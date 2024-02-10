@@ -8,6 +8,16 @@ Sunrise is an open-source productivity app that helps you focus on your work! It
 
 <!-- TODO -->
 
+## Technologies
+
+Sunrise is built with the following technologies:
+
+- [React](https://reactjs.org/)
+- [Vite](https://vitejs.dev/)
+- [Tauri](https://tauri.studio/)
+- [TypeScript](https://www.typescriptlang.org/)
+- [Bun](https://bun.sh/)
+
 ## License
 
 Sunrise is licensed under the [AGPL-3.0 License](LICENSE).
