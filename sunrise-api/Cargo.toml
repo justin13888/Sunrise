@@ -1,0 +1,22 @@
+[package]
+name = "sunrise-api"
+version = "0.1.0"
+edition = "2021"
+authors = ["Justin Chung"]
+description = "Open productivity app that helps you focus on what matters"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/justin13888/sunrise"
+keywords = ["api", "rest", "productivity"]
+
+[dependencies]
+chrono = "0.4.33"
+maplit = "1.0.2"
+rand = "0.8.5"
+serde = "1.0.196"
+tokio = "1.36.0"
+tokio-stream = "0.1.14"
+toml = "0.8.10"
+tracing = "0.1.40"
+tracing-appender = "0.2.3"
+tracing-core = "0.1.32"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt", "json", "local-time"] }

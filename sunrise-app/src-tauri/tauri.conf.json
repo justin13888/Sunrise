@@ -1,7 +1,7 @@
 {
   "productName": "sunrise-app",
   "version": "0.0.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.justin13888.sunrise",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
