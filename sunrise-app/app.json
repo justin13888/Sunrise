@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "sunrise-app",
+    "slug": "sunrise-app",
+    "android": {
+      "package": "com.justin13888.sunriseapp"
+    },
+    "ios": {
+      "bundleIdentifier": "com.justin13888.sunriseapp"
+    }
+  }
+}
