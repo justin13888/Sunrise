@@ -2,7 +2,7 @@
 
 Desktop and web (PWA) client.
 
-## Setup
+## Development
 
 1. Install [Bun](https://bun.sh/).
 2. Install dependencies: `bun install`
@@ -14,3 +14,11 @@ Desktop and web (PWA) client.
     bun run tauri android dev # For Android
     bun run tauri ios dev # For iOS
     ```
+
+## Build
+
+```bash
+bun run tauri build # For desktop
+bun run tauri android build # For Android
+bun run tauri ios build # For iOS
+```
