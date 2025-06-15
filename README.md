@@ -1,6 +1,6 @@
 # Sunrise
 
-Sunrise is an open-source productivity app that helps you focus on what matters! It is focused on being accessible, available on all major desktop and mobile platforms, open source, and built with performant technologies.
+Sunrise is an open-source productivity app that helps you focus on what matters! It aims to be accessible, available on all major desktop and mobile platforms, open source, and built with performant technologies.
 
 <!-- TODO: Add screenshot and demo link -->
 
