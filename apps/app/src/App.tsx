@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { 
   Calendar, 
   Clock, 
@@ -15,9 +15,32 @@ import {
   BatteryLow,
   AlertCircle,
   CheckCircle,
-  X
+  MoreVertical
 } from 'lucide-react';
-import type { PriorityLevel, Routine, RoutineCategory, TimeWindow } from '@sunrise/models';
+import type { PriorityLevel, Routine, RoutineCategory, RoutineCategoryDefinition, TimeWindow } from '@sunrise/models';
+import { DEFAULT_ROUTINE_CATEGORIES } from '@sunrise/models';
+
+// Create a lookup map for categories for efficient access
+const CATEGORY_LOOKUP = new Map(
+  DEFAULT_ROUTINE_CATEGORIES.map(category => [category.id, category])
+);
+
+// Helper function to get category definition by ID
+const getCategoryById = (categoryId: RoutineCategory): RoutineCategoryDefinition | undefined => {
+  return CATEGORY_LOOKUP.get(categoryId);
+};
+
+// Helper function to get category name by ID (with fallback)
+const getCategoryName = (categoryId: RoutineCategory): string => {
+  const category = getCategoryById(categoryId);
+  return category?.name || 'Unknown Category';
+};
+
+// Helper function to get category color by ID (with fallback)
+const getCategoryColor = (categoryId: RoutineCategory): string => {
+  const category = getCategoryById(categoryId);
+  return category?.color || '#6B7280';
+};
 
 // Mock data based on our schemas
 const MOCK_ROUTINES: Routine[] = [
@@ -29,7 +52,7 @@ const MOCK_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 2,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "daily",
     time_preferences: ["early_morning", "morning"],
     availability_windows: [{ start_hour: 5, start_minute: 0, end_hour: 9, end_minute: 0 }],
@@ -49,7 +72,7 @@ const MOCK_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 4,
     energy_level_required: "medium",
-    category: "health",
+    category: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // Health & Fitness
     frequency: "daily",
     time_preferences: ["morning", "late_morning"],
     availability_windows: [{ start_hour: 6, start_minute: 0, end_hour: 11, end_minute: 0 }],
@@ -69,7 +92,7 @@ const MOCK_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 3,
     energy_level_required: "high",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "weekdays",
     time_preferences: ["morning", "late_morning"],
     availability_windows: [{ start_hour: 8, start_minute: 0, end_hour: 12, end_minute: 0 }],
@@ -89,7 +112,7 @@ const MOCK_ROUTINES: Routine[] = [
     priority: "medium",
     flexibility: 8,
     energy_level_required: "low",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "daily",
     time_preferences: ["morning", "afternoon", "flexible"],
     availability_windows: [
@@ -113,7 +136,7 @@ const MOCK_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 5,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "daily",
     time_preferences: ["evening", "night"],
     availability_windows: [{ start_hour: 20, start_minute: 0, end_hour: 23, end_minute: 0 }],
@@ -134,7 +157,11 @@ function App() {
     return routines.find(r => r.id === selectedRoutineId) || null;
   }, [selectedRoutineId, routines]);
   const [editMode, setEditMode] = useState(false);
-  const [expandedCategories, setExpandedCategories] = useState(new Set(['personal', 'work', 'health']));
+  const [expandedCategories, setExpandedCategories] = useState(new Set([
+    'f47ac10b-58cc-4372-a567-0e02b2c3d479', // Personal Care
+    '550e8400-e29b-41d4-a716-446655440000', // Work & Professional  
+    '6ba7b810-9dad-11d1-80b4-00c04fd430c8'  // Health & Fitness
+  ]));
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'timeline'
 
   // Group routines by category
@@ -294,27 +321,47 @@ function App() {
         <div className="grid grid-cols-3 gap-6">
           {/* Routines List */}
           <div className="col-span-2 space-y-4">
-            {Array.from(routinesByCategory.entries()).map(([category, categoryRoutines]: [string, Routine[]]) => (
-              <div key={category} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            {Array.from(routinesByCategory.entries()).map(([categoryId, categoryRoutines]: [string, Routine[]]) => {
+              const categoryName = getCategoryName(categoryId);
+              const categoryColor = getCategoryColor(categoryId);
+              
+              return (
+              <div key={categoryId} className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => toggleCategory(category as RoutineCategory)}
+                  onClick={() => toggleCategory(categoryId as RoutineCategory)}
                   className="w-full px-6 py-4 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors"
                 >
-                  <div className="flex items-center gap-3">
-                    {expandedCategories.has(category) ? (
+                  <div className="flex items-center gap-3 w-full">
+                    {expandedCategories.has(categoryId) ? (
                       <ChevronDown className="w-5 h-5 text-gray-400" />
                     ) : (
                       <ChevronRight className="w-5 h-5 text-gray-400" />
                     )}
-                    <h3 className="font-semibold text-gray-900 capitalize">{category}</h3>
+                    <div 
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: categoryColor }}
+                    />
+                    <h3 className="font-semibold text-gray-900">{categoryName}</h3>
                     <span className="px-2 py-1 bg-gray-200 text-gray-700 text-sm rounded-full">
                       {categoryRoutines.filter(r => r.enabled).length}/{categoryRoutines.length}
                     </span>
+                    <div className="ml-auto relative">
+                      <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // TODO: Handle category options menu
+                      }}
+                      className="p-1 hover:bg-gray-200 rounded"
+                      >
+                      <MoreVertical className="w-4 h-4 text-gray-400" />
+                      </button>
+                    </div>
                   </div>
                 </button>
 
-                {expandedCategories.has(category) && (
+                {expandedCategories.has(categoryId) && (
                   <div className="divide-y divide-gray-100">
                     {categoryRoutines.map((routine) => (
                       <div
@@ -389,7 +436,8 @@ function App() {
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Detail Panel */}
@@ -520,6 +568,16 @@ function App() {
                           <span className="text-gray-500">Frequency:</span>
                           <span className="ml-2 font-medium">{selectedRoutine.frequency}</span>
                         </div>
+                        <div>
+                          <span className="text-gray-500">Category:</span>
+                          <span className="ml-2 flex items-center gap-2">
+                            <div 
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: getCategoryColor(selectedRoutine.category) }}
+                            />
+                            {getCategoryName(selectedRoutine.category)}
+                          </span>
+                        </div>
                       </div>
                     </div>
 
@@ -538,7 +596,7 @@ function App() {
                       <h5 className="font-medium text-gray-900 mb-2">Availability Windows</h5>
                       <div className="space-y-1">
                         {selectedRoutine.availability_windows.map((window, index) => (
-                          <div key={index} className="text-sm text-gray-600">
+                          <div key={`window-${selectedRoutine.id}-${index}`} className="text-sm text-gray-600">
                             {formatTimeWindow(window)}
                           </div>
                         ))}

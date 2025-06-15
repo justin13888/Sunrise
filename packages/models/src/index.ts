@@ -15,15 +15,32 @@ export const energyLevelSchema = Type.Union([
 ]);
 export type EnergyLevel = Static<typeof energyLevelSchema>;
 
-export const routineCategorySchema = Type.Union([
-  Type.Literal('work'),
-  Type.Literal('personal'),
-  Type.Literal('health'),
-  Type.Literal('social'),
-  Type.Literal('household'),
-  Type.Literal('learning'),
-  Type.Literal('creative')
-]);
+// Routine category definition schema
+export const routineCategoryDefinitionSchema = Type.Object({
+  /** Unique identifier for the category (UUIDv4) */
+  id: Type.String({ 
+    format: 'uuid',
+    examples: ['550e8400-e29b-41d4-a716-446655440000', 'f47ac10b-58cc-4372-a567-0e02b2c3d479']
+  }),
+  /** Human-readable name for the category */
+  name: Type.String({ 
+    minLength: 1, 
+    maxLength: 50, 
+    examples: ['Work & Professional', 'Personal Care', 'Health & Fitness'] 
+  }),
+  /** Color for the category (hex code) */
+  color: Type.String({ 
+    pattern: '^#[0-9a-fA-F]{6}$',
+    examples: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B']
+  })
+});
+export type RoutineCategoryDefinition = Static<typeof routineCategoryDefinitionSchema>;
+
+// For backward compatibility and simpler referencing in routines
+export const routineCategorySchema = Type.String({ 
+  format: 'uuid',
+  examples: ['550e8400-e29b-41d4-a716-446655440000']
+});
 export type RoutineCategory = Static<typeof routineCategorySchema>;
 
 export const frequencySchema = Type.Union([
@@ -200,6 +217,45 @@ export const manualOverrideSchema = Type.Object({
 });
 export type ManualOverride = Static<typeof manualOverrideSchema>;
 
+// Predefined routine categories
+export const DEFAULT_ROUTINE_CATEGORIES: RoutineCategoryDefinition[] = [
+  {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "Work & Professional",
+    color: "#3B82F6"
+  },
+  {
+    id: "f47ac10b-58cc-4372-a567-0e02b2c3d479", 
+    name: "Personal Care",
+    color: "#10B981"
+  },
+  {
+    id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    name: "Health & Fitness", 
+    color: "#EF4444"
+  },
+  {
+    id: "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+    name: "Social & Relationships",
+    color: "#8B5CF6"
+  },
+  {
+    id: "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
+    name: "Household & Maintenance",
+    color: "#F59E0B"
+  },
+  {
+    id: "6ba7b813-9dad-11d1-80b4-00c04fd430c8", 
+    name: "Learning & Development",
+    color: "#06B6D4"
+  },
+  {
+    id: "6ba7b814-9dad-11d1-80b4-00c04fd430c8",
+    name: "Creative & Hobbies",
+    color: "#EC4899"
+  }
+];
+
 // Preconfigured routine examples
 export const PRECONFIGURED_ROUTINES: Routine[] = [
   // Morning Routines
@@ -211,7 +267,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 2,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "daily",
     time_preferences: ["early_morning", "morning"],
     availability_windows: [
@@ -233,7 +289,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "medium",
     flexibility: 6,
     energy_level_required: "low",
-    category: "health",
+    category: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // Health & Fitness
     frequency: "daily",
     time_preferences: ["morning"],
     availability_windows: [
@@ -257,7 +313,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 4,
     energy_level_required: "medium",
-    category: "health",
+    category: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // Health & Fitness
     frequency: "daily",
     time_preferences: ["morning", "late_morning"],
     availability_windows: [
@@ -281,7 +337,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 3,
     energy_level_required: "high",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "weekdays",
     time_preferences: ["morning", "late_morning"],
     availability_windows: [
@@ -303,7 +359,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 5,
     energy_level_required: "medium",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "weekdays",
     time_preferences: ["afternoon"],
     availability_windows: [
@@ -325,7 +381,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "medium",
     flexibility: 8,
     energy_level_required: "low",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "daily",
     time_preferences: ["morning", "afternoon", "flexible"],
     availability_windows: [
@@ -351,7 +407,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 4,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "daily",
     time_preferences: ["midday"],
     availability_windows: [
@@ -373,7 +429,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "medium",
     flexibility: 7,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "weekdays",
     time_preferences: ["afternoon"],
     availability_windows: [
@@ -397,7 +453,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 3,
     energy_level_required: "medium",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "weekdays",
     time_preferences: ["evening"],
     availability_windows: [
@@ -419,7 +475,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 5,
     energy_level_required: "low",
-    category: "personal",
+    category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
     frequency: "daily",
     time_preferences: ["evening", "night"],
     availability_windows: [
@@ -443,7 +499,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "high",
     flexibility: 6,
     energy_level_required: "high",
-    category: "work",
+    category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
     frequency: "weekly",
     time_preferences: ["morning", "afternoon"],
     availability_windows: [
@@ -465,7 +521,7 @@ export const PRECONFIGURED_ROUTINES: Routine[] = [
     priority: "medium",
     flexibility: 8,
     energy_level_required: "medium",
-    category: "learning",
+    category: "6ba7b813-9dad-11d1-80b4-00c04fd430c8", // Learning & Development
     frequency: "daily",
     time_preferences: ["morning", "evening", "flexible"],
     availability_windows: [
@@ -509,7 +565,7 @@ export const ROUTINE_TEMPLATES: RoutineTemplate[] = [
     description: "Routine emphasizing health and fitness alongside work",
     target_user_type: ["fitness_focused", "health_conscious"],
     routines: PRECONFIGURED_ROUTINES.filter(r => 
-      r.category === "health" || r.tags.includes("fitness") || r.priority === "high"
+      r.category === "6ba7b810-9dad-11d1-80b4-00c04fd430c8" || r.tags.includes("fitness") || r.priority === "high"
     )
   }
 ];
