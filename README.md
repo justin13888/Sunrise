@@ -4,6 +4,10 @@ Sunrise is an open-source productivity app that helps you focus on what matters!
 
 <!-- TODO: Add screenshot and demo link -->
 
+## Why Sunrise?
+
+It's simple. Everybody has there own ways to stay organized but we give you simple, well-thought tools, for free! Self-host to maintain control of your data. Contribute to the open-source codebase to add features. Give feedback to help everyone else.
+
 ## Features
 
 <!-- TODO -->
