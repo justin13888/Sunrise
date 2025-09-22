@@ -1,0 +1,19 @@
+{
+  "name": "@sunrise/gcal",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "google-auth-library": "^10.1.0",
+    "googleapis-common": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "googleapis": "150.0.1"
+  }
+}
