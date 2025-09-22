@@ -22,6 +22,12 @@ export const Route = createRootRoute({
                                 >
                                     Routines
                                 </Link>
+                                <Link
+                                    to="/schedule"
+                                    className="text-gray-600 hover:text-gray-900 transition-colors [&.active]:text-indigo-600 [&.active]:font-semibold"
+                                >
+                                    Schedule
+                                </Link>
                             </div>
                         </div>
                     </div>
