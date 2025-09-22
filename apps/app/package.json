@@ -1,7 +1,7 @@
 {
   "name": "@sunrise/app",
   "version": "0.1.0",
-  "license":"AGPL-3.0-only",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,9 +10,10 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@sunrise/models": "workspace:*",
     "@radix-ui/react-slot": "^1.2.3",
+    "@sunrise/models": "workspace:*",
     "@tailwindcss/vite": "^4.1.8",
+    "@tanstack/react-router": "^1.131.50",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "class-variance-authority": "^0.7.1",
@@ -24,6 +25,8 @@
     "tailwindcss": "^4.1.8"
   },
   "devDependencies": {
+    "@tanstack/router-cli": "^1.131.50",
+    "@tanstack/router-devtools": "^1.131.50",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
