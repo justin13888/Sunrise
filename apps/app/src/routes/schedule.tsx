@@ -12,6 +12,12 @@ function ScheduleComponent() {
     const [selectedCalendarId, setSelectedCalendarId] = useState<string>('primary')
     const [isRedirecting, setIsRedirecting] = useState(false)
 
+    // Memoize time range to prevent refetches on every render
+    const [timeRange] = useState(() => ({
+        timeMin: new Date().toISOString(),
+        timeMax: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    }))
+
     // Check if user is authenticated
     const { data: userData, loading: userLoading, error: userError } = useGetMeQuery({
         errorPolicy: 'all',
@@ -33,8 +39,8 @@ function ScheduleComponent() {
         variables: {
             maxResults: 20,
             calendarId: selectedCalendarId,
-            timeMin: new Date().toISOString(),
-            timeMax: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // Next 7 days
+            timeMin: timeRange.timeMin,
+            timeMax: timeRange.timeMax
         },
         skip: !userData?.me || isRedirecting,
         errorPolicy: 'all'

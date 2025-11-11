@@ -258,7 +258,7 @@ export const resolvers: Resolvers = {
                         name: userInfoResponse.data.name || userInfoResponse.data.email, // Use email as name if name not provided
                         picture: userInfoResponse.data.picture || undefined,
                     };
-                    
+
                     console.log("✅ Fetched user info from Google:", userInfo.email);
                 } catch (userInfoError) {
                     console.error("❌ Could not fetch user info from Google:");
@@ -272,7 +272,7 @@ export const resolvers: Resolvers = {
                         "This may be because the required OAuth scopes (userinfo.email, userinfo.profile) were not granted. " +
                         "Please try signing in again.",
                         {
-                            extensions: { 
+                            extensions: {
                                 code: "USERINFO_FETCH_FAILED",
                                 originalError: userInfoError instanceof Error ? userInfoError.message : String(userInfoError)
                             },
