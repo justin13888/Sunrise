@@ -25,11 +25,11 @@ export class GoogleCalendarService {
     private clientSecret: string,
     private redirectUri: string = 'urn:ietf:wg:oauth:2.0:oob'
   ) {
-    this.oauth2Client = new google.auth.OAuth2(
+    this.oauth2Client = new google.auth.OAuth2({
       clientId,
       clientSecret,
       redirectUri
-    );
+    });
   }
 
   /**

@@ -1,11 +1,22 @@
 {
     "name": "sunrise",
     "version": "0.1.0",
+    "scripts": {
+        "test": "vitest",
+        "test:ui": "vitest --ui",
+        "test:coverage": "vitest --coverage"
+    },
     "devDependencies": {
         "@types/node": "^22.15.24",
-        "typescript": "~5.8.3"
+        "@vitest/coverage-v8": "4.0.8",
+        "@vitest/ui": "^4.0.8",
+        "typescript": "~5.8.3",
+        "vitest": "^4.0.8"
     },
-    "workspaces": ["apps/*", "packages/*"],
+    "workspaces": [
+        "apps/*",
+        "packages/*"
+    ],
     "dependencies": {
         "@sinclair/typebox": "^0.34.33"
     }

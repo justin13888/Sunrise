@@ -1,0 +1,187 @@
+scalar DateTime
+scalar URL
+
+type Query {
+  # User authentication and profile
+  me: User
+  
+  # Calendar operations
+  calendars: [Calendar!]!
+  calendar(id: ID!): Calendar
+  events(
+    calendarId: ID
+    timeMin: DateTime
+    timeMax: DateTime
+    maxResults: Int = 10
+    orderBy: EventOrderBy = START_TIME
+  ): [CalendarEvent!]!
+  event(id: ID!): CalendarEvent
+  
+  # Auth operations
+  authUrl: String!
+}
+
+type Mutation {
+  # Authentication
+  authenticateWithCode(code: String!): AuthPayload!
+  refreshToken: AuthPayload!
+  logout: Boolean!
+  
+  # Event operations
+  createEvent(input: CreateEventInput!): CalendarEvent!
+  updateEvent(id: ID!, input: UpdateEventInput!): CalendarEvent!
+  deleteEvent(id: ID!): Boolean!
+}
+
+type Subscription {
+  eventUpdated(calendarId: ID): CalendarEvent!
+  eventCreated(calendarId: ID): CalendarEvent!
+  eventDeleted(calendarId: ID): EventDeletedPayload!
+}
+
+# Types
+type User {
+  id: ID!
+  email: String!
+  name: String
+  picture: URL
+  verified: Boolean!
+}
+
+type Calendar {
+  id: ID!
+  summary: String!
+  description: String
+  primary: Boolean!
+  accessRole: CalendarAccessRole!
+  backgroundColor: String
+  foregroundColor: String
+  timeZone: String
+  events(
+    timeMin: DateTime
+    timeMax: DateTime
+    maxResults: Int = 10
+  ): [CalendarEvent!]!
+}
+
+type CalendarEvent {
+  id: ID!
+  calendarId: ID!
+  summary: String!
+  description: String
+  location: String
+  start: EventDateTime!
+  end: EventDateTime!
+  status: EventStatus!
+  visibility: EventVisibility!
+  creator: EventParticipant
+  organizer: EventParticipant
+  attendees: [EventParticipant!]
+  recurringEventId: ID
+  originalStartTime: EventDateTime
+  htmlLink: URL!
+  created: DateTime!
+  updated: DateTime!
+}
+
+type EventDateTime {
+  dateTime: DateTime
+  date: String
+  timeZone: String
+}
+
+type EventParticipant {
+  email: String!
+  displayName: String
+  self: Boolean
+  responseStatus: AttendeeResponseStatus
+}
+
+type AuthPayload {
+  accessToken: String!
+  refreshToken: String
+  user: User!
+  expiresIn: Int!
+}
+
+type EventDeletedPayload {
+  id: ID!
+  calendarId: ID!
+}
+
+# Inputs
+input CreateEventInput {
+  calendarId: ID!
+  summary: String!
+  description: String
+  location: String
+  start: EventDateTimeInput!
+  end: EventDateTimeInput!
+  attendees: [String!] # Email addresses
+  reminders: ReminderInput
+}
+
+input UpdateEventInput {
+  summary: String
+  description: String
+  location: String
+  start: EventDateTimeInput
+  end: EventDateTimeInput
+  attendees: [String!]
+  reminders: ReminderInput
+}
+
+input EventDateTimeInput {
+  dateTime: DateTime
+  date: String
+  timeZone: String
+}
+
+input ReminderInput {
+  useDefault: Boolean
+  overrides: [ReminderOverrideInput!]
+}
+
+input ReminderOverrideInput {
+  method: ReminderMethod!
+  minutes: Int!
+}
+
+# Enums
+enum EventOrderBy {
+  START_TIME
+  UPDATED
+}
+
+enum CalendarAccessRole {
+  NONE
+  FREE_BUSY_READER
+  READER
+  WRITER
+  OWNER
+}
+
+enum EventStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELLED
+}
+
+enum EventVisibility {
+  DEFAULT
+  PUBLIC
+  PRIVATE
+  CONFIDENTIAL
+}
+
+enum AttendeeResponseStatus {
+  NEEDS_ACTION
+  DECLINED
+  TENTATIVE
+  ACCEPTED
+}
+
+enum ReminderMethod {
+  EMAIL
+  POPUP
+}

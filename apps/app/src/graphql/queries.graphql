@@ -1,0 +1,97 @@
+query GetAuthUrl {
+  authUrl
+}
+
+query GetMe {
+  me {
+    id
+    email
+    name
+    picture
+    verified
+  }
+}
+
+query GetCalendars {
+  calendars {
+    id
+    summary
+    description
+    primary
+    accessRole
+    backgroundColor
+    foregroundColor
+    timeZone
+  }
+}
+
+query GetEvents($maxResults: Int, $calendarId: ID, $timeMin: DateTime, $timeMax: DateTime) {
+  events(maxResults: $maxResults, calendarId: $calendarId, timeMin: $timeMin, timeMax: $timeMax) {
+    id
+    calendarId
+    summary
+    description
+    location
+    start {
+      dateTime
+      date
+      timeZone
+    }
+    end {
+      dateTime
+      date
+      timeZone
+    }
+    status
+    visibility
+    creator {
+      email
+      displayName
+      self
+    }
+    organizer {
+      email
+      displayName
+      self
+    }
+    attendees {
+      email
+      displayName
+      self
+      responseStatus
+    }
+    htmlLink
+    created
+    updated
+  }
+}
+
+query GetCalendar($id: ID!) {
+  calendar(id: $id) {
+    id
+    summary
+    description
+    primary
+    accessRole
+    backgroundColor
+    foregroundColor
+    timeZone
+    events(maxResults: 20) {
+      id
+      summary
+      description
+      start {
+        dateTime
+        date
+        timeZone
+      }
+      end {
+        dateTime
+        date
+        timeZone
+      }
+      status
+      htmlLink
+    }
+  }
+}

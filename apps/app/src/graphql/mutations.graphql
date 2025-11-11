@@ -1,0 +1,33 @@
+mutation AuthenticateWithCode($code: String!) {
+  authenticateWithCode(code: $code) {
+    accessToken
+    refreshToken
+    expiresIn
+    user {
+      id
+      email
+      name
+      picture
+      verified
+    }
+  }
+}
+
+mutation RefreshToken {
+  refreshToken {
+    accessToken
+    refreshToken
+    expiresIn
+    user {
+      id
+      email
+      name
+      picture
+      verified
+    }
+  }
+}
+
+mutation Logout {
+  logout
+}
