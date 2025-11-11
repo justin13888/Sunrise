@@ -8,7 +8,9 @@ import { OAuth2Client, type JWTInput } from "google-auth-library";
 // If modifying these scopes, delete token.json.
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events'
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
 ];
 
 const CREDENTIALS_PATH = path.join(process.cwd(), 'credentials.json');
@@ -38,8 +40,12 @@ export class GoogleCalendarService {
   getAuthUrl(): string {
     return this.oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      prompt: 'consent',
+      prompt: 'consent', // Force consent screen to show updated scopes
       scope: SCOPES,
+      // Add a state parameter to help with debugging
+      state: `timestamp_${Date.now()}`,
+      // Include login_hint to help with account selection
+      // approval_prompt is deprecated but some clients still use it
     });
   }
 

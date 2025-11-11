@@ -18,7 +18,14 @@ function AuthComponent() {
     useEffect(() => {
         // Handle the auth callback from popup
         const handleMessage = async (event: MessageEvent) => {
-            if (event.origin !== window.location.origin) return
+            // Allow messages from the API server (localhost:3000) where OAuth callback is handled
+            const allowedOrigins = ['http://localhost:3000', 'http://localhost:1420']
+            if (!allowedOrigins.includes(event.origin)) {
+                console.log('Rejected message from origin:', event.origin)
+                return
+            }
+
+            console.log('📨 Received message from popup:', event.data)
 
             if (event.data.code) {
                 setIsAuthenticating(true)
@@ -30,11 +37,16 @@ function AuthComponent() {
                     })
 
                     if (result.data?.authenticateWithCode) {
-                        const { accessToken, refreshToken } = result.data.authenticateWithCode
+                        const { accessToken, refreshToken, user } = result.data.authenticateWithCode
+
+                        // Store tokens and user ID in localStorage
                         localStorage.setItem('access_token', accessToken)
+                        localStorage.setItem('user_id', user.id)
                         if (refreshToken) {
                             localStorage.setItem('refresh_token', refreshToken)
                         }
+
+                        console.log('✅ Successfully authenticated:', user.email)
 
                         // Navigate to schedule page
                         router.navigate({ to: '/schedule' })

@@ -224,14 +224,13 @@ export const resolvers: Resolvers = {
                 // 1. Extract and validate user info from JWT token
                 // 2. Create/update user record in database
                 // 3. Use proper user ID from token
-                // For now, we'll create a temporary user ID
-                const userId = "temp-user-" + Date.now();
 
                 // Get user info from Google using the access token
-                let userInfo = {
-                    email: "user@example.com",
-                    name: "User",
-                    picture: undefined as string | undefined,
+                // IMPORTANT: This must succeed - we don't use fallback values
+                let userInfo: {
+                    email: string;
+                    name: string;
+                    picture?: string;
                 };
 
                 try {
@@ -243,21 +242,47 @@ export const resolvers: Resolvers = {
                         refresh_token: tokens.refresh_token,
                     });
 
+                    console.log("🔍 Attempting to fetch user info from Google...");
                     const { google } = await import("googleapis");
                     const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
                     const userInfoResponse = await oauth2.userinfo.get();
 
-                    if (userInfoResponse.data) {
-                        userInfo = {
-                            email: userInfoResponse.data.email || userInfo.email,
-                            name: userInfoResponse.data.name || userInfo.name,
-                            picture: userInfoResponse.data.picture || undefined,
-                        };
+                    console.log("🔍 User info response:", JSON.stringify(userInfoResponse.data, null, 2));
+
+                    if (!userInfoResponse.data || !userInfoResponse.data.email) {
+                        throw new Error("Failed to get user info from Google - no email in response");
                     }
+
+                    userInfo = {
+                        email: userInfoResponse.data.email,
+                        name: userInfoResponse.data.name || userInfoResponse.data.email, // Use email as name if name not provided
+                        picture: userInfoResponse.data.picture || undefined,
+                    };
+                    
+                    console.log("✅ Fetched user info from Google:", userInfo.email);
                 } catch (userInfoError) {
-                    console.warn("Could not fetch user info:", userInfoError);
-                    // Continue with default user info
+                    console.error("❌ Could not fetch user info from Google:");
+                    console.error("Error details:", userInfoError);
+                    if (userInfoError instanceof Error) {
+                        console.error("Error message:", userInfoError.message);
+                        console.error("Error stack:", userInfoError.stack);
+                    }
+                    throw new GraphQLError(
+                        "Failed to fetch user information from Google. " +
+                        "This may be because the required OAuth scopes (userinfo.email, userinfo.profile) were not granted. " +
+                        "Please try signing in again.",
+                        {
+                            extensions: { 
+                                code: "USERINFO_FETCH_FAILED",
+                                originalError: userInfoError instanceof Error ? userInfoError.message : String(userInfoError)
+                            },
+                        }
+                    );
                 }
+
+                // Use the email as a stable user ID (in production, this would be a database ID)
+                // We hash or encode it to make it URL-safe and consistent
+                const userId = `google-${Buffer.from(userInfo.email).toString('base64').replace(/[/+=]/g, '')}`;
 
                 const user = {
                     id: userId,
@@ -301,42 +326,58 @@ export const resolvers: Resolvers = {
             }
         },
 
-        refreshToken: async (_, __, { refreshToken, calendarService }: GraphQLContext) => {
-            if (!refreshToken) {
-                throw new GraphQLError("No refresh token provided", {
-                    extensions: { code: "UNAUTHENTICATED" },
-                });
-            }
+        refreshToken: async (_, __, context: GraphQLContext) => {
+            // User must be authenticated to refresh their token
+            const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const client =
                     await calendarService.getClientFromRefreshToken(refreshToken);
                 const credentials = client.credentials;
 
-                const user = {
-                    id: "user-1",
-                    email: "user@example.com",
-                    name: "User",
-                    verified: true,
-                };
+                // Get updated token expiry
+                const expiresIn = credentials.expiry_date
+                    ? Math.floor((credentials.expiry_date - Date.now()) / 1000)
+                    : 3600;
+                const expiresAt = new Date(Date.now() + expiresIn * 1000);
+
+                // Update stored tokens with new access token and expiry
+                await tokenStore.storeTokens(user.id, {
+                    userId: user.id,
+                    accessToken: credentials.access_token || "",
+                    refreshToken: credentials.refresh_token || refreshToken,
+                    expiresAt,
+                    email: user.email,
+                    name: user.name || user.email,
+                    picture: user.picture,
+                });
+
+                console.log(`🔄 Refreshed tokens for user: ${user.email}`);
 
                 return {
                     accessToken: credentials.access_token || "",
                     refreshToken: credentials.refresh_token || refreshToken,
                     user,
-                    expiresIn: credentials.expiry_date
-                        ? Math.floor((credentials.expiry_date - Date.now()) / 1000)
-                        : 3600,
+                    expiresIn,
                 };
             } catch (error) {
+                console.error("Token refresh failed:", error);
                 throw new GraphQLError(`Token refresh failed: ${error}`, {
                     extensions: { code: "AUTH_ERROR" },
                 });
             }
         },
 
-        logout: async () => {
-            // In production, you'd invalidate the tokens
+        logout: async (_, __, context: GraphQLContext) => {
+            // Remove tokens from server storage if user is authenticated
+            if (context.user) {
+                try {
+                    await tokenStore.removeTokens(context.user.id);
+                    console.log(`🚪 User logged out: ${context.user.id}`);
+                } catch (error) {
+                    console.error("Error removing tokens:", error);
+                }
+            }
             return true;
         },
 

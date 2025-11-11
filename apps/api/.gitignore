@@ -176,3 +176,6 @@ dist
 
 # GraphQL Codegen
 src/generated/
+
+# Test directory
+data/

@@ -28,20 +28,10 @@ if (isDebug) {
             const headers = c.req.header();
             console.log("📝 [DEBUG] Request Headers:", headers);
 
-            // Log request body for POST/PUT requests (GraphQL operations)
-            if (method === "POST" || method === "PUT" || method === "PATCH") {
-                try {
-                    const body = await c.req.text();
-                    if (body) {
-                        console.log(
-                            "📦 [DEBUG] Request Body:",
-                            body.substring(0, 500) + (body.length > 500 ? "..." : ""),
-                        );
-                    }
-                } catch {
-                    console.log("📦 [DEBUG] Could not parse request body");
-                }
-            }
+            // TODO: Fix
+            // Note: We can't log the request body here because it would consume the stream
+            // and make it unavailable for GraphQL Yoga. To debug request bodies,
+            // enable GraphQL Yoga's own debug logging instead.
         }
 
         await next();

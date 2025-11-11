@@ -15,7 +15,9 @@
     "@apollo/client": "^4.0.5",
     "graphql": "^16.9.0",
     "graphql-scalars": "^1.23.0",
-    "@graphql-tools/schema": "^10.0.6"
+    "@graphql-tools/schema": "^10.0.6",
+    "google-auth-library": "^9.0.0",
+    "googleapis": "^140.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

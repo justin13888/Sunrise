@@ -10,15 +10,21 @@ export const Route = createFileRoute('/schedule')({
 function ScheduleComponent() {
     const router = useRouter()
     const [selectedCalendarId, setSelectedCalendarId] = useState<string>('primary')
+    const [isRedirecting, setIsRedirecting] = useState(false)
 
     // Check if user is authenticated
     const { data: userData, loading: userLoading, error: userError } = useGetMeQuery({
-        errorPolicy: 'all'
+        errorPolicy: 'all',
+        // Use cache-first to avoid unnecessary network requests
+        // The query will still refetch if needed, but won't spam the API
+        fetchPolicy: 'cache-first',
+        // Stop polling/refetching if redirecting
+        skip: isRedirecting
     })
 
     // Get user's calendars
     const { data: calendarsData, loading: calendarsLoading } = useGetCalendarsQuery({
-        skip: !userData?.me,
+        skip: !userData?.me || isRedirecting,
         errorPolicy: 'all'
     })
 
@@ -30,27 +36,30 @@ function ScheduleComponent() {
             timeMin: new Date().toISOString(),
             timeMax: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // Next 7 days
         },
-        skip: !userData?.me,
+        skip: !userData?.me || isRedirecting,
         errorPolicy: 'all'
     })
 
     // Redirect to auth if not authenticated
     useEffect(() => {
-        if (userError && !userLoading) {
+        if (userError && !userLoading && !isRedirecting) {
             // Check if it's an authentication error
             const isUnauthenticated = userError.graphQLErrors.some(
                 error => error.extensions?.code === 'UNAUTHENTICATED'
             )
 
             if (isUnauthenticated) {
+                console.log('🔒 Unauthenticated - redirecting to /auth')
+                setIsRedirecting(true)
                 router.navigate({ to: '/auth' })
             }
         }
-    }, [userError, userLoading, router])
+    }, [userError, userLoading, router, isRedirecting])
 
     const handleLogout = () => {
         localStorage.removeItem('access_token')
         localStorage.removeItem('refresh_token')
+        localStorage.removeItem('user_id')
         router.navigate({ to: '/auth' })
     }
 
@@ -64,12 +73,12 @@ function ScheduleComponent() {
         return 'No date'
     }
 
-    if (userLoading) {
+    if (userLoading || isRedirecting) {
         return (
             <div className="min-h-screen flex items-center justify-center">
                 <div className="text-center">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
-                    <p>Loading...</p>
+                    <p>{isRedirecting ? 'Redirecting to login...' : 'Loading...'}</p>
                 </div>
             </div>
         )
@@ -133,8 +142,8 @@ function ScheduleComponent() {
                                             type="button"
                                             onClick={() => setSelectedCalendarId(calendar.id)}
                                             className={`w-full text-left p-3 rounded-md transition-colors ${selectedCalendarId === calendar.id
-                                                    ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                                    : 'hover:bg-gray-50'
+                                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                                : 'hover:bg-gray-50'
                                                 }`}
                                         >
                                             <div className="flex items-center">
@@ -209,8 +218,8 @@ function ScheduleComponent() {
                                                     </div>
                                                     <div className="ml-4">
                                                         <span className={`px-2 py-1 text-xs rounded-full ${event.status === 'CONFIRMED' ? 'bg-green-100 text-green-800' :
-                                                                event.status === 'TENTATIVE' ? 'bg-yellow-100 text-yellow-800' :
-                                                                    'bg-red-100 text-red-800'
+                                                            event.status === 'TENTATIVE' ? 'bg-yellow-100 text-yellow-800' :
+                                                                'bg-red-100 text-red-800'
                                                             }`}>
                                                             {event.status.toLowerCase()}
                                                         </span>
