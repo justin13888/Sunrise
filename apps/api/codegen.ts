@@ -17,7 +17,7 @@ const config: CodegenConfig = {
             ],
             config: {
                 useIndexSignature: true,
-                contextType: './context#GraphQLContext',
+                contextType: '../context#GraphQLContext',
                 mappers: {
                     CalendarEvent: '../types/calendar#CalendarEvent',
                     Calendar: '../types/calendar#Calendar',

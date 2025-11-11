@@ -4,7 +4,7 @@ scalar URL
 type Query {
   # User authentication and profile
   me: User
-  
+
   # Calendar operations
   calendars: [Calendar!]!
   calendar(id: ID!): Calendar
@@ -12,11 +12,12 @@ type Query {
     calendarId: ID
     timeMin: DateTime
     timeMax: DateTime
-    maxResults: Int = 10
+    first: Int = 20
+    after: String
     orderBy: EventOrderBy = START_TIME
-  ): [CalendarEvent!]!
+  ): EventConnection!
   event(id: ID!): CalendarEvent
-  
+
   # Auth operations
   authUrl: String!
 }
@@ -26,7 +27,7 @@ type Mutation {
   authenticateWithCode(code: String!): AuthPayload!
   refreshToken: AuthPayload!
   logout: Boolean!
-  
+
   # Event operations
   createEvent(input: CreateEventInput!): CalendarEvent!
   updateEvent(id: ID!, input: UpdateEventInput!): CalendarEvent!
@@ -60,8 +61,9 @@ type Calendar {
   events(
     timeMin: DateTime
     timeMax: DateTime
-    maxResults: Int = 10
-  ): [CalendarEvent!]!
+    first: Int = 20
+    after: String
+  ): EventConnection!
 }
 
 type CalendarEvent {
@@ -107,6 +109,25 @@ type AuthPayload {
 type EventDeletedPayload {
   id: ID!
   calendarId: ID!
+}
+
+# Relay-style Connection Types for Pagination
+type EventConnection {
+  edges: [EventEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int
+}
+
+type EventEdge {
+  node: CalendarEvent!
+  cursor: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
 }
 
 # Inputs

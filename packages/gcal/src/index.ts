@@ -85,21 +85,34 @@ export class GoogleCalendarService {
   }
 
   /**
-   * Lists the next N events on the user's primary calendar
+   * Lists the next N events on the user's calendar with pagination support
    */
-  async listEvents(refreshToken: string, maxResults: number = 10) {
+  async listEvents(
+    refreshToken: string,
+    calendarId: string = 'primary',
+    maxResults: number = 20,
+    pageToken?: string,
+    timeMin?: string,
+    timeMax?: string,
+    orderBy: 'startTime' | 'updated' = 'startTime'
+  ) {
     const client = await this.getClientFromRefreshToken(refreshToken);
     const calendar = this.getCalendarService(client);
 
     const res = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: new Date().toISOString(),
+      calendarId,
+      timeMin: timeMin || new Date().toISOString(),
+      timeMax,
       maxResults,
       singleEvents: true,
-      orderBy: 'startTime',
+      orderBy,
+      pageToken,
     });
 
-    return res.data.items || [];
+    return {
+      items: res.data.items || [],
+      nextPageToken: res.data.nextPageToken,
+    };
   }
 
   /**

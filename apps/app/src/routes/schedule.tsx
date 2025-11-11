@@ -15,7 +15,7 @@ function ScheduleComponent() {
     // Memoize time range to prevent refetches on every render
     const [timeRange] = useState(() => ({
         timeMin: new Date().toISOString(),
-        timeMax: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+        timeMax: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() // 30 days
     }))
 
     // Check if user is authenticated
@@ -34,16 +34,17 @@ function ScheduleComponent() {
         errorPolicy: 'all'
     })
 
-    // Get events for the selected calendar
-    const { data: eventsData, loading: eventsLoading, refetch: refetchEvents } = useGetEventsQuery({
+    // Get events for the selected calendar with pagination
+    const { data: eventsData, loading: eventsLoading, refetch: refetchEvents, fetchMore } = useGetEventsQuery({
         variables: {
-            maxResults: 20,
+            first: 20,
             calendarId: selectedCalendarId,
             timeMin: timeRange.timeMin,
             timeMax: timeRange.timeMax
         },
         skip: !userData?.me || isRedirecting,
-        errorPolicy: 'all'
+        errorPolicy: 'all',
+        notifyOnNetworkStatusChange: true,
     })
 
     // Redirect to auth if not authenticated
@@ -67,6 +68,31 @@ function ScheduleComponent() {
         localStorage.removeItem('refresh_token')
         localStorage.removeItem('user_id')
         router.navigate({ to: '/auth' })
+    }
+
+    const loadMore = () => {
+        if (!eventsData?.events?.pageInfo?.hasNextPage || eventsLoading) {
+            return
+        }
+
+        fetchMore({
+            variables: {
+                after: eventsData.events.pageInfo.endCursor,
+            },
+            updateQuery: (prev, { fetchMoreResult }) => {
+                if (!fetchMoreResult) return prev
+
+                return {
+                    events: {
+                        ...fetchMoreResult.events,
+                        edges: [
+                            ...prev.events.edges,
+                            ...fetchMoreResult.events.edges,
+                        ],
+                    },
+                }
+            },
+        })
     }
 
     const formatDateTime = (dateTime: string | null | undefined, date?: string | null | undefined) => {
@@ -186,7 +212,7 @@ function ScheduleComponent() {
                             </div>
 
                             <div className="p-6">
-                                {eventsLoading ? (
+                                {eventsLoading && !eventsData ? (
                                     <div className="space-y-4">
                                         {[1, 2, 3].map((i) => (
                                             <div key={i} className="animate-pulse">
@@ -195,63 +221,82 @@ function ScheduleComponent() {
                                             </div>
                                         ))}
                                     </div>
-                                ) : eventsData?.events?.length ? (
-                                    <div className="space-y-4">
-                                        {eventsData.events.map((event) => (
-                                            <div key={event.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-                                                <div className="flex justify-between items-start">
-                                                    <div className="flex-1">
-                                                        <h3 className="font-semibold text-gray-900 text-lg">{event.summary}</h3>
-                                                        {event.description && (
-                                                            <p className="text-gray-600 mt-1 text-sm">{event.description}</p>
-                                                        )}
-                                                        {event.location && (
-                                                            <p className="text-gray-500 text-sm mt-1">📍 {event.location}</p>
-                                                        )}
-                                                        <div className="flex items-center space-x-4 mt-2 text-sm text-gray-500">
-                                                            <span>🗓️ {formatDateTime(event.start.dateTime, event.start.date)}</span>
-                                                            {event.start.dateTime && event.end.dateTime && (
-                                                                <span>→ {formatDateTime(event.end.dateTime, event.end.date)}</span>
-                                                            )}
+                                ) : eventsData?.events?.edges?.length ? (
+                                    <>
+                                        <div className="space-y-4">
+                                            {eventsData.events.edges.map((edge) => {
+                                                const event = edge.node
+                                                return (
+                                                    <div key={event.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+                                                        <div className="flex justify-between items-start">
+                                                            <div className="flex-1">
+                                                                <h3 className="font-semibold text-gray-900 text-lg">{event.summary}</h3>
+                                                                {event.description && (
+                                                                    <p className="text-gray-600 mt-1 text-sm">{event.description}</p>
+                                                                )}
+                                                                {event.location && (
+                                                                    <p className="text-gray-500 text-sm mt-1">📍 {event.location}</p>
+                                                                )}
+                                                                <div className="flex items-center space-x-4 mt-2 text-sm text-gray-500">
+                                                                    <span>🗓️ {formatDateTime(event.start.dateTime, event.start.date)}</span>
+                                                                    {event.start.dateTime && event.end.dateTime && (
+                                                                        <span>→ {formatDateTime(event.end.dateTime, event.end.date)}</span>
+                                                                    )}
+                                                                </div>
+                                                                {event.attendees && event.attendees.length > 0 && (
+                                                                    <div className="mt-2">
+                                                                        <p className="text-sm text-gray-500">
+                                                                            👥 {event.attendees.length} attendee{event.attendees.length > 1 ? 's' : ''}
+                                                                        </p>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            <div className="ml-4">
+                                                                <span className={`px-2 py-1 text-xs rounded-full ${event.status === 'CONFIRMED' ? 'bg-green-100 text-green-800' :
+                                                                    event.status === 'TENTATIVE' ? 'bg-yellow-100 text-yellow-800' :
+                                                                        'bg-red-100 text-red-800'
+                                                                    }`}>
+                                                                    {event.status.toLowerCase()}
+                                                                </span>
+                                                            </div>
                                                         </div>
-                                                        {event.attendees && event.attendees.length > 0 && (
-                                                            <div className="mt-2">
-                                                                <p className="text-sm text-gray-500">
-                                                                    👥 {event.attendees.length} attendee{event.attendees.length > 1 ? 's' : ''}
-                                                                </p>
+                                                        {event.htmlLink && (
+                                                            <div className="mt-3 pt-3 border-t">
+                                                                <a
+                                                                    href={event.htmlLink}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="text-blue-600 hover:text-blue-800 text-sm"
+                                                                >
+                                                                    View in Google Calendar →
+                                                                </a>
                                                             </div>
                                                         )}
                                                     </div>
-                                                    <div className="ml-4">
-                                                        <span className={`px-2 py-1 text-xs rounded-full ${event.status === 'CONFIRMED' ? 'bg-green-100 text-green-800' :
-                                                            event.status === 'TENTATIVE' ? 'bg-yellow-100 text-yellow-800' :
-                                                                'bg-red-100 text-red-800'
-                                                            }`}>
-                                                            {event.status.toLowerCase()}
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                {event.htmlLink && (
-                                                    <div className="mt-3 pt-3 border-t">
-                                                        <a
-                                                            href={event.htmlLink}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            className="text-blue-600 hover:text-blue-800 text-sm"
-                                                        >
-                                                            View in Google Calendar →
-                                                        </a>
-                                                    </div>
-                                                )}
+                                                )
+                                            })}
+                                        </div>
+
+                                        {/* Load More Button */}
+                                        {eventsData.events.pageInfo.hasNextPage && (
+                                            <div className="mt-6 text-center">
+                                                <Button
+                                                    onClick={loadMore}
+                                                    disabled={eventsLoading}
+                                                    variant="outline"
+                                                    className="w-full"
+                                                >
+                                                    {eventsLoading ? 'Loading more...' : 'Load More Events'}
+                                                </Button>
                                             </div>
-                                        ))}
-                                    </div>
+                                        )}
+                                    </>
                                 ) : (
                                     <div className="text-center py-8">
                                         <div className="text-gray-400 text-6xl mb-4">📅</div>
                                         <h3 className="text-gray-900 text-lg font-medium">No upcoming events</h3>
                                         <p className="text-gray-500 mt-2">
-                                            You don't have any events scheduled for the next 7 days.
+                                            You don't have any events scheduled in this calendar.
                                         </p>
                                     </div>
                                 )}

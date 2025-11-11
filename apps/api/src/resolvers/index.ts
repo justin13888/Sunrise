@@ -77,57 +77,76 @@ export const resolvers: Resolvers = {
             const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const events = await calendarService.listEvents(
+                const result = await calendarService.listEvents(
                     refreshToken,
-                    args.maxResults || 10,
+                    args.calendarId || 'primary',
+                    args.first || 20,
+                    args.after || undefined,
+                    args.timeMin || undefined,
+                    args.timeMax || undefined,
+                    args.orderBy === 'UPDATED' ? 'updated' : 'startTime'
                 );
 
-                return events.map((event) => ({
-                    id: event.id || "",
-                    calendarId: args.calendarId || "primary",
-                    summary: event.summary || "",
-                    description: event.description,
-                    location: event.location,
-                    start: {
-                        dateTime: event.start?.dateTime
-                            ? new Date(event.start.dateTime)
+                const edges = result.items.map((event) => ({
+                    cursor: event.id || '',
+                    node: {
+                        id: event.id || "",
+                        calendarId: args.calendarId || "primary",
+                        summary: event.summary || "",
+                        description: event.description,
+                        location: event.location,
+                        start: {
+                            dateTime: event.start?.dateTime
+                                ? new Date(event.start.dateTime)
+                                : undefined,
+                            date: event.start?.date,
+                            timeZone: event.start?.timeZone,
+                        },
+                        end: {
+                            dateTime: event.end?.dateTime
+                                ? new Date(event.end.dateTime)
+                                : undefined,
+                            date: event.end?.date,
+                            timeZone: event.end?.timeZone,
+                        },
+                        status: mapEventStatus(event.status),
+                        visibility: mapEventVisibility(event.visibility),
+                        creator: event.creator
+                            ? {
+                                email: event.creator.email || "",
+                                displayName: event.creator.displayName,
+                                self: event.creator.self,
+                            }
                             : undefined,
-                        date: event.start?.date,
-                        timeZone: event.start?.timeZone,
-                    },
-                    end: {
-                        dateTime: event.end?.dateTime
-                            ? new Date(event.end.dateTime)
+                        organizer: event.organizer
+                            ? {
+                                email: event.organizer.email || "",
+                                displayName: event.organizer.displayName,
+                                self: event.organizer.self,
+                            }
                             : undefined,
-                        date: event.end?.date,
-                        timeZone: event.end?.timeZone,
-                    },
-                    status: mapEventStatus(event.status),
-                    visibility: mapEventVisibility(event.visibility),
-                    creator: event.creator
-                        ? {
-                            email: event.creator.email || "",
-                            displayName: event.creator.displayName,
-                            self: event.creator.self,
-                        }
-                        : undefined,
-                    organizer: event.organizer
-                        ? {
-                            email: event.organizer.email || "",
-                            displayName: event.organizer.displayName,
-                            self: event.organizer.self,
-                        }
-                        : undefined,
-                    attendees: event.attendees?.map((attendee) => ({
-                        email: attendee.email || "",
-                        displayName: attendee.displayName,
-                        self: attendee.self,
-                        responseStatus: mapAttendeeResponse(attendee.responseStatus),
-                    })),
-                    htmlLink: event.htmlLink || "",
-                    created: new Date(event.created || Date.now()),
-                    updated: new Date(event.updated || Date.now()),
+                        attendees: event.attendees?.map((attendee) => ({
+                            email: attendee.email || "",
+                            displayName: attendee.displayName,
+                            self: attendee.self,
+                            responseStatus: mapAttendeeResponse(attendee.responseStatus),
+                        })),
+                        htmlLink: event.htmlLink || "",
+                        created: new Date(event.created || Date.now()),
+                        updated: new Date(event.updated || Date.now()),
+                    }
                 }));
+
+                return {
+                    edges,
+                    pageInfo: {
+                        hasNextPage: !!result.nextPageToken,
+                        hasPreviousPage: false, // Google Calendar API doesn't support backward pagination
+                        startCursor: edges.length > 0 ? edges[0].cursor : null,
+                        endCursor: result.nextPageToken || (edges.length > 0 ? edges[edges.length - 1].cursor : null),
+                    },
+                    totalCount: null, // Google Calendar API doesn't provide total count
+                };
             } catch (error) {
                 throw new GraphQLError(`Failed to fetch events: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
@@ -141,8 +160,12 @@ export const resolvers: Resolvers = {
             // For now, we'll get all events and find the specific one
             // In production, you'd want to use the Calendar API's get method
             try {
-                const events = await calendarService.listEvents(refreshToken, 100);
-                const event = events.find((e) => e.id === id);
+                const result = await calendarService.listEvents(
+                    refreshToken,
+                    'primary',
+                    100
+                );
+                const event = result.items.find((e) => e.id === id);
 
                 if (!event) {
                     throw new GraphQLError("Event not found", {
@@ -414,57 +437,75 @@ export const resolvers: Resolvers = {
             const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const events = await calendarService.listEvents(
+                const result = await calendarService.listEvents(
                     refreshToken,
-                    args.maxResults || 10,
+                    parent.id,
+                    args.first || 20,
+                    args.after || undefined,
+                    args.timeMin || undefined,
+                    args.timeMax || undefined,
                 );
 
-                return events.map((event) => ({
-                    id: event.id || "",
-                    calendarId: parent.id,
-                    summary: event.summary || "",
-                    description: event.description,
-                    location: event.location,
-                    start: {
-                        dateTime: event.start?.dateTime
-                            ? new Date(event.start.dateTime)
+                const edges = result.items.map((event) => ({
+                    cursor: event.id || '',
+                    node: {
+                        id: event.id || "",
+                        calendarId: parent.id,
+                        summary: event.summary || "",
+                        description: event.description,
+                        location: event.location,
+                        start: {
+                            dateTime: event.start?.dateTime
+                                ? new Date(event.start.dateTime)
+                                : undefined,
+                            date: event.start?.date,
+                            timeZone: event.start?.timeZone,
+                        },
+                        end: {
+                            dateTime: event.end?.dateTime
+                                ? new Date(event.end.dateTime)
+                                : undefined,
+                            date: event.end?.date,
+                            timeZone: event.end?.timeZone,
+                        },
+                        status: mapEventStatus(event.status),
+                        visibility: mapEventVisibility(event.visibility),
+                        creator: event.creator
+                            ? {
+                                email: event.creator.email || "",
+                                displayName: event.creator.displayName,
+                                self: event.creator.self,
+                            }
                             : undefined,
-                        date: event.start?.date,
-                        timeZone: event.start?.timeZone,
-                    },
-                    end: {
-                        dateTime: event.end?.dateTime
-                            ? new Date(event.end.dateTime)
+                        organizer: event.organizer
+                            ? {
+                                email: event.organizer.email || "",
+                                displayName: event.organizer.displayName,
+                                self: event.organizer.self,
+                            }
                             : undefined,
-                        date: event.end?.date,
-                        timeZone: event.end?.timeZone,
-                    },
-                    status: mapEventStatus(event.status),
-                    visibility: mapEventVisibility(event.visibility),
-                    creator: event.creator
-                        ? {
-                            email: event.creator.email || "",
-                            displayName: event.creator.displayName,
-                            self: event.creator.self,
-                        }
-                        : undefined,
-                    organizer: event.organizer
-                        ? {
-                            email: event.organizer.email || "",
-                            displayName: event.organizer.displayName,
-                            self: event.organizer.self,
-                        }
-                        : undefined,
-                    attendees: event.attendees?.map((attendee) => ({
-                        email: attendee.email || "",
-                        displayName: attendee.displayName,
-                        self: attendee.self,
-                        responseStatus: mapAttendeeResponse(attendee.responseStatus),
-                    })),
-                    htmlLink: event.htmlLink || "",
-                    created: new Date(event.created || Date.now()),
-                    updated: new Date(event.updated || Date.now()),
+                        attendees: event.attendees?.map((attendee) => ({
+                            email: attendee.email || "",
+                            displayName: attendee.displayName,
+                            self: attendee.self,
+                            responseStatus: mapAttendeeResponse(attendee.responseStatus),
+                        })),
+                        htmlLink: event.htmlLink || "",
+                        created: new Date(event.created || Date.now()),
+                        updated: new Date(event.updated || Date.now()),
+                    }
                 }));
+
+                return {
+                    edges,
+                    pageInfo: {
+                        hasNextPage: !!result.nextPageToken,
+                        hasPreviousPage: false,
+                        startCursor: edges.length > 0 ? edges[0].cursor : null,
+                        endCursor: result.nextPageToken || (edges.length > 0 ? edges[edges.length - 1].cursor : null),
+                    },
+                    totalCount: null,
+                };
             } catch (error) {
                 throw new GraphQLError(`Failed to fetch calendar events: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
@@ -492,7 +533,7 @@ function mapAccessRole(role?: string | null) {
     }
 }
 
-function mapEventStatus(status?: string | null) {
+function mapEventStatus(status?: string | null): "CONFIRMED" | "TENTATIVE" | "CANCELLED" {
     switch (status) {
         case "confirmed":
             return "CONFIRMED";
@@ -505,7 +546,7 @@ function mapEventStatus(status?: string | null) {
     }
 }
 
-function mapEventVisibility(visibility?: string | null) {
+function mapEventVisibility(visibility?: string | null): "DEFAULT" | "PUBLIC" | "PRIVATE" | "CONFIDENTIAL" {
     switch (visibility) {
         case "default":
             return "DEFAULT";
@@ -520,7 +561,7 @@ function mapEventVisibility(visibility?: string | null) {
     }
 }
 
-function mapAttendeeResponse(response?: string | null) {
+function mapAttendeeResponse(response?: string | null): "NEEDS_ACTION" | "DECLINED" | "TENTATIVE" | "ACCEPTED" {
     switch (response) {
         case "needsAction":
             return "NEEDS_ACTION";
