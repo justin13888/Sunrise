@@ -105,6 +105,18 @@ function ScheduleComponent() {
         return 'No date'
     }
 
+    // Separate calendars into "My Calendars" and "Other Calendars"
+    const myCalendars = calendarsData?.calendars?.filter(cal => cal.accessRole === 'OWNER')
+        .sort((a, b) => {
+            // Primary calendar always comes first
+            if (a.primary && !b.primary) return -1
+            if (!a.primary && b.primary) return 1
+            // Then sort alphabetically by summary
+            return a.summary.localeCompare(b.summary)
+        }) || []
+    const otherCalendars = calendarsData?.calendars?.filter(cal => cal.accessRole !== 'OWNER')
+        .sort((a, b) => a.summary.localeCompare(b.summary)) || []
+
     if (userLoading || isRedirecting) {
         return (
             <div className="min-h-screen flex items-center justify-center">
@@ -167,31 +179,83 @@ function ScheduleComponent() {
                                     <div className="animate-pulse h-4 bg-gray-200 rounded"></div>
                                 </div>
                             ) : (
-                                <div className="space-y-2">
-                                    {calendarsData?.calendars?.map((calendar) => (
-                                        <button
-                                            key={calendar.id}
-                                            type="button"
-                                            onClick={() => setSelectedCalendarId(calendar.id)}
-                                            className={`w-full text-left p-3 rounded-md transition-colors ${selectedCalendarId === calendar.id
-                                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                                : 'hover:bg-gray-50'
-                                                }`}
-                                        >
-                                            <div className="flex items-center">
-                                                <div
-                                                    className="w-3 h-3 rounded-full mr-3"
-                                                    style={{ backgroundColor: calendar.backgroundColor || '#3B82F6' }}
-                                                ></div>
-                                                <div>
-                                                    <p className="font-medium">{calendar.summary}</p>
-                                                    {calendar.primary && (
-                                                        <p className="text-xs text-gray-500">Primary</p>
-                                                    )}
-                                                </div>
+                                <div className="space-y-6">
+                                    {/* My Calendars Section */}
+                                    {myCalendars.length > 0 && (
+                                        <div>
+                                            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                                                My Calendars
+                                            </h3>
+                                            <div className="space-y-1">
+                                                {myCalendars.map((calendar) => (
+                                                    <button
+                                                        key={calendar.id}
+                                                        type="button"
+                                                        onClick={() => setSelectedCalendarId(calendar.id)}
+                                                        className={`w-full text-left p-3 rounded-md transition-colors ${selectedCalendarId === calendar.id
+                                                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                                            : 'hover:bg-gray-50'
+                                                            }`}
+                                                    >
+                                                        <div className="flex items-center">
+                                                            <div
+                                                                className="w-3 h-3 rounded-full mr-3 flex-shrink-0"
+                                                                style={{ backgroundColor: calendar.backgroundColor || '#3B82F6' }}
+                                                            ></div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="font-medium truncate">{calendar.summary}</p>
+                                                                {calendar.primary && (
+                                                                    <p className="text-xs text-gray-500">Primary</p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                ))}
                                             </div>
-                                        </button>
-                                    ))}
+                                        </div>
+                                    )}
+
+                                    {/* Other Calendars Section */}
+                                    {otherCalendars.length > 0 && (
+                                        <div>
+                                            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                                                Other Calendars
+                                            </h3>
+                                            <div className="space-y-1">
+                                                {otherCalendars.map((calendar) => (
+                                                    <button
+                                                        key={calendar.id}
+                                                        type="button"
+                                                        onClick={() => setSelectedCalendarId(calendar.id)}
+                                                        className={`w-full text-left p-3 rounded-md transition-colors ${selectedCalendarId === calendar.id
+                                                            ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                                            : 'hover:bg-gray-50'
+                                                            }`}
+                                                    >
+                                                        <div className="flex items-center">
+                                                            <div
+                                                                className="w-3 h-3 rounded-full mr-3 flex-shrink-0"
+                                                                style={{ backgroundColor: calendar.backgroundColor || '#9CA3AF' }}
+                                                            ></div>
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="font-medium truncate">{calendar.summary}</p>
+                                                                <p className="text-xs text-gray-500 capitalize">
+                                                                    {calendar.accessRole.toLowerCase().replace('_', ' ')}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Empty State */}
+                                    {myCalendars.length === 0 && otherCalendars.length === 0 && (
+                                        <div className="text-center py-4 text-gray-500 text-sm">
+                                            No calendars found
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
