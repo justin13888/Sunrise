@@ -1,12 +1,13 @@
+/** biome-ignore-all lint/suspicious/noExplicitAny: Resolve generally don't know about a specific type */
+import { GraphQLError } from "graphql";
+import { filter, pipe } from "graphql-yoga";
 import type { GraphQLContext } from "../context";
 import type { Resolvers } from "../generated/resolvers-types";
-import { GraphQLError } from "graphql";
+import { pubsub } from "../services/pubsub";
 import { tokenStore } from "../services/tokenStore";
+import { ensureAuth, ensureUser } from "./auth";
 import { DateTimeScalar } from "./date-time";
 import { URLScalar } from "./url";
-import { withAuth, withUser, ensureAuth, ensureUser } from "./auth";
-import { pubsub } from "../services/pubsub";
-import { pipe, filter } from 'graphql-yoga';
 
 // TODO: Finish implementing these resolvers
 export const resolvers: Resolvers = {
@@ -27,7 +28,8 @@ export const resolvers: Resolvers = {
             const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const calendars = await calendarService.listCalendars(refreshToken);
+                const calendars =
+                    await calendarService.listCalendars(refreshToken);
                 return calendars.map((cal) => ({
                     id: cal.id || "",
                     summary: cal.summary || "",
@@ -49,7 +51,8 @@ export const resolvers: Resolvers = {
             const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const calendars = await calendarService.listCalendars(refreshToken);
+                const calendars =
+                    await calendarService.listCalendars(refreshToken);
                 const calendar = calendars.find((cal) => cal.id === id);
 
                 if (!calendar) {
@@ -81,16 +84,16 @@ export const resolvers: Resolvers = {
             try {
                 const result = await calendarService.listEvents(
                     refreshToken,
-                    args.calendarId || 'primary',
+                    args.calendarId || "primary",
                     args.first || 20,
                     args.after || undefined,
                     args.timeMin || undefined,
                     args.timeMax || undefined,
-                    args.orderBy === 'UPDATED' ? 'updated' : 'startTime'
+                    args.orderBy === "UPDATED" ? "updated" : "startTime",
                 );
 
                 const edges = result.items.map((event) => ({
-                    cursor: event.id || '',
+                    cursor: event.id || "",
                     node: {
                         id: event.id || "",
                         calendarId: args.calendarId || "primary",
@@ -115,28 +118,30 @@ export const resolvers: Resolvers = {
                         visibility: mapEventVisibility(event.visibility),
                         creator: event.creator
                             ? {
-                                email: event.creator.email || "",
-                                displayName: event.creator.displayName,
-                                self: event.creator.self,
-                            }
+                                  email: event.creator.email || "",
+                                  displayName: event.creator.displayName,
+                                  self: event.creator.self,
+                              }
                             : undefined,
                         organizer: event.organizer
                             ? {
-                                email: event.organizer.email || "",
-                                displayName: event.organizer.displayName,
-                                self: event.organizer.self,
-                            }
+                                  email: event.organizer.email || "",
+                                  displayName: event.organizer.displayName,
+                                  self: event.organizer.self,
+                              }
                             : undefined,
                         attendees: event.attendees?.map((attendee) => ({
                             email: attendee.email || "",
                             displayName: attendee.displayName,
                             self: attendee.self,
-                            responseStatus: mapAttendeeResponse(attendee.responseStatus),
+                            responseStatus: mapAttendeeResponse(
+                                attendee.responseStatus,
+                            ),
                         })),
                         htmlLink: event.htmlLink || "",
                         created: new Date(event.created || Date.now()),
                         updated: new Date(event.updated || Date.now()),
-                    }
+                    },
                 }));
 
                 return {
@@ -145,7 +150,11 @@ export const resolvers: Resolvers = {
                         hasNextPage: !!result.nextPageToken,
                         hasPreviousPage: false, // Google Calendar API doesn't support backward pagination
                         startCursor: edges.length > 0 ? edges[0].cursor : null,
-                        endCursor: result.nextPageToken || (edges.length > 0 ? edges[edges.length - 1].cursor : null),
+                        endCursor:
+                            result.nextPageToken ||
+                            (edges.length > 0
+                                ? edges[edges.length - 1].cursor
+                                : null),
                     },
                     totalCount: null, // Google Calendar API doesn't provide total count
                 };
@@ -164,8 +173,8 @@ export const resolvers: Resolvers = {
             try {
                 const result = await calendarService.listEvents(
                     refreshToken,
-                    'primary',
-                    100
+                    "primary",
+                    100,
                 );
                 const event = result.items.find((e) => e.id === id);
 
@@ -199,23 +208,25 @@ export const resolvers: Resolvers = {
                     visibility: mapEventVisibility(event.visibility),
                     creator: event.creator
                         ? {
-                            email: event.creator.email || "",
-                            displayName: event.creator.displayName,
-                            self: event.creator.self,
-                        }
+                              email: event.creator.email || "",
+                              displayName: event.creator.displayName,
+                              self: event.creator.self,
+                          }
                         : undefined,
                     organizer: event.organizer
                         ? {
-                            email: event.organizer.email || "",
-                            displayName: event.organizer.displayName,
-                            self: event.organizer.self,
-                        }
+                              email: event.organizer.email || "",
+                              displayName: event.organizer.displayName,
+                              self: event.organizer.self,
+                          }
                         : undefined,
                     attendees: event.attendees?.map((attendee) => ({
                         email: attendee.email || "",
                         displayName: attendee.displayName,
                         self: attendee.self,
-                        responseStatus: mapAttendeeResponse(attendee.responseStatus),
+                        responseStatus: mapAttendeeResponse(
+                            attendee.responseStatus,
+                        ),
                     })),
                     htmlLink: event.htmlLink || "",
                     created: new Date(event.created || Date.now()),
@@ -260,31 +271,51 @@ export const resolvers: Resolvers = {
 
                 try {
                     // Create a temporary OAuth client to get user info
-                    const { OAuth2Client } = await import("google-auth-library");
+                    const { OAuth2Client } = await import(
+                        "google-auth-library"
+                    );
                     const oauth2Client = new OAuth2Client();
                     oauth2Client.setCredentials({
                         access_token: tokens.access_token,
                         refresh_token: tokens.refresh_token,
                     });
 
-                    console.log("🔍 Attempting to fetch user info from Google...");
+                    console.log(
+                        "🔍 Attempting to fetch user info from Google...",
+                    );
                     const { google } = await import("googleapis");
-                    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
+                    const oauth2 = google.oauth2({
+                        version: "v2",
+                        auth: oauth2Client,
+                    });
                     const userInfoResponse = await oauth2.userinfo.get();
 
-                    console.log("🔍 User info response:", JSON.stringify(userInfoResponse.data, null, 2));
+                    console.log(
+                        "🔍 User info response:",
+                        JSON.stringify(userInfoResponse.data, null, 2),
+                    );
 
-                    if (!userInfoResponse.data || !userInfoResponse.data.email) {
-                        throw new Error("Failed to get user info from Google - no email in response");
+                    if (
+                        !userInfoResponse.data ||
+                        !userInfoResponse.data.email
+                    ) {
+                        throw new Error(
+                            "Failed to get user info from Google - no email in response",
+                        );
                     }
 
                     userInfo = {
                         email: userInfoResponse.data.email,
-                        name: userInfoResponse.data.name || userInfoResponse.data.email, // Use email as name if name not provided
+                        name:
+                            userInfoResponse.data.name ||
+                            userInfoResponse.data.email, // Use email as name if name not provided
                         picture: userInfoResponse.data.picture || undefined,
                     };
 
-                    console.log("✅ Fetched user info from Google:", userInfo.email);
+                    console.log(
+                        "✅ Fetched user info from Google:",
+                        userInfo.email,
+                    );
                 } catch (userInfoError) {
                     console.error("❌ Could not fetch user info from Google:");
                     console.error("Error details:", userInfoError);
@@ -294,20 +325,23 @@ export const resolvers: Resolvers = {
                     }
                     throw new GraphQLError(
                         "Failed to fetch user information from Google. " +
-                        "This may be because the required OAuth scopes (userinfo.email, userinfo.profile) were not granted. " +
-                        "Please try signing in again.",
+                            "This may be because the required OAuth scopes (userinfo.email, userinfo.profile) were not granted. " +
+                            "Please try signing in again.",
                         {
                             extensions: {
                                 code: "USERINFO_FETCH_FAILED",
-                                originalError: userInfoError instanceof Error ? userInfoError.message : String(userInfoError)
+                                originalError:
+                                    userInfoError instanceof Error
+                                        ? userInfoError.message
+                                        : String(userInfoError),
                             },
-                        }
+                        },
                     );
                 }
 
                 // Use the email as a stable user ID (in production, this would be a database ID)
                 // We hash or encode it to make it URL-safe and consistent
-                const userId = `google-${Buffer.from(userInfo.email).toString('base64').replace(/[/+=]/g, '')}`;
+                const userId = `google-${Buffer.from(userInfo.email).toString("base64").replace(/[/+=]/g, "")}`;
 
                 const user = {
                     id: userId,
@@ -357,7 +391,9 @@ export const resolvers: Resolvers = {
 
             try {
                 const client =
-                    await calendarService.getClientFromRefreshToken(refreshToken);
+                    await calendarService.getClientFromRefreshToken(
+                        refreshToken,
+                    );
                 const credentials = client.credentials;
 
                 // Get updated token expiry
@@ -449,7 +485,7 @@ export const resolvers: Resolvers = {
                 );
 
                 const edges = result.items.map((event) => ({
-                    cursor: event.id || '',
+                    cursor: event.id || "",
                     node: {
                         id: event.id || "",
                         calendarId: parent.id,
@@ -474,28 +510,30 @@ export const resolvers: Resolvers = {
                         visibility: mapEventVisibility(event.visibility),
                         creator: event.creator
                             ? {
-                                email: event.creator.email || "",
-                                displayName: event.creator.displayName,
-                                self: event.creator.self,
-                            }
+                                  email: event.creator.email || "",
+                                  displayName: event.creator.displayName,
+                                  self: event.creator.self,
+                              }
                             : undefined,
                         organizer: event.organizer
                             ? {
-                                email: event.organizer.email || "",
-                                displayName: event.organizer.displayName,
-                                self: event.organizer.self,
-                            }
+                                  email: event.organizer.email || "",
+                                  displayName: event.organizer.displayName,
+                                  self: event.organizer.self,
+                              }
                             : undefined,
                         attendees: event.attendees?.map((attendee) => ({
                             email: attendee.email || "",
                             displayName: attendee.displayName,
                             self: attendee.self,
-                            responseStatus: mapAttendeeResponse(attendee.responseStatus),
+                            responseStatus: mapAttendeeResponse(
+                                attendee.responseStatus,
+                            ),
                         })),
                         htmlLink: event.htmlLink || "",
                         created: new Date(event.created || Date.now()),
                         updated: new Date(event.updated || Date.now()),
-                    }
+                    },
                 }));
 
                 return {
@@ -504,14 +542,21 @@ export const resolvers: Resolvers = {
                         hasNextPage: !!result.nextPageToken,
                         hasPreviousPage: false,
                         startCursor: edges.length > 0 ? edges[0].cursor : null,
-                        endCursor: result.nextPageToken || (edges.length > 0 ? edges[edges.length - 1].cursor : null),
+                        endCursor:
+                            result.nextPageToken ||
+                            (edges.length > 0
+                                ? edges[edges.length - 1].cursor
+                                : null),
                     },
                     totalCount: null,
                 };
             } catch (error) {
-                throw new GraphQLError(`Failed to fetch calendar events: ${error}`, {
-                    extensions: { code: "CALENDAR_ERROR" },
-                });
+                throw new GraphQLError(
+                    `Failed to fetch calendar events: ${error}`,
+                    {
+                        extensions: { code: "CALENDAR_ERROR" },
+                    },
+                );
             }
         },
     },
@@ -522,9 +567,10 @@ export const resolvers: Resolvers = {
                 ensureAuth(context);
 
                 return pipe(
-                    pubsub.subscribe('eventCreated'),
-                    filter(({ calendarId: eventCalendarId }) =>
-                        !calendarId || eventCalendarId === calendarId
+                    pubsub.subscribe("eventCreated"),
+                    filter(
+                        ({ calendarId: eventCalendarId }) =>
+                            !calendarId || eventCalendarId === calendarId,
                     ),
                 ) as AsyncIterable<{ eventCreated: any }>;
             },
@@ -536,9 +582,10 @@ export const resolvers: Resolvers = {
                 ensureAuth(context);
 
                 return pipe(
-                    pubsub.subscribe('eventUpdated'),
-                    filter(({ calendarId: eventCalendarId }) =>
-                        !calendarId || eventCalendarId === calendarId
+                    pubsub.subscribe("eventUpdated"),
+                    filter(
+                        ({ calendarId: eventCalendarId }) =>
+                            !calendarId || eventCalendarId === calendarId,
                     ),
                 ) as AsyncIterable<{ eventUpdated: any }>;
             },
@@ -550,9 +597,10 @@ export const resolvers: Resolvers = {
                 ensureAuth(context);
 
                 return pipe(
-                    pubsub.subscribe('eventDeleted'),
-                    filter(({ calendarId: eventCalendarId }) =>
-                        !calendarId || eventCalendarId === calendarId
+                    pubsub.subscribe("eventDeleted"),
+                    filter(
+                        ({ calendarId: eventCalendarId }) =>
+                            !calendarId || eventCalendarId === calendarId,
                     ),
                 ) as AsyncIterable<{ eventDeleted: any }>;
             },
@@ -579,7 +627,9 @@ function mapAccessRole(role?: string | null) {
     }
 }
 
-function mapEventStatus(status?: string | null): "CONFIRMED" | "TENTATIVE" | "CANCELLED" {
+function mapEventStatus(
+    status?: string | null,
+): "CONFIRMED" | "TENTATIVE" | "CANCELLED" {
     switch (status) {
         case "confirmed":
             return "CONFIRMED";
@@ -592,7 +642,9 @@ function mapEventStatus(status?: string | null): "CONFIRMED" | "TENTATIVE" | "CA
     }
 }
 
-function mapEventVisibility(visibility?: string | null): "DEFAULT" | "PUBLIC" | "PRIVATE" | "CONFIDENTIAL" {
+function mapEventVisibility(
+    visibility?: string | null,
+): "DEFAULT" | "PUBLIC" | "PRIVATE" | "CONFIDENTIAL" {
     switch (visibility) {
         case "default":
             return "DEFAULT";
@@ -607,7 +659,9 @@ function mapEventVisibility(visibility?: string | null): "DEFAULT" | "PUBLIC" | 
     }
 }
 
-function mapAttendeeResponse(response?: string | null): "NEEDS_ACTION" | "DECLINED" | "TENTATIVE" | "ACCEPTED" {
+function mapAttendeeResponse(
+    response?: string | null,
+): "NEEDS_ACTION" | "DECLINED" | "TENTATIVE" | "ACCEPTED" {
     switch (response) {
         case "needsAction":
             return "NEEDS_ACTION";

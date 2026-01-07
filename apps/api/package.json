@@ -1,36 +1,36 @@
 {
-  "name": "@sunrise/api",
-  "module": "src/index.ts",
-  "type": "module",
-  "scripts": {
-    "codegen": "graphql-codegen --config codegen.ts",
-    "dev:server": "bun run --watch src/server.ts",
-    "start": "bun run src/server.ts",
-    "dev": "bun run codegen && bun run dev:server"
-  },
-  "dependencies": {
-    "@apollo/client": "^4.0.5",
-    "@graphql-tools/schema": "^10.0.6",
-    "@sunrise/gcal": "workspace:*",
-    "google-auth-library": "^9.0.0",
-    "googleapis": "^140.0.0",
-    "graphql": "^16.9.0",
-    "graphql-scalars": "^1.23.0",
-    "graphql-yoga": "^5.16.2",
-    "hono": "^4.9.8"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.0.0",
-    "@types/node": "^24.5.2",
-    "ts-node-dev": "^2.0.0",
-    "@graphql-codegen/cli": "^6.0.0",
-    "@graphql-codegen/typescript": "^5.0.0",
-    "@graphql-codegen/typescript-operations": "^5.0.0",
-    "@graphql-codegen/typescript-react-apollo": "^4.3.2",
-    "@graphql-codegen/typescript-resolvers": "^5.0.0"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
-  }
+    "name": "@sunrise/api",
+    "module": "src/index.ts",
+    "type": "module",
+    "scripts": {
+        "codegen": "graphql-codegen --config codegen.ts",
+        "dev:server": "bun run --watch src/server.ts",
+        "start": "bun run src/server.ts",
+        "dev": "bun run codegen && bun run dev:server"
+    },
+    "dependencies": {
+        "@apollo/client": "^4.0.5",
+        "@graphql-tools/schema": "^10.0.6",
+        "@sunrise/gcal": "workspace:*",
+        "google-auth-library": "^9.0.0",
+        "googleapis": "^140.0.0",
+        "graphql": "^16.9.0",
+        "graphql-scalars": "^1.23.0",
+        "graphql-yoga": "^5.16.2",
+        "hono": "^4.9.8"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.0.0",
+        "@types/node": "^24.5.2",
+        "ts-node-dev": "^2.0.0",
+        "@graphql-codegen/cli": "^6.0.0",
+        "@graphql-codegen/typescript": "^5.0.0",
+        "@graphql-codegen/typescript-operations": "^5.0.0",
+        "@graphql-codegen/typescript-react-apollo": "^4.3.2",
+        "@graphql-codegen/typescript-resolvers": "^5.0.0"
+    },
+    "peerDependencies": {
+        "typescript": "^5.0.0"
+    }
 }

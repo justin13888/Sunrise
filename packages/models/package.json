@@ -1,8 +1,8 @@
 {
-  "name": "@sunrise/models",
-  "type": "module",
-  "license":"AGPL-3.0-only",
-  "exports": {
-    ".": "./src/index.ts"
-  }
+    "name": "@sunrise/models",
+    "type": "module",
+    "license": "AGPL-3.0-only",
+    "exports": {
+        ".": "./src/index.ts"
+    }
 }

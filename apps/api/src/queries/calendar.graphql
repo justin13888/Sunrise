@@ -1,80 +1,80 @@
 query GetAuthUrl {
-  authUrl
+    authUrl
 }
 
 query GetCalendars {
-  calendars {
-    id
-    summary
-    description
-    primary
-    accessRole
-    backgroundColor
-    foregroundColor
-    timeZone
-  }
+    calendars {
+        id
+        summary
+        description
+        primary
+        accessRole
+        backgroundColor
+        foregroundColor
+        timeZone
+    }
 }
 
 query GetEvents(
-  $first: Int
-  $after: String
-  $calendarId: ID
-  $timeMin: DateTime
-  $timeMax: DateTime
+    $first: Int
+    $after: String
+    $calendarId: ID
+    $timeMin: DateTime
+    $timeMax: DateTime
 ) {
-  events(
-    first: $first
-    after: $after
-    calendarId: $calendarId
-    timeMin: $timeMin
-    timeMax: $timeMax
-  ) {
-    edges {
-      cursor
-      node {
-        id
-        calendarId
-        summary
-        description
-        location
-        start {
-          dateTime
-          date
-          timeZone
+    events(
+        first: $first
+        after: $after
+        calendarId: $calendarId
+        timeMin: $timeMin
+        timeMax: $timeMax
+    ) {
+        edges {
+            cursor
+            node {
+                id
+                calendarId
+                summary
+                description
+                location
+                start {
+                    dateTime
+                    date
+                    timeZone
+                }
+                end {
+                    dateTime
+                    date
+                    timeZone
+                }
+                status
+                visibility
+                creator {
+                    email
+                    displayName
+                    self
+                }
+                organizer {
+                    email
+                    displayName
+                    self
+                }
+                attendees {
+                    email
+                    displayName
+                    self
+                    responseStatus
+                }
+                htmlLink
+                created
+                updated
+            }
         }
-        end {
-          dateTime
-          date
-          timeZone
+        pageInfo {
+            hasNextPage
+            hasPreviousPage
+            startCursor
+            endCursor
         }
-        status
-        visibility
-        creator {
-          email
-          displayName
-          self
-        }
-        organizer {
-          email
-          displayName
-          self
-        }
-        attendees {
-          email
-          displayName
-          self
-          responseStatus
-        }
-        htmlLink
-        created
-        updated
-      }
     }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-  }
 }

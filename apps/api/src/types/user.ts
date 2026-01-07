@@ -1,7 +1,7 @@
 export interface User {
-    id: string
-    email: string
-    name?: string
-    picture?: string
-    verified: boolean
+    id: string;
+    email: string;
+    name?: string;
+    picture?: string;
+    verified: boolean;
 }

@@ -1,6 +1,6 @@
+import type { GraphQLResolveInfo } from "graphql";
 import { GraphQLError } from "graphql";
 import type { GraphQLContext } from "@/context";
-import type { GraphQLResolveInfo } from "graphql";
 
 /**
  * Authorization error for unauthenticated requests
@@ -41,16 +41,16 @@ export function withAuth<TParent = any, TArgs = any, TResult = any>(
         args: TArgs,
         context: GraphQLContext & {
             user: NonNullable<GraphQLContext["user"]>;
-            refreshToken: NonNullable<GraphQLContext["refreshToken"]>
+            refreshToken: NonNullable<GraphQLContext["refreshToken"]>;
         },
-        info: GraphQLResolveInfo
-    ) => Promise<TResult> | TResult
+        info: GraphQLResolveInfo,
+    ) => Promise<TResult> | TResult,
 ) {
     return async (
         parent: TParent,
         args: TArgs,
         context: GraphQLContext,
-        info: GraphQLResolveInfo
+        info: GraphQLResolveInfo,
     ): Promise<TResult> => {
         requireAuth(context);
 
@@ -68,19 +68,20 @@ export function withAuth<TParent = any, TArgs = any, TResult = any>(
  * Higher-order function that wraps resolvers requiring only user authentication
  * (user exists, but refresh token might not be needed)
  */
+// biome-ignore lint/suspicious/noExplicitAny: generics are any
 export function withUser<TParent = any, TArgs = any, TResult = any>(
     resolver: (
         parent: TParent,
         args: TArgs,
         context: GraphQLContext & { user: NonNullable<GraphQLContext["user"]> },
-        info: GraphQLResolveInfo
-    ) => Promise<TResult> | TResult
+        info: GraphQLResolveInfo,
+    ) => Promise<TResult> | TResult,
 ) {
     return async (
         parent: TParent,
         args: TArgs,
         context: GraphQLContext,
-        info: GraphQLResolveInfo
+        info: GraphQLResolveInfo,
     ): Promise<TResult> => {
         requireUser(context);
 

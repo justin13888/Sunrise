@@ -1,181 +1,181 @@
 query GetAuthUrl {
-  authUrl
+    authUrl
 }
 
 query GetMe {
-  me {
-    id
-    email
-    name
-    picture
-    verified
-  }
+    me {
+        id
+        email
+        name
+        picture
+        verified
+    }
 }
 
 query GetCalendars {
-  calendars {
-    id
-    summary
-    description
-    primary
-    accessRole
-    backgroundColor
-    foregroundColor
-    timeZone
-  }
+    calendars {
+        id
+        summary
+        description
+        primary
+        accessRole
+        backgroundColor
+        foregroundColor
+        timeZone
+    }
 }
 
 query GetEvents(
-  $first: Int
-  $after: String
-  $calendarId: ID
-  $timeMin: DateTime
-  $timeMax: DateTime
+    $first: Int
+    $after: String
+    $calendarId: ID
+    $timeMin: DateTime
+    $timeMax: DateTime
 ) {
-  events(
-    first: $first
-    after: $after
-    calendarId: $calendarId
-    timeMin: $timeMin
-    timeMax: $timeMax
-  ) {
-    edges {
-      cursor
-      node {
+    events(
+        first: $first
+        after: $after
+        calendarId: $calendarId
+        timeMin: $timeMin
+        timeMax: $timeMax
+    ) {
+        edges {
+            cursor
+            node {
+                id
+                calendarId
+                summary
+                description
+                location
+                start {
+                    dateTime
+                    date
+                    timeZone
+                }
+                end {
+                    dateTime
+                    date
+                    timeZone
+                }
+                status
+                visibility
+                creator {
+                    email
+                    displayName
+                    self
+                }
+                organizer {
+                    email
+                    displayName
+                    self
+                }
+                attendees {
+                    email
+                    displayName
+                    self
+                    responseStatus
+                }
+                htmlLink
+                created
+                updated
+            }
+        }
+        pageInfo {
+            hasNextPage
+            hasPreviousPage
+            startCursor
+            endCursor
+        }
+    }
+}
+
+query GetCalendar($id: ID!) {
+    calendar(id: $id) {
+        id
+        summary
+        description
+        primary
+        accessRole
+        backgroundColor
+        foregroundColor
+        timeZone
+        events(first: 20) {
+            edges {
+                cursor
+                node {
+                    id
+                    summary
+                    description
+                    start {
+                        dateTime
+                        date
+                        timeZone
+                    }
+                    end {
+                        dateTime
+                        date
+                        timeZone
+                    }
+                    status
+                    htmlLink
+                }
+            }
+            pageInfo {
+                hasNextPage
+                hasPreviousPage
+                endCursor
+            }
+        }
+    }
+}
+
+subscription OnEventCreated($calendarId: ID) {
+    eventCreated(calendarId: $calendarId) {
         id
         calendarId
         summary
         description
         location
         start {
-          dateTime
-          date
-          timeZone
+            dateTime
+            date
+            timeZone
         }
         end {
-          dateTime
-          date
-          timeZone
+            dateTime
+            date
+            timeZone
         }
         status
-        visibility
-        creator {
-          email
-          displayName
-          self
-        }
-        organizer {
-          email
-          displayName
-          self
-        }
-        attendees {
-          email
-          displayName
-          self
-          responseStatus
-        }
         htmlLink
-        created
-        updated
-      }
     }
-    pageInfo {
-      hasNextPage
-      hasPreviousPage
-      startCursor
-      endCursor
-    }
-  }
-}
-
-query GetCalendar($id: ID!) {
-  calendar(id: $id) {
-    id
-    summary
-    description
-    primary
-    accessRole
-    backgroundColor
-    foregroundColor
-    timeZone
-    events(first: 20) {
-      edges {
-        cursor
-        node {
-          id
-          summary
-          description
-          start {
-            dateTime
-            date
-            timeZone
-          }
-          end {
-            dateTime
-            date
-            timeZone
-          }
-          status
-          htmlLink
-        }
-      }
-      pageInfo {
-        hasNextPage
-        hasPreviousPage
-        endCursor
-      }
-    }
-  }
-}
-
-subscription OnEventCreated($calendarId: ID) {
-  eventCreated(calendarId: $calendarId) {
-    id
-    calendarId
-    summary
-    description
-    location
-    start {
-      dateTime
-      date
-      timeZone
-    }
-    end {
-      dateTime
-      date
-      timeZone
-    }
-    status
-    htmlLink
-  }
 }
 
 subscription OnEventUpdated($calendarId: ID) {
-  eventUpdated(calendarId: $calendarId) {
-    id
-    calendarId
-    summary
-    description
-    location
-    start {
-      dateTime
-      date
-      timeZone
+    eventUpdated(calendarId: $calendarId) {
+        id
+        calendarId
+        summary
+        description
+        location
+        start {
+            dateTime
+            date
+            timeZone
+        }
+        end {
+            dateTime
+            date
+            timeZone
+        }
+        status
+        htmlLink
     }
-    end {
-      dateTime
-      date
-      timeZone
-    }
-    status
-    htmlLink
-  }
 }
 
 subscription OnEventDeleted($calendarId: ID) {
-  eventDeleted(calendarId: $calendarId) {
-    id
-    calendarId
-  }
+    eventDeleted(calendarId: $calendarId) {
+        id
+        calendarId
+    }
 }

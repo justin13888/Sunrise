@@ -1,45 +1,45 @@
 {
-  "name": "@sunrise/app",
-  "version": "0.1.0",
-  "license": "AGPL-3.0-only",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "codegen": "graphql-codegen --config codegen.ts"
-  },
-  "dependencies": {
-    "@apollo/client": "^3.11.11",
-    "@radix-ui/react-slot": "^1.2.3",
-    "@sunrise/models": "workspace:*",
-    "@tailwindcss/vite": "^4.1.8",
-    "@tanstack/react-router": "^1.131.50",
-    "@tanstack/react-router-devtools": "^1.131.50",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "graphql": "^16.9.0",
-    "graphql-ws": "^6.0.6",
-    "lucide-react": "^0.511.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "tailwind-merge": "^3.3.0",
-    "tailwindcss": "^4.1.8"
-  },
-  "devDependencies": {
-    "@graphql-codegen/cli": "^6.0.1",
-    "@graphql-codegen/client-preset": "^5.1.1",
-    "@tanstack/router-cli": "^1.131.50",
-    "@tanstack/router-devtools": "^1.131.50",
-    "@tanstack/router-plugin": "^1.131.50",
-    "@tauri-apps/cli": "^2",
-    "@types/react": "^19.1.6",
-    "@types/react-dom": "^19.1.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "tw-animate-css": "^1.3.0",
-    "vite": "^6.0.3"
-  }
+    "name": "@sunrise/app",
+    "version": "0.1.0",
+    "license": "AGPL-3.0-only",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "preview": "vite preview",
+        "tauri": "tauri",
+        "codegen": "graphql-codegen --config codegen.ts"
+    },
+    "dependencies": {
+        "@apollo/client": "^3.11.11",
+        "@radix-ui/react-slot": "^1.2.3",
+        "@sunrise/models": "workspace:*",
+        "@tailwindcss/vite": "^4.1.8",
+        "@tanstack/react-router": "^1.131.50",
+        "@tanstack/react-router-devtools": "^1.131.50",
+        "@tauri-apps/api": "^2",
+        "@tauri-apps/plugin-opener": "^2",
+        "class-variance-authority": "^0.7.1",
+        "clsx": "^2.1.1",
+        "graphql": "^16.9.0",
+        "graphql-ws": "^6.0.6",
+        "lucide-react": "^0.511.0",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0",
+        "tailwind-merge": "^3.3.0",
+        "tailwindcss": "^4.1.8"
+    },
+    "devDependencies": {
+        "@graphql-codegen/cli": "^6.0.1",
+        "@graphql-codegen/client-preset": "^5.1.1",
+        "@tanstack/router-cli": "^1.131.50",
+        "@tanstack/router-devtools": "^1.131.50",
+        "@tanstack/router-plugin": "^1.131.50",
+        "@tauri-apps/cli": "^2",
+        "@types/react": "^19.1.6",
+        "@types/react-dom": "^19.1.5",
+        "@vitejs/plugin-react": "^4.3.4",
+        "tw-animate-css": "^1.3.0",
+        "vite": "^6.0.3"
+    }
 }

@@ -3,39 +3,39 @@
  */
 export interface CalendarEvent {
     /** Unique identifier for the event */
-    id: string
+    id: string;
     /** ID of the calendar that contains this event */
-    calendarId: string
+    calendarId: string;
     /** Title/name of the event */
-    summary: string
+    summary: string;
     /** Detailed description of the event content */
-    description?: string | null
+    description?: string | null;
     /** Physical or virtual location where the event takes place */
-    location?: string | null
+    location?: string | null;
     /** Start date and time of the event */
-    start: EventDateTime
+    start: EventDateTime;
     /** End date and time of the event */
-    end: EventDateTime
+    end: EventDateTime;
     /** Current status of the event */
-    status: 'CONFIRMED' | 'TENTATIVE' | 'CANCELLED'
+    status: "CONFIRMED" | "TENTATIVE" | "CANCELLED";
     /** Visibility level determining who can see the event */
-    visibility: 'DEFAULT' | 'PUBLIC' | 'PRIVATE' | 'CONFIDENTIAL'
+    visibility: "DEFAULT" | "PUBLIC" | "PRIVATE" | "CONFIDENTIAL";
     /** Person who created the event */
-    creator?: EventParticipant
+    creator?: EventParticipant;
     /** Person who organized/owns the event */
-    organizer?: EventParticipant
+    organizer?: EventParticipant;
     /** List of people invited to the event */
-    attendees?: EventParticipant[]
+    attendees?: EventParticipant[];
     /** ID of the recurring event series this event belongs to */
-    recurringEventId?: string | null
+    recurringEventId?: string | null;
     /** Original start time for moved recurring event instances */
-    originalStartTime?: EventDateTime
+    originalStartTime?: EventDateTime;
     /** Direct link to view the event in the calendar application */
-    htmlLink: string
+    htmlLink: string;
     /** Timestamp when the event was first created */
-    created: Date
+    created: Date;
     /** Timestamp when the event was last modified */
-    updated: Date
+    updated: Date;
 }
 
 /**
@@ -43,21 +43,21 @@ export interface CalendarEvent {
  */
 export interface Calendar {
     /** Unique identifier for the calendar */
-    id: string
+    id: string;
     /** Display name/title of the calendar */
-    summary: string
+    summary: string;
     /** Optional description explaining the calendar's purpose */
-    description?: string | null
+    description?: string | null;
     /** Whether this is the user's primary/default calendar */
-    primary: boolean
+    primary: boolean;
     /** User's permission level for this calendar */
-    accessRole: 'NONE' | 'FREE_BUSY_READER' | 'READER' | 'WRITER' | 'OWNER'
+    accessRole: "NONE" | "FREE_BUSY_READER" | "READER" | "WRITER" | "OWNER";
     /** Hex color code for calendar background display */
-    backgroundColor?: string | null
+    backgroundColor?: string | null;
     /** Hex color code for calendar text/foreground display */
-    foregroundColor?: string | null
+    foregroundColor?: string | null;
     /** IANA timezone identifier for the calendar */
-    timeZone?: string | null
+    timeZone?: string | null;
 }
 
 /**
@@ -65,11 +65,11 @@ export interface Calendar {
  */
 export interface EventDateTime {
     /** Specific date and time for timed events */
-    dateTime?: Date | null
+    dateTime?: Date | null;
     /** Date in YYYY-MM-DD format for all-day events */
-    date?: string | null
+    date?: string | null;
     /** IANA timezone identifier for the date/time */
-    timeZone?: string | null // TODO: Add some business logic to parse the string into a timezone object
+    timeZone?: string | null; // TODO: Add some business logic to parse the string into a timezone object
 }
 
 /**
@@ -77,11 +77,11 @@ export interface EventDateTime {
  */
 export interface EventParticipant {
     /** Email address of the participant */
-    email: string
+    email: string;
     /** Human-readable name of the participant */
-    displayName?: string | null
+    displayName?: string | null;
     /** Whether this participant is the authenticated user */
-    self?: boolean | null
+    self?: boolean | null;
     /** Participant's response to the event invitation */
-    responseStatus?: 'NEEDS_ACTION' | 'DECLINED' | 'TENTATIVE' | 'ACCEPTED'
+    responseStatus?: "NEEDS_ACTION" | "DECLINED" | "TENTATIVE" | "ACCEPTED";
 }

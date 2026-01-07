@@ -1,9 +1,9 @@
 query GetMe {
-  me {
-    id
-    email
-    name
-    picture
-    verified
-  }
+    me {
+        id
+        email
+        name
+        picture
+        verified
+    }
 }

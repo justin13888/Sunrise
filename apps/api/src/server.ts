@@ -1,12 +1,12 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { makeExecutableSchema } from "@graphql-tools/schema";
+import { createYoga } from "graphql-yoga";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { createYoga } from "graphql-yoga";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createContext } from "./context";
 import { resolvers } from "./resolvers";
-import { makeExecutableSchema } from "@graphql-tools/schema";
 
 const app = new Hono();
 
@@ -68,7 +68,7 @@ const yoga = createYoga({
     graphqlEndpoint: "/graphql",
     // Enable GraphiQL with subscriptions support
     graphiql: {
-        subscriptionsProtocol: 'WS',
+        subscriptionsProtocol: "WS",
     },
 });
 
@@ -177,7 +177,8 @@ app.post("/auth/exchange", async (c) => {
         const calendarService = new GoogleCalendarService(
             clientId,
             clientSecret,
-            process.env.GOOGLE_REDIRECT_URI || "http://localhost:3000/auth/callback",
+            process.env.GOOGLE_REDIRECT_URI ||
+                "http://localhost:3000/auth/callback",
         );
 
         // Exchange code for tokens
