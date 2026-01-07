@@ -1,7 +1,9 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useGetEventsQuery, useGetCalendarsQuery, useGetMeQuery } from '../generated/graphql'
 import { Button } from '../components/ui/button'
+import { useEventSubscriptions } from '../hooks/useEventSubscriptions'
+import type { CalendarEvent } from '../generated/graphql'
 
 export const Route = createFileRoute('/schedule')({
     component: ScheduleComponent,
@@ -35,7 +37,7 @@ function ScheduleComponent() {
     })
 
     // Get events for the selected calendar with pagination
-    const { data: eventsData, loading: eventsLoading, refetch: refetchEvents, fetchMore } = useGetEventsQuery({
+    const { data: eventsData, loading: eventsLoading, refetch: refetchEvents, fetchMore, client } = useGetEventsQuery({
         variables: {
             first: 20,
             calendarId: selectedCalendarId,
@@ -45,6 +47,29 @@ function ScheduleComponent() {
         skip: !userData?.me || isRedirecting,
         errorPolicy: 'all',
         notifyOnNetworkStatusChange: true,
+    })
+
+    // Subscribe to real-time event updates
+    useEventSubscriptions(selectedCalendarId, {
+        onEventCreated: useCallback((event: CalendarEvent) => {
+            console.log('📅 New event created:', event)
+            // Apollo cache will automatically update due to matching ID
+            // But we can also manually refetch if needed
+            refetchEvents()
+        }, [refetchEvents]),
+
+        onEventUpdated: useCallback((event: CalendarEvent) => {
+            console.log('📝 Event updated:', event)
+            // Apollo cache will automatically update
+            refetchEvents()
+        }, [refetchEvents]),
+
+        onEventDeleted: useCallback((payload: { id: string; calendarId: string }) => {
+            console.log('🗑️ Event deleted:', payload)
+            // Remove from cache
+            client.cache.evict({ id: client.cache.identify({ __typename: 'CalendarEvent', id: payload.id }) })
+            client.cache.gc()
+        }, [client]),
     })
 
     // Redirect to auth if not authenticated

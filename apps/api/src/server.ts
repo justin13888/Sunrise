@@ -66,6 +66,10 @@ const yoga = createYoga({
     context: async ({ request }) => createContext(request),
     cors: false, // We handle CORS above
     graphqlEndpoint: "/graphql",
+    // Enable GraphiQL with subscriptions support
+    graphiql: {
+        subscriptionsProtocol: 'WS',
+    },
 });
 
 // GraphQL endpoint

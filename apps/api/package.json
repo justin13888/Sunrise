@@ -9,15 +9,15 @@
     "dev": "bun run codegen && bun run dev:server"
   },
   "dependencies": {
-    "@sunrise/gcal": "workspace:*",
-    "hono": "^4.9.8",
-    "graphql-yoga": "^5.16.0",
     "@apollo/client": "^4.0.5",
+    "@graphql-tools/schema": "^10.0.6",
+    "@sunrise/gcal": "workspace:*",
+    "google-auth-library": "^9.0.0",
+    "googleapis": "^140.0.0",
     "graphql": "^16.9.0",
     "graphql-scalars": "^1.23.0",
-    "@graphql-tools/schema": "^10.0.6",
-    "google-auth-library": "^9.0.0",
-    "googleapis": "^140.0.0"
+    "graphql-yoga": "^5.16.2",
+    "hono": "^4.9.8"
   },
   "devDependencies": {
     "@types/bun": "latest",

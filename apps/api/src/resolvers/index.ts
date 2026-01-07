@@ -5,6 +5,8 @@ import { tokenStore } from "../services/tokenStore";
 import { DateTimeScalar } from "./date-time";
 import { URLScalar } from "./url";
 import { withAuth, withUser, ensureAuth, ensureUser } from "./auth";
+import { pubsub } from "../services/pubsub";
+import { pipe, filter } from 'graphql-yoga';
 
 // TODO: Finish implementing these resolvers
 export const resolvers: Resolvers = {
@@ -511,6 +513,50 @@ export const resolvers: Resolvers = {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
             }
+        },
+    },
+
+    Subscription: {
+        eventCreated: {
+            subscribe: (_, { calendarId }, context: GraphQLContext) => {
+                ensureAuth(context);
+
+                return pipe(
+                    pubsub.subscribe('eventCreated'),
+                    filter(({ calendarId: eventCalendarId }) =>
+                        !calendarId || eventCalendarId === calendarId
+                    ),
+                ) as AsyncIterable<{ eventCreated: any }>;
+            },
+            resolve: (payload: { event: any }) => payload.event,
+        },
+
+        eventUpdated: {
+            subscribe: (_, { calendarId }, context: GraphQLContext) => {
+                ensureAuth(context);
+
+                return pipe(
+                    pubsub.subscribe('eventUpdated'),
+                    filter(({ calendarId: eventCalendarId }) =>
+                        !calendarId || eventCalendarId === calendarId
+                    ),
+                ) as AsyncIterable<{ eventUpdated: any }>;
+            },
+            resolve: (payload: { event: any }) => payload.event,
+        },
+
+        eventDeleted: {
+            subscribe: (_, { calendarId }, context: GraphQLContext) => {
+                ensureAuth(context);
+
+                return pipe(
+                    pubsub.subscribe('eventDeleted'),
+                    filter(({ calendarId: eventCalendarId }) =>
+                        !calendarId || eventCalendarId === calendarId
+                    ),
+                ) as AsyncIterable<{ eventDeleted: any }>;
+            },
+            resolve: (payload: { payload: any }) => payload.payload,
         },
     },
 };

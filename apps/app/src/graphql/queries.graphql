@@ -128,3 +128,54 @@ query GetCalendar($id: ID!) {
     }
   }
 }
+
+subscription OnEventCreated($calendarId: ID) {
+  eventCreated(calendarId: $calendarId) {
+    id
+    calendarId
+    summary
+    description
+    location
+    start {
+      dateTime
+      date
+      timeZone
+    }
+    end {
+      dateTime
+      date
+      timeZone
+    }
+    status
+    htmlLink
+  }
+}
+
+subscription OnEventUpdated($calendarId: ID) {
+  eventUpdated(calendarId: $calendarId) {
+    id
+    calendarId
+    summary
+    description
+    location
+    start {
+      dateTime
+      date
+      timeZone
+    }
+    end {
+      dateTime
+      date
+      timeZone
+    }
+    status
+    htmlLink
+  }
+}
+
+subscription OnEventDeleted($calendarId: ID) {
+  eventDeleted(calendarId: $calendarId) {
+    id
+    calendarId
+  }
+}
