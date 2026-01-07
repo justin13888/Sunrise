@@ -1,0 +1,10 @@
+# Rust directories (Tauri)
+
+src-tauri/
+*.rs
+*.toml
+Cargo.lock
+
+# App codegen
+
+apps/app/src/routeTree.gen.ts
