@@ -34,35 +34,13 @@ export class GoogleCalendarService {
     }
 
     /**
-     * Generate the authorization URL to redirect users to
+     * Create an authenticated OAuth2 client from token information
      */
-    getAuthUrl(): string {
-        return this.oauth2Client.generateAuthUrl({
-            access_type: "offline",
-            prompt: "consent", // Force consent screen to show updated scopes
-            scope: SCOPES,
-            // Add a state parameter to help with debugging
-            state: `timestamp_${Date.now()}`,
-            // Include login_hint to help with account selection
-            // approval_prompt is deprecated but some clients still use it
-        });
-    }
-
-    /**
-     * Exchange authorization code for access and refresh tokens
-     */
-    async getTokensFromCode(code: string) {
-        const { tokens } = await this.oauth2Client.getToken(code);
-        this.oauth2Client.setCredentials(tokens);
-        return tokens;
-    }
-
-    /**
-     * Create authenticated client from refresh token
-     */
-    async getClientFromRefreshToken(
-        refreshToken: string,
-    ): Promise<OAuth2Client> {
+    createAuthenticatedClient(tokens: {
+        access_token?: string | null;
+        refresh_token?: string | null;
+        expiry_date?: number | null;
+    }): OAuth2Client {
         const client = new google.auth.OAuth2(
             this.clientId,
             this.clientSecret,
@@ -70,16 +48,37 @@ export class GoogleCalendarService {
         );
 
         client.setCredentials({
-            refresh_token: refreshToken,
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expiry_date: tokens.expiry_date,
+            token_type: "Bearer",
         });
 
-        // Refresh the access token
-        await client.getAccessToken();
         return client;
     }
 
     /**
-     * Get calendar service with authenticated client
+     * Generate the authorization URL to redirect users to
+     */
+    getAuthUrl(state?: string): string {
+        return this.oauth2Client.generateAuthUrl({
+            access_type: "offline",
+            prompt: "consent",
+            scope: SCOPES,
+            state: state || `timestamp_${Date.now()}`,
+        });
+    }
+
+    /**
+     * Exchange authorization code for tokens
+     */
+    async getTokensFromCode(code: string) {
+        const { tokens } = await this.oauth2Client.getToken(code);
+        return tokens;
+    }
+
+    /**
+     * Get calendar service instance
      */
     private getCalendarService(auth: OAuth2Client): calendar_v3.Calendar {
         return google.calendar({ version: "v3", auth });
@@ -89,7 +88,7 @@ export class GoogleCalendarService {
      * Lists the next N events on the user's calendar with pagination support
      */
     async listEvents(
-        refreshToken: string,
+        auth: OAuth2Client,
         calendarId: string = "primary",
         maxResults: number = 20,
         pageToken?: string,
@@ -97,8 +96,7 @@ export class GoogleCalendarService {
         timeMax?: string,
         orderBy: "startTime" | "updated" = "startTime",
     ) {
-        const client = await this.getClientFromRefreshToken(refreshToken);
-        const calendar = this.getCalendarService(client);
+        const calendar = this.getCalendarService(auth);
 
         const res = await calendar.events.list({
             calendarId,
@@ -110,46 +108,44 @@ export class GoogleCalendarService {
             pageToken,
         });
 
+        // Check if tokens were refreshed during the request
+        // The OAuth2Client automatically refreshes tokens if the refresh_token is present
+        // We can inspect client.credentials to see if they changed, simplified here.
+        // real persistence sync should happen if credentials change.
+
         return {
             items: res.data.items || [],
             nextPageToken: res.data.nextPageToken,
+            // Return credentials so caller can persist updates if any
+            credentials: auth.credentials,
         };
     }
 
     /**
      * Lists all calendars the user has access to
      */
-    async listCalendars(refreshToken: string) {
-        const client = await this.getClientFromRefreshToken(refreshToken);
-        const calendar = this.getCalendarService(client);
-
+    async listCalendars(auth: OAuth2Client) {
+        const calendar = this.getCalendarService(auth);
         const res = await calendar.calendarList.list();
-        return res.data.items || [];
+        return {
+            items: res.data.items || [],
+            credentials: auth.credentials,
+        };
     }
 }
 
 /**
- * Legacy function for backward compatibility
- * @deprecated Use GoogleCalendarService.getClientFromRefreshToken instead
+ * Legacy function for backward compatibility - Deprecated
  */
 export async function getClientFromRefreshToken(
     refreshToken: string,
 ): Promise<OAuth2Client> {
-    const client = google.auth.fromJSON({
-        type: "authorized_user",
-        client_id: process.env.GOOGLE_CLIENT_ID,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        refresh_token: refreshToken,
-    } satisfies JWTInput);
-    if (client instanceof OAuth2Client) {
-        return client;
-    } else {
-        console.error(
-            "Failed to create OAuth2Client from refresh token",
-            client,
-        );
-        throw new Error("Invalid token format");
-    }
+    const client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+    );
+    client.setCredentials({ refresh_token: refreshToken });
+    return client;
 }
 
 /**
@@ -159,8 +155,7 @@ async function loadSavedCredentialsIfExist() {
     try {
         const content = await fs.readFile(TOKEN_PATH);
         const credentials = JSON.parse(content.toString());
-        const client = google.auth.fromJSON(credentials);
-        return client;
+        return google.auth.fromJSON(credentials);
     } catch {
         return null;
     }

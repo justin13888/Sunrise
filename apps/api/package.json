@@ -12,6 +12,8 @@
         "@apollo/client": "^4.0.5",
         "@graphql-tools/schema": "^10.0.6",
         "@sunrise/gcal": "workspace:*",
+        "better-sqlite3": "^12.5.0",
+        "drizzle-orm": "^0.45.1",
         "google-auth-library": "^9.0.0",
         "googleapis": "^140.0.0",
         "graphql": "^16.9.0",
@@ -20,15 +22,17 @@
         "hono": "^4.9.8"
     },
     "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5.0.0",
-        "@types/node": "^24.5.2",
-        "ts-node-dev": "^2.0.0",
         "@graphql-codegen/cli": "^6.0.0",
         "@graphql-codegen/typescript": "^5.0.0",
         "@graphql-codegen/typescript-operations": "^5.0.0",
         "@graphql-codegen/typescript-react-apollo": "^4.3.2",
-        "@graphql-codegen/typescript-resolvers": "^5.0.0"
+        "@graphql-codegen/typescript-resolvers": "^5.0.0",
+        "@types/better-sqlite3": "^7.6.13",
+        "@types/bun": "latest",
+        "@types/node": "^24.5.2",
+        "drizzle-kit": "^0.31.8",
+        "ts-node-dev": "^2.0.0",
+        "typescript": "^5.0.0"
     },
     "peerDependencies": {
         "typescript": "^5.0.0"

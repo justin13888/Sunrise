@@ -1,5 +1,6 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import { eq } from "drizzle-orm";
+import { db } from "../db";
+import { oauthTokens, users } from "../db/schema";
 
 export interface UserTokens {
     userId: string;
@@ -12,75 +13,82 @@ export interface UserTokens {
 }
 
 /**
- * Simple file-based token storage
- * TODO: Replace with proper database storage in production
+ * Database-backed token storage
  */
 export class TokenStore {
-    private tokensPath: string;
-
-    constructor(tokensDir: string = "./data") {
-        this.tokensPath = path.join(tokensDir, "tokens.json");
-    }
-
-    async ensureDataDir() {
-        const dir = path.dirname(this.tokensPath);
-        try {
-            await fs.access(dir);
-        } catch {
-            await fs.mkdir(dir, { recursive: true });
-        }
-    }
-
-    async loadTokens(): Promise<Record<string, UserTokens>> {
-        try {
-            const content = await fs.readFile(this.tokensPath, "utf8");
-            return JSON.parse(content);
-        } catch {
-            return {};
-        }
-    }
-
-    async saveTokens(tokens: Record<string, UserTokens>): Promise<void> {
-        await this.ensureDataDir();
-        await fs.writeFile(this.tokensPath, JSON.stringify(tokens, null, 2));
-    }
-
     async storeTokens(userId: string, tokens: UserTokens): Promise<void> {
-        const allTokens = await this.loadTokens();
-        allTokens[userId] = tokens;
-        await this.saveTokens(allTokens);
+        // 1. Upsert User
+        await db
+            .insert(users)
+            .values({
+                id: userId,
+                email: tokens.email || "unknown", // Constraint requires email
+                name: tokens.name,
+                picture: tokens.picture,
+            })
+            .onConflictDoUpdate({
+                target: users.id,
+                set: {
+                    email: tokens.email,
+                    name: tokens.name,
+                    picture: tokens.picture,
+                },
+            });
+
+        // 2. Upsert Tokens
+        await db
+            .insert(oauthTokens)
+            .values({
+                id: userId, // Simple 1:1 mapping for now
+                userId: userId,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                expiresAt: tokens.expiresAt,
+            })
+            .onConflictDoUpdate({
+                target: oauthTokens.id,
+                set: {
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken,
+                    expiresAt: tokens.expiresAt,
+                },
+            });
     }
 
     async getTokens(userId: string): Promise<UserTokens | null> {
-        const allTokens = await this.loadTokens();
-        const tokens = allTokens[userId];
+        const result = await db
+            .select({
+                tokens: oauthTokens,
+                user: users,
+            })
+            .from(oauthTokens)
+            .leftJoin(users, eq(oauthTokens.userId, users.id))
+            .where(eq(oauthTokens.userId, userId))
+            .get();
 
-        if (!tokens) return null;
+        if (!result) return null;
 
-        // Check if token is expired (with some buffer)
-        const expiresAt = new Date(tokens.expiresAt);
-        const now = new Date();
-        const bufferTime = 5 * 60 * 1000; // 5 minutes buffer
-
-        if (expiresAt.getTime() - bufferTime < now.getTime()) {
-            // Token is expired or about to expire
-            return null;
-        }
-
-        return tokens;
+        return {
+            userId: result.user?.id || userId,
+            accessToken: result.tokens.accessToken,
+            refreshToken: result.tokens.refreshToken,
+            expiresAt: result.tokens.expiresAt,
+            email: result.user?.email || undefined,
+            name: result.user?.name || undefined,
+            picture: result.user?.picture || undefined,
+        };
     }
 
     async removeTokens(userId: string): Promise<void> {
-        const allTokens = await this.loadTokens();
-        delete allTokens[userId];
-        await this.saveTokens(allTokens);
+        await db.delete(oauthTokens).where(eq(oauthTokens.userId, userId));
     }
 
     async getAllUserIds(): Promise<string[]> {
-        const allTokens = await this.loadTokens();
-        return Object.keys(allTokens);
+        const results = await db.select({ id: users.id }).from(users).all();
+        return results.map((r) => r.id);
     }
 }
 
 // Global token store instance
 export const tokenStore = new TokenStore();
+

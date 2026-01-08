@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { createContext } from "./context";
 import { resolvers } from "./resolvers";
+import { PollingService } from "./services/poller";
 
 const app = new Hono();
 
@@ -178,7 +179,7 @@ app.post("/auth/exchange", async (c) => {
             clientId,
             clientSecret,
             process.env.GOOGLE_REDIRECT_URI ||
-                "http://localhost:3000/auth/callback",
+            "http://localhost:3000/auth/callback",
         );
 
         // Exchange code for tokens
@@ -262,6 +263,15 @@ const port = parseInt(process.env.PORT || "3000");
 
 console.log(`🚀 Server running on http://localhost:${port}`);
 console.log(`📊 GraphQL endpoint: http://localhost:${port}/graphql`);
+
+// Start background polling service
+const pollingService = new PollingService(
+    process.env.GOOGLE_CLIENT_ID || "",
+    process.env.GOOGLE_CLIENT_SECRET || "",
+    process.env.GOOGLE_REDIRECT_URI,
+);
+pollingService.start();
+
 
 if (isDebug) {
     console.log(`🐛 Debug logging enabled`);
