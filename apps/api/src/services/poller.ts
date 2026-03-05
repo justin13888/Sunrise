@@ -6,11 +6,7 @@ export class PollingService {
     private timer: ReturnType<typeof setInterval> | null = null;
     private gcalService: GoogleCalendarService;
 
-    constructor(
-        clientId: string,
-        clientSecret: string,
-        redirectUri?: string,
-    ) {
+    constructor(clientId: string, clientSecret: string, redirectUri?: string) {
         this.gcalService = new GoogleCalendarService(
             clientId,
             clientSecret,
@@ -100,4 +96,3 @@ export class PollingService {
         }
     }
 }
-

@@ -25,7 +25,7 @@ export const resolvers: Resolvers = {
         },
 
         calendars: async (_, __, context: GraphQLContext) => {
-            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const calendars =
@@ -48,7 +48,7 @@ export const resolvers: Resolvers = {
         },
 
         calendar: async (_, { id }, context: GraphQLContext) => {
-            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const calendars =
@@ -79,7 +79,7 @@ export const resolvers: Resolvers = {
         },
 
         events: async (_, args, context: GraphQLContext) => {
-            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const result = await calendarService.listEvents(
@@ -166,7 +166,7 @@ export const resolvers: Resolvers = {
         },
 
         event: async (_, { id }, context: GraphQLContext) => {
-            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const { refreshToken, calendarService } = ensureAuth(context);
 
             // For now, we'll get all events and find the specific one
             // In production, you'd want to use the Calendar API's get method
@@ -442,8 +442,8 @@ export const resolvers: Resolvers = {
             return true;
         },
 
-        createEvent: async (_, { input }, context: GraphQLContext) => {
-            const { user, refreshToken } = ensureAuth(context);
+        createEvent: async (_, _args, context: GraphQLContext) => {
+            ensureAuth(context);
 
             // Implementation would use Google Calendar API to create event
             throw new GraphQLError("Not implemented", {
@@ -451,8 +451,8 @@ export const resolvers: Resolvers = {
             });
         },
 
-        updateEvent: async (_, { id, input }, context: GraphQLContext) => {
-            const { user, refreshToken } = ensureAuth(context);
+        updateEvent: async (_, _args, context: GraphQLContext) => {
+            ensureAuth(context);
 
             // Implementation would use Google Calendar API to update event
             throw new GraphQLError("Not implemented", {
@@ -460,8 +460,8 @@ export const resolvers: Resolvers = {
             });
         },
 
-        deleteEvent: async (_, { id }, context: GraphQLContext) => {
-            const { user, refreshToken } = ensureAuth(context);
+        deleteEvent: async (_, _args, context: GraphQLContext) => {
+            ensureAuth(context);
 
             // Implementation would use Google Calendar API to delete event
             throw new GraphQLError("Not implemented", {
@@ -472,7 +472,7 @@ export const resolvers: Resolvers = {
 
     Calendar: {
         events: async (parent, args, context: GraphQLContext) => {
-            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const result = await calendarService.listEvents(

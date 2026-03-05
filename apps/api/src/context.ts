@@ -12,7 +12,7 @@ export interface GraphQLContext {
 // TODO: Review this function vv
 export async function createContext(req: Request): Promise<GraphQLContext> {
     // Extract user info and refresh token from headers/session
-    const authHeader = req.headers.get("authorization");
+    const _authHeader = req.headers.get("authorization");
     const refreshTokenHeader = req.headers.get("x-refresh-token");
     const userIdHeader = req.headers.get("x-user-id"); // For temporary user ID passing
 

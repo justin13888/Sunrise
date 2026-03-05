@@ -109,7 +109,7 @@ app.get("/auth/callback", async (c) => {
             // 1. Extract userId from JWT token in the 'state' parameter
             // 2. Validate the token
             // 3. Use the actual user ID
-            const userId = state || "temp-user-" + Date.now();
+            const userId = state || `temp-user-${Date.now()}`;
 
             console.log(`🔐 Processing OAuth callback for user: ${userId}`);
 
@@ -162,7 +162,7 @@ app.post("/auth/exchange", async (c) => {
         }
 
         // TODO: Validate userId from JWT token in production
-        const finalUserId = userId || "temp-user-" + Date.now();
+        const finalUserId = userId || `temp-user-${Date.now()}`;
 
         console.log(`🔐 Server-side token exchange for user: ${finalUserId}`);
 
@@ -179,7 +179,7 @@ app.post("/auth/exchange", async (c) => {
             clientId,
             clientSecret,
             process.env.GOOGLE_REDIRECT_URI ||
-            "http://localhost:3000/auth/callback",
+                "http://localhost:3000/auth/callback",
         );
 
         // Exchange code for tokens
@@ -259,7 +259,7 @@ app.post("/auth/exchange", async (c) => {
     }
 });
 
-const port = parseInt(process.env.PORT || "3000");
+const port = parseInt(process.env.PORT || "3000", 10);
 
 console.log(`🚀 Server running on http://localhost:${port}`);
 console.log(`📊 GraphQL endpoint: http://localhost:${port}/graphql`);
@@ -271,7 +271,6 @@ const pollingService = new PollingService(
     process.env.GOOGLE_REDIRECT_URI,
 );
 pollingService.start();
-
 
 if (isDebug) {
     console.log(`🐛 Debug logging enabled`);

@@ -35,6 +35,7 @@ export function requireUser(context: GraphQLContext): void {
  * Higher-order function that wraps resolvers requiring full authentication
  * (both user and refresh token)
  */
+// biome-ignore lint/suspicious/noExplicitAny: generics are any
 export function withAuth<TParent = any, TArgs = any, TResult = any>(
     resolver: (
         parent: TParent,

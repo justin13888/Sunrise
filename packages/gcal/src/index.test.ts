@@ -1,4 +1,4 @@
-import type { OAuth2Client } from "google-auth-library";
+/** biome-ignore-all lint/suspicious/noExplicitAny: test mocks and private field access */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleCalendarService } from "./index";
 
@@ -6,15 +6,22 @@ import { GoogleCalendarService } from "./index";
 vi.mock("googleapis", () => ({
     google: {
         auth: {
-            OAuth2: vi.fn(function (options: any) {
+            OAuth2: vi.fn((...args: unknown[]) => {
                 // Handle both object-style and positional arguments
+                const [firstArg, secondArg, thirdArg] = args;
                 const config =
-                    typeof options === "object" && !Array.isArray(options)
-                        ? options
+                    typeof firstArg === "object" &&
+                    firstArg !== null &&
+                    !Array.isArray(firstArg)
+                        ? (firstArg as {
+                              clientId?: string;
+                              clientSecret?: string;
+                              redirectUri?: string;
+                          })
                         : {
-                              clientId: arguments[0],
-                              clientSecret: arguments[1],
-                              redirectUri: arguments[2],
+                              clientId: firstArg as string,
+                              clientSecret: secondArg as string,
+                              redirectUri: thirdArg as string,
                           };
 
                 return {
@@ -342,7 +349,7 @@ describe("GoogleCalendarService", () => {
             expect(tokens.refresh_token).toBeTruthy();
 
             // 3. Use refresh token to access calendar
-            const events = await service.listEvents(tokens.refresh_token!);
+            const events = await service.listEvents(tokens.refresh_token ?? "");
             expect(events).toBeDefined();
         });
 

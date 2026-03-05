@@ -1,4 +1,5 @@
 import type { GoogleCalendarService } from "@sunrise/gcal";
+import type { GraphQLResolveInfo } from "graphql";
 import { describe, expect, it, vi } from "vitest";
 import type { GraphQLContext } from "../context";
 import {
@@ -138,7 +139,12 @@ describe("withAuth", () => {
             req: new Request("http://localhost"),
         };
 
-        const result = await wrappedResolver({}, {}, context, {} as any);
+        const result = await wrappedResolver(
+            {},
+            {},
+            context,
+            {} as GraphQLResolveInfo,
+        );
 
         expect(result).toBe("result");
         expect(mockResolver).toHaveBeenCalledTimes(1);
@@ -163,14 +169,14 @@ describe("withAuth", () => {
         };
 
         await expect(
-            wrappedResolver({}, {}, context, {} as any),
+            wrappedResolver({}, {}, context, {} as GraphQLResolveInfo),
         ).rejects.toThrow(AuthenticationError);
 
         expect(mockResolver).not.toHaveBeenCalled();
     });
 
     it("should properly type the context in resolver", async () => {
-        const mockResolver = vi.fn((parent, args, context) => {
+        const mockResolver = vi.fn((_parent, _args, context) => {
             // TypeScript should know user and refreshToken are non-null
             return context.user.email;
         });
@@ -187,7 +193,12 @@ describe("withAuth", () => {
             req: new Request("http://localhost"),
         };
 
-        const result = await wrappedResolver({}, {}, context, {} as any);
+        const result = await wrappedResolver(
+            {},
+            {},
+            context,
+            {} as GraphQLResolveInfo,
+        );
         expect(result).toBe("test@example.com");
     });
 
@@ -208,7 +219,7 @@ describe("withAuth", () => {
         };
 
         await expect(
-            wrappedResolver({}, {}, context, {} as any),
+            wrappedResolver({}, {}, context, {} as GraphQLResolveInfo),
         ).rejects.toThrow("Resolver error");
     });
 });
@@ -228,7 +239,12 @@ describe("withUser", () => {
             req: new Request("http://localhost"),
         };
 
-        const result = await wrappedResolver({}, {}, context, {} as any);
+        const result = await wrappedResolver(
+            {},
+            {},
+            context,
+            {} as GraphQLResolveInfo,
+        );
 
         expect(result).toBe("result");
         expect(mockResolver).toHaveBeenCalledTimes(1);
@@ -249,7 +265,12 @@ describe("withUser", () => {
             req: new Request("http://localhost"),
         };
 
-        const result = await wrappedResolver({}, {}, context, {} as any);
+        const result = await wrappedResolver(
+            {},
+            {},
+            context,
+            {} as GraphQLResolveInfo,
+        );
 
         expect(result).toBe("result");
         expect(mockResolver).toHaveBeenCalledTimes(1);
@@ -265,14 +286,14 @@ describe("withUser", () => {
         };
 
         await expect(
-            wrappedResolver({}, {}, context, {} as any),
+            wrappedResolver({}, {}, context, {} as GraphQLResolveInfo),
         ).rejects.toThrow(AuthenticationError);
 
         expect(mockResolver).not.toHaveBeenCalled();
     });
 
     it("should properly type the context in resolver", async () => {
-        const mockResolver = vi.fn((parent, args, context) => {
+        const mockResolver = vi.fn((_parent, _args, context) => {
             // TypeScript should know user is non-null
             return context.user.id;
         });
@@ -288,7 +309,12 @@ describe("withUser", () => {
             req: new Request("http://localhost"),
         };
 
-        const result = await wrappedResolver({}, {}, context, {} as any);
+        const result = await wrappedResolver(
+            {},
+            {},
+            context,
+            {} as GraphQLResolveInfo,
+        );
         expect(result).toBe("user123");
     });
 });

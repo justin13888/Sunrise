@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as process from "node:process";
-import { type JWTInput, OAuth2Client } from "google-auth-library";
+import { OAuth2Client } from "google-auth-library";
 import { type calendar_v3, google } from "googleapis";
 
 // If modifying these scopes, delete token.json.
@@ -164,7 +164,7 @@ async function loadSavedCredentialsIfExist() {
 /**
  * Serializes credentials to a file compatible with GoogleAuth.fromJSON.
  */
-async function saveCredentials(
+async function _saveCredentials(
     client: OAuth2Client,
     // client: Omit<Omit<OAuth2Client, 'fetch'>, 'addUserProjectAndAuthHeaders'>
 ): Promise<void> {

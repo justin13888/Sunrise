@@ -146,10 +146,10 @@ describe("TokenStore", () => {
             await tokenStore.storeTokens("user1", userTokens);
 
             const allTokens = await tokenStore.loadTokens();
-            expect(allTokens["user1"].userId).toBe("user1");
-            expect(allTokens["user1"].accessToken).toBe("access-token-1");
-            expect(allTokens["user1"].email).toBe("user1@example.com");
-            expect(allTokens["user1"].name).toBe("User One");
+            expect(allTokens.user1.userId).toBe("user1");
+            expect(allTokens.user1.accessToken).toBe("access-token-1");
+            expect(allTokens.user1.email).toBe("user1@example.com");
+            expect(allTokens.user1.name).toBe("User One");
         });
 
         it("should update tokens for existing user", async () => {
@@ -171,8 +171,8 @@ describe("TokenStore", () => {
             await tokenStore.storeTokens("user1", updatedTokens);
 
             const allTokens = await tokenStore.loadTokens();
-            expect(allTokens["user1"].accessToken).toBe("new-access-token");
-            expect(allTokens["user1"].refreshToken).toBe("new-refresh-token");
+            expect(allTokens.user1.accessToken).toBe("new-access-token");
+            expect(allTokens.user1.refreshToken).toBe("new-refresh-token");
         });
 
         it("should not affect other users when updating one user", async () => {
@@ -194,8 +194,8 @@ describe("TokenStore", () => {
             await tokenStore.storeTokens("user2", user2Tokens);
 
             const allTokens = await tokenStore.loadTokens();
-            expect(allTokens["user1"].accessToken).toBe("access-token-1");
-            expect(allTokens["user2"].accessToken).toBe("access-token-2");
+            expect(allTokens.user1.accessToken).toBe("access-token-1");
+            expect(allTokens.user2.accessToken).toBe("access-token-2");
         });
     });
 
