@@ -6,7 +6,8 @@
         "codegen": "graphql-codegen --config codegen.ts",
         "dev:server": "bun run --watch src/server.ts",
         "start": "bun run src/server.ts",
-        "dev": "bun run codegen && bun run dev:server"
+        "dev": "bun run codegen && bun run dev:server",
+        "typecheck": "tsc --noEmit"
     },
     "dependencies": {
         "@apollo/client": "^4.0.5",
