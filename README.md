@@ -42,13 +42,15 @@ packages/
 
 ### Getting Started
 
-1. **Install dependencies**:
+1. **Install lefthook**: `lefthook install`
+
+2. **Install dependencies**:
 
    ```bash
    bun install
    ```
 
-2. **Set up the API**:
+3. **Set up the API**:
    - See [apps/api/README.md](apps/api/README.md) for detailed setup
    - Configure Google OAuth credentials
    - Start the API server:
@@ -58,14 +60,14 @@ packages/
      bun dev
      ```
 
-3. **Start the frontend**:
+4. **Start the frontend**:
 
    ```bash
    cd apps/app
    bun dev
    ```
 
-4. **Run tests**:
+5. **Run tests**:
 
    ```bash
    bun test          # Run all tests

@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  commands:
+    check:
+      run: bun check:fix
+    typecheck:
+      run: bun run typecheck
+
+pre-push:
+  parallel: true
+  commands:
+    biome-ci:
+      run: bunx biome ci .
+    typecheck:
+      run: bun run typecheck
+    test:
+      run: bun test
