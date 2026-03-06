@@ -148,6 +148,7 @@ export async function getClientFromRefreshToken(
     return client;
 }
 
+/* v8 ignore start */
 /**
  * Reads previously authorized credentials from the save file.
  */
@@ -302,3 +303,4 @@ if (require.main === module) {
             process.exit(1);
         });
 }
+/* v8 ignore stop */

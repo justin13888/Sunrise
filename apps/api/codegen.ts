@@ -14,6 +14,8 @@ const config: CodegenConfig = {
             plugins: ["typescript", "typescript-resolvers"],
             config: {
                 useIndexSignature: true,
+                useTypeImports: true,
+                typesPrefix: "Gql",
                 contextType: "../context#GraphQLContext",
                 mappers: {
                     CalendarEvent: "../types/calendar#CalendarEvent",
@@ -33,6 +35,7 @@ const config: CodegenConfig = {
                 withHooks: true,
                 withComponent: false,
                 withHOC: false,
+                useTypeImports: true,
             },
         },
     },
