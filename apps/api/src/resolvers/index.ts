@@ -2,7 +2,7 @@
 import { GraphQLError } from "graphql";
 import { filter, pipe } from "graphql-yoga";
 import type { GraphQLContext } from "../context";
-import type { Resolvers } from "../generated/resolvers-types";
+import type { GqlResolvers } from "../generated/resolvers-types";
 import { pubsub } from "../services/pubsub";
 import { tokenStore } from "../services/tokenStore";
 import { ensureAuth, ensureUser } from "./auth";
@@ -10,7 +10,7 @@ import { DateTimeScalar } from "./date-time";
 import { URLScalar } from "./url";
 
 // TODO: Finish implementing these resolvers
-export const resolvers: Resolvers = {
+export const resolvers: GqlResolvers = {
     DateTime: DateTimeScalar,
     URL: URLScalar,
 
@@ -28,9 +28,11 @@ export const resolvers: Resolvers = {
             const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const calendars =
-                    await calendarService.listCalendars(refreshToken);
-                return calendars.map((cal) => ({
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+                const calendars = await calendarService.listCalendars(auth);
+                return calendars.items.map((cal) => ({
                     id: cal.id || "",
                     summary: cal.summary || "",
                     description: cal.description,
@@ -51,9 +53,11 @@ export const resolvers: Resolvers = {
             const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const calendars =
-                    await calendarService.listCalendars(refreshToken);
-                const calendar = calendars.find((cal) => cal.id === id);
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+                const calendars = await calendarService.listCalendars(auth);
+                const calendar = calendars.items.find((cal) => cal.id === id);
 
                 if (!calendar) {
                     throw new GraphQLError("Calendar not found", {
@@ -82,8 +86,11 @@ export const resolvers: Resolvers = {
             const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
                 const result = await calendarService.listEvents(
-                    refreshToken,
+                    auth,
                     args.calendarId || "primary",
                     args.first || 20,
                     args.after || undefined,
@@ -171,8 +178,11 @@ export const resolvers: Resolvers = {
             // For now, we'll get all events and find the specific one
             // In production, you'd want to use the Calendar API's get method
             try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
                 const result = await calendarService.listEvents(
-                    refreshToken,
+                    auth,
                     "primary",
                     100,
                 );
@@ -390,10 +400,11 @@ export const resolvers: Resolvers = {
             const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
-                const client =
-                    await calendarService.getClientFromRefreshToken(
-                        refreshToken,
-                    );
+                const client = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+                // Force a token refresh to get fresh credentials
+                await client.getAccessToken();
                 const credentials = client.credentials;
 
                 // Get updated token expiry
@@ -475,8 +486,11 @@ export const resolvers: Resolvers = {
             const { refreshToken, calendarService } = ensureAuth(context);
 
             try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
                 const result = await calendarService.listEvents(
-                    refreshToken,
+                    auth,
                     parent.id,
                     args.first || 20,
                     args.after || undefined,
