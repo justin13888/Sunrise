@@ -29,7 +29,7 @@ export class TokenStore {
             .onConflictDoUpdate({
                 target: users.id,
                 set: {
-                    email: tokens.email,
+                    email: tokens.email || "unknown",
                     name: tokens.name,
                     picture: tokens.picture,
                 },
@@ -67,6 +67,12 @@ export class TokenStore {
             .get();
 
         if (!result) return null;
+
+        // Return null for expired or soon-to-expire tokens (5-minute buffer)
+        const bufferMs = 5 * 60 * 1000;
+        if (result.tokens.expiresAt.getTime() <= Date.now() + bufferMs) {
+            return null;
+        }
 
         return {
             userId: result.user?.id || userId,

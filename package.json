@@ -3,8 +3,9 @@
     "version": "0.1.0",
     "scripts": {
         "test": "vitest",
+        "test:run": "vitest run",
         "test:ui": "vitest --ui",
-        "test:coverage": "vitest --coverage",
+        "test:coverage": "vitest run --coverage",
         "lint": "biome lint .",
         "lint:fix": "biome lint --write .",
         "format": "biome format .",
@@ -12,7 +13,8 @@
         "check": "biome check .",
         "check:fix": "biome check --write .",
         "ci": "biome ci .",
-        "typecheck": "bun run --filter '*' typecheck"
+        "typecheck": "bun run --filter '*' typecheck",
+        "validate": "bun run ci && bun run typecheck && bun run test:coverage"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.3.11",
