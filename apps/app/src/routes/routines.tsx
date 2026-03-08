@@ -1,10 +1,3 @@
-import type {
-    PriorityLevel,
-    Routine,
-    RoutineCategory,
-    RoutineCategoryDefinition,
-    TimeWindow,
-} from "@sunrise/models";
 import { DEFAULT_ROUTINE_CATEGORIES } from "@sunrise/models";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -26,277 +19,145 @@ import {
     Zap,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import {
+    ConflictResolution,
+    type DependencyRelationship,
+    EnergyLevel,
+    Frequency,
+    type GetRoutinesQuery,
+    PriorityLevel,
+    TimeOfDay,
+    useCreateRoutineMutation,
+    useDeleteRoutineMutation,
+    useGetRoutinesQuery,
+    useUpdateRoutineMutation,
+} from "../generated/graphql";
 
 export const Route = createFileRoute("/routines")({
     component: RoutinesPage,
 });
 
-// Create a lookup map for categories for efficient access
+type GqlRoutine = GetRoutinesQuery["routines"][0];
+
+// Create a lookup map for categories
 const CATEGORY_LOOKUP = new Map(
     DEFAULT_ROUTINE_CATEGORIES.map((category) => [category.id, category]),
 );
 
-// Helper function to get category definition by ID
-const getCategoryById = (
-    categoryId: RoutineCategory,
-): RoutineCategoryDefinition | undefined => {
-    return CATEGORY_LOOKUP.get(categoryId);
-};
+const getCategoryName = (categoryId: string): string =>
+    CATEGORY_LOOKUP.get(categoryId)?.name || "Unknown Category";
 
-// Helper function to get category name by ID (with fallback)
-const getCategoryName = (categoryId: RoutineCategory): string => {
-    const category = getCategoryById(categoryId);
-    return category?.name || "Unknown Category";
-};
+const getCategoryColor = (categoryId: string): string =>
+    CATEGORY_LOOKUP.get(categoryId)?.color || "#6B7280";
 
-// Helper function to get category color by ID (with fallback)
-const getCategoryColor = (categoryId: RoutineCategory): string => {
-    const category = getCategoryById(categoryId);
-    return category?.color || "#6B7280";
-};
+function getPriorityColor(priority: PriorityLevel): string {
+    switch (priority) {
+        case PriorityLevel.High:
+            return "text-red-600 bg-red-50 border-red-200";
+        case PriorityLevel.Low:
+            return "text-green-600 bg-green-50 border-green-200";
+        default:
+            return "text-yellow-600 bg-yellow-50 border-yellow-200";
+    }
+}
 
-// Mock data based on our schemas
-const MOCK_ROUTINES: Routine[] = [
-    {
-        id: "wake_up",
-        name: "Wake up",
-        description: "Natural wake up time with gentle transition",
-        duration: {
-            minutes: 15,
-            flexible: true,
-            min_duration: 10,
-            max_duration: 30,
-        },
-        priority: "high",
-        flexibility: 2,
-        energy_level_required: "low",
-        category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
-        frequency: "daily",
-        time_preferences: ["early_morning", "morning"],
-        availability_windows: [
-            { start_hour: 5, start_minute: 0, end_hour: 9, end_minute: 0 },
-        ],
-        dependencies: [],
-        minimum_gap_minutes: 0,
-        buffer_time_minutes: 0,
-        conflict_resolution: "reschedule",
-        can_be_grouped: false,
-        enabled: true,
-        tags: ["morning", "essential"],
-    },
-    {
-        id: "morning_exercise",
-        name: "Morning exercise/workout",
-        description: "Energizing physical activity to start the day",
-        duration: {
-            minutes: 45,
-            flexible: true,
-            min_duration: 20,
-            max_duration: 90,
-        },
-        priority: "high",
-        flexibility: 4,
-        energy_level_required: "medium",
-        category: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // Health & Fitness
-        frequency: "daily",
-        time_preferences: ["morning", "late_morning"],
-        availability_windows: [
-            { start_hour: 6, start_minute: 0, end_hour: 11, end_minute: 0 },
-        ],
-        dependencies: [],
-        minimum_gap_minutes: 30,
-        buffer_time_minutes: 10,
-        conflict_resolution: "reschedule",
-        can_be_grouped: false,
-        enabled: true,
-        tags: ["morning", "fitness", "energy"],
-    },
-    {
-        id: "deep_work_morning",
-        name: "Morning deep work block",
-        description: "Focused, uninterrupted work on high-priority tasks",
-        duration: {
-            minutes: 120,
-            flexible: true,
-            min_duration: 60,
-            max_duration: 180,
-        },
-        priority: "high",
-        flexibility: 3,
-        energy_level_required: "high",
-        category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
-        frequency: "weekdays",
-        time_preferences: ["morning", "late_morning"],
-        availability_windows: [
-            { start_hour: 8, start_minute: 0, end_hour: 12, end_minute: 0 },
-        ],
-        dependencies: [],
-        minimum_gap_minutes: 15,
-        buffer_time_minutes: 10,
-        conflict_resolution: "override",
-        can_be_grouped: false,
-        enabled: true,
-        tags: ["work", "focus", "high-priority"],
-    },
-    {
-        id: "email_processing",
-        name: "Email processing",
-        description: "Dedicated time for email management and responses",
-        duration: {
-            minutes: 30,
-            flexible: true,
-            min_duration: 15,
-            max_duration: 60,
-        },
-        priority: "medium",
-        flexibility: 8,
-        energy_level_required: "low",
-        category: "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
-        frequency: "daily",
-        time_preferences: ["morning", "afternoon", "flexible"],
-        availability_windows: [
-            { start_hour: 9, start_minute: 0, end_hour: 11, end_minute: 0 },
-            { start_hour: 14, start_minute: 0, end_hour: 16, end_minute: 0 },
-        ],
-        dependencies: [],
-        minimum_gap_minutes: 0,
-        buffer_time_minutes: 5,
-        conflict_resolution: "compress",
-        can_be_grouped: true,
-        preferred_batch_size: 2,
-        enabled: true,
-        tags: ["work", "communication", "admin"],
-    },
-    {
-        id: "wind_down",
-        name: "Wind down routine",
-        description: "Relaxing activities to prepare for sleep",
-        duration: {
-            minutes: 45,
-            flexible: true,
-            min_duration: 30,
-            max_duration: 90,
-        },
-        priority: "high",
-        flexibility: 5,
-        energy_level_required: "low",
-        category: "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
-        frequency: "daily",
-        time_preferences: ["evening", "night"],
-        availability_windows: [
-            { start_hour: 20, start_minute: 0, end_hour: 23, end_minute: 0 },
-        ],
-        dependencies: [],
-        minimum_gap_minutes: 0,
-        buffer_time_minutes: 10,
-        conflict_resolution: "compress",
-        can_be_grouped: false,
-        enabled: false,
-        tags: ["evening", "relaxation", "sleep-prep"],
-    },
-];
+function getEnergyIcon(level: EnergyLevel) {
+    switch (level) {
+        case EnergyLevel.High:
+            return <Zap className="w-4 h-4 text-red-500" />;
+        case EnergyLevel.Low:
+            return <BatteryLow className="w-4 h-4 text-green-500" />;
+        default:
+            return <Battery className="w-4 h-4 text-yellow-500" />;
+    }
+}
+
+function formatTimeWindow(w: {
+    startHour: number;
+    startMinute: number;
+    endHour: number;
+    endMinute: number;
+}) {
+    const fmt = (h: number, m = 0) => {
+        const period = h >= 12 ? "PM" : "AM";
+        const dh = h === 0 ? 12 : h > 12 ? h - 12 : h;
+        return `${dh}${m ? `:${m.toString().padStart(2, "0")}` : ""}${period}`;
+    };
+    return `${fmt(w.startHour, w.startMinute)} - ${fmt(w.endHour, w.endMinute)}`;
+}
+
+const DEFAULT_CREATE_INPUT = {
+    name: "",
+    description: "",
+    duration: { minutes: 30, flexible: false },
+    priority: PriorityLevel.Medium,
+    flexibility: 5,
+    energyLevelRequired: EnergyLevel.Medium,
+    category: DEFAULT_ROUTINE_CATEGORIES[0]?.id || "",
+    frequency: Frequency.Daily,
+    timePreferences: [TimeOfDay.Morning] as TimeOfDay[],
+    availabilityWindows: [
+        { startHour: 9, startMinute: 0, endHour: 17, endMinute: 0 },
+    ],
+    dependencies: [] as {
+        routineId: string;
+        relationship: DependencyRelationship;
+        bufferMinutes?: number | null;
+    }[],
+    minimumGapMinutes: 0,
+    bufferTimeMinutes: 5,
+    conflictResolution: ConflictResolution.Reschedule,
+    canBeGrouped: true,
+    enabled: true,
+    tags: [] as string[],
+};
 
 function RoutinesPage() {
-    const [routines, setRoutines] = useState(MOCK_ROUTINES);
+    const { data, loading, error, refetch } = useGetRoutinesQuery();
+    const [updateRoutine] = useUpdateRoutineMutation();
+    const [deleteRoutineMutation] = useDeleteRoutineMutation();
+    const [createRoutineMutation] = useCreateRoutineMutation();
+
+    const routines = data?.routines ?? [];
+
     const [selectedRoutineId, setSelectedRoutineId] = useState<string | null>(
         null,
     );
-    const selectedRoutine = useMemo(() => {
-        return routines.find((r) => r.id === selectedRoutineId) || null;
-    }, [selectedRoutineId, routines]);
+    const selectedRoutine = useMemo(
+        () => routines.find((r) => r.id === selectedRoutineId) ?? null,
+        [selectedRoutineId, routines],
+    );
+
     const [editMode, setEditMode] = useState(false);
+    const [editName, setEditName] = useState("");
+    const [editDescription, setEditDescription] = useState("");
+    const [editDurationMinutes, setEditDurationMinutes] = useState(30);
+    const [editPriority, setEditPriority] = useState<PriorityLevel>(
+        PriorityLevel.Medium,
+    );
+    const [editFlexibility, setEditFlexibility] = useState(5);
+
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [createInput, setCreateInput] = useState({ ...DEFAULT_CREATE_INPUT });
+
     const [expandedCategories, setExpandedCategories] = useState(
         new Set([
-            "f47ac10b-58cc-4372-a567-0e02b2c3d479", // Personal Care
-            "550e8400-e29b-41d4-a716-446655440000", // Work & Professional
-            "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // Health & Fitness
+            "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         ]),
     );
-    const [viewMode, setViewMode] = useState("list"); // 'list' or 'timeline'
+    const [viewMode, setViewMode] = useState("list");
 
-    // Group routines by category
-    const routinesByCategory: Map<RoutineCategory, Routine[]> = useMemo(() => {
+    const routinesByCategory: Map<string, GqlRoutine[]> = useMemo(() => {
         return routines.reduce((acc, routine) => {
             const key = routine.category;
-            let array = acc.get(key);
-            if (!array) {
-                array = [];
-                acc.set(key, array);
-            }
-            array.push(routine);
-
+            if (!acc.has(key)) acc.set(key, []);
+            acc.get(key)!.push(routine);
             return acc;
-        }, new Map<RoutineCategory, Routine[]>());
+        }, new Map<string, GqlRoutine[]>());
     }, [routines]);
 
-    // Get priority color
-    const getPriorityColor = (priority: PriorityLevel) => {
-        switch (priority) {
-            case "high":
-                return "text-red-600 bg-red-50 border-red-200";
-            case "medium":
-                return "text-yellow-600 bg-yellow-50 border-yellow-200";
-            case "low":
-                return "text-green-600 bg-green-50 border-green-200";
-            default:
-                return "text-gray-600 bg-gray-50 border-gray-200";
-        }
-    };
-
-    // Get energy level icon
-    const getEnergyIcon = (level: PriorityLevel) => {
-        switch (level) {
-            case "high":
-                return <Zap className="w-4 h-4 text-red-500" />;
-            case "medium":
-                return <Battery className="w-4 h-4 text-yellow-500" />;
-            case "low":
-                return <BatteryLow className="w-4 h-4 text-green-500" />;
-            default:
-                return null;
-        }
-    };
-
-    // Format time window
-    const formatTimeWindow = (window: TimeWindow) => {
-        const formatTime = (hour: number, minute = 0) => {
-            const period = hour >= 12 ? "PM" : "AM";
-            const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-            return `${displayHour}${minute ? `:${minute.toString().padStart(2, "0")}` : ""}${period}`;
-        };
-        return `${formatTime(window.start_hour, window.start_minute)} - ${formatTime(window.end_hour, window.end_minute)}`;
-    };
-
-    // Toggle category expansion
-    const toggleCategory = (category: RoutineCategory) => {
-        const newExpanded = new Set(expandedCategories);
-        if (newExpanded.has(category)) {
-            newExpanded.delete(category);
-        } else {
-            newExpanded.add(category);
-        }
-        setExpandedCategories(newExpanded);
-    };
-
-    // Toggle routine enabled status
-    const toggleRoutineEnabled = (routineId: string) => {
-        setRoutines((prev) =>
-            prev.map((r) =>
-                r.id === routineId ? { ...r, enabled: !r.enabled } : r,
-            ),
-        );
-    };
-
-    // Delete routine
-    const deleteRoutine = (routineId: string) => {
-        setRoutines((prev) => prev.filter((r) => r.id !== routineId));
-        if (selectedRoutineId === routineId) {
-            setSelectedRoutineId(null);
-            setEditMode(false);
-        }
-    };
-
-    // Stats calculation
     const stats = useMemo(() => {
         const enabled = routines.filter((r) => r.enabled);
         const totalTime = enabled.reduce(
@@ -304,17 +165,123 @@ function RoutinesPage() {
             0,
         );
         const highPriority = enabled.filter(
-            (r) => r.priority === "high",
+            (r) => r.priority === PriorityLevel.High,
         ).length;
         const categories = new Set(enabled.map((r) => r.category)).size;
-
         return {
             totalRoutines: enabled.length,
-            totalTime: Math.round((totalTime / 60) * 10) / 10, // hours
+            totalTime: Math.round((totalTime / 60) * 10) / 10,
             highPriority,
             categories,
         };
     }, [routines]);
+
+    const toggleCategory = (categoryId: string) => {
+        setExpandedCategories((prev) => {
+            const next = new Set(prev);
+            if (next.has(categoryId)) next.delete(categoryId);
+            else next.add(categoryId);
+            return next;
+        });
+    };
+
+    const toggleRoutineEnabled = async (routine: GqlRoutine) => {
+        await updateRoutine({
+            variables: { id: routine.id, input: { enabled: !routine.enabled } },
+        });
+        refetch();
+    };
+
+    const handleDeleteRoutine = async (routineId: string) => {
+        await deleteRoutineMutation({ variables: { id: routineId } });
+        if (selectedRoutineId === routineId) {
+            setSelectedRoutineId(null);
+            setEditMode(false);
+        }
+        refetch();
+    };
+
+    const openEdit = (routine: GqlRoutine) => {
+        setEditName(routine.name);
+        setEditDescription(routine.description ?? "");
+        setEditDurationMinutes(routine.duration.minutes);
+        setEditPriority(routine.priority);
+        setEditFlexibility(routine.flexibility);
+        setEditMode(true);
+    };
+
+    const handleSaveEdit = async () => {
+        if (!selectedRoutine) return;
+        await updateRoutine({
+            variables: {
+                id: selectedRoutine.id,
+                input: {
+                    name: editName,
+                    description: editDescription || null,
+                    duration: {
+                        minutes: editDurationMinutes,
+                        flexible: selectedRoutine.duration.flexible,
+                        minDuration: selectedRoutine.duration.minDuration,
+                        maxDuration: selectedRoutine.duration.maxDuration,
+                    },
+                    priority: editPriority,
+                    flexibility: editFlexibility,
+                },
+            },
+        });
+        setEditMode(false);
+        refetch();
+    };
+
+    const handleCreate = async () => {
+        if (!createInput.name.trim()) return;
+        await createRoutineMutation({
+            variables: {
+                input: {
+                    name: createInput.name,
+                    description: createInput.description || null,
+                    duration: createInput.duration,
+                    priority: createInput.priority,
+                    flexibility: createInput.flexibility,
+                    energyLevelRequired: createInput.energyLevelRequired,
+                    category: createInput.category,
+                    frequency: createInput.frequency,
+                    timePreferences: createInput.timePreferences,
+                    availabilityWindows: createInput.availabilityWindows,
+                    dependencies: createInput.dependencies,
+                    minimumGapMinutes: createInput.minimumGapMinutes,
+                    bufferTimeMinutes: createInput.bufferTimeMinutes,
+                    conflictResolution: createInput.conflictResolution,
+                    canBeGrouped: createInput.canBeGrouped,
+                    enabled: createInput.enabled,
+                    tags: createInput.tags,
+                },
+            },
+        });
+        setShowCreateModal(false);
+        setCreateInput({ ...DEFAULT_CREATE_INPUT });
+        refetch();
+    };
+
+    if (loading) {
+        return (
+            <div className="max-w-7xl mx-auto p-6">
+                <div className="text-center py-12 text-gray-500">
+                    Loading routines...
+                </div>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="max-w-7xl mx-auto p-6">
+                <div className="text-center py-12 text-red-500">
+                    Failed to load routines: {error.message}
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="max-w-7xl mx-auto p-6">
@@ -347,6 +314,7 @@ function RoutinesPage() {
                         </button>
                         <button
                             type="button"
+                            onClick={() => setShowCreateModal(true)}
                             className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
                         >
                             <Plus className="w-4 h-4" />
@@ -415,11 +383,17 @@ function RoutinesPage() {
             <div className="grid grid-cols-3 gap-6">
                 {/* Routines List */}
                 <div className="col-span-2 space-y-4">
+                    {routines.length === 0 && (
+                        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center text-gray-500">
+                            <Calendar className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                            <p>
+                                No routines yet. Click "Add Routine" to get
+                                started.
+                            </p>
+                        </div>
+                    )}
                     {Array.from(routinesByCategory.entries()).map(
-                        ([categoryId, categoryRoutines]: [
-                            string,
-                            Routine[],
-                        ]) => {
+                        ([categoryId, categoryRoutines]) => {
                             const categoryName = getCategoryName(categoryId);
                             const categoryColor = getCategoryColor(categoryId);
 
@@ -431,9 +405,7 @@ function RoutinesPage() {
                                     <button
                                         type="button"
                                         onClick={() =>
-                                            toggleCategory(
-                                                categoryId as RoutineCategory,
-                                            )
+                                            toggleCategory(categoryId)
                                         }
                                         className="w-full px-6 py-4 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors"
                                     >
@@ -466,10 +438,9 @@ function RoutinesPage() {
                                             <div className="ml-auto relative">
                                                 <button
                                                     type="button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        // TODO: Handle category options menu
-                                                    }}
+                                                    onClick={(e) =>
+                                                        e.stopPropagation()
+                                                    }
                                                     className="p-1 hover:bg-gray-200 rounded"
                                                 >
                                                     <MoreVertical className="w-4 h-4 text-gray-400" />
@@ -507,12 +478,10 @@ function RoutinesPage() {
                                                                 <span
                                                                     className={`px-2 py-1 text-xs rounded-full border ${getPriorityColor(routine.priority)}`}
                                                                 >
-                                                                    {
-                                                                        routine.priority
-                                                                    }
+                                                                    {routine.priority.toLowerCase()}
                                                                 </span>
                                                                 {getEnergyIcon(
-                                                                    routine.energy_level_required,
+                                                                    routine.energyLevelRequired,
                                                                 )}
                                                             </div>
                                                             <p className="text-sm text-gray-600 mb-2">
@@ -526,13 +495,11 @@ function RoutinesPage() {
                                                                     {routine
                                                                         .duration
                                                                         .flexible
-                                                                        ? `${routine.duration.min_duration}-${routine.duration.max_duration}min`
+                                                                        ? `${routine.duration.minDuration}-${routine.duration.maxDuration}min`
                                                                         : `${routine.duration.minutes}min`}
                                                                 </span>
                                                                 <span>
-                                                                    {
-                                                                        routine.frequency
-                                                                    }
+                                                                    {routine.frequency.toLowerCase()}
                                                                 </span>
                                                                 <span>
                                                                     Flexibility:{" "}
@@ -551,7 +518,7 @@ function RoutinesPage() {
                                                                 ) => {
                                                                     e.stopPropagation();
                                                                     toggleRoutineEnabled(
-                                                                        routine.id,
+                                                                        routine,
                                                                     );
                                                                 }}
                                                                 className="p-1 hover:bg-gray-200 rounded"
@@ -571,8 +538,8 @@ function RoutinesPage() {
                                                                     setSelectedRoutineId(
                                                                         routine.id,
                                                                     );
-                                                                    setEditMode(
-                                                                        true,
+                                                                    openEdit(
+                                                                        routine,
                                                                     );
                                                                 }}
                                                                 className="p-1 hover:bg-gray-200 rounded"
@@ -585,7 +552,7 @@ function RoutinesPage() {
                                                                     e,
                                                                 ) => {
                                                                     e.stopPropagation();
-                                                                    deleteRoutine(
+                                                                    handleDeleteRoutine(
                                                                         routine.id,
                                                                     );
                                                                 }}
@@ -629,6 +596,7 @@ function RoutinesPage() {
                                             </button>
                                             <button
                                                 type="button"
+                                                onClick={handleSaveEdit}
                                                 className="px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
                                             >
                                                 Save
@@ -637,7 +605,9 @@ function RoutinesPage() {
                                     ) : (
                                         <button
                                             type="button"
-                                            onClick={() => setEditMode(true)}
+                                            onClick={() =>
+                                                openEdit(selectedRoutine)
+                                            }
                                             className="p-2 hover:bg-gray-100 rounded"
                                         >
                                             <Edit2 className="w-4 h-4" />
@@ -658,20 +628,28 @@ function RoutinesPage() {
                                         <input
                                             id="editName"
                                             type="text"
-                                            value={selectedRoutine.name}
+                                            value={editName}
+                                            onChange={(e) =>
+                                                setEditName(e.target.value)
+                                            }
                                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                         />
                                     </div>
                                     <div>
                                         <label
-                                            htmlFor="description"
+                                            htmlFor="editDescription"
                                             className="block text-sm font-medium text-gray-700 mb-1"
                                         >
                                             Description
                                         </label>
                                         <textarea
-                                            id="description"
-                                            value={selectedRoutine.description}
+                                            id="editDescription"
+                                            value={editDescription}
+                                            onChange={(e) =>
+                                                setEditDescription(
+                                                    e.target.value,
+                                                )
+                                            }
                                             rows={3}
                                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                         />
@@ -679,38 +657,54 @@ function RoutinesPage() {
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label
-                                                htmlFor="duration"
+                                                htmlFor="editDuration"
                                                 className="block text-sm font-medium text-gray-700 mb-1"
                                             >
                                                 Duration (min)
                                             </label>
                                             <input
-                                                id="duration"
+                                                id="editDuration"
                                                 type="number"
-                                                value={
-                                                    selectedRoutine.duration
-                                                        .minutes
+                                                value={editDurationMinutes}
+                                                onChange={(e) =>
+                                                    setEditDurationMinutes(
+                                                        Number(e.target.value),
+                                                    )
                                                 }
                                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                             />
                                         </div>
                                         <div>
                                             <label
-                                                htmlFor="priority"
+                                                htmlFor="editPriority"
                                                 className="block text-sm font-medium text-gray-700 mb-1"
                                             >
                                                 Priority
                                             </label>
                                             <select
-                                                id="priority"
-                                                value={selectedRoutine.priority}
+                                                id="editPriority"
+                                                value={editPriority}
+                                                onChange={(e) =>
+                                                    setEditPriority(
+                                                        e.target
+                                                            .value as PriorityLevel,
+                                                    )
+                                                }
                                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                             >
-                                                <option value="low">Low</option>
-                                                <option value="medium">
+                                                <option
+                                                    value={PriorityLevel.Low}
+                                                >
+                                                    Low
+                                                </option>
+                                                <option
+                                                    value={PriorityLevel.Medium}
+                                                >
                                                     Medium
                                                 </option>
-                                                <option value="high">
+                                                <option
+                                                    value={PriorityLevel.High}
+                                                >
                                                     High
                                                 </option>
                                             </select>
@@ -718,18 +712,22 @@ function RoutinesPage() {
                                     </div>
                                     <div>
                                         <label
-                                            htmlFor="flexibility"
+                                            htmlFor="editFlexibility"
                                             className="block text-sm font-medium text-gray-700 mb-1"
                                         >
-                                            Flexibility (
-                                            {selectedRoutine.flexibility}/10)
+                                            Flexibility ({editFlexibility}/10)
                                         </label>
                                         <input
-                                            id="flexibility"
+                                            id="editFlexibility"
                                             type="range"
                                             min="0"
                                             max="10"
-                                            value={selectedRoutine.flexibility}
+                                            value={editFlexibility}
+                                            onChange={(e) =>
+                                                setEditFlexibility(
+                                                    Number(e.target.value),
+                                                )
+                                            }
                                             className="w-full"
                                         />
                                         <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -756,7 +754,7 @@ function RoutinesPage() {
                                                 <span className="ml-2 font-medium">
                                                     {selectedRoutine.duration
                                                         .flexible
-                                                        ? `${selectedRoutine.duration.min_duration}-${selectedRoutine.duration.max_duration} min`
+                                                        ? `${selectedRoutine.duration.minDuration}-${selectedRoutine.duration.maxDuration} min`
                                                         : `${selectedRoutine.duration.minutes} min`}
                                                 </span>
                                             </div>
@@ -767,7 +765,7 @@ function RoutinesPage() {
                                                 <span
                                                     className={`ml-2 px-2 py-1 text-xs rounded ${getPriorityColor(selectedRoutine.priority)}`}
                                                 >
-                                                    {selectedRoutine.priority}
+                                                    {selectedRoutine.priority.toLowerCase()}
                                                 </span>
                                             </div>
                                             <div>
@@ -776,11 +774,9 @@ function RoutinesPage() {
                                                 </span>
                                                 <span className="ml-2 flex items-center gap-1">
                                                     {getEnergyIcon(
-                                                        selectedRoutine.energy_level_required,
+                                                        selectedRoutine.energyLevelRequired,
                                                     )}
-                                                    {
-                                                        selectedRoutine.energy_level_required
-                                                    }
+                                                    {selectedRoutine.energyLevelRequired.toLowerCase()}
                                                 </span>
                                             </div>
                                             <div>
@@ -788,7 +784,7 @@ function RoutinesPage() {
                                                     Frequency:
                                                 </span>
                                                 <span className="ml-2 font-medium">
-                                                    {selectedRoutine.frequency}
+                                                    {selectedRoutine.frequency.toLowerCase()}
                                                 </span>
                                             </div>
                                             <div>
@@ -818,13 +814,15 @@ function RoutinesPage() {
                                             Time Preferences
                                         </h5>
                                         <div className="flex flex-wrap gap-2">
-                                            {selectedRoutine.time_preferences.map(
+                                            {selectedRoutine.timePreferences.map(
                                                 (time) => (
                                                     <span
                                                         key={time}
                                                         className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
                                                     >
-                                                        {time.replace("_", " ")}
+                                                        {time
+                                                            .toLowerCase()
+                                                            .replace("_", " ")}
                                                     </span>
                                                 ),
                                             )}
@@ -836,7 +834,7 @@ function RoutinesPage() {
                                             Availability Windows
                                         </h5>
                                         <div className="space-y-1">
-                                            {selectedRoutine.availability_windows.map(
+                                            {selectedRoutine.availabilityWindows.map(
                                                 (window, index) => (
                                                     <div
                                                         key={`window-${selectedRoutine.id}-${index}`}
@@ -873,7 +871,7 @@ function RoutinesPage() {
                                                 </span>
                                                 <span>
                                                     {
-                                                        selectedRoutine.buffer_time_minutes
+                                                        selectedRoutine.bufferTimeMinutes
                                                     }{" "}
                                                     min
                                                 </span>
@@ -883,9 +881,7 @@ function RoutinesPage() {
                                                     Conflict Resolution:
                                                 </span>
                                                 <span className="capitalize">
-                                                    {
-                                                        selectedRoutine.conflict_resolution
-                                                    }
+                                                    {selectedRoutine.conflictResolution.toLowerCase()}
                                                 </span>
                                             </div>
                                             <div className="flex justify-between">
@@ -893,7 +889,7 @@ function RoutinesPage() {
                                                     Can Group:
                                                 </span>
                                                 <span>
-                                                    {selectedRoutine.can_be_grouped
+                                                    {selectedRoutine.canBeGrouped
                                                         ? "Yes"
                                                         : "No"}
                                                 </span>
@@ -931,8 +927,198 @@ function RoutinesPage() {
                     )}
                 </div>
             </div>
+
+            {/* Create Routine Modal */}
+            {showCreateModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-xl">
+                        <h2 className="text-lg font-semibold mb-4">
+                            New Routine
+                        </h2>
+                        <div className="space-y-3">
+                            <div>
+                                <label
+                                    htmlFor="createName"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Name *
+                                </label>
+                                <input
+                                    id="createName"
+                                    type="text"
+                                    value={createInput.name}
+                                    onChange={(e) =>
+                                        setCreateInput((p) => ({
+                                            ...p,
+                                            name: e.target.value,
+                                        }))
+                                    }
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                    placeholder="e.g. Morning exercise"
+                                />
+                            </div>
+                            <div>
+                                <label
+                                    htmlFor="createDesc"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Description
+                                </label>
+                                <textarea
+                                    id="createDesc"
+                                    value={createInput.description}
+                                    onChange={(e) =>
+                                        setCreateInput((p) => ({
+                                            ...p,
+                                            description: e.target.value,
+                                        }))
+                                    }
+                                    rows={2}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label
+                                        htmlFor="createDuration"
+                                        className="block text-sm font-medium text-gray-700 mb-1"
+                                    >
+                                        Duration (min)
+                                    </label>
+                                    <input
+                                        id="createDuration"
+                                        type="number"
+                                        value={createInput.duration.minutes}
+                                        onChange={(e) =>
+                                            setCreateInput((p) => ({
+                                                ...p,
+                                                duration: {
+                                                    ...p.duration,
+                                                    minutes: Number(
+                                                        e.target.value,
+                                                    ),
+                                                },
+                                            }))
+                                        }
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        htmlFor="createPriority"
+                                        className="block text-sm font-medium text-gray-700 mb-1"
+                                    >
+                                        Priority
+                                    </label>
+                                    <select
+                                        id="createPriority"
+                                        value={createInput.priority}
+                                        onChange={(e) =>
+                                            setCreateInput((p) => ({
+                                                ...p,
+                                                priority: e.target
+                                                    .value as PriorityLevel,
+                                            }))
+                                        }
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                    >
+                                        <option value={PriorityLevel.Low}>
+                                            Low
+                                        </option>
+                                        <option value={PriorityLevel.Medium}>
+                                            Medium
+                                        </option>
+                                        <option value={PriorityLevel.High}>
+                                            High
+                                        </option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label
+                                    htmlFor="createCategory"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Category
+                                </label>
+                                <select
+                                    id="createCategory"
+                                    value={createInput.category}
+                                    onChange={(e) =>
+                                        setCreateInput((p) => ({
+                                            ...p,
+                                            category: e.target.value,
+                                        }))
+                                    }
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                >
+                                    {DEFAULT_ROUTINE_CATEGORIES.map((cat) => (
+                                        <option key={cat.id} value={cat.id}>
+                                            {cat.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label
+                                    htmlFor="createFrequency"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Frequency
+                                </label>
+                                <select
+                                    id="createFrequency"
+                                    value={createInput.frequency}
+                                    onChange={(e) =>
+                                        setCreateInput((p) => ({
+                                            ...p,
+                                            frequency: e.target
+                                                .value as Frequency,
+                                        }))
+                                    }
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                >
+                                    <option value={Frequency.Daily}>
+                                        Daily
+                                    </option>
+                                    <option value={Frequency.Weekdays}>
+                                        Weekdays
+                                    </option>
+                                    <option value={Frequency.Weekends}>
+                                        Weekends
+                                    </option>
+                                    <option value={Frequency.Weekly}>
+                                        Weekly
+                                    </option>
+                                    <option value={Frequency.Custom}>
+                                        Custom
+                                    </option>
+                                </select>
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-2 mt-6">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowCreateModal(false);
+                                    setCreateInput({ ...DEFAULT_CREATE_INPUT });
+                                }}
+                                className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleCreate}
+                                disabled={!createInput.name.trim()}
+                                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                                Create
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
-
-// TODO: Finish this ^^

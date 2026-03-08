@@ -20,6 +20,10 @@ type Query {
 
     # Auth operations
     authUrl: String!
+
+    # Routine operations
+    routines: [Routine!]!
+    routine(id: ID!): Routine
 }
 
 type Mutation {
@@ -32,12 +36,21 @@ type Mutation {
     createEvent(input: CreateEventInput!): CalendarEvent!
     updateEvent(id: ID!, input: UpdateEventInput!): CalendarEvent!
     deleteEvent(id: ID!): Boolean!
+
+    # Routine operations
+    createRoutine(input: CreateRoutineInput!): Routine!
+    updateRoutine(id: ID!, input: UpdateRoutineInput!): Routine!
+    deleteRoutine(id: ID!): Boolean!
 }
 
 type Subscription {
     eventUpdated(calendarId: ID): CalendarEvent!
     eventCreated(calendarId: ID): CalendarEvent!
     eventDeleted(calendarId: ID): EventDeletedPayload!
+
+    routineCreated: Routine!
+    routineUpdated: Routine!
+    routineDeleted: RoutineDeletedPayload!
 }
 
 # Types
@@ -109,6 +122,52 @@ type AuthPayload {
 type EventDeletedPayload {
     id: ID!
     calendarId: ID!
+}
+
+type Routine {
+    id: ID!
+    name: String!
+    description: String
+    duration: RoutineDuration!
+    priority: PriorityLevel!
+    flexibility: Int!
+    energyLevelRequired: EnergyLevel!
+    category: String!
+    frequency: Frequency!
+    timePreferences: [TimeOfDay!]!
+    availabilityWindows: [TimeWindow!]!
+    dependencies: [RoutineDependency!]!
+    minimumGapMinutes: Int!
+    bufferTimeMinutes: Int!
+    conflictResolution: ConflictResolution!
+    canBeGrouped: Boolean!
+    preferredBatchSize: Int
+    enabled: Boolean!
+    tags: [String!]!
+}
+
+type RoutineDuration {
+    minutes: Int!
+    flexible: Boolean!
+    minDuration: Int
+    maxDuration: Int
+}
+
+type TimeWindow {
+    startHour: Int!
+    startMinute: Int!
+    endHour: Int!
+    endMinute: Int!
+}
+
+type RoutineDependency {
+    routineId: String!
+    relationship: DependencyRelationship!
+    bufferMinutes: Int
+}
+
+type RoutineDeletedPayload {
+    id: ID!
 }
 
 # Relay-style Connection Types for Pagination
@@ -205,4 +264,112 @@ enum AttendeeResponseStatus {
 enum ReminderMethod {
     EMAIL
     POPUP
+}
+
+# Routine enums
+enum PriorityLevel {
+    HIGH
+    MEDIUM
+    LOW
+}
+
+enum EnergyLevel {
+    HIGH
+    MEDIUM
+    LOW
+}
+
+enum Frequency {
+    DAILY
+    WEEKLY
+    WEEKDAYS
+    WEEKENDS
+    CUSTOM
+}
+
+enum TimeOfDay {
+    EARLY_MORNING
+    MORNING
+    LATE_MORNING
+    MIDDAY
+    AFTERNOON
+    EVENING
+    NIGHT
+    FLEXIBLE
+}
+
+enum ConflictResolution {
+    SKIP
+    RESCHEDULE
+    COMPRESS
+    OVERRIDE
+}
+
+enum DependencyRelationship {
+    BEFORE
+    AFTER
+    SAME_TIME_BLOCK
+}
+
+# Routine inputs
+input CreateRoutineInput {
+    name: String!
+    description: String
+    duration: RoutineDurationInput!
+    priority: PriorityLevel!
+    flexibility: Int!
+    energyLevelRequired: EnergyLevel!
+    category: String!
+    frequency: Frequency!
+    timePreferences: [TimeOfDay!]!
+    availabilityWindows: [TimeWindowInput!]!
+    dependencies: [RoutineDependencyInput!]!
+    minimumGapMinutes: Int!
+    bufferTimeMinutes: Int!
+    conflictResolution: ConflictResolution!
+    canBeGrouped: Boolean!
+    preferredBatchSize: Int
+    enabled: Boolean!
+    tags: [String!]!
+}
+
+input UpdateRoutineInput {
+    name: String
+    description: String
+    duration: RoutineDurationInput
+    priority: PriorityLevel
+    flexibility: Int
+    energyLevelRequired: EnergyLevel
+    category: String
+    frequency: Frequency
+    timePreferences: [TimeOfDay!]
+    availabilityWindows: [TimeWindowInput!]
+    dependencies: [RoutineDependencyInput!]
+    minimumGapMinutes: Int
+    bufferTimeMinutes: Int
+    conflictResolution: ConflictResolution
+    canBeGrouped: Boolean
+    preferredBatchSize: Int
+    enabled: Boolean
+    tags: [String!]
+}
+
+input RoutineDurationInput {
+    minutes: Int!
+    flexible: Boolean!
+    minDuration: Int
+    maxDuration: Int
+}
+
+input TimeWindowInput {
+    startHour: Int!
+    startMinute: Int!
+    endHour: Int!
+    endMinute: Int!
+}
+
+input RoutineDependencyInput {
+    routineId: String!
+    relationship: DependencyRelationship!
+    bufferMinutes: Int
 }

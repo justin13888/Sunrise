@@ -179,3 +179,69 @@ subscription OnEventDeleted($calendarId: ID) {
         calendarId
     }
 }
+
+fragment RoutineFields on Routine {
+    id
+    name
+    description
+    duration {
+        minutes
+        flexible
+        minDuration
+        maxDuration
+    }
+    priority
+    flexibility
+    energyLevelRequired
+    category
+    frequency
+    timePreferences
+    availabilityWindows {
+        startHour
+        startMinute
+        endHour
+        endMinute
+    }
+    dependencies {
+        routineId
+        relationship
+        bufferMinutes
+    }
+    minimumGapMinutes
+    bufferTimeMinutes
+    conflictResolution
+    canBeGrouped
+    preferredBatchSize
+    enabled
+    tags
+}
+
+query GetRoutines {
+    routines {
+        ...RoutineFields
+    }
+}
+
+query GetRoutine($id: ID!) {
+    routine(id: $id) {
+        ...RoutineFields
+    }
+}
+
+subscription OnRoutineCreated {
+    routineCreated {
+        ...RoutineFields
+    }
+}
+
+subscription OnRoutineUpdated {
+    routineUpdated {
+        ...RoutineFields
+    }
+}
+
+subscription OnRoutineDeleted {
+    routineDeleted {
+        id
+    }
+}

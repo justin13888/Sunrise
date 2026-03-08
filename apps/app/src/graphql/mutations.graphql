@@ -83,3 +83,19 @@ mutation UpdateEvent($id: ID!, $input: UpdateEventInput!) {
 mutation DeleteEvent($id: ID!) {
     deleteEvent(id: $id)
 }
+
+mutation CreateRoutine($input: CreateRoutineInput!) {
+    createRoutine(input: $input) {
+        ...RoutineFields
+    }
+}
+
+mutation UpdateRoutine($id: ID!, $input: UpdateRoutineInput!) {
+    updateRoutine(id: $id, input: $input) {
+        ...RoutineFields
+    }
+}
+
+mutation DeleteRoutine($id: ID!) {
+    deleteRoutine(id: $id)
+}
