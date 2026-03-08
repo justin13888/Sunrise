@@ -93,7 +93,10 @@ function EventForm({
                 <h2 className="text-lg font-semibold mb-4">{title}</h2>
                 <div className="space-y-3">
                     <div>
-                        <label htmlFor="ef-summary" className="block text-sm font-medium text-gray-700 mb-1">
+                        <label
+                            htmlFor="ef-summary"
+                            className="block text-sm font-medium text-gray-700 mb-1"
+                        >
                             Title *
                         </label>
                         <input
@@ -108,7 +111,10 @@ function EventForm({
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
-                            <label htmlFor="ef-start-date" className="block text-sm font-medium text-gray-700 mb-1">
+                            <label
+                                htmlFor="ef-start-date"
+                                className="block text-sm font-medium text-gray-700 mb-1"
+                            >
                                 Start date
                             </label>
                             <input
@@ -122,7 +128,10 @@ function EventForm({
                             />
                         </div>
                         <div>
-                            <label htmlFor="ef-start-time" className="block text-sm font-medium text-gray-700 mb-1">
+                            <label
+                                htmlFor="ef-start-time"
+                                className="block text-sm font-medium text-gray-700 mb-1"
+                            >
                                 Start time
                             </label>
                             <input
@@ -138,7 +147,10 @@ function EventForm({
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
-                            <label htmlFor="ef-end-date" className="block text-sm font-medium text-gray-700 mb-1">
+                            <label
+                                htmlFor="ef-end-date"
+                                className="block text-sm font-medium text-gray-700 mb-1"
+                            >
                                 End date
                             </label>
                             <input
@@ -150,7 +162,10 @@ function EventForm({
                             />
                         </div>
                         <div>
-                            <label htmlFor="ef-end-time" className="block text-sm font-medium text-gray-700 mb-1">
+                            <label
+                                htmlFor="ef-end-time"
+                                className="block text-sm font-medium text-gray-700 mb-1"
+                            >
                                 End time
                             </label>
                             <input
@@ -163,7 +178,10 @@ function EventForm({
                         </div>
                     </div>
                     <div>
-                        <label htmlFor="ef-location" className="block text-sm font-medium text-gray-700 mb-1">
+                        <label
+                            htmlFor="ef-location"
+                            className="block text-sm font-medium text-gray-700 mb-1"
+                        >
                             Location
                         </label>
                         <input
@@ -176,7 +194,10 @@ function EventForm({
                         />
                     </div>
                     <div>
-                        <label htmlFor="ef-description" className="block text-sm font-medium text-gray-700 mb-1">
+                        <label
+                            htmlFor="ef-description"
+                            className="block text-sm font-medium text-gray-700 mb-1"
+                        >
                             Description
                         </label>
                         <textarea
