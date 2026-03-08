@@ -132,6 +132,52 @@ export class GoogleCalendarService {
             credentials: auth.credentials,
         };
     }
+
+    /**
+     * Creates a new event on the specified calendar
+     */
+    async createEvent(
+        auth: OAuth2Client,
+        calendarId: string,
+        event: calendar_v3.Schema$Event,
+    ): Promise<calendar_v3.Schema$Event> {
+        const calendar = this.getCalendarService(auth);
+        const res = await calendar.events.insert({
+            calendarId,
+            requestBody: event,
+        });
+        return res.data;
+    }
+
+    /**
+     * Updates an existing event on the specified calendar
+     */
+    async updateEvent(
+        auth: OAuth2Client,
+        calendarId: string,
+        eventId: string,
+        event: calendar_v3.Schema$Event,
+    ): Promise<calendar_v3.Schema$Event> {
+        const calendar = this.getCalendarService(auth);
+        const res = await calendar.events.update({
+            calendarId,
+            eventId,
+            requestBody: event,
+        });
+        return res.data;
+    }
+
+    /**
+     * Deletes an event from the specified calendar
+     */
+    async deleteEvent(
+        auth: OAuth2Client,
+        calendarId: string,
+        eventId: string,
+    ): Promise<void> {
+        const calendar = this.getCalendarService(auth);
+        await calendar.events.delete({ calendarId, eventId });
+    }
 }
 
 /**

@@ -11,25 +11,19 @@ import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
 import { getMainDefinition } from "@apollo/client/utilities";
 import { createClient } from "graphql-ws";
 
-// TODO: Check this
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+const WS_URL = import.meta.env.VITE_WS_URL || API_URL.replace(/^http/, "ws");
 
 const httpLink = createHttpLink({
-    uri: "http://localhost:3000/graphql", // TODO: This hard-code is wrong. should be done at compile time.
+    uri: `${API_URL}/graphql`,
 });
 
 const authLink = setContext((_, { headers }) => {
-    // Get the authentication token from local storage if it exists
     const token = localStorage.getItem("access_token");
-    const refreshToken = localStorage.getItem("refresh_token");
-    const userId = localStorage.getItem("user_id");
-
-    // Return the headers to the context so httpLink can read them
     return {
         headers: {
             ...headers,
             authorization: token ? `Bearer ${token}` : "",
-            "x-refresh-token": refreshToken || "",
-            "x-user-id": userId || "",
         },
     };
 });
@@ -44,14 +38,7 @@ const errorLink = onError(({ graphQLErrors, networkError }) => {
 
             // Handle authentication errors
             if (extensions?.code === "UNAUTHENTICATED") {
-                console.log(
-                    "🔒 Authentication error detected - clearing tokens",
-                );
-                // Clear tokens but DON'T redirect here
-                // Let the component handle the redirect to avoid multiple redirects
                 localStorage.removeItem("access_token");
-                localStorage.removeItem("refresh_token");
-                localStorage.removeItem("user_id");
             }
         });
     }
@@ -66,16 +53,11 @@ const wsLink =
     typeof window !== "undefined"
         ? new GraphQLWsLink(
               createClient({
-                  url: "ws://localhost:3000/graphql",
+                  url: `${WS_URL}/graphql`,
                   connectionParams: () => {
                       const token = localStorage.getItem("access_token");
-                      const refreshToken =
-                          localStorage.getItem("refresh_token");
-                      const userId = localStorage.getItem("user_id");
                       return {
                           authorization: token ? `Bearer ${token}` : "",
-                          "x-refresh-token": refreshToken || "",
-                          "x-user-id": userId || "",
                       };
                   },
               }),

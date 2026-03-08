@@ -2,7 +2,13 @@
 import { GraphQLError } from "graphql";
 import { filter, pipe } from "graphql-yoga";
 import type { GraphQLContext } from "../context";
-import type { GqlResolvers } from "../generated/resolvers-types";
+import {
+    GqlEventStatus,
+    GqlEventVisibility,
+    GqlAttendeeResponseStatus,
+    type GqlResolvers,
+} from "../generated/resolvers-types";
+import { signJWT } from "../services/jwt";
 import { pubsub } from "../services/pubsub";
 import { tokenStore } from "../services/tokenStore";
 import { ensureAuth, ensureUser } from "./auth";
@@ -381,9 +387,11 @@ export const resolvers: GqlResolvers = {
                     `✅ Successfully authenticated user: ${userId} (${userInfo.email})`,
                 );
 
+                const jwtToken = await signJWT(userId);
+
                 return {
-                    accessToken: tokens.access_token,
-                    refreshToken: tokens.refresh_token,
+                    accessToken: jwtToken,
+                    refreshToken: null,
                     user,
                     expiresIn,
                 };
@@ -426,9 +434,11 @@ export const resolvers: GqlResolvers = {
 
                 console.log(`🔄 Refreshed tokens for user: ${user.email}`);
 
+                const jwtToken = await signJWT(user.id);
+
                 return {
-                    accessToken: credentials.access_token || "",
-                    refreshToken: credentials.refresh_token || refreshToken,
+                    accessToken: jwtToken,
+                    refreshToken: null,
                     user,
                     expiresIn,
                 };
@@ -453,31 +463,123 @@ export const resolvers: GqlResolvers = {
             return true;
         },
 
-        createEvent: async (_, _args, context: GraphQLContext) => {
-            ensureAuth(context);
+        createEvent: async (_, { input }, context: GraphQLContext) => {
+            const { refreshToken, calendarService } = ensureAuth(context);
 
-            // Implementation would use Google Calendar API to create event
-            throw new GraphQLError("Not implemented", {
-                extensions: { code: "NOT_IMPLEMENTED" },
-            });
+            try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+                const event = await calendarService.createEvent(
+                    auth,
+                    input.calendarId,
+                    {
+                        summary: input.summary,
+                        description: input.description || undefined,
+                        location: input.location || undefined,
+                        start: {
+                            dateTime: input.start.dateTime?.toISOString(),
+                            date: input.start.date || undefined,
+                            timeZone: input.start.timeZone || undefined,
+                        },
+                        end: {
+                            dateTime: input.end.dateTime?.toISOString(),
+                            date: input.end.date || undefined,
+                            timeZone: input.end.timeZone || undefined,
+                        },
+                        attendees: input.attendees?.map((email: string) => ({
+                            email,
+                        })),
+                    },
+                );
+
+                const gqlEvent = mapGCalEvent(event, input.calendarId);
+                pubsub.publish("eventCreated", {
+                    calendarId: input.calendarId,
+                    event: gqlEvent,
+                });
+                return gqlEvent;
+            } catch (error) {
+                throw new GraphQLError(`Failed to create event: ${error}`, {
+                    extensions: { code: "CALENDAR_ERROR" },
+                });
+            }
         },
 
-        updateEvent: async (_, _args, context: GraphQLContext) => {
-            ensureAuth(context);
+        updateEvent: async (_, { id, input }, context: GraphQLContext) => {
+            const { refreshToken, calendarService } = ensureAuth(context);
 
-            // Implementation would use Google Calendar API to update event
-            throw new GraphQLError("Not implemented", {
-                extensions: { code: "NOT_IMPLEMENTED" },
-            });
+            // Default to primary calendar; calendarId can be added to UpdateEventInput in the future
+            const calendarId = "primary";
+
+            try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+
+                const eventData: Record<string, unknown> = {};
+                if (input.summary !== undefined && input.summary !== null)
+                    eventData.summary = input.summary;
+                if (input.description !== undefined)
+                    eventData.description = input.description;
+                if (input.location !== undefined)
+                    eventData.location = input.location;
+                if (input.start)
+                    eventData.start = {
+                        dateTime: input.start.dateTime?.toISOString(),
+                        date: input.start.date || undefined,
+                        timeZone: input.start.timeZone || undefined,
+                    };
+                if (input.end)
+                    eventData.end = {
+                        dateTime: input.end.dateTime?.toISOString(),
+                        date: input.end.date || undefined,
+                        timeZone: input.end.timeZone || undefined,
+                    };
+                if (input.attendees)
+                    eventData.attendees = input.attendees.map(
+                        (email: string) => ({ email }),
+                    );
+
+                const event = await calendarService.updateEvent(
+                    auth,
+                    calendarId,
+                    id,
+                    eventData,
+                );
+
+                const gqlEvent = mapGCalEvent(event, calendarId);
+                pubsub.publish("eventUpdated", {
+                    calendarId,
+                    event: gqlEvent,
+                });
+                return gqlEvent;
+            } catch (error) {
+                throw new GraphQLError(`Failed to update event: ${error}`, {
+                    extensions: { code: "CALENDAR_ERROR" },
+                });
+            }
         },
 
-        deleteEvent: async (_, _args, context: GraphQLContext) => {
-            ensureAuth(context);
+        deleteEvent: async (_, { id }, context: GraphQLContext) => {
+            const { refreshToken, calendarService } = ensureAuth(context);
+            const calendarId = "primary";
 
-            // Implementation would use Google Calendar API to delete event
-            throw new GraphQLError("Not implemented", {
-                extensions: { code: "NOT_IMPLEMENTED" },
-            });
+            try {
+                const auth = calendarService.createAuthenticatedClient({
+                    refresh_token: refreshToken,
+                });
+                await calendarService.deleteEvent(auth, calendarId, id);
+                pubsub.publish("eventDeleted", {
+                    calendarId,
+                    payload: { id, calendarId },
+                });
+                return true;
+            } catch (error) {
+                throw new GraphQLError(`Failed to delete event: ${error}`, {
+                    extensions: { code: "CALENDAR_ERROR" },
+                });
+            }
         },
     },
 
@@ -622,6 +724,107 @@ export const resolvers: GqlResolvers = {
         },
     },
 };
+
+// Map a Google Calendar event to a GQL CalendarEvent object
+// biome-ignore lint/suspicious/noExplicitAny: gcal schema types are any
+function mapGCalEvent(event: any, calendarId: string) {
+    return {
+        id: event.id || "",
+        calendarId,
+        summary: event.summary || "",
+        description: event.description,
+        location: event.location,
+        start: {
+            dateTime: event.start?.dateTime
+                ? new Date(event.start.dateTime)
+                : undefined,
+            date: event.start?.date,
+            timeZone: event.start?.timeZone,
+        },
+        end: {
+            dateTime: event.end?.dateTime
+                ? new Date(event.end.dateTime)
+                : undefined,
+            date: event.end?.date,
+            timeZone: event.end?.timeZone,
+        },
+        status: mapEventStatusEnum(event.status),
+        visibility: mapEventVisibilityEnum(event.visibility),
+        creator: event.creator
+            ? {
+                  email: event.creator.email || "",
+                  displayName: event.creator.displayName,
+                  self: event.creator.self,
+              }
+            : undefined,
+        organizer: event.organizer
+            ? {
+                  email: event.organizer.email || "",
+                  displayName: event.organizer.displayName,
+                  self: event.organizer.self,
+              }
+            : undefined,
+        attendees: event.attendees?.map(
+            // biome-ignore lint/suspicious/noExplicitAny: attendee type
+            (attendee: any) => ({
+                email: attendee.email || "",
+                displayName: attendee.displayName,
+                self: attendee.self,
+                responseStatus: mapAttendeeResponseEnum(
+                    attendee.responseStatus,
+                ),
+            }),
+        ),
+        htmlLink: event.htmlLink || "",
+        created: new Date(event.created || Date.now()),
+        updated: new Date(event.updated || Date.now()),
+    };
+}
+
+function mapEventStatusEnum(status?: string | null): GqlEventStatus {
+    switch (status) {
+        case "confirmed":
+            return GqlEventStatus.Confirmed;
+        case "tentative":
+            return GqlEventStatus.Tentative;
+        case "cancelled":
+            return GqlEventStatus.Cancelled;
+        default:
+            return GqlEventStatus.Confirmed;
+    }
+}
+
+function mapEventVisibilityEnum(visibility?: string | null): GqlEventVisibility {
+    switch (visibility) {
+        case "default":
+            return GqlEventVisibility.Default;
+        case "public":
+            return GqlEventVisibility.Public;
+        case "private":
+            return GqlEventVisibility.Private;
+        case "confidential":
+            return GqlEventVisibility.Confidential;
+        default:
+            return GqlEventVisibility.Default;
+    }
+}
+
+function mapAttendeeResponseEnum(
+    response?: string | null,
+): GqlAttendeeResponseStatus {
+    switch (response) {
+        case "needsAction":
+            return GqlAttendeeResponseStatus.NeedsAction;
+        case "declined":
+            return GqlAttendeeResponseStatus.Declined;
+        case "tentative":
+            return GqlAttendeeResponseStatus.Tentative;
+        case "accepted":
+            return GqlAttendeeResponseStatus.Accepted;
+        default:
+            return GqlAttendeeResponseStatus.NeedsAction;
+    }
+}
 
 // Helper functions to map Google Calendar API values to GraphQL enum values
 function mapAccessRole(role?: string | null) {

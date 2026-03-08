@@ -120,8 +120,6 @@ function ScheduleComponent() {
 
     const handleLogout = () => {
         localStorage.removeItem("access_token");
-        localStorage.removeItem("refresh_token");
-        localStorage.removeItem("user_id");
         router.navigate({ to: "/auth" });
     };
 

@@ -43,15 +43,10 @@ function AuthComponent() {
                     });
 
                     if (result.data?.authenticateWithCode) {
-                        const { accessToken, refreshToken, user } =
+                        const { accessToken, user } =
                             result.data.authenticateWithCode;
 
-                        // Store tokens and user ID in localStorage
                         localStorage.setItem("access_token", accessToken);
-                        localStorage.setItem("user_id", user.id);
-                        if (refreshToken) {
-                            localStorage.setItem("refresh_token", refreshToken);
-                        }
 
                         console.log(
                             "✅ Successfully authenticated:",
