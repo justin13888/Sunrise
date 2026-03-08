@@ -918,7 +918,6 @@ export const resolvers: GqlResolvers = {
 };
 
 // Map a Google Calendar event to a GQL CalendarEvent object
-// biome-ignore lint/suspicious/noExplicitAny: gcal schema types are any
 function mapGCalEvent(event: any, calendarId: string) {
     return {
         id: event.id || "",
@@ -956,17 +955,12 @@ function mapGCalEvent(event: any, calendarId: string) {
                   self: event.organizer.self,
               }
             : undefined,
-        attendees: event.attendees?.map(
-            // biome-ignore lint/suspicious/noExplicitAny: attendee type
-            (attendee: any) => ({
-                email: attendee.email || "",
-                displayName: attendee.displayName,
-                self: attendee.self,
-                responseStatus: mapAttendeeResponseEnum(
-                    attendee.responseStatus,
-                ),
-            }),
-        ),
+        attendees: event.attendees?.map((attendee: any) => ({
+            email: attendee.email || "",
+            displayName: attendee.displayName,
+            self: attendee.self,
+            responseStatus: mapAttendeeResponseEnum(attendee.responseStatus),
+        })),
         htmlLink: event.htmlLink || "",
         created: new Date(event.created || Date.now()),
         updated: new Date(event.updated || Date.now()),

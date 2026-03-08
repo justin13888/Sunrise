@@ -65,14 +65,21 @@ function getSqlite() {
 const BASE_INPUT: CreateRoutineInput = {
     name: "Morning Exercise",
     description: "A good workout",
-    duration: { minutes: 45, flexible: true, min_duration: 20, max_duration: 90 },
+    duration: {
+        minutes: 45,
+        flexible: true,
+        min_duration: 20,
+        max_duration: 90,
+    },
     priority: "high",
     flexibility: 4,
     energy_level_required: "medium",
     category: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
     frequency: "daily",
     time_preferences: ["morning"],
-    availability_windows: [{ start_hour: 6, start_minute: 0, end_hour: 11, end_minute: 0 }],
+    availability_windows: [
+        { start_hour: 6, start_minute: 0, end_hour: 11, end_minute: 0 },
+    ],
     dependencies: [],
     minimum_gap_minutes: 30,
     buffer_time_minutes: 10,
@@ -173,7 +180,10 @@ describe("RoutineService", () => {
 
         it("should return all routines for a user", async () => {
             await service.createRoutine("user1", BASE_INPUT);
-            await service.createRoutine("user1", { ...BASE_INPUT, name: "Evening Walk" });
+            await service.createRoutine("user1", {
+                ...BASE_INPUT,
+                name: "Evening Walk",
+            });
 
             const list = await service.listRoutines("user1");
             expect(list).toHaveLength(2);
@@ -248,9 +258,13 @@ describe("RoutineService", () => {
 
         it("should return null when userId does not match", async () => {
             const created = await service.createRoutine("user1", BASE_INPUT);
-            const result = await service.updateRoutine(created.id, "wrong-user", {
-                name: "Hacked",
-            });
+            const result = await service.updateRoutine(
+                created.id,
+                "wrong-user",
+                {
+                    name: "Hacked",
+                },
+            );
             expect(result).toBeNull();
         });
 
@@ -283,7 +297,10 @@ describe("RoutineService", () => {
 
         it("should return false when userId does not match", async () => {
             const created = await service.createRoutine("user1", BASE_INPUT);
-            const result = await service.deleteRoutine(created.id, "wrong-user");
+            const result = await service.deleteRoutine(
+                created.id,
+                "wrong-user",
+            );
             expect(result).toBe(false);
 
             // Original should still exist

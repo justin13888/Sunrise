@@ -316,9 +316,7 @@ describe("GoogleCalendarService", () => {
             const { google } = await import("googleapis");
             (google.calendar as any).mockImplementationOnce(() => ({
                 events: {
-                    insert: vi
-                        .fn()
-                        .mockRejectedValue(new Error("API error")),
+                    insert: vi.fn().mockRejectedValue(new Error("API error")),
                 },
             }));
             await expect(
@@ -347,7 +345,12 @@ describe("GoogleCalendarService", () => {
         });
 
         it("should call events.update with correct params", async () => {
-            await service.updateEvent(mockAuth, "primary", "event1", updatedEvent);
+            await service.updateEvent(
+                mockAuth,
+                "primary",
+                "event1",
+                updatedEvent,
+            );
             const { google } = await import("googleapis");
             const calendarInstance = (google.calendar as any).mock.results[0]
                 ?.value;
@@ -362,9 +365,7 @@ describe("GoogleCalendarService", () => {
             const { google } = await import("googleapis");
             (google.calendar as any).mockImplementationOnce(() => ({
                 events: {
-                    update: vi
-                        .fn()
-                        .mockRejectedValue(new Error("Not found")),
+                    update: vi.fn().mockRejectedValue(new Error("Not found")),
                 },
             }));
             await expect(

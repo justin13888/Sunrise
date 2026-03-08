@@ -153,7 +153,7 @@ function RoutinesPage() {
         return routines.reduce((acc, routine) => {
             const key = routine.category;
             if (!acc.has(key)) acc.set(key, []);
-            acc.get(key)!.push(routine);
+            acc.get(key)?.push(routine);
             return acc;
         }, new Map<string, GqlRoutine[]>());
     }, [routines]);
