@@ -47,6 +47,23 @@ vi.mock("googleapis", () => ({
                         ],
                     },
                 }),
+                insert: vi.fn().mockResolvedValue({
+                    data: {
+                        id: "new-event-id",
+                        summary: "New Event",
+                        start: { dateTime: "2025-12-01T09:00:00Z" },
+                        end: { dateTime: "2025-12-01T10:00:00Z" },
+                    },
+                }),
+                update: vi.fn().mockResolvedValue({
+                    data: {
+                        id: "event1",
+                        summary: "Updated Event",
+                        start: { dateTime: "2025-12-01T09:00:00Z" },
+                        end: { dateTime: "2025-12-01T10:00:00Z" },
+                    },
+                }),
+                delete: vi.fn().mockResolvedValue({ data: {} }),
             },
             calendarList: {
                 list: vi.fn().mockResolvedValue({
@@ -263,6 +280,136 @@ describe("GoogleCalendarService", () => {
 
         it("should handle API errors", async () => {
             expect(service.listCalendars).toBeDefined();
+        });
+    });
+
+    describe("createEvent", () => {
+        const mockAuth = { credentials: {} } as any;
+        const newEvent = {
+            summary: "New Event",
+            start: { dateTime: "2025-12-01T09:00:00Z" },
+            end: { dateTime: "2025-12-01T10:00:00Z" },
+        };
+
+        it("should create an event and return it", async () => {
+            const result = await service.createEvent(
+                mockAuth,
+                "primary",
+                newEvent,
+            );
+            expect(result.id).toBe("new-event-id");
+            expect(result.summary).toBe("New Event");
+        });
+
+        it("should call events.insert with correct params", async () => {
+            await service.createEvent(mockAuth, "primary", newEvent);
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.insert).toHaveBeenCalledWith({
+                calendarId: "primary",
+                requestBody: newEvent,
+            });
+        });
+
+        it("should propagate API errors", async () => {
+            const { google } = await import("googleapis");
+            (google.calendar as any).mockImplementationOnce(() => ({
+                events: {
+                    insert: vi
+                        .fn()
+                        .mockRejectedValue(new Error("API error")),
+                },
+            }));
+            await expect(
+                service.createEvent(mockAuth, "primary", newEvent),
+            ).rejects.toThrow("API error");
+        });
+    });
+
+    describe("updateEvent", () => {
+        const mockAuth = { credentials: {} } as any;
+        const updatedEvent = {
+            summary: "Updated Event",
+            start: { dateTime: "2025-12-01T09:00:00Z" },
+            end: { dateTime: "2025-12-01T10:00:00Z" },
+        };
+
+        it("should update an event and return updated data", async () => {
+            const result = await service.updateEvent(
+                mockAuth,
+                "primary",
+                "event1",
+                updatedEvent,
+            );
+            expect(result.id).toBe("event1");
+            expect(result.summary).toBe("Updated Event");
+        });
+
+        it("should call events.update with correct params", async () => {
+            await service.updateEvent(mockAuth, "primary", "event1", updatedEvent);
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.update).toHaveBeenCalledWith({
+                calendarId: "primary",
+                eventId: "event1",
+                requestBody: updatedEvent,
+            });
+        });
+
+        it("should propagate API errors", async () => {
+            const { google } = await import("googleapis");
+            (google.calendar as any).mockImplementationOnce(() => ({
+                events: {
+                    update: vi
+                        .fn()
+                        .mockRejectedValue(new Error("Not found")),
+                },
+            }));
+            await expect(
+                service.updateEvent(
+                    mockAuth,
+                    "primary",
+                    "nonexistent",
+                    updatedEvent,
+                ),
+            ).rejects.toThrow("Not found");
+        });
+    });
+
+    describe("deleteEvent", () => {
+        const mockAuth = { credentials: {} } as any;
+
+        it("should delete an event without error", async () => {
+            await expect(
+                service.deleteEvent(mockAuth, "primary", "event1"),
+            ).resolves.toBeUndefined();
+        });
+
+        it("should call events.delete with correct params", async () => {
+            await service.deleteEvent(mockAuth, "primary", "event1");
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.delete).toHaveBeenCalledWith({
+                calendarId: "primary",
+                eventId: "event1",
+            });
+        });
+
+        it("should propagate API errors", async () => {
+            const { google } = await import("googleapis");
+            (google.calendar as any).mockImplementationOnce(() => ({
+                events: {
+                    delete: vi
+                        .fn()
+                        .mockRejectedValue(new Error("Delete failed")),
+                },
+            }));
+            await expect(
+                service.deleteEvent(mockAuth, "primary", "event1"),
+            ).rejects.toThrow("Delete failed");
         });
     });
 
