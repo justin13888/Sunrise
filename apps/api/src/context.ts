@@ -47,7 +47,11 @@ export async function createContext(req: Request): Promise<GraphQLContext> {
                     refreshToken = tokens.refreshToken;
                 }
             } catch (error) {
-                console.warn("Failed to load tokens for user:", payload.userId, error);
+                console.warn(
+                    "Failed to load tokens for user:",
+                    payload.userId,
+                    error,
+                );
             }
         }
     }

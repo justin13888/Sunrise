@@ -3,9 +3,9 @@ import { GraphQLError } from "graphql";
 import { filter, pipe } from "graphql-yoga";
 import type { GraphQLContext } from "../context";
 import {
+    GqlAttendeeResponseStatus,
     GqlEventStatus,
     GqlEventVisibility,
-    GqlAttendeeResponseStatus,
     type GqlResolvers,
 } from "../generated/resolvers-types";
 import { signJWT } from "../services/jwt";
@@ -794,7 +794,9 @@ function mapEventStatusEnum(status?: string | null): GqlEventStatus {
     }
 }
 
-function mapEventVisibilityEnum(visibility?: string | null): GqlEventVisibility {
+function mapEventVisibilityEnum(
+    visibility?: string | null,
+): GqlEventVisibility {
     switch (visibility) {
         case "default":
             return GqlEventVisibility.Default;

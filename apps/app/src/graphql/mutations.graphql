@@ -31,3 +31,55 @@ mutation RefreshToken {
 mutation Logout {
     logout
 }
+
+mutation CreateEvent($input: CreateEventInput!) {
+    createEvent(input: $input) {
+        id
+        calendarId
+        summary
+        description
+        location
+        start {
+            dateTime
+            date
+            timeZone
+        }
+        end {
+            dateTime
+            date
+            timeZone
+        }
+        status
+        htmlLink
+        created
+        updated
+    }
+}
+
+mutation UpdateEvent($id: ID!, $input: UpdateEventInput!) {
+    updateEvent(id: $id, input: $input) {
+        id
+        calendarId
+        summary
+        description
+        location
+        start {
+            dateTime
+            date
+            timeZone
+        }
+        end {
+            dateTime
+            date
+            timeZone
+        }
+        status
+        htmlLink
+        created
+        updated
+    }
+}
+
+mutation DeleteEvent($id: ID!) {
+    deleteEvent(id: $id)
+}
