@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sunrise.example/schemas/log-record.v1.json",
+  "title": "Sunrise log record (v1)",
+  "description": "NDJSON record shape per spec/10-cross-cutting/logging.md §3. One record per newline.",
+  "type": "object",
+  "required": [
+    "ts",
+    "lv",
+    "ev",
+    "pkg",
+    "mod",
+    "span",
+    "trace",
+    "dev",
+    "app",
+    "proto",
+    "ctx",
+    "msg"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "RFC 3339 with millisecond precision in UTC."
+    },
+    "lv": {
+      "type": "string",
+      "enum": ["trace", "debug", "info", "warn", "error"]
+    },
+    "ev": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "Hierarchical event name."
+    },
+    "pkg": { "type": "string" },
+    "mod": { "type": "string" },
+    "span": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID, 26-char Crockford base-32."
+    },
+    "trace": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "dev": {
+      "type": "string",
+      "pattern": "^(dev_[0-9a-f]{8})?$",
+      "description": "dev_<8 hex chars> or empty before init."
+    },
+    "app": { "type": "string" },
+    "proto": {
+      "type": "object",
+      "required": ["wire", "doc", "crypto"],
+      "additionalProperties": false,
+      "properties": {
+        "wire":   { "type": "integer", "minimum": 0 },
+        "doc":    { "type": "integer", "minimum": 0 },
+        "crypto": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ctx": {
+      "type": "object",
+      "description": "Allowlisted context keys per spec §6. Unknown keys MUST be dropped at the sink.",
+      "additionalProperties": true
+    },
+    "msg": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "err": {
+      "type": "object",
+      "required": ["code", "kind", "retryable"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["transient", "permanent", "user", "internal"]
+        },
+        "retryable": { "type": "boolean" },
+        "cause": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "share": { "type": "boolean" }
+  }
+}

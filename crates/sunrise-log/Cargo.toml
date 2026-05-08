@@ -13,5 +13,17 @@ description = "Layered NDJSON logging contract with redaction-safe Plain<T> wrap
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
