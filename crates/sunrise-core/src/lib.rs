@@ -35,6 +35,7 @@
 pub mod commands;
 pub mod config;
 pub mod core;
+pub mod engine;
 pub mod events;
 pub mod queries;
 pub mod unlock;
@@ -43,6 +44,7 @@ pub mod vault_lock;
 pub use commands::{Command, CommandResult};
 pub use config::{Clock, CoreConfig, Rng, SystemClock, SystemRng};
 pub use core::{Core, CoreError};
+pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
 pub use queries::{Query, QueryResult};
 pub use unlock::Unlock;

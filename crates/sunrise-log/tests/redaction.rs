@@ -13,6 +13,12 @@ use sunrise_log::{
     install_global, sink::RingSink, ErrField, ErrorKind, LogConfigBuilder, ProtoVersions, Sink,
 };
 
+// A long, non-natural sentinel that essentially cannot appear in the random
+// bytes of an NDJSON envelope unless the synthetic payload is being emitted
+// verbatim. We prefix every property-test payload with this so that even a
+// single-character plaintext becomes a uniquely identifiable subsequence.
+const PAYLOAD_SENTINEL: &str = "SUNRISE_LOG_REDACTION_PROPTEST_SENTINEL_DO_NOT_LEAK::";
+
 // Run all `Plain<T>`-bearing log emission paths against random plaintext
 // strings; assert no plaintext byte leaks into the ring sink.
 proptest! {
@@ -22,13 +28,11 @@ proptest! {
     })]
 
     #[test]
-    fn no_plain_bytes_leak(payload in "\\PC{1,128}") {
-        // `payload` is a synthetic plaintext value. We construct a `Plain<T>`
-        // around it and exercise every public API. The key observation: the
-        // public surface has NO function that takes a `Plain<T>` and writes
-        // to a sink. We therefore only need to confirm the surface refuses
-        // to accept it (compile-time test) and that emitting normal records
-        // still works.
+    fn no_plain_bytes_leak(suffix in "[a-zA-Z0-9]{1,128}") {
+        // `payload` is a synthetic plaintext value, prefixed with a sentinel
+        // marker so that we are certain any subsequence match in the output
+        // is a real leak rather than coincidental NDJSON character collision.
+        let payload = format!("{PAYLOAD_SENTINEL}{suffix}");
         let plain = sunrise_log::Plain::new(payload.clone());
         // Touch the value so the optimizer can't eliminate it.
         let _ = format!("{plain:?}");

@@ -2429,9 +2429,12 @@ name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "ciborium",
  "parking_lot",
  "rand 0.8.6",
  "rand_core 0.6.4",
+ "rusqlite",
  "serde",
  "sunrise-cbor",
  "sunrise-crypto",

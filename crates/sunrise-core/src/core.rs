@@ -13,6 +13,7 @@
 
 use crate::commands::{Command, CommandResult};
 use crate::config::CoreConfig;
+use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
 use crate::queries::{Query, QueryResult};
 use crate::unlock::Unlock;
@@ -32,9 +33,9 @@ pub enum CoreError {
     /// Underlying DB error.
     #[error(transparent)]
     Db(#[from] DbError),
-    /// Command not yet implemented.
-    #[error("command not yet implemented: {0}")]
-    Unimplemented(&'static str),
+    /// Engine command/query error.
+    #[error(transparent)]
+    Engine(#[from] EngineError),
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
@@ -45,6 +46,7 @@ pub struct Core {
     cfg: CoreConfig,
     db: Mutex<Db>,
     _vault_lock: VaultLock,
+    engine: Engine,
     changes_tx: broadcast::Sender<DomainEvent>,
     sync_tx: broadcast::Sender<SyncStatus>,
     closed: Mutex<bool>,
@@ -72,10 +74,13 @@ impl Core {
         let db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
         let (sync_tx, _) = broadcast::channel(64);
+        let device_id = derive_device_id(&cfg.vault_dir);
+        let engine = Engine::new(cfg.clock.clone(), cfg.rng.clone(), device_id);
         Ok(Self {
             cfg,
             db: Mutex::new(db),
             _vault_lock: lock,
+            engine,
             changes_tx,
             sync_tx,
             closed: Mutex::new(false),
@@ -84,15 +89,27 @@ impl Core {
 
     /// Submit a mutating command.
     ///
-    /// In v1 the engine that applies commands is stubbed; subsequent phases
-    /// (sync, server) replace this with a real op-emit + apply pipeline.
-    /// What we implement here is the lifecycle: closed-state check + a
-    /// no-op return that proves the routing surface compiles.
-    pub async fn submit(&self, _cmd: Command) -> Result<CommandResult, CoreError> {
+    /// Routes through the [`Engine`]: validates input, derives a fresh op-id,
+    /// CBOR-encodes the inner-op, writes the materialized state row + op-log
+    /// entry in a single `BEGIN IMMEDIATE` transaction, and emits a
+    /// `DomainEvent` on `changes()`.
+    pub async fn submit(&self, cmd: Command) -> Result<CommandResult, CoreError> {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
-        Err(CoreError::Unimplemented("submit pipeline (Phase 11)"))
+        let res = {
+            let mut db = self.db.lock();
+            self.engine.apply(&mut db, cmd.clone())?
+        };
+        // Best-effort change publish; receivers are bounded broadcast channels
+        // and dropped subscribers are accepted.
+        let event = match cmd {
+            Command::CreateTask(_) | Command::CreateStream(_) => DomainEvent::Created(res.entity),
+            Command::DeleteTask(_) | Command::DeleteStream(_) => DomainEvent::Deleted(res.entity),
+            _ => DomainEvent::Updated(res.entity),
+        };
+        let _ = self.changes_tx.send(event);
+        Ok(res)
     }
 
     /// Run a read query.
@@ -100,46 +117,16 @@ impl Core {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
-        match q {
-            Query::SyncStatus => Ok(QueryResult::SyncStatus(SyncStatus {
+        if matches!(q, Query::SyncStatus) {
+            return Ok(QueryResult::SyncStatus(SyncStatus {
                 state: SyncState::Disconnected,
                 outbox_pending: 0,
                 peer_devices: 0,
                 last_sync_ms: None,
-            })),
-            Query::DeviceList => {
-                let db = self.db.lock();
-                let mut stmt = db
-                    .conn()
-                    .prepare(
-                        "SELECT device_id, nickname, platform, revoked_at_ms IS NOT NULL
-                         FROM devices",
-                    )
-                    .map_err(DbError::from)?;
-                let rows = stmt
-                    .query_map([], |row| {
-                        Ok(crate::queries::DeviceRow {
-                            device_id: {
-                                let blob: Vec<u8> = row.get(0)?;
-                                let mut a = [0u8; 16];
-                                let take = blob.len().min(16);
-                                a[..take].copy_from_slice(&blob[..take]);
-                                a
-                            },
-                            nickname: row.get(1)?,
-                            platform: row.get(2)?,
-                            revoked: row.get(3)?,
-                        })
-                    })
-                    .map_err(DbError::from)?;
-                let mut out = Vec::new();
-                for r in rows {
-                    out.push(r.map_err(DbError::from)?);
-                }
-                Ok(QueryResult::Devices(out))
-            }
-            _ => Err(CoreError::Unimplemented("query pipeline (Phase 11)")),
+            }));
         }
+        let db = self.db.lock();
+        Ok(self.engine.query(&db, q)?)
     }
 
     /// Subscribe to domain events.
@@ -167,6 +154,23 @@ fn format_iso8601(ms: u64) -> String {
     // stringify ms-since-epoch as an integer here. Prod prefers RFC 3339
     // but the lock-file payload is human-readable for debugging only.
     format!("{ms}")
+}
+
+/// Derive a deterministic 16-byte device id from the vault directory path.
+///
+/// v1 uses a path-derived id so a vault opened from the same directory
+/// always presents the same device to the op log; production binds to a
+/// real `device_id` from a [`sunrise-crypto::DeviceCert`] once pairing
+/// is wired into the open path.
+fn derive_device_id(vault_dir: &std::path::Path) -> [u8; 16] {
+    let bytes = sunrise_crypto::derive_key(
+        "sunrise.device_id.v1",
+        vault_dir.to_string_lossy().as_bytes(),
+        16,
+    );
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    out
 }
 
 #[cfg(test)]

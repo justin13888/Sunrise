@@ -14,9 +14,12 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+chrono = { workspace = true }
+ciborium = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 rand_core = { workspace = true }
+rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }

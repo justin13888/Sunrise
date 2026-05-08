@@ -36,7 +36,7 @@ pub use attachment::Attachment;
 pub use block::{Block, BlockDraft};
 pub use common::{Energy, NoteBody};
 pub use context::Context;
-pub use inbox::INBOX_STREAM_ID;
+pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use person::Person;
 pub use routine::{
