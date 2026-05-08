@@ -1,7 +1,7 @@
 [toolchain]
-# Pinned for reproducible builds. Bumped from 1.84.0 to 1.87.0 because
-# transitive deps (block-buffer 0.12+) require edition2024 (stabilized in
-# 1.85). Any further bump requires an ADR and CI matrix update.
-channel = "1.87.0"
+# Pinned for reproducible builds. Bumped from 1.87.0 to 1.88.0 because
+# ratatui 0.28's transitive `instability` and `darling` deps require
+# rustc 1.88. Any further bump requires an ADR and CI matrix update.
+channel = "1.88.0"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"
