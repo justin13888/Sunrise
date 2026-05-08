@@ -1,0 +1,23 @@
+[package]
+name = "sunrise-onboarding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Account creation + recovery flow for Sunrise"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-error = { workspace = true }
+
+[dev-dependencies]
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
