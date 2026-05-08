@@ -16,18 +16,28 @@ Locally-generated ops are queued for transmission while offline.
 
 ## Backoff
 
-Per-op retry uses exponential backoff with jitter:
+Backoff is **per-batch** (`batch_id`), not per-op or global. The `outbox.attempts` column is per-row. Formula:
 
 ```
-delay = min(60s, base * 2^attempts) + jitter(0..base)
-base = 1s
+delay_ms = min(60_000, 1_000 * 2^(min(attempts, 6))) * jitter(0.8, 1.2)
 ```
 
-But: outbox retries are *connection-level*, not per-op. We don't run 1000 individual retry timers. The sync task runs with one connection; a failed connection retries on its own backoff schedule, and on success the entire outbox is drained.
+A single failed batch does not block subsequent batches' first attempt; per-batch backoff serializes only that batch's retries.
+
+Outbox retries are not per-op timers — the sync task runs with one connection, and on success the entire outbox is drained.
 
 ## Idempotency
 
-`op_id` is unique. If a connection acks an op then we lose the ack and re-send, the server sees the duplicate and re-acks. Receivers also see the duplicate and dedup by `op_id`.
+`op_id` is unique. If a connection acks an op then we lose the ack and re-send, the server sees the duplicate and re-acks. Receivers also see the duplicate and dedup by `op_id`. The same dedup applies at the batch level via `batch_id`.
+
+## Ack handling (transactional)
+
+When the client receives `Ack { batch_id, applied_seq_range }`, it:
+
+1. Deletes the matching outbox row.
+2. Marks the corresponding op rows `applied_at = now` (if not already applied locally).
+
+Both happen in one SQLite transaction. If the client crashes between server-side persistence and the local outbox-row delete, the next OpBatch send is dedup'd server-side by `batch_id`, returning the same Ack; the client deletes the row on the second pass.
 
 ## Bounded outbox
 

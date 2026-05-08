@@ -31,6 +31,11 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 - **IndexedDB** as a fallback for browsers without OPFS.
 - **`localStorage` is never used** for anything sensitive (session cache only, < 5 KB).
 
+#### OPFS quota handling
+
+- Storage usage = sum of OPFS file sizes under `sunrise/`. Computed via `navigator.storage.estimate()` (browser-reported) and a recursive `getDirectoryHandle().values()` walk for our own accounting.
+- Warn at 80% of `quota`; block writes at 95% with `STORAGE_QUOTA_EXCEEDED`.
+
 ### SQLite in the browser
 
 - `wa-sqlite` (WASM SQLite with FTS5).
@@ -48,6 +53,11 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 We use Web Crypto for **TLS-relevant operations and basic primitives** but **not** for our crypto core — that's in the WASM bundle (RustCrypto + ChaCha + BLAKE3) for consistency with native clients.
 
 Argon2id runs in WASM. Tradeoff: slower than native, but consistent and side-channel-aware.
+
+#### Argon2id WASM perf budget
+
+- Target: ≤ 2 s on a 2022-class laptop, ≤ 5 s on a 2020-class phone browser.
+- Calibration on first unlock; if > 5 s, surface "Recovery is slow on this browser" notice.
 
 ### Multi-tab handling
 
@@ -80,6 +90,10 @@ Two open tabs sharing a vault would otherwise corrupt SQLite. Solution:
 - App routes use the History API.
 - Deep links: `app.sunrise.example/capture?text=…` works in browser and as PWA.
 - `share_target` declared in the manifest so the user can share to the PWA from other apps.
+
+#### Deep-link service-worker timing
+
+Deep links arriving before the Service Worker is ready are queued in `localStorage.deeplink_queue` (max 8 entries, FIFO) and replayed on the first SW-activated event. Entries older than 5 minutes are discarded.
 
 ### Authentication unlock
 

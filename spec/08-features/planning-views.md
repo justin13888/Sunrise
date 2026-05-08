@@ -20,9 +20,13 @@ Composition:
 
 Today is **computed**, not edited directly except via promote/demote.
 
+### Overdue boundary
+
+A task is **overdue** iff `due_at < start_of_today_local`. Tasks whose `due_at` falls within today are "Today" tasks, not overdue, regardless of the wall-clock time within the day.
+
 ## Upcoming
 
-A 7-day rolling view (configurable to 14 / 30):
+A rolling view, span user-toggleable in the view header (chip group: 7 / 14 / 30 days). Selection persists per-device.
 
 - Day-by-day breakdown of scheduled tasks and blocks.
 - A separate "no date" lane per Stream so unscheduled but expected items show up.
@@ -34,7 +38,7 @@ Per Stream:
 
 - Header: name, color, paused/archived state, share status.
 - Default sort: priority then `sort_order` (manual).
-- Sub-tabs: Open / Done / All / Routines.
+- **Sub-tabs (mutually exclusive)**: Open / Done / All / Routines. Rendered as full-width tabs at the top of the pane — not filter chips, since chips imply combinable filters and these states are mutually exclusive in v1.
 - Filters as chips: contexts, priority, energy, due date.
 
 ## Saved views
@@ -44,7 +48,9 @@ A user creates a saved view by:
 1. Filtering current view to taste.
 2. "Save this view as…"
 
-Saved views are CRDT-synced (the spec, not the result). Examples:
+The saved-view **spec** is a CRDT entity (synced). The **result** is recomputed on each device. Per-device sort and scroll position are local-only.
+
+Examples:
 
 - "Errands today" — context `@errands`, scheduled_at ≤ today, all open streams.
 - "Waiting on" — context prefix `waiting-on:`, sorted by created_at desc.
@@ -68,3 +74,7 @@ One screen showing every Stream as a card with: count of open tasks, count overd
 
 - Every view is built from the same primitives: a query against the local DB + a renderer.
 - New views are added via spec changes, not user-built — saved views fill that gap.
+
+## States
+
+Empty / loading / error / conflict states for every planning view follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract). Per-view empty copy lives in the same file's "Per-view empty-state copy" table.

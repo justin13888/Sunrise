@@ -8,7 +8,8 @@ Accessibility is a baseline, not a feature. Every release passes the checks in t
 
 ## Targets
 
-- **WCAG 2.1 AA** for visual contrast, keyboard navigation, screen reader support.
+- **WCAG 2.1 AA** for visual contrast, keyboard navigation, screen reader support — across the board, on every platform.
+- **WCAG 2.1 AAA** for the small set of surfaces where readability under stress matters most: error-state copy, focus-mode timer text, password-entry hints. AAA on these surfaces is a target, not a release gate; AA remains the only blocking bar.
 - **iOS:** VoiceOver, Dynamic Type, Reduce Motion, Differentiate Without Color, Voice Control.
 - **Android:** TalkBack, font scaling, color inversion, switch access.
 - **Desktop / Web:** NVDA, VoiceOver (macOS), JAWS; full keyboard equivalence.
@@ -63,6 +64,15 @@ Accessibility is a baseline, not a feature. Every release passes the checks in t
 - **Android Accessibility Scanner** smoke pass per release.
 - **Manual screen reader** spot checks: TalkBack on Android, VoiceOver on iOS and macOS, NVDA on Windows.
 - **TUI:** validate with `screen-reader-friendly` mode that outputs structured text rather than glyph-art.
+
+### Per-platform a11y CI
+
+| Platform | Tool | When | Gate |
+|---|---|---|---|
+| Web | `axe-core` invoked from every Playwright critical-path test | every PR | zero violations required |
+| iOS | Accessibility Inspector smoke test on a Release build | release-PR branches | suite must pass |
+| Android | Accessibility Scanner on the signed APK | nightly on `main` | suite must pass |
+| All platforms | 2-hour manual checklist run by a designer + engineer | every release | results checked in at `qa/a11y-<release>.md` |
 
 ## Reduced-functionality fallbacks
 

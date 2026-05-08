@@ -19,13 +19,20 @@ CREATE TABLE ops (
     inner_kind     TEXT NOT NULL,
     target_kind    TEXT NOT NULL,
     target_id      BLOB,
-    deps           BLOB,
     applied_at     INTEGER,
-    received_from  BLOB,                  -- device_id of relay peer (could be self)
+    received_from  BLOB,                  -- device_id of immediate sender; see below
     received_at    INTEGER NOT NULL,
     UNIQUE (stream_id, device_id, seq)
 );
 ```
+
+`deps` are stored in a separate `op_dep` table with an index for fast satisfaction queries; see [`local-database.md`](./local-database.md).
+
+`received_from` is the `device_id` of the immediate sender (the relay's own device id if forwarded from server, or the originating device id if directly synced). It is set once at first arrival on this device and never overwritten by intermediate hops. It is used only for diagnostics and to detect "this op came from a non-paired peer" anomalies.
+
+## `ts_ms` vs ULID embedded timestamp
+
+`op_id` is a ULID; its embedded timestamp is the device's `ts_ms` at emit time. They are equal by construction at emit. `ts_ms` is what gets serialized in the envelope; the ULID's embedded ts is for sortability only. Clock-skew handling is per [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md).
 
 ## Access patterns
 
@@ -58,6 +65,10 @@ for each new op O:
 
 Cycles in deps are impossible because deps are by op_id which depends on prior op_ids; a cycle would require time travel.
 
+## Orphan ops
+
+An op whose deps remain unsatisfied for > **48 hours** is logged at `warn` (`db.dep.orphan`) and the user is informed via a banner ("Some changes from `<device_h>` are waiting on data we haven't received."). After **30 days**, the orphan is moved to a `op_orphan_archive` table and removed from the active op-log; it is never auto-applied with missing deps. A user-initiated "force resync this Stream" operation re-fetches all ops for the Stream from the relay; if the missing dep is found, archived orphans become eligible.
+
 ## Outbox
 
 Locally generated ops are inserted into `ops` with `applied_at = now` (locally applied immediately) AND into `outbox` for sync transmission. The sync layer reads from `outbox`, sends, and on ack removes the entry.
@@ -83,6 +94,8 @@ ULID, generated client-side. Carries a millisecond-precision timestamp prefix fo
 ## Cross-stream ops
 
 Ops belong to exactly one Stream — they live in that Stream's op log. Operations that *appear* cross-stream (moving a task) are modeled as a delete in the source Stream + a create in the destination Stream, both ops emitted atomically by the same device.
+
+A move emits two ops: `delete_in(src_stream)` and `create_in(dst_stream)`. Both are submitted in one OpBatch; the destination op's `deps` includes the source op's id. A receiver that gets the destination op without the source op holds it as orphan (above) until the source arrives. The relay forwards both atomically; partial fan-out is a relay bug, not a normal condition.
 
 ## Compaction interaction
 

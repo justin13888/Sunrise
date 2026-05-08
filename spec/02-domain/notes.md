@@ -66,6 +66,20 @@ All editors emit / consume the same `NoteBody` JSON (or its CRDT equivalent). Th
 
 `{kind: "ref", ref: "tsk_…"}` renders as the target entity's title; clicking navigates. References are **scrubbed at egress** when sharing the parent Stream with someone who doesn't have access to the referenced entity (becomes `{kind: "redacted"}`).
 
+The redacted form is:
+
+```cbor
+{
+  kind: "redacted",
+  reason: "private_ref" | "external_account" | "deleted_entity",
+  placeholder_text: "(redacted)"   ; used by editors that need a visible token
+}
+```
+
+The original target id is **not** preserved in the redacted form sent to a recipient who shouldn't see it.
+
+A reference whose target is soft-deleted renders as `{kind: "redacted", reason: "deleted_entity", placeholder_text: "(removed)"}` for the local user as well. The original reference id is preserved in the local CRDT state so a user-initiated undelete restores the link automatically.
+
 ## Length
 
 Soft limit: 64KB per NoteBody. Beyond that, performance degrades; UI nudges the user toward splitting. Hard limit: 1MB.

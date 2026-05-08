@@ -75,6 +75,13 @@ Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no te
 
 Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, the relay enforces the same boundary by dropping ops whose signing identity does not have `editor` role on the target Stream.
 
+### Permission elevation (viewer → editor)
+
+Elevation is **prospective**: ops the recipient already received as a viewer are not re-evaluated, and future ops are accepted under the new role.
+
+- The recipient retains the (decrypted) viewer-period ops; nothing is replayed.
+- If the viewer attempted edit-ops while a viewer (which were dropped client-side), those drops are not undone; the recipient must re-make the edits.
+
 ## What sharing is *not*
 
 - Not realtime collaborative editing of a Note like Google Docs. (CRDT supports it; UX surface is *not* prioritized for v1 — it's a single-cursor model with merged saves.)

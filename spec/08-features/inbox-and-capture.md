@@ -39,9 +39,13 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 ## Capture UX patterns
 
 - **Single field.** No labels, no required form fields beyond the title.
-- **Smart defaults.** If the user is currently viewing Stream X, capture defaults to X (override with `#inbox`).
+- **Stream default.** Capture always lands in Inbox **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, TUI subcommand) **always** lands in Inbox. There is no per-device "respect current stream" preference.
 - **Voice capture** on supporting platforms (iOS Siri, Android voice, watchOS). Voice goes through the same parser.
-- **Batch capture.** Multi-line input where each line is a task. Each line is parsed independently. Useful for clearing a paper list at once.
+- **Batch capture.**
+  - Web/Desktop: paste of multi-line text auto-detects line-separated batch; a modal preview shows parsed items with checkboxes; user confirms.
+  - Mobile: explicit "Batch capture" entry inside the Inbox view (multi-line textarea).
+  - Each line becomes a Task (line ≥ 3 non-whitespace chars; shorter lines are skipped).
+- **Dedup.** Dedup key is `(account_id, normalized_title, source, captured_within_5_min)`. `normalized_title` = lowercase + strip leading/trailing whitespace + collapse internal whitespace. Duplicate captures are silently dropped; UI shows a brief "Already captured" toast.
 
 ## Inbox view
 
@@ -73,3 +77,7 @@ Inbox view characteristics:
 - The capture window must render and be ready for input ≤100ms after the trigger fires.
 - The parse function must run inline without input lag (< 5ms per keystroke on a 100-char line).
 - Commit is local; no network is awaited before the user can dismiss.
+
+## States
+
+Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract).

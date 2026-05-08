@@ -86,12 +86,26 @@ impl Core {
 
 These rules are enforced by `#![forbid(unsafe_code)]` plus a `clippy.toml` deny list (`std::time::SystemTime::now`, `rand::thread_rng`, `std::fs::*`, …) plus a CI grep.
 
+Determinism is **per-device**, and applies to the bytes that leave the device. The op-log encoding (CBOR bytes the device emits over the wire) is bit-for-bit identical for identical input on the same device, time, and RNG seed. SQLite's WAL behavior is allowed to vary across runs; storage internals are not part of the determinism contract. With both `CoreConfig::clock` and `CoreConfig::rng` fixed, op-emit byte sequences are reproducible — this is the basis for sync-protocol round-trip tests.
+
 ## Threading
 
 - One `tokio` multi-thread runtime owned by the core.
 - All `submit` and `query` calls are `async` and may execute concurrently.
 - Internal sync state machine runs as a long-lived task.
 - UI callbacks (`changes`, `sync_status`) are pushed via bounded channels; UI must drain.
+
+## Single-writer guarantee
+
+Exactly **one** `Core` instance per vault path per process. Multiple processes attempting to open the same vault is a supported scenario:
+
+- The vault directory contains `core.lock`, an OS-level advisory file lock acquired with `fcntl(F_OFD_SETLK)` on Unix and `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)` on Windows.
+- Acquisition timeout is 250 ms. On timeout, `Core::open` returns `CoreError::VAULT_LOCKED { holder_pid, holder_started_at }` (read from `core.lock` contents). The caller decides whether to retry or surface the error.
+- The lock file contents are the holding process's PID and ISO 8601 start timestamp (≤ 64 bytes), rewritten on each open. They are **not** authoritative — they exist only for the error message — the lock itself is the OS lock.
+- The TUI's two-process model uses a single core daemon; both UI processes connect to it, neither holds `core.lock` directly. See [`../07-clients/tui.md`](../07-clients/tui.md).
+- On crash, the OS releases the lock; recovery is a normal unclean-shutdown reopen.
+
+`submit` calls within a single `Core` are **per-entity serialized**: the core acquires an in-memory lock keyed by `(stream_id, entity_id)` before applying. Cross-entity calls run concurrently. There is no global submit serialization — concurrent calls on different entities apply in parallel and commit in arrival order. CRDT merge guarantees convergence regardless of arrival order.
 
 ## Errors
 

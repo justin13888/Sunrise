@@ -13,6 +13,16 @@ Search runs **entirely on-device** against the decrypted vault. The server never
 - **Tokenizer:** `unicode61 remove_diacritics 2` plus Porter stemming for English. Per-locale tokenizer is configured at vault creation; switching locales triggers a full re-index.
 - **Refresh:** on every committed op affecting an indexed field, the FTS row is updated in the same SQL transaction that applies the op.
 
+### Locale switch & re-index
+
+Re-indexing on locale change is a **foreground task**:
+
+- Search is disabled during the run; the search field shows `"Re-indexing search… <progress %>"`.
+- Expected duration: < 5 s for ≤ 10 000 entities on a 2022-class device.
+- Re-index runs the full source set through the new tokenizer in a single SQL transaction batched by 1 000 rows.
+
+Cross-device divergence due to mismatched locales is acknowledged: when the local locale differs from the locale recorded in any sibling device's most recent vault-meta announcement, the user sees a banner: `"Search index uses <locale>; some other devices are configured differently and may show different results."`
+
 ## Why not server-side encrypted search
 
 - Searchable Symmetric Encryption schemes leak access patterns (which document was opened) and are weaker than plain AEAD.

@@ -24,9 +24,15 @@ All notifications are **rendered locally**. The server cannot read content; even
 - Configurable per task and per Stream (default).
 - Block reminders: 15 min before (default).
 
+### Lead-time hierarchy
+
+Per-task → per-Stream → global, in that order. The first non-null wins. UI labels values inline so users see where the value comes from.
+
 ## Quiet hours
 
 User-configured per device. During quiet hours, notifications are queued and fire at the next allowed time, OR are dropped (per-category preference).
+
+`quiet_hours.policy = "queue" | "drop"`, default `queue`. Queue: notification fires at the next minute outside quiet hours, capped to 4 hours after the original time; if still in quiet hours then, drop with a `notif.queued.dropped` log line. Multiple queued notifications collapse using the coalescing rule (see [`../06-server/push-notifications.md`](../06-server/push-notifications.md)).
 
 ## Action buttons
 
@@ -41,12 +47,9 @@ These are routed through deep links / OS action handlers and run as commands aga
 
 ## Multi-device dedup
 
-If two devices schedule the same reminder, the user gets one ping each. Dedup options:
+The user picks a **primary** device per account: that device handles reminders; other devices stay silent.
 
-- **Primary device per account.** The user picks "this device handles reminders." Other devices don't fire.
-- **First-to-fire wins.** First device that fires emits a "fired" op; other devices see it and suppress their pending reminder. Brief race window where both might fire is acceptable.
-
-Default in v1: primary device, with a "duplicate-tolerant" fallback if the primary is offline or stale.
+Fallback when the primary goes quiet: if the primary push device hasn't checked in for 1 hour, ALL active devices receive the push. Users may see duplicates briefly; they can mute on devices that don't need them. This is intentionally simple — no per-device duplicate-tolerance setting, no first-to-fire suppression op.
 
 ## Notification channels (Android)
 

@@ -6,6 +6,10 @@ status: accepted
 
 The user-facing experience of search. Implementation is in [`../03-crypto/encrypted-search.md`](../03-crypto/encrypted-search.md).
 
+## Searchable entity surface
+
+v1 indexes Tasks, Streams, Blocks, Notes (NoteBody plain-text projection), and People (display name only). Routines are not searched directly — search by stream and tag instead.
+
 ## Free-text search
 
 - `/` opens search from any view.
@@ -39,12 +43,13 @@ Mix-and-match. Free text without operators searches title + body + notes.
 
 ## Saved searches
 
-`Cmd-S` after running a search saves it (prompts for a name). Saved searches sync.
+`Cmd-S` after running a search saves it (prompts for a name). Saved searches store the **query spec**, not results. Each open of a saved search re-runs the FTS query. Sync: query spec is a CRDT entity (LWW Register on the spec object).
 
 ## Performance
 
-- Sub-100ms p95 result render for 10k tasks.
+- p95 < 100 ms result render for ≤ 10 000 indexed Tasks on 2022-class laptops.
 - Local FTS5 query; no network.
+- CI benchmark uses a fixed corpus and a fixed query set; perf regressions block release.
 
 ## Search and privacy
 
@@ -66,3 +71,7 @@ Mix-and-match. Free text without operators searches title + body + notes.
 
 - Cloud search across users / shared streams from a single query (we can search shared streams *we hold locally* but not "everything in the universe").
 - AI-powered fuzzy semantic search in v1 (tracked; requires a local embedding model that meets perf/privacy targets).
+
+## States
+
+Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract).

@@ -19,6 +19,22 @@ recovery_code = bip39_encode(recovery_seed)   // "abandon ability ... yellow"  (
 
 ## Server-side material
 
+### Argon2id parameters (frozen for v1)
+
+- **Algorithm:** Argon2id, **version 0x13** (RFC 9106).
+- **Memory:** `m = 65536` KiB (64 MiB).
+- **Iterations:** `t = 3`.
+- **Parallelism:** `p = 1`.
+- **Output length:** 32 bytes.
+
+These parameters are platform-uniform (chosen for the slower-bound mobile target). There is **no timeout**; the function runs to completion, and the UI shows a progress modal on mobile.
+
+**First-launch calibration.** The app runs Argon2id once on a synthetic password and records the wall-clock time. If > 5 s, the UI shows: *"Recovery on this device is slow (≈ Ns). You can still use it, but consider enabling biometric/keystore unlock for daily use."* This is informational; recovery is never blocked.
+
+**OOM handling.** Catch `argon2::Error::MemoryAllocation` and present: *"Not enough memory to derive recovery key. Close other apps and try again."* This does not consume a rate-limit slot.
+
+### Recovery blob construction
+
 At account creation the client constructs and uploads a single `recovery_blob`:
 
 ```
@@ -26,7 +42,8 @@ recovery_salt   = os_csprng(16)
 recovery_key    = Argon2id(
                       password = recovery_seed,         // 32 bytes
                       salt     = recovery_salt,
-                      m = 64 MiB, t = 3, p = 1,
+                      version  = 0x13,
+                      m = 65536 (64 MiB), t = 3, p = 1,
                       out_len  = 32
                   )
 
@@ -55,9 +72,17 @@ upload = {
 }
 ```
 
+The on-disk and on-wire bytes of `upload` begin with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 (`"SR" + kind=3 + version=0x0001`); the recovery-blob version is the same value as the `blob_v` field.
+
 The server stores `upload` keyed by `account_id` (i.e. by the email/identity registered at account creation). The salt and nonce are stored in cleartext alongside the ciphertext; that is intended.
 
 The server can serve `upload` to anyone who proves access to the account email (recovery flow, below). The server cannot decrypt the blob without `recovery_seed`, which it never sees.
+
+### Versioning and previous-blob retention
+
+`blob_v` is an unsigned integer. **v1 reads only `blob_v == 1`**; any other value yields `RECOVERY_VERSION_UNKNOWN` and the UI prompts an upgrade.
+
+When a client uploads a new blob (e.g. on passphrase or recovery-code rotation), the server retains the **previous** blob for **30 days** under `recovery/<account_id>/<uploaded_at>.blob`. The client UI offers "restore from previous recovery key" within that window. After 30 days the previous blob is hard-deleted.
 
 ## Recovery flow (Mode B from `pairing-and-onboarding.md`)
 

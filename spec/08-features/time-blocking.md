@@ -18,6 +18,12 @@ Multi-stream operators benefit from saying "from 9 to 11 I'm doing Work A" rathe
 - Click an empty grid slot → create an empty Block (later bind a task to it).
 - Click a Block → detail pane: bind/unbind tasks, edit notes, set color, set travel buffers.
 
+### Snap, overlap, and reminders
+
+- **Snap granularity.** 15 min default; user-configurable to {5, 10, 15, 30, 60} minutes — see [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md#drag-and-drop-ux-tokens).
+- **Overlap.** Overlapping Blocks coexist (the user might intend to be at two places); UI shades overlaps and offers a "resolve" tool.
+- **Reminders.** Per-block override; default inherits the Stream default of 15-min-before. Both fields are nullable to disable.
+
 ## Travel-time buffers
 
 A Block can have `travel_time_before` and `travel_time_after`. Surfaced visually as a half-tone leading/trailing rectangle on the grid. Used for reminders ("leave for the gym in 15 min") and to prevent stacking conflicting Blocks.
@@ -54,3 +60,7 @@ Calendars are a 10-year product; we use them, we don't compete with them.
 ## Today integration
 
 Today's "Scheduled" section is composed of Blocks for today, sorted by start time, with bound tasks expanded inline.
+
+## States
+
+Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract).

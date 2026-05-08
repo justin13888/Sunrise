@@ -30,11 +30,15 @@ SwiftUI scenes ──▶ ViewModels (ObservableObject) ──▶ CoreClient (Swi
 
 ### Lock Screen widgets
 
-- **Single-tap capture.** Tapping launches the app pre-focused on a quick capture sheet. (iOS doesn't allow direct text entry on the lock screen for a third-party app, but we shorten the path.)
+- **Single-tap capture.** Tap opens the app cold to the dedicated `CapturePresenter` view (text field focused, software keyboard up). No per-tap deep-link payload is needed because Lock Screen widgets cannot embed input. (iOS doesn't allow direct text entry on the lock screen for a third-party app, but we shorten the path.)
 - **Today summary.** Small widget showing tasks-due-today count + first task title.
 - **Stream tile.** Large widget showing top items in a chosen Stream.
 
 Widgets read from a shared App Group container synced periodically by the main app's BGTask.
+
+#### Widget refresh cadence
+
+`BGAppRefreshTask` is scheduled every 15 minutes (iOS may delay). The widget shows a "last updated <relative>" stamp. On-app-open also refreshes synchronously.
 
 ### Home Screen widgets
 
@@ -113,6 +117,7 @@ The app is woken silently, runs sync, optionally raises a local notification if 
 
 ## Performance budgets
 
-- Cold start to Today: ≤500ms on iPhone 14+.
-- Capture sheet ready: ≤100ms.
-- Op apply rate ≥10k/sec on iPhone 14.
+- Cold start to Today: ≤ 500 ms on iPhone 14+ Wi-Fi; ≤ 800 ms on iPhone 11 Wi-Fi. Measured from app-launch event to first-painted Today list (not full sync).
+- Network condition: Wi-Fi for the gate; cellular adds up to +200 ms allowance.
+- Capture sheet ready: ≤ 100 ms.
+- Op apply rate ≥ 10 k/sec on iPhone 14.

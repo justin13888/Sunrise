@@ -23,9 +23,25 @@ Lightweight indicators of which of the user's other devices are online and which
 
 For shared streams, "is co-viewing" is reported by:
 
-- The viewing client emitting an ephemeral "viewing" beacon every 30s while the Stream view is open.
+- The viewing client emitting an ephemeral "viewing" beacon every 30 s while the Stream view is open.
 - The server fanning out to other subscribers.
 - These beacons are not stored in the op log; they are a transient pub/sub.
+
+### Channel ACL
+
+Presence channels are subscribed by `(account_id, stream_id)`:
+
+- A device subscribes to presence on a Stream only if its identity is the owner OR a current grant recipient (state ∈ `{accepted}`).
+- The relay enforces this on subscribe.
+- Subscription is dropped on revoke.
+
+Presence beacons leak that **someone with access** is viewing; they do not leak which person beyond beacons being scoped to identity-id-hash (`BLAKE3(idn, 4)` rendered as 8 lowercase hex chars). Each cohort member can map hash → person via their local people directory.
+
+### Beacon interval
+
+- Default: every 30 s while the Stream view is foreground.
+- Configurable: `[presence] beacon_interval_s = 30`, range 10–120.
+- A device that goes background sends one final "leaving" beacon; absence after 90 s is treated as offline.
 
 ## What the server cannot infer from presence
 

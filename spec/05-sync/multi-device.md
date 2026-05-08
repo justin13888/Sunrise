@@ -18,9 +18,9 @@ A user runs Sunrise on N devices. All N see the same data and converge.
    ┌───────┐       ┌───────┐       ┌───────┐
    │Phone A│       │Laptop │       │  TUI  │
    └───────┘       └───────┘       └───────┘
-        ▲                              ▲
-        └────────── LAN sync ──────────┘ (opportunistic)
 ```
+
+All sync goes through the server in v1. LAN / mDNS direct sync is deferred to v2+ (see [`transports.md`](./transports.md) non-goals): partition-tolerance complexity, peer-discovery security, key-distribution to peers without a central relay, and NAT traversal all add risk for marginal user benefit.
 
 ## Bootstrapping a new device
 
@@ -31,6 +31,16 @@ See [`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboardi
 Each device maintains, per (Stream, originating-device) pair, the highest `seq` it has seen and applied. On connect, it sends all cursors and the server delivers ops since.
 
 This means: with N devices each producing ops, every other device tracks N cursors per Stream. Manageable; cursors are tiny (16 bytes ID + 8 bytes seq).
+
+A cursor is considered **stale** if its device has not heartbeated within 30 days, matching the compaction "known device" threshold.
+
+### Cursor cleanup on device revoke
+
+On `device_revoke`:
+
+- The server deletes the cursor row immediately.
+- Other devices observe the revoke and remove their local cached cursor for the revoked device on the next compaction-eligibility evaluation.
+- The revoked device's `device_id` remains in `vault_meta.devices` as `revoked_at_ms` for audit; never reused.
 
 ## Per-device settings
 

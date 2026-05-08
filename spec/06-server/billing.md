@@ -11,8 +11,9 @@ Self-host has no billing. Skip this spec for self-host operators.
 | Plan | Price (illustrative) | Storage | Devices | Shared streams | Push/day |
 |---|---|---|---|---|---|
 | Free | $0 | 100 MB / 1 GB blobs | 5 | 5 (in+out) | 100 |
-| Plus | $5/mo | 5 GB / 50 GB blobs | 50 | unlimited | 10k |
-| Family | $9/mo | shared 5 GB / 50 GB across ≤4 identities | 200 total | unlimited | 30k |
+| Pro | $5/mo | 5 GB / 50 GB blobs | 50 | unlimited | 10k |
+
+> Family plan is deferred to v2; v1 ships Free and Pro tiers only.
 
 Numbers are placeholders pending real cost analysis. Do not promote them externally before [`../11-roadmap/`](../11-roadmap/) decisions.
 
@@ -21,12 +22,20 @@ Numbers are placeholders pending real cost analysis. Do not promote them externa
 - Subscriptions managed via Stripe Customer Portal.
 - Customer Portal handles upgrades, downgrades, payment methods, invoices.
 - Sunrise server stores: `stripe_customer_id`, `plan`, `current_period_end`, *not* card data.
+- Webhook signing: the `Stripe-Signature` header is verified per Stripe's spec (HMAC-SHA256 of timestamp + body, with timestamp tolerance ≤ 5 minutes). Webhook handling is idempotent on Stripe `event.id`, deduplicated via the `processed_stripe_events` table (INSERT … ON CONFLICT DO NOTHING). Rows in `processed_stripe_events` are retained for **30 days**.
 
 ## Plan enforcement
 
-- Quota checks on op write, blob upload, device registration.
-- Soft enforcement: 7-day grace before hard-limit on transient overages.
-- On hard-limit: writes refused with a clear error code; reads continue; UI directs to upgrade.
+Quota checks run on op write, blob upload, and device registration.
+
+| Phase | Behavior |
+|---|---|
+| Within plan | Writes accepted; no warning. |
+| 100% – 110% (hard cap = 110%) | Writes accepted; in-app banner shown; emails at 100% and 105%; responses carry `X-Sunrise-Quota-Warning: true` and HTTP `202 Accepted` with `quota_used_ratio` in the body. |
+| > 110% | New writes return `429 AUTH_QUOTA_EXCEEDED` with `Retry-After: <seconds-until-period-end>`; reads continue. |
+| Day 8 of overage | Existing writes still rejected; account marked `quota_locked` in DB. User must upgrade or delete. |
+
+The 7-day soft-grace window covers transient overages before the hard cap engages.
 
 ## Billing privacy
 
@@ -36,7 +45,8 @@ Numbers are placeholders pending real cost analysis. Do not promote them externa
 
 ## Refunds and downgrades
 
-- Downgrade preserves all data; the user is asked to free space if over the new limit; soft 30-day grace.
+- Downgrade preserves all data; the user is asked to free space if over the new limit.
+- The downgrade grace window is **30 days**: writes that would exceed the new plan's limit return `202 + X-Sunrise-Quota-Warning`; after 30 days, they are hard-rejected.
 - Account deletion at any time triggers full data deletion within 30 days.
 
 ## Self-host conversion
@@ -48,6 +58,7 @@ A managed-cloud user can switch to self-host with no plan obligations. Their dat
 - Per-shared-stream quotas (so one heavily-shared Stream doesn't eat the owner's quota).
 - "Pay what you can" tier (community).
 - Annual billing discount.
+- Family plan (deferred to v2).
 
 ## What we do not monetize
 

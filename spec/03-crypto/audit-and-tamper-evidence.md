@@ -22,20 +22,30 @@ Receivers enforce:
 For each Stream, every device maintains a running root computed in causal-order applied:
 
 ```
-root_0 = BLAKE3-256("sunrise.stream_root.init.v1" || stream_id)
-root_n = BLAKE3-256("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n)
-env_hash_n = BLAKE3-256(canonical_cbor_envelope_bytes_n)
+root_0     = BLAKE3("sunrise.stream_root.init.v1" || stream_id, 32)
+root_n     = BLAKE3("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n, 32)
+env_hash_n = BLAKE3(canonical_cbor_envelope_bytes_n, 32)
 ```
 
-Concurrent ops apply in `(ts_ms, device_id, seq)` lexicographic order before being folded into the root, so all devices that have applied the same set of ops produce the same root regardless of arrival order.
+Concurrent ops apply in `(ts_ms_clamped, device_id_lex, seq)` lexicographic order before being folded into the root, where:
+
+```
+ts_ms_clamped = clamp(envelope.ts_ms,
+                      server_first_seen_ms - 5 * 60_000,
+                      server_first_seen_ms + 5 * 60_000)
+```
+
+The relay timestamps every inbound op as `server_first_seen_ms` and includes it in the op's metadata as an unsigned addendum (see [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) §6). The annotation is part of every replicated op; relays MUST forward it unchanged. Two devices that have observed the same set of ops compute identical roots if both have observed the same `server_first_seen_ms` annotations.
+
+Devices with > 5 min skew display a `"Your clock is ≥ 5 minutes off; sync may produce unexpected ordering"` warning.
 
 ## Checkpoint ops
 
-Each device emits a `checkpoint` op periodically — the cadence is **whichever of these comes first**:
+Each device emits **one checkpoint per Stream per (256-op-window OR 24 h-elapsed), whichever comes first**. The 24 h timer resets on each emitted checkpoint.
 
-- Every 256 applied ops in a Stream.
-- Every 24 hours of wall time, conditional on at least one applied op.
-- Immediately before the device disconnects gracefully (best-effort).
+- During a batch apply that crosses multiple thresholds, the device emits **exactly one** checkpoint at the end of the batch (debounced).
+- "Immediately before disconnect": a device emits a final checkpoint on graceful shutdown if the most recent applied op is past the last checkpoint.
+- Crash recovery re-emits the missed checkpoint on next startup.
 
 The checkpoint payload (encrypted under the Stream key, like normal ops) is:
 

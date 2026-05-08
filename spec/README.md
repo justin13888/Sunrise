@@ -23,6 +23,11 @@ Read top-down. Each numbered section builds on the prior ones:
 | 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, testing, perf. |
 | 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why* not *what*. |
 
+Two operational substrates that every section depends on:
+
+- [`10-cross-cutting/logging.md`](./10-cross-cutting/logging.md) — layered structured-logging contract for every package ([ADR-0010](./11-adr/0010-logging-strategy.md)).
+- [`10-cross-cutting/protocol-versioning.md`](./10-cross-cutting/protocol-versioning.md) — explicit version negotiation, capability bits, deprecation policy ([ADR-0009](./11-adr/0009-protocol-versioning-spec.md)).
+
 ## Conventions
 
 - **Status legend** at the top of every spec:
@@ -40,3 +45,5 @@ See [`00-product/glossary.md`](./00-product/glossary.md) for shared vocabulary (
 ## Status
 
 All v1 specs are **accepted**. The cryptography section ([`03-crypto/`](./03-crypto/)) is the cryptographic design of record: algorithms, parameters, wire formats, key lifecycles, and protocol fixtures are byte-exact. Any future change requires a superseding ADR in [`11-adr/`](./11-adr/) and a wire-format version bump.
+
+Each spec section is self-contained: an implementer should be able to read a section straight through and have everything they need to write byte-correct code. Where a topic spans sections, cross-references are explicit. Two cross-cutting documents (`logging.md`, `protocol-versioning.md`) under [`10-cross-cutting/`](./10-cross-cutting/) are read alongside the rest.

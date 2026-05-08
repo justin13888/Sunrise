@@ -12,6 +12,28 @@ Materializes Routines into Tasks on a schedule. Lives in the core; runs on every
 - Current time, in the routine's tz.
 - Existing materialized occurrences (to dedup).
 
+## RRULE subset (v1)
+
+v1 supports the following RFC 5545 RRULE features. The same subset is reused by Google Calendar and iCalendar import/export — see [`../09-integrations/`](../09-integrations/) and reference this section.
+
+| Property | v1 |
+|---|---|
+| `FREQ` | DAILY, WEEKLY, MONTHLY, YEARLY |
+| `INTERVAL` | yes |
+| `COUNT` | yes |
+| `UNTIL` | yes (UTC) |
+| `BYDAY` | yes (e.g. `MO,WE,FR`, `1MO`, `-1FR`) |
+| `BYMONTHDAY` | yes |
+| `BYMONTH` | yes |
+| `BYSETPOS` | no |
+| `BYHOUR`, `BYMINUTE`, `BYSECOND` | no |
+| `BYWEEKNO`, `BYYEARDAY` | no |
+| `WKST` | yes (default `MO`) |
+| `RDATE`, `EXDATE` | yes |
+| `RSCALE` | no |
+
+Unsupported properties on import are silently dropped with a `int.import.rrule_lossy` `warn` log. Library: `rrule` crate (Rust) pinned via `Cargo.toml`.
+
 ## Output
 
 - Zero or more new Task entities created within `[now, now + horizon]` with `routine_id` and `routine_occurrence` set.
@@ -49,6 +71,8 @@ When a device wakes after being offline for many days:
 - `merge` policy: emit one Task summarizing them.
 - `queue` policy: emit one Task per missed occurrence.
 
+Selection UX: per-Routine setting in the Routine config view — `Catch-up policy` segmented control with options Skip / Merge / Queue. Default = Skip.
+
 The op-log idempotence still applies: a device that *previously* emitted an op for a missed occurrence (because it was online then) won't re-emit; the offline device sees that op via sync and merges.
 
 ## Edge cases
@@ -56,7 +80,7 @@ The op-log idempotence still applies: a device that *previously* emitted an op f
 - **DST transitions.** Occurrence is computed in the routine's tz. If a 9am routine falls in a "spring forward" gap, we use the same wall-clock 9am after the gap (skip the missing hour); for "fall back," we keep the first occurrence.
 - **Tz changes.** If the routine's tz is changed, future occurrences shift. Past-generated occurrences are not retroactively moved.
 - **Routine deletion.** Stops generation. Existing occurrences remain unless explicitly deleted by the user.
-- **Adaptive cadence (`every X days since last completion`).** Snap to a coarse grid (default: day) and use LWW for the "next due" date computed from the most recent completion. See [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
+- **Adaptive cadence (`every X days since last completion`).** Stores `(last_completed_at, X)` as an LWW Register. Concurrent completions: the most recent `last_completed_at` wins, ties broken by lex `device_id`. The "next due" is `last_completed_at + X days`, recomputed on every read. See [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 
 ## Streak counter
 

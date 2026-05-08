@@ -49,13 +49,19 @@ Owner triggers revoke. This is implemented as:
    ShareRevokePayload = {
        1: bstr .size 16,     ; stream_id
        2: bstr .size 16,     ; recipient_identity_id_bytes
-       3: uint               ; effective_at
+       3: uint               ; effective_at_ms
    }
    ```
 2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient.
-3. The relay, on seeing `share_revoke`, stops forwarding the Stream's ops to the revoked recipient's devices.
+3. The relay, on seeing `share_revoke`, stops forwarding the Stream's ops to the revoked recipient's devices at `effective_at_ms`. A recipient device offline at the cutoff discovers revocation on next reconnect via a `RELAY_GRANT_REVOKED` error frame; the client discards any buffered post-cutoff ops.
 
-The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (this is the same property as for revoked sibling devices). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time."
+The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (this is the same property as for revoked sibling devices). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.
+
+## Share expiration
+
+`expires_at` (the optional field on `ShareGrantPayload`) is enforced **client-side** by recipients: a recipient with `now >= expires_at` MUST stop applying ops from that grant. Already-applied ops remain in the local vault (same as revoke).
+
+Server-side enforcement is best-effort: the relay refuses to forward ops to a recipient whose grant has expired, but does not delete already-buffered ops. This prevents new data flow once the relay processes the expiry; combined with the client-side gate, expired ops do not reach an honest client even via a hostile relay (the client checks before applying).
 
 ## What is shared
 
@@ -68,13 +74,17 @@ When sharing a Stream, the recipient gets:
 
 ## Egress scrubbing
 
-A Note in a shared Stream may contain `{kind: "ref", target: EntityRef}` pointing to a Task or Note in a Stream the recipient does not have. On op emission, the **owner's device** runs egress scrubbing as part of constructing the op:
+A Note in a shared Stream may contain `{kind: "ref", target: EntityRef}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**: editors only see entity ids for entities inside the shared Stream, so an editor's UI cannot construct a ref to an entity in one of the owner's private Streams. Cross-stream refs in shared content therefore always come from the owner.
+
+On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
 1. Walk the Note CRDT's outbound payload before encryption.
-2. For every `{kind: "ref", target}` whose `target` is in a Stream the current recipient set does not all share, replace with `{kind: "redacted", placeholder: "—"}`. The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted under the shared Stream's key.
-3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per recipient cohort under the same Stream key (this is unusual; v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only).
+2. For every `{kind: "ref", target}` whose `target` is in a Stream this cohort does not share, replace with `{kind: "redacted", placeholder: "—"}`. The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
+3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
 
-Editors do not run egress scrubbing — an editor by definition has access to the Stream's content but no special privilege over other Streams; their Notes naturally contain refs only to entities they themselves can see. If an editor (somehow) authored a ref to a Stream they do not own, the **owner's device** re-scrubs on receipt before forwarding to other recipients. The CRDT layer treats the scrubbed form as the canonical merged value.
+A scrubbed envelope is detectable to the **owner** (they retain the original). Recipients cannot tell whether their envelope was scrubbed; this is by design (no leak of the existence of private references).
+
+There is no editor→owner re-scrubbing path: editors cannot author cross-stream refs in the first place, so there is nothing for the owner to re-scrub on inbound editor ops.
 
 ## Cross-relay sharing
 

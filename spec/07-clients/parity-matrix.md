@@ -47,3 +47,14 @@ Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x; **MA
 - A capability MUST not regress mid-version. A v1.0 → v1.1 release cannot remove a MUST.
 - A capability marked N/A is a deliberate choice; if revisited, document the change in [`../11-adr/`](../11-adr/).
 - A user can run **without** any specific OS feature (Live Activities, Glance, etc.); fallbacks via plain notifications must exist.
+
+## Capture-surface portability
+
+Each platform MUST implement its native capture surface (Desktop hotkey, iOS share extension + widget, Android quick tile + share intent, Web PWA share, TUI subcommand). Platforms MAY implement additional surfaces. There is no requirement for cross-platform parity *of capture surfaces*; the requirement is parity of *capture semantics* — the resulting Task is identical regardless of capture origin.
+
+## Vim-mode opt-in
+
+- Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced).
+- Available on Desktop and Web; TUI is vim-style by default (opt-out).
+- Conflict mitigation: when vim mode is on, browser-default `Ctrl+Shift+P` is intercepted only inside the Sunrise web-app surface; outside (DevTools open, etc.) the browser keeps the binding.
+- Full motion list lives in [`../08-features/keyboard.md`](../08-features/keyboard.md).

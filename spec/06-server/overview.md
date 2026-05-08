@@ -77,3 +77,11 @@ For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob s
 ## Versioning
 
 v1 is a single wire-protocol version: the server speaks v1, clients speak v1, no negotiation. A future major version coordinates with a client release ≥30 days prior and migrates everything atomically; clients that miss the deadline see a clear "please update" message.
+
+Persisted server-side structures (recovery blobs at rest; snapshot blobs the server relays opaquely) follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3. The server does not introspect these payloads; it stores opaque bytes.
+
+## Deferred to v2
+
+- **Family plan** (group quotas, multi-identity sharing under one subscription). v1 ships Free and Pro tiers only.
+- Cross-server federation.
+- Foreground-service "always-on" sync on Android (per-device opt-in; v1 accepts occasional Doze-induced latency).

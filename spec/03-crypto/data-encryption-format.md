@@ -4,15 +4,29 @@ status: accepted
 
 # Data Encryption Format
 
-The byte-exact wire and storage format for ops, blob chunks, and HPKE single-shot ciphertexts. Encoded as canonical CBOR (RFC 8949 §4.2.1, "deterministic encoding"). All map keys are integers; sorted; no floats; length-prefixed strings; library: `ciborium` in deterministic mode with a thin wrapper that asserts canonical form on decode.
+The byte-exact wire and storage format for ops, blob chunks, and HPKE single-shot ciphertexts. Encoded as canonical CBOR (RFC 8949 §4.2.1, "deterministic encoding").
+
+## Canonical CBOR enforcement
+
+Implementations MUST use `ciborium` ≥ 0.2 in deterministic mode wrapped by `sunrise_crypto::canonical_cbor`. The wrapper, on **decode**, verifies:
+
+1. All map keys are sorted by encoded byte form (RFC 8949 §4.2.1 length-then-lex on the key bytes).
+2. No indefinite-length items.
+3. Integers use minimal encoding (no leading-zero `uint`).
+4. No floating-point types appear in any envelope (use scaled integers).
+5. Strings and byte strings are length-prefixed in single chunks.
+
+Any violation aborts decryption with `CRYPTO_NON_CANONICAL_CBOR` before any AEAD attempt. The wrapper is the only entry point — direct `ciborium::de::from_reader` on envelope bytes is forbidden by clippy lint.
 
 ## Op envelope
 
 Every op (in-stream or control) is wrapped in a single envelope type. The envelope is the unit of storage in the `ops` table and the unit of transport on the wire.
 
+Every persisted/transmitted envelope begins with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3: `"SR" + kind=2 + version=DOC_SCHEMA_V (uint16 big-endian)`. Readers MUST verify the magic before any CBOR parse; mismatch → `PROTOCOL_BAD_MAGIC` and discard. The prefix is not part of the canonical CBOR; the bytes that follow are.
+
 ```cddl
 OpEnvelope = {
-    1: uint,            ; v             (envelope version, = 1)
+    1: uint,            ; v             (envelope version, = 1; matches the magic-prefix version)
     2: bstr .size 16,   ; stream_id     (raw 128-bit; see below for special values)
     3: bstr .size 16,   ; device_id     (raw 128-bit; signing device)
     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
@@ -59,7 +73,7 @@ This binds every metadata field to the ciphertext.
 Always computed (regardless of `aead_alg`):
 
 ```
-sig_input = "sunrise.op_envelope.v1" || BLAKE3-256(canonical_cbor_without_field_11)
+sig_input = "sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 32)
 sig       = Ed25519_sign(D_S_priv, sig_input)
 ```
 
@@ -71,15 +85,35 @@ The signature covers the ciphertext (or signed-only payload) bit-for-bit and all
 - AEAD alone authenticates the AAD, which already includes every metadata field.
 - Both together give belt-and-suspenders assurance against forgery by anyone who later obtains the Stream key.
 
+### Signature key resolution
+
+When verifying an op envelope's signature, select the device cert in force at `envelope.ts_ms`:
+
+```
+device_certs = vault_meta.device_certs[envelope.device_id]   // 1..N records
+candidate    = device_certs
+                .filter(c => c.created_at_ms <= envelope.ts_ms)
+                .filter(c => no device_revoke r exists with r.device_id = envelope.device_id
+                             AND r.effective_at_ms <= envelope.ts_ms)
+                .max_by_key(c => c.created_at_ms)
+if candidate.is_none(): reject CRYPTO_DEVICE_NOT_TRUSTED
+verify with candidate.D_S_pub
+```
+
+Key rotation grace: when a device emits `device_rotate(old, new, effective_at)`, the **previous** cert remains the resolution result for any envelope with `ts_ms < effective_at`. There is no flat "24 h grace" — the rotation op carries the explicit cutoff.
+
+The resolution snapshot is captured at signature-verify entry; concurrent vault-meta updates do not change the result of an in-flight verification.
+
 ### Verification order
 
 A receiver MUST verify in this order:
 
-1. Decode CBOR; assert canonical form.
-2. Resolve the signing device's `D_S_pub` from a valid DeviceCert in the local vault-meta log.
-3. Verify `sig` over `sig_input`. If invalid: reject; do not decrypt.
-4. If `aead_alg = 1`, run AEAD-open with the Stream key for `(stream_id, epoch)`. If the AEAD tag is invalid: reject.
-5. Decode the inner Op as canonical CBOR; reject if not canonical.
+1. Verify the 5-byte magic prefix; mismatch → `PROTOCOL_BAD_MAGIC`.
+2. Decode CBOR; assert canonical form (or `CRYPTO_NON_CANONICAL_CBOR`).
+3. Resolve the signing device's `D_S_pub` per "Signature key resolution" above.
+4. Verify `sig` over `sig_input`. If invalid: reject; do not decrypt.
+5. If `aead_alg = 1`, run AEAD-open with the Stream key for `(stream_id, epoch)`. If the AEAD tag is invalid: reject.
+6. Decode the inner Op as canonical CBOR; reject if not canonical.
 
 Failed verification at any step is a hard reject: the op MUST NOT be applied or forwarded.
 
@@ -154,9 +188,10 @@ BlobChunkEnvelope = {
 
 ```
 blob_chunk_nonce = BLAKE3.derive_key(
-    context = "sunrise.blob_chunk_nonce.v1",
-    key_material = blob_key || u32_be(chunk_idx)
-)[0..24]
+    context      = "sunrise.blob_chunk_nonce.v1",
+    key_material = blob_key || u32_be(chunk_idx),
+    out_len      = 24
+)
 
 ciphertext = XChaCha20-Poly1305_seal(
     key       = blob_key,
@@ -166,7 +201,15 @@ ciphertext = XChaCha20-Poly1305_seal(
 )
 ```
 
-Per-chunk plaintext SHA-256 hashes are recorded in the parent attachment metadata op; receivers verify each chunk after decrypt.
+**Per-chunk integrity at decrypt time** is provided by the AEAD tag — XChaCha20-Poly1305 fails closed if any byte of `ciphertext` or `aad` is altered. Re-verifying with a separate hash on every read would duplicate that work; we don't.
+
+**Content integrity** for the assembled attachment is recorded once on the parent attachment metadata op as a single BLAKE3 hash over the concatenated plaintext chunks:
+
+```
+content_hash = BLAKE3(chunk_0_plaintext || chunk_1_plaintext || … || chunk_{N-1}_plaintext, 32)
+```
+
+Receivers compute this once after all chunks decrypt and compare to the value in the metadata op. A mismatch is a hard error and the attachment is treated as corrupted (the user is offered a re-fetch).
 
 The per-blob `blob_key` is a 32-byte random value generated when the attachment is created and recorded inside the attachment's `create` op (which is itself encrypted under the Stream key, so the blob key is end-to-end protected).
 

@@ -34,7 +34,9 @@ Targets: macOS 13+, Windows 10+ (1809+), recent mainstream Linux distros (glibc 
 
 - **Menu bar item.** Always-on small icon with quick capture, today snapshot, sync status.
 - **Touch Bar** (older Intel): MAY surface focus mode timer and quick capture.
-- **Spotlight integration.** Use `NSUserActivity` to register tasks for Spotlight search (only their *titles*; Spotlight is local-only on Apple devices). Optional, opt-in.
+- **Spotlight integration.** Use `NSUserActivity` to register tasks for Spotlight search (only their *titles*; decrypted on-device, indexed locally — macOS Spotlight does not see plaintext via cloud). Optional, opt-in.
+  - First-run prompt after sign-in: "Add Sunrise to Spotlight? [Add] [Skip]".
+  - Settings → Integrations exposes a toggle to add/remove later.
 - **Continuity Camera.** When attaching from a Mac, support iPhone scanning.
 - **Sandboxing.** Mac App Store build is sandboxed; direct DMG build is not (preferred for global hotkey reliability).
 - **Accessibility permission** required for global hotkey.
@@ -82,6 +84,16 @@ Targets: macOS 13+, Windows 10+ (1809+), recent mainstream Linux distros (glibc 
 - Detached "focus mode" window (always-on-top, compact).
 - Optional second window for "stream view side-by-side."
 - Capture is its own borderless window.
+
+### Side-by-side Stream view
+
+- Trigger: drag a Stream from the sidebar onto the main pane while holding `Alt` (macOS) / `Ctrl` (Win/Linux). Or `View → Compare Streams` menu item.
+- Layout: two columns, equal width by default; user-draggable splitter. Max two columns in v1.
+- Each column is independent: independent scroll, selection, edit cursor.
+
+## Menu-bar / tray snapshot refresh
+
+The macOS menu-bar item and Windows/Linux tray surface a daily-snapshot view. Refresh on: app launch, every 60 s while the menu-bar/tray surface is visible, and immediately on relevant CRDT change (debounced 500 ms).
 
 ## Telemetry
 

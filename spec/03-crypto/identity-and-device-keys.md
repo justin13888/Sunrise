@@ -18,11 +18,11 @@ The two private halves are independent (NOT derived from each other or a shared 
 ### Identity ID
 
 ```
-identity_id_bytes = BLAKE3-256( "sunrise.identity_id.v1" || ID_S_pub )[0..16]
-identity_id_str   = "idn_" || crockford_base32_no_pad( identity_id_bytes )
+identity_id_bytes = BLAKE3( "sunrise.identity_id.v1" || ID_S_pub, 16 )
+identity_id_str   = "idn_" || crockford_base32( identity_id_bytes )
 ```
 
-`crockford_base32_no_pad` is Crockford's alphabet (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), uppercase, no padding. 16 bytes encode to 26 characters, identical to ULID encoding.
+`crockford_base32` uses Crockford's alphabet (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), uppercase. 16 bytes (128 bits) encode to 26 characters with no padding character used; the encoder handles the partial last group.
 
 The identity ID is stable forever; it does NOT change on identity rotation (a rotation publishes a transition certificate that maps the new keys to the same identity ID; see [`key-rotation.md`](./key-rotation.md)).
 
@@ -37,10 +37,10 @@ Each device has its own keypairs:
 
 ```
 device_id_bytes = ULID()  // 128-bit, generated client-side at provisioning
-device_id_str   = "dev_" || crockford_base32_no_pad( device_id_bytes )
+device_id_str   = "dev_" || crockford_base32( device_id_bytes )
 ```
 
-Device IDs are random; the ULID timestamp prefix is convenience for sorting, not load-bearing.
+Device IDs are 16 bytes encoded as 26-char Crockford base32 (no padding character used); the ULID timestamp prefix is convenience for sorting, not load-bearing.
 
 ### DeviceCert
 
@@ -61,7 +61,7 @@ DeviceCertBody = {
 DeviceCert = {
     body: DeviceCertBody,
     sig:  bstr .size 64,         ; Ed25519_sign(ID_S_priv,
-                                  ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body)))
+                                  ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body), 32))
 }
 ```
 
@@ -83,22 +83,51 @@ unlock_secret = (
     Argon2id(            // passphrase fallback (Linux without TPM, kiosk web, etc.)
         password = utf8_nfc(passphrase),
         salt     = device_salt,
-        m = 64 MiB, t = 3, p = 1,
+        version  = 0x13,                 // RFC 9106
+        m        = 65536,                // KiB (64 MiB)
+        t        = 3,
+        p        = 1,
         out_len  = 32
     )
 )
 
 vault_root = BLAKE3.derive_key(
-    context = "sunrise.vault_root.v1",
-    key_material = unlock_secret || device_salt
+    context      = "sunrise.vault_root.v1",
+    key_material = unlock_secret || device_salt,
+    out_len      = 32
 )
 ```
 
-Where:
+`vault_root` MUST be zeroized on lock, app exit, and after a configurable idle timeout (default 15 minutes; user-configurable from 1 minute to "until quit").
 
-- `device_salt` is 16 random bytes generated at device provisioning, stored in the device's local config (file alongside the SQLite DB; not secret).
-- The OS-keystore release path is preferred wherever available. A device records which path is in use; switching paths requires re-wrapping all at-rest material.
-- `vault_root` MUST be zeroized on lock, app exit, and after a configurable idle timeout (default 15 minutes; user-configurable from 1 minute to "until quit").
+### `device_salt` persistence
+
+`device_salt` is 32 random bytes generated at first run. Storage is per-platform:
+
+| Platform | Path | Mode |
+|---|---|---|
+| Linux | `$XDG_STATE_HOME/sunrise/device.toml` | 0600 |
+| macOS | `~/Library/Application Support/Sunrise/device.toml` | 0600 |
+| Windows | `%LOCALAPPDATA%\Sunrise\device.toml` | (ACL: current user only) |
+| iOS | Keychain item `service=sunrise.device_salt, accessGroup=<bundle>.sunrise` | (Keychain) |
+| Android | `EncryptedSharedPreferences` keyed `device_salt` | (system) |
+
+The file format on desktop is TOML with `device_salt = "<base64url>"` and a sibling field `unlock_path = "keystore" | "passphrase"`.
+
+On launch the client reads the salt; if missing, this device is treated as **uninitialized** and a fresh salt is generated. **Loss of `device_salt` is loss of the device's identity** — the device must be re-paired (the user is prompted).
+
+### Path switch (keystore ⇄ passphrase)
+
+Switching unlock paths requires re-wrapping every wrapped Stream key:
+
+1. User authenticates under the **current** path.
+2. Core derives `vault_root_old` from the current path.
+3. Core generates `vault_root_new` from the new path (new passphrase or new keystore key).
+4. All wrapped Stream keys are decrypted with `vault_root_old`, re-wrapped under `vault_root_new`, and committed in a single SQLite transaction.
+5. On commit, `unlock_path` and `device_salt` (regenerated as part of the switch) are updated atomically.
+6. On crash mid-switch: a `path_switch_in_progress` marker is detected at next open; the user is prompted to re-authenticate under the **new** path; if they cannot, they fall back to the old path and the new wrapping is rolled back.
+
+The OS-keystore release path is preferred wherever available.
 
 ## Stream keys
 
@@ -137,7 +166,7 @@ The Stream is the unit of sharing in the domain model. Matching the crypto unit 
 | `vault_root` | RAM only | (n/a; zeroized on lock) |
 | Stream keys (all epochs) | SQLite `stream_keys` table | `vault_root` (XChaCha20-Poly1305) |
 | Wrapped Stream keys for siblings / peers | Stream op log (`key_envelope`, `share_grant` ops) | HPKE to recipient `D_D_pub` / `ID_D_pub` |
-| `device_salt` | Local config file (cleartext) | (non-secret) |
+| `device_salt` (32 B) | Per-platform path (see "device_salt persistence") | (non-secret; integrity by FS perms / Keychain / EncryptedSharedPreferences) |
 
 ## Public-key publication
 
@@ -147,7 +176,7 @@ Out-of-band fingerprint verification (QR or numeric SAS) is offered for users wh
 
 ```
 fingerprint = base32_groups_of_5(
-    BLAKE3-256("sunrise.identity_fingerprint.v1" || ID_S_pub || ID_D_pub)[0..15]
+    BLAKE3("sunrise.identity_fingerprint.v1" || ID_S_pub || ID_D_pub, 15)
 )   // 24 chars in 5 groups of 4 + final group of 4 with separator dashes; 120 bits
 ```
 

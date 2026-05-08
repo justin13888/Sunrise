@@ -26,6 +26,8 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | accepted |
 | 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted |
 | 0008 | [Local FTS over server-side search](./0008-search-strategy.md) | accepted |
+| 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted |
+| 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
 
 ## When to write a new ADR
 

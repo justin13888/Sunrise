@@ -26,13 +26,17 @@ Full-screen UI showing:
 
 - iOS: registers a Live Activity; locks the user into the app via Focus filters if set.
 - Android: foreground service with a persistent notification; suppresses other Sunrise notifications.
-- Desktop: dims other windows (where supported); hides the tray badge.
+- Desktop: on macOS, dims other windows (where supported) and hides the tray badge. On Linux/Windows, the dim is a no-op (focus mode still works; just no dim).
 - Web: requests page visibility lock where possible; exits gracefully on tab close.
 - TUI: takes over the whole pane; restores on exit.
 
+### Notification suppression scope
+
+Focus mode suppresses **reminder** notifications only. Background sync wakeups continue (silent). Suppression starts on focus-mode start and ends 30 s after focus-mode end.
+
 ## Capture-aside
 
-While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in Inbox. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
+While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in **Inbox** — always, regardless of any current-stream context. Rationale: focus mode is for *not switching context*. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
 
 ## Pomodoro and timer policy
 
@@ -58,3 +62,7 @@ While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands 
 ## Focus from a watch
 
 Apple Watch / Wear OS (when shipped): start/stop focus, see timer. No editing.
+
+## States
+
+Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract). (Focus mode itself is never "empty" — it shows an idle screen when no task is selected.)

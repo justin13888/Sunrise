@@ -23,19 +23,23 @@ v1 ships only these two. CalDAV, outbound webhooks, and inbound email-to-Sunrise
 
 ## Multi-device coordination
 
-Multiple devices running the same integration would call the API multiple times. We elect a **primary integration runner** per integration: the most-recently-active device that has the integration's token decrypted. Other devices defer via a periodic heartbeat in a control op; on the runner's absence (> 24h), another device takes over.
+Multiple devices running the same integration would call the API multiple times. We elect a **primary integration runner** per integration using the same rule as the compactor election (see [`../04-storage/compaction.md`](../04-storage/compaction.md)): the smallest `device_id` among devices with a heartbeat in the last 24 h. Election re-runs per-integration per-day. Other devices defer via a periodic heartbeat in a control op.
 
 ## Token storage
 
 Tokens stored as fields in the integration config inside the Stream entity (CRDT-synced, encrypted), reachable only after vault unlock. They are never in plaintext in logs or in transit beyond the third-party's TLS endpoint.
 
+### External revocation detection
+
+On any third-party API call returning `401` *after* a recent successful refresh, the integration sets the CRDT field `needs_reauth = true`, surfaces an in-app banner, zeroizes the old tokens, and stops scheduling sync runs. The user clicks "Reauthenticate" and walks through the standard OAuth re-consent flow.
+
 ## Disabling
 
-Disabling an integration:
+Disabling an integration shows a modal containing a checkbox **"Also delete entities imported from <provider>"**, unchecked by default:
 
 - Flushes any in-flight sync.
-- Marks imported entities as orphaned (read-only with a "source disconnected" banner).
-- Optionally deletes imported entities (user choice).
+- Marks imported entities as orphaned (read-only with a "source disconnected" banner) — the default behavior when the box is unchecked.
+- If the box is checked, the disable op carries `delete_imports: true`; all clients delete the matching entities on observation.
 
 ## Building new integrations
 
@@ -48,6 +52,18 @@ trait Integration: Send + Sync {
     async fn handle_event(&self, evt: DomainEvent) -> Result<()>;
     async fn revoke(&self) -> Result<()>;
 }
+
+pub struct IntegrationCtx<'a> {
+    pub stream_id:  StreamId,
+    pub device_id:  DeviceId,
+    pub keys:       &'a StreamKeyAccess,    // encrypt/decrypt for this stream
+    pub config:     &'a IntegrationConfig,  // { tokens, settings }
+    pub error_sink: &'a dyn ErrorSink,      // banner alerts to UI
+    pub log:        &'a tracing::Span,
+    pub clock:      &'a dyn Clock,
+}
 ```
+
+`Clock` and `ErrorSink` are concrete traits — passing them as `&dyn` enables deterministic testing (a fake clock and a captured error stream).
 
 New integrations are added by implementing this trait and registering with the core's integration registry. The UI layer adds a settings panel.

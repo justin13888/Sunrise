@@ -20,6 +20,9 @@ A first-class deployment topology, not a charity afterthought.
 
 ## Config (`sunrise.toml`)
 
+The server resolves the config file in this order: `--config <path>` flag → `$SUNRISE_CONFIG` env → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`. **First found wins.** A missing config is a fatal error with exit code 78 (`CONFIG`).
+
+
 ```toml
 [server]
 listen = "0.0.0.0:443"
@@ -28,10 +31,16 @@ public_url = "https://sunrise.example.com"
 [tls]
 mode = "acme"            # or "static"
 acme_email = "ops@example.com"
+# ACME certs renew at expiry - 30 days as a background task (no restart).
+# On renewal failure: retry hourly with exponential backoff up to 24h, then daily.
+# Warnings are logged at 14, 7, and 3 days remaining.
 
 [storage]
 mode = "single-binary"   # or "scaled"
 data_dir = "/var/lib/sunrise"
+sqlite_pool_size = 5      # WAL mode; writes serialize at the SQLite layer.
+                          # The server retries `database is locked` up to 3 times
+                          # with 50 ms backoff before returning 503 SERVER_OVERLOADED.
 
 # OR for scaled:
 # postgres_url = "postgres://..."
@@ -49,6 +58,14 @@ admin_emails      = ["ops@example.com"]
 apns = { key_id = "...", team_id = "...", key_path = "..." }   # optional
 fcm  = { service_account_path = "..." }                         # optional
 web_push = { vapid_public_key = "...", vapid_private_key = "..." }
+# Relative paths in [push.apns] and [push.fcm] resolve against the config file's
+# directory (NOT the CWD). Absolute paths are used as-is.
+
+[observability]
+audit_retention_days = 30   # default; cron at 02:00 UTC deletes expired records.
+                            # Server logs use account_h everywhere; no email-tagged
+                            # buffer exists — there is no auth_log_retention_hours
+                            # setting in v1.
 
 [quotas]
 max_account_storage_mb = 51200
@@ -80,10 +97,12 @@ max_blob_size_mb = 100
 The binary includes a `sunrise-server doctor` subcommand:
 
 - Verifies TLS works.
-- Verifies storage is writable and reads what it wrote.
+- Verifies storage is writable: writes a 10 MiB test file under `[storage] data_dir`, fsyncs, reads back, asserts byte-identical, and deletes. Reports the free-space ratio: warns at < 10%, errors at < 1%.
+- Verifies Postgres `fsync = on` (production requirement).
 - Verifies push providers are configured (if enabled).
 - Reports protocol versions supported.
 - Round-trips a synthetic op end-to-end against a built-in test client.
+- `sunrise doctor --check-logs` verifies that audit/log retention is being enforced as configured.
 
 ## What self-hosters give up vs managed cloud
 

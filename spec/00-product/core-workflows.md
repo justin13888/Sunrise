@@ -31,6 +31,8 @@ Capture works fully offline; sync is best-effort after commit.
 2. User drags or keyboard-promotes inbox items into Today, optionally onto time blocks.
 3. The system surfaces overdue items grouped by stream so they can be deferred or dropped, not blindly bumped.
 
+**Promote / demote semantics.** A Task in Inbox can be promoted to a Stream (move + retag) and demoted back to Inbox (move to Inbox + clear stream-specific state). Both are ordinary CRDT moves and use the cross-stream-move rules in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md); there is no special "promotion" CRDT type. Bouncing between Inbox and a Stream is allowed unconditionally; the task carries a `move_history` Loro list (append-only, capped at the last 16 entries; older entries pruned by Loro's tombstone GC). Undo is the inverse op and shares the same merge rules. Promotion order is deterministic across devices: ties broken by `(ts_ms, device_id_lex)`.
+
 ## 3. Do work in focus
 
 **Trigger.** User is ready to execute.
@@ -56,6 +58,15 @@ Capture works fully offline; sync is best-effort after commit.
 1. User activates a "context" (e.g. `Travel: Tokyo`).
 2. Sunrise filters: streams not relevant become collapsed, items tagged for the trip become primary, recurring routines pause or shift.
 3. On return, Sunrise restores prior state and surfaces what accrued during the shift.
+
+**Routine behavior during a context shift.** Each active Routine evaluates against the active context's policy (a per-routine field, synced as a CRDT register, default `pause`):
+
+| Policy | Routine behavior during the shift |
+|---|---|
+| `pause` | Generation horizon stops advancing; existing future occurrences are tombstoned. On resume, generation resumes from `now` (no backfill). |
+| `shift_tz` | Future occurrences are re-anchored to the user's *new* TZ. The local time of the rule (e.g. `09:00`) stays; the UTC time changes. DST in either zone follows the standard "wall-clock preserved" rule. |
+| `skip` | Occurrences that would fire during the shift are tombstoned with `cause: "context_shift"`. The streak counter applies the routine's `forgiveness_in_window` rule (see [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)). |
+| `unchanged` | Routine ignores the shift. |
 
 ## 6. Recover / move device
 

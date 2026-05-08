@@ -26,7 +26,7 @@ The Sunrise server holds no passwords, no OTP secrets, no recovery emails-in-tra
 | `identity_pub_s`, `identity_pub_d` | First device on first login | Registered after OIDC sign-in via authenticated API call |
 | `recovery_blob` | Same | Opaque ciphertext; see "Recovery" below |
 
-A first OIDC login with no matching `account_id` either auto-provisions the account (if the server's `auth.allow_signup` is true) or returns 403. Sign-up is an OIDC concern (the IdP gates it with whatever its admin configured: email verification, captcha, invite codes, allow-list, etc.).
+A first OIDC login with no matching `account_id` either auto-provisions the account (if the server's `auth.allow_signup` is true) or returns `403 AUTH_SIGNUP_DISABLED`. `allow_signup` is purely a server-side guard: when `false`, the server rejects unknown-account tokens even if the IdP issued them. Sign-up is otherwise an OIDC concern (the IdP gates it with whatever its admin configured: email verification, captcha, invite codes, allow-list, etc.).
 
 ## Per-request auth
 
@@ -39,17 +39,19 @@ The Sunrise server validates the token by:
 3. Looking up the account row by `(iss, sub)`.
 4. Optionally verifying a `device_id` claim (set by the client on token request via OIDC `acr_values` / a custom claim — see "Device binding" below).
 
-There are **no Sunrise-issued tokens, no per-request signatures, and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer.
+There are **no Sunrise-issued tokens and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer. Token TTL is **1 hour**; clients renew at 75% of TTL pre-emptively without disconnecting (using the out-of-band token-refresh frame `0x12 RefreshToken { token: tstr }`, accepted at any time on the sync WebSocket).
 
-For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). Tokens expiring mid-connection trigger a graceful reconnect.
+A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. See [`api.md`](./api.md) for the exact mechanics.
+
+For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). The server checks `exp` on every inbound message; on expiry it sends `Error { code: "AUTH_TOKEN_EXPIRED" }` followed by `Close { code: "auth_expired", reason: "renew and reconnect" }`, and the client renews via OIDC and reconnects.
 
 ## Device binding
 
 A device must be associated with an account so the server can route ops correctly and so revocation works.
 
 1. After OIDC login, the client calls `POST /api/v1/devices` with `{ device_pub_s, device_pub_d, device_cert, nickname, platform }`. The server records the device under the account.
-2. The client's OIDC token implicitly identifies the *account*. The `device_id` is conveyed in a custom client-set claim, in a per-device PKCE-issued token (each device runs its own OIDC client), or — simplest — passed alongside the token in a `X-Sunrise-Device` header that the server cross-checks against the account's registered device list.
-3. Revocation: `DELETE /api/v1/devices/<dev_id>` from any other paired device removes the device row. Subsequent requests carrying a token with that `device_id` are rejected at the server even if the OIDC token is still valid. Token revocation at the IdP is also supported but not required.
+2. The client's OIDC token implicitly identifies the *account*. The `device_id` is conveyed in two places (defense in depth): a custom URI-namespaced claim `https://sunrise.app/device_id` on the OIDC token (each device runs its own OIDC client and requests this claim via the authorization-request `claims` parameter — RFC 7519 §4.2; if the IdP refuses, it returns `invalid_claims`) and the `X-Sunrise-Device` header. The server requires both to match.
+3. Revocation: `DELETE /api/v1/devices/<dev_id>` from any other paired device removes the device row in the request's transaction. Subsequent requests carrying a token with that `device_id` are rejected at the server even if the OIDC token is still valid; in-flight requests may still succeed for up to 5 s as connection-affinity caches expire. Token revocation at the IdP is also supported but not required.
 
 ## Recovery
 
@@ -62,6 +64,8 @@ Flow:
 3. User enters their **recovery code** locally; client runs Argon2id and decrypts the blob.
 
 OIDC alone cannot recover the vault — the recovery code is required to decrypt. This is the double-gate property: even if the IdP is fully compromised, an attacker still cannot read the user's data without the offline recovery code.
+
+The server stores recovery blobs **opaquely** — it does not validate internal format or version. It only enforces the size cap (10 MiB; see [`api.md`](./api.md)) and that the upload is signed by an active device. Account deletion uses a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) issued by `POST /api/v1/accounts/me/delete/initiate`; the OIDC issuer relays the token to the user's verified email, after which `DELETE /api/v1/accounts/me { confirm_phrase: "<token>" }` consumes it. A wrong or expired phrase returns `403 ACCOUNT_DELETE_PHRASE_INVALID`.
 
 The user's only "Sunrise password" is the recovery code, and the server never sees it. Everything else (login factors, MFA, account deletion confirmations) is the IdP's responsibility.
 

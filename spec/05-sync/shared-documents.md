@@ -26,18 +26,70 @@ A grant carries a role (`viewer` / `editor`):
 
 This is enforced **client-side** (their core checks role before emitting). The server *also* checks: it rejects ops on shared Streams from devices whose identity isn't a grantee with editor role. Defense in depth.
 
+## Grant state machine
+
+```
+            ┌───────┐  recipient receives    ┌─────────┐
+   create → │pending│ ───────────────────► │ accepted │
+            └───────┘    valid grant         └─────────┘
+                │                                │
+                │ recipient rejects /             │ owner revokes
+                │ expires before accept           │  OR expires
+                ▼                                ▼
+            ┌───────┐                      ┌─────────┐
+            │declined│                     │ revoked │
+            └───────┘                      └─────────┘
+```
+
+- `pending`: created by owner, not yet seen by recipient. Owner can cancel (transitions to `revoked`).
+- `accepted`: recipient has decrypted and applied at least one op under the grant.
+- `declined`: recipient explicitly declines (offers a UI). Owner sees the decline.
+- `revoked`: owner revoked OR expired. Terminal.
+
+State is on the grant record (`grant.state` field, CRDT LWW Register). Concurrent transitions resolve by the standard LWW rule.
+
+## StreamKey rotation on revoke
+
+- Owner emits `stream_key_rotate` immediately on revoke; new ops use the new epoch.
+- Existing recipients receive the new epoch's key in a `share_key_distribute` op (one per remaining recipient, encrypted to their identity).
+- The revoked recipient does not receive the new key (server enforces).
+- Latency target: rotation completes within 5 s on a healthy connection. Until distribute completes, the owner's device queues new ops locally and emits them once all remaining recipients have a fresh key.
+
 ## Read-only attestation
 
 Because the server *can* see device IDs and op metadata, it enforces editor-role checks. But it cannot read content. So a malicious grantee viewer running a modified client could in principle emit ops; the server rejects them. Other devices also reject them on signature check (no valid editor cert).
 
-## Egress scrubbing (recap)
+## Egress scrubbing
 
-When an owner's device prepares an op for sync delivery to a grantee:
+When an owner's device prepares an op for sync delivery to a grantee, cross-stream entity references in note content are scrubbed. Attachment metadata is included; chunks are fetched on demand. Scrubbing happens at the **encryption-for-grantee** boundary. The owner's own copy retains the unscrubbed data.
 
-- Cross-stream entity references in note content are scrubbed (see [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)).
-- Attachment metadata is included; chunks fetched on demand.
+### Scrubbing implementation
 
-Scrubbing happens at the **encryption-for-grantee** boundary. The owner's own copy retains the unscrubbed data.
+Scrubbing happens **per envelope, per cohort**, at op-emit time:
+
+1. Author's device builds the canonical (unscrubbed) op.
+2. For each recipient cohort that this op fans out to, compute the cohort's accessible-Stream set.
+3. Walk the op's references; replace any reference to an entity in a non-accessible Stream with `{kind: "redacted", reason: "private_ref"}`.
+4. CBOR-encode the per-cohort variant; encrypt under the cohort's Stream key.
+5. Emit each per-cohort envelope as a separate sub-op in the same OpBatch.
+
+Editors **cannot** create cross-stream references in v1 — the UI prevents it because editors hold no ids for entities outside the shared Stream. Owner scrubs at emit time; there is no editor→owner re-scrubbing path.
+
+### Entity reference format
+
+References inside Note bodies and free-text fields use the canonical form:
+
+```
+[<display>](sr://<entity_kind>/<entity_id>)
+```
+
+Where:
+
+- `entity_kind` ∈ `{task, stream, context, person, block, attachment, routine}`.
+- `entity_id` is the prefixed id from [`../02-domain/identifiers.md`](../02-domain/identifiers.md), URL-safe (no encoding needed; ids are alphanumeric + underscore).
+- `display` is the user-typed display text, escaped per markdown rules.
+
+The scrubber recognizes `sr://` URIs and rewrites the URI portion to `redacted:` while preserving display text (or replacing with `(redacted)`).
 
 ## Joining and leaving
 

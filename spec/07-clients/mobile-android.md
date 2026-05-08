@@ -100,10 +100,18 @@ Compose UI ──▶ ViewModels ──▶ CoreClient (Kotlin wrapper)
 ## OEM quirks
 
 - **Battery optimization whitelisting**: we ask once on first launch (with explanation), document in help. Some OEMs (Xiaomi, Huawei, OnePlus historically) aggressively kill background work; we document workarounds and degrade gracefully.
-- **Custom skins** that override widget rendering: tested on Samsung One UI, Pixel, Xiaomi MIUI as a representative set.
+- **Custom skins** that override widget rendering. Tested skin matrix:
+
+| Skin | Device used in CI / QA | Min OS |
+|---|---|---|
+| Pixel | Pixel 7 | Android 13 |
+| One UI (Samsung) | Galaxy S22 | Android 13 |
+| MIUI (Xiaomi) | Redmi Note 12 | Android 12 |
+| HyperOS (Xiaomi 2024+) | Xiaomi 13T | Android 14 |
+| OxygenOS (OnePlus) | OnePlus 11 | Android 13 |
 
 ## Performance budgets
 
-- Cold start to Today: ≤700ms on a 2022 mid-range device.
-- Op apply rate ≥5k/sec on the same.
-- Doze-friendly: average background CPU ≤20s/day.
+- Cold start to Today: ≤ 700 ms on Pixel 7 Wi-Fi; ≤ 1100 ms on Pixel 4a / Galaxy A52 Wi-Fi.
+- Op apply rate ≥ 5 k/sec on the same.
+- Doze-friendly: average background CPU ≤ 20 s/day. WorkManager 15-min cadence is approximate (Doze can extend to ~hourly).

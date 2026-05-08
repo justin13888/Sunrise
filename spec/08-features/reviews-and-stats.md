@@ -25,7 +25,7 @@ If the inbox has untriaged items, the review enters one-at-a-time triage: keep /
 
 ### Step 3 — Routines tuning
 
-For each Routine with non-trivial drift (skipped > N% in the last K weeks):
+For each Routine with non-trivial drift (default threshold: skipped > 30% over the last 4 weeks; configurable via debug menu, not user-facing):
 
 - Suggest pausing.
 - Suggest changing cadence.
@@ -61,7 +61,7 @@ Off by default.
 
 Per Stream:
 
-- Completed-per-week trend (last 12 weeks).
+- Completed-per-week trend (last 12 weeks). **Completed-per-week** = transitions to `done` whose `done_at` falls in the week. Re-opens that flip back to `pending` decrement the count for the week of the original completion, so the chart is stable.
 - Deferred-per-week trend.
 - Routine streaks.
 - Time-in-focus (when known) per Stream.
@@ -74,7 +74,7 @@ We do not surface:
 
 ## Activity timeline (per entity)
 
-Each Task / Stream has an activity feed: created, edited, completed, deferred, focus-session, etc. Useful for "what happened?" not for analytics.
+Each Task / Stream has an activity feed showing **user-visible ops only**: task create / complete / move / delete, Stream create / delete, share grant / revoke, integration sync run, focus-session. Field-level edits are summarized as "Updated <task>" with the count of changed fields. Excludes routine generation, snapshot ops, presence, and key rotations. Useful for "what happened?" not for analytics.
 
 ## Export
 

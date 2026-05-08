@@ -76,6 +76,18 @@ If both the desktop client and TUI run on the same machine for the same account,
 - Loro CRDT writes go through a single core process via a Unix socket "core daemon" — only one TUI/desktop attaches as the writer; the other becomes a read-only view via subscription.
 - Run separately on different machines (laptop + remote box) — each has its own vault and syncs through the server normally.
 
+## Daemon coordination
+
+- A `core daemon` listens on `$XDG_RUNTIME_DIR/sunrise/core.sock` (Linux/macOS); Windows uses a named pipe.
+- The TUI process attaches via the socket. Acquisition order: TUI checks for an existing socket; if absent, TUI forks the daemon and waits for socket readiness (≤ 2 s) before attaching.
+- The `core.lock` file is held by the daemon. UI processes are not lock holders.
+- Daemon crash detection: socket close. UI displays `"Sunrise daemon stopped — reconnecting…"` and respawns the daemon up to 3 times in 60 s, then prompts the user.
+- Daemon idle shutdown: after 5 minutes with no attached UI, the daemon exits cleanly.
+
+## Minimum terminal size
+
+Minimum 80 × 24. Below that, the TUI displays `"Sunrise needs at least 80 × 24"` and refuses to render. Redraw on resize is debounced 50 ms.
+
 ## SSH-friendly behavior
 
 - Render at the terminal's reported size; respond to resize.

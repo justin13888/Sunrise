@@ -57,6 +57,12 @@ We considered:
 
 `sort_order` is a fractional-index string (see e.g. `fractional-indexing` algorithm). New streams default between the last and "end." Reorders are constant work; no list-shifting.
 
+The string is bounded by a defrag rule:
+
+- A device that observes a `sort_order` string ≥ 64 bytes triggers a defrag op for the affected list.
+- Defrag is a single op `stream.list.defrag` carrying the new index for every entry. It is idempotent — concurrent defrag from two devices produces the same output (lex-sort the entries by `(ts_ms, device_id_lex)` and re-assign indexes evenly across `[A, Z]`).
+- The trigger is per-device throttled to once per list per hour to prevent thrash.
+
 ## Sharing
 
 A Stream is the **unit of sharing** with another identity. Sharing a Stream:
@@ -74,5 +80,13 @@ See [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 ## Validation
 
 - `name` MUST be non-empty.
-- `parent_id` MUST refer to a non-archived, non-deleted Stream.
+- `parent_id` MUST refer to a non-archived, non-deleted Stream **at the time the `parent_id` is set or changed**. The validation is enforced on `parent_id` mutations only, not retroactively (see "Child-stream lifecycle on parent delete" below).
 - Cycles are impossible by structure (one-level limit + no parent self-reference).
+
+## Child-stream lifecycle on parent delete
+
+Soft-delete of a parent Stream **orphans** child Streams: their `parent_id` becomes invalid but the children themselves persist.
+
+- On read, the UI displays orphaned children at the top level with a `(was: <parent name>)` annotation, read from the parent's tombstone (which retains `name` for ≤ 30 days post-delete).
+- The user MAY re-parent the orphan, in which case the new `parent_id` is validated as usual.
+- Hard-delete of the parent (after compaction removes the tombstone) drops the annotation; orphans become regular top-level Streams.

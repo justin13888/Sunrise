@@ -34,6 +34,26 @@ The server stores op envelopes in a queue per `(stream_id, target_device_id)`. D
 5. Server sends `Ack` to originating client.
 6. Other connected receivers get `Push`. Disconnected receivers get a wakeup push if a token is registered.
 
+### Blob 2PC outbox
+
+The blob upload flow is a textbook 2PC outbox:
+
+```
+1. Begin Postgres tx.
+2. Insert op row with status='pending', blob_ref=presigned_url, blob_id=<random>.
+3. Commit Postgres tx.
+4. Server returns presigned URL to client.
+5. Client uploads blob to object store (PUT to presigned URL).
+6. Client calls POST /api/v1/blobs/<blob_id>/finalize { chunk_hashes }.
+7. Server verifies hashes, sets status='ready'.
+```
+
+A `pending` row older than **24 h** is GC'd by a cron job; the blob, if uploaded, is garbage-collected by the object-store lifecycle policy. (This 24-hour pending-blob TTL is unchanged from earlier drafts; the broader retention numbers — see "Retention" below — are unified to 30 days.)
+
+### Concurrent same-`blob_id`
+
+`blob_id` is 16 random bytes; collision probability is cryptographically negligible. If two finalize calls arrive for the same `blob_id` with non-matching `chunk_hashes`, the second returns `409 BLOB_FINALIZE_CONFLICT`. Identical hashes → idempotent `200 OK`.
+
 ## Op read path (on subscribe / catch-up)
 
 1. Receiver sends `Subscribe` with cursors.
@@ -48,19 +68,28 @@ The server stores op envelopes in a queue per `(stream_id, target_device_id)`. D
 
 ## Retention
 
-- Op envelopes: retained until eligible for compaction (see [`../04-storage/compaction.md`](../04-storage/compaction.md)).
+All retention numbers are unified to **30 days** (or shorter) in v1:
+
+- Op envelopes: retained until eligible for compaction; post-compaction retention is **30 days** (see [`../04-storage/compaction.md`](../04-storage/compaction.md)).
+- Op metadata rows: retained at least **30 days** regardless of compaction state, providing a recovery window if compaction logic produces a defective snapshot.
+- Blob GC grace: `gc_grace_days = 30` (configurable). Tombstoned blobs are deleted from the object store on day 31. This is independent of post-compaction retention.
+- Pending-blob outbox rows: 24 h (described above).
 - Cursors: retained for the life of the device.
-- Audit: minimal; we keep aggregate metrics, not per-op access logs, beyond 14 days.
+- Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
+
+Postgres durability for self-hosters: `fsync = on` is the default and required for production. The Doctor subcommand verifies it (see [`self-hosting.md`](./self-hosting.md)). Self-hosters who change it accept data-loss risk; this is documented in operator notes.
 
 ## Blob storage
 
 | Operation | Detail |
 |---|---|
-| Init upload | Server returns N presigned PUT URLs, one per chunk |
-| Upload chunks | Direct from client to object store |
-| Finalize | Client posts hash list; server verifies via HEAD on each chunk; activates blob |
-| Download | Server returns presigned GET URL; client decrypts |
-| Delete | Client requests delete; server tombstones; GC removes after grace period |
+| Init upload | Server returns N presigned PUT URLs, one per chunk. Upload URLs expire **1 hour** after issuance. |
+| Upload chunks | Direct from client to object store. |
+| Finalize | Client posts `chunk_hashes` (one `BLAKE3(ciphertext_chunk, 32)` per entry, lowercase hex, 32 chars). Server validates a single hash per chunk: for the S3 backend, via the storage backend's native ETag equivalent; for the local backend, by computing BLAKE3-of-ciphertext on receipt. Mismatch → `400 BLOB_HASH_MISMATCH` (see [`api.md`](./api.md)). There is no `plaintext_hash` server-side; that's a client-only concept. |
+| Download | Server returns presigned GET URL (expires **24 hours** after issuance; clients re-request on expiry); client decrypts. |
+| Delete | Client requests delete; server tombstones; GC removes after the 30-day grace period. |
+
+Persisted blob payloads carry the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3, but the server stores opaque bytes and does not introspect.
 
 ## Privacy / metadata
 

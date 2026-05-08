@@ -48,6 +48,15 @@ The Sunrise server has **two deployment profiles**:
 
 A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
 
+### Cross-server delivery (managed ↔ self-hosted)
+
+v1 ships with a single rule: **the owner's server is authoritative for relay**. If a user on managed cloud shares a Stream with a user on a self-hosted instance, both clients connect to the **owner's** server. The non-owner side authenticates to the owner's server using a relay-only token issued at share-grant time.
+
+- The `share_grant` envelope carries `relay_url` (the owner's server) and `relay_token` (a short-lived bearer scoped to that share).
+- The recipient's client adds an outbound connection to `relay_url` in addition to its own server connection. Quotas are charged to the owner.
+- If the owner's server is unreachable, the share is in-progress unavailable (no peer-to-peer fallback in v1). UI surfaces `"Stream unavailable — owner's server is offline"`.
+- Federation between independent servers is explicitly out of scope for v1.
+
 ## Rationale
 
 The alternative to having a server is pure peer-to-peer. We considered it and rejected it for v1 because:

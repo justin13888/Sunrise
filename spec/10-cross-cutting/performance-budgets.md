@@ -66,6 +66,14 @@ All platforms: ≤100ms p95.
 - iOS: average background CPU per day ≤30s.
 - Android: average background CPU per day ≤40s; respects Doze.
 
+### iOS background-CPU measurement
+
+- **Tool**: MetricKit's `MXCPUMetric.cumulativeCPUTime`, aggregated over the `MXMetricPayload.timeStampEnd − timeStampBegin` window.
+- **Window**: backgrounded period only (foreground time excluded).
+- **Inclusions**: Sunrise's own `BGAppRefreshTask` CPU time.
+- **Exclusions**: silent-push CPU is system-attributed and not counted.
+- **Test fleet**: 10 devices enrolled in the TestFlight beta with MetricKit reporting enabled. The fleet's aggregate **p95 must be ≤ 30 s/day**; a release that exceeds this for two consecutive weekly windows blocks promotion to General Availability.
+
 ## Network
 
 - Idle steady-state: ≤2 KB/min keepalive.
@@ -85,3 +93,9 @@ All platforms: ≤100ms p95.
 
 - Any benchmark exceeding budget by >5% is a P1; merge gate.
 - "Hard cap" violations on the user's path block release.
+
+## Calibration cadence
+
+- Benchmarks are calibrated on bare-metal CI runners owned by the project (rented dedicated hosts, not shared cloud VMs). Shared-VM runners introduce too much variance to defend a 5 % gate.
+- Recalibration runs **monthly**, and additionally whenever the CI runner image changes.
+- If a calibration result diverges by more than 5 % from the previous calibration, page the on-call and hold baseline updates until the divergence is investigated.

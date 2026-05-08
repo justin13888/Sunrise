@@ -42,7 +42,9 @@ Move = delete-source + create-destination. Ordering matters:
 
 Result after both apply: T has been deleted from S1 (idempotent), and exists in *both* S2 and S3 — both as legitimate creations. **One is a duplicate.**
 
-Resolution: deterministic — the *task copy* with the later create timestamp survives; the earlier one is auto-tombstoned. The merge journal records this.
+Resolution: deterministic — sort copies by `(create_op.ts_ms, create_op.device_id_lex, create_op.seq)` and keep the **last** entry; all earlier entries are auto-tombstoned. The same rule extends to N-way concurrent moves. Total ordering guarantees determinism. The merge journal records this.
+
+`device_id_lex` is the lex byte order of the raw 16-byte `device_id` (memcmp). No base-encoding is involved.
 
 (We considered a "moved" relation, but it explodes in scope. The duplicate-and-tombstone path is simple and correct.)
 
@@ -78,6 +80,8 @@ CREATE TABLE merge_journal (
 ```
 
 UI surfaces "X edits merged automatically this week" in the weekly review. Power users can drill in. We do **not** show every merge in real time — that's a worse UX than letting the CRDT do its job.
+
+Cardinality: one row per `(entity_id, field, op_id_at_merge)` triple. Same field merged again creates a new row. The journal is capped at **5 000 rows** per device (FIFO eviction); it is diagnostic-only.
 
 ## Atomic batches
 

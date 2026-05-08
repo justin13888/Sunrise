@@ -20,7 +20,7 @@ The complete and frozen set of algorithms used in Sunrise v1. Any change require
 | Hash | BLAKE3 | 256-bit output unless noted | `blake3` 1.x |
 | KDF (internal) | BLAKE3 KDF mode (`derive_key`) | Per-call `context` string (see usage rules) | `blake3` |
 | MAC (rare; non-AEAD paths) | BLAKE3 keyed | 32-byte key | `blake3` |
-| Password / recovery-code KDF | Argon2id | m=64 MiB, t=3, p=1, salt=16 random bytes, 32-byte output | `argon2` 0.5.x (RustCrypto) |
+| Password / recovery-code KDF | Argon2id (version 0x13, RFC 9106) | m=65536 KiB (64 MiB), t=3, p=1, salt=16 random bytes, 32-byte output | `argon2` 0.5.x (RustCrypto) |
 | RNG | OS CSPRNG | `getrandom`-backed | `rand_core` + `getrandom` |
 | TLS | TLS 1.3 only | Cipher suites: `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256` | `rustls` 0.23.x |
 
@@ -40,7 +40,7 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
 
 - **HPKE Base mode** for any single-recipient public-key encryption (key envelopes for sibling devices, share grants for peers, recovery blob upload, pairing transport). The spec layer never composes raw X25519 + KDF + AEAD.
 - **BLAKE3 KDF mode** for all internal symmetric derivations. Every `derive_key` call MUST pass a unique, descriptive context string of the form `"sunrise.<purpose>.v<version>"` (e.g. `"sunrise.vault_root.v1"`, `"sunrise.blob_chunk_nonce.v1"`).
-- **Argon2id** for stretching low-entropy human secrets (passphrase, recovery code) into 32-byte keys. Parameters are fixed and platform-uniform; phones budget ~1 s, desktops ~250 ms (parameters chosen for the slower bound).
+- **Argon2id** for stretching low-entropy human secrets (passphrase, recovery code) into 32-byte keys. Algorithm version is **0x13 (RFC 9106)**; parameters are `m = 65536` KiB (64 MiB), `t = 3`, `p = 1`, fixed and platform-uniform. Phones budget ~1 s, desktops ~250 ms (parameters chosen for the slower bound). There is no time-out at the call site; UI shows a progress modal on mobile.
 
 ### When to sign
 
@@ -62,8 +62,33 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
 - All crypto goes through the leaf crate `sunrise-crypto`. App code MUST NOT call `chacha20poly1305`, `ed25519-dalek`, `hpke`, `snow`, `blake3`, `argon2`, etc., directly.
 - `sunrise-crypto` exposes typed wrappers (`StreamKey`, `OpEnvelope`, `IdentityPrivKey`, `DevicePrivKey`, `RecoveryKey`, …). Type confusion at the API level is impossible (e.g. an `IdentityPrivKey` cannot be passed where a `DevicePrivKey` is expected).
 - All key types implement zeroize-on-drop.
-- Versions are pinned in `Cargo.lock` and vendored at release; reproducible builds are required for tagged releases.
+- Versions are pinned in `Cargo.lock` and vendored at release.
 - `cargo-deny` and `cargo-audit` run in CI; new versions of crypto deps require explicit review by a designated reviewer (see `CODEOWNERS`).
+
+## Constant-time guarantees
+
+All signature-verify, AEAD-tag-verify, and HPKE-decrypt code paths MUST be constant-time. The `sunrise-crypto` crate uses:
+
+| Library | Role | CT property |
+|---|---|---|
+| `ed25519-dalek` | Ed25519 sign/verify | constant-time by default |
+| `chacha20poly1305` | XChaCha20-Poly1305 AEAD | constant-time |
+| `hpke` | HPKE Base mode | constant-time |
+| `subtle` | tag/MAC/hash equality | `ConstantTimeEq` |
+| `argon2` | passphrase / recovery KDF | does not require CT (it's a deliberate-cost KDF over a passphrase, not a comparison primitive) |
+
+A clippy lint **`sunrise::ct_compare`** rejects `==` between any types whose names match `*Mac`, `*Tag`, `*Sig`, or `*Hash` outside `sunrise-crypto`'s own constant-time helpers. Crypto-typed equality MUST go through `subtle::ConstantTimeEq`.
+
+## Reproducible builds
+
+Tagged releases are reproducible:
+
+- `rustc` pinned via `rust-toolchain.toml`.
+- `Cargo.lock` committed.
+- `RUSTFLAGS="-C codegen-units=1 -C link-arg=-Wl,--build-id=none"`.
+- `SOURCE_DATE_EPOCH` set to the release-commit timestamp.
+
+Two builds from the same commit with the same toolchain produce bit-identical artifacts. A CI check rebuilds the previous tag and diffs; any drift fails CI.
 
 ## Test vectors
 

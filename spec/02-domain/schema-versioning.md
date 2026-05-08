@@ -19,7 +19,7 @@ These are independent. Adding a new task field bumps `doc_schema_version` only. 
 ## Compatibility windows
 
 - **Wire protocol:** N and N-1 must interoperate. N-2 is rejected with a clear "please update your client" error.
-- **Doc schema:** infinite forward compat. Newer fields on older clients are *preserved* but ignored. Older clients re-emit unknown fields verbatim. (This requires CRDT op encoding to round-trip unknown fields — see [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md).)
+- **Doc schema:** infinite forward compat. Newer fields on older clients are *preserved* but ignored. Older clients re-emit unknown fields verbatim. (This requires CRDT op encoding to round-trip unknown fields — see [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md), and [`../10-cross-cutting/protocol-versioning.md` §7](../10-cross-cutting/protocol-versioning.md#7-document-schema-forward-compat) for the precise round-trip rules.)
 - **DB schema:** local-only; runs migrations in-place on first launch of a new version.
 
 ## Adding a field

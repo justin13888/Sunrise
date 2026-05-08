@@ -44,6 +44,11 @@ Attachment = {
 
 Attachments are not pre-fetched on sync. Each device pulls on first view, decrypts, caches locally with an LRU. Cache size is configurable per device.
 
+- Default auto-fetch threshold: **10 MiB**. Smaller attachments fetch silently on first view.
+- Larger attachments show an inline placeholder with file name, size, and a "Download" button. The "Cancel" button during transfer aborts and marks the attachment `partial: true` in cache.
+- Re-tapping a `partial: true` attachment retries from byte 0 (chunks are 1 MiB each; the cache uses chunk granularity but resume-from-partial is not implemented in v1).
+- Cellular vs Wi-Fi: per-platform setting `auto_fetch_on_cellular: bool = false`.
+
 ## TUI / web limitations
 
 - TUI cannot render most attachments. It shows metadata and can save-to-disk.
@@ -53,8 +58,17 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 
 Logical delete sets `deleted=true`. The encrypted blob is **garbage-collected** when:
 
-1. All devices have acknowledged the tombstone, AND
-2. A configurable grace period (default 30 days) has elapsed.
+1. All active devices have acknowledged the tombstone, AND
+2. A grace period of 30 days has elapsed.
+
+Acknowledgement is **explicit** via a `device_op_cursor` op emitted by each device every 24 hours and on shutdown. The op carries `(device_id, max_op_seq_observed_per_stream)`. A blob is GC-eligible when:
+
+```
+all_active_devices.every(d => d.cursor[stream_id] >= tombstone_op.seq)
+  AND now - tombstone_op.ts_ms >= 30 days
+```
+
+`active_device` = a device that has emitted a cursor op in the last 30 days. A device silent for > 30 days is considered abandoned and excluded from the quorum; re-pairing or re-syncing produces a fresh cursor that takes effect immediately.
 
 The server runs the GC; only the **blob** is GC'd, never the metadata, since metadata reveals nothing without the wrapped key.
 

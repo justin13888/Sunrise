@@ -46,21 +46,28 @@ If the server is sending more ops than the client can apply (rare but possible d
 ## Abuse handling
 
 - A misbehaving (or compromised) client that floods ops gets rate-limited at the connection level after thresholds.
-- Per-device signed op-rate is bounded; the server drops ops above per-device limits and surfaces the violation to the client.
+- Per-device signed op-rate has a hard limit of **50 signed ops/sec per device** (averaged over a 10 s window). Excess returns `AUTH_RATE_LIMITED`; the client backs off.
+- Soft limit (warning, not enforced): 5 ops/sec sustained over 60 s. Crossing the soft limit logs `srv.quota.warning` but ops continue.
 
 ## Stream-level prioritization
 
-When the outbox has ops for multiple Streams and bandwidth is tight, the client prioritizes:
+Clients **SHOULD** prioritize foreground-Stream sync. When the outbox has ops for multiple Streams and bandwidth is tight, the client prioritizes:
 
 1. Today-related Streams (where the user is currently focused).
 2. Streams with shared peers active (presence indicates someone is waiting).
 3. Other Streams.
 
-Ordering is best-effort; the server sees ops in the order the client sends.
+Implementation: outbound OpBatch order favors the Stream the user is currently viewing. Servers apply no special prioritization. Failure to prioritize is a UX issue, not a correctness issue.
 
 ## Push priority
 
-Pushes use APNs/FCM priority tiers. Critical (an op marking a task done that the user expects to be reflected on another device immediately) gets high priority; bulk backfill uses normal/low priority.
+Pushes use APNs/FCM priority tiers:
+
+| Sunrise tier | APNs | FCM | Web Push |
+|---|---|---|---|
+| `critical` (block-start reminder) | `apns-priority: 10`, `apns-push-type: alert` | `priority: high` | `Urgency: high` |
+| `normal` (sync wakeup) | `apns-priority: 5`, `apns-push-type: background` | `priority: normal` | `Urgency: normal` |
+| `bulk` (silent re-sync) | `apns-priority: 5`, `apns-push-type: background` | `priority: normal`, `time_to_live: 86400` | `Urgency: low` |
 
 ## Self-host considerations
 

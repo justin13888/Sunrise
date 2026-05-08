@@ -69,12 +69,21 @@ Field-level rationale:
 - `done` and `cancelled` are *not* terminal: a task can transition back to `todo`. UI may warn but does not refuse.
 - `blocked` is computed in v1: a task is `blocked` iff `blocked_by` is non-empty AND every blocker's state ≠ `done`/`cancelled`. The persisted `state` field is the user-set state; UI shows effective state.
 
+### `blocked` across the offline boundary
+
+`blocked` is a derived view, never a persisted state. Each device computes it on read from `(blocked_by, observed_remove_set)` and the current applied state of the referenced blockers. Reconciliation rules:
+
+- `blocked_by` is an OR-Set (Loro). Concurrent add and remove of the same blocker is **add-wins** (with timestamp-based tiebreak; full algorithm in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
+- A blocker completing on device B emits `task.update(state=done)`. Device A, on receiving that op, recomputes `blocked` for any task whose `blocked_by` references B. There is no separate "unblock" op.
+- If a device is offline while a blocker completes, its local view stays `blocked` until sync; on sync, the recomputation runs as part of `db.merge.applied` and the UI updates without user action.
+
 ## Lifecycle
 
 - **Created** in Inbox by default unless captured into a specific stream.
 - **Promoted** to a stream by drag, keyboard, or natural-language parsing (`#streamname` in capture).
 - **Scheduled** by setting `scheduled_at` (and optionally a Block).
-- **Completed** by user action; `completed_at` set; if part of a routine, the routine's streak counter advances.
+- **Completed** by user action; `completed_at` set; if part of a routine, the routine's streak counter advances on the **first** `pending → done` transition for that occurrence (subsequent `done → pending → done` transitions on the same occurrence are no-ops for the streak — see [`routines-and-recurrence.md`](./routines-and-recurrence.md)).
+- **Resurrected** (a `done` or `cancelled` task transitioned back to `todo`) is allowed without restriction for non-routine tasks; for routine-generated tasks, the streak counter is unaffected by resurrection because of idempotency keying.
 - **Deferred** by changing `scheduled_at` to a later date; `deferred_count` increments by 1; UI exposes the running count to nudge the user toward "drop it or do it."
 - **Archived** to remove from default views without deleting.
 - **Deleted** sets `deleted=true`; remains as tombstone until compaction.
@@ -85,6 +94,7 @@ Field-level rationale:
 - `due_at` ≥ `scheduled_at` if both are set (UI may reorder if user inverts).
 - `blocked_by` MUST NOT contain `id` (no self-blocking).
 - `blocked_by` cycles are detected on submit and rejected (cycle = chain of blocked_by returning to start). The check is local; with concurrent edits, a cycle can transiently form across devices and will be broken by a deterministic tie-breaker on merge (see [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
+- A Task's serialized envelope (encrypted) MUST NOT exceed **1.25 MiB**. Enforcement is at submit time in `sunrise-core::submit`. Over-limit submits return `VALIDATION_PAYLOAD_TOO_LARGE`. The UI shows `"This task is too large to save — try moving the body to an attachment."` and offers a one-click conversion that creates an Attachment from the body.
 
 ## CRDT mapping
 

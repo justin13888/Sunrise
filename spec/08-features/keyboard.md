@@ -34,7 +34,36 @@ Defaults follow platform conventions; user remappable in Settings.
 
 ## Vim mode (opt-in)
 
-A user can enable "vim-style" navigation in desktop and web; it adds modal navigation, `gg/G`, `dd`, `yy`/`p` for cut/paste, etc. The TUI is vim-style by default.
+Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced). Available on Desktop and Web. The TUI is vim-style by default (opt-out).
+
+### v1 vim-mode keymap (exhaustive)
+
+| Keys | Action |
+|---|---|
+| `h` `j` `k` `l` | Move left / down / up / right |
+| `w` `b` `e` | Forward word / back word / end of word |
+| `gg` | Top of list/document |
+| `G` | Bottom of list/document |
+| `0` | Start of line |
+| `$` | End of line |
+| `i` `a` | Insert before / after cursor |
+| `I` `A` | Insert at start / end of line |
+| `o` `O` | Open new line below / above |
+| `x` | Delete character under cursor |
+| `dd` | Delete current line / row |
+| `yy` | Yank current line / row |
+| `p` `P` | Paste after / before cursor |
+| `u` | Undo |
+| `Ctrl-r` | Redo |
+| `/` | Search-in-list |
+| `:` | Command palette |
+| `Esc` | Return to Normal mode |
+
+No regex, no macros, no marks in v1.
+
+### Vim-mode conflict mitigation
+
+When vim mode is on, the browser-default `Ctrl+Shift+P` is intercepted only inside the Sunrise web-app surface; outside (DevTools open, browser chrome focused, etc.) the browser keeps the binding. See `Ctrl+Shift+P` conflict notes below.
 
 ## Discoverability
 
@@ -46,7 +75,7 @@ A user can enable "vim-style" navigation in desktop and web; it adds modal navig
 
 - All keyboard shortcuts have a visible UI affordance — no hidden-only commands.
 - VoiceOver / TalkBack / NVDA traversal is keyboard-equivalent.
-- Focus indicators are *always* visible (no `outline: none` overrides).
+- Focus indicators are *always* visible (no `outline: none` overrides). Contrast is WCAG 2.1 AA minimum (3:1 against adjacent colors). Every interactive element MUST have a visible focus indicator.
 
 ## Mobile keyboards
 
@@ -57,3 +86,7 @@ A user can enable "vim-style" navigation in desktop and web; it adds modal navig
 ## Conflict policy
 
 Where a keyboard shortcut conflicts with a user-installed system shortcut: the user's wins; we silently no-op our handler if the OS reports the binding is intercepted.
+
+### `Ctrl+Shift+P` on web
+
+The web app intercepts `Ctrl+Shift+P` only when focus is inside the app's main element (not in browser chrome / DevTools). Documented in user-facing help; users can rebind via Settings → Keyboard.

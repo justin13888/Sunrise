@@ -10,32 +10,47 @@ Without compaction, the op log grows forever. Compaction trims ops that are no l
 
 An op is eligible for compaction when **all** of the following hold:
 
-1. Its `applied_at` is set on every device known to the identity (acknowledgment received).
+1. Its `applied_at` is set on every "known device" of the identity (see below).
 2. It is older than a retention window (default: 30 days for normal ops, 365 days for control ops like share grants/revokes).
 3. The op is not a checkpoint or transition op needed for tamper-evidence anchors.
 
+### "Known device"
+
+A "known device" is a device with an entry in `vault_meta.devices` that is **not** revoked AND has emitted a cursor op in the last 30 days. A revoked device is excluded immediately (no grace delay). A device silent > 30 days is excluded; if it returns, it must catch up via snapshot rather than blocking compaction.
+
 ## How
 
-Compaction folds a range of ops into a **snapshot op** for a Stream:
+Compaction folds a range of ops into a **snapshot op** for a Stream. The snapshot's CBOR shape:
 
-```
-SnapshotOp = {
-    kind: "snapshot",
-    stream_id: …,
-    covers: { device_id => max_seq },     // the range it replaces
-    state: encrypted-CBOR( current materialized state of stream, at this checkpoint ),
-    base_root: …,                          // the op-log root at this point
-    sig: …,
+```cddl
+Snapshot = {
+    v:                uint,                ; snapshot format version (1)
+    stream_id:        bstr .size 16,
+    upto_op_seq:      uint,
+    generated_at_ms:  uint,
+    doc_state:        bstr,                ; loro::Doc::export_snapshot() bytes
+    head_root:        bstr .size 32,
+    participants:     [+ {device_id: bstr .size 16, last_op_seq: uint}],
+    hash:             bstr .size 32,       ; BLAKE3(canonical CBOR of the above fields, 32)
 }
 ```
 
-A snapshot op is itself signed and encrypted under the Stream key. Devices that haven't yet processed the underlying ops can apply the snapshot directly and skip the predecessors.
+`doc_state` is the Loro library's own snapshot binary (Loro version pinned per [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)). The encrypted-CBOR envelope wraps the whole structure; it is signed under the Stream key.
 
-After all known devices acknowledge the snapshot, the predecessor ops can be deleted from local storage and the server's log.
+Validation on application:
 
-## Who initiates
+1. Verify magic + version.
+2. Recompute `hash` over the canonical CBOR of all other fields; reject on mismatch.
+3. Verify `head_root` matches a re-derivation from the imported Loro doc.
+4. Replace local Stream state with snapshot.
 
-Any device with full visibility can propose a snapshot. To avoid two devices producing slightly different snapshots in the same window, we elect a "compactor" device deterministically (lowest device_id alive in the last 7 days).
+Devices that haven't yet processed the underlying ops can apply the snapshot directly and skip the predecessors. After all known devices acknowledge the snapshot, the predecessor ops can be deleted from local storage and the server's log.
+
+## Who initiates (compactor election)
+
+- Eligible compactor: the device with the smallest `device_id` (lex byte order) among all "known devices" at the moment compaction conditions become true.
+- Re-elected per-Stream per-day. Election re-runs at the next compaction-eligibility check if the previous compactor went silent.
+- No tie-breaker needed (`device_id`s are 16 random bytes; collision negligible).
 
 ## What about devices we haven't heard from?
 
@@ -65,6 +80,15 @@ The server runs a parallel compaction:
 3. Retains the snapshot op until superseded.
 
 The server does not reorder, rewrite, or merge ops; it only deletes ops it no longer needs to retain.
+
+### Server-side retention after compaction
+
+After compaction, the server retains the original ciphertext blobs for **30 days** under a `compacted/` prefix before deletion. This window allows:
+
+- Late-arriving devices to catch up via the original op stream (faster than snapshot in some cases).
+- Forensic recovery if a snapshot is determined to be defective.
+
+After 30 days, the original blobs are hard-deleted; the snapshot is the only authoritative state.
 
 ## User-visible effect
 

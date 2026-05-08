@@ -69,8 +69,10 @@ Parser is a single deterministic function in core (string in, structured task dr
 ## Undo
 
 - `Cmd/Ctrl+Z` / `u` in TUI.
-- Stack depth: last 50 user actions in this session.
-- Time-bounded: undo of an op older than 5 minutes shows a confirm ("undo from 12 minutes ago?").
+- **Undoable**: any user-initiated CRUD on entities; explicit user actions in views.
+- **Not undoable**: sync receipts (other-device ops), background routine generation, server-initiated ops.
+- Time-bound: undo within 5 min is one-tap. > 5 min: confirmation modal `"Undo this change from <Nm ago>?"`.
+- Per-device undo stack, 64 entries; not synced.
 
 ## Drag-and-drop matrix
 
@@ -82,6 +84,12 @@ Parser is a single deterministic function in core (string in, structured task dr
 | File → Task (attach) | Yes | Yes (Files app) | Yes | Yes | Use `attach <path>` |
 | Task → Task (reorder) | Yes | Yes | Yes | Yes | `Alt+↑/↓` |
 
+### Drag-and-drop UX tokens
+
+- Snap grid (Calendar): 15-min increments by default; user-configurable {5, 10, 15, 30, 60} minutes.
+- Ghost opacity: 0.65.
+- Drop-target visual: 2 px solid `accent` border + 8% `accent` background tint.
+
 ## Notification interactions
 
 - "Mark done" action button on every reminder push.
@@ -89,6 +97,16 @@ Parser is a single deterministic function in core (string in, structured task dr
 - "Snooze until tomorrow" action.
 
 These run via local OS APIs (deep links into the app for desktop; native action handlers for iOS / Android; Web Push action buttons for web).
+
+### Action wiring (per platform)
+
+| Action | iOS | Android | Web |
+|---|---|---|---|
+| Complete task | UNNotificationAction `complete`, deep link `sunrise://task/<id>?action=complete` | Notification `Action` with `PendingIntent` carrying the same URI | Web Push `actions[0].action = "complete"`, app handles in `notificationclick` |
+| Snooze 1h | `snooze_1h` | same | `actions[1]` |
+| Open | tap body | tap body | default action |
+
+The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to a CRDT op without opening UI when possible.
 
 ## URL scheme
 

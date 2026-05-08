@@ -31,6 +31,16 @@ UPDATE schema_meta SET db_schema_version = 7;
 
 Migrations run in a single transaction per migration; failure rolls back; the app refuses to launch on migration failure and surfaces a clear error with a "send diagnostics" path.
 
+### Failure recovery
+
+- Failure mid-migration leaves the previous schema intact (migrations run in a single transaction; ROLLBACK on error).
+- The app refuses to launch with `STORAGE_MIGRATION_FAILED { from_v, to_v, error_code }`. Diagnostic-bundle export is allowed; vault data access is not.
+- Recovery options surfaced in UI:
+  1. **Retry** — re-run the migration; useful for transient I/O errors.
+  2. **Restore from backup** — if user has an external backup of the vault directory.
+  3. **Reset and resync** — delete local vault, re-pair the device; remote ops are intact.
+- Downgrades require an explicit reverse migration with its own ADR; v1 ships no reverse migrations.
+
 ## CRDT doc-schema migrations
 
 These are coordinated:
@@ -45,6 +55,14 @@ These are coordinated:
 The user's vault stores the highest `doc_schema_version` it has seen any op produced under. Devices on older versions will refuse to *originate* ops under a newer version — they read but don't write past their max.
 
 This produces a property: a v1 device and a v2 device coexist, with the v1 device gracefully degrading.
+
+### Minimum-version discovery
+
+The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-cursor heartbeats. Each cursor op carries `doc_schema_v_max` (the highest version that device can write).
+
+- After all active devices' cursors report `doc_schema_v_max ≥ N+1`, a 7-day grace begins.
+- After grace, the **server's `doc_schema_floor`** advances to `N+1`, refusing inbound ops with `doc_schema_v < N+1`.
+- A device that has not heartbeat in 30 days is considered abandoned and excluded from the minimum.
 
 ## Materialized state rebuild
 

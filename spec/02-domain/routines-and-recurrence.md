@@ -43,6 +43,15 @@ CatchupPolicy = "skip"        ; missed occurrences are dropped
               / "queue"       ; each missed occurrence becomes a separate task
 ```
 
+### `merge` semantics
+
+When generation runs and finds N ≥ 2 missed occurrences, `merge` produces exactly **one** task:
+
+- `due_at` = the most recent missed occurrence's expected time.
+- `routine_occurrence` = list of all merged occurrences' ISO dates.
+- `title` = the routine's `title_template` evaluated against the most recent occurrence.
+- The streak counter idempotency key is `"streak:routine:" || routine_id || ":merged:" || sorted_dates_hash`, so completing the merged task increments the streak by 1, not N.
+
 ## Recurrence rule
 
 We use **RFC 5545 RRULE** (the iCalendar standard) as a baseline. Supported parts: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. Not supported in v1: `BYYEARDAY`, `BYWEEKNO`.
@@ -63,7 +72,7 @@ A background job in the core looks ahead by a per-Routine `materialization_horiz
 | `MONTHLY` | 180 days |
 | `YEARLY` | 540 days |
 
-The horizon is a Routine field (LWW-register, user-editable in the Routine settings UI; range 7–730 days, clamped on write). For each occurrence in the horizon that has no existing Task:
+The horizon is a Routine field (LWW-register, user-editable in the Routine settings UI; range 7–730 days, clamped on write). Reducing the horizon **does not** delete already-generated future occurrences (that would discard any user notes/edits on them); increasing the horizon generates new occurrences from `max(now, last_generated_at)` to the new horizon. For each occurrence in the horizon that has no existing Task:
 
 1. Compute occurrence datetime in the routine's tz.
 2. Apply `skip_dates`.
@@ -78,9 +87,16 @@ Editing a generated Task only touches that occurrence. Editing the Routine promp
 
 ## Streak counter
 
-Increments on completion of an occurrence within `grace_window` after the scheduled time. The `grace_window` is a per-Routine field (default: 24 hours; range 0–7 days, LWW). Stored as a CRDT PN-counter so concurrent completions on multiple devices do not double-count (the inner-Op `op_id` makes increments idempotent).
+Increments on completion of an occurrence within `grace_window` after the scheduled time. The `grace_window` is a per-Routine field (default: 24 hours; range 0–7 days, LWW). Stored as a CRDT PN-counter so concurrent completions on multiple devices do not double-count.
+
+Idempotency: only the **first** `pending → done` transition for an occurrence increments the counter. The increment carries `idempotency_key = "streak:" || routine_id || ":" || occurrence_iso_date` (or, for catchup-merged occurrences, the form in "merge semantics" above). Subsequent `done → pending → done` transitions on the same occurrence are no-ops for the streak; the key dedups them. The idempotency-key set is a per-Routine HLL-flavored set persisted in the Routine's CRDT state — set membership is permanent (no GC), at most ~14 bytes per occurrence. Concurrent completions on different devices for the same occurrence both emit the same key, so the PN-counter sees one effective increment.
 
 Streak resets to 0 on a missed occurrence with one exception: the **forgiveness rule** allows up to one missed occurrence per 30-day rolling window without resetting. The forgiveness rule is enabled by default and toggled per Routine.
+
+The 30-day forgiveness window is anchored at **`streak_started_at`**, the timestamp of the first non-failed completion that began the current streak. Sliding behavior:
+
+- When `now - streak_started_at > 30 days`, `streak_started_at` advances to `streak_started_at + 30 days` (re-anchor without resetting the streak).
+- Forgiveness is consumed when applied; a counter `forgivenesses_in_current_window` tracks usage and resets to 0 on each anchor advance.
 
 ## Pausing
 

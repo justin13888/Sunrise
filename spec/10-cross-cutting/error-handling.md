@@ -22,8 +22,17 @@ A finite enum across the system. Examples:
 - `INTEGRATION_REAUTH_REQUIRED`
 - `VALIDATION_INVALID_TITLE`
 - `VALIDATION_DUE_BEFORE_SCHEDULED`
+- `INTERNAL_UNKNOWN_CODE`
 
 Codes are stable across versions; new codes can be added but never repurposed.
+
+### Registry
+
+- The single source of truth is the TOML manifest at `crates/sunrise-error/codes.toml`.
+- The Rust enum at `crates/sunrise-error/src/codes.rs` and the TypeScript enum at `packages/sunrise-error-ts/src/codes.ts` are **generated** mirrors. Hand-editing either generated file is a CI failure.
+- Codes are added at minor-version boundaries; never reused, never renamed.
+- Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
+- An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
 ## Error envelope (core → UI)
 
@@ -59,6 +68,17 @@ UI maps `code` → localized user copy + (optionally) an action button.
 - Transient retries are bounded with exponential backoff.
 - The UI never silently re-runs a destructive operation. Retries happen only for *idempotent* operations.
 
+### Canonical retry policy
+
+```
+initial_delay_ms = 100
+max_delay_ms     = 30000
+jitter_pct       = ±20%
+max_retries      = 5
+```
+
+Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 writes always carry an idempotency key (`batch_id`), so they are eligible; writes without an idempotency key never auto-retry.
+
 ## Uncaught panics
 
 - Rust panics in the core are caught at the FFI boundary and surfaced as `CoreError(FATAL_INTERNAL, …)` rather than crashing the host.
@@ -67,8 +87,26 @@ UI maps `code` → localized user copy + (optionally) an action button.
 ## Validation errors
 
 - Validation runs at the command boundary in the core.
-- Returns `VALIDATION_*` codes with field-specific diagnostic.
-- UI surfaces inline at the offending field.
+- Returns `VALIDATION_*` codes with a structured `diagnostic` object.
+- UI surfaces inline at the offending field, keying off `diagnostic.field`.
+
+The wire shape of a validation error:
+
+```json
+{
+  "code": "VALIDATION_FIELD",
+  "kind": "user",
+  "retryable": false,
+  "diagnostic": {
+    "field": "title",
+    "constraint": "max_length",
+    "limit": 512,
+    "actual": 538
+  }
+}
+```
+
+`field` is dotted-path into the command payload; `constraint` is one of the documented constraint names per entity (`max_length`, `non_empty`, `before`, `after`, `pattern`, `enum`, …); `limit` and `actual` are the constraint's documented numeric or string operands. UIs must not parse `code` for human copy; they must read `diagnostic.field` to highlight the input and look up the localized message via the error-code registry.
 
 ## Cross-cutting principles
 

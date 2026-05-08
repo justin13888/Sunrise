@@ -17,6 +17,10 @@ Reasons:
 
 Automerge was the alternative; rejected for v1 due to slower mobile performance and a heavier op encoding.
 
+### Version pinning
+
+`loro = "=1.0.0"` (exact pin in `Cargo.toml`); upgrading requires a superseding ADR. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "=1.0.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
+
 ## Document layout
 
 We do **not** use one giant CRDT doc. Instead:
@@ -42,6 +46,20 @@ Why per-Stream:
 | `stream_order` (parent → ordered children) | Loro List with fractional indices |
 | `streak_counter` | PN-counter |
 | `deferred_count` | PN-counter |
+
+### OR-Set merge rules
+
+For an OR-Set field (`blocked_by`, `tags`, `assignees`, etc.):
+
+- An add carries `(value, add_op_id)`.
+- A remove carries `(value, [observed_add_op_ids])` — the set of add op ids the removing device has observed for `value`.
+- A remove **only removes** the listed add op ids. Concurrent adds with op ids the remover did not observe survive.
+- Concurrent same-value adds produce one logical entry (Loro deduplicates by value).
+- Tie-breaker on simultaneous final state: not needed; OR-Set is deterministic.
+
+### Cross-stream isolation enforcement
+
+Per-Stream isolation is enforced at the application layer in `sunrise-domain`: every CRDT-mutating call goes through `StreamCore::mutate(stream_id, |doc| …)`, which inspects all entity ids appearing in mutation arguments. Non-conforming calls return `DomainError::CROSS_STREAM_REF { from_stream, to_stream }` and the mutation is rolled back. Loro itself has no such check; the application owns isolation.
 
 ## Concurrent writes — concrete cases
 
