@@ -17,10 +17,14 @@ Frame := uint16 len_prefix || msg_kind: uint8 || payload: bytes (CBOR)
 ## Message catalog
 
 ```
-ClientHello { protocol_version, account_id, device_id, supported_compressions }
-ServerHello { protocol_version, server_id, server_time, accepted_compression }
-Auth        { device_sig over (server_nonce || account_id || device_id) }
-AuthOk      | AuthFail { reason }
+ClientHello { account_id, device_id, supported_compressions }
+ServerHello { server_id, server_time, accepted_compression }
+;   The OIDC access token is carried as a `Authorization: Bearer …` header
+;   on the WebSocket upgrade request (or `?access_token=` query param for
+;   browsers without header support); there is no separate Auth message.
+;   The server validates the token before accepting ClientHello and uses
+;   X-Sunrise-Device to bind the connection to a registered device row.
+AuthFail    { reason }   ; sent then `Bye` if token validation fails post-upgrade
 
 Subscribe   { streams: [{ stream_id, since_cursors: { device_id => seq }}] }
 Unsubscribe { streams: [stream_id] }
@@ -50,7 +54,9 @@ The server **never** sees op contents; it only sees envelopes (which are opaque 
 ## Connection lifecycle
 
 ```
-Client connects → ClientHello → ServerHello → Auth → AuthOk
+Client opens WS upgrade with Authorization: Bearer <oidc_jwt> + X-Sunrise-Device
+Server validates token + device → 101 Switching Protocols (or 401 / Bye)
+Client → ClientHello → Server → ServerHello
 Client → Subscribe(streams)
 Server → OpBatch... (history since cursors) → Ack
 Server → Push(...) live ops as they arrive from peers
@@ -83,13 +89,13 @@ Per-message frame compression negotiated in the handshake. Default: `zstd` level
 
 ## Versioning
 
-`protocol_version = 1`. The server must support N and N-1; older clients receive a clean error.
+The wire protocol is pinned at **v1** for the entire v1 release line. Clients and server within a major release MUST speak the same version; there is no in-band version negotiation. A future major version coordinates with a client release ≥30 days in advance and migrates everything atomically per [`../06-server/overview.md`](../06-server/overview.md). Mismatch between a client and server (e.g., a self-hoster running an older binary) returns a clean `Error { code: "PROTOCOL_VERSION_MISMATCH" }` then `Bye`, and the client surfaces "please update Sunrise (client or server)."
 
 ## Security at the protocol layer
 
 - Wrapped in TLS 1.3.
-- `Auth` proves device-key possession via a fresh server nonce signed by `D_S_priv`.
-- Op envelopes are independently authenticated (signed) and encrypted; protocol-layer auth is for connection access, not content trust.
+- Connection auth is an OIDC bearer token validated at WS upgrade; see [`../06-server/auth.md`](../06-server/auth.md).
+- Op envelopes are independently authenticated (signed by the originating device's `D_S_priv`) and encrypted at the application layer. Protocol-layer auth is for connection access only; content trust comes from the envelope signatures, which the server cannot forge regardless of token compromise.
 
 ## Self-host vs managed
 

@@ -28,13 +28,11 @@ Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x; **MA
 | Sharing — accept invite | MUST | MUST | MUST | MUST | MUST |
 | Sharing — view shared stream as editor | MUST | MUST | MUST | MUST | MUST |
 | Calendar integration (Google) | MUST | MUST | MUST | MUST | MAY |
-| CalDAV integration | SHOULD | SHOULD | SHOULD | SHOULD | MAY |
-| iCal export | MUST | MUST | MUST | MUST | MUST |
+| iCal import / export | MUST | MUST | MUST | MUST | MUST |
 | Background sync | MUST (running) | MUST (BGTask) | MUST (WorkManager) | SHOULD (Service Worker) | N/A (foreground tool) |
 | Tray / menu bar | MUST | N/A | N/A | N/A | N/A |
 | Lock screen widget | N/A | MUST | SHOULD (Glance) | N/A | N/A |
 | Home screen widget | N/A | MUST | MUST | N/A | N/A |
-| Live Activities (iOS) | N/A | SHOULD | N/A | N/A | N/A |
 | Quick Settings tile (Android) | N/A | N/A | SHOULD | N/A | N/A |
 | Watch app (Apple Watch / Wear OS) | N/A | MAY | MAY | N/A | N/A |
 | OS automation surface (App Intents / Tasker) | MUST (CLI) | MUST | MUST | N/A | MUST (CLI) |
@@ -42,7 +40,7 @@ Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x; **MA
 | Mouse | MUST | N/A | N/A | MUST | MAY |
 | Touch | MAY | MUST | MUST | MUST | N/A |
 | Print / PDF export | SHOULD | SHOULD | SHOULD | SHOULD | MAY |
-| Offline initial setup (no internet) | MUST (LAN pair) | MUST (LAN pair) | MUST (LAN pair) | N/A | MUST |
+| First-run pairing | MUST | MUST | MUST | MAY | MUST |
 
 ## Hard rules
 

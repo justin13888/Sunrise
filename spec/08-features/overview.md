@@ -16,7 +16,6 @@ User-visible feature specs. Each spec defines the user contract; implementations
 | [`search.md`](./search.md) | Local FTS with structured operators |
 | [`notifications.md`](./notifications.md) | Local reminders + peer-driven notifications |
 | [`reviews-and-stats.md`](./reviews-and-stats.md) | Weekly review flow + per-Stream stats |
-| [`automation.md`](./automation.md) | Limited if-this-then-that rules |
 | [`keyboard.md`](./keyboard.md) | Per-platform key maps + vim mode |
 
 ## Feature interactions
@@ -46,13 +45,6 @@ User-visible feature specs. Each spec defines the user contract; implementations
                                        Calendar integration
 ```
 
-## Feature flags
+## No feature flags
 
-Some features ship behind a per-user flag (default off) for early users:
-
-- `automation_rules` — power-user feature.
-- `live_activities` (iOS) — gates Live Activities until they're polished.
-- `web_push` — iOS web push works in Safari 16.4+.
-- `tui_daemon` — daemon mode.
-
-Flags are stored in the vault-meta CRDT doc (`settings.feature_flags: { name: bool }`, LWW-register per name). Enabling on one device propagates via normal sync to all paired devices. There is no server-side flag service in v1; the relay does not gate features. There is no separate `feature-flags.md` cross-cutting spec — this section is the normative reference.
+v1 has no per-user feature gates and no flag-service plumbing. The product is opinionated: every feature listed above ships on every supported platform, or it doesn't ship at all. Platform capability is detected at runtime (e.g. iOS web push lights up on Safari 16.4+ automatically); it isn't user-configurable.

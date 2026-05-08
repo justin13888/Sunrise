@@ -25,15 +25,14 @@ Block = {
     travel_time_before?: duration,            ; surfaced as a leading buffer
     travel_time_after?:  duration,
     source:       BlockSource,
-    external_id?: text,                       ; for round-tripping with Google/CalDAV
+    external_id?: text,                       ; for round-tripping with Google Calendar
     rrule?:       text,                       ; for recurring blocks (rare; usually use Routine)
     deleted:      bool,
 }
 
 BlockSource = "sunrise"                       ; created in Sunrise
-            / "import:gcal"                   ; imported from Google
-            / "import:caldav"
-            / "import:ics"
+            / "import:gcal"                   ; imported from Google Calendar
+            / "import:ics"                    ; imported from a one-shot .ics file
 ```
 
 ## Why Blocks aren't Tasks

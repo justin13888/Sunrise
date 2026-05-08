@@ -42,6 +42,30 @@ The sync server is part of Sunrise, not a sellable product to other apps. Reason
 
 Notes use a constrained rich text format (see [`02-domain/notes.md`](../02-domain/notes.md)). Reason: a Markdown editor invites comparison to all Markdown editors, which is a fight not worth having.
 
+## Not an automation platform
+
+No if-this-then-that rules, no scripting, no cron-driven actions, no outbound webhooks. Reason: every automation system grows unbounded — triggers, conditions, actions, debugging, dry-run, loop prevention, rate limits — and most of the value is captured by recurring routines (which we *do* ship). Users who need automation can drive Sunrise from outside via the OS automation surfaces already exposed (App Intents on Apple, Tasker / App Actions on Android, the TUI / CLI on desktop).
+
+## Not an inbound email gateway
+
+No `you@in.sunrise.example` capture address. Reason: inbound email is operationally heavy (DKIM/SPF/DMARC, abuse handling, attachment storage) and breaks the E2EE story (the receiving server sees plaintext). The native share sheets on iOS / Android and a browser extension cover the "save this for later" use case.
+
+## Not a calendar protocol server, not a CalDAV client
+
+We integrate with **Google Calendar** and **iCalendar (.ics) import/export**, full stop. No CalDAV, no Exchange, no Apple iCloud direct, no Office 365 direct. Reason: each protocol is its own quirks-museum, and Google Calendar already proxies most of them for users who care. CalDAV may return post-v1 if there's loud demand from self-hosters.
+
+## Not a custom auth stack
+
+We do not implement password storage, email-OTP delivery, magic links, MFA, captcha, or our own session/token format. All login, sign-up, MFA, password reset, and email verification go through an **OIDC** issuer (Sunrise-operated for managed cloud; operator-chosen for self-host). Reason: every one of those is a permanent surface for security bugs and engineering hours; OIDC issuers do all of it well. See [`../06-server/auth.md`](../06-server/auth.md).
+
+## No feature flags / per-user gates
+
+The product is opinionated. Every shipped feature is on for every user on every supported platform; there is no flag service, no LaunchDarkly-style gating, no per-user rollout controls. Reason: feature gates explode test surface, mask broken code paths, and signal a lack of conviction. We turn features on by shipping them.
+
+## No LAN-only / no-server topology
+
+Pairing and sync always go through a server (managed or self-hosted). Reason: an extra "no-server" code path doubles the transport-layer test matrix while serving a vanishingly small audience. Self-hosters who want LAN-only operation run the server on the LAN.
+
 ---
 
 **Test.** When a feature request arrives, the first question is: "does this push us toward a non-goal above?" If yes, default to no.

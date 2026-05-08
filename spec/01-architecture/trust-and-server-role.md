@@ -11,7 +11,7 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 1. **A reliable mailbox.** Devices may be offline for weeks. The server holds encrypted ops until the next device check-in.
 2. **Push fanout.** Wakes a device to pull when an op is queued for it.
 3. **Encrypted blob storage.** Attachments larger than the op-log payload limit are stored as encrypted blobs; the server holds them but cannot read them.
-4. **Authentication for sync.** Verifies that a request claiming to be from device D is actually signed by D's key.
+4. **Authentication for sync.** Verifies an OIDC access token (issued by a separate IdP) plus a registered device ID. See [`../06-server/auth.md`](../06-server/auth.md).
 5. **Rate limiting & abuse prevention.** Per-account quotas to keep the system viable.
 6. **Coordination for sharing.** Invites, key-exchange envelopes between identities (the keys themselves are wrapped end-to-end).
 7. **Account/billing surface.** Email + payment for managed cloud users. Self-hosted servers can omit billing.
@@ -43,8 +43,8 @@ The Sunrise server has **two deployment profiles**:
 
 | Profile | Auth | Billing | Push | Geo |
 |---|---|---|---|---|
-| Managed | Sunrise-issued accounts | Stripe | APNs/FCM via shared cert | Global |
-| Self-hosted | Operator-chosen (basic, OIDC, none) | Off | Optional, operator's own certs | Wherever the operator runs |
+| Managed | Sunrise-operated OIDC issuer | Stripe | APNs/FCM via shared cert | Global |
+| Self-hosted | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Off | Optional, operator's own certs | Wherever the operator runs |
 
 A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
 
@@ -56,4 +56,4 @@ The alternative to having a server is pure peer-to-peer. We considered it and re
 - Sharing across networks needs a rendezvous; that rendezvous is a server even if we call it something else.
 - Self-hosting a tiny relay is operationally simpler than running a P2P NAT-traversal stack.
 
-A future P2P transport may exist as a *supplement* (LAN sync, when both devices are on the same network), not a replacement. See [`../05-sync/transports.md`](../05-sync/transports.md).
+v1 has no P2P or LAN-direct transport. See [`../05-sync/transports.md`](../05-sync/transports.md).

@@ -8,19 +8,16 @@ Two surfaces: the **sync protocol** (over WebSocket; spec'd in [`../05-sync/wire
 
 ## REST endpoints
 
-All endpoints are HTTPS. Authenticated requests carry a device-signed bearer in `Authorization: SunriseDeviceSig <…>` (see [`auth.md`](./auth.md)).
+All endpoints are HTTPS. Authenticated requests carry a standard OIDC access token in `Authorization: Bearer <jwt>` plus an `X-Sunrise-Device: <dev_id>` header (see [`auth.md`](./auth.md)). Sign-up, login, password reset, MFA, and email change are all handled by the configured OIDC issuer — they have no Sunrise REST endpoints.
 
 ### Account
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/accounts/init` | `{ email }` | `{ otp_pending: true }` (sends OTP email) |
-| POST | `/api/v1/accounts` | `{ email, otp, identity_pub_s, identity_pub_d, recovery_blob, terms_accepted_at }` | `{ account_id, server_id }` |
+| POST | `/api/v1/accounts` | `{ identity_pub_s, identity_pub_d, recovery_blob, terms_accepted_at }` | `{ account_id }` (called once by the first device after OIDC login auto-provisions the account) |
 | GET | `/api/v1/accounts/me` | — | `{ account_id, email, devices: [DeviceMeta], plan }` |
-| POST | `/api/v1/accounts/me/email_change` | `{ new_email, otp_code }` | 204 |
-| POST | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 |
-| POST | `/api/v1/accounts/recovery/init` | `{ email }` | `{ otp_pending: true }` (skipped on self-host with `auth.recovery_requires_email = false`) |
-| POST | `/api/v1/accounts/recovery/blob` | `{ challenge_sig }` | `{ recovery_blob }` (auth via recovery-code-derived challenge; see auth.md) |
+| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 |
+| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) |
 | DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) |
 
 ### Identity discovery (for sharing)
@@ -64,8 +61,10 @@ The `share_envelope` is opaque to the server.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/api/v1/meta` | — | `{ server_version, protocol_versions, capabilities, max_op_size, max_blob_size }` |
+| GET | `/api/v1/meta` | — | `{ server_version, protocol_version, oidc_issuer, oidc_client_id, capabilities, max_op_size, max_blob_size }` |
 | GET | `/api/v1/health` | — | 200 if alive |
+
+`oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration.
 
 ## Errors
 
@@ -96,9 +95,8 @@ Most "API" calls in a typical app — CRUD on tasks — are *not* server API cal
 
 | Endpoint | Managed | Self-host (default) | Self-host (single-binary) |
 |---|---|---|---|
-| `/api/v1/accounts/init`, `/api/v1/accounts` (OTP-gated) | yes | yes | yes (OTP optional via `auth.signup_requires_email`) |
+| `/api/v1/accounts` | yes | yes | yes |
 | `/api/v1/accounts/me/*` | yes | yes | yes |
-| `/api/v1/accounts/recovery/*` | yes | yes (email gate optional) | yes (email gate optional) |
 | `/api/v1/identities` (discovery) | yes | yes | yes |
 | `/api/v1/devices/*` | yes | yes | yes |
 | `/api/v1/devices/<id>/push_token` | yes | optional (operator's APNs/FCM creds) | no |

@@ -19,7 +19,7 @@ Read top-down. Each numbered section builds on the prior ones:
 | 06 | [`06-server/`](./06-server) | What does the server do (and *not* do)? |
 | 07 | [`07-clients/`](./07-clients) | Per-platform: desktop, iOS, Android, web, TUI. |
 | 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…) |
-| 09 | [`09-integrations/`](./09-integrations) | External: Google Calendar, CalDAV, iCal, webhooks. |
+| 09 | [`09-integrations/`](./09-integrations) | External: Google Calendar, iCalendar import/export. |
 | 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, testing, perf. |
 | 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why* not *what*. |
 

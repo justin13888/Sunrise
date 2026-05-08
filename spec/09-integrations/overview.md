@@ -9,10 +9,9 @@ External integrations connect Sunrise to systems we *don't* build. Integrations 
 | Integration | Direction | Spec |
 |---|---|---|
 | Google Calendar | Bidirectional | [`google-calendar.md`](./google-calendar.md) |
-| CalDAV | Bidirectional | [`caldav.md`](./caldav.md) |
 | iCalendar (.ics) | Import / export | [`icalendar.md`](./icalendar.md) |
-| Webhooks (outbound) | Outbound triggered by automation rules | [`webhooks.md`](./webhooks.md) |
-| Email-to-Sunrise | Inbound (deferred) | [`email.md`](./email.md) |
+
+v1 ships only these two. CalDAV, outbound webhooks, and inbound email-to-Sunrise are explicit non-goals — see [`../00-product/non-goals.md`](../00-product/non-goals.md).
 
 ## Design principles
 
@@ -24,13 +23,7 @@ External integrations connect Sunrise to systems we *don't* build. Integrations 
 
 ## Multi-device coordination
 
-Multiple devices running the same integration would call the API multiple times. We elect a **primary integration runner** per integration:
-
-- The most-recently-active device that has the integration's token decrypted.
-- Other devices defer to it via a periodic heartbeat in a control op.
-- On the runner's prolonged absence (> 24h), another device takes over.
-
-This avoids API rate-limit duplication.
+Multiple devices running the same integration would call the API multiple times. We elect a **primary integration runner** per integration: the most-recently-active device that has the integration's token decrypted. Other devices defer via a periodic heartbeat in a control op; on the runner's absence (> 24h), another device takes over.
 
 ## Token storage
 

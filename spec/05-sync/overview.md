@@ -20,7 +20,7 @@ Sync moves encrypted ops between devices that participate in the same identity (
 |---|---|
 | CRDT engine | [`crdt-design.md`](./crdt-design.md) |
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
-| Transports (WS/HTTP/LAN/P2P) | [`transports.md`](./transports.md) |
+| Transports (WS + HTTP fallback) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |
 | Presence | [`presence.md`](./presence.md) |
 | Offline outbox | [`offline-queue.md`](./offline-queue.md) |

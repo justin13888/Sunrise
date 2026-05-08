@@ -10,8 +10,7 @@ Devices must exchange ops promptly when both online. Mobile must work behind cel
 
 - **Primary:** WebSocket over TLS (`wss://`).
 - **Fallback:** HTTP/2 long-poll for restricted networks.
-- **LAN supplement:** mDNS-discovered direct WS for opportunistic same-network sync.
-- **Future:** P2P (NAT-traversal, libp2p-style) is explicitly deferred.
+- **No LAN/P2P/USB/BLE in v1.** Same-network sync relays through the server like everything else; it's fast enough on typical broadband, and the alternative doubles the transport test matrix for a small audience. Future P2P remains structurally compatible (the wire protocol is transport-agnostic) but is not on the v1 path.
 
 ## Alternatives considered
 
@@ -28,5 +27,5 @@ Devices must exchange ops promptly when both online. Mobile must work behind cel
 - Server connection model is straightforward: one WS per active device per account.
 - Reconnect logic is easy to test deterministically.
 - Restricted networks are handled via fallback without a separate codepath for the *protocol* — only the transport adapter changes.
-- LAN sync is a real feature, not a research project, and is straightforward over WS.
+- Same-network sync is fast enough through a relay; we don't ship a separate LAN code path.
 - Future P2P is structurally compatible — the wire protocol is transport-agnostic.

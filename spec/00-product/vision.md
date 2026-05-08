@@ -33,4 +33,4 @@ These are **non-negotiable**. Any feature decision that conflicts with one of th
 
 - A user has to learn a query language to filter their tasks.
 - A user feels obligated to maintain Sunrise (groom backlog, archive, tag) as a chore in itself.
-- A power-user feature (e.g. automation rules) is unusable by a casual user on day one.
+- A casual user has to learn the system before they can capture and triage on day one.

@@ -32,12 +32,12 @@ Use a Block with `rrule`. UX prompts: "every weekday 9-10 → Work A standup."
 
 ## External calendar integration
 
-- **Import (read-only Blocks).** Toggle per integration: pull events from Google Calendar / CalDAV. Imported Blocks are tagged `source = import:gcal/caldav`. They are read-only (cannot edit or bind tasks). User can convert one to a Sunrise Block (snapshot to a new editable Block; the import remains).
-- **Export (push to external).** Per-Stream toggle. When on, Sunrise-created Blocks within that Stream are pushed as events to a designated external calendar. Edits propagate. Conflict policy: external is updated on change; if the external system's event is deleted out-of-band, we drop the binding and surface a notification.
+- **Import (read-only Blocks).** Toggle per integration: pull events from Google Calendar. Imported Blocks are tagged `source = import:gcal`. They are read-only (cannot edit or bind tasks). User can convert one to a Sunrise Block (snapshot to a new editable Block; the import remains). One-shot `.ics` import is also supported and yields `source = import:ics` Blocks.
+- **Export (push to external).** Per-Stream toggle. When on, Sunrise-created Blocks within that Stream are pushed as events to a designated Google Calendar. Edits propagate. Conflict policy: external is updated on change; if the external event is deleted out-of-band, we drop the binding and surface a notification.
 
-## Why not a native CalDAV server inside Sunrise
+## Why not a native calendar server inside Sunrise
 
-We considered it. Decision: integrate, don't replace. Calendars are a 10-year product; we use them, we don't compete with them.
+Calendars are a 10-year product; we use them, we don't compete with them.
 
 ## TUI experience
 

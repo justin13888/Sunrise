@@ -76,4 +76,4 @@ For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob s
 
 ## Versioning
 
-The server speaks `protocol_version` N and N-1. A minor server release does not break older clients. Major server release coordinates with a client release ≥30 days prior; clients that miss the deadline see a clear "please update" message.
+v1 is a single wire-protocol version: the server speaks v1, clients speak v1, no negotiation. A future major version coordinates with a client release ≥30 days prior and migrates everything atomically; clients that miss the deadline see a clear "please update" message.

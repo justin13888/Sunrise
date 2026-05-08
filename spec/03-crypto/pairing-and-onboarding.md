@@ -54,7 +54,7 @@ The Noise static keys for the handshake are **not** the device or identity long-
    }))
    ```
 2. **User on E** scans the QR (or types the 6-digit fallback). E confirms a nickname for N.
-3. **E ⇄ N**: Noise XX handshake runs over the relay (a TLS WebSocket whose payloads the server cannot interpret), or LAN mDNS-discovered direct WS, or USB.
+3. **E ⇄ N**: Noise XX handshake runs over the relay — a TLS WebSocket whose payloads the server cannot interpret. Both devices connect to the same relay endpoint, identified by the `relay_url` carried in the QR.
 4. After the handshake's third message:
    - Both sides have agreed transport keys.
    - Both sides compute the same handshake hash `h`.
@@ -87,7 +87,8 @@ The relay sees only Noise traffic (opaque ciphertext) and the eventual `device_c
 
 - **QR path:** the QR carries `N_static_pub` (32 B), so the handshake's authentication is bound to a 256-bit value the user transferred out-of-band. MITM is computationally infeasible.
 - **Numeric-only path:** the 6-digit code is the SAS computed from the handshake hash. Security relies on interactive context: the user aborts on mismatch. A MITM has a single online attempt at a 1-in-1,000,000 collision; we require the user to confirm explicitly on both sides, and we rate-limit pair attempts per account.
-- **USB path** (Tauri desktop ↔ phone): the same Noise handshake runs over a USB transport; the SAS step is mandatory regardless of transport.
+
+> v1 does not ship LAN/mDNS, BLE, or USB pairing transports. All pairing handshakes relay through the server (which sees only opaque Noise ciphertext).
 
 ## Mode B: pair using only a recovery code
 

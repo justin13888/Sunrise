@@ -4,7 +4,7 @@ status: accepted
 
 # Deployment Topologies
 
-Three topologies are supported. A user can move between them without data loss.
+Two topologies are supported. A user can move between them without data loss.
 
 ## T1: Managed cloud (default)
 
@@ -28,32 +28,21 @@ Three topologies are supported. A user can move between them without data loss.
                                 └── local disk OR S3-compatible
 ```
 
-- One Go/Rust binary, optional Postgres, optional S3.
-- Auth: basic auth, OIDC, or "single user, paired devices only" mode.
+- One Rust binary, optional Postgres, optional S3.
+- Auth: operator brings any OIDC issuer (Keycloak, Authelia, Dex, Auth0, Google Workspace, etc.). See [`../06-server/auth.md`](../06-server/auth.md).
 - Push: optional; if absent, devices poll. (See [`../06-server/push-notifications.md`](../06-server/push-notifications.md).)
 - Use cases: privacy-conscious users; teams of ≤3; researchers.
-
-## T3: LAN-only / no server (limited)
-
-```
-[Device A]  ── mDNS/BLE/USB ─▶  [Device B]
-```
-
-- No long-running server. Devices discover each other on a local network and exchange ops directly.
-- Useful for: travel without internet, paired offline use, initial setup before any cloud account.
-- Limitations: shared documents with a remote identity are not possible; reminders to a not-currently-paired device are not delivered until they meet again.
-- Implementation: same wire protocol as T1/T2, but transport is `mdns+ws` or `usb-tether+http` instead of `wss`.
 
 ## Topology migration
 
 | From → To | How |
 |---|---|
-| T3 → T1 | User signs up; first sync uploads queued ops. |
 | T1 → T2 | User runs self-host binary, points clients at it via "Sync server URL" setting; clients re-pair to the new host but keep their identity and data. |
-| T1 → T3 | User stops paying / disconnects. Existing devices remain functional and can sync over LAN. New devices cannot pair without an out-of-band channel. |
 | T2 → T1 | Reverse of T1 → T2. |
 
-The wire protocol is the same in all topologies. Only the transport URL and the auth mode change.
+The wire protocol is the same in both topologies. Only the server URL and OIDC issuer change.
+
+> **No-server / LAN-only mode is not supported in v1.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
 
 ## Federation note
 

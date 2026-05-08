@@ -39,9 +39,11 @@ data_dir = "/var/lib/sunrise"
 # s3_bucket = "sunrise-ops"
 
 [auth]
-allow_signup = false              # invite-only
-oidc_issuer = ""                  # optional
-admin_emails = ["ops@example.com"]
+oidc_issuer       = "https://auth.example.com"   # required; any OIDC-conformant issuer
+oidc_client_id    = "sunrise"
+oidc_client_secret = "..."
+allow_signup      = false                        # if false, only existing IdP users with prior accounts can use the server
+admin_emails      = ["ops@example.com"]
 
 [push]
 apns = { key_id = "...", team_id = "...", key_path = "..." }   # optional
