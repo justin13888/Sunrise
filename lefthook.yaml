@@ -1,17 +1,25 @@
 pre-commit:
   parallel: true
   commands:
-    check:
+    biome-check:
       run: bun run check:fix
-    typecheck:
+    bun-typecheck:
       run: bun run typecheck
+    rust-fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+    rust-clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -D warnings
 
 pre-push:
   parallel: true
   commands:
     biome-ci:
       run: bun run ci
-    typecheck:
+    bun-typecheck:
       run: bun run typecheck
-    test:
+    bun-test:
       run: bun run test:run
+    rust-test:
+      run: cargo test --workspace --all-targets

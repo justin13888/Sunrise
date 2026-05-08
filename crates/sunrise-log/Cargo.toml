@@ -1,0 +1,17 @@
+[package]
+name = "sunrise-log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Layered NDJSON logging contract with redaction-safe Plain<T> wrappers"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]

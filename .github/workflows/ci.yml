@@ -2,96 +2,120 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, v1-rewrite]
   pull_request:
-    branches: [master]
+    branches: [master, v1-rewrite]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
 jobs:
-  lint:
-    name: Lint & Format
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+      - name: cargo doc-test
+        run: cargo test --workspace --doc
+
+  rust-deny:
+    name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Cache Bun packages
-        uses: actions/cache@v4
+  bun-lint:
+    name: Bun lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run ci
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Biome CI check
-        run: bun run ci
-
-  typecheck:
-    name: TypeScript
+  bun-typecheck:
+    name: Bun typecheck
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Cache Bun packages
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Generate GraphQL types
-        run: bun run --filter '@sunrise/api' codegen
-
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
       - name: TypeScript typecheck
         run: bun run typecheck
         env:
           NODE_OPTIONS: --max-old-space-size=4096
 
-  test:
-    name: Tests
+  bun-test:
+    name: Bun tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Cache Bun packages
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
       - name: Run tests with coverage
         run: bun run test:coverage
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-report
           path: coverage/
           retention-days: 30
+
+  log-redaction:
+    name: Log redaction gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject .expose() in logging/telemetry/observability surfaces
+        run: |
+          set -euo pipefail
+          # spec/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
+          # logging, telemetry, or observability code paths.
+          if rg -nP '\bplain[a-z_]*\.expose\(' \
+              crates/sunrise-log/src \
+              crates/*/src/telemetry \
+              crates/*/src/logging \
+              crates/*/src/observability \
+              packages/sunrise-log/src 2>/dev/null; then
+            echo "::error::Plain<T>::expose() called inside redaction-protected surface."
+            exit 1
+          fi
+          echo "OK: no .expose() calls in protected surfaces."

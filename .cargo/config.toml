@@ -1,0 +1,24 @@
+# Cross-compile target hints. Targets aren't installed by default; CI installs
+# them on demand. Keep workspace-level settings minimal so local builds are
+# fast on whatever host is running.
+
+[build]
+# Use the host target by default; CI overrides via --target.
+
+[target.aarch64-apple-darwin]
+# Apple Silicon desktop target (Tauri desktop builds).
+
+[target.aarch64-apple-ios]
+# iOS device target (UniFFI bindings).
+
+[target.aarch64-linux-android]
+# Android arm64 target (UniFFI bindings).
+
+[target.wasm32-unknown-unknown]
+# Web PWA WASM target (wasm-bindgen).
+
+[target.x86_64-unknown-linux-gnu]
+[target.x86_64-pc-windows-msvc]
+
+[net]
+git-fetch-with-cli = true
