@@ -1,0 +1,24 @@
+[package]
+name = "sunrise-crdt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Loro-backed CRDT layer for Sunrise streams"
+
+[lints]
+workspace = true
+
+[dependencies]
+loro = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
