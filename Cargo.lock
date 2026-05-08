@@ -1930,6 +1930,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "rand 0.8.6",
+ "rand_core 0.6.4",
+ "serde",
+ "sunrise-cbor",
+ "sunrise-crypto",
+ "sunrise-domain",
+ "sunrise-error",
+ "sunrise-id",
+ "sunrise-storage",
+ "sunrise-sync",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "sunrise-crdt"
 version = "0.1.0"
 dependencies = [

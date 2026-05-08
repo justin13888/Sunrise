@@ -1,0 +1,32 @@
+[package]
+name = "sunrise-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise core API: single-writer vault, command/query, sync state"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
+sunrise-cbor = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-storage = { workspace = true }
+sunrise-sync = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
