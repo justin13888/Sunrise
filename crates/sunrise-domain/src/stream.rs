@@ -1,0 +1,163 @@
+//! Stream entity per `spec/02-domain/streams.md`.
+
+use crate::common::NoteBody;
+use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sunrise_id::EntityRef;
+
+/// Fixed Stream colors per the spec's palette. v1: 8 fixed values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamColor {
+    /// Default neutral.
+    Slate,
+    /// Reds.
+    Rose,
+    /// Oranges.
+    Amber,
+    /// Greens.
+    Emerald,
+    /// Blues.
+    Sky,
+    /// Indigos.
+    Indigo,
+    /// Purples.
+    Violet,
+    /// Pinks.
+    Pink,
+}
+
+/// Review cadence for a Stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamReviewCadence {
+    /// Weekly review.
+    Weekly,
+    /// Every two weeks.
+    Biweekly,
+    /// Monthly review.
+    Monthly,
+    /// No review reminders.
+    None,
+}
+
+/// Persisted Stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stream {
+    /// Stream id.
+    pub id: EntityRef,
+    /// Creation time.
+    pub created_at: DateTime<Utc>,
+    /// Last-update time.
+    pub updated_at: DateTime<Utc>,
+    /// Display name (1..=128 chars after trim).
+    pub name: String,
+    /// Optional description (rich text).
+    #[serde(default)]
+    pub description: Option<NoteBody>,
+    /// Color from a fixed palette.
+    pub color: StreamColor,
+    /// Optional icon id from a fixed set.
+    #[serde(default)]
+    pub icon: Option<&'static str>,
+    /// Optional parent Stream — one-level nesting only.
+    #[serde(default)]
+    pub parent_id: Option<EntityRef>,
+    /// Fractional-index sort key.
+    pub sort_order: String,
+    /// Archived state.
+    #[serde(default)]
+    pub archived: bool,
+    /// Paused state.
+    #[serde(default)]
+    pub paused: bool,
+    /// Optional pause expiry.
+    #[serde(default)]
+    pub paused_until: Option<DateTime<Utc>>,
+    /// Review cadence preference.
+    pub review_cadence: StreamReviewCadence,
+    /// Optional default Context applied to new tasks captured into this Stream.
+    #[serde(default)]
+    pub default_context: Option<EntityRef>,
+    /// Tombstone.
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// Draft used by the UI when creating a Stream.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StreamDraft {
+    /// Display name.
+    pub name: String,
+    /// Optional description.
+    pub description: Option<NoteBody>,
+    /// Color (defaults to `Slate` if omitted).
+    pub color: Option<StreamColor>,
+    /// Optional parent stream id (one-level nesting only).
+    pub parent_id: Option<EntityRef>,
+    /// Optional review cadence (defaults to `Weekly`).
+    pub review_cadence: Option<StreamReviewCadence>,
+}
+
+impl StreamDraft {
+    /// Validate.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        let _ = validate_title(&self.name, "stream.name", MAX_STREAM_NAME_LEN)?;
+        Ok(())
+    }
+}
+
+/// Patch applied via `Command::UpdateStream`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StreamPatch {
+    /// New name.
+    pub name: Option<String>,
+    /// New description.
+    pub description: Option<Option<NoteBody>>,
+    /// New color.
+    pub color: Option<StreamColor>,
+    /// New parent id.
+    pub parent_id: Option<Option<EntityRef>>,
+    /// New review cadence.
+    pub review_cadence: Option<StreamReviewCadence>,
+    /// Archive / unarchive.
+    pub archived: Option<bool>,
+    /// Pause / unpause.
+    pub paused: Option<bool>,
+    /// New pause expiry.
+    pub paused_until: Option<Option<DateTime<Utc>>>,
+}
+
+impl StreamPatch {
+    /// Validate.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(n) = &self.name {
+            let _ = validate_title(n, "stream.name", MAX_STREAM_NAME_LEN)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_validates_name() {
+        let d = StreamDraft {
+            name: "Work: Acme".into(),
+            ..Default::default()
+        };
+        d.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_rejects_empty_name() {
+        let d = StreamDraft {
+            name: "   ".into(),
+            ..Default::default()
+        };
+        assert_eq!(d.validate(), Err(ValidationError::InvalidTitle));
+    }
+}
