@@ -1,61 +1,87 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Audit and Tamper Evidence
 
-The server is untrusted but in the message path. We need to detect: dropped ops, replayed ops, reordered ops, fork attacks (different views of history served to different devices).
+The relay is untrusted but is in the message path. We need to detect: dropped ops, replayed ops, reordered ops, and fork attacks (different views of history served to different devices).
 
-## Per-device monotonic counters
+## Identity and replay invariants
 
-Every op carries `(device_id, seq)` where `seq` is strictly monotonic within a device for a given Stream. Receiving devices verify:
+The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. The inner-Op `op_id` (a ULID) is the canonical CRDT-merge identity used for idempotent application — duplicate `op_id` arrivals are dropped silently.
 
-- `seq` increases by 1 (no gaps after compaction).
-- A gap implies the server withheld an op or it was lost. Gap detection produces a sync warning.
+Receivers enforce:
 
-## Per-stream Merkle hash chain
+- `seq` strictly monotonic per `(stream_id, device_id)`, starting at 1, no gaps.
+- A gap is a sync warning: surfaced as "received op #(N+2); op #(N+1) missing" with a "request resync" affordance.
+- A repeated `(stream_id, device_id, seq)` whose envelope bytes don't match the previously stored one is treated as integrity-fatal: sync stops, the user sees an integrity warning.
+- A repeated `(stream_id, device_id, seq)` whose bytes do match is silently dropped (idempotent re-delivery).
 
-For each Stream, devices maintain a running **op-log root**:
+## Per-Stream Merkle root
+
+For each Stream, every device maintains a running root computed in causal-order applied:
 
 ```
-root_n = BLAKE3( root_{n-1} || op_id_n || env_hash_n )
+root_0 = BLAKE3-256("sunrise.stream_root.init.v1" || stream_id)
+root_n = BLAKE3-256("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n)
+env_hash_n = BLAKE3-256(canonical_cbor_envelope_bytes_n)
 ```
 
-`env_hash_n` = BLAKE3 of the full op envelope.
+Concurrent ops apply in `(ts_ms, device_id, seq)` lexicographic order before being folded into the root, so all devices that have applied the same set of ops produce the same root regardless of arrival order.
 
-- Each device publishes its current root in periodic "checkpoint ops."
-- Other devices verify checkpoints they receive against their own computed root.
-- A mismatch indicates: malicious server (different views), out-of-order delivery, or a bug. The client surfaces a "vault integrity warning."
+## Checkpoint ops
 
-Note: this is *eventual* tamper evidence, not real-time prevention. CRDTs allow concurrent ops, so two checkpoint roots can legitimately differ at a given moment. The check is: "for the set of ops both devices have seen, does the merge-equivalent root match?"
+Each device emits a `checkpoint` op periodically — the cadence is **whichever of these comes first**:
 
-## Fork detection (server view divergence)
+- Every 256 applied ops in a Stream.
+- Every 24 hours of wall time, conditional on at least one applied op.
+- Immediately before the device disconnects gracefully (best-effort).
 
-A hostile server could serve different op sets to different devices. To detect:
+The checkpoint payload (encrypted under the Stream key, like normal ops) is:
 
-1. Each device, on every reconnect, sends its **highest seen `(device_id, seq)` pairs** for each Stream.
-2. The server's response includes ops since those points.
-3. The server's response is signed (transport-level via account auth) but content-trusted only via the per-op signatures.
-4. If the server omits ops it has previously delivered, the next sync from the originating device will surface the gap (because the originating device's checkpoint will reference ops the receiving device never saw).
+```cddl
+CheckpointPayload = {
+    1: bstr .size 32,            ; root after applying the most recent op
+    2: { bstr .size 16 => uint } ; covers: the (device_id => max applied seq) snapshot at this root
+}
+```
 
-This is not perfect; a sufficiently elaborate fork can hide for a long time if the user's devices never reconnect to the same canonical view. We accept this and document the limitation.
+## Verifying checkpoints from peers
+
+When device A receives a checkpoint from device B for Stream S:
+
+1. Look up A's local applied set restricted to the same `covers`.
+2. Compute the root A would have for that restricted set.
+3. If A's restricted-root equals B's `root`: confirmed; A advances its peer-trust state for B's view of S.
+4. If they differ but A is missing some op B claims to have applied (i.e. B's `covers[d_i] > A's max applied seq for d_i`): A re-requests the missing ops and retries.
+5. If they differ for a covers set A has fully applied: this is a **fork detected** — A surfaces an integrity-red warning, stops accepting more ops on S until the user inspects and acknowledges, and writes a forensic record (B's checkpoint envelope, A's restricted-root) to the vault.
 
 ## Rollback detection
 
-A simpler attack: server serves a known-old snapshot to one device after the device was offline.
+A simpler attack: the relay serves a known-old snapshot to a device after that device was offline.
 
-Mitigation: each device persists its **highest-seen op-log root** per Stream. On reconnect, it compares the server's first delivery against its stored root; if the server's chain doesn't extend the stored root, the device refuses to apply and surfaces a "rollback detected" warning.
+Mitigation: every device persists its **highest-seen `root` per Stream** durably. On reconnect:
 
-## Replay protection
+1. Device sends its persisted `(root, covers)` to the relay.
+2. Relay's reply is expected to either echo the same root (no new ops) or extend it (compute the new root over A's set ∪ new ops). If the relay's first delivery cannot extend A's stored root, A refuses to apply and surfaces a "rollback detected" warning.
 
-`(device_id, seq, op_id)` make replays detectable: the same op appearing twice is identical and is idempotent (the CRDT layer drops duplicates by `op_id`). However, the *act* of replaying old ops is itself a sign of either bug or malice; we log a counter.
+## Fork detection (server view divergence)
 
-## What the user sees
+A hostile relay could serve different op sets to different devices and avoid consistency forever, but in practice as devices reconnect to each other their checkpoints converge or diverge. The checkpoint mechanism above will eventually detect a fork once two formerly-divergent devices have a checkpoint comparison.
 
-- A per-vault "Integrity" indicator (green / yellow / red) in advanced settings.
-- On `red`, a clear instruction: stop syncing, contact support / cross-verify with another device.
+This is *eventual* tamper evidence, not real-time prevention. We accept the residual risk and document it.
 
-## What we explicitly don't do in v1
+## Per-vault Integrity indicator
 
-- Transparency logs (Certificate-Transparency-like public log of identity-key changes). Tracked for v2 once federation is in scope.
-- Multi-party verification of server integrity (out of scope).
+A persistent UI element in advanced settings:
+
+- **Green** — all checkpoints within the last 7 days verified across all paired devices.
+- **Yellow** — gap detected once, recovered after resync.
+- **Red** — fork or rollback detected; sync paused until the user acknowledges.
+
+A `red` state offers a "save forensic bundle" affordance that exports the relevant envelopes, checkpoints, and roots in a sealed encrypted file the user can share with support or with peers for cross-verification.
+
+## Out of scope (v1)
+
+- **Transparency logs** (Certificate-Transparency-style public log of identity-key events). Tracked for v2 with federation.
+- **Multi-party verification of relay integrity** (oblivious transfers, third-party auditor). Out of scope.

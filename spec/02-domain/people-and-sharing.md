@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # People
@@ -57,6 +57,23 @@ People records are **per-vault** and never sent to the server in plaintext. Link
 | Transfer ownership | Stream | New owner becomes responsible; permissions reset; original owner's access becomes "shared with" |
 
 Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no team admin surface).
+
+### Capability matrix
+
+| Capability | viewer | editor |
+|---|---|---|
+| Read all Tasks/Notes/Blocks/Attachments in the Stream | ✓ | ✓ |
+| Decrypt and download Attachments | ✓ | ✓ |
+| Export the Stream's content to file | ✓ | ✓ |
+| Create / update / delete Tasks, Notes, Blocks | — | ✓ |
+| Add or remove Contexts on a Task | — | ✓ |
+| Upload new Attachments | — | ✓ |
+| Edit Stream metadata (name, color, description) | — | — (owner only) |
+| Add or remove sharing peers | — | — (owner only) |
+| Trigger Stream-key rotation | — | — (owner only) |
+| Archive or delete the Stream | — | — (owner only) |
+
+Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, the relay enforces the same boundary by dropping ops whose signing identity does not have `editor` role on the target Stream.
 
 ## What sharing is *not*
 

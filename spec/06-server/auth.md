@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Server Authentication
@@ -49,7 +49,9 @@ Flow:
 5. Client signs the challenge with that key and `POST /api/v1/accounts/recovery/blob`.
 6. Server verifies and returns the encrypted recovery blob.
 
-This double gate (email + recovery code) prevents a stolen recovery code alone from being used without email access. **Open**: should there be a "no email" mode for self-host? Default proposal: yes, configurable.
+This double gate (email + recovery code) prevents a stolen recovery code alone from being used without email access.
+
+**Self-host: no-email mode.** Self-hosted operators MAY disable the email step via `auth.recovery_requires_email = false` in server config. When disabled, the recovery flow skips steps 1–2 and starts at step 3, returning the recovery blob to any client that completes the recovery-key challenge. Operators choosing this mode accept the corresponding security trade (a stolen recovery code is the only barrier). Managed cloud always requires email.
 
 ## OIDC / SSO (self-host only)
 

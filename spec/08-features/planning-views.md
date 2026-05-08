@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Planning Views

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Multi-Device (Single User)

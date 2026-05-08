@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Offline Queue (Outbox)

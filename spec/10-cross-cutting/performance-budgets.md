@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Performance Budgets
@@ -10,12 +10,22 @@ Numbers we promise. CI fails when a regression breaks them.
 
 | Platform | p50 | p95 | Hard cap |
 |---|---|---|---|
-| Desktop (Apple Silicon, mid-tier 2022 Win/Linux) | 200 ms | 500 ms | 1 s |
-| iOS (iPhone 14+) | 300 ms | 700 ms | 1.5 s |
-| Android (Pixel 7) | 400 ms | 900 ms | 2 s |
-| Web (4G, cold cache) | 1.5 s | 3 s | 5 s |
-| Web (warm cache) | 250 ms | 500 ms | 1 s |
-| TUI | 100 ms | 250 ms | 500 ms |
+| Desktop (baseline A) | 200 ms | 500 ms | 1 s |
+| iOS (baseline B) | 300 ms | 700 ms | 1.5 s |
+| Android (baseline C) | 400 ms | 900 ms | 2 s |
+| Web (4G, cold cache, baseline A) | 1.5 s | 3 s | 5 s |
+| Web (warm cache, baseline A) | 250 ms | 500 ms | 1 s |
+| TUI (baseline A) | 100 ms | 250 ms | 500 ms |
+
+### Hardware baselines (CI-pinned)
+
+| Code | Spec | Used in CI as |
+|---|---|---|
+| **Baseline A** (desktop) | Apple M1 Pro, 16 GB RAM, NVMe SSD | macOS GitHub Actions runner; `bench-desktop-a` |
+| **Baseline B** (iOS) | iPhone 13 (A15, 4 GB RAM) | physical device farm; `bench-ios-b` |
+| **Baseline C** (Android) | Pixel 7 (Tensor G2, 8 GB RAM, UFS 3.1) | physical device farm; `bench-android-c` |
+
+Linux/Windows desktop builds run a calibrated comparison test on a Ryzen 5 5600 (16 GB DDR4-3200, NVMe SSD) and a Dell XPS 13 9310 (i7-1185G7, 16 GB, NVMe SSD); benches must hit Baseline A within ±15 % on both. Targets above are normative on the named baseline; comparable consumer hardware is expected to track within the same envelope.
 
 ## Quick capture (trigger → input ready)
 
@@ -27,11 +37,11 @@ All platforms: ≤100ms p95.
 
 ## Op apply rate
 
-- Desktop: ≥50k ops/sec.
-- iOS (iPhone 14+): ≥10k ops/sec.
-- Android (Pixel 7): ≥8k ops/sec.
-- Web (V8 + WASM): ≥5k ops/sec.
-- TUI: ≥40k ops/sec.
+- Desktop (Baseline A): ≥50k ops/sec.
+- iOS (Baseline B): ≥10k ops/sec.
+- Android (Baseline C): ≥8k ops/sec.
+- Web (V8 + WASM, Baseline A): ≥5k ops/sec.
+- TUI (Baseline A): ≥40k ops/sec.
 
 ## Initial sync (10k tasks)
 

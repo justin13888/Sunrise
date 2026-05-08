@@ -1,69 +1,96 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Key Rotation
 
-Three keys can rotate: device, stream, identity. Each has a different cost.
+Three key types rotate, each with a different cost and cascade. Throughout this spec, "the rotating device" is the device the user initiated rotation from; it MUST be a paired, currently-authorized device.
 
 ## Device key rotation (cheap)
 
 **Triggers.**
-- User rotates a device's key voluntarily (e.g. before international travel).
-- Periodic auto-rotation (default off; opt-in for high-paranoia users).
+
+- User-initiated voluntary rotation (e.g. before international travel).
+- Automatic rotation on a schedule (default off; opt-in; cadence values 30 / 90 / 365 days).
 
 **Procedure.**
-1. Device generates new `D_S` and `D_D`.
-2. Issues a new `DeviceCert` signed by the still-valid identity key on this device.
-3. Publishes a control op announcing the new keys; tag points old key as superseded.
-4. Old per-device wrapped stream keys are re-wrapped under the new device key (handled by the same device, no peer involvement).
 
-The relay continues to accept signed ops from the old device key for a short overlap window (default 24h) so in-flight ops aren't lost.
+1. The rotating device generates new `D_S'`, `D_D'` keypairs.
+2. It signs a fresh `DeviceCert'` for itself using `ID_S_priv` (still held by this device).
+3. It emits a `device_cert` op (control envelope, signed by the **new** `D_S_priv'`).
+4. It re-wraps each Stream key currently stored in `stream_keys` for this device under the new `D_D_pub'` (this is local-only; no peer involvement).
+5. It emits a `device_revoke` op for the **old** key with `effective_at = now + 24h` (the overlap window).
+
+The relay continues to accept signed ops from the old device key until `effective_at`. After that, ops signed by the old key are rejected.
 
 ## Stream key rotation (medium)
 
 **Triggers.**
+
 - A device with access to the Stream is revoked.
 - A shared peer's access is revoked.
 - User-initiated periodic rotation.
 
 **Procedure.**
-1. Device with current access generates new `StreamKey'`.
-2. Re-wraps `StreamKey'` for every still-authorized device and shared peer in the form of a **key-envelope** op published in the Stream's op log.
-3. From a chosen rotation point (op N+1), all *new* ops in this Stream are encrypted under `StreamKey'`.
-4. The old `StreamKey` is retained on still-authorized devices to decrypt historical ops.
-5. Revoked parties cannot decrypt ops from N+1 onward.
 
-A rotation does **not** re-encrypt historical ops. Historical ops are still readable by anyone who held the old key when those ops were created — that's an inherent limit of E2EE; we don't lie about it. If forward secrecy of historical content is needed, the user must export, delete, and re-create.
+1. The rotating device generates `stream_key_<epoch+1>` (32 random bytes).
+2. For every still-authorized sibling device, it produces a `key_envelope` op (HPKE single-shot to that device's `D_D_pub`).
+3. For every still-authorized shared peer, it produces a `share_grant` op for the new epoch (HPKE single-shot to the peer identity's `ID_D_pub`).
+4. From the next emitted op forward in this Stream, `epoch` in the envelope is the new value; ciphertext is encrypted under `stream_key_<epoch+1>`.
+5. The previous epoch's key MUST be retained by the rotating device (and any still-authorized recipient) so historical ops remain readable. Past epochs are never deleted from local storage.
+
+A rotation does **not** re-encrypt historical ops. Historical ops remain readable by anyone who held the previous epoch's key when those ops were created. This is an inherent limit of E2EE. If forward secrecy of historical content is required, the user must export the affected Stream, delete it, and re-create.
+
+### Why we keep epochs
+
+The op log for a Stream may contain ops from multiple epochs interleaved (a slow peer might still be emitting under the old epoch when the rotation lands, until they catch up). Receivers select the decryption key by `(stream_id, epoch)` from the envelope. Past epoch keys are kept in `stream_keys` indefinitely; they are encrypted under `vault_root` like the current key.
 
 ## Identity rotation (expensive)
 
 **Triggers.**
+
 - Suspected recovery code compromise.
-- Suspected identity-key extraction (rare; requires escape from OS keystore on the user's device).
+- Suspected identity-key extraction (rare; requires escape from OS keystore).
 
 **Procedure.**
-1. User initiates from a trusted device.
-2. Device generates new `ID_S'`, `ID_D'`.
-3. Publishes an "identity rotation" control op signed by *both* the old and new identity keys (a "transition certificate").
-4. Re-issues `DeviceCert` for every still-authorized device under the new identity key.
-5. Rotates every Stream key (cascading from the identity change).
-6. Notifies all sharing peers; their devices verify the transition cert and re-bind the Person ↔ identity link.
-7. Old identity is retired in the op log; future ops signed by the old identity are rejected.
 
-Cost: O(devices + streams + peers) re-key operations. Approximate wall time on a typical user's data: a few seconds. Approximate sync impact: a moderate batch of control ops. UX should be a single-click "rotate identity" with a progress indicator.
+1. The rotating device generates new `ID_S'`, `ID_D'` keypairs.
+2. It emits an `identity_transition` control op:
+   ```cddl
+   IdentityTransition = {
+       1: bstr .size 16,    ; identity_id_bytes (unchanged — same identity)
+       2: bstr .size 32,    ; new ID_S_pub
+       3: bstr .size 32,    ; new ID_D_pub
+       4: bstr .size 64,    ; sig by OLD ID_S_priv over fields {1,2,3}
+       5: bstr .size 64,    ; sig by NEW ID_S_priv over fields {1,2,3,4}
+       6: uint              ; effective_at (ms since epoch)
+   }
+   ```
+   Both signatures are required so receivers can verify the rotation came from someone holding the old key, and that the new key is a willing successor.
+3. It re-issues a fresh `DeviceCert` for **every other still-authorized device** under the new `ID_S_priv'`. (Other devices' own `D_S` and `D_D` are unchanged; only their cert is replaced.) These `device_cert` ops are emitted by the rotating device on behalf of the others. Each peer device, upon seeing both the `identity_transition` and its updated cert, treats itself as still-authorized.
+4. It uploads a fresh recovery blob using the new identity keys (the recovery code itself MAY be rotated at the same time; it is the user's choice).
+5. It emits a fresh `share_grant` to **every shared peer** for every Stream (the peer's identity DH `ID_D_pub` is unchanged; only the granting identity has new keys, so the share signature changes).
+6. It re-publishes `{identity_id, new ID_S_pub, new ID_D_pub}` to the server's identity registry, signed by the new `ID_S_priv'`. The server replaces the public bundle and retains the previous one for `effective_at + 7 days` so peers in flight can still verify recently-emitted ops.
+
+**Stream keys are NOT rotated as a consequence of identity rotation by itself.** Stream keys rotate only when a device or peer is revoked. If the user's reason to rotate identity is "I think someone has my identity key," that someone could only impersonate me going forward (forge ops); they could not read content unless they also held a Stream key. If the user wants both, they perform identity rotation followed by Stream key rotation per Stream, and the UI offers a single "rotate everything" affordance that does it.
+
+Cost on a typical user (10 devices, 30 Streams, 5 sharing peers): O(devices + streams + peers) = ~45 control ops; wall time on a 4G connection a few seconds.
 
 ## Revocation
 
-Revocation = "remove this device from the identity." It is a **device** rotation triggered from any other still-authorized device:
+Revocation = removing a device from the identity. Triggered from any other still-authorized device.
 
-1. Trusted device publishes a revocation op for the target device.
-2. Trusted device rotates every Stream key (so future ops aren't readable by the revoked device's old keys).
-3. Other devices apply the rotation and continue.
-4. The server stops accepting ops signed by the revoked device.
-5. The revoked device, when next online, sees the revocation in its inbox; UI tells the user, and the device wipes its local data.
+**Procedure.**
 
-## What rotation does *not* do
+1. The trusted device emits a `device_revoke` op for the target device, signed by the trusted device.
+2. The trusted device performs a Stream key rotation **for every Stream the revoked device had access to** (all of them, in v1). This produces fresh `key_envelope` ops for sibling devices and `share_grant` ops for peers under the new epoch — but pointedly NOT for the revoked device.
+3. The server, on seeing the `device_revoke` op (it is a control envelope, the server can read the metadata: `revoked_device_id`), starts rejecting future ops signed by the revoked device.
+4. The revoked device, when next online, sees the revocation in its inbox; the UI explains the situation and the local DB is wiped on first launch.
 
-- It does not retroactively un-leak content. If a revoked device was holding plaintext on disk, that plaintext is in their hands.
-- It does not magically forget the *fact* of past activity from sync metadata. The server still has timestamps and counts.
+A revoked device that never reconnects retains whatever plaintext it had at the moment of revocation. We are honest about this in the UI.
+
+## What rotation does not do
+
+- It does not retroactively un-leak content. A revoked device keeps whatever plaintext it had on disk.
+- It does not erase the *fact* of past activity from server-side metadata (timestamps, op counts).
+- It does not affect historical ops the rotating side already emitted under prior keys; CRDT history is by design replayable to converge state.

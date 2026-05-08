@@ -1,80 +1,85 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Cryptography — Overview
 
 Sunrise is end-to-end encrypted: the server holds ciphertext and metadata; only paired user devices hold the keys to read content.
 
-This document is the index. Each linked spec is normative for its area.
+This document is the index. Each linked spec is normative for its area; **all crypto specs in this directory are accepted (frozen) for v1**.
 
-## Goals
+## Goals (in priority order)
 
-1. **Confidentiality.** Plaintext content is unreadable by the server, network attackers, or anyone without an authorized device.
-2. **Integrity.** Tampering with stored or in-flight ops is detectable.
+1. **Confidentiality.** Plaintext content is unreadable to the server, network attackers, or anyone without an authorized device.
+2. **Integrity.** Tampering with stored or in-flight ops is detected on decrypt.
 3. **Authenticity.** Each op is bound to the device that produced it.
-4. **Forward secrecy of session traffic.** TLS-level (not within E2EE; we don't aim for op-level forward secrecy in v1).
-5. **Recoverability.** A user with no surviving device can recover with a recovery code.
-6. **Revocability.** A lost/stolen device can be revoked, after which it cannot read new content.
-7. **Sharing.** Selective sharing of subgraphs to other identities, without leaking unrelated content.
+4. **Recoverability.** A user with no surviving device can recover with a recovery code.
+5. **Revocability.** A lost/stolen device can be revoked, after which it cannot read new content.
+6. **Selective sharing.** Sharing a Stream to another identity does not leak unrelated content.
 
-## Non-goals
+## Non-goals (v1)
 
-- **Plausible deniability** of identity ownership (deferred).
-- **Post-quantum.** v1 uses classical primitives; PQ is tracked but not shipped (see [`primitives.md`](./primitives.md)).
-- **Anonymity from the relay.** The server knows account email and device IDs.
+- **Forward secrecy of stored ops.** Compromise of a current Stream key reveals all past ops encrypted under it. (TLS 1.3 provides session-level FS for the transport.)
+- **Plausible deniability** of identity ownership.
+- **Post-quantum resistance.** Envelope algorithm IDs are versioned to support a future PQ rotation; no PQ primitives ship in v1.
+- **Anonymity from the relay.** The server learns account email, device IDs, op counts, IPs, and the sharing graph.
 - **Defense against compelled disclosure** of user secrets.
 
-## High-level shape
+## Trust anchors
 
 ```
                   ┌──────────────────────┐
                   │   Identity keypair   │  ← long-lived; restored from recovery
                   │   (Ed25519 + X25519) │
                   └──────────┬───────────┘
-                             │ derives / signs
+                             │ signs
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
       ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-      │ Device key  │ │ Device key  │ │ Device key  │  ← per device; signed by identity
+      │ Device key  │ │ Device key  │ │ Device key  │  ← per device; bound by DeviceCert
       │  (Phone A)  │ │ (Laptop B)  │ │   (TUI C)   │
       └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
              │               │               │
              ▼               ▼               ▼
        ┌──────────────────────────────────────────┐
-       │         Vault root key (per-user)        │  ← wraps stream keys
+       │         Vault root key (per-device)      │  ← wraps at-rest material
        └──────────────────┬───────────────────────┘
                           │
             ┌─────────────┼──────────────┐
             ▼             ▼              ▼
        ┌─────────┐   ┌─────────┐    ┌──────────┐
-       │ Stream A│   │ Stream B│    │ Inbox    │  ← per-stream content key
-       │   key   │   │   key   │    │   key    │
+       │ Stream A│   │ Stream B│    │ Inbox    │  ← per-Stream content key
+       │   key   │   │   key   │    │   key    │   (epoch-versioned)
        └────┬────┘   └────┬────┘    └────┬─────┘
             │             │              │
             ▼             ▼              ▼
-        Encrypted    Encrypted      Encrypted ops
+        Encrypted    Encrypted      Encrypted ops + blobs
             ops          ops             …
 ```
 
-| Spec | What it covers |
+## Specs in this section
+
+| Spec | Covers |
 |---|---|
-| [`primitives.md`](./primitives.md) | Algorithms, parameters, library choices |
-| [`identity-and-device-keys.md`](./identity-and-device-keys.md) | How identity and device keys are generated, stored, derived |
-| [`data-encryption-format.md`](./data-encryption-format.md) | Per-op envelope, AEAD, header fields |
-| [`pairing-and-onboarding.md`](./pairing-and-onboarding.md) | Adding a new device |
-| [`recovery.md`](./recovery.md) | Surviving total device loss |
-| [`key-rotation.md`](./key-rotation.md) | Rotating identity, device, stream keys |
-| [`sharing-with-others.md`](./sharing-with-others.md) | Granting access to another identity |
-| [`encrypted-search.md`](./encrypted-search.md) | Searching without leaking to the server |
-| [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md) | Detecting server-side tampering or rollback |
+| [`primitives.md`](./primitives.md) | Algorithms, parameters, library choices, usage rules |
+| [`identity-and-device-keys.md`](./identity-and-device-keys.md) | Identity / device keypairs, vault root, Stream keys, DeviceCert |
+| [`data-encryption-format.md`](./data-encryption-format.md) | Op envelope, AEAD, AAD, signatures, blob chunks |
+| [`pairing-and-onboarding.md`](./pairing-and-onboarding.md) | Noise XX pairing, account creation, SAS |
+| [`recovery.md`](./recovery.md) | BIP-39 recovery code, Argon2id stretching, recovery blob |
+| [`key-rotation.md`](./key-rotation.md) | Device, Stream, identity rotation; revocation |
+| [`sharing-with-others.md`](./sharing-with-others.md) | HPKE share envelopes, egress scrubbing |
+| [`encrypted-search.md`](./encrypted-search.md) | Client-side FTS only; rationale |
+| [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md) | Per-Stream Merkle root, checkpoints, rollback detection |
 
 ## What lives where
 
-| Material | Location | Protected by |
+| Material | Location | Confidentiality |
 |---|---|---|
-| Identity private key | OS keystore (Keychain / Keystore / TPM / file w/ passphrase on Linux) | Hardware where available; passphrase fallback |
-| Device private key | Same | Same |
-| Vault root key | Derived at unlock; held in process memory only | Memory protection where OS permits |
-| Stream keys | Encrypted in vault DB under vault root key | At-rest: vault root key |
-| Recovery code | User-held (paper / password manager) | User's discretion |
+| Identity private keys (`ID_S_priv`, `ID_D_priv`) | OS keystore (Keychain / Android Keystore / Secure Enclave / StrongBox); fallback: file encrypted under passphrase-derived key | Hardware-backed where available; passphrase fallback otherwise |
+| Device private keys (`D_S_priv`, `D_D_priv`) | Same as identity, separate keystore slot | Same |
+| Vault root key | Process memory only; rebuilt at unlock; zeroized on lock/exit | OS memory protection |
+| Stream keys (current + historical epochs) | SQLite `stream_keys` table, AEAD-wrapped under vault root | At-rest under vault root |
+| Wrapped Stream keys for sibling devices | In Stream op log as `key_envelope` ops (HPKE to recipient device's `D_D_pub`) | HPKE |
+| Wrapped Stream keys for shared peers | In Stream op log as `share_grant` ops (HPKE to recipient identity's `ID_D_pub`) | HPKE |
+| Recovery blob (wraps `ID_S_priv`, `ID_D_priv`) | Server | AEAD under Argon2id-stretched recovery code |
+| Recovery code | User-held (paper / password manager) | User's discretion; **not recoverable if lost** |

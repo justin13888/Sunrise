@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Schema Versioning
@@ -55,3 +55,7 @@ Avoid. If unavoidable:
 - We expect rapid iteration in the first 6 months. Therefore:
   - All entities have `unknown_fields: { * tstr => any }` carve-outs in the CRDT codec.
   - All scalar enums have an "unknown" fallback so a future `state: "delegated"` doesn't crash older clients.
+
+## Encryption granularity
+
+Encryption is at the **op envelope** level, not the field level. The entire CRDT op (any field set, any payload) is encrypted as one unit under the Stream key. There are no field-level encryption sub-keys; "indexable plaintext metadata" does not exist on the server. See [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) for the envelope structure. Schema additions therefore never expand the server's ciphertext-visibility surface.

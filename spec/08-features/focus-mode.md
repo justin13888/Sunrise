@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Focus Mode

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Automation Rules
@@ -50,9 +50,17 @@ Out-of-band integrations:
 
 ## Safety
 
-- Rules can't bulk-delete or destructively modify large numbers of entities; we cap actions per trigger at 1 by default and require explicit "allow batch" per rule.
+- A single trigger fires **at most one** action chain by default. Setting `allow_batch = true` on a rule raises the cap to 100 affected entities per fire; rules requesting more are rejected at save time.
 - Rule preview: the user sees a dry-run of how many entities a rule *would* affect before enabling it.
 - Disabled rules are paused, not deleted, so the user can experiment.
+
+### Loop prevention
+
+A rule's actions can produce ops that are themselves triggers (e.g. `move-to-Stream` triggers a "task created in Stream" rule). To avoid runaway feedback:
+
+- Each action carries a `triggered_by_op_id` field; the automation engine refuses to fire any rule whose chain depth on a single originating op exceeds 4.
+- A rule that has fired N times in the last 60 seconds for the same target entity is auto-disabled with a UI warning (default N = 5; configurable per rule, range 1–20).
+- Routines do NOT trigger automation rules during their initial materialization burst on a fresh device (cold start emits hundreds of `create` ops; treating them all as triggers would explode).
 
 ## What we don't do
 

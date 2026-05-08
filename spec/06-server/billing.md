@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Billing (Managed Cloud Only)

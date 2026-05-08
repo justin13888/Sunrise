@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Task
@@ -95,6 +95,6 @@ Field-level rationale:
 - `deferred_count`: PN-counter.
 - `body`: a CRDT text type (Loro RichText).
 
-## Open
+## Assignee in v1
 
-> **Open:** Should `assignee` be a multi-value field for delegation v2? Defer to feature spec.
+`assignee` is a single-valued, **informational** Person reference. It does not grant the assignee any access to the Task; it is a label. Delegation (multi-assignee, hand-off semantics) is explicitly out of scope for v1; if introduced later, it will be a separate field, not a re-typing of `assignee`.

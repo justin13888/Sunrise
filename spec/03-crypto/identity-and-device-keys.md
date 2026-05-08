@@ -1,87 +1,154 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Identity and Device Keys
 
 ## Identity
 
-A user has **one** Identity. The identity is the cryptographic anchor:
+A user has **exactly one** Identity. The identity is the cryptographic anchor: long-lived, restored from recovery if all devices are lost.
 
-- Long-lived; restored from recovery if all devices are lost.
-- Two keypairs:
-  - **Identity signing key** (Ed25519) — `ID_S_pub`, `ID_S_priv`.
-  - **Identity DH key** (X25519) — `ID_D_pub`, `ID_D_priv`.
-- The user's "Identity ID" is `idn_<base32(BLAKE3(ID_S_pub) truncated to 16 bytes)>`.
+Two keypairs:
+
+- **Identity signing key** (Ed25519) — `ID_S_pub` (32 B), `ID_S_priv` (32 B seed).
+- **Identity DH key** (X25519) — `ID_D_pub` (32 B), `ID_D_priv` (32 B).
+
+The two private halves are independent (NOT derived from each other or a shared seed), to keep the algorithms separable for any future rotation.
+
+### Identity ID
+
+```
+identity_id_bytes = BLAKE3-256( "sunrise.identity_id.v1" || ID_S_pub )[0..16]
+identity_id_str   = "idn_" || crockford_base32_no_pad( identity_id_bytes )
+```
+
+`crockford_base32_no_pad` is Crockford's alphabet (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), uppercase, no padding. 16 bytes encode to 26 characters, identical to ULID encoding.
+
+The identity ID is stable forever; it does NOT change on identity rotation (a rotation publishes a transition certificate that maps the new keys to the same identity ID; see [`key-rotation.md`](./key-rotation.md)).
 
 ## Devices
 
-Each device has **its own** keypairs:
+Each device has its own keypairs:
 
-- **Device signing key** (Ed25519) — `D_S_pub`, `D_S_priv`. Used to sign every op.
-- **Device DH key** (X25519) — `D_D_pub`, `D_D_priv`. Used during pairing to wrap stream keys.
+- **Device signing key** (Ed25519) — `D_S_pub`, `D_S_priv`. Used to sign every op the device emits.
+- **Device DH key** (X25519) — `D_D_pub`, `D_D_priv`. Recipient key for HPKE key envelopes targeting this device.
 
-A `DeviceCert` binds a device key to the identity:
-
-```
-DeviceCert = sign( ID_S_priv,
-    blake3( D_S_pub || D_D_pub || device_id || created_at || nickname ) )
-```
-
-A device's authority to participate is checked by:
-
-1. Validating `DeviceCert` against the user's `ID_S_pub`.
-2. Confirming the device hasn't been revoked (no revocation entry in the op log; see [`key-rotation.md`](./key-rotation.md)).
-
-## Vault root key
-
-Used to encrypt at-rest material on a single device.
+### Device ID
 
 ```
-vault_root = HKDF-SHA-512(
-    salt = device_salt,
-    ikm  = unlock_secret,             // passphrase-derived OR keystore-released
-    info = "sunrise.vault_root.v1"
+device_id_bytes = ULID()  // 128-bit, generated client-side at provisioning
+device_id_str   = "dev_" || crockford_base32_no_pad( device_id_bytes )
+```
+
+Device IDs are random; the ULID timestamp prefix is convenience for sorting, not load-bearing.
+
+### DeviceCert
+
+Binds a device's public keys to the identity. Format:
+
+```cddl
+DeviceCertBody = {
+    1: uint,                     ; v (= 1)
+    2: bstr .size 16,            ; device_id (raw bytes)
+    3: bstr .size 32,            ; D_S_pub
+    4: bstr .size 32,            ; D_D_pub
+    5: bstr .size 16,            ; identity_id_bytes
+    6: uint,                     ; created_at (ms since epoch)
+    7: tstr .size (1..64),       ; nickname (utf-8)
+    8: tstr,                     ; platform ("ios" / "android" / "macos" / "windows" / "linux" / "web" / "tui")
+}
+
+DeviceCert = {
+    body: DeviceCertBody,
+    sig:  bstr .size 64,         ; Ed25519_sign(ID_S_priv,
+                                  ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body)))
+}
+```
+
+Verification of a device's authority to act as part of an identity requires:
+
+1. The DeviceCert's signature verifies under the identity's current `ID_S_pub`.
+2. The DeviceCert appears in the user's vault-meta op log and has not been superseded by a `device_revoke` op.
+
+The DeviceCert is published as a `device_cert` op in the user's vault-meta log (a per-identity log distinct from any Stream).
+
+## Vault root key (per device)
+
+Used to wrap at-rest material on a single device. Computed at unlock and held in process memory only.
+
+```
+unlock_secret = (
+    OS_KEYSTORE_RELEASE  // 32 B random, kept in keystore, released after biometric/passcode
+    OR
+    Argon2id(            // passphrase fallback (Linux without TPM, kiosk web, etc.)
+        password = utf8_nfc(passphrase),
+        salt     = device_salt,
+        m = 64 MiB, t = 3, p = 1,
+        out_len  = 32
+    )
+)
+
+vault_root = BLAKE3.derive_key(
+    context = "sunrise.vault_root.v1",
+    key_material = unlock_secret || device_salt
 )
 ```
 
-`unlock_secret` is whichever applies on this device:
+Where:
 
-- **OS keystore** holds an opaque random secret released after biometric/passcode authentication.
-- **Passphrase** is run through Argon2id to produce a key.
-
-Devices SHOULD prefer the OS keystore. The passphrase mode is a fallback (Linux without TPM, kiosk web, etc.).
+- `device_salt` is 16 random bytes generated at device provisioning, stored in the device's local config (file alongside the SQLite DB; not secret).
+- The OS-keystore release path is preferred wherever available. A device records which path is in use; switching paths requires re-wrapping all at-rest material.
+- `vault_root` MUST be zeroized on lock, app exit, and after a configurable idle timeout (default 15 minutes; user-configurable from 1 minute to "until quit").
 
 ## Stream keys
 
-Per-Stream symmetric keys used as AEAD keys for ops within that Stream.
+A Stream's content is encrypted under a 32-byte symmetric key. Each Stream key has an integer **epoch** starting at 1; rotation produces epoch 2, 3, … (see [`key-rotation.md`](./key-rotation.md)).
 
-- Generated when a Stream is created.
-- Wrapped under the vault root key in the local DB.
-- Wrapped under each authorized device's `D_D_pub` and stored in a "key envelope" entity in the op log so that other paired devices can decrypt.
-- Wrapped under each shared peer's `ID_D_pub` for sharing (see [`sharing-with-others.md`](./sharing-with-others.md)).
+```
+stream_key_<epoch>  // 32 B, generated by os.csprng() at create or rotate
+```
 
-## Why per-Stream, not per-Task?
+Each device that has access stores all current and past epochs locally, AEAD-wrapped under `vault_root`:
 
-- Per-Stream keys give us efficient bulk decrypt on initial sync.
-- Per-Task keys would be too granular (key envelope explosion).
-- Per-vault key would prevent selective sharing.
+```
+wrapped_stream_key = XChaCha20-Poly1305_seal(
+    key       = vault_root,
+    nonce     = random 24 B,
+    plaintext = stream_key,
+    aad       = "sunrise.wrap.stream_key.v1" || stream_id || epoch
+)
+```
 
-Stream is the **sharing unit** in the domain model; matching the crypto unit to the sharing unit is the right tradeoff.
+Past epochs are retained because old ops remain encrypted under the epoch under which they were created (see "Why we keep epochs" in [`key-rotation.md`](./key-rotation.md)).
 
-## Storage at rest
+### Why per-Stream, not per-Task or per-vault
 
-| Item | On-device storage |
-|---|---|
-| Identity private keys | OS keystore (non-extractable on iOS/macOS Secure Enclave + Android StrongBox); fallback: encrypted file |
-| Device private keys | Same as above (separate slot) |
-| Vault root key | RAM only; rebuilt at unlock |
-| Stream keys | SQLite, encrypted by vault root key (column-level XChaCha20-Poly1305) |
-| Wrapped stream keys for other devices | In the op log (encrypted to that device) |
-| Wrapped stream keys for shared peers | In the op log (encrypted to that peer's identity DH key) |
+The Stream is the unit of sharing in the domain model. Matching the crypto unit to the sharing unit avoids:
+
+- Per-task keys: key-envelope explosion at sync time.
+- Per-vault key: cannot share a subset selectively.
+
+## Storage at rest — summary
+
+| Material | Storage | Wrapped by |
+|---|---|---|
+| `ID_S_priv`, `ID_D_priv` | OS keystore (preferred) or AEAD-encrypted file under `vault_root` (fallback) | OS keystore / vault root |
+| `D_S_priv`, `D_D_priv` | Same | Same |
+| `vault_root` | RAM only | (n/a; zeroized on lock) |
+| Stream keys (all epochs) | SQLite `stream_keys` table | `vault_root` (XChaCha20-Poly1305) |
+| Wrapped Stream keys for siblings / peers | Stream op log (`key_envelope`, `share_grant` ops) | HPKE to recipient `D_D_pub` / `ID_D_pub` |
+| `device_salt` | Local config file (cleartext) | (non-secret) |
 
 ## Public-key publication
 
-A user's `ID_S_pub` and `ID_D_pub` are published to the server when the account is created so other users can share with them by user handle / email lookup. Server-stored profile blobs are integrity-protected by `ID_S_priv` so the server cannot substitute keys.
+At account creation, the client uploads `{identity_id, ID_S_pub, ID_D_pub}` to the server, signed by `ID_S_priv`. The server stores them as the canonical record for `idn_…` lookups. The signature lets any device detect server substitution: a sharer's client refuses to use a peer's key bundle whose self-signature does not verify.
 
-Out-of-band verification (QR / numeric fingerprint) is offered for users who want to confirm a peer's keys haven't been MITM'd by a hostile server.
+Out-of-band fingerprint verification (QR or numeric SAS) is offered for users who want to confirm a peer's keys haven't been MITM'd by a hostile server. The displayed fingerprint is:
+
+```
+fingerprint = base32_groups_of_5(
+    BLAKE3-256("sunrise.identity_fingerprint.v1" || ID_S_pub || ID_D_pub)[0..15]
+)   // 24 chars in 5 groups of 4 + final group of 4 with separator dashes; 120 bits
+```
+
+120 bits is more than sufficient against any practical MITM search; the format is chosen for human readability over a phone call.

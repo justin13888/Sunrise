@@ -1,12 +1,12 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Core Workflows
 
 Six workflows define Sunrise. Every UI surface is justified by serving at least one. Anything not serving one of these is a candidate for deletion.
 
-## 1. Capture (≤2s)
+## 1. Capture
 
 **Trigger.** Idea strikes anywhere — in bed, on a call, mid-walk, mid-SSH session.
 
@@ -15,10 +15,12 @@ Six workflows define Sunrise. Every UI surface is justified by serving at least 
 2. Single-line input. Optional: `#stream`, `@context`, `!high`, `^tomorrow 9am` inline annotations.
 3. Enter commits to local DB. UI dismisses. Sync happens after.
 
-**Constraints.**
-- Sub-100ms from hotkey to focused input.
-- Sub-50ms from Enter to visible confirmation.
-- Works fully offline.
+**Latency targets** (p95 on the platform baselines in [`../10-cross-cutting/performance-budgets.md`](../10-cross-cutting/performance-budgets.md)):
+
+- Hotkey → focused input: ≤ 100 ms.
+- Enter → visible confirmation: ≤ 50 ms.
+
+Capture works fully offline; sync is best-effort after commit.
 
 ## 2. Plan today
 

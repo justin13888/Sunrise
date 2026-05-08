@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Routines and Recurrence
@@ -54,7 +54,16 @@ Sunrise extensions (carried in a parallel field, not in the RRULE string itself)
 
 ## Generation
 
-A background job in the core looks ahead by `materialization_horizon` (default: 14 days for daily, 60 days for weekly+, configurable). For each occurrence in the horizon that has no existing Task:
+A background job in the core looks ahead by a per-Routine `materialization_horizon`. Defaults by `FREQ`:
+
+| FREQ | Default horizon |
+|---|---|
+| `DAILY` | 14 days |
+| `WEEKLY` | 60 days |
+| `MONTHLY` | 180 days |
+| `YEARLY` | 540 days |
+
+The horizon is a Routine field (LWW-register, user-editable in the Routine settings UI; range 7–730 days, clamped on write). For each occurrence in the horizon that has no existing Task:
 
 1. Compute occurrence datetime in the routine's tz.
 2. Apply `skip_dates`.
@@ -69,14 +78,18 @@ Editing a generated Task only touches that occurrence. Editing the Routine promp
 
 ## Streak counter
 
-Increments on completion of an occurrence ≤ `grace_window` after the scheduled time. Decrements (or resets to 0, depending on user setting) on skip. Stored as a CRDT PN-counter so concurrent completions on multiple devices do not double-count.
+Increments on completion of an occurrence within `grace_window` after the scheduled time. The `grace_window` is a per-Routine field (default: 24 hours; range 0–7 days, LWW). Stored as a CRDT PN-counter so concurrent completions on multiple devices do not double-count (the inner-Op `op_id` makes increments idempotent).
+
+Streak resets to 0 on a missed occurrence with one exception: the **forgiveness rule** allows up to one missed occurrence per 30-day rolling window without resetting. The forgiveness rule is enabled by default and toggled per Routine.
 
 ## Pausing
 
 Pausing a Routine stops generation but does not delete already-generated occurrences. `paused_until` auto-unpauses.
 
-## Open questions
+## Adaptive cadence — convergence rule
 
-> **Open:** Should the streak counter survive a 1-day miss (forgiveness rule)? Default proposal: no streak break for 1 miss/30 days. Configurable per Routine.
+Adaptive-cadence routines compute "next due" from the most recent completion. To converge cleanly under concurrent completions on multiple devices, the rule is:
 
-> **Open:** "Adaptive cadence" recurrence is a hard fit for a CRDT — two devices completing at slightly different moments produce different "next due" dates. Resolution path: snap "next due" to a coarse grid (e.g. day) and use LWW.
+1. The Routine's `last_completed_at` is an LWW-register on `(timestamp, device_id)`.
+2. The "next due" date is **derived** from `last_completed_at` and the cadence interval, snapped to the start of the local day in the Routine's `timezone`.
+3. Two devices completing within the same local day produce the same snapped result; later concurrent completions LWW.

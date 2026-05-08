@@ -26,9 +26,8 @@ Read top-down. Each numbered section builds on the prior ones:
 ## Conventions
 
 - **Status legend** at the top of every spec:
-  `Status: draft | accepted | superseded | deprecated`. Drafts may have open questions; accepted specs are normative.
+  `status: accepted | superseded | deprecated`. Every spec in this directory is **accepted (frozen)** for v1; changes require a superseding ADR.
 - **MUST / SHOULD / MAY** follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
-- **Open questions** are inline as `> **Open:** …` blocks. Every open question must either be resolved or moved to `11-adr/` before the spec is marked accepted.
 - **Cross-references** use relative paths: `[envelope format](../03-crypto/data-encryption-format.md)`.
 - **Diagrams** are ASCII first; Mermaid only if absolutely required for clarity.
 - **Wire formats** are specified in CDDL or pseudo-Rust struct form, not prose.
@@ -38,6 +37,6 @@ Read top-down. Each numbered section builds on the prior ones:
 
 See [`00-product/glossary.md`](./00-product/glossary.md) for shared vocabulary (Stream, Context, Routine, Block, etc.).
 
-## Status snapshot
+## Status
 
-All specs in this initial drop are **draft**. They establish the intended shape of the system; concrete numbers (timeouts, byte budgets) are placeholders to be tightened during implementation.
+All v1 specs are **accepted**. The cryptography section ([`03-crypto/`](./03-crypto/)) is the cryptographic design of record: algorithms, parameters, wire formats, key lifecycles, and protocol fixtures are byte-exact. Any future change requires a superseding ADR in [`11-adr/`](./11-adr/) and a wire-format version bump.

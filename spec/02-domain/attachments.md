@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Attachments
@@ -20,6 +20,7 @@ Attachment = {
     blob_ref:      BlobRef,             ; opaque pointer into blob store (per-blob key wrapped)
     width?:        uint,                ; image only
     height?:       uint,
+    thumbnail_ref?: BlobRef,             ; image only; max edge 512 px; AVIF preferred
     duration_ms?:  uint,                ; audio/video
     deleted:       bool,
 }
@@ -57,6 +58,12 @@ Logical delete sets `deleted=true`. The encrypted blob is **garbage-collected** 
 
 The server runs the GC; only the **blob** is GC'd, never the metadata, since metadata reveals nothing without the wrapped key.
 
-## Open
+## Image previews (thumbnails)
 
-> **Open:** Image previews require thumbnails. Generate on the source device and store as a separate (small) blob with its own key, or generate on-demand per viewer? Defer; both have tradeoffs.
+Image attachments include a thumbnail generated on the **source device** at attach time:
+
+- Max edge: 512 px; format: AVIF (fallback JPEG for platforms without AVIF encode).
+- Stored as a separate small blob with the same per-blob key as the original (no extra key envelope).
+- The thumbnail's `BlobRef` is recorded in a `thumbnail_ref` field on the Attachment metadata op.
+
+Generating on receivers is rejected for v1: it would require every receiver to fetch the full ciphertext just to thumbnail, defeating the lazy-fetch policy.

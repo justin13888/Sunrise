@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Local Database
@@ -121,11 +121,29 @@ If an op cannot be applied (e.g. dep not yet present), it is inserted with `appl
 
 ## SQLCipher configuration
 
-- Cipher: AES-256-GCM (SQLCipher v4 default, then we override to ChaCha20-Poly1305 in v1.1; **TBD** — see open question).
-- KDF iterations: 256k (configurable based on device class).
-- Key: derived from the vault root key via HKDF.
+For v1 we ship the SQLCipher v4 default cipher suite to leverage the well-tested upstream:
 
-> **Open:** SQLCipher's default is AES-256. We use ChaCha20-Poly1305 elsewhere. Decision: stick with SQLCipher's default for v1 to leverage the well-tested upstream; revisit when SQLCipher's ChaCha mode matures.
+- Cipher: AES-256-CBC with HMAC-SHA-512 page MAC (SQLCipher v4 default).
+- KDF: PBKDF2-HMAC-SHA-512, 256 000 iterations.
+- Page MAC algorithm: HMAC-SHA-512.
+- Page size: 4096 bytes.
+
+The SQLCipher key is derived from `vault_root` (see [`../03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md)):
+
+```
+sqlcipher_raw_key = BLAKE3.derive_key(
+    context = "sunrise.sqlcipher_key.v1",
+    key_material = vault_root
+)   // 32 bytes; passed to SQLCipher as a 64-char hex blob via PRAGMA key
+```
+
+Using a pre-derived key bypasses SQLCipher's internal PBKDF2 (we already gated entry through Argon2id at unlock); we set `PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512` and `PRAGMA kdf_iter = 1` since the input is already a uniformly random 32-byte key.
+
+The choice of AES here is a deliberate divergence from XChaCha20-Poly1305 used elsewhere; rationale:
+
+- SQLCipher's AES-CBC + HMAC mode is shipped as a single audited library on every supported platform (including iOS, Android, WASM via `wa-sqlite`).
+- Page-level encryption inside SQLite has its own design (per-page IVs, MAC over `(page_no, ciphertext)`). Replacing the cipher would mean shipping a custom SQLCipher fork, which is outside our maintenance budget.
+- The vault DB at rest is protected by the OS keystore and the application unlock; the cipher choice here is defense-in-depth, not the primary trust boundary.
 
 ## Backups
 

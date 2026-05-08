@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Conflict Resolution
@@ -78,6 +78,17 @@ CREATE TABLE merge_journal (
 ```
 
 UI surfaces "X edits merged automatically this week" in the weekly review. Power users can drill in. We do **not** show every merge in real time — that's a worse UX than letting the CRDT do its job.
+
+## Atomic batches
+
+`OpBatch` (see [`wire-protocol.md`](./wire-protocol.md)) carries multiple ops as one transactional unit. Receiver behavior:
+
+1. Verify and decrypt every envelope in the batch before applying any.
+2. If every op's `deps` are present and applied, apply all ops in the batch in a single SQL transaction; set `applied_at` for all.
+3. If any op has unsatisfied `deps`, persist the entire batch with `applied_at = NULL` and defer; reattempt on each subsequent dep arrival.
+4. If any envelope fails verification (signature or AEAD), reject the entire batch; emit a sync warning.
+
+A batch is never partially applied.
 
 ## What we never do
 

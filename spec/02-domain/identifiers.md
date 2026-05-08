@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Identifiers
@@ -34,8 +34,8 @@ Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`
 ## ID generation
 
 - Generated **client-side** (devices), never server-side. The server has no concept of "next ID."
-- Each device uses its own RNG seeded by the OS.
-- Collision probability: with 80 random bits and ULID's millisecond grouping, collision is astronomically unlikely (≈10⁻¹² per million ops/ms even on a single device; vanishingly small across devices because timestamp prefixes will diverge).
+- Each device uses its own OS CSPRNG (`getrandom`).
+- ULID has 80 bits of randomness; with `n` IDs minted in a single millisecond on a single device, the per-millisecond birthday-bound collision probability is ≈ `n² / 2^81`. At `n = 10` (a heavy capture burst on one device): ≈ 4.1 × 10⁻²². Across devices, distinct millisecond-prefix windows make cross-device collision strictly less likely than the worst-case same-device bound. Treat collisions as cryptographically impossible; do not write fallback paths for them.
 
 ## Stability
 

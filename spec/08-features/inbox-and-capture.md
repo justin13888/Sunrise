@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Inbox and Capture

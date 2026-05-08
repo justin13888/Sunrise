@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Features — Overview
@@ -48,11 +48,11 @@ User-visible feature specs. Each spec defines the user contract; implementations
 
 ## Feature flags
 
-Some features ship behind a flag (default off) for early users:
+Some features ship behind a per-user flag (default off) for early users:
 
 - `automation_rules` — power-user feature.
 - `live_activities` (iOS) — gates Live Activities until they're polished.
 - `web_push` — iOS web push works in Safari 16.4+.
 - `tui_daemon` — daemon mode.
 
-Flags are sync-only (a user enables on one device, applies on all). See [`../10-cross-cutting/feature-flags.md`](../10-cross-cutting/feature-flags.md) (referenced; v1 keeps flags simple in-vault).
+Flags are stored in the vault-meta CRDT doc (`settings.feature_flags: { name: bool }`, LWW-register per name). Enabling on one device propagates via normal sync to all paired devices. There is no server-side flag service in v1; the relay does not gate features. There is no separate `feature-flags.md` cross-cutting spec — this section is the normative reference.

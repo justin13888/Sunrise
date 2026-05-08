@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Sync Wire Protocol
@@ -37,6 +37,9 @@ ControlOp   { kind, payload: OpEnvelopeBytes }   ; share grants, revokes, device
 
 Ping        { client_time }
 Pong        { server_time, client_time_echo }
+
+Throttle    { scope: "stream" / "account", target_id?: bstr, retry_after_ms, reason_code }
+            ; sent by server when a quota or rate limit is reached; non-terminal
 
 Error       { code, message_safe_for_logs }
 Bye         { reason }

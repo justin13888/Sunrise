@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Trust and Server Role

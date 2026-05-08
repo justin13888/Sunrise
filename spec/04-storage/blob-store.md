@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 ---
 
 # Blob Store
@@ -16,7 +16,7 @@ $VAULT/blobs/<00..ff>/<sha256[2..]>.<chunk_idx>
 - Filename is the rest of the plaintext SHA-256 plus the chunk index (e.g. `9a7c3f...e1.0`).
 - Each file is one encrypted chunk (see envelope in [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)).
 
-Naming by *plaintext* SHA-256 enables content-addressable dedup *within a single vault*. (Cross-vault dedup is impossible by design — different stream keys produce different ciphertext for identical content.)
+Naming by *plaintext* SHA-256 is **local-only** — it never reaches the network. The server stores blobs by an opaque `BlobChunkId` it generates at upload (see "Server-side storage" below); it cannot compute the plaintext SHA-256 because it never sees plaintext. The plaintext-SHA-256 file layout enables content-addressable dedup within a single vault. Cross-vault dedup is impossible by design — the server's ciphertext bytes differ for identical plaintexts because per-blob keys differ.
 
 ## Chunking
 
