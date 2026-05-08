@@ -33,3 +33,18 @@ coverage/
 .sidecar-start.sh
 .sidecar-base
 .td-root
+
+# Rust / Cargo build artifacts
+target/
+**/*.rs.bk
+*.pdb
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
+# Local vault data (dev/test)
+.sunrise-vault/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

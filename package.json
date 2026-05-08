@@ -1,6 +1,7 @@
 {
     "name": "sunrise",
     "version": "0.1.0",
+    "private": true,
     "scripts": {
         "test": "vitest",
         "test:run": "vitest run",
@@ -14,7 +15,12 @@
         "check:fix": "biome check --write .",
         "ci": "biome ci .",
         "typecheck": "bun run --filter '*' typecheck",
-        "validate": "bun run ci && bun run typecheck && bun run test:coverage"
+        "validate": "bun run ci && bun run typecheck && bun run test:coverage",
+        "rust:fmt": "cargo fmt --all",
+        "rust:fmt:check": "cargo fmt --all -- --check",
+        "rust:clippy": "cargo clippy --workspace --all-targets -- -D warnings",
+        "rust:test": "cargo test --workspace --all-targets",
+        "rust:check": "cargo check --workspace --all-targets"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.3.11",
