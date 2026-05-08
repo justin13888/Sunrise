@@ -1,0 +1,266 @@
+//! SQLite/SQLCipher database wrapper.
+//!
+//! Per `spec/04-storage/local-database.md`:
+//!
+//! ```sql
+//! PRAGMA journal_mode   = WAL;
+//! PRAGMA synchronous    = NORMAL;
+//! PRAGMA foreign_keys   = ON;
+//! PRAGMA busy_timeout   = 5000;
+//! PRAGMA auto_vacuum    = INCREMENTAL;
+//! ```
+//!
+//! All multi-row writes use `BEGIN IMMEDIATE … COMMIT`.
+//!
+//! The SQLCipher key is derived deterministically from the vault root:
+//! `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root) → 32 bytes`,
+//! passed to SQLCipher as a 64-char hex string with `PRAGMA kdf_iter = 1`
+//! (we already pre-derive, so SQLCipher's own KDF doesn't need iterations).
+
+use crate::migrations::MIGRATIONS;
+use rusqlite::{Connection, OpenFlags};
+use std::path::Path;
+use sunrise_cbor::version::STORAGE_V;
+use sunrise_crypto::keys::VaultRootKey;
+use sunrise_error::ErrorCode;
+use thiserror::Error;
+
+/// Storage layer errors.
+#[derive(Debug, Error)]
+pub enum DbError {
+    /// SQLite/rusqlite error.
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    /// Schema version mismatch (DB newer than this binary supports).
+    #[error("STORAGE_V too new: db is {db_v}, binary supports up to {binary_v}")]
+    StorageVTooNew {
+        /// Version found in the DB.
+        db_v: u32,
+        /// Latest version this binary knows.
+        binary_v: u32,
+    },
+    /// Schema version mismatch (DB older; needs upgrade).
+    #[error("STORAGE_V too old: db is {db_v}, binary expects {binary_v}")]
+    StorageVTooOld {
+        /// Version found in the DB.
+        db_v: u32,
+        /// Version the binary needs.
+        binary_v: u32,
+    },
+    /// Migration failed.
+    #[error("migration {id} ({name}) failed: {source}")]
+    Migration {
+        /// Migration id.
+        id: u32,
+        /// Migration name.
+        name: &'static str,
+        /// Underlying error.
+        source: rusqlite::Error,
+    },
+}
+
+impl DbError {
+    /// Map to a canonical [`ErrorCode`] for the wire.
+    #[must_use]
+    pub const fn as_error_code(&self) -> ErrorCode {
+        match self {
+            Self::StorageVTooNew { .. } => ErrorCode::StorageVTooNew,
+            Self::StorageVTooOld { .. } => ErrorCode::StorageVTooOld,
+            _ => ErrorCode::FatalInternal,
+        }
+    }
+}
+
+/// Open / managed SQLCipher connection.
+pub struct Db {
+    conn: Connection,
+}
+
+impl core::fmt::Debug for Db {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Db").finish_non_exhaustive()
+    }
+}
+
+impl Db {
+    /// Open (or create) the vault DB at `path` keyed by `vault_root`.
+    ///
+    /// The first time this is called for a fresh vault, all migrations are
+    /// applied. On subsequent opens, the schema version is read and either
+    /// the DB is current (returns `Ok`) or the version is mismatched and the
+    /// caller must surface a clear error.
+    pub fn open(path: &Path, vault_root: &VaultRootKey) -> Result<Self, DbError> {
+        let mut conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::apply_sqlcipher_key(&conn, vault_root)?;
+        Self::apply_pragmas(&conn)?;
+        Self::ensure_schema(&mut conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Open an in-memory DB (used by tests and for non-persisted vaults).
+    pub fn open_memory(vault_root: &VaultRootKey) -> Result<Self, DbError> {
+        let mut conn = Connection::open_in_memory()?;
+        Self::apply_sqlcipher_key(&conn, vault_root)?;
+        Self::apply_pragmas(&conn)?;
+        Self::ensure_schema(&mut conn)?;
+        Ok(Self { conn })
+    }
+
+    fn apply_sqlcipher_key(conn: &Connection, vault_root: &VaultRootKey) -> Result<(), DbError> {
+        // Derive a 32-byte SQLCipher raw key from vault_root.
+        let raw = sunrise_crypto::derive_key("sunrise.sqlcipher_key.v1", vault_root.as_bytes(), 32);
+        let mut hex_buf = String::with_capacity(64);
+        for b in &raw {
+            use core::fmt::Write;
+            let _ = write!(hex_buf, "{b:02x}");
+        }
+        // SQLCipher's `PRAGMA key = "x'<64 hex>'"` accepts a raw key.
+        let key_pragma = format!("PRAGMA key = \"x'{hex_buf}'\"");
+        conn.execute_batch(&key_pragma)?;
+        // Pre-derived: skip SQLCipher's own KDF iterations.
+        conn.execute_batch("PRAGMA kdf_iter = 1;")?;
+        Ok(())
+    }
+
+    fn apply_pragmas(conn: &Connection) -> Result<(), DbError> {
+        // SQLCipher requires the key BEFORE any other pragma; the caller
+        // ensures that by calling apply_sqlcipher_key first.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA auto_vacuum = INCREMENTAL;",
+        )?;
+        Ok(())
+    }
+
+    fn ensure_schema(conn: &mut Connection) -> Result<(), DbError> {
+        // Detect existing schema by probing for `schema_meta`.
+        let exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let binary_v: u32 = u32::from(STORAGE_V);
+        if exists == 0 {
+            // Fresh DB: apply all migrations in a single transaction.
+            let tx = conn.transaction()?;
+            for m in MIGRATIONS {
+                tx.execute_batch(m.sql)
+                    .map_err(|source| DbError::Migration {
+                        id: m.id,
+                        name: m.name,
+                        source,
+                    })?;
+            }
+            // Pin the storage version.
+            tx.execute(
+                "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+                rusqlite::params![binary_v, 0],
+            )?;
+            tx.commit()?;
+            return Ok(());
+        }
+        let db_v: u32 =
+            conn.query_row("SELECT storage_v FROM schema_meta", [], |row| row.get(0))?;
+        if db_v > binary_v {
+            return Err(DbError::StorageVTooNew { db_v, binary_v });
+        }
+        if db_v < binary_v {
+            return Err(DbError::StorageVTooOld { db_v, binary_v });
+        }
+        Ok(())
+    }
+
+    /// Borrow the underlying `rusqlite::Connection`.
+    #[must_use]
+    pub const fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Mutable borrow of the connection (for transactions).
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
+    /// Execute `f` inside a `BEGIN IMMEDIATE` transaction.
+    ///
+    /// The closure receives a `rusqlite::Transaction`; returning `Ok(_)`
+    /// commits, returning `Err(_)` rolls back.
+    pub fn with_tx<R, F>(&mut self, f: F) -> Result<R, DbError>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<R>,
+    {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let r = f(&tx)?;
+        tx.commit()?;
+        Ok(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vault_key() -> VaultRootKey {
+        VaultRootKey::from_bytes([0xab; 32])
+    }
+
+    #[test]
+    fn open_in_memory_initializes_schema() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        let v: u32 = db
+            .conn()
+            .query_row("SELECT storage_v FROM schema_meta", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+    }
+
+    #[test]
+    fn open_persistent_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        {
+            let _ = Db::open(&path, &vault_key()).unwrap();
+        }
+        // Reopen with the same key.
+        let _ = Db::open(&path, &vault_key()).unwrap();
+    }
+
+    #[test]
+    fn wrong_key_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        {
+            let _ = Db::open(&path, &vault_key()).unwrap();
+        }
+        let bogus = VaultRootKey::from_bytes([0u8; 32]);
+        let res = Db::open(&path, &bogus);
+        assert!(res.is_err(), "wrong vault root must not open the DB");
+    }
+
+    #[test]
+    fn fts5_table_present() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'search_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // FTS5 creates several backing tables; at least one matches.
+        assert!(count >= 1);
+    }
+}
