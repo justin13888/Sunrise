@@ -1,0 +1,24 @@
+[package]
+name = "sunrise-wire-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise sync wire protocol: frame layout, message codecs, negotiation"
+
+[lints]
+workspace = true
+
+[dependencies]
+ciborium = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+zstd = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-error = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
