@@ -137,6 +137,8 @@ sunrise-onboarding = { path = "crates/sunrise-onboarding", version = "0.1.0" }
 sunrise-core = { path = "crates/sunrise-core", version = "0.1.0" }
 sunrise-server = { path = "crates/sunrise-server", version = "0.1.0" }
 sunrise-tui = { path = "crates/sunrise-tui", version = "0.1.0" }
+sunrise-integrations = { path = "crates/sunrise-integrations", version = "0.1.0" }
+sunrise-core-bindings = { path = "crates/sunrise-core-bindings", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

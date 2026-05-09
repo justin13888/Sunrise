@@ -1,0 +1,29 @@
+[package]
+name = "sunrise-core-bindings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "FFI-friendly facade over sunrise-core; consumed by iOS/Android via UniFFI."
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync"] }
+sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

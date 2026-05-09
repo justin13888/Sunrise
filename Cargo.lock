@@ -2496,6 +2496,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-core-bindings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sunrise-core",
+ "sunrise-crypto",
+ "sunrise-domain",
+ "sunrise-id",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "sunrise-crdt"
 version = "0.1.0"
 dependencies = [
@@ -2575,6 +2590,19 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "zeroize",
+]
+
+[[package]]
+name = "sunrise-integrations"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sunrise-domain",
+ "sunrise-id",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

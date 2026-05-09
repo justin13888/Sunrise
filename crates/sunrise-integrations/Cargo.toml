@@ -1,0 +1,22 @@
+[package]
+name = "sunrise-integrations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise external integrations (Google Calendar, iCalendar)"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
