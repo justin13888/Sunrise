@@ -2574,6 +2574,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-e2e"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "parking_lot",
+ "sunrise-core",
+ "sunrise-crypto",
+ "sunrise-domain",
+ "sunrise-server",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sunrise-error"
 version = "0.1.0"
 dependencies = [

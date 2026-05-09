@@ -1,0 +1,25 @@
+[package]
+name = "sunrise-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise end-to-end gating: cross-crate scenarios + chaos harness."
+
+[lints]
+workspace = true
+
+[dependencies]
+sunrise-core = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-server = { workspace = true }
+sunrise-crypto = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+axum = { workspace = true }
+parking_lot = { workspace = true }
+tempfile = "3"
