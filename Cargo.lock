@@ -2679,9 +2679,11 @@ dependencies = [
 name = "sunrise-tui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossterm",
  "ratatui",
  "sunrise-core",
+ "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
  "tokio",
