@@ -1,0 +1,31 @@
+[package]
+name = "sunrise-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+# This crate is a Tauri shell that links sunrise-core. We don't include it
+# in the root workspace [[members]] because Tauri's `cargo tauri` driver
+# resolves it as a standalone package — the cargo workspace marker file
+# isolates it from the main `cargo build --workspace` cycle.
+[workspace]
+
+[lib]
+name = "sunrise_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+sunrise-core = { path = "../../../crates/sunrise-core" }
+sunrise-domain = { path = "../../../crates/sunrise-domain" }
+sunrise-id = { path = "../../../crates/sunrise-id" }
+sunrise-crypto = { path = "../../../crates/sunrise-crypto" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync"] }
+
+# Tauri itself is NOT yet pinned here — install it locally with
+# `cd apps/desktop && bun install` then `bun run tauri dev`. The shell
+# below is the Rust-side bridge that mounts once Tauri is configured.
