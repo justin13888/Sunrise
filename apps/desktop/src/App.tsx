@@ -12,7 +12,7 @@ export function App() {
         coreInvoke<Task[]>("query_today", { now_ms: Date.now() })
             .then(setTasks)
             .catch((err) => console.error(err));
-    }, [view]);
+    }, []);
 
     return (
         <div style={styles.shell}>
