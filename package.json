@@ -14,7 +14,7 @@
         "check": "biome check .",
         "check:fix": "biome check --write .",
         "ci": "biome ci .",
-        "typecheck": "bash -c 'if [ -z \"$(ls -A apps 2>/dev/null)$(ls -A packages 2>/dev/null)\" ]; then echo \"No TS workspace members yet — skip\"; else bun run --filter \\\"*\\\" typecheck; fi'",
+        "typecheck": "bash -c 'if [ -z \"$(ls -A apps 2>/dev/null)$(ls -A packages 2>/dev/null)\" ]; then echo \"No TS workspace members yet — skip\"; else bun run --filter \"*\" typecheck; fi'",
         "validate": "bun run ci && bun run typecheck && bun run test:coverage",
         "rust:fmt": "cargo fmt --all",
         "rust:fmt:check": "cargo fmt --all -- --check",
