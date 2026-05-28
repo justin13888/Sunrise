@@ -165,6 +165,10 @@ pub use sunrise_core::{CommandResult as FfiCommandResult, QueryResult as FfiQuer
 mod tests {
     use super::*;
 
+    // The FFI surface manages a single process-global `Core` (see `slot()`),
+    // so tests that open or close the vault must not run concurrently.
+    static VAULT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn decode_hex_round_trip() {
         let h = "0".repeat(64);
@@ -179,6 +183,9 @@ mod tests {
 
     #[test]
     fn open_then_close_round_trip() {
+        let _guard = VAULT_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let key = "ab".repeat(32);
         let err = sunrise_open(
@@ -193,6 +200,9 @@ mod tests {
 
     #[test]
     fn submit_query_round_trip() {
+        let _guard = VAULT_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let key = "cd".repeat(32);
         let _ = sunrise_open(
