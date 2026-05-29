@@ -67,6 +67,94 @@ docs/          Implementation notes
 just setup    # install JS dependencies (bun install) and git hooks (lefthook install)
 ```
 
+Then confirm the toolchain is wired up by running the full automated gate (see [End-to-end QA](#end-to-end-qa) for the complete walkthrough):
+
+```bash
+just validate     # JS/TS: Biome CI + typecheck + coverage
+just rust-test    # Rust: unit tests + cross-crate end-to-end tests
+```
+
+### End-to-end QA
+
+This is the exact path to exercise every surface of the codebase. Work top to bottom: the automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each Rust command from the repo root.
+
+> **Maturity note (v1 rewrite):** the Rust core, sync relay server, and TUI run for real today. The **web** client backs onto a `localStorage` stub (the real WASM `sunrise-core` build is deferred), and the **desktop** Tauri shell is frontend-only until its native deps are pinned. Caveats are called out per surface below so QA results aren't misread.
+
+#### 1. Automated test suites (the source of truth)
+
+```bash
+just test            # JS/TS suite (Vitest), run once
+just test-coverage   # …with coverage report
+bun run test:ui      # …interactive Vitest UI in the browser
+
+just rust-test       # entire Rust workspace: unit + integration + e2e tests
+cargo test -p sunrise-e2e   # just the cross-crate end-to-end tests
+```
+
+The `sunrise-e2e` crate is the release-gate proof that crates work together: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, and runs two independent `Core` vaults side by side to prove vault-lock isolation. (Cross-device sync through the relay is not wired end-to-end yet.)
+
+For a single "is everything green?" pass, run `just validate && just rust-test` (this is also what `just pre-push` mirrors for the git hook).
+
+#### 2. Sync relay server (manual E2E)
+
+Run the self-host server in its own terminal:
+
+```bash
+cargo run -p sunrise-server
+# → "sunrise-server listening on 127.0.0.1:8443"
+```
+
+It serves **plain HTTP** on `127.0.0.1:8443` with an in-memory store by default. Probe it from another terminal:
+
+```bash
+curl http://127.0.0.1:8443/health
+curl http://127.0.0.1:8443/meta
+curl http://127.0.0.1:8443/metrics
+curl http://127.0.0.1:8443/api/v1/accounts
+```
+
+> Configuration is currently default-only (ephemeral, in-memory). The `-c sunrise.toml` flag shown in the binary's docstring is not wired up yet, so flags/config files have no effect.
+
+#### 3. Terminal client — TUI (manual E2E)
+
+The TUI opens a real encrypted vault and is the quickest way to exercise the core command/query loop by hand:
+
+```bash
+# Use a throwaway vault so QA never touches your real data:
+SUNRISE_VAULT=$(mktemp -d) cargo run -p sunrise-tui
+```
+
+It opens (creating if needed) the vault at `$SUNRISE_VAULT`, defaulting to `~/.sunrise/vault`, unlocked with a fixed single-user dev key. Keybindings:
+
+| Key                 | Action                                            |
+| ------------------- | ------------------------------------------------- |
+| `1`–`5`             | Switch view: Today, Inbox, Stream, Search, Focus  |
+| `↑`/`↓` (or `j`/`k`)| Move selection                                    |
+| `c`                 | Capture a task — type a title, `Enter` to save    |
+| `x` / `Space`       | Toggle the selected task complete                 |
+| `/`                 | Search — type a query, `Enter` to commit          |
+| `q` / `Esc`         | Quit                                              |
+
+QA flow: capture a few tasks (`c`), complete one (`x`), switch views (`1`–`5`), search (`/`), then quit and re-launch with the same `SUNRISE_VAULT` to confirm the data persisted.
+
+#### 4. Web PWA (manual E2E)
+
+```bash
+bun run --filter @sunrise/web dev     # dev server at http://localhost:5174
+bun run --filter @sunrise/web build   # production build
+bun run --filter @sunrise/web preview # serve the production build
+```
+
+> **Stub caveat:** the web Core is a `localStorage`-backed stub mirroring the real Core's surface (`queryToday`, `queryInbox`, `createTask`, `completeTask`). Use it for UI/PWA-shell QA only — it does **not** exercise real persistence, CRDT, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+
+#### 5. Desktop app — Tauri (manual E2E)
+
+```bash
+bun run --filter @sunrise/desktop dev   # frontend renderer only, http://localhost:5173
+```
+
+> **Deferred caveat:** the native Tauri shell is not yet runnable — its Tauri deps aren't pinned, and IPC falls back to a stub. The frontend renders, but `cargo tauri dev` won't drive a real window until the deps are installed (`cd apps/desktop && bun install && bun run tauri dev` once configured).
+
 ### Common tasks
 
 All project commands are centralized in the [`justfile`](justfile). Run `just` (or `just --list`) to see everything:
