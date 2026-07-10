@@ -2774,6 +2774,7 @@ dependencies = [
  "ciborium",
  "proptest",
  "serde",
+ "serde_bytes",
  "sunrise-cbor",
  "sunrise-error",
  "thiserror 1.0.69",

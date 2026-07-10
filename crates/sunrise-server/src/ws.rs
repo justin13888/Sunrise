@@ -25,9 +25,10 @@ use axum::{
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, FrameFlags, Hello, MsgKind, REQUIRED_CLIENT_BITS,
-    REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
+    MsgKind, OpBatchPayload, SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
 use crate::relay::{ConnId, RelayFrame};
@@ -58,18 +59,29 @@ async fn run_session(socket: WebSocket, state: ServerState) {
     let (header, payload) = match decode_frame(&buf) {
         Ok(v) => v,
         Err(e) => {
-            let _ = send_error_frame(&mut sink, &format!("frame decode: {e}")).await;
+            let _ =
+                send_error_frame(&mut sink, e.as_error_code(), &format!("frame decode: {e}")).await;
             return;
         }
     };
     if header.msg_kind != MsgKind::Hello {
-        let _ = send_error_frame(&mut sink, "expected Hello as first frame").await;
+        let _ = send_error_frame(
+            &mut sink,
+            ErrorCode::ProtocolBadMagic,
+            "expected Hello as first frame",
+        )
+        .await;
         return;
     }
     let hello: Hello = match ciborium::de::from_reader(&payload[..]) {
         Ok(h) => h,
         Err(e) => {
-            let _ = send_error_frame(&mut sink, &format!("hello decode: {e}")).await;
+            let _ = send_error_frame(
+                &mut sink,
+                ErrorCode::SyncOpInvalid,
+                &format!("hello decode: {e}"),
+            )
+            .await;
             return;
         }
     };
@@ -85,14 +97,15 @@ async fn run_session(socket: WebSocket, state: ServerState) {
     ) {
         Ok(a) => a,
         Err(e) => {
-            let _ = send_error_frame(&mut sink, &format!("negotiation: {e}")).await;
+            let _ =
+                send_error_frame(&mut sink, e.as_error_code(), &format!("negotiation: {e}")).await;
             return;
         }
     };
 
     let mut ack_payload = Vec::new();
     if ciborium::ser::into_writer(&ack, &mut ack_payload).is_err() {
-        let _ = send_error_frame(&mut sink, "ack encode").await;
+        let _ = send_error_frame(&mut sink, ErrorCode::FatalInternal, "ack encode").await;
         return;
     }
     let Ok(ack_frame) = encode_frame(MsgKind::HelloAck, FrameFlags::EMPTY, &ack_payload) else {
@@ -202,31 +215,54 @@ async fn handle_inbound(
     state: &ServerState,
 ) -> bool {
     let Ok((header, payload)) = decode_frame(buf) else {
-        let _ = send_error_frame(sink, "frame decode").await;
+        let _ = send_error_frame(sink, ErrorCode::ProtocolBadMagic, "frame decode").await;
         return false;
     };
     match header.msg_kind {
         MsgKind::Subscribe => {
-            // Subscribe payload: CBOR array of 16-byte stream-id blobs.
-            let stream_ids: Vec<[u8; 16]> = match ciborium::de::from_reader(&payload[..]) {
+            let sub = match SubscribePayload::decode(&payload) {
                 Ok(v) => v,
                 Err(_) => {
-                    let _ = send_error_frame(sink, "subscribe decode").await;
+                    let _ =
+                        send_error_frame(sink, ErrorCode::SyncOpInvalid, "subscribe decode").await;
                     return true;
                 }
             };
-            for sid in stream_ids {
-                let rx = state.relay.subscribe((account, sid));
-                subs.push(rx);
+            for entry in sub.streams {
+                let sid = entry.stream_id;
+                // Atomic snapshot + subscribe: retained frames first, then a
+                // CaughtUp marker for this stream, then live frames flow.
+                let subscription = state.relay.subscribe((account, sid));
+                for retained in subscription.retained {
+                    if sink.send(Message::Binary(retained.bytes)).await.is_err() {
+                        return false;
+                    }
+                }
+                if !send_caught_up(sink, sid).await {
+                    return false;
+                }
+                subs.push(subscription.rx);
             }
             true
         }
         MsgKind::OpBatch => {
-            // Republish raw frame to all subscribers of (account, stream).
-            // For v1 we extract the stream-id from the CBOR header field
-            // `stream_id` if present. The server re-uses the original
-            // frame bytes verbatim for fan-out.
-            let stream_id: [u8; 16] = extract_stream_id(&payload).unwrap_or([0u8; 16]);
+            // Decode the typed payload to route by its stream-id. On decode
+            // failure, reply with a coded Error and do NOT fan out.
+            let batch = match extract_op_batch(&payload) {
+                Some(b) => b,
+                None => {
+                    let _ = send_error_frame(
+                        sink,
+                        ErrorCode::SyncOpInvalid,
+                        "malformed OpBatch payload",
+                    )
+                    .await;
+                    return true;
+                }
+            };
+            let stream_id = batch.stream_id;
+            let server_first_seen_ms = state.clock.now_ms();
+            // Republish the original raw frame bytes verbatim for fan-out.
             state.relay.publish(
                 (account, stream_id),
                 RelayFrame {
@@ -234,13 +270,17 @@ async fn handle_inbound(
                     bytes: buf.to_vec(),
                 },
             );
-            // Send Ack with the seq that was published. v1 self-host uses
-            // the wall-clock as a placeholder server_first_seen_ms.
-            let ack_payload = build_ack_payload(state.clock.now_ms());
-            let ack_frame =
-                encode_frame(MsgKind::Ack, FrameFlags::EMPTY, &ack_payload).unwrap_or_default();
-            if !ack_frame.is_empty() {
-                let _ = sink.send(Message::Binary(ack_frame)).await;
+            // Ack the batch with its stream-id + batch-id and the injected
+            // clock's first-seen timestamp.
+            let ack = AckPayload {
+                batch_id: batch.batch_id,
+                stream_id,
+                server_first_seen_ms,
+            };
+            if let Ok(bytes) = ack.encode() {
+                if let Ok(frame) = encode_frame(MsgKind::Ack, FrameFlags::EMPTY, &bytes) {
+                    let _ = sink.send(Message::Binary(frame)).await;
+                }
             }
             true
         }
@@ -256,32 +296,42 @@ async fn handle_inbound(
     }
 }
 
-/// Encode a one-off Error frame and ship it.
+/// Encode a one-off coded [`ErrorPayload`] frame and ship it.
 async fn send_error_frame(
     sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    msg: &str,
+    code: ErrorCode,
+    reason: &str,
 ) -> Result<(), axum::Error> {
-    let mut payload = Vec::new();
-    let _ = ciborium::ser::into_writer(&serde_json::json!({"msg": msg}), &mut payload);
-    let frame = encode_frame(MsgKind::Error, FrameFlags::EMPTY, &payload).unwrap_or_default();
+    let payload = ErrorPayload {
+        code,
+        reason: reason.to_string(),
+    };
+    let bytes = payload.encode().unwrap_or_default();
+    let frame = encode_frame(MsgKind::Error, FrameFlags::EMPTY, &bytes).unwrap_or_default();
     sink.send(Message::Binary(frame)).await
 }
 
-fn build_ack_payload(server_first_seen_ms: u64) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let _ = ciborium::ser::into_writer(
-        &serde_json::json!({ "server_first_seen_ms": server_first_seen_ms }),
-        &mut buf,
-    );
-    buf
+/// Send a CaughtUp marker for `stream_id`. Returns false on send failure.
+async fn send_caught_up(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    stream_id: [u8; 16],
+) -> bool {
+    let payload = CaughtUpPayload { stream_id };
+    let Ok(bytes) = payload.encode() else {
+        return true;
+    };
+    // CaughtUp rides the `StreamUpdate` kind (see wire-protocol payloads).
+    let Ok(frame) = encode_frame(MsgKind::StreamUpdate, FrameFlags::EMPTY, &bytes) else {
+        return true;
+    };
+    sink.send(Message::Binary(frame)).await.is_ok()
 }
 
-/// Best-effort: pluck a 16-byte `stream_id` field from a CBOR-encoded
-/// payload. v1 inner-ops are simple enums; in production this is a
-/// canonical CBOR map decode. v1 self-host: returns None — fan-out
-/// happens via a synthetic all-zeros stream-id which is fine in tests.
-fn extract_stream_id(_cbor: &[u8]) -> Option<[u8; 16]> {
-    None
+/// Decode the typed [`OpBatchPayload`] from a frame payload to route it by
+/// stream-id. Returns `None` on any decode failure, so the caller replies
+/// with a coded Error instead of silently fanning out to all-zeros.
+fn extract_op_batch(payload: &[u8]) -> Option<OpBatchPayload> {
+    OpBatchPayload::decode(payload).ok()
 }
 
 /// Single-tenant account hash for self-host mode. Production binds this

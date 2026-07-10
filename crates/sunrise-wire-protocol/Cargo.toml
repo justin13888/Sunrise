@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 ciborium = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
 thiserror = { workspace = true }
 zstd = { workspace = true }
 sunrise-cbor = { workspace = true }

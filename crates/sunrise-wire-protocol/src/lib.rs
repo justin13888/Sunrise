@@ -10,8 +10,9 @@
 //! - [`Hello`] / [`HelloAck`] — session negotiation.
 //! - [`Capability`] — capability bitfield with required-bits enforcement.
 //!
-//! Higher-level messages (OpBatch, Subscribe, etc.) are typed in
-//! [`messages`] but their full payloads ship in Phase 8 (sync).
+//! Higher-level message kinds are discriminated in [`messages`]; their
+//! typed CBOR payloads (OpBatch, Ack, Subscribe, CaughtUp, …) live in
+//! [`payloads`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -25,6 +26,7 @@ pub mod capability;
 pub mod frame;
 pub mod messages;
 pub mod negotiation;
+pub mod payloads;
 
 pub use capability::{Capability, CapabilityBits, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS};
 pub use frame::{
@@ -33,3 +35,7 @@ pub use frame::{
 };
 pub use messages::MsgKind;
 pub use negotiation::{Hello, HelloAck, NegotiationError};
+pub use payloads::{
+    AckPayload, CaughtUpPayload, CursorEntry, ErrorPayload, NackPayload, OpBatchPayload,
+    SubscribeEntry, SubscribePayload,
+};
