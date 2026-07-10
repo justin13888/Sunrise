@@ -93,7 +93,12 @@ pub struct Stream {
     /// Color from a fixed palette.
     pub color: StreamColor,
     /// Optional icon id from a fixed set.
-    #[serde(default)]
+    ///
+    /// `skip_deserializing`: the `&'static str` element cannot borrow from a
+    /// deserializer, so this field is never read back (it always round-trips to
+    /// `None` in v1) — this keeps `Stream: Deserialize<'de>` free of a
+    /// `'de: 'static` bound so it can nest inside `InnerOp`.
+    #[serde(default, skip_deserializing)]
     pub icon: Option<&'static str>,
     /// Optional parent Stream — one-level nesting only.
     #[serde(default)]

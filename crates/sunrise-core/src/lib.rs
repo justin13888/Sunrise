@@ -37,6 +37,7 @@ pub mod config;
 pub mod core;
 pub mod engine;
 pub mod events;
+pub mod inner_op;
 pub mod keychain;
 pub mod queries;
 pub mod unlock;

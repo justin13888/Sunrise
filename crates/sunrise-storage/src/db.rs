@@ -513,6 +513,88 @@ mod tests {
         }
     }
 
+    /// Build a DB with migrations 0001..0005 applied, stamped `storage_v = 5`,
+    /// simulating a real v5 vault opened by a newer binary.
+    fn seed_v5_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..5] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![5_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v5_db_adds_lww_metadata_columns() {
+        assert!(u32::from(STORAGE_V) >= 6);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v5_db(&conn);
+
+        // Seed a v5 task row (pre-LWW columns) so we can prove data survives.
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, stream_id, title, state)
+             VALUES (?, ?, 'survivor', 'todo')",
+            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0006.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // The pre-existing task row is intact, and its new columns hold defaults.
+        let (title, created, lww_ts): (String, i64, i64) = conn
+            .query_row(
+                "SELECT title, created_at_ms, lww_ts_ms FROM tasks WHERE id = ?",
+                rusqlite::params![vec![1u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "survivor");
+        assert_eq!(created, 0);
+        assert_eq!(lww_ts, 0);
+
+        // The new LWW columns exist on all three materialized tables.
+        for (table, col) in [
+            ("tasks", "lww_device"),
+            ("tasks", "updated_at_ms"),
+            ("streams", "lww_ts_ms"),
+            ("streams", "lww_device"),
+            ("routines", "lww_ts_ms"),
+            ("routines", "lww_device"),
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?"),
+                    rusqlite::params![col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n, 1,
+                "column {table}.{col} should exist after v5->v6 upgrade"
+            );
+        }
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

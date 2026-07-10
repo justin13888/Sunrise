@@ -44,6 +44,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "sync_local",
         sql: include_str!("../migrations/0005_sync_local.sql"),
     },
+    Migration {
+        id: 6,
+        name: "lww_metadata",
+        sql: include_str!("../migrations/0006_lww_metadata.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

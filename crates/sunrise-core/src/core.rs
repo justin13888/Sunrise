@@ -137,6 +137,29 @@ impl Core {
         Ok(res)
     }
 
+    /// Apply a remote op envelope (the receive half of sync).
+    ///
+    /// Locks the vault, applies the op via [`Engine::apply_remote`] (idempotent,
+    /// entity-level LWW), and broadcasts the resulting [`DomainEvent`] on
+    /// `changes()`. Returns `Ok(None)` for an idempotent re-receive. The sync
+    /// driver (next slice) calls this for every inbound envelope.
+    pub async fn apply_remote(
+        &self,
+        envelope_bytes: &[u8],
+    ) -> Result<Option<DomainEvent>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let event = {
+            let mut db = self.db.lock();
+            self.engine.apply_remote(&mut db, envelope_bytes)?
+        };
+        if let Some(ev) = &event {
+            let _ = self.changes_tx.send(ev.clone());
+        }
+        Ok(event)
+    }
+
     /// Run a read query.
     pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
         if *self.closed.lock() {

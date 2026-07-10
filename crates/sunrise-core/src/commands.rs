@@ -76,6 +76,17 @@ pub enum Command {
         /// Wall clock (ms since epoch) from the injected clock.
         now_ms: u64,
     },
+    /// Trust a peer device by its self-issued [`DeviceCert`] (canonical CBOR).
+    ///
+    /// Verifies the cert (self-signed, per v1 issuance), then upserts the
+    /// device's id + signing pubkey + cert blob into the local `devices` table
+    /// so that [`crate::Engine::apply_remote`] can verify envelopes signed by
+    /// that device. Emits **no op**: device trust is local state in v1 (device
+    /// pairing/attestation is a later slice).
+    TrustDevice {
+        /// Canonical-CBOR `DeviceCert` bytes for the peer device.
+        cert_cbor: Vec<u8>,
+    },
 }
 
 /// Result of a command, returned synchronously to the caller after the

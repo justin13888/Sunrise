@@ -49,11 +49,15 @@
 
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, Rng};
+use crate::events::DomainEvent;
+use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
 use crate::queries::{DeviceRow, Query, QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use sunrise_crypto::op_envelope::open_envelope;
+use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::{
     inbox_stream_ref, materialization_horizon_days, occurrence_task_id, NoteBody, Routine,
     RoutineCatchupPolicy, RoutineDraft, RoutinePatch, ScheduleConstraint, Stream, StreamColor,
@@ -92,12 +96,28 @@ pub enum EngineError {
     /// CBOR encode/decode failure for an inner-op blob.
     #[error("cbor: {0}")]
     Cbor(String),
+    /// Inner-op CBOR codec failure.
+    #[error("inner-op: {0}")]
+    InnerOp(#[from] InnerOpError),
     /// Target entity not found.
     #[error("not found: {0}")]
     NotFound(String),
     /// Invalid state transition or policy violation.
     #[error("invalid: {0}")]
     Invalid(String),
+    /// A remote op envelope was malformed, failed verification, or failed to
+    /// decrypt (bad magic / signature / AEAD / non-canonical inner CBOR).
+    ///
+    /// Maps to [`sunrise_error::ErrorCode::SyncOpInvalid`] at the public API.
+    #[error("remote op invalid: {0}")]
+    RemoteOpInvalid(String),
+    /// A remote op envelope names a `device_id` that is not present in the
+    /// local `devices` table (never trusted via [`Command::TrustDevice`]).
+    ///
+    /// Maps to [`sunrise_error::ErrorCode::SyncOpInvalid`] at the public API:
+    /// the op decoded but failed a semantic (trust) check.
+    #[error("remote op from unknown device")]
+    UnknownDevice,
 }
 
 /// One command-application pipeline. Stateless; holds references to the
@@ -148,6 +168,7 @@ impl Engine {
                 self.skip_routine_occurrence(db, id, occurrence_key)
             }
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
+            Command::TrustDevice { cert_cbor } => self.trust_device(db, &cert_cbor),
         }
     }
 
@@ -169,6 +190,190 @@ impl Engine {
                 last_sync_ms: None,
             })),
         }
+    }
+
+    // ---- device trust + remote apply (receive half of sync) ----
+
+    /// Trust a peer device from its self-issued [`DeviceCert`] (canonical CBOR).
+    ///
+    /// Verifies the cert is well-formed and self-signed (v1: the issuing
+    /// identity key is the device signing key), then upserts `device_id`,
+    /// `cert_blob` (which carries `D_S_pub`), nickname, and platform into the
+    /// `devices` table. Emits **no op** — device trust is local state in v1.
+    fn trust_device(&self, db: &mut Db, cert_cbor: &[u8]) -> Result<CommandResult, EngineError> {
+        let cert = DeviceCert::from_cbor(cert_cbor)
+            .map_err(|e| EngineError::Invalid(format!("device cert decode: {e}")))?;
+        // Self-signed check: verify the cert against its own embedded signing
+        // pubkey, matching keychain issuance (`DeviceCert::issue(body, &signing)`
+        // where `signing` is the device key). Rejects tampered/foreign certs.
+        cert.verify(&cert.body.d_s_pub)
+            .map_err(|e| EngineError::Invalid(format!("device cert verify: {e}")))?;
+        let device_id = cert.body.device_id;
+        let cert_owned = cert_cbor.to_vec();
+        let nickname = cert.body.nickname.clone();
+        let platform = cert.body.platform.clone();
+        let created_at_ms = cert.body.created_at_ms;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            // Upsert: re-trusting a known device refreshes its cert blob.
+            tx.execute(
+                "INSERT INTO devices
+                 (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms)
+                 VALUES (?, ?, ?, ?, ?, NULL)
+                 ON CONFLICT(device_id) DO UPDATE SET
+                    cert_blob = excluded.cert_blob,
+                    nickname = excluded.nickname,
+                    platform = excluded.platform",
+                params![
+                    &device_id[..],
+                    cert_owned,
+                    nickname,
+                    platform,
+                    created_at_ms
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult {
+            entity: EntityRef::new(EntityKind::Device, device_id),
+            state: None,
+            op_id: [0u8; 16],
+            seq: 0,
+        })
+    }
+
+    /// Apply a remote op envelope: idempotent, entity-level last-writer-wins.
+    ///
+    /// This is the receive half of sync. The whole pipeline runs under one
+    /// `BEGIN IMMEDIATE` transaction (after out-of-tx crypto verification):
+    ///
+    /// 1. `decode_envelope` — malformed bytes are rejected.
+    /// 2. Sender lookup — `envelope.device_id` must be a trusted (non-revoked)
+    ///    row in `devices`, else [`EngineError::UnknownDevice`].
+    /// 3. `verify_envelope` against the stored device pubkey — a bad signature
+    ///    is never applied.
+    /// 4. Decrypt under the shared Stream key (same derivation as the sender —
+    ///    the pairing model shares a vault root) and decode the inner op. A
+    ///    different vault root derives a different key and fails AEAD.
+    /// 5. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
+    ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
+    ///    op was already present (`changes() == 0`), return `Ok(None)` with no
+    ///    materialization and no event.
+    /// 6. LWW materialization: the entity's stored `(lww_ts_ms, lww_device)` is
+    ///    compared against the envelope's `(ts_ms, device_id)`
+    ///    lexicographically. The greater pair wins (ties on `ts_ms` broken by
+    ///    raw device-id memcmp — higher wins). A winning op performs the same
+    ///    materialized-row upsert the local path does and stamps the LWW
+    ///    columns from the envelope; a losing op keeps the row but stays
+    ///    recorded in the op log.
+    /// 7. Advance `sync_cursors(stream_id, device_id)` to `max(seq)`.
+    ///
+    /// Remote ops are **not** enqueued in the outbox: the relay fans out to
+    /// peers, so re-broadcasting a received op would loop.
+    ///
+    /// Returns the [`DomainEvent`] the caller should broadcast (matching what a
+    /// local submit emits for the same op kind), or `Ok(None)` on an idempotent
+    /// re-receive.
+    ///
+    /// # Errors
+    /// [`EngineError::RemoteOpInvalid`] for malformed / unverifiable /
+    /// undecryptable envelopes, [`EngineError::UnknownDevice`] for an untrusted
+    /// sender, and storage errors from the transaction.
+    pub fn apply_remote(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+    ) -> Result<Option<DomainEvent>, EngineError> {
+        // a. Decode.
+        let env = decode_envelope(envelope_bytes)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;
+
+        // b. Sender must be a trusted, non-revoked device.
+        let cert_blob = self
+            .lookup_device_cert(db, &env.device_id)?
+            .ok_or(EngineError::UnknownDevice)?;
+        let cert = DeviceCert::from_cbor(&cert_blob)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
+        let d_s_pub = cert.body.d_s_pub;
+
+        // c. Verify the signature before doing anything else.
+        verify_envelope(&env, &d_s_pub)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("verify: {e}")))?;
+
+        // d. Decrypt under the shared Stream key and decode the inner op.
+        let stream_key = self.keychain.stream_key(&env.stream_id);
+        let inner_cbor = open_envelope(&env, &d_s_pub, Some(&stream_key))
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("open: {e}")))?;
+        let inner = decode_inner_op(&inner_cbor)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
+
+        let now_ms = self.clock.now_ms();
+        let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
+        let target = inner.target_ref();
+        let effect = inner.effect();
+        let inner_kind = inner.inner_kind();
+        let target_kind = inner.target_kind();
+
+        let mut applied = false;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            // e. Idempotence gate.
+            OpLog::insert(
+                tx,
+                &op_id,
+                &env.stream_id,
+                &env.device_id,
+                env.seq,
+                env.ts_ms,
+                envelope_bytes,
+                inner_kind,
+                target_kind,
+                Some(target.bytes()),
+                Some(now_ms),
+                Some(&env.device_id),
+                now_ms,
+                &[],
+            )
+            .map_err(|e| match e {
+                sunrise_storage::OpLogError::Sqlite(s) => s,
+                sunrise_storage::OpLogError::Db(_) => rusqlite::Error::ExecuteReturnedResults,
+            })?;
+            if tx.changes() == 0 {
+                // Already applied: nothing further.
+                return Ok(());
+            }
+            applied = true;
+            // f. LWW materialization.
+            materialize_remote(tx, &inner, env.ts_ms, &env.device_id)?;
+            // g. Advance the sync cursor.
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id, env.seq)?;
+            Ok(())
+        })?;
+
+        if !applied {
+            return Ok(None);
+        }
+        Ok(Some(match effect {
+            OpEffect::Create => DomainEvent::Created(target),
+            OpEffect::Update => DomainEvent::Updated(target),
+            OpEffect::Delete => DomainEvent::Deleted(target),
+        }))
+    }
+
+    /// Trusted device cert lookup (non-revoked). `None` = untrusted sender.
+    fn lookup_device_cert(
+        &self,
+        db: &Db,
+        device_id: &[u8; 16],
+    ) -> Result<Option<Vec<u8>>, EngineError> {
+        let blob: Option<Vec<u8>> = db
+            .conn()
+            .query_row(
+                "SELECT cert_blob FROM devices
+                 WHERE device_id = ? AND revoked_at_ms IS NULL",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(blob)
     }
 
     // ---- command handlers ----
@@ -210,7 +415,7 @@ impl Engine {
 
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            insert_task_row(tx, &task)?;
+            insert_task_row(tx, &task, now_ms, &self.keychain.device_id())?;
             insert_task_contexts(tx, &task)?;
             ftsr_upsert_task(tx, &task)?;
             self.ops_insert(
@@ -326,7 +531,7 @@ impl Engine {
                 false,
                 false,
             )?;
-            update_task_row(tx, &task_for_persist)?;
+            update_task_row(tx, &task_for_persist, now_ms, &self.keychain.device_id())?;
             replace_task_contexts(tx, &task_for_persist)?;
             ftsr_upsert_task(tx, &task_for_persist)?;
             self.ops_insert(
@@ -382,7 +587,7 @@ impl Engine {
         let seq = self.next_seq(db, task.stream_id.bytes())?;
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone)?;
+            update_task_row(tx, &task_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -422,7 +627,7 @@ impl Engine {
         let seq = self.next_seq(db, task.stream_id.bytes())?;
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone)?;
+            update_task_row(tx, &task_clone, now_ms, &self.keychain.device_id())?;
             ftsr_delete_task(tx, &task_clone.id)?;
             self.ops_insert(
                 tx,
@@ -493,7 +698,7 @@ impl Engine {
         let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_stream_row(tx, &stream_clone)?;
+            insert_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -562,7 +767,7 @@ impl Engine {
         let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_stream_row(tx, &stream_clone)?;
+            update_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -606,7 +811,7 @@ impl Engine {
         let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_stream_row(tx, &stream_clone)?;
+            update_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -666,7 +871,13 @@ impl Engine {
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            insert_routine_row(tx, &routine_clone, now_ms)?;
+            insert_routine_row(
+                tx,
+                &routine_clone,
+                now_ms,
+                now_ms,
+                &self.keychain.device_id(),
+            )?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -756,7 +967,7 @@ impl Engine {
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            update_routine_row(tx, &routine_clone)?;
+            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -800,7 +1011,7 @@ impl Engine {
         let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_routine_row(tx, &routine_clone)?;
+            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -861,7 +1072,7 @@ impl Engine {
         let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_routine_row(tx, &routine_clone)?;
+            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -883,7 +1094,7 @@ impl Engine {
                 let task_seq = self.next_seq_tx(tx, t.stream_id.bytes())?;
                 let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                update_task_row(tx, &t)?;
+                update_task_row(tx, &t, now_ms, &self.keychain.device_id())?;
                 ftsr_delete_task(tx, &t.id)?;
                 let del_op_id = self.fresh_op_id(now_ms);
                 self.ops_insert(
@@ -1000,7 +1211,8 @@ impl Engine {
             )?;
             for (key, at, title_override) in &jobs {
                 let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
-                let inserted = insert_task_row_or_ignore(tx, &task)?;
+                let inserted =
+                    insert_task_row_or_ignore(tx, &task, now_ms, &self.keychain.device_id())?;
                 if !inserted {
                     continue;
                 }
@@ -1086,7 +1298,7 @@ impl Engine {
             let seq = self.next_seq(db, t.stream_id.bytes())?;
             let t_clone = t.clone();
             db.with_tx(|tx| -> rusqlite::Result<()> {
-                update_task_row(tx, &t_clone)?;
+                update_task_row(tx, &t_clone, now_ms, &self.keychain.device_id())?;
                 ftsr_delete_task(tx, &t_clone.id)?;
                 self.ops_insert(
                     tx,
@@ -1327,27 +1539,6 @@ impl Engine {
     }
 }
 
-// ---- inner-op CBOR ----
-
-#[derive(Debug, serde::Serialize)]
-enum InnerOp {
-    TaskCreate(Task),
-    TaskUpdate(Task),
-    TaskDelete(EntityRef),
-    StreamCreate(Stream),
-    StreamUpdate(Stream),
-    StreamDelete(EntityRef),
-    RoutineCreate(Box<Routine>),
-    RoutineUpdate(Box<Routine>),
-    RoutineDelete(EntityRef),
-}
-
-fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, EngineError> {
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(op, &mut buf).map_err(|e| EngineError::Cbor(e.to_string()))?;
-    Ok(buf)
-}
-
 // ---- table operations ----
 
 impl Engine {
@@ -1454,6 +1645,200 @@ impl Engine {
     }
 }
 
+// ---- remote (LWW) materialization ----
+
+/// Deterministic op-id for a received op, derived from
+/// `(stream_id, device_id, seq)`. Two replicas that receive the same op assign
+/// it the same op-log primary key, reinforcing the `UNIQUE(stream, device, seq)`
+/// idempotence gate.
+fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16] {
+    let mut km = Vec::with_capacity(16 + 16 + 8);
+    km.extend_from_slice(stream_id);
+    km.extend_from_slice(device_id);
+    km.extend_from_slice(&seq.to_be_bytes());
+    let bytes = sunrise_crypto::derive_key("sunrise.remote_op_id.v1", &km, 16);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+/// Advance `sync_cursors(stream_id, device_id)` to `max(existing, seq)`.
+fn upsert_sync_cursor(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+    seq: u64,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
+         VALUES (?, ?, ?)
+         ON CONFLICT(stream_id, device_id) DO UPDATE SET
+            last_applied_seq = MAX(last_applied_seq, excluded.last_applied_seq)",
+        params![&stream_id[..], &device_id[..], seq],
+    )?;
+    Ok(())
+}
+
+/// Read the stored `(lww_ts_ms, lww_device)` pair for `id` in `table`.
+/// `None` when the row is absent.
+fn read_row_lww(
+    tx: &Transaction<'_>,
+    table: &str,
+    id_col: &str,
+    id: &[u8; 16],
+) -> rusqlite::Result<Option<(i64, Option<Vec<u8>>)>> {
+    let sql = format!("SELECT lww_ts_ms, lww_device FROM {table} WHERE {id_col} = ?");
+    tx.query_row(&sql, params![&id[..]], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+    })
+    .optional()
+}
+
+/// Entity-level LWW decision: does the incoming `(env_ts, env_dev)` beat the
+/// row's stored `(row_ts, row_dev)`? Greater `ts` wins; ties are broken by raw
+/// 16-byte device-id memcmp (higher wins). A placeholder row with no stamped
+/// device (`lww_device IS NULL`) loses ties to any real op.
+fn lww_wins(env_ts: u64, env_dev: &[u8; 16], row_ts: i64, row_dev: Option<&[u8]>) -> bool {
+    let row_ts_u = u64::try_from(row_ts.max(0)).unwrap_or(0);
+    if env_ts != row_ts_u {
+        return env_ts > row_ts_u;
+    }
+    match row_dev {
+        None => true,
+        Some(rd) => env_dev.as_slice() > rd,
+    }
+}
+
+/// Tombstone a materialized task under LWW (delete op won). Stamps LWW columns
+/// and drops the task from the FTS index.
+fn tombstone_task(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE tasks SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+         WHERE id = ?",
+        params![ts_ms, ts_ms, &device[..], &id[..]],
+    )?;
+    tx.execute(
+        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
+        params![&id[..]],
+    )?;
+    Ok(())
+}
+
+/// Tombstone a materialized stream under LWW (delete op won).
+fn tombstone_stream(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE streams SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+         WHERE stream_id = ?",
+        params![ts_ms, ts_ms, &device[..], &id[..]],
+    )?;
+    Ok(())
+}
+
+/// Tombstone a materialized routine under LWW (delete op won).
+fn tombstone_routine(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE routines SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+         WHERE id = ?",
+        params![ts_ms, ts_ms, &device[..], &id[..]],
+    )?;
+    Ok(())
+}
+
+/// Apply one decoded remote inner op to the materialized tables under LWW.
+///
+/// Compares the envelope's `(ts_ms, device_id)` against the target row's stored
+/// `(lww_ts_ms, lww_device)`. If the envelope wins (or the row is absent for a
+/// create/update), it performs the same insert/update the local path does and
+/// stamps the LWW columns from the envelope. A losing op is a no-op here (it is
+/// still recorded in the op log by the caller).
+///
+/// `*Delete` ops carry only an id (v1 full-state limitation): they can tombstone
+/// an existing row under LWW, but cannot materialize a tombstone for a row that
+/// has not yet been created on this replica (see [`crate::inner_op`] docs).
+fn materialize_remote(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    let (table, id_col) = match inner.entity_kind() {
+        EntityKind::Stream => ("streams", "stream_id"),
+        EntityKind::Routine => ("routines", "id"),
+        // Task (and any future kind) key on `id`.
+        _ => ("tasks", "id"),
+    };
+    let target = inner.target_ref();
+    let existing = read_row_lww(tx, table, id_col, target.bytes())?;
+    let wins = match &existing {
+        None => true,
+        Some((row_ts, row_dev)) => lww_wins(ts_ms, device, *row_ts, row_dev.as_deref()),
+    };
+    if !wins {
+        return Ok(());
+    }
+    let present = existing.is_some();
+    match inner {
+        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) => {
+            // The owning stream must exist before the task (FK).
+            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
+            if present {
+                update_task_row(tx, t, ts_ms, device)?;
+                replace_task_contexts(tx, t)?;
+            } else {
+                insert_task_row(tx, t, ts_ms, device)?;
+                insert_task_contexts(tx, t)?;
+            }
+            ftsr_upsert_task(tx, t)?;
+        }
+        InnerOp::TaskDelete(_) => {
+            if present {
+                tombstone_task(tx, target.bytes(), ts_ms, device)?;
+            }
+        }
+        InnerOp::StreamCreate(s) | InnerOp::StreamUpdate(s) => {
+            if present {
+                update_stream_row(tx, s, ts_ms, device)?;
+            } else {
+                insert_stream_row(tx, s, ts_ms, device)?;
+            }
+        }
+        InnerOp::StreamDelete(_) => {
+            if present {
+                tombstone_stream(tx, target.bytes(), ts_ms, device)?;
+            }
+        }
+        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
+            ensure_stream_row(tx, &r.template.stream_id, ts_ms, None, false, false, false)?;
+            if present {
+                update_routine_row(tx, r, ts_ms, device)?;
+            } else {
+                insert_routine_row(tx, r, ts_ms, ts_ms, device)?;
+            }
+        }
+        InnerOp::RoutineDelete(_) => {
+            if present {
+                tombstone_routine(tx, target.bytes(), ts_ms, device)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ensure_stream_row(
     tx: &Transaction<'_>,
     stream: &EntityRef,
@@ -1495,14 +1880,20 @@ fn ensure_stream_row(
     Ok(())
 }
 
-fn insert_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
+fn insert_stream_row(
+    tx: &Transaction<'_>,
+    s: &Stream,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
          (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color)
-         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
+          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
+          lww_ts_ms, lww_device)
+         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             Vec::<u8>::new(),
@@ -1514,18 +1905,25 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
             s.updated_at.as_millisecond(),
             s.name,
             s.color.as_str(),
+            lww_ts_ms,
+            &lww_device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
+fn update_stream_row(
+    tx: &Transaction<'_>,
+    s: &Stream,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
-             name = ?, color = ?
+             name = ?, color = ?, lww_ts_ms = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
             parent_blob,
@@ -1534,6 +1932,8 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
             s.updated_at.as_millisecond(),
             s.name,
             s.color.as_str(),
+            lww_ts_ms,
+            &lww_device[..],
             id_blob,
         ],
     )?;
@@ -1590,7 +1990,12 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     Ok(Some(stream))
 }
 
-fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
+fn insert_task_row(
+    tx: &Transaction<'_>,
+    t: &Task,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -1600,8 +2005,10 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
          (id, stream_id, title, state, priority, energy, estimated_min,
           scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
-          scheduling_constraints, extra, head_root)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+          scheduling_constraints, extra, head_root,
+          created_at_ms, updated_at_ms, lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+                 ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -1623,12 +2030,21 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            t.created_at.as_millisecond(),
+            t.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
+fn update_task_row(
+    tx: &Transaction<'_>,
+    t: &Task,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -1638,7 +2054,8 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             stream_id = ?, title = ?, state = ?, priority = ?,
             energy = ?, estimated_min = ?, scheduled_at_ms = ?, due_at_ms = ?,
             completed_at_ms = ?, deferred_count = ?, archived = ?, deleted = ?,
-            body = ?, scheduling_constraints = ?
+            body = ?, scheduling_constraints = ?,
+            updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -1656,6 +2073,9 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            t.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
             id_blob,
         ],
     )?;
@@ -1747,7 +2167,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
             "SELECT stream_id, title, state, priority, energy, estimated_min,
                     scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
                     archived, deleted, body, scheduling_constraints,
-                    routine_id, routine_occurrence
+                    routine_id, routine_occurrence, created_at_ms, updated_at_ms
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -1768,6 +2188,8 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, Option<Vec<u8>>>(13)?,
                     r.get::<_, Option<Vec<u8>>>(14)?,
                     r.get::<_, Option<i64>>(15)?,
+                    r.get::<_, i64>(16)?,
+                    r.get::<_, i64>(17)?,
                 ))
             },
         )
@@ -1792,8 +2214,8 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
     }
     let task = Task {
         id: EntityRef::new(EntityKind::Task, *id),
-        created_at: ms_to_ts(0),
-        updated_at: ms_to_ts(0),
+        created_at: ms_to_ts(t.16.max(0)),
+        updated_at: ms_to_ts(t.17.max(0)),
         title: t.1,
         body: t.12.map(NoteBody),
         stream_id: EntityRef::new(EntityKind::Stream, stream_bytes),
@@ -1830,7 +2252,12 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
 
 /// INSERT OR IGNORE a task row (materialization dedup by deterministic id).
 /// Returns `true` when a new row was actually inserted.
-fn insert_task_row_or_ignore(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<bool> {
+fn insert_task_row_or_ignore(
+    tx: &Transaction<'_>,
+    t: &Task,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<bool> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -1840,8 +2267,10 @@ fn insert_task_row_or_ignore(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result
          (id, stream_id, title, state, priority, energy, estimated_min,
           scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
-          scheduling_constraints, extra, head_root)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+          scheduling_constraints, extra, head_root,
+          created_at_ms, updated_at_ms, lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+                 ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -1861,6 +2290,10 @@ fn insert_task_row_or_ignore(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            t.created_at.as_millisecond(),
+            t.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
         ],
     )?;
     Ok(changed > 0)
@@ -1945,7 +2378,13 @@ fn decode_blob_opt<T: serde::de::DeserializeOwned + serde::Serialize + Default>(
     }
 }
 
-fn insert_routine_row(tx: &Transaction<'_>, r: &Routine, now_ms: u64) -> rusqlite::Result<()> {
+fn insert_routine_row(
+    tx: &Transaction<'_>,
+    r: &Routine,
+    now_ms: u64,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
     let rrule_text = r.rrule.to_rfc5545();
@@ -1959,8 +2398,9 @@ fn insert_routine_row(tx: &Transaction<'_>, r: &Routine, now_ms: u64) -> rusqlit
          (id, stream_id, rrule, rrule_text, timezone, starts_at_ms, ends_at_ms,
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
-          last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
+          lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -1982,12 +2422,19 @@ fn insert_routine_row(tx: &Transaction<'_>, r: &Routine, now_ms: u64) -> rusqlit
             r.paused_until.map(|d| d.as_millisecond()),
             now_ms,
             now_ms,
+            lww_ts_ms,
+            &lww_device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_routine_row(tx: &Transaction<'_>, r: &Routine) -> rusqlite::Result<()> {
+fn update_routine_row(
+    tx: &Transaction<'_>,
+    r: &Routine,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
     let rrule_text = r.rrule.to_rfc5545();
@@ -2002,7 +2449,8 @@ fn update_routine_row(tx: &Transaction<'_>, r: &Routine) -> rusqlite::Result<()>
             starts_at_ms = ?, ends_at_ms = ?, streak_counter = ?, paused = ?,
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
-            last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?
+            last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?,
+            lww_ts_ms = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -2023,6 +2471,8 @@ fn update_routine_row(tx: &Transaction<'_>, r: &Routine) -> rusqlite::Result<()>
             r.last_completed_at.map(|d| d.as_millisecond()),
             r.paused_until.map(|d| d.as_millisecond()),
             r.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
             id_blob,
         ],
     )?;
@@ -3336,7 +3786,7 @@ mod tests {
                     false,
                     false,
                 )?;
-                insert_routine_row(tx, &r, NOW as u64)
+                insert_routine_row(tx, &r, NOW as u64, NOW as u64, &e.keychain.device_id())
             })
             .unwrap();
             e.materialize_one_routine(&mut db, &r, NOW as u64).unwrap();
@@ -3509,5 +3959,672 @@ mod tests {
         assert!(!deleted(keep_anchor), "anchor-weekday occurrence stays");
         assert!(deleted(drop_id), "off-cadence future task regenerated away");
         assert!(!deleted(started_id), "started task is preserved");
+    }
+
+    // ---- apply_remote (receive half of sync) tests ----
+
+    use crate::events::DomainEvent;
+
+    fn db_root(root: [u8; 32]) -> Db {
+        Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
+    }
+
+    fn engine_seeded(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {
+        let kc = Arc::new(Keychain::for_test_seeded(
+            VaultRootKey::from_bytes(root),
+            seed,
+        ));
+        Engine::new(clock, Arc::new(SystemRng), kc)
+    }
+
+    fn set_clock(c: &FakeClock, v: u64) {
+        *c.0.lock() = v;
+    }
+
+    fn env_bytes(db: &Db, op_id: &[u8; 16]) -> Vec<u8> {
+        OpLog::get_envelope(db, op_id).unwrap().unwrap()
+    }
+
+    /// Sealed envelope of the most recent `task.create` op targeting `target`.
+    fn create_env_for(db: &Db, target: &[u8; 16]) -> Vec<u8> {
+        let op_id: Vec<u8> = db
+            .conn()
+            .query_row(
+                "SELECT op_id FROM ops
+                 WHERE target_id = ? AND inner_kind = 'task.create'
+                 ORDER BY rowid DESC LIMIT 1",
+                params![&target[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut a = [0u8; 16];
+        a.copy_from_slice(&op_id[..16]);
+        env_bytes(db, &a)
+    }
+
+    fn read_task_t(e: &Engine, db: &Db, id: EntityRef) -> Task {
+        match e.query(db, Query::EntityById(id)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!("expected task"),
+        }
+    }
+
+    fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
+        receiver
+            .apply(
+                db,
+                Command::TrustDevice {
+                    cert_cbor: sender.keychain.cert_blob().to_vec(),
+                },
+            )
+            .unwrap();
+    }
+
+    const ROOT: [u8; 32] = [0x5a; 32];
+    const T0: u64 = 1_700_000_000_000;
+
+    #[test]
+    fn apply_remote_round_trip_materializes_identically() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "shared task".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        let ev = eb.apply_remote(&mut dbb, &env).unwrap();
+        assert!(matches!(ev, Some(DomainEvent::Created(id)) if id == res.entity));
+
+        // Field-by-field identical materialization on the receiver.
+        let ta = read_task_t(&ea, &dba, res.entity);
+        let tb = read_task_t(&eb, &dbb, res.entity);
+        assert_eq!(ta, tb);
+    }
+
+    #[test]
+    fn apply_remote_is_idempotent() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "once".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        assert!(eb.apply_remote(&mut dbb, &env).unwrap().is_some());
+        let task_after_first = read_task_t(&eb, &dbb, res.entity);
+        let ops_after_first = op_count(&dbb);
+
+        // Second application is a no-op: Ok(None), row unchanged, no new ops row.
+        assert!(eb.apply_remote(&mut dbb, &env).unwrap().is_none());
+        assert_eq!(read_task_t(&eb, &dbb, res.entity), task_after_first);
+        assert_eq!(op_count(&dbb), ops_after_first);
+        assert_eq!(ops_after_first, 1, "exactly one remote op recorded");
+    }
+
+    #[test]
+    fn lww_earlier_remote_update_loses_to_later_local() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        // A creates; B receives the create.
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "orig".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &res.op_id))
+            .unwrap();
+
+        // B updates locally at a LATER ts.
+        set_clock(&cb, T0 + 10_000);
+        eb.apply(
+            &mut dbb,
+            Command::UpdateTask {
+                id: res.entity,
+                patch: TaskPatch {
+                    title: Some("B-late".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // A updates locally at an EARLIER ts, then that op arrives at B.
+        set_clock(&ca, T0 + 5_000);
+        let a_up = ea
+            .apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: res.entity,
+                    patch: TaskPatch {
+                        title: Some("A-early".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let ev = eb
+            .apply_remote(&mut dbb, &env_bytes(&dba, &a_up.op_id))
+            .unwrap();
+        // Op is applied (recorded + event emitted) but LWW keeps B's later value.
+        assert!(matches!(ev, Some(DomainEvent::Updated(_))));
+        assert_eq!(read_task_t(&eb, &dbb, res.entity).title, "B-late");
+        // The losing op is still recorded in the op log.
+        assert_eq!(op_count(&dbb), 3, "create + local update + remote update");
+    }
+
+    #[test]
+    fn lww_later_remote_update_wins_over_earlier_local() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "orig".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &res.op_id))
+            .unwrap();
+
+        // B updates locally at an EARLIER ts.
+        set_clock(&cb, T0 + 5_000);
+        eb.apply(
+            &mut dbb,
+            Command::UpdateTask {
+                id: res.entity,
+                patch: TaskPatch {
+                    title: Some("B-early".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // A updates at a LATER ts; that op wins on B.
+        set_clock(&ca, T0 + 10_000);
+        let a_up = ea
+            .apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: res.entity,
+                    patch: TaskPatch {
+                        title: Some("A-late".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &a_up.op_id))
+            .unwrap();
+        assert_eq!(read_task_t(&eb, &dbb, res.entity).title, "A-late");
+    }
+
+    #[test]
+    fn lww_tie_break_higher_device_wins_both_directions() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let da = ea.keychain.device_id();
+        let db_id = eb.keychain.device_id();
+        assert_ne!(da, db_id);
+        // Winner's title: the op from the lexicographically-higher device id.
+        let (winner_title, a_wins) = if da.as_slice() > db_id.as_slice() {
+            ("A-tie", true)
+        } else {
+            ("B-tie", false)
+        };
+
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        // Mutual trust so each side can apply the other's op.
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        // A creates; both sides get the create.
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "orig".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let create_env = env_bytes(&dba, &res.op_id);
+        eb.apply_remote(&mut dbb, &create_env).unwrap();
+
+        // Both update the SAME task at the SAME ts (a tie).
+        set_clock(&ca, T0 + 1_000);
+        set_clock(&cb, T0 + 1_000);
+        let a_up = ea
+            .apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: res.entity,
+                    patch: TaskPatch {
+                        title: Some("A-tie".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let b_up = eb
+            .apply(
+                &mut dbb,
+                Command::UpdateTask {
+                    id: res.entity,
+                    patch: TaskPatch {
+                        title: Some("B-tie".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+
+        // Exchange the competing updates both ways.
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &a_up.op_id))
+            .unwrap();
+        ea.apply_remote(&mut dba, &env_bytes(&dbb, &b_up.op_id))
+            .unwrap();
+
+        // Both replicas converge on the higher device's value, in both directions.
+        assert_eq!(read_task_t(&ea, &dba, res.entity).title, winner_title);
+        assert_eq!(read_task_t(&eb, &dbb, res.entity).title, winner_title);
+        let _ = a_wins;
+    }
+
+    #[test]
+    fn unknown_device_rejected() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        // NOTE: B does NOT trust A.
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "from stranger".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &env),
+            Err(EngineError::UnknownDevice)
+        ));
+        // No ops row, no materialization.
+        assert_eq!(op_count(&dbb), 0);
+        assert!(matches!(
+            eb.query(&dbb, Query::EntityById(res.entity)),
+            Err(EngineError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn tampered_envelope_rejected() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "authentic".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        // Flip a byte in the trailing signature region.
+        let mut sig_tampered = env.clone();
+        let last = sig_tampered.len() - 1;
+        sig_tampered[last] ^= 0x01;
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &sig_tampered),
+            Err(EngineError::RemoteOpInvalid(_))
+        ));
+
+        // Flip a byte in the ciphertext region (roughly the middle of the CBOR).
+        let mut ct_tampered = env.clone();
+        let mid = ct_tampered.len() / 2;
+        ct_tampered[mid] ^= 0x01;
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &ct_tampered),
+            Err(EngineError::RemoteOpInvalid(_))
+        ));
+
+        // Nothing was applied by either rejection.
+        assert_eq!(op_count(&dbb), 0);
+    }
+
+    #[test]
+    fn wrong_stream_key_rejected() {
+        // A and B are on DIFFERENT vault roots, so B derives a different Stream
+        // key and cannot decrypt A's payload — even though the cert (device-key
+        // signed, root-independent) verifies and A is trusted.
+        let root_a = [0xa1; 32];
+        let root_b = [0xb2; 32];
+        let ea = engine_seeded(root_a, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(root_b, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(root_a);
+        let mut dbb = db_root(root_b);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "secret".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &env),
+            Err(EngineError::RemoteOpInvalid(_))
+        ));
+        assert_eq!(op_count(&dbb), 0);
+    }
+
+    #[test]
+    fn deterministic_routine_task_converges() {
+        // Both engines hold the SAME routine (same id) and each materializes the
+        // same occurrence locally, producing a task with the SAME deterministic
+        // id but different op-ids. Exchanging both create envelopes converges to
+        // ONE identical task per DB.
+        fn fixed_routine() -> Routine {
+            Routine {
+                id: EntityRef::new(EntityKind::Routine, [0x44; 16]),
+                created_at: ms_to_ts(NOW),
+                updated_at: ms_to_ts(NOW),
+                template: TaskTemplate {
+                    title: "Stretch".into(),
+                    stream_id: stream_ref(7),
+                    contexts: Vec::new(),
+                    energy: None,
+                    priority: None,
+                    estimated_duration_s: None,
+                    body: None,
+                },
+                rrule: RRule::parse("FREQ=DAILY").unwrap(),
+                timezone: "UTC".into(),
+                starts_at: ms_to_ts(NOW + 3_600_000),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                skip_dates: Vec::new(),
+                skipped_keys: Vec::new(),
+                catchup_policy: RoutineCatchupPolicy::Skip,
+                streak_counter: 0,
+                last_completed_at: None,
+                paused: false,
+                paused_until: None,
+                archived: false,
+                deleted: false,
+            }
+        }
+
+        let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let r = fixed_routine();
+        for (e, d) in [(&ea, &mut dba), (&eb, &mut dbb)] {
+            d.with_tx(|tx| {
+                ensure_stream_row(
+                    tx,
+                    &r.template.stream_id,
+                    NOW as u64,
+                    None,
+                    false,
+                    false,
+                    false,
+                )?;
+                insert_routine_row(tx, &r, NOW as u64, NOW as u64, &e.keychain.device_id())
+            })
+            .unwrap();
+            e.materialize_one_routine(d, &r, NOW as u64).unwrap();
+        }
+
+        // Pick the first materialized occurrence's deterministic task id.
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+        let occ = r.occurrences_in(window).unwrap();
+        let tid = occurrence_task_id(&r.id, &occ[0].key);
+
+        // Exchange the two create envelopes both ways.
+        let env_a = create_env_for(&dba, tid.bytes());
+        let env_b = create_env_for(&dbb, tid.bytes());
+        eb.apply_remote(&mut dbb, &env_a).unwrap();
+        ea.apply_remote(&mut dba, &env_b).unwrap();
+
+        // Exactly one task per DB, and identical content.
+        for d in [&dba, &dbb] {
+            let n: i64 = d
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE id = ?",
+                    params![tid.bytes().to_vec()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "one task row for the shared occurrence id");
+        }
+        assert_eq!(read_task_t(&ea, &dba, tid), read_task_t(&eb, &dbb, tid));
+    }
+
+    /// One canonical task row: (id, title, state, scheduled_ms, due_ms,
+    /// stream_id, deleted, deferred_count, completed_ms).
+    type TaskProjRow = (
+        Vec<u8>,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Vec<u8>,
+        i64,
+        i64,
+        Option<i64>,
+    );
+
+    /// Canonical projection of the `tasks` table for convergence assertions:
+    /// every semantic field except op-ids and the LWW bookkeeping columns.
+    fn tasks_projection(db: &Db) -> Vec<TaskProjRow> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT id, title, state, scheduled_at_ms, due_at_ms, stream_id,
+                        deleted, deferred_count, completed_at_ms
+                 FROM tasks ORDER BY id ASC",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    fn all_envelopes(db: &Db) -> Vec<Vec<u8>> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT envelope FROM ops ORDER BY rowid ASC")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+
+        /// Two mutually-trusting engines run random interleaved command streams
+        /// on their own DBs; exchanging ALL envelopes both ways (with reordering
+        /// and duplication) converges both DBs to an identical task projection.
+        #[test]
+        fn convergence_under_random_interleaving(
+            steps in proptest::collection::vec(
+                (proptest::bool::ANY, 0u8..4u8, 0u8..8u8),
+                1usize..14usize,
+            ),
+        ) {
+            // Shared timeline so ops carry a common ts axis (ties possible).
+            let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+            let ea = engine_seeded(ROOT, [1u8; 32], clock.clone());
+            let eb = engine_seeded(ROOT, [2u8; 32], clock.clone());
+            let mut dba = db_root(ROOT);
+            let mut dbb = db_root(ROOT);
+            trust(&eb, &mut dbb, &ea);
+            trust(&ea, &mut dba, &eb);
+
+            let mut ids_a: Vec<EntityRef> = Vec::new();
+            let mut ids_b: Vec<EntityRef> = Vec::new();
+            let mut tick = T0;
+
+            for (i, (actor_a, kind, arg)) in steps.into_iter().enumerate() {
+                tick += 1;
+                set_clock(&clock, tick);
+                let (e, d, ids) = if actor_a {
+                    (&ea, &mut dba, &mut ids_a)
+                } else {
+                    (&eb, &mut dbb, &mut ids_b)
+                };
+                // With no existing task, any non-create degrades to a create.
+                let effective = if ids.is_empty() { 0 } else { kind };
+                match effective {
+                    0 => {
+                        let r = e
+                            .apply(
+                                d,
+                                Command::CreateTask(TaskDraft {
+                                    title: format!("t{}-{}", usize::from(actor_a), i),
+                                    ..Default::default()
+                                }),
+                            )
+                            .unwrap();
+                        ids.push(r.entity);
+                    }
+                    1 => {
+                        let target = ids[usize::from(arg) % ids.len()];
+                        let _ = e.apply(
+                            d,
+                            Command::UpdateTask {
+                                id: target,
+                                patch: TaskPatch {
+                                    title: Some(format!("u{}-{}", usize::from(actor_a), i)),
+                                    ..Default::default()
+                                },
+                            },
+                        );
+                    }
+                    2 => {
+                        let target = ids[usize::from(arg) % ids.len()];
+                        let _ = e.apply(d, Command::CompleteTask(target));
+                    }
+                    _ => {
+                        let target = ids[usize::from(arg) % ids.len()];
+                        let _ = e.apply(
+                            d,
+                            Command::DeferTask {
+                                id: target,
+                                to_ms: tick + 86_400_000,
+                            },
+                        );
+                    }
+                }
+            }
+
+            // Exchange ALL envelopes both ways, forward then reversed (the
+            // reversed pass re-delivers every op as a duplicate and in a
+            // different order).
+            let envs_a = all_envelopes(&dba);
+            let envs_b = all_envelopes(&dbb);
+            for pass in 0..2 {
+                let a_iter: Vec<&Vec<u8>> = if pass == 0 {
+                    envs_a.iter().collect()
+                } else {
+                    envs_a.iter().rev().collect()
+                };
+                let b_iter: Vec<&Vec<u8>> = if pass == 0 {
+                    envs_b.iter().collect()
+                } else {
+                    envs_b.iter().rev().collect()
+                };
+                for env in a_iter {
+                    eb.apply_remote(&mut dbb, env).unwrap();
+                }
+                for env in b_iter {
+                    ea.apply_remote(&mut dba, env).unwrap();
+                }
+            }
+
+            proptest::prop_assert_eq!(tasks_projection(&dba), tasks_projection(&dbb));
+        }
     }
 }
