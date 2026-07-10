@@ -30,6 +30,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
 | 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted |
+| 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | proposed |
 
 ## When to write a new ADR
 

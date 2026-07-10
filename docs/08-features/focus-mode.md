@@ -11,6 +11,26 @@ A dedicated mode that takes one task and removes everything else.
 - From any task list: `f` or "Focus" button on a hovered/selected task.
 - From a Block: tap a bound task within it.
 - From a notification: a reminder push has a "Focus now" action.
+- From the **Focus Planner** (below), which proposes what to work on next.
+
+## Focus Planner — choosing what to focus on
+
+For interdependent, long-horizon work the hardest question is *which task to
+touch*, not how long to run the clock. When focus is entered without a specific
+task, the planner proposes a ranked queue by walking the task graph:
+
+- **Actionable only.** Filter to tasks whose `blocked_by` are all `done` /
+  `cancelled` — the derived-`blocked` rule from
+  [`../02-domain/tasks.md`](../02-domain/tasks.md). Blocked tasks never appear;
+  the planner is never a dead end.
+- **Ranked by leverage.** Each candidate is scored by how much it releases —
+  its *downstream unblock weight* / position on the critical path — then by
+  `due_at`, `priority`, and `scheduled_at`.
+- **Energy-matched.** Sorted against the session's declared energy budget using
+  `Task.energy`, so high-energy work lands in high-energy windows.
+
+One keypress accepts the top pick; the queue stays visible so the user keeps
+their bearings. The ranking is a pure query (`Query::FocusPlan`) over the graph.
 
 ## Composition
 
@@ -18,9 +38,10 @@ Full-screen UI showing:
 
 - **The task title** (large).
 - **The body** (rich text), if any.
-- **A timer** (default Pomodoro: 25 minutes work, 5 minutes break, configurable per Stream).
+- **A timer** (default Pomodoro: 25 minutes work, 5 minutes break, configurable per Stream). The session may instead be **sized to the task** (see [Adaptive session length](#adaptive-session-length)); either way the session records the **actual focused time** it contained, not just its planned length.
 - **Three actions only**: complete, defer, capture-aside.
 - **Sub-task list**, if the task has notes containing a checklist.
+- **What this unblocks**, if the task has dependents (see [Unblock cascade](#unblock-cascade)).
 
 ## What focus does to the system
 
@@ -45,13 +66,47 @@ While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands 
 - Audible cue (off by default; opt-in).
 - Visual progress bar.
 
+### Adaptive session length
+
+The 25/5 default holds, but the length is a choice made per session start:
+`one pomodoro (25m)` · `sized to estimate` (from `Task.estimated_duration_s`) ·
+`timeboxed to my next Block` · `until done`. When a task's estimate exceeds one
+session, the timer shows **chunk N of M** with checkpoints, so a long task shows
+visible progress *within* a sitting instead of ending "barely dented."
+
+## Unblock cascade
+
+When a task is completed mid-session, the engine recomputes the graph frontier
+and shows the concrete payoff — e.g. *"Done. This unblocked "Deploy" and "QA".
+Short break, then keep the chain?"* — turning the dependency graph into a felt
+reward: you watch your work release downstream work. This is **informational and
+opt-out**: it offers the next actionable task, it does not keep score (see
+[What we don't do](#what-we-dont-do)).
+
+## Estimate calibration
+
+Because every session records **actual focused time per task**, over time we
+derive a per-user, per-Stream, per-energy **calibration factor** (e.g. "your
+30-minute estimates run ~1.7× long"). Surfaced in the weekly review and fed back
+into scheduling so future plans are honest. This is the compounding payoff of
+recording actuals — estimates get better the more you focus. Session records are
+represented per [ADR-0013](../11-adr/0013-focus-session-op-representation.md).
+
+## Interruption capture
+
+Beyond capture-aside (above), bailing out early or switching task offers a
+one-tap reason (self / meeting / blocked / other) → a distraction journal
+summarized in the weekly review ("top focus-breakers"). No shame UI; it is data
+the user opted into. Breaks scale with session length and cumulative load, and
+respect quiet hours ([`notifications.md`](./notifications.md)).
+
 ## What completing a focus session records
 
 - The task gets a focus-session entry in its activity timeline:
   - Started at, ended at, duration.
   - Whether the task was completed in this session.
 - Routines: a focus session that completes a routine occurrence increments the routine streak.
-- Reviews: weekly review surfaces "time spent in focus" per Stream.
+- Reviews: weekly review surfaces "time spent in focus" per Stream, plus the estimate-vs-actual calibration factor (see [`reviews-and-stats.md`](./reviews-and-stats.md), which already lists `focus-session` as a user-visible op).
 
 ## What we don't do
 
