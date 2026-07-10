@@ -6,9 +6,10 @@ export default defineConfig({
         environment: "node",
         include: ["**/*.test.ts", "**/*.spec.ts"],
         // legacy/ holds the v0 prototype; preserved for reference, not built or
-        // tested. crates/ is Rust; node_modules is third-party. See
-        // spec/README.md for context on why apps/{api,app}, packages/{gcal,models}
-        // were moved under legacy/.
+        // tested. crates/ is Rust; node_modules is third-party. .claude/ holds
+        // transient agent worktrees (full repo copies). See docs/README.md for
+        // context on why apps/{api,app}, packages/{gcal,models} were moved
+        // under legacy/.
         exclude: [
             "**/node_modules/**",
             "**/dist/**",
@@ -17,6 +18,7 @@ export default defineConfig({
             "legacy/**",
             "crates/**",
             "target/**",
+            ".claude/**",
         ],
         coverage: {
             provider: "v8",
@@ -38,6 +40,7 @@ export default defineConfig({
                 "legacy/**",
                 "crates/**",
                 "target/**",
+                ".claude/**",
             ],
         },
     },
