@@ -15,7 +15,7 @@ The complete and frozen set of algorithms used in Sunrise v1. Any change require
 | Op-envelope AEAD | XChaCha20-Poly1305 | 32-byte key, 24-byte nonce, 16-byte tag | `chacha20poly1305` (RustCrypto) |
 | Blob-chunk AEAD | XChaCha20-Poly1305 | Same as above; nonce derived (see [`data-encryption-format.md`](./data-encryption-format.md)) | Same |
 | At-rest wrap (Stream key, recovery blob, keystore-fallback file) | XChaCha20-Poly1305 | Same | Same |
-| Public-key encryption to a recipient (key envelopes, share grants, recovery upload) | HPKE Base mode | Suite ID `0x0020 0x0001 0x0003` (DHKEM(X25519, HKDF-SHA-256), HKDF-SHA-256, ChaCha20-Poly1305) | `hpke` 0.11.x (RustCrypto) |
+| Public-key encryption to a recipient (key envelopes, share grants, recovery upload) | HPKE Base mode | Suite ID `0x0020 0x0001 0x0003` (DHKEM(X25519, HKDF-SHA-256), HKDF-SHA-256, ChaCha20-Poly1305) | `hpke` 0.13.x (RustCrypto) |
 | Pairing handshake | Noise XX | Pattern `Noise_XX_25519_ChaChaPoly_SHA256` | `snow` 0.9.x |
 | Hash | BLAKE3 | 256-bit output unless noted | `blake3` 1.x |
 | KDF (internal) | BLAKE3 KDF mode (`derive_key`) | Per-call `context` string (see usage rules) | `blake3` |

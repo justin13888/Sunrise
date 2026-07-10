@@ -1,0 +1,117 @@
+---
+status: living
+---
+
+# Dependency Pins
+
+`living`, because this file tracks resolved versions that move with `Cargo.lock` and the workspace manifest; it is the normative pin registry, not a frozen design doc.
+
+This is the source of truth for *which* third-party crates the Rust workspace
+depends on and *why*. Ranges are declared in the root `Cargo.toml`
+`[workspace.dependencies]`; the **Version** column below is the value actually
+resolved in `Cargo.lock`. When the lockfile moves, this table moves with it —
+but any change governed by an ADR or an `accepted` spec still requires the
+superseding decision named in the **Governing decision** column.
+
+## Rust workspace pins
+
+| Purpose | Crate | Version (Cargo.lock) | Governing decision | Notes |
+|---|---|---|---|---|
+| CRDT document store | `loro` | 1.12.0 | [ADR-0003](../11-adr/0003-crdt-loro-vs-automerge.md), [crdt-design.md](../05-sync/crdt-design.md) | Pinned major+minor for v1; exact-pin policy returns at Phase 17 lockdown. Snapshot format compatibility guaranteed within `1.x`. |
+| Signatures (identity, device keys) | `ed25519-dalek` | 2.2.0 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen crypto suite; consumed only by `sunrise-crypto`. |
+| Key agreement (X25519 / DHKEM) | `x25519-dalek` | 2.0.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
+| AEAD (XChaCha20-Poly1305) | `chacha20poly1305` | 0.10.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
+| Public-key encryption (key envelopes, share grants) | `hpke` | *declared 0.13; not in lock* | [ADR-0004](../11-adr/0004-crypto-primitives.md), [primitives.md](../03-crypto/primitives.md) | Declared in `[workspace.dependencies]` but unconsumed — pending the sharing key-envelope implementation. Not yet resolved into `Cargo.lock` because no crate references it. See Reconciliations §b. |
+| Handshake (Noise) | `snow` | 0.9.6 | [ADR-0004](../11-adr/0004-crypto-primitives.md), [pairing-and-onboarding.md](../03-crypto/pairing-and-onboarding.md) | `sunrise-pairing` only. |
+| Hashing / KDF context | `blake3` | 1.8.5 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Content hashing + SQLCipher key derivation. |
+| Password hashing | `argon2` | 0.5.3 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Argon2id at unlock; `sunrise-crypto` only. |
+| Local database | `rusqlite` | 0.31.0 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. |
+| CBOR serialization | `ciborium` | 0.2.2 | [wire-protocol.md](../05-sync/wire-protocol.md), [data-encryption-format.md](../03-crypto/data-encryption-format.md) | Canonical op / envelope encoding. |
+| HTTP + WebSocket server | `axum` | 0.7.9 | [ADR-0005](../11-adr/0005-sync-transport.md) | Relay REST + `/sync` WS; `sunrise-server`. |
+| Async runtime | `tokio` | 1.52.3 | — (runtime substrate) | Multi-thread runtime for server + sync driver. |
+| WebSocket client transport | `tokio-tungstenite` | 0.24.0 | [ADR-0005](../11-adr/0005-sync-transport.md) | Sync transport; `rustls-tls-webpki-roots`. |
+| TLS | `rustls` | 0.23.40 | [ADR-0005](../11-adr/0005-sync-transport.md) | `ring` backend, no OpenSSL. |
+| TUI rendering | `ratatui` | 0.28.1 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui`. |
+| Terminal backend | `crossterm` | 0.28.1 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui`. |
+| Frame compression | `zstd` | 0.13.3 | [wire-protocol.md](../05-sync/wire-protocol.md) | Wire-frame payload compression. |
+| Structured logging | *none (hand-written)* | — | [ADR-0010](../11-adr/0010-logging-strategy.md), [logging.md](../10-cross-cutting/logging.md) | `sunrise-log` is hand-rolled (NDJSON, `Plain<T>` redaction); `tracing` 0.1 is declared but enters the lock only transitively via axum's `tracing` feature. |
+| Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
+| Snapshot testing | `insta` | *declared 1.40; not in lock* | [testing.md](../10-cross-cutting/testing.md) | Declared for future snapshot fixtures; no crate consumes it yet, so it is absent from `Cargo.lock`. |
+| Datetime (target) | `jiff` | *not declared; target 0.2.x* | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library once the migration slice lands. Not yet in `Cargo.toml` or `Cargo.lock`. See Reconciliations §d. |
+| Datetime (current) | `chrono` | 0.4.44 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Currently used across `sunrise-domain`; removed when the jiff migration lands. |
+| Datetime (dead) | `time` | *declared 0.3; not in lock* | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Declared but unconsumed (`time` has no timezone support). Removed with the jiff migration. |
+| RRULE parsing | *none (hand-written)* | — | [recurrence-engine.md](../08-features/recurrence-engine.md), [routines-and-recurrence.md](../02-domain/routines-and-recurrence.md) | Hand-written parser at `crates/sunrise-domain/src/rrule.rs`. See Reconciliations §c. |
+
+Supporting utility crates (`serde`, `thiserror`, `anyhow`, `hyper`, `tower`,
+`tower-http`, `subtle`, `zeroize`, `rand`, `parking_lot`, etc.) follow their
+declared caret ranges in `Cargo.toml` and are not individually pinned here;
+they carry no independent design decision.
+
+## Bun workspace pins
+
+Majors only; exact ranges live in the per-package `package.json` files.
+
+| Purpose | Package | Major | Notes |
+|---|---|---|---|
+| UI framework | `react` / `react-dom` | 18 | `apps/web`, `apps/desktop`. |
+| Web bundler / dev server | `vite` | 5 | `apps/web`. |
+| Language | `typescript` | 5.8 | Workspace-wide (`~5.8.3`). |
+| Lint / format | `@biomejs/biome` | 2 | Root dev dependency. |
+| Unit testing | `vitest` | 4 | Root + coverage-v8. |
+
+## Reconciliations
+
+Four places where doc prose had drifted from the real manifest / lockfile.
+Each is now reconciled to reality.
+
+### a. `loro` — doc pin vs. lockfile
+
+`docs/05-sync/crdt-design.md` previously carried an exact `1.0` pin. The real
+resolved version is **1.12.0** (`loro = "1.12"` in `[workspace.dependencies]`).
+`crdt-design.md` has been corrected to the real pin. The rule stands: upgrades
+require a superseding ADR. The `1.0 → 1.12` move is ratified here as accepting
+upstream fixes on the pre-`2.0` line; snapshot format compatibility is
+guaranteed by the library within `1.x`.
+
+### b. `hpke` — declared, not yet consumed
+
+`docs/03-crypto/primitives.md` previously wrote `hpke 0.11.x`. The workspace
+actually declares **`hpke = { version = "0.13", ... }`**. No crate consumes it
+yet — `grep` over `crates/` finds no `use hpke` and no member `Cargo.toml`
+referencing it — so it does **not** appear in `Cargo.lock`. State: *declared,
+pending the sharing key-envelope implementation.* `primitives.md` has been
+aligned to `0.13`.
+
+### c. `rrule` — hand-written parser, not a crate
+
+`docs/08-features/recurrence-engine.md` previously named a third-party crate
+(`rrule`) pinned via `Cargo.toml` as the RRULE library. Reality: recurrence
+parsing is a
+**hand-written parser at `crates/sunrise-domain/src/rrule.rs`**. This is
+deliberate:
+
+- the v1 supported subset is narrow (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`,
+  `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`), so a full RFC 5545 engine is
+  unnecessary;
+- it adds **zero unvetted transitive dependencies** to a security-frozen
+  workspace (`unsafe_code = "forbid"`, deny-listed types);
+- it lets us emit an **exact error taxonomy** aligned with the domain spec
+  rather than mapping a third-party crate's errors.
+
+The table row above reflects this (Purpose: RRULE parsing → *none
+(hand-written)*).
+
+### d. `chrono` / `time` → `jiff`
+
+Per [ADR-0011](../11-adr/0011-datetime-jiff.md), **`jiff` (target `0.2.x`)**
+becomes the sole datetime library. The migration is **in progress**:
+
+- `jiff` is **not yet declared** in `Cargo.toml` and is absent from
+  `Cargo.lock`.
+- `chrono` **0.4.44** is currently in the lockfile and used across
+  `sunrise-domain`; it stays until the migration slice lands.
+- `time` is **declared (`0.3`) but unused** — no `use time::` anywhere in
+  `crates/` — and is removed together with the migration.
+
+Storage stays epoch-ms integers and op CBOR stays RFC 3339 strings, so neither
+the on-disk nor the wire format changes when the migration completes.

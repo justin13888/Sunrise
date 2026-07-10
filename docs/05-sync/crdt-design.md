@@ -19,7 +19,7 @@ Automerge was the alternative; rejected for v1 due to slower mobile performance 
 
 ### Version pinning
 
-`loro = "=1.0.0"` (exact pin in `Cargo.toml`); upgrading requires a superseding ADR. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "=1.0.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
+`loro = "1.12"` (major+minor pin in `Cargo.toml`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)); upgrading requires a superseding ADR. The `1.0 → 1.12` move is ratified as accepting upstream fixes on the pre-`2.0` line. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "1.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
 
 ## Document layout
 

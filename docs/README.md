@@ -13,7 +13,7 @@ Read top-down, 00 → 11, then `implementation/`. Each numbered section builds o
 | # | Section | What it covers |
 |---|---|---|
 | 00 | [`00-product/`](./00-product) | Who Sunrise is for; what it does and does not do. |
-| 01 | [`01-architecture/`](./01-architecture) | Layers, trust boundaries, deployment; `dependencies.md` (upcoming) pins exact versions. |
+| 01 | [`01-architecture/`](./01-architecture) | Layers, trust boundaries, deployment; `dependencies.md` pins exact versions. |
 | 02 | [`02-domain/`](./02-domain) | Entities and relationships we model. |
 | 03 | [`03-crypto/`](./03-crypto) | E2E encryption: keys, recovery, sharing, wire formats. |
 | 04 | [`04-storage/`](./04-storage) | How data is persisted on each client. |

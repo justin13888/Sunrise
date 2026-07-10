@@ -35,7 +35,7 @@ v1 supports the following RFC 5545 RRULE features. The same subset is reused by 
 
 `EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
 
-Unsupported properties on import are silently dropped with a `int.import.rrule_lossy` `warn` log. Library: `rrule` crate (Rust) pinned via `Cargo.toml`.
+Unsupported properties on import are silently dropped with a `int.import.rrule_lossy` `warn` log. Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/src/rrule.rs`), not a third-party crate: the supported subset is deliberately narrow, it adds zero unvetted transitive dependencies to a security-frozen workspace, and it lets us emit an exact error taxonomy rather than remap a library's errors. See [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md).
 
 ## Output
 
