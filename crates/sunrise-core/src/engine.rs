@@ -49,7 +49,7 @@
 
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, Rng};
-use crate::queries::{DeviceRow, Query, QueryResult};
+use crate::queries::{DeviceRow, Query, QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -138,6 +138,8 @@ impl Engine {
             Query::StreamTasks(s) => self.query_stream_tasks(db, &s),
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
+            Query::StreamList => self.query_stream_list(db),
+            Query::Search { text, limit } => self.query_search(db, &text, limit),
             Query::SyncStatus => Ok(QueryResult::SyncStatus(crate::events::SyncStatus {
                 state: sunrise_sync::SyncState::Disconnected,
                 outbox_pending: 0,
@@ -718,6 +720,94 @@ impl Engine {
         Ok(QueryResult::Devices(out))
     }
 
+    fn query_stream_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        let inbox = inbox_stream_ref();
+        let inbox_blob: Vec<u8> = inbox.bytes().to_vec();
+
+        // Synthetic Inbox row: count of open tasks parked in the inbox stream.
+        let inbox_open: i64 = db.conn().query_row(
+            "SELECT COUNT(*) FROM tasks
+             WHERE stream_id = ? AND deleted = 0
+               AND state IN ('todo', 'in_progress')",
+            params![inbox_blob.clone()],
+            |r| r.get(0),
+        )?;
+
+        let mut rows = Vec::new();
+        rows.push(StreamRow {
+            id: inbox,
+            name: "Inbox".to_string(),
+            color: StreamColor::Slate,
+            open_task_count: u64::try_from(inbox_open).unwrap_or(0),
+            archived: false,
+        });
+
+        // Real streams (exclude deleted and the synthetic inbox row, which
+        // `ensure_stream_row` may have materialized with an empty name).
+        // Ordered case-insensitively by name.
+        let mut stmt = db.conn().prepare(
+            "SELECT s.stream_id, s.name, s.color, s.archived,
+                    (SELECT COUNT(*) FROM tasks t
+                     WHERE t.stream_id = s.stream_id AND t.deleted = 0
+                       AND t.state IN ('todo', 'in_progress')) AS open_count
+             FROM streams s
+             WHERE s.deleted = 0 AND s.stream_id != ?
+             ORDER BY s.name COLLATE NOCASE ASC, s.stream_id ASC",
+        )?;
+        let mapped = stmt.query_map(params![inbox_blob], |row| {
+            let id_blob: Vec<u8> = row.get(0)?;
+            let name: String = row.get(1)?;
+            let color_str: String = row.get(2)?;
+            let archived: i64 = row.get(3)?;
+            let open_count: i64 = row.get(4)?;
+            let mut a = [0u8; 16];
+            let take = id_blob.len().min(16);
+            a[..take].copy_from_slice(&id_blob[..take]);
+            Ok(StreamRow {
+                id: EntityRef::new(EntityKind::Stream, a),
+                name,
+                color: StreamColor::from_str_lossy(&color_str),
+                open_task_count: u64::try_from(open_count).unwrap_or(0),
+                archived: archived != 0,
+            })
+        })?;
+        for r in mapped {
+            rows.push(r?);
+        }
+        Ok(QueryResult::Streams(rows))
+    }
+
+    fn query_search(&self, db: &Db, text: &str, limit: u32) -> Result<QueryResult, EngineError> {
+        let match_expr = sanitize_fts_query(text);
+        // Empty/whitespace-only input yields no results (never touch FTS).
+        if match_expr.is_empty() {
+            return Ok(QueryResult::Tasks(Vec::new()));
+        }
+        let mut stmt = db.conn().prepare(
+            "SELECT id FROM search_idx
+             WHERE search_idx MATCH ? AND kind = 'task'
+             ORDER BY bm25(search_idx)
+             LIMIT ?",
+        )?;
+        let ids = stmt
+            .query_map(params![match_expr, i64::from(limit)], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut tasks = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let mut bytes = [0u8; 16];
+            let take = raw.len().min(16);
+            bytes[..take].copy_from_slice(&raw[..take]);
+            if let Some(t) = read_task(db.conn(), &bytes)? {
+                if !t.deleted {
+                    tasks.push(t);
+                }
+            }
+        }
+        Ok(QueryResult::Tasks(tasks))
+    }
+
     // ---- id helpers ----
 
     fn fresh_id(&self, kind: EntityKind, now_ms: u64) -> EntityRef {
@@ -1193,6 +1283,31 @@ fn parse_energy(s: &str) -> Option<sunrise_domain::Energy> {
     }
 }
 
+/// Turn arbitrary user input into a safe FTS5 MATCH expression.
+///
+/// FTS5's query grammar treats characters like `"`, `*`, `:`, `-`, `(`, `)`,
+/// and bare-word operators (`AND`/`OR`/`NOT`/`NEAR`) as syntax; hostile or
+/// accidental input can otherwise produce a MATCH syntax error. We defuse it
+/// completely: split on whitespace, strip embedded double quotes and control
+/// characters (a NUL would truncate the C string SQLite receives) from each
+/// token, wrap each token in double quotes (making it a literal phrase — no
+/// operator or special character survives), and join with spaces (implicit
+/// AND). An empty result means "no query".
+fn sanitize_fts_query(text: &str) -> String {
+    text.split_whitespace()
+        .map(|tok| {
+            let cleaned: String = tok
+                .chars()
+                .filter(|&c| c != '"' && !c.is_control())
+                .collect();
+            cleaned
+        })
+        .filter(|tok| !tok.is_empty())
+        .map(|tok| format!("\"{tok}\""))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     // Determinism: never read a wall clock on failure. Out-of-range epoch-ms
     // (corrupt row) clamps to the Unix epoch rather than `Timestamp::now()`.
@@ -1506,7 +1621,287 @@ mod tests {
         assert!(matches!(res, Err(EngineError::Invalid(_))));
     }
 
+    #[test]
+    fn stream_list_counts_open_tasks_inbox_first_and_ordering() {
+        let mut db = db();
+        let e = engine();
+
+        // Two real streams. Deliberately create "beta" before "alpha" so we
+        // exercise case-insensitive name ordering rather than insertion order.
+        let beta = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Beta".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let alpha = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "alpha".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let gone = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Deleted".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::DeleteStream(gone)).unwrap();
+
+        // Inbox: 1 open + 1 done (done not counted).
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "inbox open".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let inbox_done = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "inbox done".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::CompleteTask(inbox_done)).unwrap();
+
+        // alpha: 2 open (one todo, one in-progress), 1 cancelled, 1 deleted.
+        for _ in 0..2 {
+            e.apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "a open".into(),
+                    stream_id: Some(alpha),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        }
+        let a_ip = db_last_task(&db, alpha);
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: a_ip,
+                patch: TaskPatch {
+                    state: Some(TaskState::InProgress),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let a_cancel = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "a cancel".into(),
+                    stream_id: Some(alpha),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: a_cancel,
+                patch: TaskPatch {
+                    state: Some(TaskState::Cancelled),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let a_del = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "a del".into(),
+                    stream_id: Some(alpha),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::DeleteTask(a_del)).unwrap();
+
+        // beta: 0 open tasks.
+        let rows = match e.query(&db, Query::StreamList).unwrap() {
+            QueryResult::Streams(v) => v,
+            _ => panic!("wrong variant"),
+        };
+
+        // Inbox is always first.
+        assert_eq!(rows[0].id, inbox_stream_ref());
+        assert_eq!(rows[0].name, "Inbox");
+        assert_eq!(rows[0].open_task_count, 1);
+
+        // Then real (non-deleted) streams ordered case-insensitively by name:
+        // "alpha" < "Beta". Deleted stream excluded entirely.
+        let names: Vec<_> = rows.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec!["Inbox", "alpha", "Beta"]);
+        assert!(!names.contains(&"Deleted".to_string()));
+
+        let alpha_row = rows.iter().find(|r| r.id == alpha).unwrap();
+        assert_eq!(alpha_row.open_task_count, 2);
+        let beta_row = rows.iter().find(|r| r.id == beta).unwrap();
+        assert_eq!(beta_row.open_task_count, 0);
+    }
+
+    #[test]
+    fn search_matches_title_and_body_excludes_deleted_and_respects_limit() {
+        let mut db = db();
+        let e = engine();
+
+        // Title hit.
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "quarterly kangaroo report".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        // Body hit (unique term only in the body).
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "misc notes".into(),
+                body: Some(NoteBody(b"remember the kangaroo".to_vec())),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        // Deleted task that would otherwise match.
+        let del = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "kangaroo obsolete".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::DeleteTask(del)).unwrap();
+
+        let hits = match e
+            .query(
+                &db,
+                Query::Search {
+                    text: "kangaroo".into(),
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(v) => v,
+            _ => panic!("wrong variant"),
+        };
+        let titles: Vec<_> = hits.iter().map(|t| t.title.clone()).collect();
+        assert_eq!(
+            hits.len(),
+            2,
+            "title + body hits, deleted excluded: {titles:?}"
+        );
+        assert!(titles.contains(&"quarterly kangaroo report".to_string()));
+        assert!(titles.contains(&"misc notes".to_string()));
+        assert!(!titles.contains(&"kangaroo obsolete".to_string()));
+
+        // Limit is honored.
+        let limited = match e
+            .query(
+                &db,
+                Query::Search {
+                    text: "kangaroo".into(),
+                    limit: 1,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(v) => v,
+            _ => panic!(),
+        };
+        assert_eq!(limited.len(), 1);
+
+        // Empty / whitespace-only input returns nothing without touching FTS.
+        let empty = match e
+            .query(
+                &db,
+                Query::Search {
+                    text: "   ".into(),
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(v) => v,
+            _ => panic!(),
+        };
+        assert!(empty.is_empty());
+    }
+
+    // Fetch the most-recently-created task id in a stream (highest rowid
+    // proxy via id ordering is unstable, so use created ordering by title
+    // being unavailable — instead read the last inserted via the ops table
+    // is overkill; query tasks table directly).
+    fn db_last_task(db: &Db, stream: EntityRef) -> EntityRef {
+        let blob: Vec<u8> = stream.bytes().to_vec();
+        let raw: Vec<u8> = db
+            .conn()
+            .query_row(
+                "SELECT id FROM tasks WHERE stream_id = ? ORDER BY id DESC LIMIT 1",
+                params![blob],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut a = [0u8; 16];
+        let take = raw.len().min(16);
+        a[..take].copy_from_slice(&raw[..take]);
+        EntityRef::new(EntityKind::Task, a)
+    }
+
     proptest::proptest! {
+        /// `Query::Search` must never surface an FTS5 syntax error, no matter
+        /// how hostile the input (quotes, colons, stars, unbalanced quotes,
+        /// `NEAR`, hyphens, parentheses).
+        #[test]
+        fn search_never_errors_on_hostile_input(s in ".*") {
+            let mut db = db();
+            let e = engine();
+            e.apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "haystack".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+            let res = e.query(
+                &db,
+                Query::Search {
+                    text: s,
+                    limit: 20,
+                },
+            );
+            proptest::prop_assert!(res.is_ok());
+        }
+
         /// Any epoch-ms in a sane range survives the `ms_to_ts` ->
         /// `as_millisecond` round-trip that bridges SQLite INTEGER storage
         /// and `jiff::Timestamp`.

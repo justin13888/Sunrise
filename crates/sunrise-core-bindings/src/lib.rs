@@ -221,4 +221,44 @@ mod tests {
         assert!(r.contains("ffi task"), "query result: {r}");
         let _ = sunrise_close();
     }
+
+    #[test]
+    fn stream_list_and_search_json_round_trip() {
+        let _guard = VAULT_GUARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let key = "ef".repeat(32);
+        let _ = sunrise_open(
+            dir.path().to_string_lossy().into_owned(),
+            key,
+            "0.1.0+ffi-test".into(),
+        );
+
+        let cmd = serde_json::json!({"CreateTask": {
+            "title": "searchable widget",
+            "contexts": [],
+        }});
+        let r = sunrise_submit_json(cmd.to_string());
+        assert!(!r.starts_with("error:"), "submit returned: {r}");
+
+        // StreamList: externally-tagged unit variant -> bare string.
+        let r = sunrise_query_json(serde_json::json!("StreamList").to_string());
+        assert!(!r.starts_with("error:"), "stream list: {r}");
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let streams = parsed
+            .get("Streams")
+            .and_then(|v| v.as_array())
+            .expect("Streams array");
+        assert_eq!(streams[0]["name"], "Inbox");
+        assert_eq!(streams[0]["open_task_count"], 1);
+
+        // Search: externally-tagged struct variant.
+        let q = serde_json::json!({"Search": {"text": "widget", "limit": 10}});
+        let r = sunrise_query_json(q.to_string());
+        assert!(!r.starts_with("error:"), "search: {r}");
+        assert!(r.contains("searchable widget"), "search result: {r}");
+
+        let _ = sunrise_close();
+    }
 }

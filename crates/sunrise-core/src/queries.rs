@@ -1,7 +1,7 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Stream, Task};
+use sunrise_domain::{Stream, StreamColor, Task};
 use sunrise_id::EntityRef;
 
 /// Read query.
@@ -24,6 +24,15 @@ pub enum Query {
     DeviceList,
     /// Snapshot of sync status.
     SyncStatus,
+    /// All streams (plus the synthetic Inbox row), with open-task counts.
+    StreamList,
+    /// Full-text search over tasks.
+    Search {
+        /// Raw user query text (sanitized before hitting FTS5).
+        text: String,
+        /// Maximum number of results to return.
+        limit: u32,
+    },
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -43,6 +52,24 @@ pub enum QueryResult {
     Devices(Vec<DeviceRow>),
     /// Sync status snapshot.
     SyncStatus(crate::events::SyncStatus),
+    /// `StreamList` returns stream rows (Inbox first).
+    Streams(Vec<StreamRow>),
+}
+
+/// One row of [`Query::StreamList`]. The synthetic Inbox row uses
+/// [`sunrise_domain::inbox_stream_ref`] as its `id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamRow {
+    /// Stream id (the all-zero id for the Inbox row).
+    pub id: EntityRef,
+    /// Display name ("Inbox" for the synthetic row).
+    pub name: String,
+    /// Stream color.
+    pub color: StreamColor,
+    /// Count of open tasks (todo / in-progress, not deleted).
+    pub open_task_count: u64,
+    /// Whether the stream is archived (always false for Inbox).
+    pub archived: bool,
 }
 
 /// One row of [`Query::DeviceList`].
