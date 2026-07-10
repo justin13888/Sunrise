@@ -15,8 +15,8 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **CRDT-based sync**: Edit offline on any device and merge without conflicts.
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours.
-- **Cross-platform clients**: Desktop (Tauri), web (PWA), and terminal (TUI), with mobile bindings via UniFFI.
-- **Routines with recurrence**: RRULE-based scheduling and routine generation.
+- **Cross-platform clients**: A full terminal client (TUI) today; desktop (Tauri) and web (PWA) shells in progress, with mobile bindings via UniFFI planned.
+- **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation.
 - **Calendar integrations**: Google Calendar and iCalendar.
 
 ## Architecture
@@ -75,68 +75,120 @@ just rust-test    # Rust: unit tests + cross-crate end-to-end tests
 
 ### End-to-end QA
 
-This is the exact path to exercise every surface of the codebase. Work top to bottom: the automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each Rust command from the repo root.
+This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust core, sync relay server, and TUI run for real today. The **web** client backs onto a `localStorage` stub (the real WASM `sunrise-core` build is deferred), and the **desktop** Tauri shell is frontend-only until its native deps are pinned. Caveats are called out per surface below so QA results aren't misread.
+> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today, and cross-device sync is proven end to end by the `sunrise-e2e` convergence test. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md) — and the **desktop** Tauri shell is frontend-only until its native deps are wired. Caveats are called out per surface so QA results aren't misread.
 
-#### 1. Automated test suites (the source of truth)
+#### 1. Toolchain check
+
+Confirm the toolchains are present. The exact Rust version is pinned in `rust-toolchain.toml`; `rustup` will honor it automatically inside the repo.
 
 ```bash
-just test            # JS/TS suite (Vitest), run once
-just test-coverage   # …with coverage report
-bun run test:ui      # …interactive Vitest UI in the browser
+cargo --version     # Rust toolchain (pinned via rust-toolchain.toml)
+bun --version       # JS/TS runtime + package manager
+just --version      # command runner (all tasks live in the justfile)
 
-just rust-test       # entire Rust workspace: unit + integration + e2e tests
-cargo test -p sunrise-e2e   # just the cross-crate end-to-end tests
+just setup          # one-time: bun install + lefthook install (git hooks)
 ```
 
-The `sunrise-e2e` crate is the release-gate proof that crates work together: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, and runs two independent `Core` vaults side by side to prove vault-lock isolation. (Cross-device sync through the relay is not wired end-to-end yet.)
+#### 2. Automated gates (the source of truth)
 
-For a single "is everything green?" pass, run `just validate && just rust-test` (this is also what `just pre-push` mirrors for the git hook).
-
-#### 2. Sync relay server (manual E2E)
-
-Run the self-host server in its own terminal:
+Run the full JS/TS gate, the full Rust suite, and the lint/format checks. A green run here is the "is everything correct?" answer.
 
 ```bash
+bun run validate                          # Biome CI + typecheck + Vitest coverage
+cargo test --workspace --all-targets      # entire Rust workspace — 411 tests pass
+cargo clippy --workspace --all-targets -- -D warnings   # pedantic-clean
+cargo fmt --check                         # formatting clean
+```
+
+`just validate && just rust-test` is the same pass wrapped in `just` recipes (what `just pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
+
+#### 3. Live sync demo (server + two clients)
+
+The TUI wires live sync through three optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, and `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange (both instances share the fixed dev vault root, so stream keys derive identically). All three unset = fully offline (`sync: off` in the status line).
+
+```bash
+# Terminal 0 — run the self-host relay:
 cargo run -p sunrise-server
-# → "sunrise-server listening on 127.0.0.1:8443"
+# → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
+
+# Terminal 1 — instance A (exports its cert, trusts B's):
+SUNRISE_VAULT=/tmp/vault-a \
+SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
+SUNRISE_EXPORT_CERT_FILE=/tmp/a.cert \
+SUNRISE_TRUST_CERT_FILE=/tmp/b.cert \
+cargo run -p sunrise-tui
+
+# Terminal 2 — instance B (exports its cert, trusts A's):
+SUNRISE_VAULT=/tmp/vault-b \
+SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
+SUNRISE_EXPORT_CERT_FILE=/tmp/b.cert \
+SUNRISE_TRUST_CERT_FILE=/tmp/a.cert \
+cargo run -p sunrise-tui
 ```
 
-It serves **plain HTTP** on `127.0.0.1:8443` with an in-memory store by default. Probe it from another terminal:
+Cert trust is a two-sided file exchange: the **first** launch of each instance only exports its cert (the peer's file doesn't exist yet); **restart both** so each picks up the peer cert and submits `TrustDevice`. Then capture a task (`c`) in one instance and watch it appear in the other; the status line shows `sync: live` (green) with the pending count. The same flow is proven headlessly by `cargo test -p sunrise-tui --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
 
 ```bash
-curl http://127.0.0.1:8443/health
-curl http://127.0.0.1:8443/meta
-curl http://127.0.0.1:8443/metrics
-curl http://127.0.0.1:8443/api/v1/accounts
+cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
 ```
 
-> Configuration is currently default-only (ephemeral, in-memory). The `-c sunrise.toml` flag shown in the binary's docstring is not wired up yet, so flags/config files have no effect.
+> The server config is default-only (ephemeral, in-memory). The `-c sunrise.toml` flag in the binary's docstring is not wired up yet, so flags/config files have no effect.
 
-#### 3. Terminal client — TUI (manual E2E)
+#### 4. Terminal client — TUI feature tour (manual E2E)
 
-The TUI opens a real encrypted vault and is the quickest way to exercise the core command/query loop by hand:
+The TUI opens a real encrypted vault and is the quickest way to exercise the core command/query loop by hand. Use a throwaway vault so QA never touches real data:
 
 ```bash
-# Use a throwaway vault so QA never touches your real data:
 SUNRISE_VAULT=$(mktemp -d) cargo run -p sunrise-tui
 ```
 
-It opens (creating if needed) the vault at `$SUNRISE_VAULT`, defaulting to `~/.sunrise/vault`, unlocked with a fixed single-user dev key. Keybindings:
+It opens (creating if needed) the vault at `$SUNRISE_VAULT` (default `~/.sunrise/vault`), unlocked with a fixed single-user dev key. Keys and commands:
 
-| Key                 | Action                                            |
-| ------------------- | ------------------------------------------------- |
-| `1`–`5`             | Switch view: Today, Inbox, Stream, Search, Focus  |
-| `↑`/`↓` (or `j`/`k`)| Move selection                                    |
-| `c`                 | Capture a task — type a title, `Enter` to save    |
-| `x` / `Space`       | Toggle the selected task complete                 |
-| `/`                 | Search — type a query, `Enter` to commit          |
-| `q` / `Esc`         | Quit                                              |
+| Input                | Action                                                     |
+| -------------------- | ---------------------------------------------------------- |
+| `1`–`5`              | Switch view: **Today, Inbox, Stream, Search, Focus**       |
+| `↑`/`↓` (or `j`/`k`) | Move selection (vim-style)                                  |
+| `h`/`l`              | In Stream view, move between the streams and tasks panes    |
+| `Enter`              | Activate — confirm a stream, or open the selected task in Focus |
+| `c`                  | Capture a task — type a title, `Enter` to save, `Esc` cancels |
+| `x` / `Space`        | Toggle the selected task complete                          |
+| `/`                  | Search — type a query, `Enter` to commit (FTS5)            |
+| `:`                  | Command mode (see below)                                   |
+| `q` / `Esc`          | Quit / back out                                            |
 
-QA flow: capture a few tasks (`c`), complete one (`x`), switch views (`1`–`5`), search (`/`), then quit and re-launch with the same `SUNRISE_VAULT` to confirm the data persisted.
+Command mode (`:` opens the command line; the leading `:` is optional):
 
-#### 4. Web PWA (manual E2E)
+| Command             | Action                                                     |
+| ------------------- | ---------------------------------------------------------- |
+| `:q` / `:quit`      | Quit                                                       |
+| `:help` / `:h`      | Show help                                                  |
+| `:view <name>`      | Switch view by name or number (`today`…`focus`, or `1`–`5`) |
+| `:preview <path>`   | In Focus, render an image inline (requires the `images` feature) |
+
+QA flow: capture a few tasks (`c`), complete one (`x`), tour the views (`1`–`5`), open one in Focus (`Enter`) to see full detail including scheduling constraints, run a search (`/` or `:view search`), try `:help`, then quit and re-launch with the same `SUNRISE_VAULT` to confirm data persisted.
+
+**Image preview:** the `images` feature is on by default, so `:preview <path>` (from the Focus view) renders a PNG or JPEG inline — using the terminal's graphics protocol where available, halfblocks otherwise. Point it at any sample image, e.g. `:preview ~/Pictures/sample.png`. To build without image support: `cargo run -p sunrise-tui --no-default-features`.
+
+#### 5. Benchmarks (manual)
+
+Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (submit / query_today@10k / fts@10k / ws-handshake) and merges the results back for your platform.
+
+```bash
+just bench            # run the criterion suite only
+just bench-baseline   # run benches, then update bench/baseline.json for this platform
+```
+
+#### 6. Chaos suite (manual)
+
+Four fault-injection scenarios — heavy drop, corruption, delay, and partition — each proving the cores reconverge after the transport heals:
+
+```bash
+cargo test -p sunrise-e2e --test chaos -- --nocapture
+```
+
+#### 7. Web PWA (manual E2E)
 
 ```bash
 bun run --filter @sunrise/web dev     # dev server at http://localhost:5174
@@ -144,15 +196,15 @@ bun run --filter @sunrise/web build   # production build
 bun run --filter @sunrise/web preview # serve the production build
 ```
 
-> **Stub caveat:** the web Core is a `localStorage`-backed stub mirroring the real Core's surface (`queryToday`, `queryInbox`, `createTask`, `completeTask`). Use it for UI/PWA-shell QA only — it does **not** exercise real persistence, CRDT, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is deferred on an MSRV blocker. Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, CRDT, or crypto. Data lives in browser storage; clear it via DevTools to reset.
 
-#### 5. Desktop app — Tauri (manual E2E)
+#### 8. Desktop app — Tauri (manual E2E)
 
 ```bash
 bun run --filter @sunrise/desktop dev   # frontend renderer only, http://localhost:5173
 ```
 
-> **Deferred caveat:** the native Tauri shell is not yet runnable — its Tauri deps aren't pinned, and IPC falls back to a stub. The frontend renders, but `cargo tauri dev` won't drive a real window until the deps are installed (`cd apps/desktop && bun install && bun run tauri dev` once configured).
+> **Deferred caveat:** the native Tauri shell is frontend-only — the renderer displays and IPC falls back to a stub. `bun run tauri dev` won't drive a real native window until the Tauri deps are wired (`cd apps/desktop && bun install && bun run tauri dev` once configured). Tauri 2 is deliberately excluded from the cargo workspace to keep the core `cargo build` fast.
 
 ### Common tasks
 

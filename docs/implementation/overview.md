@@ -23,76 +23,111 @@ overview is the entry point.
 | 8 | sunrise-sync | ✅ shipped | State machine, cursors, outbox, backoff, transport trait |
 | 9 | sunrise-pairing / onboarding | ✅ shipped | SAS, QR, account flow, recovery wrapper |
 | 10 | sunrise-core | ✅ shipped | Open / submit / query / changes / sync_status / close + engine pipeline |
-| 11 | sunrise-server | ✅ shipped | REST endpoints, WS relay, OIDC verifier trait, metrics, blob 2PC, push fanout |
-| 12 | sunrise-tui | ✅ shipped | Today / Inbox / Stream / Search / Focus views, vim keymap, Core integration |
-| 13 | apps/desktop | 🟡 scaffolded | Tauri 2 + React shell; `bun install` + `bun run tauri dev` to bring up |
-| 14 | apps/web | 🟡 scaffolded | Vite + React + Service Worker; localStorage stub until WASM core build |
+| 11 | sunrise-server | ✅ shipped | REST endpoints, WS relay, typed OpBatch/Ack routing, retained-ring replay, OIDC verifier trait, metrics, blob 2PC, push fanout |
+| 12 | sunrise-tui | ✅ shipped | Today / Inbox / Stream / Search / Focus views, vim keymap, `:` command mode, image preview (`images` feature), insta golden frames, Core integration |
+| 13 | apps/desktop | 🟡 frontend-only | Tauri 2 + React renderer; `bun install` + `bun run tauri dev` to bring up. Native shell wiring is platform-owner work |
+| 14 | apps/web | 🟡 stub (by decision) | Vite + React + Service Worker; localStorage Core stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) (WASM core build deferred — MSRV blocker) |
 | 15 | sunrise-core-bindings | 🟡 scaffolded | JSON-FFI surface; UniFFI annotations follow once iOS / Android land |
 | 16 | sunrise-integrations | ✅ shipped | iCal RFC 5545 subset; GCal OAuth-URL builder + EventSyncer trait |
-| 17 | E2E gating | 🟡 partial | sunrise-e2e harness, bench/baseline.json, chaos test layout |
+| 17 | E2E gating | ✅ shipped | sunrise-e2e flagship convergence + chaos scenarios; sunrise-bench criterion suite + linux-x86_64 baselines in `bench/baseline.json` (CI regression gate deferred — see below) |
 
-## What still needs work for "v1 done"
+## v1 core: complete
 
-Docs consolidation is **done** (this tree, plus
-[`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)).
-The remaining v1 build work, in roughly dependency order:
+The v1 Rust core is feature-complete end to end. Everything from the
+persisted vault through the sync relay and back into a second device now
+runs for real, exercised by the flagship convergence e2e. In summary,
+the following all **landed**:
 
-1. **jiff migration**: replace `chrono` with `jiff` across all crates per
-   [ADR-0011](../11-adr/0011-datetime-jiff.md); drop the declared-but-unused
-   `time` dependency.
-2. **Storage migration-apply fix + stream metadata**: fix migration
-   application, and persist stream name / color.
-3. **Stream/Search queries**: implement the `StreamList` and `Search`
-   read queries.
-4. **Scheduling constraints**: implement
-   [scheduling-constraints.md](../02-domain/scheduling-constraints.md)
-   (migration 0003).
-5. **Routine generation**: `routine_gen` recurrence engine driving Task
-   materialization (migration 0004).
-6. **Op-envelope sealing + key management + persistent outbox**
-   (migration 0005).
-7. **Typed `OpBatch` / `Ack` + relay replay buffer**.
-8. **`apply_remote` + LWW metadata** (migration 0006).
-9. **WebSocket sync driver + live sync status**: the `Core` → `Transport`
-   glue that flows local ops through `sunrise-sync` to the relay WS hub
-   (the relay itself works — see
-   `crates/sunrise-server/tests/ws_handshake.rs`).
-10. **Two-Core relay-convergence e2e**.
-11. **TUI completion**: command mode, real Stream / Search / Focus, images.
-12. **Criterion benches + baseline populate**: `bench/baseline.json`
-    schema is committed; populate baselines and wire the >5% guard.
-13. **Chaos harness + scenarios**: layout is in place at `tests/chaos/`;
-    populate toxic-proxy scenarios once the sync layer is live.
-14. **Web WASM core** (gated spike): `cargo build -p sunrise-core --target
-    wasm32-unknown-unknown` + `wasm-bindgen`; `apps/web/src/wasm.ts`
-    currently returns a localStorage stub.
+- **Docs consolidation** — single `docs/` design tree (this file plus
+  [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)),
+  contradictions reconciled, ADR-0011 (jiff), ADR-0012 (web WASM deferred),
+  and the scheduling-constraints domain spec.
+- **jiff migration** — `chrono` and the unused `time` dependency removed;
+  `jiff` `0.2.32` is the sole datetime library
+  ([ADR-0011](../11-adr/0011-datetime-jiff.md)).
+- **Storage** — migrations 0002–0006 with an auto-upgrade path in
+  `ensure_schema`: stream name/color, scheduling constraints, routine
+  materialization, local identity + persistent outbox + sync cursors, and
+  LWW metadata.
+- **Read queries** — `Query::StreamList` and `Query::Search` (FTS5,
+  hostile-input-safe).
+- **Scheduling constraints** on Task / Routine (hard/soft, OR-within-kind,
+  AND-across-kinds) per
+  [scheduling-constraints.md](../02-domain/scheduling-constraints.md).
+- **Routine generation** — `routine_gen` DST-aware RRULE expansion,
+  Routine CRUD, and deterministic cross-device materialization
+  (blake3 occurrence task ids).
+- **Sync wire layer** — op-envelope sealing (XChaCha + Ed25519, Keychain,
+  vault-root-derived per-stream keys, per-(stream, device) seq); typed
+  `OpBatch` / `Ack` payloads with real stream routing and a relay
+  retained-ring replay buffer; `apply_remote` (idempotent, entity-level
+  LWW, TrustDevice).
+- **WebSocket sync driver** — `Core::start_sync` with live `SyncStatus`,
+  outbox drain, reconnect/backoff, and incremental subscribe.
+- **Flagship e2e** — two `Core`s converge through the relay (live edits,
+  offline catch-up, LWW conflict, routine dedup); the subscribe-own-streams
+  and `Core::shutdown` driver bugs are fixed.
+- **TUI** — command mode (`:q` / `:view` / `:help` / `:preview`), real
+  Stream / Search / Focus views, image preview behind the default-on
+  `images` feature, and insta golden-frame snapshots.
+- **Benchmarks + chaos** — `sunrise-bench` criterion suite (submit,
+  query_today@10k, fts@10k, ws-handshake) with linux-x86_64 baselines
+  populated in `bench/baseline.json`; a chaos harness (seeded
+  drop/corrupt/delay/partition transport) with four scenarios that
+  converge after heal.
 
-### Deferred / platform-owner
+## Deferred / platform-owner
 
-Out of scope for the v1 core; owned by platform engineers or later phases:
+Deliberately out of scope for the v1 core; owned by platform engineers or
+scheduled for a later phase. None of these block v1.
 
-- **Real Tauri bundling**: `apps/desktop` has the renderer + IPC bridge;
-  `bun install && bun run tauri dev` brings up the live shell. Tauri 2 is
-  excluded from the cargo workspace so the main `cargo build` cycle stays
-  fast.
-- **iOS / Android build pipelines**: `crates/sunrise-core-bindings`
-  exposes the JSON-FFI surface; UniFFI scaffolding and xcframework / .aar
-  pipelines are platform-engineer owned.
-- **Mutation-testing gate**: the `cargo-mutants` 90% gate and per-crate
-  target list (`docs/10-cross-cutting/testing.md`) run in the release
-  pipeline, not the v1 core loop.
+- **Web WASM core** — the PWA stays on the localStorage stub per
+  [ADR-0012](../11-adr/0012-web-wasm-deferred.md) (MSRV blocker on the WASM
+  toolchain). `apps/web/src/wasm.ts` mirrors the Core surface behind a
+  `loadCore()` seam so the WASM build can drop in later.
+- **Desktop Tauri wiring** — `apps/desktop` has the renderer + IPC bridge;
+  the native shell (`bun install && bun run tauri dev`) is platform-owner
+  work. Tauri 2 is excluded from the cargo workspace so the main
+  `cargo build` cycle stays fast.
+- **iOS / Android / UniFFI** — `crates/sunrise-core-bindings` exposes the
+  JSON-FFI surface; UniFFI annotations and xcframework / .aar pipelines are
+  platform-engineer owned.
+- **Apple Focus integration** — not yet wired.
+- **OIDC JWKS verifier** — server ships the verifier *trait*; the JWKS
+  fetch/verify implementation is deferred.
+- **Blob fetch** — server exposes the 2PC stub; the fetch path is deferred.
+- **Merge journal & per-field CRDT** — v1 conflict resolution is
+  entity-level LWW; a merge journal and per-field CRDT are future work.
+- **CI gates** — the >5% bench-regression gate and the `cargo-mutants`
+  mutation-testing gate (`docs/10-cross-cutting/testing.md`) run in the
+  release pipeline, not the v1 core loop. The baseline data and criterion
+  suite that feed the regression gate are already in place.
 
 ## Workspace test count
 
-Counts move as the slices above land, so no fixed number is pinned here.
+**411** tests pass across the workspace (`cargo test --workspace
+--all-targets`, summing the `test result:` lines). The number moves as
+tests are added, so treat it as "400+" rather than an exact contract.
 
 ```
-cargo test --workspace                    # full suite
-cargo clippy --workspace -- -D warnings   # clean
+cargo test --workspace --all-targets      # full suite (411 passing)
+cargo clippy --workspace --all-targets -- -D warnings   # clean (pedantic)
 cargo fmt --check                         # clean
 ```
 
 ## Boots end-to-end
 
-- `cargo run -p sunrise-server` — REST + `/sync` WebSocket relay
-- `cargo run -p sunrise-tui` — Ratatui terminal client against `~/.sunrise/vault`
+- `cargo run -p sunrise-server` — REST + `/sync` WebSocket relay on
+  `127.0.0.1:8443` (plain HTTP, in-memory store by default).
+- `cargo run -p sunrise-tui` — Ratatui terminal client. Reads the vault
+  directory from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and unlocks
+  with a fixed single-user dev key.
+
+> **Sync in the TUI:** setting `SUNRISE_SYNC_URL`
+> (e.g. `ws://127.0.0.1:8443/sync`) starts the WebSocket sync driver;
+> `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev
+> two-file device-cert exchange (see the README's live sync demo). The
+> status line shows `sync: live|catching-up|disconnected|off (N pending)`.
+> Unset, the TUI stays fully offline. The wiring is proven headlessly by
+> `cargo test -p sunrise-tui --test live_sync` and, end to end, by
+> `cargo test -p sunrise-e2e --test two_core_relay_convergence`.
