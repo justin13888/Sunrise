@@ -3,7 +3,7 @@
 use crate::common::{Energy, NoteBody};
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -58,7 +58,7 @@ pub struct TaskTemplate {
 impl TaskTemplate {
     /// Build a `TaskDraft` for this occurrence.
     #[must_use]
-    pub fn to_draft(&self, scheduled_at: Option<DateTime<Utc>>) -> TaskDraft {
+    pub fn to_draft(&self, scheduled_at: Option<Timestamp>) -> TaskDraft {
         TaskDraft {
             title: self.title.clone(),
             body: self.body.clone(),
@@ -80,9 +80,9 @@ pub struct Routine {
     /// Routine id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Task template materialized per occurrence.
     pub template: TaskTemplate,
     /// Recurrence rule.
@@ -90,13 +90,13 @@ pub struct Routine {
     /// IANA timezone string (e.g., `"America/Los_Angeles"`).
     pub timezone: String,
     /// Inclusive start.
-    pub starts_at: DateTime<Utc>,
+    pub starts_at: Timestamp,
     /// Optional inclusive end.
     #[serde(default)]
-    pub ends_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<Timestamp>,
     /// Dates explicitly skipped.
     #[serde(default)]
-    pub skip_dates: Vec<DateTime<Utc>>,
+    pub skip_dates: Vec<Timestamp>,
     /// What to do when an occurrence is missed.
     pub catchup_policy: RoutineCatchupPolicy,
     /// Streak counter (PN-counter; signed for safety).
@@ -104,13 +104,13 @@ pub struct Routine {
     pub streak_counter: i64,
     /// Last successful completion (for streak grace).
     #[serde(default)]
-    pub last_completed_at: Option<DateTime<Utc>>,
+    pub last_completed_at: Option<Timestamp>,
     /// Paused.
     #[serde(default)]
     pub paused: bool,
     /// Pause expiry.
     #[serde(default)]
-    pub paused_until: Option<DateTime<Utc>>,
+    pub paused_until: Option<Timestamp>,
     /// Archived.
     #[serde(default)]
     pub archived: bool,
@@ -129,9 +129,9 @@ pub struct RoutineDraft {
     /// IANA timezone.
     pub timezone: String,
     /// Inclusive start.
-    pub starts_at: DateTime<Utc>,
+    pub starts_at: Timestamp,
     /// Optional inclusive end.
-    pub ends_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<Timestamp>,
     /// Catchup policy.
     pub catchup_policy: RoutineCatchupPolicy,
 }

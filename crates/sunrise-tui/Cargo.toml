@@ -20,7 +20,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-chrono = { workspace = true }
+jiff = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

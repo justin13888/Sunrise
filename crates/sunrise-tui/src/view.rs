@@ -94,7 +94,7 @@ impl ViewState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use jiff::Timestamp;
     use std::collections::BTreeSet;
     use sunrise_domain::TaskState;
     use sunrise_id::{EntityKind, EntityRef};
@@ -102,8 +102,8 @@ mod tests {
     fn fake(idx: u8) -> Task {
         Task {
             id: EntityRef::new(EntityKind::Task, [idx; 16]),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
             title: format!("task {idx}"),
             body: None,
             stream_id: EntityRef::new(EntityKind::Stream, [0u8; 16]),

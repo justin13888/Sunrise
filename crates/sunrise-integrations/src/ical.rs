@@ -10,7 +10,7 @@
 //! recurrence-id overrides, X- properties, attachments.
 
 use crate::IntegrationError;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use jiff::{civil, tz::TimeZone, Timestamp};
 
 /// One iCalendar event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,9 +20,9 @@ pub struct ICalEvent {
     /// `SUMMARY` — display title.
     pub summary: Option<String>,
     /// `DTSTART` parsed to UTC.
-    pub dtstart: Option<DateTime<Utc>>,
+    pub dtstart: Option<Timestamp>,
     /// `DTEND` parsed to UTC.
-    pub dtend: Option<DateTime<Utc>>,
+    pub dtend: Option<Timestamp>,
     /// `DESCRIPTION` — long-form text.
     pub description: Option<String>,
     /// Raw `RRULE` line (parsed downstream by `sunrise-domain::rrule`).
@@ -139,15 +139,15 @@ fn split_property(line: &str) -> (&str, &str) {
     (name, value)
 }
 
-fn parse_datetime(s: &str) -> Option<DateTime<Utc>> {
-    // YYYYMMDD'T'HHMMSS('Z')?
+fn parse_datetime(s: &str) -> Option<Timestamp> {
+    // YYYYMMDD'T'HHMMSS('Z')? — parse as civil (wall-clock) then pin to UTC.
     let s = s.trim_end_matches('Z');
-    let dt = NaiveDateTime::parse_from_str(s, "%Y%m%dT%H%M%S").ok()?;
-    Some(Utc.from_utc_datetime(&dt))
+    let dt: civil::DateTime = civil::DateTime::strptime("%Y%m%dT%H%M%S", s).ok()?;
+    dt.to_zoned(TimeZone::UTC).ok().map(|z| z.timestamp())
 }
 
-fn format_dt(dt: DateTime<Utc>) -> String {
-    dt.format("%Y%m%dT%H%M%SZ").to_string()
+fn format_dt(dt: Timestamp) -> String {
+    dt.strftime("%Y%m%dT%H%M%SZ").to_string()
 }
 
 fn unescape(s: &str) -> String {

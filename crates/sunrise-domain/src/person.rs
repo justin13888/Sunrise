@@ -4,7 +4,7 @@
 //! informational labels only) Task `assignee`. v1 does not implement
 //! delegation; assigning a Task to a non-self Person is a label, not access.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -14,9 +14,9 @@ pub struct Person {
     /// Person id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Display name (UI; treat as plaintext).
     pub display_name: String,
     /// Optional reference to the Person's identity public key set; absent

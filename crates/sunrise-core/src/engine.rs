@@ -157,8 +157,8 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let task = Task {
             id: task_id,
-            created_at: ms_to_chrono(now_ms),
-            updated_at: ms_to_chrono(now_ms),
+            created_at: ms_to_ts(now_ms as i64),
+            updated_at: ms_to_ts(now_ms as i64),
             title: d.title.trim().to_string(),
             body: d.body.clone(),
             stream_id: stream,
@@ -250,7 +250,7 @@ impl Engine {
             }
             task.state = state;
             if state == TaskState::Done {
-                task.completed_at = Some(ms_to_chrono(now_ms));
+                task.completed_at = Some(ms_to_ts(now_ms as i64));
             } else {
                 task.completed_at = None;
             }
@@ -279,7 +279,7 @@ impl Engine {
         if let Some(arch) = patch.archived {
             task.archived = arch;
         }
-        task.updated_at = ms_to_chrono(now_ms);
+        task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
@@ -345,9 +345,9 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        task.scheduled_at = Some(ms_to_chrono(to_ms));
+        task.scheduled_at = Some(ms_to_ts(to_ms as i64));
         task.deferred_count = task.deferred_count.saturating_add(1);
-        task.updated_at = ms_to_chrono(now_ms);
+        task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
@@ -389,7 +389,7 @@ impl Engine {
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.deleted = true;
-        task.updated_at = ms_to_chrono(now_ms);
+        task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.id))?;
@@ -447,8 +447,8 @@ impl Engine {
         let stream_id = self.fresh_id(EntityKind::Stream, now_ms);
         let stream = Stream {
             id: stream_id,
-            created_at: ms_to_chrono(now_ms),
-            updated_at: ms_to_chrono(now_ms),
+            created_at: ms_to_ts(now_ms as i64),
+            updated_at: ms_to_ts(now_ms as i64),
             name: d.name.trim().to_string(),
             description: d.description.clone(),
             color: d.color.unwrap_or(StreamColor::Slate),
@@ -532,7 +532,7 @@ impl Engine {
         if let Some(pu) = patch.paused_until {
             stream.paused_until = pu;
         }
-        stream.updated_at = ms_to_chrono(now_ms);
+        stream.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
@@ -579,7 +579,7 @@ impl Engine {
         let mut stream = read_stream(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("stream {id}")))?;
         stream.deleted = true;
-        stream.updated_at = ms_to_chrono(now_ms);
+        stream.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.id))?;
         let device_id = self.device_id;
@@ -866,8 +866,8 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
             parent_blob,
             s.archived as i64,
             s.deleted as i64,
-            s.created_at.timestamp_millis(),
-            s.updated_at.timestamp_millis(),
+            s.created_at.as_millisecond(),
+            s.updated_at.as_millisecond(),
         ],
     )?;
     Ok(())
@@ -883,7 +883,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
             parent_blob,
             s.archived as i64,
             s.deleted as i64,
-            s.updated_at.timestamp_millis(),
+            s.updated_at.as_millisecond(),
             id_blob,
         ],
     )?;
@@ -919,8 +919,8 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     });
     let stream = Stream {
         id: EntityRef::new(EntityKind::Stream, *id),
-        created_at: ms_to_chrono(created_ms.max(0) as u64),
-        updated_at: ms_to_chrono(updated_ms.max(0) as u64),
+        created_at: ms_to_ts(created_ms.max(0)),
+        updated_at: ms_to_ts(updated_ms.max(0)),
         name: String::new(),
         description: None,
         color: StreamColor::Slate,
@@ -958,12 +958,12 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
                 let m = s / 60;
                 i64::try_from(m).ok()
             }),
-            t.scheduled_at.map(|d| d.timestamp_millis()),
-            t.due_at.map(|d| d.timestamp_millis()),
-            t.completed_at.map(|d| d.timestamp_millis()),
+            t.scheduled_at.map(|d| d.as_millisecond()),
+            t.due_at.map(|d| d.as_millisecond()),
+            t.completed_at.map(|d| d.as_millisecond()),
             t.deferred_count,
             t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
-            t.routine_occurrence.map(|d| d.timestamp_millis()),
+            t.routine_occurrence.map(|d| d.as_millisecond()),
             t.archived as i64,
             t.deleted as i64,
             body_blob,
@@ -991,9 +991,9 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             t.energy.map(energy_str),
             t.estimated_duration_s
                 .and_then(|s| i64::try_from(s / 60).ok()),
-            t.scheduled_at.map(|d| d.timestamp_millis()),
-            t.due_at.map(|d| d.timestamp_millis()),
-            t.completed_at.map(|d| d.timestamp_millis()),
+            t.scheduled_at.map(|d| d.as_millisecond()),
+            t.due_at.map(|d| d.as_millisecond()),
+            t.completed_at.map(|d| d.as_millisecond()),
             t.deferred_count,
             t.archived as i64,
             t.deleted as i64,
@@ -1108,8 +1108,8 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
     }
     let task = Task {
         id: EntityRef::new(EntityKind::Task, *id),
-        created_at: ms_to_chrono(0),
-        updated_at: ms_to_chrono(0),
+        created_at: ms_to_ts(0),
+        updated_at: ms_to_ts(0),
         title: t.1,
         body: t.12.map(NoteBody),
         stream_id: EntityRef::new(EntityKind::Stream, stream_bytes),
@@ -1121,9 +1121,9 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
             let secs = m.checked_mul(60)?;
             u64::try_from(secs).ok()
         }),
-        scheduled_at: t.6.map(|m| ms_to_chrono(m.max(0) as u64)),
-        due_at: t.7.map(|m| ms_to_chrono(m.max(0) as u64)),
-        completed_at: t.8.map(|m| ms_to_chrono(m.max(0) as u64)),
+        scheduled_at: t.6.map(|m| ms_to_ts(m.max(0))),
+        due_at: t.7.map(|m| ms_to_ts(m.max(0))),
+        completed_at: t.8.map(|m| ms_to_ts(m.max(0))),
         deferred_count: t.9,
         blocks: BTreeSet::new(),
         blocked_by: BTreeSet::new(),
@@ -1184,9 +1184,10 @@ fn parse_energy(s: &str) -> Option<sunrise_domain::Energy> {
     }
 }
 
-fn ms_to_chrono(ms: u64) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(ms).unwrap_or(0))
-        .unwrap_or_else(chrono::Utc::now)
+fn ms_to_ts(ms: i64) -> jiff::Timestamp {
+    // Determinism: never read a wall clock on failure. Out-of-range epoch-ms
+    // (corrupt row) clamps to the Unix epoch rather than `Timestamp::now()`.
+    jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
 fn hex_short(b: &[u8; 16]) -> String {
@@ -1387,7 +1388,7 @@ mod tests {
         let mut db = db();
         let e = engine();
         let now = 1_700_000_000_000u64;
-        let due_soon = ms_to_chrono(now + 3_600_000);
+        let due_soon = ms_to_ts((now + 3_600_000) as i64);
         e.apply(
             &mut db,
             Command::CreateTask(TaskDraft {
@@ -1397,7 +1398,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let far = ms_to_chrono(now + 7 * 86_400_000);
+        let far = ms_to_ts((now + 7 * 86_400_000) as i64);
         e.apply(
             &mut db,
             Command::CreateTask(TaskDraft {
@@ -1455,5 +1456,16 @@ mod tests {
             },
         );
         assert!(matches!(res, Err(EngineError::Invalid(_))));
+    }
+
+    proptest::proptest! {
+        /// Any epoch-ms in a sane range survives the `ms_to_ts` ->
+        /// `as_millisecond` round-trip that bridges SQLite INTEGER storage
+        /// and `jiff::Timestamp`.
+        #[test]
+        fn ms_timestamp_round_trip(ms in -10_000_000_000_000i64..=10_000_000_000_000i64) {
+            let ts = ms_to_ts(ms);
+            proptest::prop_assert_eq!(ts.as_millisecond(), ms);
+        }
     }
 }

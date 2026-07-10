@@ -37,9 +37,7 @@ superseding decision named in the **Governing decision** column.
 | Structured logging | *none (hand-written)* | — | [ADR-0010](../11-adr/0010-logging-strategy.md), [logging.md](../10-cross-cutting/logging.md) | `sunrise-log` is hand-rolled (NDJSON, `Plain<T>` redaction); `tracing` 0.1 is declared but enters the lock only transitively via axum's `tracing` feature. |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
 | Snapshot testing | `insta` | *declared 1.40; not in lock* | [testing.md](../10-cross-cutting/testing.md) | Declared for future snapshot fixtures; no crate consumes it yet, so it is absent from `Cargo.lock`. |
-| Datetime (target) | `jiff` | *not declared; target 0.2.x* | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library once the migration slice lands. Not yet in `Cargo.toml` or `Cargo.lock`. See Reconciliations §d. |
-| Datetime (current) | `chrono` | 0.4.44 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Currently used across `sunrise-domain`; removed when the jiff migration lands. |
-| Datetime (dead) | `time` | *declared 0.3; not in lock* | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Declared but unconsumed (`time` has no timezone support). Removed with the jiff migration. |
+| Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed; `chrono` and the unused `time` dependency were removed. See Reconciliations §d. |
 | RRULE parsing | *none (hand-written)* | — | [recurrence-engine.md](../08-features/recurrence-engine.md), [routines-and-recurrence.md](../02-domain/routines-and-recurrence.md) | Hand-written parser at `crates/sunrise-domain/src/rrule.rs`. See Reconciliations §c. |
 
 Supporting utility crates (`serde`, `thiserror`, `anyhow`, `hyper`, `tower`,
@@ -103,15 +101,19 @@ The table row above reflects this (Purpose: RRULE parsing → *none
 
 ### d. `chrono` / `time` → `jiff`
 
-Per [ADR-0011](../11-adr/0011-datetime-jiff.md), **`jiff` (target `0.2.x`)**
-becomes the sole datetime library. The migration is **in progress**:
+Per [ADR-0011](../11-adr/0011-datetime-jiff.md), **`jiff` `0.2.32`** is the sole
+datetime library. The migration **landed**:
 
-- `jiff` is **not yet declared** in `Cargo.toml` and is absent from
-  `Cargo.lock`.
-- `chrono` **0.4.44** is currently in the lockfile and used across
-  `sunrise-domain`; it stays until the migration slice lands.
-- `time` is **declared (`0.3`) but unused** — no `use time::` anywhere in
-  `crates/` — and is removed together with the migration.
+- `jiff` is declared in `[workspace.dependencies]` (`0.2`, resolving to
+  `0.2.32` in `Cargo.lock`) with `default-features = false` plus `std`,
+  `serde`, and `tzdb-bundle-platform`.
+- `chrono` was **removed** — no `chrono::` usage remains and it is absent
+  from `Cargo.lock`.
+- `time` (declared `0.3`, never consumed) was **removed** with it.
 
 Storage stays epoch-ms integers and op CBOR stays RFC 3339 strings, so neither
-the on-disk nor the wire format changes when the migration completes.
+the on-disk nor the wire format changed. A permanent wire-compat test
+(`crates/sunrise-domain/tests/serde_compat.rs`) decodes the pre-migration
+chrono-era CBOR fixtures under the jiff types; `jiff::Timestamp` and
+`chrono::DateTime<Utc>` serialize a UTC instant to the identical RFC 3339
+string, so the canonical bytes are byte-identical.

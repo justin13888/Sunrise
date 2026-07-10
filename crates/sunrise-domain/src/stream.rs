@@ -2,7 +2,7 @@
 
 use crate::common::NoteBody;
 use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -48,9 +48,9 @@ pub struct Stream {
     /// Stream id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last-update time.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Display name (1..=128 chars after trim).
     pub name: String,
     /// Optional description (rich text).
@@ -74,7 +74,7 @@ pub struct Stream {
     pub paused: bool,
     /// Optional pause expiry.
     #[serde(default)]
-    pub paused_until: Option<DateTime<Utc>>,
+    pub paused_until: Option<Timestamp>,
     /// Review cadence preference.
     pub review_cadence: StreamReviewCadence,
     /// Optional default Context applied to new tasks captured into this Stream.
@@ -126,7 +126,7 @@ pub struct StreamPatch {
     /// Pause / unpause.
     pub paused: Option<bool>,
     /// New pause expiry.
-    pub paused_until: Option<Option<DateTime<Utc>>>,
+    pub paused_until: Option<Option<Timestamp>>,
 }
 
 impl StreamPatch {

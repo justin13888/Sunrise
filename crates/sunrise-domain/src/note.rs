@@ -3,7 +3,7 @@
 //! Notes are children of Task / Stream / Block. They cannot float free.
 
 use crate::common::NoteBody;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -13,9 +13,9 @@ pub struct Note {
     /// Note id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Parent entity (Task / Stream / Block).
     pub parent: EntityRef,
     /// Body.

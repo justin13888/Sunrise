@@ -8,7 +8,7 @@
 //! v1 implements parsing + recognition; full DST-aware expansion lives in
 //! `crates/sunrise-domain::routine_gen` (TODO Phase 5/6 timing).
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -101,7 +101,7 @@ pub struct RRule {
     pub count: Option<u32>,
     /// `UNTIL` (optional, UTC).
     #[serde(default)]
-    pub until: Option<DateTime<Utc>>,
+    pub until: Option<Timestamp>,
     /// `WKST` (optional; defaults to Monday per RFC 5545).
     #[serde(default)]
     pub wkst: Option<Weekday>,
@@ -195,7 +195,7 @@ impl RRule {
                     );
                 }
                 "UNTIL" => {
-                    let parsed: DateTime<Utc> = v
+                    let parsed: Timestamp = v
                         .parse()
                         .map_err(|_| RRuleParseError::BadValue("UNTIL", v.into()))?;
                     out.until = Some(parsed);

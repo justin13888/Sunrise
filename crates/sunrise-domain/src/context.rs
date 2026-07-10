@@ -1,7 +1,7 @@
 //! Context entity per `docs/02-domain/contexts-and-tags.md`.
 
 use crate::validation::{validate_title, ValidationError, MAX_CONTEXT_NAME_LEN};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -11,9 +11,9 @@ pub struct Context {
     /// Context id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Display name (e.g., `@deep-work`).
     pub name: String,
     /// Tombstone.

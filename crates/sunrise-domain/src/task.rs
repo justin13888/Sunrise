@@ -2,7 +2,7 @@
 
 use crate::common::{Energy, NoteBody};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sunrise_id::EntityRef;
@@ -52,9 +52,9 @@ pub struct Task {
     /// Unique id (typed reference).
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last-update time (CRDT-derived: max of contributing op times).
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Title; non-empty after trim, ≤ 512 chars.
     pub title: String,
     /// Optional body (rich text).
@@ -79,13 +79,13 @@ pub struct Task {
     pub estimated_duration_s: Option<u64>,
     /// When the user intends to do it.
     #[serde(default)]
-    pub scheduled_at: Option<DateTime<Utc>>,
+    pub scheduled_at: Option<Timestamp>,
     /// Hard deadline.
     #[serde(default)]
-    pub due_at: Option<DateTime<Utc>>,
+    pub due_at: Option<Timestamp>,
     /// Set on transition to Done.
     #[serde(default)]
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<Timestamp>,
     /// PN-counter; system-incremented on defer.
     #[serde(default)]
     pub deferred_count: i64,
@@ -103,7 +103,7 @@ pub struct Task {
     pub routine_id: Option<EntityRef>,
     /// Occurrence date for routine-generated tasks.
     #[serde(default)]
-    pub routine_occurrence: Option<DateTime<Utc>>,
+    pub routine_occurrence: Option<Timestamp>,
     /// Archived (out of default views).
     #[serde(default)]
     pub archived: bool,
@@ -131,9 +131,9 @@ pub struct TaskDraft {
     /// Optional estimated duration in seconds.
     pub estimated_duration_s: Option<u64>,
     /// Optional scheduled_at.
-    pub scheduled_at: Option<DateTime<Utc>>,
+    pub scheduled_at: Option<Timestamp>,
     /// Optional due_at.
-    pub due_at: Option<DateTime<Utc>>,
+    pub due_at: Option<Timestamp>,
     /// Optional assignee.
     pub assignee: Option<EntityRef>,
 }
@@ -160,9 +160,9 @@ pub struct TaskPatch {
     /// New duration.
     pub estimated_duration_s: Option<Option<u64>>,
     /// New scheduled_at.
-    pub scheduled_at: Option<Option<DateTime<Utc>>>,
+    pub scheduled_at: Option<Option<Timestamp>>,
     /// New due_at.
-    pub due_at: Option<Option<DateTime<Utc>>>,
+    pub due_at: Option<Option<Timestamp>>,
     /// New blocked_by set (replaces).
     pub blocked_by: Option<Vec<EntityRef>>,
     /// New assignee.
@@ -245,8 +245,8 @@ mod tests {
 
     #[test]
     fn draft_rejects_due_before_scheduled() {
-        let now = Utc::now();
-        let later = now + chrono::Duration::hours(1);
+        let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let later = now + jiff::SignedDuration::from_hours(1);
         let d = TaskDraft {
             title: "x".into(),
             scheduled_at: Some(later),

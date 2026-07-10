@@ -3,7 +3,7 @@
 //! A Block is a scheduled time range that may bind to 0..N Tasks. Tasks may
 //! reference 0..N Blocks via `Task.blocks` (OR-Set).
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sunrise_id::EntityRef;
@@ -14,15 +14,15 @@ pub struct Block {
     /// Block id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Owning Stream.
     pub stream_id: EntityRef,
     /// Start time.
-    pub starts_at: DateTime<Utc>,
+    pub starts_at: Timestamp,
     /// End time. MUST be > `starts_at`.
-    pub ends_at: DateTime<Utc>,
+    pub ends_at: Timestamp,
     /// Optional title (free text; UI may compose from bound tasks).
     #[serde(default)]
     pub title: Option<String>,
@@ -40,9 +40,9 @@ pub struct BlockDraft {
     /// Owning Stream.
     pub stream_id: EntityRef,
     /// Start.
-    pub starts_at: DateTime<Utc>,
+    pub starts_at: Timestamp,
     /// End.
-    pub ends_at: DateTime<Utc>,
+    pub ends_at: Timestamp,
     /// Optional title.
     pub title: Option<String>,
     /// Optional tasks to bind on creation.

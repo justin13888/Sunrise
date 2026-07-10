@@ -4,7 +4,7 @@
 //! encrypted; see `docs/03-crypto/data-encryption-format.md` §blob-chunks).
 //! This entity carries only the per-attachment metadata.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
@@ -14,9 +14,9 @@ pub struct Attachment {
     /// Attachment id.
     pub id: EntityRef,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Parent entity (Task usually).
     pub parent: EntityRef,
     /// Filename (informational).

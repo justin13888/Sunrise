@@ -288,7 +288,7 @@ fn emit_throttle_notice(global: &Global, n_dropped: u64, original_ev: &'static s
 
 /// RFC 3339 with millisecond precision in UTC.
 ///
-/// The bare-bones formatter avoids pulling in `chrono` here. Format:
+/// The bare-bones formatter avoids pulling in a datetime library here. Format:
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ`.
 ///
 /// `sunrise-log` is the one crate where reading wall-clock time directly is

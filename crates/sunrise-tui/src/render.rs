@@ -153,7 +153,7 @@ pub fn render_focus(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
                 Span::raw("due: "),
                 Span::raw(
                     t.due_at
-                        .map(|d| d.to_rfc3339())
+                        .map(|d| d.to_string())
                         .unwrap_or_else(|| "—".into()),
                 ),
             ]),
