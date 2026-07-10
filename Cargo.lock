@@ -2615,11 +2615,14 @@ name = "sunrise-e2e"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "jiff",
  "parking_lot",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
+ "sunrise-id",
  "sunrise-server",
+ "sunrise-sync",
  "tempfile",
  "tokio",
 ]

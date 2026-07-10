@@ -17,9 +17,12 @@ sunrise-core = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-crypto = { workspace = true }
+sunrise-sync = { workspace = true, features = ["ws"] }
+axum = { workspace = true }
+jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
-axum = { workspace = true }
+sunrise-id = { workspace = true }
 parking_lot = { workspace = true }
 tempfile = "3"
