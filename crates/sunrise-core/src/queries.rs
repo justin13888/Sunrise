@@ -1,7 +1,7 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Stream, StreamColor, Task};
+use sunrise_domain::{Routine, Stream, StreamColor, Task};
 use sunrise_id::EntityRef;
 
 /// Read query.
@@ -26,6 +26,8 @@ pub enum Query {
     SyncStatus,
     /// All streams (plus the synthetic Inbox row), with open-task counts.
     StreamList,
+    /// All live (non-deleted) routines.
+    Routines,
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -48,6 +50,10 @@ pub enum QueryResult {
     Stream(Box<Stream>),
     /// `EntityById` may return a task.
     Task(Box<Task>),
+    /// `EntityById` may return a routine.
+    Routine(Box<Routine>),
+    /// `Routines` returns all live routines.
+    Routines(Vec<Routine>),
     /// Device list rows: (device_id, nickname, platform, is_revoked).
     Devices(Vec<DeviceRow>),
     /// Sync status snapshot.

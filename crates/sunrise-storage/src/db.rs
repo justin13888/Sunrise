@@ -388,6 +388,67 @@ mod tests {
         assert_eq!(routine_col, 1, "routines gained the column too");
     }
 
+    /// Build a DB with migrations 0001..0003 applied, stamped `storage_v = 3`,
+    /// simulating a real v3 vault opened by a newer binary.
+    fn seed_v3_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
+        tx.execute_batch(MIGRATIONS[1].sql).unwrap();
+        tx.execute_batch(MIGRATIONS[2].sql).unwrap();
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![3_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v3_db_adds_routine_materialization_columns() {
+        assert!(u32::from(STORAGE_V) >= 4);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v3_db(&conn);
+
+        // Seed a v3 routine row (no materialization columns yet).
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms, name, color)
+             VALUES (?, ?, 1, ?, 0, 0, 0, 'S', 'slate')",
+            rusqlite::params![vec![1u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO routines (id, stream_id, rrule, timezone, starts_at_ms)
+             VALUES (?, ?, 'FREQ=DAILY', 'UTC', 0)",
+            rusqlite::params![vec![9u8; 16], vec![1u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0004.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // New columns exist; defaults hold for the pre-existing row.
+        let (catchup, mat_until, template): (String, i64, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT catchup_policy, materialized_until_ms, template
+                 FROM routines WHERE id = ?",
+                rusqlite::params![vec![9u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(catchup, "skip", "catchup_policy defaults to 'skip'");
+        assert_eq!(mat_until, 0, "materialized_until_ms defaults to 0");
+        assert!(template.is_none(), "template defaults to NULL");
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

@@ -113,6 +113,9 @@ fn expected_routine() -> Routine {
         ends_at: Some(ts(R_ENDS)),
         scheduling_constraints: Vec::new(),
         skip_dates: vec![ts(R_SKIP1), ts(R_SKIP2)],
+        // New field: defaults to empty and is skipped on the wire, so the
+        // chrono-era fixture still decodes and re-encodes byte-identically.
+        skipped_keys: Vec::new(),
         catchup_policy: RoutineCatchupPolicy::Merge,
         streak_counter: 7,
         last_completed_at: Some(ts(R_LAST_COMPLETED)),

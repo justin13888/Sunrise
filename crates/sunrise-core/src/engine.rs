@@ -54,8 +54,10 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use sunrise_domain::{
-    inbox_stream_ref, NoteBody, ScheduleConstraint, Stream, StreamColor, StreamDraft, StreamPatch,
-    StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState,
+    inbox_stream_ref, materialization_horizon_days, occurrence_task_id, NoteBody, Routine,
+    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, ScheduleConstraint, Stream, StreamColor,
+    StreamDraft, StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState,
+    TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog};
@@ -127,6 +129,13 @@ impl Engine {
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
             Command::DeleteStream(id) => self.delete_stream(db, id),
+            Command::CreateRoutine(d) => self.create_routine(db, d),
+            Command::UpdateRoutine { id, patch } => self.update_routine(db, id, patch),
+            Command::DeleteRoutine(id) => self.delete_routine(db, id),
+            Command::SkipRoutineOccurrence { id, occurrence_key } => {
+                self.skip_routine_occurrence(db, id, occurrence_key)
+            }
+            Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
         }
     }
 
@@ -139,6 +148,7 @@ impl Engine {
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
             Query::StreamList => self.query_stream_list(db),
+            Query::Routines => self.query_routines(db),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
             Query::SyncStatus => Ok(QueryResult::SyncStatus(crate::events::SyncStatus {
                 state: sunrise_sync::SyncState::Disconnected,
@@ -623,7 +633,502 @@ impl Engine {
         })
     }
 
+    // ---- routine command handlers ----
+
+    fn create_routine(&self, db: &mut Db, d: RoutineDraft) -> Result<CommandResult, EngineError> {
+        d.validate()?;
+        let now_ms = self.clock.now_ms();
+        let routine_id = self.fresh_id(EntityKind::Routine, now_ms);
+        let routine = Routine {
+            id: routine_id,
+            created_at: ms_to_ts(now_ms as i64),
+            updated_at: ms_to_ts(now_ms as i64),
+            template: d.template,
+            rrule: d.rrule,
+            timezone: d.timezone,
+            starts_at: d.starts_at,
+            ends_at: d.ends_at,
+            scheduling_constraints: d.scheduling_constraints,
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: d.catchup_policy,
+            streak_counter: 0,
+            last_completed_at: None,
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+        };
+        let stream = routine.template.stream_id;
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::RoutineCreate(Box::new(routine.clone())))?;
+        let device_id = self.device_id;
+        let seq = next_seq(db, stream.bytes())?;
+        let routine_clone = routine.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            insert_routine_row(tx, &routine_clone, now_ms)?;
+            ops_insert(
+                tx,
+                &op_id,
+                stream.bytes(),
+                &device_id,
+                seq,
+                now_ms,
+                &inner_op,
+                "routine.create",
+                "routine",
+                Some(routine_id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+
+        // Materialize the near-horizon occurrences for the freshly-created
+        // routine (first run: `materialized_until` is 0, so the window opens at
+        // `starts_at` and any missed occurrences run the catchup policy).
+        self.materialize_one_routine(db, &routine, now_ms)?;
+
+        Ok(CommandResult {
+            entity: routine_id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    fn update_routine(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        patch: RoutinePatch,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Routine)?;
+        patch.validate()?;
+        let now_ms = self.clock.now_ms();
+        let mut routine = read_routine(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
+
+        // Track whether the change affects which occurrences exist (and thus
+        // requires regenerating future not-started tasks).
+        let mut structural = false;
+        if let Some(t) = patch.template {
+            routine.template = t;
+        }
+        if let Some(r) = patch.rrule {
+            structural |= routine.rrule != r;
+            routine.rrule = r;
+        }
+        if let Some(tz) = patch.timezone {
+            structural |= routine.timezone != tz;
+            routine.timezone = tz;
+        }
+        if let Some(s) = patch.starts_at {
+            structural |= routine.starts_at != s;
+            routine.starts_at = s;
+        }
+        if let Some(e) = patch.ends_at {
+            structural |= routine.ends_at != e;
+            routine.ends_at = e;
+        }
+        if let Some(list) = patch.scheduling_constraints {
+            routine.scheduling_constraints = list;
+        }
+        if let Some(c) = patch.catchup_policy {
+            routine.catchup_policy = c;
+        }
+        if let Some(p) = patch.paused {
+            routine.paused = p;
+        }
+        if let Some(pu) = patch.paused_until {
+            routine.paused_until = pu;
+        }
+        if let Some(a) = patch.archived {
+            routine.archived = a;
+        }
+        routine.updated_at = ms_to_ts(now_ms as i64);
+
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
+        let device_id = self.device_id;
+        let stream = routine.template.stream_id;
+        let seq = next_seq(db, stream.bytes())?;
+        let routine_clone = routine.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            update_routine_row(tx, &routine_clone)?;
+            ops_insert(
+                tx,
+                &op_id,
+                stream.bytes(),
+                &device_id,
+                seq,
+                now_ms,
+                &inner_op,
+                "routine.update",
+                "routine",
+                Some(id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+
+        if structural {
+            self.regenerate_future_tasks(db, &routine, now_ms)?;
+        }
+        self.materialize_one_routine(db, &routine, now_ms)?;
+
+        Ok(CommandResult {
+            entity: id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    fn delete_routine(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Routine)?;
+        let now_ms = self.clock.now_ms();
+        let mut routine = read_routine(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
+        routine.deleted = true;
+        routine.updated_at = ms_to_ts(now_ms as i64);
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::RoutineDelete(id))?;
+        let device_id = self.device_id;
+        let stream = routine.template.stream_id;
+        let seq = next_seq(db, stream.bytes())?;
+        let routine_clone = routine.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            update_routine_row(tx, &routine_clone)?;
+            ops_insert(
+                tx,
+                &op_id,
+                stream.bytes(),
+                &device_id,
+                seq,
+                now_ms,
+                &inner_op,
+                "routine.delete",
+                "routine",
+                Some(id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult {
+            entity: id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    fn skip_routine_occurrence(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        occurrence_key: String,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Routine)?;
+        let now_ms = self.clock.now_ms();
+        let mut routine = read_routine(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
+        if !routine.skipped_keys.contains(&occurrence_key) {
+            routine.skipped_keys.push(occurrence_key.clone());
+        }
+        routine.updated_at = ms_to_ts(now_ms as i64);
+
+        // Tombstone the already-materialized task for this occurrence, but only
+        // if it exists and is still an untouched (Todo, non-deferred) routine
+        // task — a user who already started/edited it keeps it.
+        let task_id = occurrence_task_id(&id, &occurrence_key);
+        let existing = read_task(db.conn(), task_id.bytes())?;
+        let drop_task = existing
+            .as_ref()
+            .filter(|t| {
+                !t.deleted
+                    && t.state == TaskState::Todo
+                    && t.deferred_count == 0
+                    && t.routine_id == Some(id)
+            })
+            .cloned();
+
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
+        let device_id = self.device_id;
+        let stream = routine.template.stream_id;
+        let seq = next_seq(db, stream.bytes())?;
+        let routine_clone = routine.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            update_routine_row(tx, &routine_clone)?;
+            ops_insert(
+                tx,
+                &op_id,
+                stream.bytes(),
+                &device_id,
+                seq,
+                now_ms,
+                &inner_op,
+                "routine.update",
+                "routine",
+                Some(id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            if let Some(mut t) = drop_task {
+                t.deleted = true;
+                t.updated_at = ms_to_ts(now_ms as i64);
+                let task_seq = next_seq_tx(tx, t.stream_id.bytes())?;
+                let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
+                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+                update_task_row(tx, &t)?;
+                ftsr_delete_task(tx, &t.id)?;
+                let del_op_id = self.fresh_op_id(now_ms);
+                ops_insert(
+                    tx,
+                    &del_op_id,
+                    t.stream_id.bytes(),
+                    &device_id,
+                    task_seq,
+                    now_ms,
+                    &del_op,
+                    "task.delete",
+                    "task",
+                    Some(t.id.bytes()),
+                    Some(now_ms),
+                    None,
+                    now_ms,
+                    &[],
+                )?;
+            }
+            Ok(())
+        })?;
+
+        Ok(CommandResult {
+            entity: id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    fn materialize_routines(&self, db: &mut Db, now_ms: u64) -> Result<CommandResult, EngineError> {
+        let routines = read_routines(db.conn())?;
+        for routine in routines {
+            self.materialize_one_routine(db, &routine, now_ms)?;
+        }
+        // No single target entity; return a routine-kind sentinel.
+        Ok(CommandResult {
+            entity: EntityRef::new(EntityKind::Routine, [0u8; 16]),
+            state: None,
+            op_id: [0u8; 16],
+            seq: 0,
+        })
+    }
+
+    /// Expand a routine over `[max(starts_at, materialized_until), now+horizon)`
+    /// and INSERT-OR-IGNORE the resulting tasks, applying the catchup policy to
+    /// occurrences at or before `now`. Runs in one transaction per routine:
+    /// the inserts and the `materialized_until` advance commit together, so a
+    /// crash never leaves the watermark ahead of the tasks it represents.
+    fn materialize_one_routine(
+        &self,
+        db: &mut Db,
+        routine: &Routine,
+        now_ms: u64,
+    ) -> Result<(), EngineError> {
+        if routine.paused || routine.archived || routine.deleted {
+            return Ok(());
+        }
+        let mat_until = read_materialized_until(db.conn(), routine.id.bytes())?;
+        let horizon_ms = u64::from(materialization_horizon_days(routine.rrule.freq)) * 86_400_000;
+        let window_end_ms = now_ms.saturating_add(horizon_ms);
+        let starts_ms = u64::try_from(routine.starts_at.as_millisecond().max(0)).unwrap_or(0);
+        let window_start_ms = starts_ms.max(mat_until);
+        if window_end_ms <= window_start_ms {
+            return Ok(());
+        }
+        let window = (
+            ms_to_ts(window_start_ms as i64),
+            ms_to_ts(window_end_ms as i64),
+        );
+        let occ = routine
+            .occurrences_in(window)
+            .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?;
+        let now_ts = ms_to_ts(now_ms as i64);
+
+        // Partition into missed (<= now) and future (> now).
+        let (missed, future): (Vec<_>, Vec<_>) = occ.into_iter().partition(|o| o.at <= now_ts);
+
+        // Build the (key, instant, optional-title-override) tuples to insert.
+        let mut jobs: Vec<(String, jiff::Timestamp, Option<String>)> = Vec::new();
+        match routine.catchup_policy {
+            RoutineCatchupPolicy::Skip => {}
+            RoutineCatchupPolicy::Queue => {
+                for o in &missed {
+                    jobs.push((o.key.clone(), o.at, None));
+                }
+            }
+            RoutineCatchupPolicy::Merge => {
+                let n = missed.len();
+                if n >= 2 {
+                    let latest = &missed[n - 1];
+                    let title = format!("{} (x{n} catch-up)", routine.template.title);
+                    jobs.push((latest.key.clone(), latest.at, Some(title)));
+                } else if let Some(o) = missed.first() {
+                    jobs.push((o.key.clone(), o.at, None));
+                }
+            }
+        }
+        for o in &future {
+            jobs.push((o.key.clone(), o.at, None));
+        }
+
+        let device_id = self.device_id;
+        let routine = routine.clone();
+        let clock = self.clock.clone();
+        let rng = self.rng.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            ensure_stream_row(
+                tx,
+                &routine.template.stream_id,
+                now_ms,
+                None,
+                false,
+                false,
+                false,
+            )?;
+            for (key, at, title_override) in &jobs {
+                let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
+                let inserted = insert_task_row_or_ignore(tx, &task)?;
+                if !inserted {
+                    continue;
+                }
+                insert_task_contexts(tx, &task)?;
+                ftsr_upsert_task(tx, &task)?;
+                let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))
+                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+                let seq = next_seq_tx(tx, task.stream_id.bytes())?;
+                let mut rand = [0u8; 10];
+                rng.fill_bytes(&mut rand);
+                let op_id = *Ulid::from_timestamp_and_random(clock.now_ms(), rand).as_bytes();
+                ops_insert(
+                    tx,
+                    &op_id,
+                    task.stream_id.bytes(),
+                    &device_id,
+                    seq,
+                    now_ms,
+                    &inner_op,
+                    "task.create",
+                    "task",
+                    Some(task.id.bytes()),
+                    Some(now_ms),
+                    None,
+                    now_ms,
+                    &[],
+                )?;
+            }
+            set_materialized_until(tx, routine.id.bytes(), window_end_ms)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Regeneration policy (v1): after a structural routine edit, delete future
+    /// routine-materialized tasks that are still untouched (Todo, non-deferred)
+    /// and whose deterministic id no longer matches any current future
+    /// occurrence. Started, completed, deferred, or user-moved tasks are kept.
+    fn regenerate_future_tasks(
+        &self,
+        db: &mut Db,
+        routine: &Routine,
+        now_ms: u64,
+    ) -> Result<(), EngineError> {
+        let horizon_ms = u64::from(materialization_horizon_days(routine.rrule.freq)) * 86_400_000;
+        let now_ts = ms_to_ts(now_ms as i64);
+        let window = (now_ts, ms_to_ts(now_ms.saturating_add(horizon_ms) as i64));
+        let valid: BTreeSet<[u8; 16]> = routine
+            .occurrences_in(window)
+            .map_err(|e| EngineError::Invalid(format!("routine expand: {e}")))?
+            .iter()
+            .map(|o| *occurrence_task_id(&routine.id, &o.key).bytes())
+            .collect();
+
+        // Candidate future, not-started routine tasks for this routine.
+        let rid_blob: Vec<u8> = routine.id.bytes().to_vec();
+        let mut stmt = db.conn().prepare(
+            "SELECT id FROM tasks
+             WHERE routine_id = ? AND deleted = 0 AND state = 'todo'
+               AND deferred_count = 0
+               AND scheduled_at_ms IS NOT NULL AND scheduled_at_ms > ?",
+        )?;
+        let ids = stmt
+            .query_map(params![rid_blob, now_ms as i64], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+
+        let device_id = self.device_id;
+        for raw in ids {
+            let mut bytes = [0u8; 16];
+            let take = raw.len().min(16);
+            bytes[..take].copy_from_slice(&raw[..take]);
+            if valid.contains(&bytes) {
+                continue;
+            }
+            let Some(mut t) = read_task(db.conn(), &bytes)? else {
+                continue;
+            };
+            t.deleted = true;
+            t.updated_at = ms_to_ts(now_ms as i64);
+            let op_id = self.fresh_op_id(now_ms);
+            let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.id))?;
+            let seq = next_seq(db, t.stream_id.bytes())?;
+            let t_clone = t.clone();
+            db.with_tx(|tx| -> rusqlite::Result<()> {
+                update_task_row(tx, &t_clone)?;
+                ftsr_delete_task(tx, &t_clone.id)?;
+                ops_insert(
+                    tx,
+                    &op_id,
+                    t_clone.stream_id.bytes(),
+                    &device_id,
+                    seq,
+                    now_ms,
+                    &inner_op,
+                    "task.delete",
+                    "task",
+                    Some(t_clone.id.bytes()),
+                    Some(now_ms),
+                    None,
+                    now_ms,
+                    &[],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     // ---- query handlers ----
+
+    fn query_routines(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        Ok(QueryResult::Routines(read_routines(db.conn())?))
+    }
 
     fn query_today(
         &self,
@@ -697,6 +1202,11 @@ impl Engine {
                 let s = read_stream(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("stream {r}")))?;
                 Ok(QueryResult::Stream(Box::new(s)))
+            }
+            EntityKind::Routine => {
+                let rt = read_routine(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
+                Ok(QueryResult::Routine(Box::new(rt)))
             }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?} in v1",
@@ -842,6 +1352,9 @@ enum InnerOp {
     StreamCreate(Stream),
     StreamUpdate(Stream),
     StreamDelete(EntityRef),
+    RoutineCreate(Box<Routine>),
+    RoutineUpdate(Box<Routine>),
+    RoutineDelete(EntityRef),
 }
 
 fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, EngineError> {
@@ -1200,7 +1713,8 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         .query_row(
             "SELECT stream_id, title, state, priority, energy, estimated_min,
                     scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
-                    archived, deleted, body, scheduling_constraints
+                    archived, deleted, body, scheduling_constraints,
+                    routine_id, routine_occurrence
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -1219,6 +1733,8 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, i64>(11)?,
                     r.get::<_, Option<Vec<u8>>>(12)?,
                     r.get::<_, Option<Vec<u8>>>(13)?,
+                    r.get::<_, Option<Vec<u8>>>(14)?,
+                    r.get::<_, Option<i64>>(15)?,
                 ))
             },
         )
@@ -1264,12 +1780,389 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         blocks: BTreeSet::new(),
         blocked_by: BTreeSet::new(),
         assignee: None,
-        routine_id: None,
-        routine_occurrence: None,
+        routine_id: t.14.map(|b| {
+            let mut a = [0u8; 16];
+            let take = b.len().min(16);
+            a[..take].copy_from_slice(&b[..take]);
+            EntityRef::new(EntityKind::Routine, a)
+        }),
+        routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
         archived: t.10 != 0,
         deleted: t.11 != 0,
     };
     Ok(Some(task))
+}
+
+// ---- routine table operations ----
+
+/// INSERT OR IGNORE a task row (materialization dedup by deterministic id).
+/// Returns `true` when a new row was actually inserted.
+fn insert_task_row_or_ignore(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<bool> {
+    let id_blob: Vec<u8> = t.id.bytes().to_vec();
+    let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
+    let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
+    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
+    let changed = tx.execute(
+        "INSERT OR IGNORE INTO tasks
+         (id, stream_id, title, state, priority, energy, estimated_min,
+          scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
+          routine_id, routine_occurrence, archived, deleted, body,
+          scheduling_constraints, extra, head_root)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+        params![
+            id_blob,
+            stream_blob,
+            t.title,
+            task_state_str(t.state),
+            t.priority.map(i64::from),
+            t.energy.map(energy_str),
+            t.estimated_duration_s
+                .and_then(|s| i64::try_from(s / 60).ok()),
+            t.scheduled_at.map(|d| d.as_millisecond()),
+            t.due_at.map(|d| d.as_millisecond()),
+            t.completed_at.map(|d| d.as_millisecond()),
+            t.deferred_count,
+            t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
+            t.routine_occurrence.map(|d| d.as_millisecond()),
+            t.archived as i64,
+            t.deleted as i64,
+            body_blob,
+            constraints_blob,
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Build a materialized routine task for `(key, at)`. `title_override` carries
+/// the merge suffix when a catch-up collapses ≥2 missed occurrences.
+fn build_routine_task(
+    routine: &Routine,
+    key: &str,
+    at: jiff::Timestamp,
+    title_override: Option<String>,
+    now_ms: u64,
+) -> Task {
+    let draft = routine.template.to_draft(Some(at));
+    Task {
+        id: occurrence_task_id(&routine.id, key),
+        created_at: ms_to_ts(now_ms as i64),
+        updated_at: ms_to_ts(now_ms as i64),
+        title: title_override.unwrap_or(draft.title),
+        body: draft.body,
+        stream_id: routine.template.stream_id,
+        contexts: draft.contexts.into_iter().collect(),
+        state: TaskState::Todo,
+        priority: draft.priority,
+        energy: draft.energy,
+        estimated_duration_s: draft.estimated_duration_s,
+        scheduled_at: Some(at),
+        due_at: None,
+        // Routine constraints are copied verbatim onto each occurrence.
+        scheduling_constraints: routine.scheduling_constraints.clone(),
+        completed_at: None,
+        deferred_count: 0,
+        blocks: BTreeSet::new(),
+        blocked_by: BTreeSet::new(),
+        assignee: None,
+        routine_id: Some(routine.id),
+        routine_occurrence: Some(at),
+        archived: false,
+        deleted: false,
+    }
+}
+
+fn next_seq_tx(tx: &Transaction<'_>, stream_id: &[u8; 16]) -> rusqlite::Result<u64> {
+    let stream_blob: Vec<u8> = stream_id.to_vec();
+    let max: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ?",
+        params![stream_blob],
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(max.saturating_add(1)).unwrap_or(1))
+}
+
+fn catchup_policy_str(p: RoutineCatchupPolicy) -> &'static str {
+    match p {
+        RoutineCatchupPolicy::Skip => "skip",
+        RoutineCatchupPolicy::Merge => "merge",
+        RoutineCatchupPolicy::Queue => "queue",
+    }
+}
+
+fn parse_catchup_policy(s: &str) -> RoutineCatchupPolicy {
+    match s {
+        "merge" => RoutineCatchupPolicy::Merge,
+        "queue" => RoutineCatchupPolicy::Queue,
+        _ => RoutineCatchupPolicy::Skip,
+    }
+}
+
+/// Encode a CBOR blob for a non-empty serializable value, or `None` when empty
+/// (mirrors `encode_constraints`, keeping empty lists as SQL NULL).
+fn encode_blob_opt<T: serde::Serialize>(
+    value: &T,
+    is_empty: bool,
+) -> rusqlite::Result<Option<Vec<u8>>> {
+    if is_empty {
+        return Ok(None);
+    }
+    let bytes = sunrise_cbor::encode_canonical(value)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Ok(Some(bytes))
+}
+
+fn decode_blob_opt<T: serde::de::DeserializeOwned + serde::Serialize + Default>(
+    blob: Option<Vec<u8>>,
+) -> Result<T, EngineError> {
+    match blob {
+        None => Ok(T::default()),
+        Some(bytes) => {
+            sunrise_cbor::decode_canonical(&bytes).map_err(|e| EngineError::Cbor(e.to_string()))
+        }
+    }
+}
+
+fn insert_routine_row(tx: &Transaction<'_>, r: &Routine, now_ms: u64) -> rusqlite::Result<()> {
+    let id_blob: Vec<u8> = r.id.bytes().to_vec();
+    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
+    let rrule_text = r.rrule.to_rfc5545();
+    let template_blob = sunrise_cbor::encode_canonical(&r.template)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
+    let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
+    let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
+    tx.execute(
+        "INSERT INTO routines
+         (id, stream_id, rrule, rrule_text, timezone, starts_at_ms, ends_at_ms,
+          streak_counter, paused, archived, deleted, scheduling_constraints,
+          template, skip_dates, skipped_keys, catchup_policy,
+          last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            id_blob,
+            stream_blob,
+            rrule_text,
+            rrule_text,
+            r.timezone,
+            r.starts_at.as_millisecond(),
+            r.ends_at.map(|d| d.as_millisecond()),
+            r.streak_counter,
+            r.paused as i64,
+            r.archived as i64,
+            r.deleted as i64,
+            constraints_blob,
+            template_blob,
+            skip_dates_blob,
+            skipped_keys_blob,
+            catchup_policy_str(r.catchup_policy),
+            r.last_completed_at.map(|d| d.as_millisecond()),
+            r.paused_until.map(|d| d.as_millisecond()),
+            now_ms,
+            now_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_routine_row(tx: &Transaction<'_>, r: &Routine) -> rusqlite::Result<()> {
+    let id_blob: Vec<u8> = r.id.bytes().to_vec();
+    let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
+    let rrule_text = r.rrule.to_rfc5545();
+    let template_blob = sunrise_cbor::encode_canonical(&r.template)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
+    let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
+    let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
+    tx.execute(
+        "UPDATE routines SET
+            stream_id = ?, rrule = ?, rrule_text = ?, timezone = ?,
+            starts_at_ms = ?, ends_at_ms = ?, streak_counter = ?, paused = ?,
+            archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
+            skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
+            last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?
+         WHERE id = ?",
+        params![
+            stream_blob,
+            rrule_text,
+            rrule_text,
+            r.timezone,
+            r.starts_at.as_millisecond(),
+            r.ends_at.map(|d| d.as_millisecond()),
+            r.streak_counter,
+            r.paused as i64,
+            r.archived as i64,
+            r.deleted as i64,
+            constraints_blob,
+            template_blob,
+            skip_dates_blob,
+            skipped_keys_blob,
+            catchup_policy_str(r.catchup_policy),
+            r.last_completed_at.map(|d| d.as_millisecond()),
+            r.paused_until.map(|d| d.as_millisecond()),
+            r.updated_at.as_millisecond(),
+            id_blob,
+        ],
+    )?;
+    Ok(())
+}
+
+fn read_materialized_until(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<u64, EngineError> {
+    let id_blob: Vec<u8> = id.to_vec();
+    let v: Option<i64> = conn
+        .query_row(
+            "SELECT materialized_until_ms FROM routines WHERE id = ?",
+            params![id_blob],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(u64::try_from(v.unwrap_or(0).max(0)).unwrap_or(0))
+}
+
+fn set_materialized_until(tx: &Transaction<'_>, id: &[u8; 16], ms: u64) -> rusqlite::Result<()> {
+    let id_blob: Vec<u8> = id.to_vec();
+    tx.execute(
+        "UPDATE routines SET materialized_until_ms = ? WHERE id = ?",
+        params![i64::try_from(ms).unwrap_or(i64::MAX), id_blob],
+    )?;
+    Ok(())
+}
+
+fn routine_from_row(
+    id: &[u8; 16],
+    rrule_text: &str,
+    timezone: String,
+    starts_ms: i64,
+    ends_ms: Option<i64>,
+    streak: i64,
+    paused: i64,
+    archived: i64,
+    deleted: i64,
+    constraints: Option<Vec<u8>>,
+    template: Option<Vec<u8>>,
+    skip_dates: Option<Vec<u8>>,
+    skipped_keys: Option<Vec<u8>>,
+    catchup: &str,
+    last_completed_ms: Option<i64>,
+    paused_until_ms: Option<i64>,
+    created_ms: i64,
+    updated_ms: i64,
+) -> Result<Routine, EngineError> {
+    let rrule = sunrise_domain::RRule::parse(rrule_text)
+        .map_err(|e| EngineError::Invalid(format!("stored rrule: {e}")))?;
+    let template: TaskTemplate = match template {
+        Some(b) => {
+            sunrise_cbor::decode_canonical(&b).map_err(|e| EngineError::Cbor(e.to_string()))?
+        }
+        None => return Err(EngineError::Invalid("routine missing template".into())),
+    };
+    Ok(Routine {
+        id: EntityRef::new(EntityKind::Routine, *id),
+        created_at: ms_to_ts(created_ms.max(0)),
+        updated_at: ms_to_ts(updated_ms.max(0)),
+        template,
+        rrule,
+        timezone,
+        starts_at: ms_to_ts(starts_ms.max(0)),
+        ends_at: ends_ms.map(|m| ms_to_ts(m.max(0))),
+        scheduling_constraints: decode_constraints(constraints)?,
+        skip_dates: decode_blob_opt(skip_dates)?,
+        skipped_keys: decode_blob_opt(skipped_keys)?,
+        catchup_policy: parse_catchup_policy(catchup),
+        streak_counter: streak,
+        last_completed_at: last_completed_ms.map(|m| ms_to_ts(m.max(0))),
+        paused: paused != 0,
+        paused_until: paused_until_ms.map(|m| ms_to_ts(m.max(0))),
+        archived: archived != 0,
+        deleted: deleted != 0,
+    })
+}
+
+const ROUTINE_COLUMNS: &str = "rrule_text, timezone, starts_at_ms, ends_at_ms,
+     streak_counter, paused, archived, deleted, scheduling_constraints,
+     template, skip_dates, skipped_keys, catchup_policy, last_completed_at_ms,
+     paused_until_ms, created_at_ms, updated_at_ms";
+
+fn read_routine(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> Result<Option<Routine>, EngineError> {
+    let id_blob: Vec<u8> = id.to_vec();
+    let sql = format!("SELECT {ROUTINE_COLUMNS} FROM routines WHERE id = ?");
+    let raw = conn
+        .query_row(&sql, params![id_blob], |r| {
+            // Collect the columns as owned values first (query_row's closure
+            // must return rusqlite::Result); decode outside.
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Option<Vec<u8>>>(8)?,
+                r.get::<_, Option<Vec<u8>>>(9)?,
+                r.get::<_, Option<Vec<u8>>>(10)?,
+                r.get::<_, Option<Vec<u8>>>(11)?,
+                r.get::<_, String>(12)?,
+                r.get::<_, Option<i64>>(13)?,
+                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, i64>(15)?,
+                r.get::<_, i64>(16)?,
+            ))
+        })
+        .optional()?;
+    let Some(v) = raw else {
+        return Ok(None);
+    };
+    let routine = routine_from_row(
+        id, &v.0, v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, &v.12, v.13, v.14, v.15,
+        v.16,
+    )?;
+    Ok(Some(routine))
+}
+
+fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>, EngineError> {
+    let sql =
+        format!("SELECT id, {ROUTINE_COLUMNS} FROM routines WHERE deleted = 0 ORDER BY id ASC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let id_raw: Vec<u8> = r.get(0)?;
+            Ok((
+                id_raw,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, Option<Vec<u8>>>(9)?,
+                r.get::<_, Option<Vec<u8>>>(10)?,
+                r.get::<_, Option<Vec<u8>>>(11)?,
+                r.get::<_, Option<Vec<u8>>>(12)?,
+                r.get::<_, String>(13)?,
+                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, Option<i64>>(15)?,
+                r.get::<_, i64>(16)?,
+                r.get::<_, i64>(17)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for v in rows {
+        let mut id = [0u8; 16];
+        let take = v.0.len().min(16);
+        id[..take].copy_from_slice(&v.0[..take]);
+        out.push(routine_from_row(
+            &id, &v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, v.12, &v.13, v.14, v.15,
+            v.16, v.17,
+        )?);
+    }
+    Ok(out)
 }
 
 // ---- helpers ----
@@ -2124,5 +3017,370 @@ mod tests {
             let ts = ms_to_ts(ms);
             proptest::prop_assert_eq!(ts.as_millisecond(), ms);
         }
+    }
+
+    // ---- routine materialization tests ----
+
+    use sunrise_domain::{RRule, Routine, RoutineCatchupPolicy, RoutineDraft, TaskTemplate};
+
+    const NOW: i64 = 1_700_000_000_000;
+    const DAY_MS: i64 = 86_400_000;
+
+    fn stream_ref(b: u8) -> EntityRef {
+        EntityRef::new(EntityKind::Stream, [b; 16])
+    }
+
+    fn routine_draft(
+        stream: EntityRef,
+        rrule: &str,
+        starts_ms: i64,
+        policy: RoutineCatchupPolicy,
+        constraints: Vec<ScheduleConstraint>,
+    ) -> RoutineDraft {
+        RoutineDraft {
+            template: TaskTemplate {
+                title: "Water plants".into(),
+                stream_id: stream,
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rrule: RRule::parse(rrule).unwrap(),
+            timezone: "UTC".into(),
+            starts_at: ms_to_ts(starts_ms),
+            ends_at: None,
+            scheduling_constraints: constraints,
+            catchup_policy: policy,
+        }
+    }
+
+    fn op_count(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM ops", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn live_task_ids(db: &Db) -> BTreeSet<[u8; 16]> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT id FROM tasks WHERE deleted = 0")
+            .unwrap();
+        let out = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .map(|raw| {
+                let raw = raw.unwrap();
+                let mut a = [0u8; 16];
+                let take = raw.len().min(16);
+                a[..take].copy_from_slice(&raw[..take]);
+                a
+            })
+            .collect();
+        out
+    }
+
+    fn past_task_count(db: &Db, rid: EntityRef) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT count(*) FROM tasks
+                 WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
+                params![rid.bytes().to_vec(), NOW],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn create_routine_materializes_future_tasks_with_linkage() {
+        let mut db = db();
+        let e = engine();
+        let stream = stream_ref(5);
+        let c = sample_constraint();
+        let draft = routine_draft(
+            stream,
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            vec![c],
+        );
+        let res = e.apply(&mut db, Command::CreateRoutine(draft)).unwrap();
+        let rid = res.entity;
+        assert_eq!(rid.kind(), EntityKind::Routine);
+
+        // Routine is queryable.
+        let routines = match e.query(&db, Query::Routines).unwrap() {
+            QueryResult::Routines(v) => v,
+            _ => panic!(),
+        };
+        assert_eq!(routines.len(), 1);
+        let routine = routines.into_iter().next().unwrap();
+        assert_eq!(routine.id, rid);
+
+        // Daily occurrences within the 14-day horizon are all materialized.
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
+        let occ = routine.occurrences_in(window).unwrap();
+        assert!(occ.len() >= 13, "daily horizon materializes ~14 days");
+
+        // Each occurrence has a deterministic task with linkage + copied
+        // constraints + scheduled_at == occurrence instant.
+        for o in &occ {
+            let tid = occurrence_task_id(&rid, &o.key);
+            let t = match e.query(&db, Query::EntityById(tid)).unwrap() {
+                QueryResult::Task(t) => *t,
+                _ => panic!("task {tid} missing for occurrence {}", o.key),
+            };
+            assert_eq!(t.routine_id, Some(rid));
+            assert_eq!(t.routine_occurrence, Some(o.at));
+            assert_eq!(t.scheduled_at, Some(o.at));
+            assert_eq!(t.scheduling_constraints, vec![c]);
+        }
+    }
+
+    #[test]
+    fn rematerialize_is_idempotent() {
+        let mut db = db();
+        let e = engine();
+        let draft = routine_draft(
+            stream_ref(5),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        e.apply(&mut db, Command::CreateRoutine(draft)).unwrap();
+        let ids_before = live_task_ids(&db);
+        let ops_before = op_count(&db);
+
+        // Re-run materialization at the same clock: no new tasks, no new ops.
+        e.apply(&mut db, Command::MaterializeRoutines { now_ms: NOW as u64 })
+            .unwrap();
+        assert_eq!(live_task_ids(&db), ids_before, "no duplicate tasks");
+        assert_eq!(op_count(&db), ops_before, "no new ops on re-materialize");
+    }
+
+    #[test]
+    fn two_engines_produce_identical_task_ids() {
+        // Same routine content (same id) on two independent DBs => identical
+        // deterministic task-id sets, even though op-ids differ (rng).
+        fn fixed_routine() -> Routine {
+            Routine {
+                id: EntityRef::new(EntityKind::Routine, [0x33; 16]),
+                created_at: ms_to_ts(NOW),
+                updated_at: ms_to_ts(NOW),
+                template: TaskTemplate {
+                    title: "R".into(),
+                    stream_id: stream_ref(7),
+                    contexts: Vec::new(),
+                    energy: None,
+                    priority: None,
+                    estimated_duration_s: None,
+                    body: None,
+                },
+                rrule: RRule::parse("FREQ=DAILY").unwrap(),
+                timezone: "UTC".into(),
+                starts_at: ms_to_ts(NOW + 3_600_000),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                skip_dates: Vec::new(),
+                skipped_keys: Vec::new(),
+                catchup_policy: RoutineCatchupPolicy::Skip,
+                streak_counter: 0,
+                last_completed_at: None,
+                paused: false,
+                paused_until: None,
+                archived: false,
+                deleted: false,
+            }
+        }
+
+        fn run() -> BTreeSet<[u8; 16]> {
+            let mut db = db();
+            let e = engine();
+            let r = fixed_routine();
+            db.with_tx(|tx| {
+                ensure_stream_row(
+                    tx,
+                    &r.template.stream_id,
+                    NOW as u64,
+                    None,
+                    false,
+                    false,
+                    false,
+                )?;
+                insert_routine_row(tx, &r, NOW as u64)
+            })
+            .unwrap();
+            e.materialize_one_routine(&mut db, &r, NOW as u64).unwrap();
+            live_task_ids(&db)
+        }
+
+        let a = run();
+        let b = run();
+        assert!(!a.is_empty());
+        assert_eq!(a, b, "task-id sets converge across devices");
+    }
+
+    #[test]
+    fn catchup_policies_skip_queue_merge() {
+        let start = NOW - (5 * DAY_MS + 3_600_000); // 6 missed daily occurrences
+                                                    // Skip: no past tasks.
+        {
+            let mut db = db();
+            let e = engine();
+            let d = routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                start,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            );
+            let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+            assert_eq!(past_task_count(&db, rid), 0, "skip drops missed");
+        }
+        // Queue: one task per missed occurrence.
+        {
+            let mut db = db();
+            let e = engine();
+            let d = routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                start,
+                RoutineCatchupPolicy::Queue,
+                Vec::new(),
+            );
+            let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+            assert_eq!(past_task_count(&db, rid), 6, "queue keeps every missed");
+        }
+        // Merge: exactly one past task, titled with the catch-up suffix.
+        {
+            let mut db = db();
+            let e = engine();
+            let d = routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                start,
+                RoutineCatchupPolicy::Merge,
+                Vec::new(),
+            );
+            let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+            assert_eq!(
+                past_task_count(&db, rid),
+                1,
+                "merge collapses missed to one"
+            );
+            let title: String = db
+                .conn()
+                .query_row(
+                    "SELECT title FROM tasks
+                     WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
+                    params![rid.bytes().to_vec(), NOW],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(title.contains("(x6 catch-up)"), "merge title: {title}");
+        }
+    }
+
+    #[test]
+    fn skip_occurrence_prevents_task() {
+        let mut db = db();
+        let e = engine();
+        let d = routine_draft(
+            stream_ref(5),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+        let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+        let occ = routine.occurrences_in(window).unwrap();
+        let target = occ[2].key.clone();
+        let tid = occurrence_task_id(&rid, &target);
+
+        // Task exists pre-skip.
+        assert!(matches!(
+            e.query(&db, Query::EntityById(tid)).unwrap(),
+            QueryResult::Task(_)
+        ));
+
+        e.apply(
+            &mut db,
+            Command::SkipRoutineOccurrence {
+                id: rid,
+                occurrence_key: target.clone(),
+            },
+        )
+        .unwrap();
+
+        // The existing task is tombstoned...
+        let t = match e.query(&db, Query::EntityById(tid)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!(),
+        };
+        assert!(t.deleted, "skipped occurrence's task is tombstoned");
+
+        // ...and re-materialization does not resurrect it.
+        e.apply(&mut db, Command::MaterializeRoutines { now_ms: NOW as u64 })
+            .unwrap();
+        let t2 = match e.query(&db, Query::EntityById(tid)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!(),
+        };
+        assert!(t2.deleted, "skip persists across materialize");
+    }
+
+    #[test]
+    fn update_routine_regenerates_future_but_keeps_started() {
+        let mut db = db();
+        let e = engine();
+        let d = routine_draft(
+            stream_ref(5),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+        let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+        let daily = routine.occurrences_in(window).unwrap();
+        // occ[0] is the anchor weekday (kept by a weekly rule); occ[2] is a
+        // different weekday (dropped); mark occ[3] in-progress so it survives.
+        let keep_anchor = occurrence_task_id(&rid, &daily[0].key);
+        let drop_id = occurrence_task_id(&rid, &daily[2].key);
+        let started_id = occurrence_task_id(&rid, &daily[3].key);
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: started_id,
+                patch: TaskPatch {
+                    state: Some(TaskState::InProgress),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // Change to weekly (only the anchor weekday recurs).
+        let patch = RoutinePatch {
+            rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+            ..Default::default()
+        };
+        e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
+            .unwrap();
+
+        let deleted = |id: EntityRef| -> bool {
+            match e.query(&db, Query::EntityById(id)).unwrap() {
+                QueryResult::Task(t) => t.deleted,
+                _ => panic!(),
+            }
+        };
+        assert!(!deleted(keep_anchor), "anchor-weekday occurrence stays");
+        assert!(deleted(drop_id), "off-cadence future task regenerated away");
+        assert!(!deleted(started_id), "started task is preserved");
     }
 }

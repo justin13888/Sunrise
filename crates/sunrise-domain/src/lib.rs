@@ -27,6 +27,7 @@ pub mod inbox;
 pub mod note;
 pub mod person;
 pub mod routine;
+pub mod routine_gen;
 pub mod rrule;
 pub mod schema;
 pub mod stream;
@@ -45,8 +46,10 @@ pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use person::Person;
 pub use routine::{
-    Routine, RoutineCatchupPolicy, RoutineDraft, RoutineReviewCadence, TaskTemplate,
+    materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
+    RoutineReviewCadence, TaskTemplate,
 };
+pub use routine_gen::{expand, occurrence_task_id, ExpandError, Occurrence};
 pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};

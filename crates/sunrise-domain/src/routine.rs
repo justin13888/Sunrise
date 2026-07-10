@@ -1,9 +1,10 @@
 //! Routine entity per `docs/02-domain/routines-and-recurrence.md`.
 
 use crate::common::{Energy, NoteBody};
-use crate::constraint::ScheduleConstraint;
+use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
+use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
@@ -99,9 +100,18 @@ pub struct Routine {
     /// Scheduling constraints (value list; whole list is one LWW register).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
-    /// Dates explicitly skipped.
+    /// Dates explicitly skipped. Retained for chrono-era wire compatibility
+    /// and iCal `EXDATE` import; matched against occurrences by identical civil
+    /// minute in the routine's timezone.
     #[serde(default)]
     pub skip_dates: Vec<Timestamp>,
+    /// Occurrence keys (`YYYY-MM-DDTHH:MM`) explicitly skipped via
+    /// `SkipRoutineOccurrence`. Preferred over [`Self::skip_dates`] for new
+    /// skips: a key is tzdb-drift-immune and needs no instant re-resolution.
+    /// Defaults to empty and is omitted on the wire, keeping the chrono-era
+    /// fixtures byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_keys: Vec<String>,
     /// What to do when an occurrence is missed.
     pub catchup_policy: RoutineCatchupPolicy,
     /// Streak counter (PN-counter; signed for safety).
@@ -142,6 +152,81 @@ pub struct RoutineDraft {
     pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Catchup policy.
     pub catchup_policy: RoutineCatchupPolicy,
+}
+
+impl RoutineDraft {
+    /// Validate the draft: title shape, timezone resolvability, constraint
+    /// list, and `ends_at ≥ starts_at`.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        let _ = validate_title(
+            &self.template.title,
+            "routine.template.title",
+            MAX_TASK_TITLE_LEN,
+        )?;
+        if jiff::tz::TimeZone::get(&self.timezone).is_err() {
+            return Err(ValidationError::Field {
+                field: "routine.timezone",
+                constraint: "iana_timezone",
+            });
+        }
+        if let Some(end) = self.ends_at {
+            if end < self.starts_at {
+                return Err(ValidationError::Field {
+                    field: "routine.ends_at",
+                    constraint: "after_starts_at",
+                });
+            }
+        }
+        validate_constraint_list(&self.scheduling_constraints)?;
+        Ok(())
+    }
+}
+
+/// Patch applied via `Command::UpdateRoutine`. `Some(None)` clears an optional
+/// field; `None` leaves it unchanged (mirrors [`crate::task::TaskPatch`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoutinePatch {
+    /// Replace the task template.
+    pub template: Option<TaskTemplate>,
+    /// Replace the recurrence rule (triggers regeneration of future tasks).
+    pub rrule: Option<RRule>,
+    /// Replace the IANA timezone string.
+    pub timezone: Option<String>,
+    /// Replace the anchor start.
+    pub starts_at: Option<Timestamp>,
+    /// Set/clear the inclusive end.
+    pub ends_at: Option<Option<Timestamp>>,
+    /// Replace the whole scheduling-constraints list (LWW).
+    pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
+    /// Replace the catchup policy.
+    pub catchup_policy: Option<RoutineCatchupPolicy>,
+    /// Pause / unpause.
+    pub paused: Option<bool>,
+    /// Set/clear the pause expiry.
+    pub paused_until: Option<Option<Timestamp>>,
+    /// Archive / unarchive.
+    pub archived: Option<bool>,
+}
+
+impl RoutinePatch {
+    /// Validate the patch's individual fields.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(t) = &self.template {
+            let _ = validate_title(&t.title, "routine.template.title", MAX_TASK_TITLE_LEN)?;
+        }
+        if let Some(tz) = &self.timezone {
+            if jiff::tz::TimeZone::get(tz).is_err() {
+                return Err(ValidationError::Field {
+                    field: "routine.timezone",
+                    constraint: "iana_timezone",
+                });
+            }
+        }
+        if let Some(list) = &self.scheduling_constraints {
+            validate_constraint_list(list)?;
+        }
+        Ok(())
+    }
 }
 
 /// Per-FREQ materialization horizon (per spec: DAILY=14d, WEEKLY=60d,

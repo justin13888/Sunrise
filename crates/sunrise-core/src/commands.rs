@@ -1,7 +1,9 @@
 //! Command type submitted via [`crate::Core::submit`].
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState};
+use sunrise_domain::{
+    RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+};
 use sunrise_id::EntityRef;
 
 /// Mutating commands. v1 covers Tasks and Streams; deeper entity types
@@ -47,6 +49,33 @@ pub enum Command {
     },
     /// Soft-delete a Stream.
     DeleteStream(EntityRef),
+    /// Create a Routine and materialize its near-horizon occurrences.
+    CreateRoutine(RoutineDraft),
+    /// Mutate a Routine. An rrule/timezone/anchor change regenerates future
+    /// not-yet-started routine tasks.
+    UpdateRoutine {
+        /// Target routine.
+        id: EntityRef,
+        /// Patch.
+        patch: RoutinePatch,
+    },
+    /// Soft-delete a Routine (tombstone). Stops generation; existing tasks
+    /// remain.
+    DeleteRoutine(EntityRef),
+    /// Skip a single occurrence of a Routine by its occurrence key
+    /// (`YYYY-MM-DDTHH:MM` in the routine's tz).
+    SkipRoutineOccurrence {
+        /// Target routine.
+        id: EntityRef,
+        /// Occurrence key to skip.
+        occurrence_key: String,
+    },
+    /// Run materialization for every live Routine using `now_ms` as the clock.
+    /// Emitted by `Core::open` and the periodic core timer.
+    MaterializeRoutines {
+        /// Wall clock (ms since epoch) from the injected clock.
+        now_ms: u64,
+    },
 }
 
 /// Result of a command, returned synchronously to the caller after the

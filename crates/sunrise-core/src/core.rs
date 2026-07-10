@@ -71,11 +71,19 @@ impl Core {
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let vault_root = unlock.into_root();
         let db_path = cfg.vault_dir.join("vault.db");
-        let db = Db::open(&db_path, &vault_root)?;
+        let mut db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
         let (sync_tx, _) = broadcast::channel(64);
         let device_id = derive_device_id(&cfg.vault_dir);
         let engine = Engine::new(cfg.clock.clone(), cfg.rng.clone(), device_id);
+        // Generation timing (recurrence-engine.md): materialize routines on
+        // every app launch, using the injected clock so this stays deterministic.
+        engine.apply(
+            &mut db,
+            Command::MaterializeRoutines {
+                now_ms: cfg.clock.now_ms(),
+            },
+        )?;
         Ok(Self {
             cfg,
             db: Mutex::new(db),
@@ -104,8 +112,12 @@ impl Core {
         // Best-effort change publish; receivers are bounded broadcast channels
         // and dropped subscribers are accepted.
         let event = match cmd {
-            Command::CreateTask(_) | Command::CreateStream(_) => DomainEvent::Created(res.entity),
-            Command::DeleteTask(_) | Command::DeleteStream(_) => DomainEvent::Deleted(res.entity),
+            Command::CreateTask(_) | Command::CreateStream(_) | Command::CreateRoutine(_) => {
+                DomainEvent::Created(res.entity)
+            }
+            Command::DeleteTask(_) | Command::DeleteStream(_) | Command::DeleteRoutine(_) => {
+                DomainEvent::Deleted(res.entity)
+            }
             _ => DomainEvent::Updated(res.entity),
         };
         let _ = self.changes_tx.send(event);

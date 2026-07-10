@@ -5,8 +5,8 @@
 //! `BYWEEKNO`. Extensions (floating windows, adaptive cadence) are out of
 //! scope here.
 //!
-//! v1 implements parsing + recognition; full DST-aware expansion lives in
-//! `crates/sunrise-domain::routine_gen` (TODO Phase 5/6 timing).
+//! This module implements parsing + recognition; full DST-aware expansion
+//! lives in [`crate::routine_gen`].
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -217,6 +217,64 @@ impl RRule {
         out.freq = freq.ok_or(RRuleParseError::MissingFreq)?;
         Ok(out)
     }
+
+    /// Render back to a canonical RFC 5545 RRULE body (no `RRULE:` prefix).
+    ///
+    /// Round-trips losslessly through [`RRule::parse`]: only non-default parts
+    /// are emitted (`INTERVAL=1` and an unset `WKST` are omitted). Used by the
+    /// storage layer to persist the rule as text.
+    #[must_use]
+    pub fn to_rfc5545(&self) -> String {
+        let freq = match self.freq {
+            Frequency::Daily => "DAILY",
+            Frequency::Weekly => "WEEKLY",
+            Frequency::Monthly => "MONTHLY",
+            Frequency::Yearly => "YEARLY",
+        };
+        let mut parts = vec![format!("FREQ={freq}")];
+        if self.interval != 1 {
+            parts.push(format!("INTERVAL={}", self.interval));
+        }
+        if !self.by_day.is_empty() {
+            let days: Vec<&str> = self.by_day.iter().map(|w| weekday_token(*w)).collect();
+            parts.push(format!("BYDAY={}", days.join(",")));
+        }
+        if !self.by_month_day.is_empty() {
+            let v: Vec<String> = self.by_month_day.iter().map(ToString::to_string).collect();
+            parts.push(format!("BYMONTHDAY={}", v.join(",")));
+        }
+        if !self.by_month.is_empty() {
+            let v: Vec<String> = self.by_month.iter().map(ToString::to_string).collect();
+            parts.push(format!("BYMONTH={}", v.join(",")));
+        }
+        if !self.by_set_pos.is_empty() {
+            let v: Vec<String> = self.by_set_pos.iter().map(ToString::to_string).collect();
+            parts.push(format!("BYSETPOS={}", v.join(",")));
+        }
+        if let Some(c) = self.count {
+            parts.push(format!("COUNT={c}"));
+        }
+        if let Some(u) = self.until {
+            parts.push(format!("UNTIL={u}"));
+        }
+        if let Some(w) = self.wkst {
+            parts.push(format!("WKST={}", weekday_token(w)));
+        }
+        parts.join(";")
+    }
+}
+
+/// Canonical 2-letter RFC 5545 token for a weekday.
+fn weekday_token(w: Weekday) -> &'static str {
+    match w {
+        Weekday::Su => "SU",
+        Weekday::Mo => "MO",
+        Weekday::Tu => "TU",
+        Weekday::We => "WE",
+        Weekday::Th => "TH",
+        Weekday::Fr => "FR",
+        Weekday::Sa => "SA",
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +329,21 @@ mod tests {
     fn parse_until_iso() {
         let r = RRule::parse("FREQ=DAILY;UNTIL=2027-01-01T00:00:00Z").unwrap();
         assert!(r.until.is_some());
+    }
+
+    #[test]
+    fn to_rfc5545_round_trips() {
+        for body in [
+            "FREQ=DAILY",
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE,FR;WKST=SU",
+            "FREQ=MONTHLY;BYDAY=FR;BYSETPOS=-1",
+            "FREQ=MONTHLY;BYMONTHDAY=-1,15;BYMONTH=1,6,12",
+            "FREQ=DAILY;COUNT=10",
+            "FREQ=YEARLY;UNTIL=2027-01-01T00:00:00Z",
+        ] {
+            let parsed = RRule::parse(body).unwrap();
+            let reparsed = RRule::parse(&parsed.to_rfc5545()).unwrap();
+            assert_eq!(parsed, reparsed, "round-trip mismatch for {body}");
+        }
     }
 }

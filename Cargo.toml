@@ -106,7 +106,11 @@ futures-core = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 pin-project-lite = { version = "0.2", default-features = false }
 url = { version = "2.5", default-features = false }
-jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-platform"] }
+# `tzdb-bundle-always` embeds a fixed tzdb in the binary so every device
+# resolves IANA zones identically (deterministic routine expansion), independent
+# of the host OS tzdb. `default-features = false` also disables `tzdb-zoneinfo`,
+# so without an explicit bundle no named zone would resolve at all.
+jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
 
 # --- random ---
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
