@@ -15,10 +15,12 @@ use crate::commands::{Command, CommandResult};
 use crate::config::CoreConfig;
 use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
+use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
 use crate::unlock::Unlock;
 use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
+use std::sync::Arc;
 use sunrise_storage::{Db, DbError};
 use sunrise_sync::SyncState;
 use thiserror::Error;
@@ -36,6 +38,9 @@ pub enum CoreError {
     /// Engine command/query error.
     #[error(transparent)]
     Engine(#[from] EngineError),
+    /// Device keychain load/create error.
+    #[error(transparent)]
+    Keychain(#[from] KeychainError),
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
@@ -74,8 +79,16 @@ impl Core {
         let mut db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
         let (sync_tx, _) = broadcast::channel(64);
-        let device_id = derive_device_id(&cfg.vault_dir);
-        let engine = Engine::new(cfg.clock.clone(), cfg.rng.clone(), device_id);
+        // Load-or-create the persistent device identity. The keychain takes
+        // ownership of the vault root (Core no longer keeps a copy) and supplies
+        // the device id + signing key used to seal every op envelope.
+        let keychain = Arc::new(Keychain::open(
+            &mut db,
+            vault_root,
+            cfg.clock.as_ref(),
+            cfg.rng.as_ref(),
+        )?);
+        let engine = Engine::new(cfg.clock.clone(), cfg.rng.clone(), keychain);
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
         engine.apply(
@@ -130,9 +143,14 @@ impl Core {
             return Err(CoreError::Closed);
         }
         if matches!(q, Query::SyncStatus) {
+            let outbox_pending = {
+                let db = self.db.lock();
+                let n = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
+                u32::try_from(n).unwrap_or(u32::MAX)
+            };
             return Ok(QueryResult::SyncStatus(SyncStatus {
                 state: SyncState::Disconnected,
-                outbox_pending: 0,
+                outbox_pending,
                 peer_devices: 0,
                 last_sync_ms: None,
             }));
@@ -166,23 +184,6 @@ fn format_iso8601(ms: u64) -> String {
     // stringify ms-since-epoch as an integer here. Prod prefers RFC 3339
     // but the lock-file payload is human-readable for debugging only.
     format!("{ms}")
-}
-
-/// Derive a deterministic 16-byte device id from the vault directory path.
-///
-/// v1 uses a path-derived id so a vault opened from the same directory
-/// always presents the same device to the op log; production binds to a
-/// real `device_id` from a [`sunrise-crypto::DeviceCert`] once pairing
-/// is wired into the open path.
-fn derive_device_id(vault_dir: &std::path::Path) -> [u8; 16] {
-    let bytes = sunrise_crypto::derive_key(
-        "sunrise.device_id.v1",
-        vault_dir.to_string_lossy().as_bytes(),
-        16,
-    );
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    out
 }
 
 #[cfg(test)]
@@ -223,6 +224,62 @@ mod tests {
         let qr = core.query(Query::SyncStatus).await.unwrap();
         assert!(matches!(qr, QueryResult::SyncStatus(_)));
         core.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn identity_persists_and_outbox_hydrates_across_reopen() {
+        use sunrise_domain::TaskDraft;
+        let dir = tempfile::tempdir().unwrap();
+
+        let device_id_first;
+        {
+            let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+            core.submit(Command::CreateTask(TaskDraft {
+                title: "persisted".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+            device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
+                QueryResult::SyncStatus(s) => {
+                    assert_eq!(s.outbox_pending, 1, "one op pending after submit");
+                    // Read the device id straight from the vault for comparison.
+                    let db = core.db.lock();
+                    db.conn()
+                        .query_row(
+                            "SELECT device_id FROM local_identity WHERE id = 1",
+                            [],
+                            |r| r.get::<_, Vec<u8>>(0),
+                        )
+                        .unwrap()
+                }
+                _ => panic!("expected sync status"),
+            };
+            core.close().await.unwrap();
+        }
+
+        // Reopen: the same device identity loads, and the unacked outbox row
+        // hydrates from disk.
+        let core2 = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let device_id_second = {
+            let db = core2.db.lock();
+            db.conn()
+                .query_row(
+                    "SELECT device_id FROM local_identity WHERE id = 1",
+                    [],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            device_id_first, device_id_second,
+            "same device id on reopen"
+        );
+        match core2.query(Query::SyncStatus).await.unwrap() {
+            QueryResult::SyncStatus(s) => assert_eq!(s.outbox_pending, 1),
+            _ => panic!("expected sync status"),
+        }
+        core2.close().await.unwrap();
     }
 
     #[tokio::test]

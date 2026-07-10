@@ -449,6 +449,70 @@ mod tests {
         assert!(template.is_none(), "template defaults to NULL");
     }
 
+    /// Build a DB with migrations 0001..0004 applied, stamped `storage_v = 4`,
+    /// simulating a real v4 vault opened by a newer binary.
+    fn seed_v4_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..4] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![4_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v4_db_adds_sync_local_tables() {
+        assert!(u32::from(STORAGE_V) >= 5);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v4_db(&conn);
+
+        // Seed a v4 op row so we can prove existing data survives the upgrade.
+        conn.execute(
+            "INSERT INTO ops
+             (op_id, stream_id, device_id, seq, ts_ms, envelope,
+              inner_kind, target_kind, received_at)
+             VALUES (?, ?, ?, 1, 0, ?, 'task.create', 'task', 0)",
+            rusqlite::params![vec![1u8; 16], vec![0u8; 16], vec![7u8; 16], vec![9u8; 4]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0005.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // The pre-existing op row is intact.
+        let seq: i64 = conn
+            .query_row(
+                "SELECT seq FROM ops WHERE op_id = ?",
+                rusqlite::params![vec![1u8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(seq, 1);
+
+        // New tables exist.
+        for table in ["local_identity", "outbox", "sync_cursors"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    rusqlite::params![table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "table {table} should exist after v4->v5 upgrade");
+        }
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

@@ -39,6 +39,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "routine_materialization",
         sql: include_str!("../migrations/0004_routine_materialization.sql"),
     },
+    Migration {
+        id: 5,
+        name: "sync_local",
+        sql: include_str!("../migrations/0005_sync_local.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

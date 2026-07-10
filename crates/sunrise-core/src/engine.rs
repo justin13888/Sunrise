@@ -49,6 +49,7 @@
 
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, Rng};
+use crate::keychain::Keychain;
 use crate::queries::{DeviceRow, Query, QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
@@ -60,8 +61,18 @@ use sunrise_domain::{
     TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
-use sunrise_storage::{Db, OpLog};
+use sunrise_storage::{Db, OpLog, Outbox};
 use thiserror::Error;
+
+/// Vault-meta op-log stream id: 16 zero bytes.
+///
+/// v1 routing: Stream lifecycle ops (create/update/delete) and all routine ops
+/// are logged under this meta stream, while task ops are logged under their
+/// owning Stream's id. The Inbox stream id is *also* all-zeros
+/// (`INBOX_STREAM_BYTES`), so inbox-task ops and meta ops share this id and its
+/// derived Stream key in v1. Accepted: meta and inbox coincide until a dedicated
+/// meta-stream id is introduced.
+const META_STREAM: [u8; 16] = [0u8; 16];
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
@@ -95,25 +106,26 @@ pub enum EngineError {
 pub struct Engine {
     clock: Arc<dyn Clock>,
     rng: Arc<dyn Rng>,
-    device_id: [u8; 16],
+    keychain: Arc<Keychain>,
 }
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
-            .field("device_id", &hex_short(&self.device_id))
+            .field("device_id", &hex_short(&self.keychain.device_id()))
             .finish_non_exhaustive()
     }
 }
 
 impl Engine {
-    /// Construct.
+    /// Construct. The keychain supplies the device id + signing key used to
+    /// seal every op envelope.
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>, rng: Arc<dyn Rng>, device_id: [u8; 16]) -> Self {
+    pub fn new(clock: Arc<dyn Clock>, rng: Arc<dyn Rng>, keychain: Arc<Keychain>) -> Self {
         Self {
             clock,
             rng,
-            device_id,
+            keychain,
         }
     }
 
@@ -194,19 +206,17 @@ impl Engine {
         };
 
         let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, stream.bytes())?;
+        let seq = self.next_seq(db, stream.bytes())?;
 
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
             insert_task_row(tx, &task)?;
             insert_task_contexts(tx, &task)?;
             ftsr_upsert_task(tx, &task)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
                 stream.bytes(),
-                &device_id,
                 seq,
                 now_ms,
                 &inner_op,
@@ -303,8 +313,7 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, task.stream_id.bytes())?;
+        let seq = self.next_seq(db, task.stream_id.bytes())?;
 
         let task_for_persist = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
@@ -320,11 +329,10 @@ impl Engine {
             update_task_row(tx, &task_for_persist)?;
             replace_task_contexts(tx, &task_for_persist)?;
             ftsr_upsert_task(tx, &task_for_persist)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
                 task_for_persist.stream_id.bytes(),
-                &device_id,
                 seq,
                 now_ms,
                 &inner_op,
@@ -371,16 +379,14 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, task.stream_id.bytes())?;
+        let seq = self.next_seq(db, task.stream_id.bytes())?;
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_task_row(tx, &task_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
                 task_clone.stream_id.bytes(),
-                &device_id,
                 seq,
                 now_ms,
                 &inner_op,
@@ -413,17 +419,15 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.id))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, task.stream_id.bytes())?;
+        let seq = self.next_seq(db, task.stream_id.bytes())?;
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_task_row(tx, &task_clone)?;
             ftsr_delete_task(tx, &task_clone.id)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
                 task_clone.stream_id.bytes(),
-                &device_id,
                 seq,
                 now_ms,
                 &inner_op,
@@ -485,16 +489,15 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamCreate(stream.clone()))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, stream_id.bytes())?;
+        // Stream lifecycle ops route to the vault-meta log, not the new Stream.
+        let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             insert_stream_row(tx, &stream_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream_id.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -556,16 +559,14 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, stream.id.bytes())?;
+        let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_stream_row(tx, &stream_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream_clone.id.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -602,16 +603,14 @@ impl Engine {
         stream.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.id))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, stream.id.bytes())?;
+        let seq = self.next_seq(db, &META_STREAM)?;
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_stream_row(tx, &stream_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream_clone.id.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -662,17 +661,16 @@ impl Engine {
         let stream = routine.template.stream_id;
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineCreate(Box::new(routine.clone())))?;
-        let device_id = self.device_id;
-        let seq = next_seq(db, stream.bytes())?;
+        // Routine ops route to the vault-meta log.
+        let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
             insert_routine_row(tx, &routine_clone, now_ms)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -753,18 +751,16 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        let device_id = self.device_id;
         let stream = routine.template.stream_id;
-        let seq = next_seq(db, stream.bytes())?;
+        let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
             update_routine_row(tx, &routine_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -801,17 +797,14 @@ impl Engine {
         routine.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineDelete(id))?;
-        let device_id = self.device_id;
-        let stream = routine.template.stream_id;
-        let seq = next_seq(db, stream.bytes())?;
+        let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_routine_row(tx, &routine_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -865,17 +858,14 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        let device_id = self.device_id;
-        let stream = routine.template.stream_id;
-        let seq = next_seq(db, stream.bytes())?;
+        let seq = self.next_seq(db, &META_STREAM)?;
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             update_routine_row(tx, &routine_clone)?;
-            ops_insert(
+            self.ops_insert(
                 tx,
                 &op_id,
-                stream.bytes(),
-                &device_id,
+                &META_STREAM,
                 seq,
                 now_ms,
                 &inner_op,
@@ -890,17 +880,16 @@ impl Engine {
             if let Some(mut t) = drop_task {
                 t.deleted = true;
                 t.updated_at = ms_to_ts(now_ms as i64);
-                let task_seq = next_seq_tx(tx, t.stream_id.bytes())?;
+                let task_seq = self.next_seq_tx(tx, t.stream_id.bytes())?;
                 let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
                 update_task_row(tx, &t)?;
                 ftsr_delete_task(tx, &t.id)?;
                 let del_op_id = self.fresh_op_id(now_ms);
-                ops_insert(
+                self.ops_insert(
                     tx,
                     &del_op_id,
                     t.stream_id.bytes(),
-                    &device_id,
                     task_seq,
                     now_ms,
                     &del_op,
@@ -996,7 +985,6 @@ impl Engine {
             jobs.push((o.key.clone(), o.at, None));
         }
 
-        let device_id = self.device_id;
         let routine = routine.clone();
         let clock = self.clock.clone();
         let rng = self.rng.clone();
@@ -1020,15 +1008,14 @@ impl Engine {
                 ftsr_upsert_task(tx, &task)?;
                 let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                let seq = next_seq_tx(tx, task.stream_id.bytes())?;
+                let seq = self.next_seq_tx(tx, task.stream_id.bytes())?;
                 let mut rand = [0u8; 10];
                 rng.fill_bytes(&mut rand);
                 let op_id = *Ulid::from_timestamp_and_random(clock.now_ms(), rand).as_bytes();
-                ops_insert(
+                self.ops_insert(
                     tx,
                     &op_id,
                     task.stream_id.bytes(),
-                    &device_id,
                     seq,
                     now_ms,
                     &inner_op,
@@ -1082,7 +1069,6 @@ impl Engine {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
 
-        let device_id = self.device_id;
         for raw in ids {
             let mut bytes = [0u8; 16];
             let take = raw.len().min(16);
@@ -1097,16 +1083,15 @@ impl Engine {
             t.updated_at = ms_to_ts(now_ms as i64);
             let op_id = self.fresh_op_id(now_ms);
             let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.id))?;
-            let seq = next_seq(db, t.stream_id.bytes())?;
+            let seq = self.next_seq(db, t.stream_id.bytes())?;
             let t_clone = t.clone();
             db.with_tx(|tx| -> rusqlite::Result<()> {
                 update_task_row(tx, &t_clone)?;
                 ftsr_delete_task(tx, &t_clone.id)?;
-                ops_insert(
+                self.ops_insert(
                     tx,
                     &op_id,
                     t_clone.stream_id.bytes(),
-                    &device_id,
                     seq,
                     now_ms,
                     &inner_op,
@@ -1365,60 +1350,108 @@ fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, EngineError> {
 
 // ---- table operations ----
 
-#[allow(clippy::too_many_arguments)]
-fn ops_insert(
-    tx: &Transaction<'_>,
-    op_id: &[u8; 16],
-    stream_id: &[u8; 16],
-    device_id: &[u8; 16],
-    seq: u64,
-    ts_ms: u64,
-    envelope: &[u8],
-    inner_kind: &str,
-    target_kind: &str,
-    target_id: Option<&[u8; 16]>,
-    applied_at_ms: Option<u64>,
-    received_from: Option<&[u8; 16]>,
-    received_at_ms: u64,
-    deps: &[[u8; 16]],
-) -> rusqlite::Result<()> {
-    if let Err(e) = OpLog::insert(
-        tx,
-        op_id,
-        stream_id,
-        device_id,
-        seq,
-        ts_ms,
-        envelope,
-        inner_kind,
-        target_kind,
-        target_id,
-        applied_at_ms,
-        received_from,
-        received_at_ms,
-        deps,
-    ) {
-        return match e {
-            sunrise_storage::OpLogError::Sqlite(s) => Err(s),
-            sunrise_storage::OpLogError::Db(_) => Err(rusqlite::Error::ExecuteReturnedResults),
-        };
+impl Engine {
+    /// Seal `inner_op` into a real [`OpEnvelope`] and append it to the op log,
+    /// enqueue it in the outbox, and (forward-compat) persist the wrapped Stream
+    /// key — all inside the caller's transaction.
+    ///
+    /// `stream_id` is the op's *routing* stream (the meta stream for
+    /// Stream/routine ops; the owning Stream for task ops); it is bound into the
+    /// envelope and the outbox row. The signing device id is taken from the
+    /// keychain, so envelope `seq` is per `(stream_id, device_id)`.
+    #[allow(clippy::too_many_arguments)]
+    fn ops_insert(
+        &self,
+        tx: &Transaction<'_>,
+        op_id: &[u8; 16],
+        stream_id: &[u8; 16],
+        seq: u64,
+        ts_ms: u64,
+        inner_op: &[u8],
+        inner_kind: &str,
+        target_kind: &str,
+        target_id: Option<&[u8; 16]>,
+        applied_at_ms: Option<u64>,
+        received_from: Option<&[u8; 16]>,
+        received_at_ms: u64,
+        deps: &[[u8; 16]],
+    ) -> rusqlite::Result<()> {
+        let device_id = self.keychain.device_id();
+        let envelope = self
+            .keychain
+            .seal_op(*stream_id, seq, ts_ms, inner_op, self.rng.as_ref())
+            .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        if let Err(e) = OpLog::insert(
+            tx,
+            op_id,
+            stream_id,
+            &device_id,
+            seq,
+            ts_ms,
+            &envelope,
+            inner_kind,
+            target_kind,
+            target_id,
+            applied_at_ms,
+            received_from,
+            received_at_ms,
+            deps,
+        ) {
+            return match e {
+                sunrise_storage::OpLogError::Sqlite(s) => Err(s),
+                sunrise_storage::OpLogError::Db(_) => Err(rusqlite::Error::ExecuteReturnedResults),
+            };
+        }
+        // Same-transaction outbox enqueue: the pending marker commits with the op.
+        Outbox::enqueue(tx, op_id, stream_id, ts_ms)
+            .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        // Forward-compat: record the wrapped Stream key (idempotent).
+        self.keychain
+            .persist_stream_key(tx, stream_id, self.rng.as_ref(), ts_ms)?;
+        Ok(())
     }
-    Ok(())
-}
 
-fn next_seq(db: &Db, stream_id: &[u8; 16]) -> Result<u64, EngineError> {
-    let stream_blob: Vec<u8> = stream_id.to_vec();
-    let max: Option<i64> = db
-        .conn()
-        .query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ?",
-            params![stream_blob],
+    /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
+    fn next_seq(&self, db: &Db, stream_id: &[u8; 16]) -> Result<u64, EngineError> {
+        let stream_blob: Vec<u8> = stream_id.to_vec();
+        let device_blob: Vec<u8> = self.keychain.device_id().to_vec();
+        let max: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ? AND device_id = ?",
+                params![stream_blob, device_blob],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let next = max.map_or(1, |v| v.saturating_add(1));
+        Ok(u64::try_from(next).unwrap_or(1))
+    }
+
+    /// Next `seq` for `(stream_id, this device)`, read inside a transaction so it
+    /// sees uncommitted inserts from earlier in the same transaction.
+    fn next_seq_tx(&self, tx: &Transaction<'_>, stream_id: &[u8; 16]) -> rusqlite::Result<u64> {
+        let stream_blob: Vec<u8> = stream_id.to_vec();
+        let device_blob: Vec<u8> = self.keychain.device_id().to_vec();
+        let max: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ? AND device_id = ?",
+            params![stream_blob, device_blob],
             |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let next = max.map_or(1, |v| v.saturating_add(1));
-    Ok(u64::try_from(next).unwrap_or(1))
+        )?;
+        Ok(u64::try_from(max.saturating_add(1)).unwrap_or(1))
+    }
+
+    /// Decode + verify + open the stored envelope for `op_id` back to its
+    /// inner-op CBOR, using the keychain. Proves the full seal/unseal cycle;
+    /// used by the engine's own tests.
+    #[cfg(test)]
+    pub(crate) fn open_op_row(&self, db: &Db, op_id: &[u8; 16]) -> Result<Vec<u8>, EngineError> {
+        let env = OpLog::get_envelope(db, op_id)?
+            .ok_or_else(|| EngineError::NotFound(format!("op {}", hex_short(op_id))))?;
+        self.keychain
+            .open_op(&env)
+            .map_err(|e| EngineError::Invalid(e.to_string()))
+    }
 }
 
 fn ensure_stream_row(
@@ -1871,16 +1904,6 @@ fn build_routine_task(
     }
 }
 
-fn next_seq_tx(tx: &Transaction<'_>, stream_id: &[u8; 16]) -> rusqlite::Result<u64> {
-    let stream_blob: Vec<u8> = stream_id.to_vec();
-    let max: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ?",
-        params![stream_blob],
-        |row| row.get(0),
-    )?;
-    Ok(u64::try_from(max.saturating_add(1)).unwrap_or(1))
-}
-
 fn catchup_policy_str(p: RoutineCatchupPolicy) -> &'static str {
     match p {
         RoutineCatchupPolicy::Skip => "skip",
@@ -2270,15 +2293,119 @@ mod tests {
     }
 
     fn engine() -> Engine {
+        let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
         Engine::new(
             Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
             Arc::new(SystemRng),
-            [9u8; 16],
+            keychain,
         )
     }
 
     fn db() -> Db {
         Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
+    }
+
+    #[test]
+    fn create_task_seals_a_valid_envelope() {
+        let mut db = db();
+        let e = engine();
+        let res = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "sealed task".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // The stored ops row is a real magic-prefixed OpEnvelope.
+        let env_bytes = OpLog::get_envelope(&db, &res.op_id).unwrap().unwrap();
+        assert_eq!(&env_bytes[..2], b"SR", "envelope carries the magic prefix");
+        let env = sunrise_crypto::decode_envelope(&env_bytes).unwrap();
+        // Inbox tasks route to the zero (meta) stream id.
+        assert_eq!(env.stream_id, [0u8; 16]);
+        assert_eq!(env.device_id, e.keychain.device_id());
+        assert_eq!(env.seq, res.seq);
+
+        // Signature verifies against the keychain's device signing key.
+        sunrise_crypto::verify_envelope(&env, &e.keychain.device_signing_pub()).unwrap();
+
+        // open_op_row proves the full seal→unseal cycle: it yields inner-op CBOR
+        // that parses as the externally-tagged `TaskCreate` variant.
+        let inner = e.open_op_row(&db, &res.op_id).unwrap();
+        let value: ciborium::value::Value = ciborium::de::from_reader(inner.as_slice()).unwrap();
+        let ciborium::value::Value::Map(map) = value else {
+            panic!("inner op must be a map");
+        };
+        let (k, _) = &map[0];
+        assert_eq!(k, &ciborium::value::Value::Text("TaskCreate".to_string()));
+    }
+
+    #[test]
+    fn per_device_seq_is_independent() {
+        // Two devices (distinct keychains) writing to the same DB keep separate
+        // per-(stream, device) seq sequences.
+        let mut db = db();
+        let clock = || Arc::new(FakeClock(PLMutex::new(1_700_000_000_000)));
+        let ea = Engine::new(
+            clock(),
+            Arc::new(SystemRng),
+            Arc::new(Keychain::for_test_seeded(
+                VaultRootKey::from_bytes([0xab; 32]),
+                [1u8; 32],
+            )),
+        );
+        let eb = Engine::new(
+            clock(),
+            Arc::new(SystemRng),
+            Arc::new(Keychain::for_test_seeded(
+                VaultRootKey::from_bytes([0xab; 32]),
+                [2u8; 32],
+            )),
+        );
+        assert_ne!(ea.keychain.device_id(), eb.keychain.device_id());
+
+        let mk = |title: &str| {
+            Command::CreateTask(TaskDraft {
+                title: title.into(),
+                ..Default::default()
+            })
+        };
+        let a1 = ea.apply(&mut db, mk("a1")).unwrap();
+        let b1 = eb.apply(&mut db, mk("b1")).unwrap();
+        let a2 = ea.apply(&mut db, mk("a2")).unwrap();
+        assert_eq!(a1.seq, 1);
+        assert_eq!(b1.seq, 1, "device B starts its own seq at 1");
+        assert_eq!(a2.seq, 2, "device A continues its own sequence");
+    }
+
+    #[test]
+    fn submit_enqueues_outbox_row() {
+        let mut db = db();
+        let e = engine();
+        let res = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "outboxed".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        let pending = Outbox::list_unacked(&db).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].op_id, res.op_id);
+        assert_eq!(Outbox::pending_count(&db).unwrap(), 1);
+
+        db.with_tx(|tx| {
+            Outbox::mark_acked(tx, &res.op_id, 999)
+                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(Outbox::pending_count(&db).unwrap(), 0);
     }
 
     #[test]
