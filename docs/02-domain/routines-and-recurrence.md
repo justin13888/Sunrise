@@ -24,6 +24,7 @@ Routine = {
     last_completed_at?: tdate,
     paused:            bool,
     paused_until?:     tdate,
+    scheduling_constraints?: [* SchedulingConstraint], ; copied to each materialized task; whole list is one LWW register (max 16); see scheduling-constraints.md
     archived:          bool,
     deleted:           bool,
 }
@@ -82,6 +83,10 @@ The horizon is a Routine field (LWW-register, user-editable in the Routine setti
 4. Otherwise, create a Task with `routine_id` and `routine_occurrence` set.
 
 Generation is **idempotent** — re-running generates nothing if the Task already exists for that `(routine_id, occurrence)` pair. This is critical because generation runs on every device.
+
+### Scheduling constraints on generated tasks
+
+A Routine's `scheduling_constraints` are **copied verbatim** onto each Task at generation time (evaluated thereafter in the *Task's* device-local tz, per [`scheduling-constraints.md`](./scheduling-constraints.md)). The `rrule` decides *when* occurrences exist; constraints only annotate and validate the *scheduling* of the resulting Tasks. An occurrence that violates a `hard` constraint is still materialized — never silently dropped — but **flagged** so the UI can surface it; the constraint governs scheduling, not existence.
 
 ## Editing series vs occurrence
 

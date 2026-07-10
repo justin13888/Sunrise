@@ -21,8 +21,9 @@ Task = {
     priority?:     1..5,              ; 1 = highest, 5 = lowest; absent = unset
     energy?:       Energy,            ; "low" / "med" / "high"
     estimated_duration?: duration,    ; ISO 8601 duration
-    scheduled_at?: tdate,             ; when user intends to do it
-    due_at?:       tdate,             ; deadline; UI distinguishes from scheduled_at
+    scheduled_at?: tdate,             ; when user intends to do it; the target ("soft") deadline
+    due_at?:       tdate,             ; the hard deadline; UI distinguishes from scheduled_at
+    scheduling_constraints?: [* SchedulingConstraint], ; see scheduling-constraints.md; whole list is one LWW register (max 16)
     completed_at?: tdate,             ; set on transition to Done
     deferred_count: uint,             ; PN-counter; surfaced in review
     blocks:        [* tstr],          ; block IDs scheduling this task
@@ -46,6 +47,11 @@ Field-level rationale:
 - `estimated_duration` is mandatory for tasks that get auto-scheduled; optional otherwise.
 - `deferred_count` is a counter the system increments; it is not user-editable.
 - `blocks_others` is *not* persisted — derived from `blocked_by` reverse lookup.
+- `scheduling_constraints` is an optional list (max 16) of requirement windows restricting when the Task should be scheduled or executed; the whole list is one LWW register. Full semantics in [`scheduling-constraints.md`](./scheduling-constraints.md).
+
+### Deadline semantics
+
+There is no separate "target deadline" field: `scheduled_at` **is** the target deadline. `scheduled_at` records when the user *intends* to do the task — a soft target — and `due_at` is the **hard** deadline. If both are set, `scheduled_at` MUST be ≤ `due_at` (the `DueBeforeScheduled` invariant in domain validation, below). A `hard` scheduling constraint likewise blocks scheduling that would violate it; `soft` targets (including `scheduled_at`) only influence ranking. See [`scheduling-constraints.md`](./scheduling-constraints.md).
 
 ## State machine
 
@@ -103,6 +109,7 @@ Field-level rationale:
 - `contexts`: observed-remove set.
 - `blocks`, `blocked_by`: observed-remove sets.
 - `deferred_count`: PN-counter.
+- `scheduling_constraints`: the **whole list** is a single LWW-register (edited as a unit; no per-constraint identity). See [`scheduling-constraints.md`](./scheduling-constraints.md).
 - `body`: a CRDT text type (Loro RichText).
 
 ## Assignee in v1

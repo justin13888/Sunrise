@@ -111,6 +111,7 @@ CREATE TABLE routine (
     stream_id      BLOB NOT NULL REFERENCES stream(stream_id),
     rrule_blob     BLOB NOT NULL,              -- CBOR-encoded RRULE subset
     config_blob    BLOB NOT NULL,              -- CBOR; horizon, catchup, streak rules
+    scheduling_constraints BLOB,               -- canonical CBOR, NULL = empty; projection (arrives in migration 0003)
     next_gen_at_ms INTEGER NOT NULL,
     created_at_ms  INTEGER NOT NULL,
     updated_at_ms  INTEGER NOT NULL
@@ -189,6 +190,7 @@ CREATE TABLE tasks (
     routine_occurrence INTEGER,
     archived         INTEGER NOT NULL DEFAULT 0,
     deleted          INTEGER NOT NULL DEFAULT 0,
+    scheduling_constraints BLOB,           -- canonical CBOR, NULL = empty; projection (arrives in migration 0003)
     body             BLOB,                 -- CRDT doc snapshot
     extra            BLOB,                 -- forward-compat unknown fields
     head_root        BLOB                  -- per-task tamper-detection snapshot

@@ -46,6 +46,7 @@ Why per-Stream:
 | `stream_order` (parent → ordered children) | Loro List with fractional indices |
 | `streak_counter` | PN-counter |
 | `deferred_count` | PN-counter |
+| `scheduling_constraints` (Task, Routine) | LWW-register over the **whole list** (edited as a unit; no per-element identity) — see [`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) |
 
 ### OR-Set merge rules
 

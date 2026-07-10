@@ -54,6 +54,7 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 - **Notes** are children of an entity; they cannot float free.
 - **Routines** generate Tasks; once a generated task exists, edits to the task do not retroactively affect future occurrences (unless the user explicitly chooses "edit series").
 - **People** are first-class identities, including the local user. A Task assigned to a non-self Person is a "watching/waiting" annotation in v1, not a delegation primitive.
+- A **Task** or **Routine** may carry **scheduling constraints** — requirement windows (time-of-day / days-of-week / date-range, each `hard` or `soft`) restricting when it should be scheduled. These are a *value type*, not an entity: they mint no ID (see [`scheduling-constraints.md`](./scheduling-constraints.md)) and add no prefix to [`identifiers.md`](./identifiers.md).
 
 ## Identity vs. identity
 
