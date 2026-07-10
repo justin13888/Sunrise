@@ -16,9 +16,11 @@ pub mod chaos;
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::chaos::{FaultHandle, Toxic, ToxicConfig};
 use sunrise_core::{
     BoxTransport, Clock, Command, Core, CoreConfig, Query, QueryResult, SyncConfig, SystemRng,
     TransportFactory, Unlock,
@@ -69,6 +71,40 @@ pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
     })
 }
 
+/// Build a [`TransportFactory`] that dials the relay with a real [`WsTransport`]
+/// and wraps every freshly-connected transport in a [`Toxic`] fault injector.
+///
+/// All connections a single factory opens share the one [`FaultHandle`]
+/// returned alongside it, so a test can retune drop/corrupt probabilities or
+/// toggle a partition and have it steer the live connection **and** every
+/// reconnect. Each connection gets its own RNG stream, seeded from `seed` plus a
+/// monotonic connection counter, so a reconnect does not replay the identical
+/// fault pattern the previous connection saw.
+#[must_use]
+pub fn toxic_ws_factory(
+    addr: SocketAddr,
+    config: ToxicConfig,
+    seed: u64,
+) -> (TransportFactory, FaultHandle) {
+    let url = format!("ws://{addr}/sync");
+    let handle = FaultHandle::from_config(config);
+    let delay = config.delay;
+    let counter = Arc::new(AtomicU64::new(0));
+    let conn_handle = handle.clone();
+    let factory: TransportFactory = Arc::new(move || {
+        let url = url.clone();
+        let faults = conn_handle.clone();
+        let n = counter.fetch_add(1, Ordering::Relaxed);
+        let conn_seed = seed.wrapping_add(n);
+        Box::pin(async move {
+            let inner = WsTransport::connect(&url).await?;
+            let toxic = Toxic::with_handle(inner, faults, delay, conn_seed);
+            Ok(Box::new(toxic) as BoxTransport)
+        }) as sunrise_core::ConnectFuture
+    });
+    (factory, handle)
+}
+
 // ---------------------------------------------------------------------------
 // Cores
 // ---------------------------------------------------------------------------
@@ -85,6 +121,20 @@ pub async fn open_synced_core(
     addr: SocketAddr,
     clock: Arc<dyn Clock>,
 ) -> Arc<Core> {
+    open_core_with_factory(vault_dir, root, addr, clock, ws_factory(addr)).await
+}
+
+/// Like [`open_synced_core`] but starts the driver against a caller-supplied
+/// [`TransportFactory`] — e.g. a [`toxic_ws_factory`] for chaos scenarios. The
+/// vault is still keyed by the shared paired-device `root`; `addr` only seeds
+/// the [`CoreConfig`] sync URL (the actual transport comes from `factory`).
+pub async fn open_core_with_factory(
+    vault_dir: &Path,
+    root: [u8; 32],
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: TransportFactory,
+) -> Arc<Core> {
     let cfg = CoreConfig {
         vault_dir: vault_dir.to_path_buf(),
         clock,
@@ -98,7 +148,7 @@ pub async fn open_synced_core(
         .await
         .expect("open core");
     let core = Arc::new(core);
-    core.start_sync(ws_factory(addr)).expect("start sync");
+    core.start_sync(factory).expect("start sync");
     core
 }
 

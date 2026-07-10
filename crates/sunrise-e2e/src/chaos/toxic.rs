@@ -152,6 +152,15 @@ impl FaultHandle {
     pub fn corrupt_prob(&self) -> f64 {
         f64::from_bits(self.inner.corrupt_bits.load(Ordering::Relaxed))
     }
+
+    /// Build a handle initialised from `config`'s drop/corruption probabilities,
+    /// with the link un-partitioned. Share it across every [`Toxic`] a
+    /// transport factory produces (via [`Toxic::with_handle`]) so one handle
+    /// steers the live connection *and* every reconnect.
+    #[must_use]
+    pub fn from_config(config: ToxicConfig) -> Self {
+        Self::new(config.drop_prob, config.corrupt_prob)
+    }
 }
 
 impl fmt::Debug for FaultHandle {
@@ -208,6 +217,28 @@ impl<T: Transport> Toxic<T> {
             rng: ChaCha20Rng::seed_from_u64(seed),
         };
         (toxic, faults)
+    }
+
+    /// Wrap `inner` reusing an existing shared [`FaultHandle`] (rather than
+    /// minting a fresh one as [`Toxic::with_seed`] does), with an explicit RNG
+    /// `seed`. Every wrapper built from the same handle observes the same
+    /// runtime drop / corrupt / partition switches — the shape a reconnecting
+    /// transport factory needs, where one handle must steer every connection it
+    /// opens. `delay` is the static per-frame delay range (mirrors
+    /// [`ToxicConfig::delay`]).
+    #[must_use]
+    pub fn with_handle(
+        inner: T,
+        faults: FaultHandle,
+        delay: Option<(Duration, Duration)>,
+        seed: u64,
+    ) -> Self {
+        Self {
+            inner,
+            faults,
+            delay,
+            rng: ChaCha20Rng::seed_from_u64(seed),
+        }
     }
 
     /// A fresh clone of this wrapper's [`FaultHandle`].
