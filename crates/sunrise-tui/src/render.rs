@@ -72,12 +72,23 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Span::raw("  "),
         Span::raw(state.status.clone()),
     ];
-    if state.mode != Mode::Normal {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("> {}", state.input),
-            Style::default().fg(Color::White),
-        ));
+    match state.mode {
+        // Command-line entry mirrors vim: the buffer shows after a `:`.
+        Mode::Command => {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!(":{}", state.input),
+                Style::default().fg(Color::White),
+            ));
+        }
+        Mode::Insert => {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("> {}", state.input),
+                Style::default().fg(Color::White),
+            ));
+        }
+        Mode::Normal => {}
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -266,6 +277,38 @@ mod tests {
         let s = buffer_text(buf);
         assert!(s.contains("Search"));
         assert!(s.contains("/ test"));
+    }
+
+    fn frame_to_string(width: u16, height: u16, state: &ViewState) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            render(f, area, state);
+        })
+        .unwrap();
+        buffer_text(term.backend().buffer())
+    }
+
+    #[test]
+    fn snapshot_today_empty() {
+        let state = ViewState::default();
+        insta::assert_snapshot!(frame_to_string(50, 10, &state));
+    }
+
+    #[test]
+    fn snapshot_command_line_active() {
+        let mut state = ViewState::default();
+        state.mode = Mode::Command;
+        state.input = "vi".into();
+        insta::assert_snapshot!(frame_to_string(50, 10, &state));
+    }
+
+    #[test]
+    fn snapshot_help_message() {
+        let mut state = ViewState::default();
+        let _ = crate::apply_command(crate::parse_command(":help"), &mut state);
+        insta::assert_snapshot!(frame_to_string(80, 10, &state));
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {

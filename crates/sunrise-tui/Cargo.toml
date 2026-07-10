@@ -30,3 +30,4 @@ sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }

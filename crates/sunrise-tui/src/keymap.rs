@@ -35,6 +35,8 @@ pub enum Action {
     Capture,
     /// Begin a search (switches to Insert in the search bar).
     BeginSearch,
+    /// Begin a command-line entry (`:` switches to Command mode).
+    BeginCommand,
     /// Enter Insert mode.
     EnterInsert,
     /// Leave Insert/Command mode back to Normal.
@@ -71,6 +73,7 @@ pub fn dispatch(key: crossterm::event::KeyCode, mode: Mode, vim_mode: bool) -> O
         (Mode::Normal, Char('x' | ' ')) => Some(Action::Toggle),
         (Mode::Normal, Char('c')) => Some(Action::Capture),
         (Mode::Normal, Char('/')) => Some(Action::BeginSearch),
+        (Mode::Normal, Char(':')) => Some(Action::BeginCommand),
         (Mode::Normal, Char('i')) if vim_mode => Some(Action::EnterInsert),
         (Mode::Insert | Mode::Command, Backspace) => Some(Action::Backspace),
         (Mode::Insert | Mode::Command, Enter) => Some(Action::Submit),
@@ -144,6 +147,34 @@ mod tests {
         );
         assert_eq!(
             dispatch(KeyCode::Esc, Mode::Insert, true),
+            Some(Action::Escape)
+        );
+    }
+
+    #[test]
+    fn colon_enters_command_mode() {
+        assert_eq!(
+            dispatch(KeyCode::Char(':'), Mode::Normal, true),
+            Some(Action::BeginCommand)
+        );
+    }
+
+    #[test]
+    fn command_mode_buffers_and_submits() {
+        assert_eq!(
+            dispatch(KeyCode::Char('v'), Mode::Command, true),
+            Some(Action::InsertChar('v'))
+        );
+        assert_eq!(
+            dispatch(KeyCode::Backspace, Mode::Command, true),
+            Some(Action::Backspace)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Enter, Mode::Command, true),
+            Some(Action::Submit)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Esc, Mode::Command, true),
             Some(Action::Escape)
         );
     }

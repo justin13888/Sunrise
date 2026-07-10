@@ -15,7 +15,8 @@
     clippy::manual_let_else,
     clippy::needless_pass_by_value,
     clippy::missing_panics_doc,
-    clippy::module_name_repetitions
+    clippy::module_name_repetitions,
+    clippy::too_many_lines
 )]
 
 use crossterm::event::{self, Event};
@@ -31,7 +32,9 @@ use std::time::Duration;
 use sunrise_core::{Command, Core, CoreConfig, Query, QueryResult, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::TaskDraft;
-use sunrise_tui::{dispatch, render, Action, Mode, View, ViewState};
+use sunrise_tui::{
+    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, View, ViewState,
+};
 
 type Tty = Terminal<CrosstermBackend<Stdout>>;
 
@@ -126,6 +129,11 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
                 state.input.clear();
                 state.status = "search: type query, Enter to commit, Esc to cancel".into();
             }
+            Action::BeginCommand => {
+                state.mode = Mode::Command;
+                state.input.clear();
+                state.status.clear();
+            }
             Action::EnterInsert => {
                 state.mode = Mode::Insert;
                 state.input.clear();
@@ -142,6 +150,17 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
             }
             Action::Backspace => {
                 state.input.pop();
+            }
+            Action::Submit if state.mode == Mode::Command => {
+                // Command-line submit: parse `:…` and apply. `apply_command`
+                // writes any view switch / status message; we handle the effect.
+                let cmd = parse_command(&state.input);
+                state.mode = Mode::Normal;
+                state.input.clear();
+                match apply_command(cmd, &mut state) {
+                    Some(AppEffect::Quit) => break,
+                    None => refresh(core, &mut state).await,
+                }
             }
             Action::Submit => {
                 if state.view == View::Search {
