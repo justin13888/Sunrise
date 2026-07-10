@@ -54,8 +54,8 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use sunrise_domain::{
-    inbox_stream_ref, NoteBody, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
-    Task, TaskDraft, TaskPatch, TaskState,
+    inbox_stream_ref, NoteBody, ScheduleConstraint, Stream, StreamColor, StreamDraft, StreamPatch,
+    StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog};
@@ -171,6 +171,7 @@ impl Engine {
             estimated_duration_s: d.estimated_duration_s,
             scheduled_at: d.scheduled_at,
             due_at: d.due_at,
+            scheduling_constraints: d.scheduling_constraints.clone(),
             completed_at: None,
             deferred_count: 0,
             blocks: BTreeSet::new(),
@@ -272,6 +273,9 @@ impl Engine {
         if let Some(d) = patch.due_at {
             task.due_at = d;
         }
+        if let Some(list) = patch.scheduling_constraints {
+            task.scheduling_constraints = list;
+        }
         if let Some(bs) = patch.blocked_by {
             task.blocked_by = bs.into_iter().collect();
         }
@@ -281,6 +285,10 @@ impl Engine {
         if let Some(arch) = patch.archived {
             task.archived = arch;
         }
+        // Re-check cross-field invariants on the patched Task. A patch that
+        // sets only `due_at` earlier than the existing `scheduled_at` (or an
+        // invalid constraint list) would otherwise pass silently.
+        task.validate_invariants()?;
         task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
@@ -1040,12 +1048,14 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
+    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
     tx.execute(
         "INSERT INTO tasks
          (id, stream_id, title, state, priority, energy, estimated_min,
           scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
-          routine_id, routine_occurrence, archived, deleted, body, extra, head_root)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+          routine_id, routine_occurrence, archived, deleted, body,
+          scheduling_constraints, extra, head_root)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
         params![
             id_blob,
             stream_blob,
@@ -1066,6 +1076,7 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             t.archived as i64,
             t.deleted as i64,
             body_blob,
+            constraints_blob,
         ],
     )?;
     Ok(())
@@ -1075,12 +1086,13 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
+    let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
     tx.execute(
         "UPDATE tasks SET
             stream_id = ?, title = ?, state = ?, priority = ?,
             energy = ?, estimated_min = ?, scheduled_at_ms = ?, due_at_ms = ?,
             completed_at_ms = ?, deferred_count = ?, archived = ?, deleted = ?,
-            body = ?
+            body = ?, scheduling_constraints = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -1097,10 +1109,33 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
             t.archived as i64,
             t.deleted as i64,
             body_blob,
+            constraints_blob,
             id_blob,
         ],
     )?;
     Ok(())
+}
+
+/// Encode a scheduling-constraint list to a canonical-CBOR blob for the
+/// `scheduling_constraints` column. An empty list stores `NULL`.
+fn encode_constraints(list: &[ScheduleConstraint]) -> rusqlite::Result<Option<Vec<u8>>> {
+    if list.is_empty() {
+        return Ok(None);
+    }
+    let v = list.to_vec();
+    let bytes = sunrise_cbor::encode_canonical(&v)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Ok(Some(bytes))
+}
+
+/// Decode the `scheduling_constraints` column blob (NULL == empty list).
+fn decode_constraints(blob: Option<Vec<u8>>) -> Result<Vec<ScheduleConstraint>, EngineError> {
+    match blob {
+        None => Ok(Vec::new()),
+        Some(bytes) => {
+            sunrise_cbor::decode_canonical(&bytes).map_err(|e| EngineError::Cbor(e.to_string()))
+        }
+    }
 }
 
 fn insert_task_contexts(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
@@ -1165,7 +1200,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         .query_row(
             "SELECT stream_id, title, state, priority, energy, estimated_min,
                     scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
-                    archived, deleted, body
+                    archived, deleted, body, scheduling_constraints
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -1183,6 +1218,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, i64>(10)?,
                     r.get::<_, i64>(11)?,
                     r.get::<_, Option<Vec<u8>>>(12)?,
+                    r.get::<_, Option<Vec<u8>>>(13)?,
                 ))
             },
         )
@@ -1222,6 +1258,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         }),
         scheduled_at: t.6.map(|m| ms_to_ts(m.max(0))),
         due_at: t.7.map(|m| ms_to_ts(m.max(0))),
+        scheduling_constraints: decode_constraints(t.13)?,
         completed_at: t.8.map(|m| ms_to_ts(m.max(0))),
         deferred_count: t.9,
         blocks: BTreeSet::new(),
@@ -1874,6 +1911,183 @@ mod tests {
         let take = raw.len().min(16);
         a[..take].copy_from_slice(&raw[..take]);
         EntityRef::new(EntityKind::Task, a)
+    }
+
+    fn sample_constraint() -> ScheduleConstraint {
+        ScheduleConstraint {
+            time_of_day: Some(sunrise_domain::TimeOfDayRange {
+                start: jiff::civil::time(9, 0, 0, 0),
+                end: jiff::civil::time(17, 0, 0, 0),
+            }),
+            days_of_week: sunrise_domain::WeekdaySet::new(),
+            date_range: None,
+            severity: sunrise_domain::ConstraintSeverity::Hard,
+        }
+    }
+
+    #[test]
+    fn create_task_with_constraints_round_trips() {
+        let mut db = db();
+        let e = engine();
+        let c = sample_constraint();
+        let r = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "with constraint".into(),
+                    scheduling_constraints: vec![c],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let t = match e.query(&db, Query::EntityById(r.entity)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!(),
+        };
+        assert_eq!(t.scheduling_constraints, vec![c]);
+    }
+
+    #[test]
+    fn update_task_replaces_whole_constraint_list() {
+        let mut db = db();
+        let e = engine();
+        let c1 = sample_constraint();
+        let r = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "x".into(),
+                    scheduling_constraints: vec![c1],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        // Replace with a different, single-element list.
+        let c2 = ScheduleConstraint {
+            time_of_day: None,
+            days_of_week: sunrise_domain::WeekdaySet::from_days([sunrise_domain::Weekday::Sa]),
+            date_range: None,
+            severity: sunrise_domain::ConstraintSeverity::Soft,
+        };
+        let patch = TaskPatch {
+            scheduling_constraints: Some(vec![c2]),
+            ..Default::default()
+        };
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch,
+            },
+        )
+        .unwrap();
+        let t = match e.query(&db, Query::EntityById(r.entity)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!(),
+        };
+        assert_eq!(t.scheduling_constraints, vec![c2]);
+
+        // Clearing to empty persists as NULL / empty list.
+        let clear = TaskPatch {
+            scheduling_constraints: Some(vec![]),
+            ..Default::default()
+        };
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch: clear,
+            },
+        )
+        .unwrap();
+        let t = match e.query(&db, Query::EntityById(r.entity)).unwrap() {
+            QueryResult::Task(t) => *t,
+            _ => panic!(),
+        };
+        assert!(t.scheduling_constraints.is_empty());
+    }
+
+    #[test]
+    fn patch_due_before_scheduled_is_rejected() {
+        let mut db = db();
+        let e = engine();
+        let now = 1_700_000_000_000i64;
+        let scheduled = ms_to_ts(now + 2 * 3_600_000);
+        let r = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "x".into(),
+                    scheduled_at: Some(scheduled),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        // Patch sets ONLY due_at, earlier than the existing scheduled_at. This
+        // used to slip through silently; the invariant re-check must reject it.
+        let earlier = ms_to_ts(now + 3_600_000);
+        let patch = TaskPatch {
+            due_at: Some(Some(earlier)),
+            ..Default::default()
+        };
+        let res = e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch,
+            },
+        );
+        assert!(matches!(
+            res,
+            Err(EngineError::Validation(
+                sunrise_domain::ValidationError::DueBeforeScheduled
+            ))
+        ));
+    }
+
+    #[test]
+    fn invalid_constraint_list_rejected_on_create_and_update() {
+        let mut db = db();
+        let e = engine();
+        // An empty (no-dimension) constraint is invalid.
+        let bad = ScheduleConstraint {
+            time_of_day: None,
+            days_of_week: sunrise_domain::WeekdaySet::new(),
+            date_range: None,
+            severity: sunrise_domain::ConstraintSeverity::Hard,
+        };
+        let create = e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "x".into(),
+                scheduling_constraints: vec![bad],
+                ..Default::default()
+            }),
+        );
+        assert!(matches!(create, Err(EngineError::Validation(_))));
+
+        // A valid task, then an update that introduces the invalid list.
+        let r = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "ok".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let patch = TaskPatch {
+            scheduling_constraints: Some(vec![bad]),
+            ..Default::default()
+        };
+        let update = e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: r.entity,
+                patch,
+            },
+        );
+        assert!(matches!(update, Err(EngineError::Validation(_))));
     }
 
     proptest::proptest! {

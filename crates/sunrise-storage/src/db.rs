@@ -325,6 +325,69 @@ mod tests {
         assert_eq!(color, "slate");
     }
 
+    /// Build a DB with migrations 0001+0002 applied, stamped `storage_v = 2`,
+    /// simulating a real v2 vault opened by a newer binary.
+    fn seed_v2_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
+        tx.execute_batch(MIGRATIONS[1].sql).unwrap();
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![2_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v2_db_adds_scheduling_constraints_column() {
+        // Only meaningful if the binary is ahead of v2.
+        assert!(u32::from(STORAGE_V) >= 3);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v2_db(&conn);
+
+        // Seed a stream + task row against the v2 schema (no
+        // scheduling_constraints column yet).
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms, name, color)
+             VALUES (?, ?, 1, ?, 0, 0, 0, 'S', 'slate')",
+            rusqlite::params![vec![1u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, stream_id, title, state)
+             VALUES (?, ?, 'seed', 'todo')",
+            rusqlite::params![vec![2u8; 16], vec![1u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies pending migrations (0003).
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // The new columns exist and default to NULL for the pre-existing row.
+        let (task_sc, routine_col): (Option<Vec<u8>>, i64) = conn
+            .query_row(
+                "SELECT scheduling_constraints,
+                        (SELECT COUNT(*) FROM pragma_table_info('routines')
+                         WHERE name = 'scheduling_constraints')
+                 FROM tasks WHERE id = ?",
+                rusqlite::params![vec![2u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(task_sc.is_none(), "seed row's constraints default to NULL");
+        assert_eq!(routine_col, 1, "routines gained the column too");
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

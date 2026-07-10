@@ -29,6 +29,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_names",
         sql: include_str!("../migrations/0002_stream_names.sql"),
     },
+    Migration {
+        id: 3,
+        name: "scheduling_constraints",
+        sql: include_str!("../migrations/0003_scheduling_constraints.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

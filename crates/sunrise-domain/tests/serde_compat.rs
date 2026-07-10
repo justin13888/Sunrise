@@ -68,6 +68,9 @@ fn expected_task() -> Task {
         estimated_duration_s: Some(5400),
         scheduled_at: Some(ts(T_SCHEDULED)),
         due_at: Some(ts(T_DUE)),
+        // New field defaults to empty and is skipped on the wire, so the
+        // chrono-era fixtures still decode and re-encode byte-identically.
+        scheduling_constraints: Vec::new(),
         completed_at: Some(ts(T_COMPLETED)),
         deferred_count: 2,
         blocks,
@@ -108,6 +111,7 @@ fn expected_routine() -> Routine {
         timezone: "America/Los_Angeles".to_string(),
         starts_at: ts(R_STARTS),
         ends_at: Some(ts(R_ENDS)),
+        scheduling_constraints: Vec::new(),
         skip_dates: vec![ts(R_SKIP1), ts(R_SKIP2)],
         catchup_policy: RoutineCatchupPolicy::Merge,
         streak_counter: 7,

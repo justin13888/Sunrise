@@ -21,6 +21,7 @@
 pub mod attachment;
 pub mod block;
 pub mod common;
+pub mod constraint;
 pub mod context;
 pub mod inbox;
 pub mod note;
@@ -35,6 +36,10 @@ pub mod validation;
 pub use attachment::Attachment;
 pub use block::{Block, BlockDraft};
 pub use common::{Energy, NoteBody};
+pub use constraint::{
+    validate_list as validate_constraint_list, ConstraintError, ConstraintSeverity, DateRange,
+    ScheduleConstraint, TimeOfDayRange, WeekdaySet, MAX_CONSTRAINTS,
+};
 pub use context::Context;
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
@@ -42,7 +47,7 @@ pub use person::Person;
 pub use routine::{
     Routine, RoutineCatchupPolicy, RoutineDraft, RoutineReviewCadence, TaskTemplate,
 };
-pub use rrule::{Frequency, RRule, RRuleParseError};
+pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};

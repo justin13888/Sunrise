@@ -114,6 +114,7 @@ mod tests {
             estimated_duration_s: None,
             scheduled_at: None,
             due_at: None,
+            scheduling_constraints: Vec::new(),
             completed_at: None,
             deferred_count: 0,
             blocks: BTreeSet::new(),

@@ -1,6 +1,7 @@
 //! Task entity per `docs/02-domain/tasks.md`.
 
 use crate::common::{Energy, NoteBody};
+use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,9 @@ pub struct Task {
     /// Hard deadline.
     #[serde(default)]
     pub due_at: Option<Timestamp>,
+    /// Scheduling constraints (value list; whole list is one LWW register).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Set on transition to Done.
     #[serde(default)]
     pub completed_at: Option<Timestamp>,
@@ -134,6 +138,9 @@ pub struct TaskDraft {
     pub scheduled_at: Option<Timestamp>,
     /// Optional due_at.
     pub due_at: Option<Timestamp>,
+    /// Optional scheduling constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Optional assignee.
     pub assignee: Option<EntityRef>,
 }
@@ -163,6 +170,9 @@ pub struct TaskPatch {
     pub scheduled_at: Option<Option<Timestamp>>,
     /// New due_at.
     pub due_at: Option<Option<Timestamp>>,
+    /// Replace the whole scheduling-constraints list (LWW). `None` leaves it
+    /// unchanged; `Some(vec![])` clears it; `Some(list)` replaces it.
+    pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
     /// New blocked_by set (replaces).
     pub blocked_by: Option<Vec<EntityRef>>,
     /// New assignee.
@@ -192,6 +202,25 @@ impl TaskDraft {
                 });
             }
         }
+        validate_constraint_list(&self.scheduling_constraints)?;
+        Ok(())
+    }
+}
+
+impl Task {
+    /// Re-check cross-field invariants on a materialized Task.
+    ///
+    /// Enforced after applying a patch (a patch that sets only `due_at` earlier
+    /// than an existing `scheduled_at` would otherwise silently break the
+    /// deadline invariant): `scheduled_at ≤ due_at` when both are present, and
+    /// the scheduling-constraint list is valid.
+    pub fn validate_invariants(&self) -> Result<(), ValidationError> {
+        if let (Some(s), Some(d)) = (self.scheduled_at, self.due_at) {
+            if d < s {
+                return Err(ValidationError::DueBeforeScheduled);
+            }
+        }
+        validate_constraint_list(&self.scheduling_constraints)?;
         Ok(())
     }
 }
@@ -209,6 +238,9 @@ impl TaskPatch {
                     constraint: "range_1_5",
                 });
             }
+        }
+        if let Some(list) = &self.scheduling_constraints {
+            validate_constraint_list(list)?;
         }
         Ok(())
     }

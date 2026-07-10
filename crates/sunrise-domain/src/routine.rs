@@ -1,6 +1,7 @@
 //! Routine entity per `docs/02-domain/routines-and-recurrence.md`.
 
 use crate::common::{Energy, NoteBody};
+use crate::constraint::ScheduleConstraint;
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
 use jiff::Timestamp;
@@ -69,6 +70,7 @@ impl TaskTemplate {
             estimated_duration_s: self.estimated_duration_s,
             scheduled_at,
             due_at: None,
+            scheduling_constraints: Vec::new(),
             assignee: None,
         }
     }
@@ -94,6 +96,9 @@ pub struct Routine {
     /// Optional inclusive end.
     #[serde(default)]
     pub ends_at: Option<Timestamp>,
+    /// Scheduling constraints (value list; whole list is one LWW register).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Dates explicitly skipped.
     #[serde(default)]
     pub skip_dates: Vec<Timestamp>,
@@ -132,6 +137,9 @@ pub struct RoutineDraft {
     pub starts_at: Timestamp,
     /// Optional inclusive end.
     pub ends_at: Option<Timestamp>,
+    /// Optional scheduling constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Catchup policy.
     pub catchup_policy: RoutineCatchupPolicy,
 }
