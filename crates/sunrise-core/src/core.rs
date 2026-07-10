@@ -234,6 +234,23 @@ impl Core {
     /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
     /// joins it, then drops the vault lock when this `Core` drops.
     pub async fn close(self) -> Result<(), CoreError> {
+        self.shutdown().await;
+        Ok(())
+    }
+
+    /// Stop the sync driver (if running) and mark this handle closed, **without
+    /// consuming** `self`.
+    ///
+    /// This is the shutdown path for an `Arc<Core>` — the shape
+    /// [`Core::start_sync`] requires. While a session is live the driver holds a
+    /// transient strong `Arc<Core>` (upgraded from its `Weak` for the duration
+    /// of the connection), so neither `Arc::try_unwrap` nor the consuming
+    /// [`Core::close`] can run, and a plain drop of the caller's `Arc` cannot
+    /// stop the driver. Aborting and joining the driver task here releases that
+    /// transient strong reference, so dropping the last external `Arc` then runs
+    /// [`Core`]'s `Drop` and releases the vault lock. [`Core::close`] delegates
+    /// here. Idempotent.
+    pub async fn shutdown(&self) {
         *self.closed.lock() = true;
         self.sync_shared.request_shutdown();
         let handle = self.sync_handle.lock().take();
@@ -241,7 +258,6 @@ impl Core {
             h.abort();
             let _ = h.await;
         }
-        Ok(())
     }
 }
 

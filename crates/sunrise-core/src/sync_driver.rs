@@ -372,6 +372,7 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
     // idempotent apply on the peer tolerates replays).
     if build_outbox_frames(
         core,
+        &mut subscribed,
         &mut inflight_ops,
         &mut inflight,
         &mut batch_counter,
@@ -412,6 +413,7 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
             SessionEvent::Submit => {
                 if build_outbox_frames(
                     core,
+                    &mut subscribed,
                     &mut inflight_ops,
                     &mut inflight,
                     &mut batch_counter,
@@ -524,8 +526,18 @@ async fn handle_frame(
 
 /// Drain the persistent outbox (skipping already-in-flight ops), grouping by
 /// stream into `OpBatch` frames with monotonically increasing `batch_id`s.
+///
+/// For every stream we emit an `OpBatch` on we also ensure a `Subscribe` frame
+/// has been sent for its channel (tracked via `subscribed`). Without this, a
+/// device that *creates* a stream mid-session — and therefore only ever *sends*
+/// on its channel — would never subscribe to *receive* peers' ops for that
+/// stream until the next reconnect (the initial `Subscribe` covered only the
+/// streams that existed at connect time, and inbound `StreamCreate` handling
+/// only subscribes the *other* side). Subscribing here makes two-way sync on a
+/// locally-authored stream converge immediately.
 fn build_outbox_frames(
     core: &Core,
+    subscribed: &mut HashSet<[u8; 16]>,
     inflight_ops: &mut HashSet<[u8; 16]>,
     inflight: &mut HashMap<u64, InflightBatch>,
     batch_counter: &mut u64,
@@ -535,6 +547,10 @@ fn build_outbox_frames(
     for (stream_id, ops) in groups {
         if ops.is_empty() {
             continue;
+        }
+        if subscribed.insert(stream_id) {
+            let frame = encode_subscribe_one(stream_id)?;
+            out.push(frame);
         }
         *batch_counter += 1;
         let batch_id = *batch_counter;
