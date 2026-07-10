@@ -11,7 +11,15 @@ use ratatui::Frame;
 use sunrise_domain::Task;
 
 /// Top-level dispatch: pick the renderer that matches the view.
-pub fn render(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+///
+/// With the `images` feature, `preview` is the runtime-owned image state
+/// for the Focus view's preview pane (`None` when nothing is loaded).
+pub fn render(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &ViewState,
+    #[cfg(feature = "images")] preview: Option<&mut crate::images::Preview>,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -26,7 +34,12 @@ pub fn render(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         View::Inbox => render_inbox(f, chunks[1], &state.tasks, state.selected),
         View::Stream => render_stream(f, chunks[1], state),
         View::Search => render_search(f, chunks[1], state),
-        View::Focus => render_focus(f, chunks[1], state),
+        View::Focus => {
+            #[cfg(feature = "images")]
+            render_focus(f, chunks[1], state, preview);
+            #[cfg(not(feature = "images"))]
+            render_focus(f, chunks[1], state);
+        }
     }
     render_status(f, chunks[2], state);
 }
@@ -191,13 +204,32 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     render_task_list(f, chunks[1], &state.tasks, state.selected, "Results");
 }
 
-/// Render the Focus view: the focused task fullscreen, with full detail.
-pub fn render_focus(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+/// Render the Focus view: task detail on the left, attachment/image preview
+/// pane on the right.
+///
+/// With the `images` feature, `preview` holds the image loaded via
+/// `:preview <path>`; `None` (or a build without the feature) renders the
+/// placeholder pane instead.
+pub fn render_focus(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &ViewState,
+    #[cfg(feature = "images")] preview: Option<&mut crate::images::Preview>,
+) {
     let block = Block::default().borders(Borders::ALL).title("Focus");
     let Some(t) = state.focused_task.as_ref() else {
         f.render_widget(Paragraph::new("no task selected").block(block), area);
         return;
     };
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+    let (area, preview_area) = (chunks[0], chunks[1]);
+    #[cfg(feature = "images")]
+    render_preview_pane(f, preview_area, preview);
+    #[cfg(not(feature = "images"))]
+    render_preview_placeholder(f, preview_area);
 
     let dash = || "—".to_string();
     let mut lines = vec![
@@ -246,6 +278,39 @@ pub fn render_focus(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Right pane of the Focus view: the loaded image, or the placeholder.
+#[cfg(feature = "images")]
+fn render_preview_pane(
+    f: &mut Frame<'_>,
+    area: Rect,
+    preview: Option<&mut crate::images::Preview>,
+) {
+    let Some(p) = preview else {
+        render_preview_placeholder(f, area);
+        return;
+    };
+    let block = Block::default().borders(Borders::ALL).title("Preview");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_stateful_widget(ratatui_image::StatefulImage::new(None), inner, p);
+}
+
+/// Placeholder for the Focus preview pane when no image is loaded (or the
+/// `images` feature is compiled out).
+// TODO(core): needs Command::AttachFile + Query::TaskAttachments before task
+// attachments can be listed/previewed here; until then `:preview <path>`
+// side-loads an arbitrary image file.
+fn render_preview_placeholder(f: &mut Frame<'_>, area: Rect) {
+    let msg = "attachment preview — no attachments API in core v1";
+    f.render_widget(
+        Paragraph::new(msg)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title("Preview")),
         area,
     );
 }
@@ -354,17 +419,22 @@ mod tests {
         assert!(s.contains("Tasks"));
     }
 
+    /// Feature-agnostic wrapper for the top-level [`render`] (no preview).
+    fn draw_frame(f: &mut Frame<'_>, state: &ViewState) {
+        let area = f.area();
+        #[cfg(feature = "images")]
+        render(f, area, state, None);
+        #[cfg(not(feature = "images"))]
+        render(f, area, state);
+    }
+
     #[test]
     fn render_dispatches_by_view() {
         let backend = TestBackend::new(60, 12);
         let mut term = Terminal::new(backend).unwrap();
         let mut state = ViewState::default();
         state.view = View::Inbox;
-        term.draw(|f| {
-            let area = f.area();
-            render(f, area, &state);
-        })
-        .unwrap();
+        term.draw(|f| draw_frame(f, &state)).unwrap();
         let buf = term.backend().buffer();
         let s = buffer_text(buf);
         assert!(s.contains("Inbox"));
@@ -379,11 +449,7 @@ mod tests {
         let mut state = ViewState::default();
         state.view = View::Search;
         state.input = "test".into();
-        term.draw(|f| {
-            let area = f.area();
-            render(f, area, &state);
-        })
-        .unwrap();
+        term.draw(|f| draw_frame(f, &state)).unwrap();
         let buf = term.backend().buffer();
         let s = buffer_text(buf);
         assert!(s.contains("Search"));
@@ -393,11 +459,7 @@ mod tests {
     fn frame_to_string(width: u16, height: u16, state: &ViewState) -> String {
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            let area = f.area();
-            render(f, area, state);
-        })
-        .unwrap();
+        term.draw(|f| draw_frame(f, state)).unwrap();
         buffer_text(term.backend().buffer())
     }
 
@@ -485,6 +547,55 @@ mod tests {
         let mut state = ViewState::default();
         state.view = View::Focus;
         insta::assert_snapshot!(frame_to_string(60, 10, &state));
+    }
+
+    #[test]
+    fn snapshot_focus_preview_placeholder() {
+        // No image loaded: the right pane shows the attachments placeholder
+        // (identical with or without the `images` feature).
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        state.focused_task = Some(fixtures::fake_task(3));
+        insta::assert_snapshot!(frame_to_string(70, 10, &state));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn snapshot_focus_preview_halfblocks() {
+        use ratatui_image::picker::Picker;
+
+        // Generate a tiny 4x4 checkerboard PNG at test time — no binary
+        // fixture is committed.
+        let png_path = std::env::temp_dir().join(format!(
+            "sunrise-tui-preview-fixture-{}.png",
+            std::process::id()
+        ));
+        let img = image::RgbImage::from_fn(4, 4, |x, y| {
+            if (x + y) % 2 == 0 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
+        img.save(&png_path).unwrap();
+
+        // Manual Picker (no terminal query): defaults to halfblocks, which
+        // renders deterministic `▀` cells.
+        let mut picker = Picker::new((8, 16));
+        let mut preview = crate::images::load_preview(&mut picker, &png_path).unwrap();
+        std::fs::remove_file(&png_path).ok();
+
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        state.focused_task = Some(fixtures::fake_task(3));
+        let backend = TestBackend::new(70, 10);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            render(f, area, &state, Some(&mut preview));
+        })
+        .unwrap();
+        insta::assert_snapshot!(buffer_text(term.backend().buffer()));
     }
 
     #[test]

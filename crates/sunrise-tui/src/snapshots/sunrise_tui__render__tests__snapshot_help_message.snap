@@ -11,4 +11,4 @@ Sunrise — Today    (0 tasks)
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- NORMAL   :q quit  :view <today|inbox|stream|search|focus>  :help
+ NORMAL   :q quit  :view <today|inbox|stream|search|focus|1-5>  :preview <path>

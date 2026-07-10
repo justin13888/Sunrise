@@ -87,11 +87,22 @@ fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
 async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Error>> {
     let _ = Arc::new(SystemRng); // make explicit that we have an RNG injected via core cfg
     let mut state = ViewState::default();
+    // Image-preview state (`:preview <path>`). Owned here because Picker and
+    // the protocol state are not Clone; render fns borrow them per frame.
+    // init_picker queries the terminal, so this runs after entering the
+    // alternate screen but before the event loop reads input.
+    #[cfg(feature = "images")]
+    let mut picker = sunrise_tui::images::init_picker();
+    #[cfg(feature = "images")]
+    let mut preview: Option<sunrise_tui::images::Preview> = None;
     refresh(core, &mut state).await;
 
     loop {
         term.draw(|f| {
             let area = f.area();
+            #[cfg(feature = "images")]
+            render(f, area, &state, preview.as_mut());
+            #[cfg(not(feature = "images"))]
             render(f, area, &state);
         })?;
 
@@ -162,6 +173,10 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
                 if state.mode == Mode::Normal && state.view == View::Focus {
                     // Close the Focus view back to where it was opened from.
                     state.close_focus();
+                    #[cfg(feature = "images")]
+                    {
+                        preview = None;
+                    }
                     refresh(core, &mut state).await;
                 } else {
                     state.mode = Mode::Normal;
@@ -185,6 +200,23 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
                 state.input.clear();
                 match apply_command(cmd, &mut state) {
                     Some(AppEffect::Quit) => break,
+                    Some(AppEffect::Preview(path)) => {
+                        #[cfg(feature = "images")]
+                        match sunrise_tui::images::load_preview(&mut picker, &path) {
+                            Ok(p) => {
+                                preview = Some(p);
+                                state.status = format!("preview: {}", path.display());
+                            }
+                            Err(e) => state.status = e,
+                        }
+                        // Defensive: apply_command only emits this effect when
+                        // the `images` feature is compiled in.
+                        #[cfg(not(feature = "images"))]
+                        {
+                            let _ = path;
+                            state.status = "images feature disabled".into();
+                        }
+                    }
                     None => refresh(core, &mut state).await,
                 }
             }

@@ -1,0 +1,14 @@
+---
+source: crates/sunrise-tui/src/render.rs
+expression: buffer_text(term.backend().buffer())
+---
+ 1:Today  2:Inbox  3:Stream  4:Search  5:Focus                        
+┌Focus───────────────────────────────────┐┌Preview───────────────────┐
+│[ ] task 3                              ││▀                         │
+│                                        ││                          │
+│state:     Todo                         ││                          │
+│priority:  —                            ││                          │
+│energy:    —                            ││                          │
+│scheduled: —                            ││                          │
+└────────────────────────────────────────┘└──────────────────────────┘
+ NORMAL

@@ -30,6 +30,8 @@
 )]
 
 pub mod command;
+#[cfg(feature = "images")]
+pub mod images;
 pub mod keymap;
 pub mod render;
 pub mod view;
@@ -41,23 +43,26 @@ pub use view::{StreamPane, View, ViewState};
 
 /// Help text listing the command-line commands, shown in the status line by
 /// `:help`. Kept short enough to fit a typical status line.
-pub const HELP_TEXT: &str = ":q quit  :view <today|inbox|stream|search|focus>  :help";
+pub const HELP_TEXT: &str = ":q quit  :view <today|inbox|stream|search|focus|1-5>  :preview <path>";
 
 /// A side effect the runtime (`main`) must perform after a command is applied.
 ///
 /// Kept separate from [`ViewState`] mutation so `apply_command` stays pure and
 /// unit-testable without a running terminal or `Core`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppEffect {
     /// Tear down and exit the application.
     Quit,
+    /// Load an image file into the Focus-view preview pane (`:preview`).
+    /// Only emitted when the `images` cargo feature is enabled.
+    Preview(std::path::PathBuf),
 }
 
 /// Apply a parsed [`Cmd`] to `state`, returning an [`AppEffect`] the runtime
-/// must act on (currently only [`AppEffect::Quit`]).
+/// must act on ([`AppEffect::Quit`], [`AppEffect::Preview`]).
 ///
 /// Pure over `state`: view switches and status-line messages are written here;
-/// I/O (task reloads, terminal teardown) is left to `main`.
+/// I/O (task reloads, image decoding, terminal teardown) is left to `main`.
 #[must_use]
 pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
     match cmd {
@@ -70,6 +75,17 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
         Cmd::ShowHelp => {
             state.status = HELP_TEXT.to_string();
             None
+        }
+        Cmd::Preview(path) => {
+            if state.view != View::Focus {
+                state.status = "preview only in Focus view".into();
+                None
+            } else if cfg!(feature = "images") {
+                Some(AppEffect::Preview(path))
+            } else {
+                state.status = "images feature disabled".into();
+                None
+            }
         }
         Cmd::Error(msg) => {
             state.status = format!("error: {msg}");
@@ -122,5 +138,36 @@ mod apply_tests {
         let effect = apply_command(parse_command(":view focus"), &mut state);
         assert_eq!(effect, None);
         assert_eq!(state.view, View::Focus);
+    }
+
+    #[test]
+    fn preview_outside_focus_is_status_error() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        let effect = apply_command(parse_command(":preview /tmp/x.png"), &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.status, "preview only in Focus view");
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn preview_in_focus_returns_preview_effect() {
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        let effect = apply_command(parse_command(":preview /tmp/x.png"), &mut state);
+        assert_eq!(
+            effect,
+            Some(AppEffect::Preview(std::path::PathBuf::from("/tmp/x.png")))
+        );
+    }
+
+    #[cfg(not(feature = "images"))]
+    #[test]
+    fn preview_in_focus_without_feature_reports_disabled() {
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        let effect = apply_command(parse_command(":preview /tmp/x.png"), &mut state);
+        assert_eq!(effect, None);
+        assert_eq!(state.status, "images feature disabled");
     }
 }

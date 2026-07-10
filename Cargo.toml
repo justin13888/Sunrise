@@ -92,6 +92,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 # --- TUI ---
 ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", default-features = false, features = ["events"] }
+# ratatui-image 2.0 is the release line pinned to ratatui ^0.28.1 (3.x+ needs
+# ratatui 0.29). `crossterm` feature enables terminal protocol detection.
+ratatui-image = { version = "2.0", default-features = false, features = ["crossterm", "rustix"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # --- utility ---
 thiserror = { version = "1.0", default-features = false }

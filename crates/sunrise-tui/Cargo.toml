@@ -19,10 +19,18 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Inline image previews (Kitty/iTerm2/Sixel with halfblocks fallback).
+# Default-on for the shipped binary; the crate must also build without it.
+default = ["images"]
+images = ["dep:ratatui-image", "dep:image"]
+
 [dependencies]
 jiff = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+ratatui-image = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }

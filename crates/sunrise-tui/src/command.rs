@@ -6,6 +6,7 @@
 //! palette) and `docs/07-clients/tui.md` (Command mode).
 
 use crate::view::View;
+use std::path::PathBuf;
 
 /// A parsed command-line command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +17,10 @@ pub enum Cmd {
     SwitchView(View),
     /// Show the help message listing available commands (`:help`).
     ShowHelp,
+    /// Preview an image file in the Focus view (`:preview <path>`). Always
+    /// parsed; without the `images` cargo feature the runtime reports that
+    /// the feature is disabled.
+    Preview(PathBuf),
     /// Unrecognized or malformed command; carries a status-line message.
     Error(String),
 }
@@ -29,20 +34,30 @@ pub enum Cmd {
 pub fn parse_command(input: &str) -> Cmd {
     let trimmed = input.trim();
     let trimmed = trimmed.strip_prefix(':').unwrap_or(trimmed).trim();
-    let mut parts = trimmed.split_whitespace();
-    let Some(name) = parts.next() else {
-        return Cmd::Error("empty command".into());
+    // Split off the command name; `rest` keeps interior spacing so path
+    // arguments with spaces survive intact.
+    let (name, rest) = match trimmed.split_once(char::is_whitespace) {
+        Some((n, r)) => (n, r.trim()),
+        None => (trimmed, ""),
     };
     match name {
+        "" => Cmd::Error("empty command".into()),
         "q" | "quit" => Cmd::Quit,
         "help" | "h" => Cmd::ShowHelp,
-        "view" => match parts.next() {
+        "view" => match rest.split_whitespace().next() {
             None => Cmd::Error("usage: :view <today|inbox|stream|search|focus>".into()),
             Some(arg) => match parse_view(arg) {
                 Some(v) => Cmd::SwitchView(v),
                 None => Cmd::Error(format!("unknown view: {arg}")),
             },
         },
+        "preview" => {
+            if rest.is_empty() {
+                Cmd::Error("usage: :preview <path>".into())
+            } else {
+                Cmd::Preview(PathBuf::from(rest))
+            }
+        }
         other => Cmd::Error(format!("unknown command: {other}")),
     }
 }
@@ -106,6 +121,33 @@ mod tests {
             Cmd::Error(msg) => assert!(msg.contains("nope")),
             other => panic!("expected error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn preview_takes_rest_of_line_as_path() {
+        assert_eq!(
+            parse_command(":preview /tmp/cat.png"),
+            Cmd::Preview(PathBuf::from("/tmp/cat.png"))
+        );
+        // Paths with spaces are kept whole (rest-of-line semantics).
+        assert_eq!(
+            parse_command(":preview /home/me/My Pictures/cat photo.png"),
+            Cmd::Preview(PathBuf::from("/home/me/My Pictures/cat photo.png"))
+        );
+        // Surrounding whitespace is trimmed off the path.
+        assert_eq!(
+            parse_command("  :preview   spaced.png  "),
+            Cmd::Preview(PathBuf::from("spaced.png"))
+        );
+    }
+
+    #[test]
+    fn preview_missing_arg_is_error() {
+        match parse_command(":preview") {
+            Cmd::Error(msg) => assert!(msg.contains("usage")),
+            other => panic!("expected error, got {other:?}"),
+        }
+        assert!(matches!(parse_command(":preview   "), Cmd::Error(_)));
     }
 
     #[test]
