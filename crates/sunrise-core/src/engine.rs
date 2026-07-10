@@ -857,8 +857,8 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO streams
          (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-          parent_id, archived, deleted, created_at_ms, updated_at_ms)
-         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?)",
+          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color)
+         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             Vec::<u8>::new(),
@@ -868,6 +868,8 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
             s.deleted as i64,
             s.created_at.as_millisecond(),
             s.updated_at.as_millisecond(),
+            s.name,
+            s.color.as_str(),
         ],
     )?;
     Ok(())
@@ -877,13 +879,17 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
-        "UPDATE streams SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?
+        "UPDATE streams
+         SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
+             name = ?, color = ?
          WHERE stream_id = ?",
         params![
             parent_blob,
             s.archived as i64,
             s.deleted as i64,
             s.updated_at.as_millisecond(),
+            s.name,
+            s.color.as_str(),
             id_blob,
         ],
     )?;
@@ -894,7 +900,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     let id_blob: Vec<u8> = id.to_vec();
     let row = conn
         .query_row(
-            "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms
+            "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -904,11 +910,13 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, i64>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((parent_raw, archived, deleted, created_ms, updated_ms)) = row else {
+    let Some((parent_raw, archived, deleted, created_ms, updated_ms, name, color_str)) = row else {
         return Ok(None);
     };
     let parent = parent_raw.map(|b| {
@@ -921,9 +929,10 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         id: EntityRef::new(EntityKind::Stream, *id),
         created_at: ms_to_ts(created_ms.max(0)),
         updated_at: ms_to_ts(updated_ms.max(0)),
-        name: String::new(),
+        name,
         description: None,
-        color: StreamColor::Slate,
+        // Unknown/forward-compatible color strings fall back to Slate.
+        color: StreamColor::from_str_lossy(&color_str),
         icon: None,
         parent_id: parent,
         sort_order: String::from("a0"),
@@ -1338,6 +1347,45 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(st.archived, false);
+        // Name and color must round-trip through storage (regression: these
+        // used to come back as "" / Slate).
+        assert_eq!(st.name, "Work");
+        assert_eq!(st.color, StreamColor::Sky);
+    }
+
+    #[test]
+    fn update_stream_persists_name_and_color() {
+        let mut db = db();
+        let e = engine();
+        let s = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    color: Some(StreamColor::Sky),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let patch = StreamPatch {
+            name: Some("Personal".into()),
+            color: Some(StreamColor::Emerald),
+            ..Default::default()
+        };
+        e.apply(
+            &mut db,
+            Command::UpdateStream {
+                id: s.entity,
+                patch,
+            },
+        )
+        .unwrap();
+        let st = match e.query(&db, Query::EntityById(s.entity)).unwrap() {
+            QueryResult::Stream(s) => *s,
+            _ => panic!(),
+        };
+        assert_eq!(st.name, "Personal");
+        assert_eq!(st.color, StreamColor::Emerald);
     }
 
     #[test]

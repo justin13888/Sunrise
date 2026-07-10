@@ -40,6 +40,10 @@ pub enum DbError {
         binary_v: u32,
     },
     /// Schema version mismatch (DB older; needs upgrade).
+    ///
+    /// Retained for wire-code stability ([`ErrorCode::StorageVTooOld`]) but no
+    /// longer produced by [`Db::ensure_schema`], which now auto-applies pending
+    /// migrations instead of erroring on an older DB.
     #[error("STORAGE_V too old: db is {db_v}, binary expects {binary_v}")]
     StorageVTooOld {
         /// Version found in the DB.
@@ -175,7 +179,25 @@ impl Db {
             return Err(DbError::StorageVTooNew { db_v, binary_v });
         }
         if db_v < binary_v {
-            return Err(DbError::StorageVTooOld { db_v, binary_v });
+            // Existing DB behind this binary: apply every pending migration
+            // (id > db_v) in ascending order inside ONE transaction, then pin
+            // the storage version to binary_v.
+            let tx = conn.transaction()?;
+            for m in MIGRATIONS.iter().filter(|m| m.id > db_v) {
+                tx.execute_batch(m.sql)
+                    .map_err(|source| DbError::Migration {
+                        id: m.id,
+                        name: m.name,
+                        source,
+                    })?;
+            }
+            // applied_at_ms stays 0: the storage layer has no injected clock,
+            // matching the fresh-DB path which also writes 0.
+            tx.execute(
+                "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+                rusqlite::params![binary_v, 0],
+            )?;
+            tx.commit()?;
         }
         Ok(())
     }
@@ -247,6 +269,76 @@ mod tests {
         let bogus = VaultRootKey::from_bytes([0u8; 32]);
         let res = Db::open(&path, &bogus);
         assert!(res.is_err(), "wrong vault root must not open the DB");
+    }
+
+    /// Build a DB that has ONLY migration 0001 applied and is stamped
+    /// `storage_v = 1`, simulating a real v1 vault opened by a newer binary.
+    fn seed_v1_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![1_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v1_db_and_preserves_rows() {
+        // Sanity: this test only exercises the upgrade path if the binary is
+        // actually ahead of v1.
+        assert!(u32::from(STORAGE_V) >= 2);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v1_db(&conn);
+
+        // Insert a stream row against the v1 schema (no name/color columns).
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![7u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+
+        // Run the normal open path: pending migrations must auto-apply.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        // Schema upgraded to the binary version.
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // Existing row intact, new columns present with defaults.
+        let (name, color): (String, String) = conn
+            .query_row(
+                "SELECT name, color FROM streams WHERE stream_id = ?",
+                rusqlite::params![vec![7u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "");
+        assert_eq!(color, "slate");
+    }
+
+    #[test]
+    fn rejects_db_from_newer_binary() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v1_db(&conn);
+        // Stamp a version strictly newer than this binary supports.
+        let too_new = u32::from(STORAGE_V) + 1;
+        conn.execute(
+            "UPDATE schema_meta SET storage_v = ?",
+            rusqlite::params![too_new],
+        )
+        .unwrap();
+        let err = Db::ensure_schema(&mut conn).unwrap_err();
+        assert!(matches!(err, DbError::StorageVTooNew { .. }));
     }
 
     #[test]

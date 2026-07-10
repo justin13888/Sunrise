@@ -18,11 +18,18 @@ pub struct Migration {
 }
 
 /// All known migrations, in apply order.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    id: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        id: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        id: 2,
+        name: "stream_names",
+        sql: include_str!("../migrations/0002_stream_names.sql"),
+    },
+];
 
 /// Current storage version (= last migration id).
 #[must_use]

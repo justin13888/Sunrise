@@ -28,6 +28,40 @@ pub enum StreamColor {
     Pink,
 }
 
+impl StreamColor {
+    /// Lowercase wire/storage string form (matches the serde representation).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Slate => "slate",
+            Self::Rose => "rose",
+            Self::Amber => "amber",
+            Self::Emerald => "emerald",
+            Self::Sky => "sky",
+            Self::Indigo => "indigo",
+            Self::Violet => "violet",
+            Self::Pink => "pink",
+        }
+    }
+
+    /// Parse from the lowercase string form. Unknown strings fall back to
+    /// [`StreamColor::Slate`] so a forward-compatible DB never fails to load.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "rose" => Self::Rose,
+            "amber" => Self::Amber,
+            "emerald" => Self::Emerald,
+            "sky" => Self::Sky,
+            "indigo" => Self::Indigo,
+            "violet" => Self::Violet,
+            "pink" => Self::Pink,
+            // "slate" and any unknown value → Slate.
+            _ => Self::Slate,
+        }
+    }
+}
+
 /// Review cadence for a Stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
