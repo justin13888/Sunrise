@@ -75,6 +75,7 @@ pub fn sunrise_open(vault_dir: String, vault_root_hex: String, app_v: String) ->
         clock: Arc::new(sunrise_core::SystemClock),
         rng: Arc::new(SystemRng),
         app: app_v,
+        sync: None,
     };
     let unlock = Unlock::DevicePaired(VaultRootKey::from_bytes(vault_root));
     let res = rt().block_on(Core::open(cfg, unlock));

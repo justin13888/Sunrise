@@ -34,6 +34,7 @@ fn cfg(dir: &std::path::Path) -> CoreConfig {
         clock: Arc::new(FixedClock(Mutex::new(1_700_000_000_000))),
         rng: Arc::new(SystemRng),
         app: "0.1.0+e2e".into(),
+        sync: None,
     }
 }
 

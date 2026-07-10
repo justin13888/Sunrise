@@ -17,14 +17,23 @@ use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
 use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
+use crate::sync_driver::{self, SyncShared, TransportFactory};
 use crate::unlock::Unlock;
 use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::sync::Arc;
 use sunrise_storage::{Db, DbError};
-use sunrise_sync::SyncState;
+use sunrise_wire_protocol::{CursorEntry, SubscribeEntry};
 use thiserror::Error;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+
+/// One outbox op ready to send: `(op_id, sealed envelope bytes)`.
+type OutboxOp = ([u8; 16], Vec<u8>);
+
+/// Outbox ops grouped under one stream: `(stream_id, ops)`.
+type OutboxGroup = ([u8; 16], Vec<OutboxOp>);
 
 /// Errors produced by [`Core`].
 #[derive(Debug, Error)]
@@ -41,6 +50,15 @@ pub enum CoreError {
     /// Device keychain load/create error.
     #[error(transparent)]
     Keychain(#[from] KeychainError),
+    /// Local sync bookkeeping (outbox / cursors) error.
+    #[error(transparent)]
+    SyncLocal(#[from] sunrise_storage::SyncLocalError),
+    /// Op-log access error.
+    #[error(transparent)]
+    OpLog(#[from] sunrise_storage::OpLogError),
+    /// Direct SQLite error from a driver-support read.
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
@@ -54,6 +72,12 @@ pub struct Core {
     engine: Engine,
     changes_tx: broadcast::Sender<DomainEvent>,
     sync_tx: broadcast::Sender<SyncStatus>,
+    /// Live sync state, shared with the driver task. Present even in offline
+    /// mode (state stays `Disconnected`); the driver, when started, owns it.
+    sync_shared: Arc<SyncShared>,
+    /// The spawned driver task, if [`Core::start_sync`] has run. Aborted on
+    /// `close`/drop so the task never leaks.
+    sync_handle: Mutex<Option<JoinHandle<()>>>,
     closed: Mutex<bool>,
 }
 
@@ -97,6 +121,8 @@ impl Core {
                 now_ms: cfg.clock.now_ms(),
             },
         )?;
+        let initial_pending = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
+        let sync_shared = SyncShared::new(sync_tx.clone(), initial_pending);
         Ok(Self {
             cfg,
             db: Mutex::new(db),
@@ -104,6 +130,8 @@ impl Core {
             engine,
             changes_tx,
             sync_tx,
+            sync_shared,
+            sync_handle: Mutex::new(None),
             closed: Mutex::new(false),
         })
     }
@@ -134,6 +162,11 @@ impl Core {
             _ => DomainEvent::Updated(res.entity),
         };
         let _ = self.changes_tx.send(event);
+        // Wake the sync driver (if running) so the new outbox row drains
+        // immediately rather than waiting for the next inbound frame.
+        if self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
         Ok(res)
     }
 
@@ -166,16 +199,19 @@ impl Core {
             return Err(CoreError::Closed);
         }
         if matches!(q, Query::SyncStatus) {
+            // Outbox depth is DB truth (accurate offline and online); the live
+            // session fields come from the driver's `SyncShared`.
             let outbox_pending = {
                 let db = self.db.lock();
                 let n = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
                 u32::try_from(n).unwrap_or(u32::MAX)
             };
+            let (state, last_sync_ms, peer_devices) = self.sync_shared.status_fields();
             return Ok(QueryResult::SyncStatus(SyncStatus {
-                state: SyncState::Disconnected,
+                state,
                 outbox_pending,
-                peer_devices: 0,
-                last_sync_ms: None,
+                peer_devices,
+                last_sync_ms,
             }));
         }
         let db = self.db.lock();
@@ -195,11 +231,184 @@ impl Core {
     }
 
     /// Mark the core closed; subsequent submit/query calls fail with
-    /// [`CoreError::Closed`]. Drops the vault lock when this `Core` drops.
+    /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
+    /// joins it, then drops the vault lock when this `Core` drops.
     pub async fn close(self) -> Result<(), CoreError> {
         *self.closed.lock() = true;
+        self.sync_shared.request_shutdown();
+        let handle = self.sync_handle.lock().take();
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
         Ok(())
     }
+}
+
+/// Driver-support API. These are synchronous DB reads/writes the sync driver
+/// calls *between* awaits — the db mutex is locked and released within each
+/// method, never held across an `.await`.
+impl Core {
+    /// Start the client sync driver against `factory`. Idempotent: a second
+    /// call while a driver is running is a no-op.
+    ///
+    /// Must be called from within a tokio runtime (it spawns the driver task)
+    /// on an `Arc<Core>` so the task can hold a `Weak<Core>` back-reference —
+    /// this keeps [`Core::open`] usable without a runtime for offline / TUI
+    /// sync-off cases. The `factory` yields a fresh transport per connection
+    /// attempt; `sunrise_sync::WsTransport` is the production one, an in-process
+    /// loopback is used in tests.
+    pub fn start_sync(self: &Arc<Self>, factory: TransportFactory) -> Result<(), CoreError> {
+        let mut guard = self.sync_handle.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        self.sync_shared.mark_active();
+        let weak = Arc::downgrade(self);
+        let shared = self.sync_shared.clone();
+        let rng = self.cfg.rng.clone();
+        let handle = tokio::spawn(sync_driver::run(weak, shared, factory, rng));
+        *guard = Some(handle);
+        Ok(())
+    }
+
+    /// App identity string (`<semver>+<platform>`) for the sync `Hello`.
+    pub(crate) fn app_string(&self) -> &str {
+        &self.cfg.app
+    }
+
+    /// Injected wall clock, in ms since the Unix epoch.
+    pub(crate) fn now_ms(&self) -> u64 {
+        self.cfg.clock.now_ms()
+    }
+
+    /// This device's self-issued cert (canonical CBOR). A peer passes it to
+    /// [`Command::TrustDevice`] to accept this device's ops.
+    #[must_use]
+    pub fn device_cert(&self) -> Vec<u8> {
+        self.engine.keychain().cert_blob().to_vec()
+    }
+
+    /// Count of unacked outbox rows (DB truth).
+    pub(crate) fn sync_pending(&self) -> Result<u64, CoreError> {
+        let db = self.db.lock();
+        Ok(sunrise_storage::Outbox::pending_count(&db)?)
+    }
+
+    /// Build the subscribe set: every known stream (the zero meta/inbox stream,
+    /// every stream we have ops for, and every declared stream) with its
+    /// per-`(device)` cursors from `sync_cursors`.
+    pub(crate) fn sync_subscribe_entries(&self) -> Result<Vec<SubscribeEntry>, CoreError> {
+        use rusqlite::params;
+        let db = self.db.lock();
+        let conn = db.conn();
+        let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
+        streams.insert([0u8; 16]);
+        {
+            let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
+            let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                streams.insert(to16(&row?));
+            }
+        }
+        {
+            let mut stmt = conn.prepare("SELECT stream_id FROM streams WHERE deleted = 0")?;
+            let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                streams.insert(to16(&row?));
+            }
+        }
+        let mut entries = Vec::with_capacity(streams.len());
+        for stream_id in streams {
+            let mut stmt = conn.prepare(
+                "SELECT device_id, last_applied_seq FROM sync_cursors WHERE stream_id = ?",
+            )?;
+            let rows = stmt.query_map(params![&stream_id[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let mut cursors = Vec::new();
+            for row in rows {
+                let (dev, seq) = row?;
+                cursors.push(CursorEntry {
+                    device_id: to16(&dev),
+                    last_applied_seq: u64::try_from(seq).unwrap_or(0),
+                });
+            }
+            entries.push(SubscribeEntry { cursors, stream_id });
+        }
+        Ok(entries)
+    }
+
+    /// Load unacked outbox rows (skipping in-flight op ids), grouped by stream
+    /// in enqueue order, each op paired with its sealed envelope bytes.
+    pub(crate) fn sync_outbox_grouped(
+        &self,
+        skip: &HashSet<[u8; 16]>,
+    ) -> Result<Vec<OutboxGroup>, CoreError> {
+        let db = self.db.lock();
+        let unacked = sunrise_storage::Outbox::list_unacked(&db)?;
+        // Preserve first-seen stream order for stable batch grouping.
+        let mut order: Vec<[u8; 16]> = Vec::new();
+        let mut groups: std::collections::HashMap<[u8; 16], Vec<OutboxOp>> =
+            std::collections::HashMap::new();
+        for entry in unacked {
+            if skip.contains(&entry.op_id) {
+                continue;
+            }
+            let Some(env) = sunrise_storage::OpLog::get_envelope(&db, &entry.op_id)? else {
+                continue;
+            };
+            groups
+                .entry(entry.stream_id)
+                .or_insert_with(|| {
+                    order.push(entry.stream_id);
+                    Vec::new()
+                })
+                .push((entry.op_id, env));
+        }
+        Ok(order
+            .into_iter()
+            .map(|s| {
+                let ops = groups.remove(&s).unwrap_or_default();
+                (s, ops)
+            })
+            .collect())
+    }
+
+    /// Mark `op_ids` acked in the persistent outbox; returns the new pending
+    /// count.
+    pub(crate) fn sync_mark_acked(&self, op_ids: &[[u8; 16]]) -> Result<u64, CoreError> {
+        let now = self.cfg.clock.now_ms();
+        let mut db = self.db.lock();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            for id in op_ids {
+                sunrise_storage::Outbox::mark_acked(tx, id, now)
+                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+            }
+            Ok(())
+        })?;
+        Ok(sunrise_storage::Outbox::pending_count(&db)?)
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        // Best-effort: signal the driver and abort the task so it never leaks.
+        // (Can't await a join in `Drop`; abort is sufficient — the driver only
+        // yields at `.await` points, never mid-DB-write.)
+        self.sync_shared.request_shutdown();
+        if let Some(h) = self.sync_handle.lock().take() {
+            h.abort();
+        }
+    }
+}
+
+/// Left-pad / truncate a DB blob to a 16-byte id.
+fn to16(b: &[u8]) -> [u8; 16] {
+    let mut a = [0u8; 16];
+    let take = b.len().min(16);
+    a[..take].copy_from_slice(&b[..take]);
+    a
 }
 
 fn format_iso8601(ms: u64) -> String {
@@ -232,6 +441,7 @@ mod tests {
             clock: Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
             rng: Arc::new(SystemRng),
             app: "0.1.0+test".into(),
+            sync: None,
         }
     }
 

@@ -31,6 +31,7 @@ pub async fn init_core(vault_dir: PathBuf, vault_root: [u8; 32]) -> Result<(), S
         clock: Arc::new(sunrise_core::SystemClock),
         rng: Arc::new(SystemRng),
         app: env!("CARGO_PKG_VERSION").into(),
+        sync: None,
     };
     let unlock = Unlock::DevicePaired(VaultRootKey::from_bytes(vault_root));
     let core = Core::open(cfg, unlock).await.map_err(|e| e.to_string())?;

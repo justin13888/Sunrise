@@ -25,9 +25,13 @@ pub mod cursor;
 pub mod outbox;
 pub mod state;
 pub mod transport;
+#[cfg(feature = "ws")]
+pub mod ws;
 
 pub use backoff::Backoff;
 pub use cursor::{Cursor, CursorMap};
 pub use outbox::Outbox;
 pub use state::{SyncState, SyncStateMachine, SyncStateTransition};
 pub use transport::{Transport, TransportError};
+#[cfg(feature = "ws")]
+pub use ws::WsTransport;

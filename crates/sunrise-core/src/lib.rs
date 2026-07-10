@@ -40,6 +40,7 @@ pub mod events;
 pub mod inner_op;
 pub mod keychain;
 pub mod queries;
+pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
 
@@ -50,5 +51,6 @@ pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
 pub use keychain::{Keychain, KeychainError};
 pub use queries::{Query, QueryResult};
+pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TransportFactory};
 pub use unlock::Unlock;
 pub use vault_lock::{VaultLock, VaultLockError};

@@ -149,6 +149,12 @@ impl Engine {
         }
     }
 
+    /// This device's keychain (device id, signing key, cert). Used by the sync
+    /// driver / trust flows on `Core`.
+    pub(crate) fn keychain(&self) -> &Keychain {
+        &self.keychain
+    }
+
     /// Apply a command end-to-end inside a single transaction.
     pub fn apply(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
         match cmd {
@@ -183,12 +189,11 @@ impl Engine {
             Query::StreamList => self.query_stream_list(db),
             Query::Routines => self.query_routines(db),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
-            Query::SyncStatus => Ok(QueryResult::SyncStatus(crate::events::SyncStatus {
-                state: sunrise_sync::SyncState::Disconnected,
-                outbox_pending: 0,
-                peer_devices: 0,
-                last_sync_ms: None,
-            })),
+            // Sync status is owned by `Core` (it reads the live `SyncShared` and
+            // the DB outbox count); the engine never serves it.
+            Query::SyncStatus => Err(EngineError::Invalid(
+                "SyncStatus is served by Core, not the Engine".into(),
+            )),
         }
     }
 

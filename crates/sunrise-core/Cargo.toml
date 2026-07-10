@@ -30,6 +30,7 @@ sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-storage = { workspace = true }
 sunrise-sync = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

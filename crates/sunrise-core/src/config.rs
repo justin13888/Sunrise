@@ -64,6 +64,9 @@ pub struct CoreConfig {
     pub rng: Arc<dyn Rng>,
     /// `<semver>+<platform>` for log records and Hello frames.
     pub app: String,
+    /// Sync configuration. `None` = offline mode (no driver task spawned;
+    /// current single-device behavior).
+    pub sync: Option<crate::sync_driver::SyncConfig>,
 }
 
 impl std::fmt::Debug for CoreConfig {
@@ -84,6 +87,7 @@ impl CoreConfig {
             clock: Arc::new(SystemClock),
             rng: Arc::new(SystemRng),
             app: app.into(),
+            sync: None,
         }
     }
 }
@@ -112,6 +116,7 @@ mod tests {
             }),
             rng: Arc::new(SystemRng),
             app: "0.1.0+test".into(),
+            sync: None,
         };
         assert_eq!(cfg.clock.now_ms(), 123);
     }

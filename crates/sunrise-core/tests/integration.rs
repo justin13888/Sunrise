@@ -38,6 +38,7 @@ fn cfg(dir: &std::path::Path) -> CoreConfig {
         }),
         rng: Arc::new(SystemRng),
         app: "0.1.0+integration".into(),
+        sync: None,
     }
 }
 

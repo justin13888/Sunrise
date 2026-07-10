@@ -2524,6 +2524,7 @@ dependencies = [
  "sunrise-id",
  "sunrise-storage",
  "sunrise-sync",
+ "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2745,12 +2746,14 @@ name = "sunrise-sync"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "serde",
  "sunrise-cbor",
  "sunrise-error",
  "sunrise-wire-protocol",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
