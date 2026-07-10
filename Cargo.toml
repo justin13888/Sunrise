@@ -126,6 +126,10 @@ getrandom = { version = "0.2", default-features = false, features = ["std"] }
 proptest = { version = "1.5", default-features = false, features = ["std"] }
 proptest-derive = "0.5"
 insta = { version = "1.40", default-features = false, features = ["yaml"] }
+# `cargo_bench_support` keeps the Criterion harness (raw sample.json output +
+# CLI arg parsing) while dropping the plotters/gnuplot report backends we don't
+# ship in CI. Benches live in `crates/sunrise-bench` (harness = false).
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 # --- internal workspace crates ---
 sunrise-log = { path = "crates/sunrise-log", version = "0.1.0" }
@@ -146,6 +150,7 @@ sunrise-server = { path = "crates/sunrise-server", version = "0.1.0" }
 sunrise-tui = { path = "crates/sunrise-tui", version = "0.1.0" }
 sunrise-integrations = { path = "crates/sunrise-integrations", version = "0.1.0" }
 sunrise-core-bindings = { path = "crates/sunrise-core-bindings", version = "0.1.0" }
+sunrise-bench = { path = "crates/sunrise-bench", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

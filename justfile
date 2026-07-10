@@ -71,6 +71,17 @@ rust-check:
 rust-test:
     cargo test --workspace --all-targets
 
+# Run the Criterion benchmark suite (submit / query_today / fts / ws_handshake)
+[group('rust')]
+bench:
+    cargo bench -p sunrise-bench
+
+# Run the benches, then merge the results into bench/baseline.json for this platform
+[group('rust')]
+bench-baseline:
+    cargo bench -p sunrise-bench
+    cargo run -p sunrise-bench --bin baseline
+
 # --- Aggregates (mirror the git hooks; handy to run by hand) ---
 
 # Everything the pre-commit hook runs

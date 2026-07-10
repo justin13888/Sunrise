@@ -1,0 +1,51 @@
+[package]
+name = "sunrise-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Criterion benchmarks + deterministic synthetic-vault generator + baseline-populate tooling."
+
+[lints]
+workspace = true
+
+[dependencies]
+sunrise-core = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-storage = { workspace = true }
+sunrise-crypto = { workspace = true }
+jiff = { workspace = true }
+parking_lot = { workspace = true }
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+criterion = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+ciborium = { workspace = true }
+sunrise-server = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
+
+[[bench]]
+name = "submit"
+harness = false
+
+[[bench]]
+name = "query_today"
+harness = false
+
+[[bench]]
+name = "fts"
+harness = false
+
+[[bench]]
+name = "ws_handshake"
+harness = false
