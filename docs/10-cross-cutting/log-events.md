@@ -6,7 +6,7 @@ This file catalogs every `ev` value emitted across the workspace. Adding a
 new event name requires a one-line entry here so analysts can `grep` for
 meaning. The per-package ev-catalog snapshot test references this list.
 
-See [`spec/10-cross-cutting/logging.md`](../spec/10-cross-cutting/logging.md)
+See [`logging.md`](./logging.md)
 for the structured-record schema and grammar.
 
 ---

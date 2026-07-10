@@ -2,7 +2,7 @@
 
 `status: living`
 
-This file tracks the state of the v1 implementation against `spec/`.
+This file tracks the state of the v1 implementation against `docs/`.
 Each phase has a per-section file (added as the surface stabilizes); this
 overview is the entry point.
 
@@ -55,7 +55,7 @@ follow-up sessions or platform-engineer ownership:
    benches themselves are written.
 7. **Mutation testing**: `cargo-mutants` 90% gate runs as part of the
    release pipeline; the per-crate target list is documented in
-   `spec/10-cross-cutting/testing.md`.
+   `docs/10-cross-cutting/testing.md`.
 
 ## Workspace test count
 

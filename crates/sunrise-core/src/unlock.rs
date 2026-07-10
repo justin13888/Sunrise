@@ -2,7 +2,7 @@
 
 use sunrise_crypto::keys::VaultRootKey;
 
-/// Three unlock modes per `spec/01-architecture/shared-core.md`.
+/// Three unlock modes per `docs/01-architecture/shared-core.md`.
 #[derive(Debug)]
 pub enum Unlock {
     /// User typed a passphrase; the caller derives the vault root via

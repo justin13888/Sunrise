@@ -1,4 +1,4 @@
-//! Stream entity per `spec/02-domain/streams.md`.
+//! Stream entity per `docs/02-domain/streams.md`.
 
 use crate::common::NoteBody;
 use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};

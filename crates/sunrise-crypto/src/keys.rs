@@ -1,6 +1,6 @@
 //! Key newtypes with `Zeroize`-on-drop and constant-time equality.
 //!
-//! Per `spec/03-crypto/identity-and-device-keys.md`:
+//! Per `docs/03-crypto/identity-and-device-keys.md`:
 //!
 //! - **Identity** keys (long-lived, recoverable): Ed25519 signing pair `ID_S`
 //!   and X25519 DH pair `ID_D`. Generated once per user, restored from

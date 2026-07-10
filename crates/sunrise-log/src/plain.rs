@@ -12,7 +12,7 @@
 //! only way to read its content is `expose()`, which is banned in
 //! `telemetry/`, `logging/`, and `observability/` modules by a CI grep.
 //!
-//! See `spec/10-cross-cutting/logging.md` §6.
+//! See `docs/10-cross-cutting/logging.md` §6.
 
 use core::fmt;
 use zeroize::Zeroize;

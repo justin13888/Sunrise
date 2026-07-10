@@ -1,6 +1,6 @@
 //! Canonical CBOR encode/decode wrapper around `ciborium`.
 //!
-//! Per `spec/03-crypto/data-encryption-format.md`, byte-exact AAD requires
+//! Per `docs/03-crypto/data-encryption-format.md`, byte-exact AAD requires
 //! deterministic CBOR (RFC 8949 §4.2 "Core Deterministic Encoding"). Our
 //! requirements:
 //!

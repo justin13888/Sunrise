@@ -1,6 +1,6 @@
 //! Asserts that `codes.toml` and the hand-maintained Rust enum stay aligned.
 //!
-//! Per `spec/10-cross-cutting/error-handling.md`, the TOML manifest is the
+//! Per `docs/10-cross-cutting/error-handling.md`, the TOML manifest is the
 //! source of truth and the Rust enum is a generated mirror; until the
 //! build-script lands, this test catches drift.
 

@@ -1,6 +1,6 @@
 //! Recovery flow: BIP-39 → seed → unseal recovery blob → restore identity.
 //!
-//! Per `spec/03-crypto/recovery.md`. The flow:
+//! Per `docs/03-crypto/recovery.md`. The flow:
 //!
 //! 1. User logs in via OIDC on a fresh device.
 //! 2. Client fetches the encrypted recovery blob from the server.

@@ -1,6 +1,6 @@
 //! Short Authentication String — 6-digit decimal SAS code.
 //!
-//! Per `spec/03-crypto/pairing-and-onboarding.md`:
+//! Per `docs/03-crypto/pairing-and-onboarding.md`:
 //!
 //! ```text
 //! sas_int = decimal_be(BLAKE3("sunrise.pair_sas.v1" || handshake_hash, 3)) mod 1_000_000

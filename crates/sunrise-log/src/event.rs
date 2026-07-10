@@ -1,9 +1,9 @@
 //! Event names.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §3, the `ev` field follows the
+//! Per `docs/10-cross-cutting/logging.md` §3, the `ev` field follows the
 //! grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. The first segment is a
 //! short package id; subsequent segments are hierarchical. New event names
-//! require an entry in `docs/log-events.md` (gated by the per-package
+//! require an entry in `docs/10-cross-cutting/log-events.md` (gated by the per-package
 //! catalog snapshot test).
 
 use thiserror::Error;

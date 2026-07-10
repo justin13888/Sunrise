@@ -1,6 +1,6 @@
 //! `OpEnvelope` — byte-exact CBOR codec, sign, encrypt, verify, decrypt.
 //!
-//! Per `spec/03-crypto/data-encryption-format.md`:
+//! Per `docs/03-crypto/data-encryption-format.md`:
 //!
 //! ```cddl
 //! OpEnvelope = {

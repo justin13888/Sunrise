@@ -1,7 +1,7 @@
-//! Attachment metadata per `spec/02-domain/attachments.md`.
+//! Attachment metadata per `docs/02-domain/attachments.md`.
 //!
 //! The blob bytes themselves live in the Stream's blob store (chunked &
-//! encrypted; see `spec/03-crypto/data-encryption-format.md` §blob-chunks).
+//! encrypted; see `docs/03-crypto/data-encryption-format.md` §blob-chunks).
 //! This entity carries only the per-attachment metadata.
 
 use chrono::{DateTime, Utc};

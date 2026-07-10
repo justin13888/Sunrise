@@ -1,4 +1,4 @@
-//! Error category — mirrors `spec/10-cross-cutting/error-handling.md` §kind.
+//! Error category — mirrors `docs/10-cross-cutting/error-handling.md` §kind.
 
 use serde::{Deserialize, Serialize};
 

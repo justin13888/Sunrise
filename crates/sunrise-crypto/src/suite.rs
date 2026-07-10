@@ -1,8 +1,8 @@
 //! v1 crypto suite identifiers.
 //!
-//! Per `spec/03-crypto/primitives.md`. The suite identifier is byte-exact
+//! Per `docs/03-crypto/primitives.md`. The suite identifier is byte-exact
 //! and frozen; new suites get new ids and a key-rotation flow per
-//! `spec/03-crypto/key-rotation.md`.
+//! `docs/03-crypto/key-rotation.md`.
 
 /// 16-byte HPKE suite identifier per RFC 9180 §7.1: KEM(0x0020) ||
 /// KDF(0x0001) || AEAD(0x0003) — DHKEM(X25519, HKDF-SHA-256), HKDF-SHA-256,

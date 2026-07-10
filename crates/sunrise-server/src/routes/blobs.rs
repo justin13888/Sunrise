@@ -1,6 +1,6 @@
 //! Blob 2PC outbox routes (`/api/v1/blobs/init`, `/finalize`, `/{id}`).
 //!
-//! Per `spec/06-server/api.md`. v1 self-host: pending uploads go to
+//! Per `docs/06-server/api.md`. v1 self-host: pending uploads go to
 //! `<blob_root>/pending/<upload_id>/`, finalized blobs are committed to
 //! `<blob_root>/<aa>/<bb>/<id>` (BLAKE3-content-addressed). The
 //! `finalize` step verifies the supplied chunk hashes against the

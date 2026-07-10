@@ -1,4 +1,4 @@
-//! Note entity per `spec/02-domain/notes.md`.
+//! Note entity per `docs/02-domain/notes.md`.
 //!
 //! Notes are children of Task / Stream / Block. They cannot float free.
 

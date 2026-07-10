@@ -1,6 +1,6 @@
 //! Content-addressed encrypted blob store.
 //!
-//! Per `spec/04-storage/blob-store.md`. Each chunk is its own file under
+//! Per `docs/04-storage/blob-store.md`. Each chunk is its own file under
 //! `$VAULT/blobs/<blob_id_hex_2>/<blob_id_hex>/<chunk_idx>.bin`. Storage
 //! is opaque ciphertext; integrity comes from the AEAD tag inside.
 

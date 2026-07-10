@@ -1,4 +1,4 @@
-//! 5-byte magic prefix per `spec/10-cross-cutting/protocol-versioning.md` §3.
+//! 5-byte magic prefix per `docs/10-cross-cutting/protocol-versioning.md` §3.
 //!
 //! Layout:
 //!

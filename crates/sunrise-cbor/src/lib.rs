@@ -1,9 +1,9 @@
 //! Deterministic CBOR + magic-prefix utilities + v1 version constants.
 //!
 //! See:
-//! - `spec/10-cross-cutting/protocol-versioning.md` §3 — uniform 5-byte
+//! - `docs/10-cross-cutting/protocol-versioning.md` §3 — uniform 5-byte
 //!   magic prefix `"SR" + kind:u8 + version:u16-be`.
-//! - `spec/03-crypto/data-encryption-format.md` — canonical CBOR
+//! - `docs/03-crypto/data-encryption-format.md` — canonical CBOR
 //!   serialization rules for the op envelope.
 //!
 //! Canonical CBOR rules enforced here:

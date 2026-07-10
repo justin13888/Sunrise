@@ -1,6 +1,6 @@
 //! Noise XX pairing handshake + QR payload + SAS code computation.
 //!
-//! Per `spec/03-crypto/pairing-and-onboarding.md`. v1 implements:
+//! Per `docs/03-crypto/pairing-and-onboarding.md`. v1 implements:
 //!
 //! - QR payload encode/decode (lex-ordered JSON UTF-8, base64url-no-pad).
 //! - Short Authentication String (SAS) — 6-digit decimal derived from the

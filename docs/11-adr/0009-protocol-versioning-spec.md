@@ -10,7 +10,7 @@ These were three local treatments of versioning. The audit revealed that no docu
 
 ## Decision
 
-Add `spec/10-cross-cutting/protocol-versioning.md` as the authoritative versioning spec. It:
+Add `docs/10-cross-cutting/protocol-versioning.md` as the authoritative versioning spec. It:
 
 1. Names the four versioned surfaces (wire, doc-schema, crypto-suite, storage).
 2. Pins v1 constants for each.

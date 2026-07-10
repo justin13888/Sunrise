@@ -12,7 +12,7 @@ A one-shot implementing agent would either pick a different logging library per 
 
 ## Decision
 
-Add `spec/10-cross-cutting/logging.md` as the canonical logging spec. It:
+Add `docs/10-cross-cutting/logging.md` as the canonical logging spec. It:
 
 1. Defines five levels (`trace`/`debug`/`info`/`warn`/`error`) with platform mappings.
 2. Defines an NDJSON record schema with required fields (`ts`, `lv`, `ev`, `pkg`, `mod`, `span`, `trace`, `dev`, `app`, `proto`, `ctx`, `msg`, `err`).

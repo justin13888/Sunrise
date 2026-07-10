@@ -68,7 +68,7 @@ Field rules:
 |---|---|---|---|
 | `ts` | yes | RFC 3339 with millisecond precision, UTC, `Z` suffix | Single source of truth for ordering within a device. |
 | `lv` | yes | `"trace"\|"debug"\|"info"\|"warn"\|"error"` | Lowercase. |
-| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name. The first segment is the package's short id (`sync`, `crypto`, `core`, `db`, `ui`, `srv`, `int`, …). New `ev` values require a one-line entry in `docs/log-events.md` so analysts can grep for meaning. |
+| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name. The first segment is the package's short id (`sync`, `crypto`, `core`, `db`, `ui`, `srv`, `int`, …). New `ev` values require a one-line entry in [`log-events.md`](./log-events.md) so analysts can grep for meaning. |
 | `pkg` | yes | string | Cargo crate name, npm package name, or platform module name. |
 | `mod` | yes | string | Rust module path / TS file path / Swift file / Kotlin class. |
 | `span` | yes | ULID | The current span id (see §4). |

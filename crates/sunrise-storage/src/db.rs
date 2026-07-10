@@ -1,6 +1,6 @@
 //! SQLite/SQLCipher database wrapper.
 //!
-//! Per `spec/04-storage/local-database.md`:
+//! Per `docs/04-storage/local-database.md`:
 //!
 //! ```sql
 //! PRAGMA journal_mode   = WAL;

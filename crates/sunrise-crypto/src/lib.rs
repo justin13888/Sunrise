@@ -2,11 +2,11 @@
 //!
 //! Implements:
 //!
-//! - `spec/03-crypto/primitives.md` — algorithm choices and parameters.
-//! - `spec/03-crypto/identity-and-device-keys.md` — key hierarchy, identity-id.
-//! - `spec/03-crypto/data-encryption-format.md` — `OpEnvelope` byte-exact codec.
-//! - `spec/03-crypto/key-rotation.md` — Stream-key wrap/unwrap.
-//! - `spec/03-crypto/recovery.md` — Argon2id-derived recovery blob.
+//! - `docs/03-crypto/primitives.md` — algorithm choices and parameters.
+//! - `docs/03-crypto/identity-and-device-keys.md` — key hierarchy, identity-id.
+//! - `docs/03-crypto/data-encryption-format.md` — `OpEnvelope` byte-exact codec.
+//! - `docs/03-crypto/key-rotation.md` — Stream-key wrap/unwrap.
+//! - `docs/03-crypto/recovery.md` — Argon2id-derived recovery blob.
 //!
 //! All algorithm choices are FROZEN for v1 (ADR-0004): Ed25519, X25519,
 //! XChaCha20-Poly1305, ChaCha20-Poly1305 (HPKE-internal), HPKE Base, Noise XX,

@@ -1,6 +1,6 @@
 //! Sunrise domain entities and validation.
 //!
-//! Implements `spec/02-domain/`. Each entity lives in its own module; the
+//! Implements `docs/02-domain/`. Each entity lives in its own module; the
 //! module-level docs cite the relevant spec file. Validation rules return
 //! [`sunrise_error::ErrorCode`] values so the core can surface them to the
 //! UI without translation.

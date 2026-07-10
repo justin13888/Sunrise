@@ -1,6 +1,6 @@
 //! v1 protocol-version constants.
 //!
-//! Per `spec/10-cross-cutting/protocol-versioning.md` §2. The four versioned
+//! Per `docs/10-cross-cutting/protocol-versioning.md` §2. The four versioned
 //! surfaces are exposed as `u16` because the magic-prefix layout encodes
 //! them in 2 bytes big-endian; the wire protocol's `Hello` / `HelloAck`
 //! frames also carry them as small unsigned ints.

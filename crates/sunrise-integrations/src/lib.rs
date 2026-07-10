@@ -1,6 +1,6 @@
 //! External integrations.
 //!
-//! Implements `spec/09-integrations/`. v1 ships:
+//! Implements `docs/09-integrations/`. v1 ships:
 //!
 //! - [`ical`]: RFC 5545 import/export (subset).
 //! - [`gcal`]: Google Calendar OAuth flow + event sync (interface only;

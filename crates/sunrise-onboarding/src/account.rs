@@ -1,6 +1,6 @@
 //! Account creation request / response shapes.
 //!
-//! Per `spec/06-server/api.md` §POST /api/v1/accounts.
+//! Per `docs/06-server/api.md` §POST /api/v1/accounts.
 
 use serde::{Deserialize, Serialize};
 

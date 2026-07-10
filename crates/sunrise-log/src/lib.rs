@@ -1,6 +1,6 @@
 //! Sunrise's layered NDJSON logging contract.
 //!
-//! Implements `spec/10-cross-cutting/logging.md`. This crate is the only
+//! Implements `docs/10-cross-cutting/logging.md`. This crate is the only
 //! place in the workspace that writes to a log sink; every other crate emits
 //! events through the macros and types re-exported here. Direct calls to
 //! `println!`, `eprintln!`, `tracing::info!`, etc. are forbidden in shipped

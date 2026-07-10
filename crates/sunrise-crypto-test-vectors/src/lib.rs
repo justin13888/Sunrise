@@ -1,7 +1,7 @@
 //! Frozen byte-exact test vectors for the v1 crypto suite.
 //!
 //! Every entry here MUST stay byte-stable across releases; any change is a
-//! crypto-suite version bump per `spec/03-crypto/key-rotation.md`. The crate
+//! crypto-suite version bump per `docs/03-crypto/key-rotation.md`. The crate
 //! is consumed only by the `sunrise-crypto` test suite; the binary form is
 //! committed as `vectors/*.{cbor,json}` files.
 

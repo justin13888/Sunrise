@@ -1,6 +1,6 @@
 //! Token-bucket throttle per `(ev, lv)`.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §9: 100 tokens, refill 10/sec.
+//! Per `docs/10-cross-cutting/logging.md` §9: 100 tokens, refill 10/sec.
 //! When the bucket is empty, records are dropped and a single
 //! `log.throttled` record is emitted at most once per minute carrying
 //! `n_dropped`.

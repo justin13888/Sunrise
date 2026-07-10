@@ -1,6 +1,6 @@
 //! `DeviceCert` — signed certificate binding a device to an identity.
 //!
-//! Per `spec/03-crypto/identity-and-device-keys.md`:
+//! Per `docs/03-crypto/identity-and-device-keys.md`:
 //!
 //! ```cddl
 //! DeviceCert = {

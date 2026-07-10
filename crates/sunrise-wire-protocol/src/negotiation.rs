@@ -1,6 +1,6 @@
 //! Hello / HelloAck session negotiation.
 //!
-//! Per `spec/10-cross-cutting/protocol-versioning.md` §4.
+//! Per `docs/10-cross-cutting/protocol-versioning.md` §4.
 
 use crate::capability::{CapabilityBits, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS};
 use serde::{Deserialize, Serialize};

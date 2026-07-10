@@ -1,6 +1,6 @@
 //! `init(LogConfig)` — global bootstrap.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §10, every binary calls
+//! Per `docs/10-cross-cutting/logging.md` §10, every binary calls
 //! `sunrise_log::init(LogConfig)` exactly once at startup, before any other
 //! workspace code runs. After `init`, the global dispatcher routes records
 //! to the configured sinks. Calling `init` more than once is allowed only

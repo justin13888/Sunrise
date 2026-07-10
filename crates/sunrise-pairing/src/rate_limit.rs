@@ -1,6 +1,6 @@
 //! Pairing rate limits + email-hash helper.
 //!
-//! Per `spec/03-crypto/pairing-and-onboarding.md`.
+//! Per `docs/03-crypto/pairing-and-onboarding.md`.
 
 const EMAIL_HASH_DOMAIN: &str = "sunrise.account_email_hash.v1";
 

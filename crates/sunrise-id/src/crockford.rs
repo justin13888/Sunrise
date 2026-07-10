@@ -1,6 +1,6 @@
 //! Crockford base-32 codec, ULID variant.
 //!
-//! Per `spec/02-domain/identifiers.md`: a ULID is 128 bits encoded in 26
+//! Per `docs/02-domain/identifiers.md`: a ULID is 128 bits encoded in 26
 //! Crockford base-32 chars. The encoding pads two zero bits at the top so
 //! that 26 × 5 = 130 bits cover the 128 payload bits.
 //!

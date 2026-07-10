@@ -1,6 +1,6 @@
 //! Op log access on top of [`crate::Db`].
 //!
-//! Per `spec/04-storage/op-log.md`. The op log is an append-only table of
+//! Per `docs/04-storage/op-log.md`. The op log is an append-only table of
 //! envelope blobs keyed by `op_id`; insertion happens in the same
 //! transaction as any materialized-state mutation derived from the op.
 

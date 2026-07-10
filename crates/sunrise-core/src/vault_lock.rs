@@ -1,6 +1,6 @@
 //! Vault advisory lock.
 //!
-//! Per `spec/01-architecture/shared-core.md`: exactly one [`crate::Core`] per
+//! Per `docs/01-architecture/shared-core.md`: exactly one [`crate::Core`] per
 //! vault path per process. The lock file (`<vault>/core.lock`) is acquired
 //! at open time; on contention we wait up to 250ms then surface a typed
 //! error containing the holder's PID + start timestamp (read from the lock

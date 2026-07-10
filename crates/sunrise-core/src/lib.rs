@@ -1,6 +1,6 @@
 //! Sunrise core public API.
 //!
-//! Implements `spec/01-architecture/shared-core.md`. The [`Core`] type is the
+//! Implements `docs/01-architecture/shared-core.md`. The [`Core`] type is the
 //! single entry point UIs use: `open` the vault, `submit` commands, run
 //! `query`s, observe `changes`/`sync_status`. `close` runs the graceful
 //! shutdown.

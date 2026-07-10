@@ -1,6 +1,6 @@
 //! Capability bitfield.
 //!
-//! Per `spec/10-cross-cutting/protocol-versioning.md` §5: 64-bit field;
+//! Per `docs/10-cross-cutting/protocol-versioning.md` §5: 64-bit field;
 //! bits 0..32 are server-side, bits 32..64 are client-side.
 
 /// Wrapped 64-bit capability bitfield.

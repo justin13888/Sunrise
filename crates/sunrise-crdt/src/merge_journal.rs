@@ -1,6 +1,6 @@
 //! Merge journal entries — record losing/winning ops for review.
 //!
-//! Per `spec/05-sync/conflict-resolution.md`. Each scalar LWW resolution
+//! Per `docs/05-sync/conflict-resolution.md`. Each scalar LWW resolution
 //! and each task-move resolution writes a journal entry; UI exposes the
 //! recent entries in the review surface.
 

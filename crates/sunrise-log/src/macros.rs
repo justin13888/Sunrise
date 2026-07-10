@@ -1,6 +1,6 @@
 //! Public macros: `event!`, `error_event!`.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §6, the type system enforces that
+//! Per `docs/10-cross-cutting/logging.md` §6, the type system enforces that
 //! `Plain<T>` cannot be passed in any record field. The macros therefore
 //! accept values exclusively through the [`crate::ctx::CtxValue`] enum,
 //! which has no `Plain<T>` variant.

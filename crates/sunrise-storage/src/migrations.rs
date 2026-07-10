@@ -1,6 +1,6 @@
 //! Schema migrations.
 //!
-//! Per `spec/04-storage/migrations.md`. Migration scripts are static,
+//! Per `docs/04-storage/migrations.md`. Migration scripts are static,
 //! embedded at build time, and applied in id order.
 //!
 //! Adding a migration: bump `STORAGE_V` in `sunrise-cbor::version`, append a

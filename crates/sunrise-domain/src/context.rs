@@ -1,4 +1,4 @@
-//! Context entity per `spec/02-domain/contexts-and-tags.md`.
+//! Context entity per `docs/02-domain/contexts-and-tags.md`.
 
 use crate::validation::{validate_title, ValidationError, MAX_CONTEXT_NAME_LEN};
 use chrono::{DateTime, Utc};

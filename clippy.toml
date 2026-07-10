@@ -1,5 +1,5 @@
 # Clippy deny list enforcing the determinism rules from
-# spec/01-architecture/shared-core.md §determinism-rules.
+# docs/01-architecture/shared-core.md §determinism-rules.
 # Direct calls to non-deterministic stdlib surfaces are forbidden in core
 # crates; use the injected `Clock`, `Rng`, `Storage` handles instead.
 

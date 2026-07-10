@@ -1,4 +1,4 @@
-//! Task entity per `spec/02-domain/tasks.md`.
+//! Task entity per `docs/02-domain/tasks.md`.
 
 use crate::common::{Energy, NoteBody};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};

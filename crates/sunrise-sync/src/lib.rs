@@ -1,6 +1,6 @@
 //! Sync state machine + cursors + outbox + transport trait.
 //!
-//! Per `spec/05-sync/`. The state machine is transport-agnostic — concrete
+//! Per `docs/05-sync/`. The state machine is transport-agnostic — concrete
 //! WebSocket / HTTP-long-poll transports plug in via the [`Transport`]
 //! trait. Phase 11 (server) and the per-platform clients in Phase 13+ will
 //! provide implementations.

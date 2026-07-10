@@ -1,11 +1,11 @@
-//! NDJSON record shape per `spec/10-cross-cutting/logging.md` §3.
+//! NDJSON record shape per `docs/10-cross-cutting/logging.md` §3.
 
 use crate::{ctx::Ctx, level::Level, proto::ProtoVersions};
 use serde::{Deserialize, Serialize};
 
 /// Error category attached to `warn` / `error` records.
 ///
-/// Per `spec/10-cross-cutting/error-handling.md` §kind.
+/// Per `docs/10-cross-cutting/error-handling.md` §kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ErrorKind {

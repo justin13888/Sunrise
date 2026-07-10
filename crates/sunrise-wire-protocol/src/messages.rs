@@ -1,6 +1,6 @@
 //! v1 message kind discriminators.
 //!
-//! Per `spec/05-sync/wire-protocol.md`:
+//! Per `docs/05-sync/wire-protocol.md`:
 //!
 //! ```text
 //! 0x01  Hello           C → S

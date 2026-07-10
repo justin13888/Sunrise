@@ -1,6 +1,6 @@
 //! Account creation + recovery flow.
 //!
-//! Per `spec/03-crypto/recovery.md` and `spec/06-server/api.md` §account.
+//! Per `docs/03-crypto/recovery.md` and `docs/06-server/api.md` §account.
 //! v1 surface is the data shapes the client sends to / receives from the
 //! server. Transport-layer plumbing lives in the per-platform clients.
 

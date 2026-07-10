@@ -1,6 +1,6 @@
 //! Entity kinds and their string prefixes.
 //!
-//! Per `spec/02-domain/identifiers.md`, every ULID is namespaced by a
+//! Per `docs/02-domain/identifiers.md`, every ULID is namespaced by a
 //! 4-character ASCII prefix (3 letters + `_`).
 
 use serde::{Deserialize, Serialize};

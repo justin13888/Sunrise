@@ -1,6 +1,6 @@
 //! Log sinks.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §8, four sinks may be enabled:
+//! Per `docs/10-cross-cutting/logging.md` §8, four sinks may be enabled:
 //! `stderr`, `file`, `ring`, `remote`. v1 implements `stderr` (functional)
 //! and `ring` (functional in-memory circular buffer); `file` is a thin
 //! NDJSON-to-file appender (rotation/gzip deferred to future work, marked

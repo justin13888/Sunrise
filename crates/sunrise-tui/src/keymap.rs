@@ -1,6 +1,6 @@
 //! Vim-style keymap for the TUI.
 //!
-//! Matches `spec/07-clients/tui.md`. v1 covers a small set of
+//! Matches `docs/07-clients/tui.md`. v1 covers a small set of
 //! navigation/mutation actions; further operators (text-object motions,
 //! macros) are out of scope for v1.
 

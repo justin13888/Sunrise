@@ -9,7 +9,7 @@ adversity:
 - arbitrary delay
 - full partition
 
-Per `spec/10-cross-cutting/testing.md` §release-gates, the suite is
+Per `docs/10-cross-cutting/testing.md` §release-gates, the suite is
 expected to converge to byte-identical state on both clients within
 the bounded retry / backoff budget for every scenario.
 

@@ -28,7 +28,7 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 similar_names = "allow"
-# Hard denies aligned with spec/01-architecture/shared-core.md determinism rules.
+# Hard denies aligned with docs/01-architecture/shared-core.md determinism rules.
 disallowed_methods = "deny"
 disallowed_types = "deny"
 print_stdout = "deny"

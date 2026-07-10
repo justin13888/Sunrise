@@ -1,9 +1,9 @@
 //! XChaCha20-Poly1305 AEAD wrapper.
 //!
-//! Per `spec/03-crypto/primitives.md`: every op-envelope and blob-chunk
+//! Per `docs/03-crypto/primitives.md`: every op-envelope and blob-chunk
 //! AEAD operation uses XChaCha20-Poly1305 with a 32-byte key and a 24-byte
 //! random nonce (or, for blob chunks, a deterministically-derived nonce —
-//! see `spec/03-crypto/data-encryption-format.md`).
+//! see `docs/03-crypto/data-encryption-format.md`).
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};

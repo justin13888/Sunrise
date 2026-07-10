@@ -1,6 +1,6 @@
 //! In-memory ring buffer sink.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §8, the `ring` sink is a 4 MiB
+//! Per `docs/10-cross-cutting/logging.md` §8, the `ring` sink is a 4 MiB
 //! circular buffer that always accepts `trace+`. It backs the
 //! diagnostic-bundle export.
 

@@ -1,4 +1,4 @@
-//! CRDT convergence property test per spec/10-cross-cutting/testing.md §2.
+//! CRDT convergence property test per docs/10-cross-cutting/testing.md §2.
 //!
 //! N=3 simulated replicas; each replica generates a random sequence of
 //! ops; we cross-import in a random order; assert all replicas converge to

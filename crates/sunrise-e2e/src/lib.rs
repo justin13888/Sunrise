@@ -2,7 +2,7 @@
 //!
 //! Boots cross-crate scenarios that span [`sunrise-core`] +
 //! [`sunrise-server`]. Used by Phase 17 release-gating checks per
-//! `spec/10-cross-cutting/testing.md`.
+//! `docs/10-cross-cutting/testing.md`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

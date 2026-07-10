@@ -1,6 +1,6 @@
 //! 11-byte frame header + framing codec.
 //!
-//! Layout per `spec/05-sync/wire-protocol.md`:
+//! Layout per `docs/05-sync/wire-protocol.md`:
 //!
 //! ```text
 //! 0:2     magic       "SR" (ASCII)

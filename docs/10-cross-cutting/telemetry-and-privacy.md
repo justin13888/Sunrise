@@ -77,7 +77,7 @@ In Rust core code, plaintext content fields are wrapped in `Plain<T>`:
 struct Plain<T>(T);
 ```
 
-`Plain<T>` does not implement `Display`, `Debug`, or `Serialize`. To use, code must explicitly call `.expose()`. The CI lint that enforces this is canonical and is specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); a forbidden-module call to `Plain<T>::expose()` fails the build with: `"Plain<T>::expose() called from a forbidden module: redaction may be bypassed. See spec/10-cross-cutting/logging.md."`
+`Plain<T>` does not implement `Display`, `Debug`, or `Serialize`. To use, code must explicitly call `.expose()`. The CI lint that enforces this is canonical and is specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); a forbidden-module call to `Plain<T>::expose()` fails the build with: `"Plain<T>::expose() called from a forbidden module: redaction may be bypassed. See docs/10-cross-cutting/logging.md."`
 
 This is the structural enforcement that prevents accidental telemetry of content.
 

@@ -1,4 +1,4 @@
-//! Routine entity per `spec/02-domain/routines-and-recurrence.md`.
+//! Routine entity per `docs/02-domain/routines-and-recurrence.md`.
 
 use crate::common::{Energy, NoteBody};
 use crate::rrule::RRule;

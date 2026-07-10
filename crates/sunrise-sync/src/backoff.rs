@@ -1,4 +1,4 @@
-//! Exponential backoff with jitter, per `spec/10-cross-cutting/error-handling.md`
+//! Exponential backoff with jitter, per `docs/10-cross-cutting/error-handling.md`
 //! §canonical-retry-policy:
 //!
 //! ```text
@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Pure stateful struct; takes a `now` and an external RNG source as inputs
-//! so the determinism rules in `spec/01-architecture/shared-core.md` apply
+//! so the determinism rules in `docs/01-architecture/shared-core.md` apply
 //! when consumed inside `sunrise-core`.
 
 use std::time::Duration;

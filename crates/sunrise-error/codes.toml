@@ -1,6 +1,6 @@
 # Sunrise error code registry — single source of truth.
 #
-# Per spec/10-cross-cutting/error-handling.md §registry, this manifest is
+# Per docs/10-cross-cutting/error-handling.md §registry, this manifest is
 # authoritative; the Rust enum at crates/sunrise-error/src/codes.rs and the
 # TypeScript enum at packages/sunrise-error-ts/src/codes.ts are GENERATED
 # mirrors of this file. Hand-editing the generated files is a CI failure.
@@ -44,7 +44,7 @@ name = "VALIDATION_PAYLOAD_TOO_LARGE"
 kind = "user"
 retryable = false
 since = "v1"
-docs = "Per spec/02-domain/tasks.md: Task envelope ≤ 1.25 MiB."
+docs = "Per docs/02-domain/tasks.md: Task envelope ≤ 1.25 MiB."
 
 [[code]]
 id = 103
@@ -106,7 +106,7 @@ name = "STORAGE_VAULT_LOCKED"
 kind = "transient"
 retryable = true
 since = "v1"
-docs = "Per spec/01-architecture/shared-core.md: another process holds core.lock."
+docs = "Per docs/01-architecture/shared-core.md: another process holds core.lock."
 
 [[code]]
 id = 302

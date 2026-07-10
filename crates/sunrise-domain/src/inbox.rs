@@ -1,6 +1,6 @@
 //! Inbox pseudo-stream.
 //!
-//! Per `spec/02-domain/streams.md`, the Inbox is a fixed-id Stream that holds
+//! Per `docs/02-domain/streams.md`, the Inbox is a fixed-id Stream that holds
 //! unassigned tasks. It is not user-creatable, deletable, or editable.
 
 use sunrise_id::EntityRef;

@@ -1,6 +1,6 @@
 //! Stream-key wrap/unwrap under the vault root key.
 //!
-//! Per `spec/03-crypto/key-rotation.md`:
+//! Per `docs/03-crypto/key-rotation.md`:
 //!
 //! ```text
 //! wrapped_stream_key = XChaCha20-Poly1305_seal(

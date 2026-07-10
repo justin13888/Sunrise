@@ -6,16 +6,16 @@
 use sunrise_error::ErrorCode;
 use thiserror::Error;
 
-/// Maximum length of a Task title (in chars after trim) per spec/02-domain/tasks.md.
+/// Maximum length of a Task title (in chars after trim) per docs/02-domain/tasks.md.
 pub const MAX_TASK_TITLE_LEN: usize = 512;
 
-/// Maximum length of a Stream name per spec/02-domain/streams.md.
+/// Maximum length of a Stream name per docs/02-domain/streams.md.
 pub const MAX_STREAM_NAME_LEN: usize = 128;
 
 /// Maximum length of a Context name (lower bound; UI may further constrain).
 pub const MAX_CONTEXT_NAME_LEN: usize = 64;
 
-/// Per spec/02-domain/tasks.md §validation: encoded Task envelope ≤ 1.25 MiB.
+/// Per docs/02-domain/tasks.md §validation: encoded Task envelope ≤ 1.25 MiB.
 pub const MAX_TASK_ENVELOPE_BYTES: usize = 1_310_720;
 
 /// Validation errors. Each carries the canonical wire code so the core can

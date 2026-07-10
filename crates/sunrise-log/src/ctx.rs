@@ -1,6 +1,6 @@
 //! Per-record context (`ctx`) keys and the redaction allowlist.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §6, the context object MUST only
+//! Per `docs/10-cross-cutting/logging.md` §6, the context object MUST only
 //! contain keys from the allowlist below; unknown keys are dropped at the
 //! sink. Plaintext domain data (Task title, Note body, email, etc.) is
 //! ALWAYS forbidden — it doesn't appear here because it can't pass through

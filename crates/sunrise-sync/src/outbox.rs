@@ -1,6 +1,6 @@
 //! FIFO outbox of locally-emitted op envelopes awaiting send.
 //!
-//! Per `spec/05-sync/offline-queue.md`. Persistence (across process restarts)
+//! Per `docs/05-sync/offline-queue.md`. Persistence (across process restarts)
 //! is the storage layer's job; this in-memory wrapper is what the running
 //! state machine drains.
 

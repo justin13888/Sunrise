@@ -1,6 +1,6 @@
 //! Recovery blob.
 //!
-//! Per `spec/03-crypto/recovery.md`. The recovery blob is opaque to the
+//! Per `docs/03-crypto/recovery.md`. The recovery blob is opaque to the
 //! server and only decryptable with the user's BIP-39 recovery code.
 //!
 //! ```text
@@ -210,7 +210,7 @@ fn payload_from_cbor(bytes: &[u8]) -> Result<RecoveryPayload, RecoveryError> {
 /// Seal a recovery blob.
 ///
 /// `seed` is the 32-byte BIP-39 derived seed (caller produces it; see
-/// `spec/03-crypto/recovery.md`).
+/// `docs/03-crypto/recovery.md`).
 ///
 /// # Errors
 /// Argon2id parameter or CBOR encode failure.

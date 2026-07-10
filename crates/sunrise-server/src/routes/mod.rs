@@ -10,7 +10,7 @@ pub mod health;
 pub mod meta;
 
 /// Build the v1 router. Routes are namespaced; full set per
-/// `spec/06-server/api.md`. v1 ships health/meta/accounts/blobs/devices;
+/// `docs/06-server/api.md`. v1 ships health/meta/accounts/blobs/devices;
 /// per-account quota and full OIDC-gated CRUD ride on Phase 17.
 #[must_use]
 pub fn api_v1() -> Router<ServerState> {

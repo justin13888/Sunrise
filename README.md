@@ -48,8 +48,7 @@ apps/
 packages/
   sunrise-ui/  Shared UI tokens and components
 schemas/       Versioned JSON schemas
-spec/          Product, architecture, domain, and protocol specs
-docs/          Implementation notes
+docs/          Design source of truth: product, architecture, domain, crypto, sync, ADRs + implementation notes
 ```
 
 ## Development

@@ -1,6 +1,6 @@
 //! Protocol versions field.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §3 + `protocol-versioning.md`,
+//! Per `docs/10-cross-cutting/logging.md` §3 + `protocol-versioning.md`,
 //! every record carries `proto: { wire, doc, crypto }`. These come from the
 //! version constants in `sunrise-cbor`/`sunrise-wire-protocol`/
 //! `sunrise-crypto`. The logger doesn't depend on those crates (would be a

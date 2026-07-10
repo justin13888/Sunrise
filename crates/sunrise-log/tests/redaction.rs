@@ -1,4 +1,4 @@
-//! Redaction property test per `spec/10-cross-cutting/logging.md` §6.3.
+//! Redaction property test per `docs/10-cross-cutting/logging.md` §6.3.
 //!
 //! Asserts that even when the logger is configured at the most permissive
 //! settings (`Trace+`, ring sink), no plaintext byte from a synthetic

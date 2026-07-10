@@ -1,6 +1,6 @@
 //! SQLite + SQLCipher local storage layer.
 //!
-//! Implements `spec/04-storage/`. Each device's vault opens exactly one
+//! Implements `docs/04-storage/`. Each device's vault opens exactly one
 //! `Db` instance; the in-process advisory lock is owned by `sunrise-core`
 //! (Phase 10).
 //!

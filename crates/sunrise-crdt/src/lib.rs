@@ -1,6 +1,6 @@
 //! Loro-backed CRDT layer for Sunrise streams.
 //!
-//! Implements `spec/05-sync/crdt-design.md` on top of `loro`. Each Stream
+//! Implements `docs/05-sync/crdt-design.md` on top of `loro`. Each Stream
 //! gets one [`StreamDoc`] (a wrapper around `loro::LoroDoc`); the vault-meta
 //! log gets a separate doc.
 //!

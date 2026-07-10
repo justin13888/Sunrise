@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://sunrise.example/schemas/log-record.v1.json",
     "title": "Sunrise log record (v1)",
-    "description": "NDJSON record shape per spec/10-cross-cutting/logging.md §3. One record per newline.",
+    "description": "NDJSON record shape per docs/10-cross-cutting/logging.md §3. One record per newline.",
     "type": "object",
     "required": [
         "ts",

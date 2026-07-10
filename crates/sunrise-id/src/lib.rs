@@ -1,6 +1,6 @@
 //! Sunrise identifiers.
 //!
-//! Implements `spec/02-domain/identifiers.md`: ULIDs (128-bit, Crockford
+//! Implements `docs/02-domain/identifiers.md`: ULIDs (128-bit, Crockford
 //! base-32, 26 chars) namespaced by entity kind. The 16 raw bytes are the
 //! authoritative form; the prefixed string `"tsk_…"` is the I/O-boundary
 //! representation.

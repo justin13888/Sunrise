@@ -1,4 +1,4 @@
-//! Block (time-block) entity per `spec/02-domain/time-blocks.md`.
+//! Block (time-block) entity per `docs/02-domain/time-blocks.md`.
 //!
 //! A Block is a scheduled time range that may bind to 0..N Tasks. Tasks may
 //! reference 0..N Blocks via `Task.blocks` (OR-Set).

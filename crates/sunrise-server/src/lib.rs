@@ -1,6 +1,6 @@
 //! Sunrise sync relay server library surface.
 //!
-//! Implements the foundation of `spec/06-server/`. v1 ships:
+//! Implements the foundation of `docs/06-server/`. v1 ships:
 //!
 //! - REST endpoints under `/api/v1/`: account scaffolding, meta, health.
 //! - Self-host single-binary mode (`./sunrise-server -c sunrise.toml`).

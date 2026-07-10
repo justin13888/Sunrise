@@ -1,6 +1,6 @@
 //! Pairing QR payload encoder/decoder.
 //!
-//! Per `spec/03-crypto/pairing-and-onboarding.md` §QR. The payload is a
+//! Per `docs/03-crypto/pairing-and-onboarding.md` §QR. The payload is a
 //! UTF-8 JSON object with lex-ordered keys. Field encodings:
 //!
 //! - `magic_v1`: 5-byte magic prefix (PairingPayload kind, version 1) as

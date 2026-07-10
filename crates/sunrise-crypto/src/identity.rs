@@ -1,6 +1,6 @@
 //! Identity ID derivation.
 //!
-//! Per `spec/03-crypto/identity-and-device-keys.md`:
+//! Per `docs/03-crypto/identity-and-device-keys.md`:
 //!
 //! ```text
 //! identity_id_bytes = BLAKE3.derive_key("sunrise.identity_id.v1", ID_S_pub, 16)

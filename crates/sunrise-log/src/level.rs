@@ -1,7 +1,7 @@
 //! Logging levels.
 //!
 //! Five levels, RFC 5424-aligned semantics, mapped 1:1 to `tracing::Level` /
-//! `pino`. See `spec/10-cross-cutting/logging.md` §2.
+//! `pino`. See `docs/10-cross-cutting/logging.md` §2.
 
 use serde::{Deserialize, Serialize};
 

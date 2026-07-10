@@ -1,6 +1,6 @@
 //! `CoreConfig` — the dependency-injection bundle.
 //!
-//! Per `spec/01-architecture/shared-core.md` §determinism. Every clock /
+//! Per `docs/01-architecture/shared-core.md` §determinism. Every clock /
 //! RNG / storage handle the core needs is injected via this struct so
 //! tests can substitute deterministic fakes.
 

@@ -1,6 +1,6 @@
 //! Typed entity reference: `<prefix><26-char ULID>`.
 //!
-//! See `spec/02-domain/identifiers.md` §`EntityRef`.
+//! See `docs/02-domain/identifiers.md` §`EntityRef`.
 
 use crate::{
     crockford::{decode_str, ENCODED_LEN},

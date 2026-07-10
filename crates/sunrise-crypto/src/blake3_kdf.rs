@@ -1,6 +1,6 @@
 //! BLAKE3 KDF wrapper.
 //!
-//! Per `spec/03-crypto/primitives.md`, every `derive_key` call MUST pass a
+//! Per `docs/03-crypto/primitives.md`, every `derive_key` call MUST pass a
 //! unique, descriptive context string. The thin wrapper here forces every
 //! caller to supply a non-empty static `&str` context.
 

@@ -1,6 +1,6 @@
 //! Per-Stream Merkle root for tamper detection.
 //!
-//! Per `spec/03-crypto/audit-and-tamper-evidence.md`:
+//! Per `docs/03-crypto/audit-and-tamper-evidence.md`:
 //!
 //! ```text
 //! root_0    = BLAKE3("sunrise.stream_root.init.v1" || stream_id, 32)

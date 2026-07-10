@@ -1,6 +1,6 @@
 //! WebSocket sync endpoint at `/sync`.
 //!
-//! Per `spec/05-sync/wire-protocol.md`. The handshake is:
+//! Per `docs/05-sync/wire-protocol.md`. The handshake is:
 //!
 //! 1. Client sends `Hello` as the first WS binary frame.
 //! 2. Server runs [`Hello::negotiate`] against its supported set; on

@@ -1,4 +1,4 @@
-//! RFC 5545 RRULE parser (v1 subset) per `spec/02-domain/routines-and-recurrence.md`.
+//! RFC 5545 RRULE parser (v1 subset) per `docs/02-domain/routines-and-recurrence.md`.
 //!
 //! Supported in v1: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`,
 //! `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. NOT supported: `BYYEARDAY`,

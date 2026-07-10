@@ -1,6 +1,6 @@
 //! Per-(stream, originating-device) sync cursors.
 //!
-//! Per `spec/05-sync/multi-device.md`. Each device maintains, for every
+//! Per `docs/05-sync/multi-device.md`. Each device maintains, for every
 //! `(stream_id, originating_device_id)` pair, the highest `seq` it has
 //! applied. Cursors are sent on connect so the server can deliver only the
 //! ops since.

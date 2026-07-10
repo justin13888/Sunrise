@@ -1,6 +1,6 @@
 //! Trace and span propagation.
 //!
-//! Per `spec/10-cross-cutting/logging.md` §4, every log record carries:
+//! Per `docs/10-cross-cutting/logging.md` §4, every log record carries:
 //! - `trace`: the root trace id (ULID), started by the entry point that
 //!   initiates user-visible work.
 //! - `span`: the current span id (ULID), nested within a trace.

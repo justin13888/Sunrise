@@ -1,4 +1,4 @@
-//! Person entity per `spec/02-domain/people-and-sharing.md`.
+//! Person entity per `docs/02-domain/people-and-sharing.md`.
 //!
 //! v1 Persons are first-class identities used for sharing grants and (as
 //! informational labels only) Task `assignee`. v1 does not implement

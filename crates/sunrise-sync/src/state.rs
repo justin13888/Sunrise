@@ -1,4 +1,4 @@
-//! Sync state machine per `spec/05-sync/multi-device.md`.
+//! Sync state machine per `docs/05-sync/multi-device.md`.
 //!
 //! ```text
 //! Disconnected ──connect ok──> Catching up

@@ -1,6 +1,6 @@
 //! Sunrise terminal UI library surface.
 //!
-//! Implements `spec/07-clients/tui.md` foundation. v1 ships:
+//! Implements `docs/07-clients/tui.md` foundation. v1 ships:
 //!
 //! - Today / Inbox / Stream / Search / Focus view enum.
 //! - Vim-style modal navigation (default-on per the parity matrix).

@@ -1,6 +1,6 @@
 //! Stable canonical error codes shared across the workspace.
 //!
-//! Per `spec/10-cross-cutting/error-handling.md`, the registry source of
+//! Per `docs/10-cross-cutting/error-handling.md`, the registry source of
 //! truth is `codes.toml`. The Rust enum here is intended to be a generated
 //! mirror; until the build-script codegen lands, it is hand-maintained and
 //! kept in sync by the test in `tests/manifest_in_sync.rs`.
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Canonical error envelope returned by the core to the UI.
 ///
-/// Per `spec/10-cross-cutting/error-handling.md`.
+/// Per `docs/10-cross-cutting/error-handling.md`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoreError {
     /// Stable canonical code.

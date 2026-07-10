@@ -1,6 +1,6 @@
 //! Sunrise sync wire protocol.
 //!
-//! Implements `spec/05-sync/wire-protocol.md`. The wire is framed:
+//! Implements `docs/05-sync/wire-protocol.md`. The wire is framed:
 //! 11 byte header (magic + kind + version + msg_kind + flags + len),
 //! followed by a payload (canonical CBOR, optionally zstd-compressed).
 //!
