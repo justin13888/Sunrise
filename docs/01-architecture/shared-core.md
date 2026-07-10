@@ -57,7 +57,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Query {
-    Today { now: DateTime<Utc>, contexts: Vec<ContextId> },
+    Today { now: jiff::Timestamp, contexts: Vec<ContextId> },
     Inbox,
     StreamView { stream: StreamId, filter: FilterSpec },
     Search(SearchSpec),
@@ -76,6 +76,8 @@ impl Core {
     pub async fn close(self) -> Result<()>;
 }
 ```
+
+Datetime types (`jiff::Timestamp` for absolute instants, `jiff::Zoned` / `jiff::civil::*` for wall-clock semantics) follow [ADR-0011](../11-adr/0011-datetime-jiff.md).
 
 ## Determinism rules
 
