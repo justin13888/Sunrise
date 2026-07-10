@@ -39,7 +39,16 @@ pub enum Action {
     BeginCommand,
     /// Enter Insert mode.
     EnterInsert,
-    /// Leave Insert/Command mode back to Normal.
+    /// Toggle which Stream-view pane has focus (Tab).
+    TogglePane,
+    /// Focus the left (Streams) pane of the Stream view.
+    PaneLeft,
+    /// Focus the right (Tasks) pane of the Stream view.
+    PaneRight,
+    /// Activate the highlighted item (Enter in Normal mode): select a
+    /// stream in the Streams pane, open Focus on a task elsewhere.
+    Activate,
+    /// Leave Insert/Command mode back to Normal (or close Focus).
     Escape,
     /// Append a character to the active input (Insert/Command mode).
     InsertChar(char),
@@ -49,23 +58,37 @@ pub enum Action {
     Submit,
 }
 
-/// Translate a key event in a given mode into an [`Action`].
+/// Translate a key event in a given mode (and active view) into an
+/// [`Action`].
 ///
 /// `vim_mode = false` collapses normal-mode bindings down to a friendlier
 /// "always insert" feel: `j/k` produce InsertChar instead of Next/Prev.
+/// `view` disambiguates the few view-local bindings: Tab / `h` / `l`
+/// switch panes only in the Stream view, and Esc closes the Focus view
+/// instead of quitting.
 #[must_use]
-pub fn dispatch(key: crossterm::event::KeyCode, mode: Mode, vim_mode: bool) -> Option<Action> {
+pub fn dispatch(
+    key: crossterm::event::KeyCode,
+    mode: Mode,
+    vim_mode: bool,
+    view: View,
+) -> Option<Action> {
     use crossterm::event::KeyCode::*;
     match (mode, key) {
-        (Mode::Normal, Char('q')) | (_, Esc) if mode == Mode::Normal => Some(Action::Quit),
         (Mode::Insert | Mode::Command, Esc) => Some(Action::Escape),
-        (Mode::Normal, Esc) => Some(Action::Quit),
-        (Mode::Normal, Char('q')) => Some(Action::Quit),
+        (Mode::Normal, Esc) if view == View::Focus => Some(Action::Escape),
+        (Mode::Normal, Esc | Char('q')) => Some(Action::Quit),
         (Mode::Normal, Char('1')) => Some(Action::SwitchView(View::Today)),
         (Mode::Normal, Char('2')) => Some(Action::SwitchView(View::Inbox)),
         (Mode::Normal, Char('3')) => Some(Action::SwitchView(View::Stream)),
         (Mode::Normal, Char('4')) => Some(Action::SwitchView(View::Search)),
-        (Mode::Normal, Char('5')) => Some(Action::SwitchView(View::Focus)),
+        (Mode::Normal, Char('5' | 'f')) => Some(Action::SwitchView(View::Focus)),
+        (Mode::Normal, Tab) if view == View::Stream => Some(Action::TogglePane),
+        (Mode::Normal, Char('h')) if view == View::Stream && vim_mode => Some(Action::PaneLeft),
+        (Mode::Normal, Char('l')) if view == View::Stream && vim_mode => Some(Action::PaneRight),
+        (Mode::Normal, Left) if view == View::Stream => Some(Action::PaneLeft),
+        (Mode::Normal, Right) if view == View::Stream => Some(Action::PaneRight),
+        (Mode::Normal, Enter) => Some(Action::Activate),
         (Mode::Normal, Char('j')) if vim_mode => Some(Action::Next),
         (Mode::Normal, Char('k')) if vim_mode => Some(Action::Prev),
         (Mode::Normal, Down) => Some(Action::Next),
@@ -87,50 +110,46 @@ mod tests {
     use super::*;
     use crossterm::event::KeyCode;
 
+    /// Shorthand: dispatch in the Today view (the default context).
+    fn d(key: KeyCode, mode: Mode, vim: bool) -> Option<Action> {
+        dispatch(key, mode, vim, View::Today)
+    }
+
     #[test]
     fn quit_in_normal_mode() {
         assert_eq!(
-            dispatch(KeyCode::Char('q'), Mode::Normal, true),
+            d(KeyCode::Char('q'), Mode::Normal, true),
             Some(Action::Quit)
         );
-        assert_eq!(
-            dispatch(KeyCode::Esc, Mode::Normal, true),
-            Some(Action::Quit)
-        );
+        assert_eq!(d(KeyCode::Esc, Mode::Normal, true), Some(Action::Quit));
     }
 
     #[test]
     fn vim_movement() {
         assert_eq!(
-            dispatch(KeyCode::Char('j'), Mode::Normal, true),
+            d(KeyCode::Char('j'), Mode::Normal, true),
             Some(Action::Next)
         );
         assert_eq!(
-            dispatch(KeyCode::Char('k'), Mode::Normal, true),
+            d(KeyCode::Char('k'), Mode::Normal, true),
             Some(Action::Prev)
         );
     }
 
     #[test]
     fn arrow_movement_works_in_both_modes() {
-        assert_eq!(
-            dispatch(KeyCode::Down, Mode::Normal, false),
-            Some(Action::Next)
-        );
-        assert_eq!(
-            dispatch(KeyCode::Up, Mode::Normal, false),
-            Some(Action::Prev)
-        );
+        assert_eq!(d(KeyCode::Down, Mode::Normal, false), Some(Action::Next));
+        assert_eq!(d(KeyCode::Up, Mode::Normal, false), Some(Action::Prev));
     }
 
     #[test]
     fn switch_view_bindings() {
         assert_eq!(
-            dispatch(KeyCode::Char('2'), Mode::Normal, true),
+            d(KeyCode::Char('2'), Mode::Normal, true),
             Some(Action::SwitchView(View::Inbox))
         );
         assert_eq!(
-            dispatch(KeyCode::Char('1'), Mode::Normal, true),
+            d(KeyCode::Char('1'), Mode::Normal, true),
             Some(Action::SwitchView(View::Today))
         );
     }
@@ -138,23 +157,20 @@ mod tests {
     #[test]
     fn insert_mode_buffers_chars() {
         assert_eq!(
-            dispatch(KeyCode::Char('x'), Mode::Insert, true),
+            d(KeyCode::Char('x'), Mode::Insert, true),
             Some(Action::InsertChar('x'))
         );
         assert_eq!(
-            dispatch(KeyCode::Backspace, Mode::Insert, true),
+            d(KeyCode::Backspace, Mode::Insert, true),
             Some(Action::Backspace)
         );
-        assert_eq!(
-            dispatch(KeyCode::Esc, Mode::Insert, true),
-            Some(Action::Escape)
-        );
+        assert_eq!(d(KeyCode::Esc, Mode::Insert, true), Some(Action::Escape));
     }
 
     #[test]
     fn colon_enters_command_mode() {
         assert_eq!(
-            dispatch(KeyCode::Char(':'), Mode::Normal, true),
+            d(KeyCode::Char(':'), Mode::Normal, true),
             Some(Action::BeginCommand)
         );
     }
@@ -162,32 +178,87 @@ mod tests {
     #[test]
     fn command_mode_buffers_and_submits() {
         assert_eq!(
-            dispatch(KeyCode::Char('v'), Mode::Command, true),
+            d(KeyCode::Char('v'), Mode::Command, true),
             Some(Action::InsertChar('v'))
         );
         assert_eq!(
-            dispatch(KeyCode::Backspace, Mode::Command, true),
+            d(KeyCode::Backspace, Mode::Command, true),
             Some(Action::Backspace)
         );
-        assert_eq!(
-            dispatch(KeyCode::Enter, Mode::Command, true),
-            Some(Action::Submit)
-        );
-        assert_eq!(
-            dispatch(KeyCode::Esc, Mode::Command, true),
-            Some(Action::Escape)
-        );
+        assert_eq!(d(KeyCode::Enter, Mode::Command, true), Some(Action::Submit));
+        assert_eq!(d(KeyCode::Esc, Mode::Command, true), Some(Action::Escape));
     }
 
     #[test]
     fn capture_and_search_bindings() {
         assert_eq!(
-            dispatch(KeyCode::Char('c'), Mode::Normal, true),
+            d(KeyCode::Char('c'), Mode::Normal, true),
             Some(Action::Capture)
         );
         assert_eq!(
-            dispatch(KeyCode::Char('/'), Mode::Normal, true),
+            d(KeyCode::Char('/'), Mode::Normal, true),
             Some(Action::BeginSearch)
+        );
+    }
+
+    #[test]
+    fn pane_switching_only_in_stream_view() {
+        assert_eq!(
+            dispatch(KeyCode::Tab, Mode::Normal, true, View::Stream),
+            Some(Action::TogglePane)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Char('h'), Mode::Normal, true, View::Stream),
+            Some(Action::PaneLeft)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Char('l'), Mode::Normal, true, View::Stream),
+            Some(Action::PaneRight)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Left, Mode::Normal, false, View::Stream),
+            Some(Action::PaneLeft)
+        );
+        // Outside the Stream view none of these bind.
+        assert_eq!(
+            dispatch(KeyCode::Tab, Mode::Normal, true, View::Today),
+            None
+        );
+        assert_eq!(
+            dispatch(KeyCode::Char('h'), Mode::Normal, true, View::Inbox),
+            None
+        );
+    }
+
+    #[test]
+    fn enter_activates_in_normal_mode() {
+        assert_eq!(
+            d(KeyCode::Enter, Mode::Normal, true),
+            Some(Action::Activate)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Enter, Mode::Normal, true, View::Stream),
+            Some(Action::Activate)
+        );
+    }
+
+    #[test]
+    fn f_opens_focus_view() {
+        assert_eq!(
+            d(KeyCode::Char('f'), Mode::Normal, true),
+            Some(Action::SwitchView(View::Focus))
+        );
+    }
+
+    #[test]
+    fn esc_in_focus_view_escapes_instead_of_quitting() {
+        assert_eq!(
+            dispatch(KeyCode::Esc, Mode::Normal, true, View::Focus),
+            Some(Action::Escape)
+        );
+        assert_eq!(
+            dispatch(KeyCode::Esc, Mode::Normal, true, View::Today),
+            Some(Action::Quit)
         );
     }
 }

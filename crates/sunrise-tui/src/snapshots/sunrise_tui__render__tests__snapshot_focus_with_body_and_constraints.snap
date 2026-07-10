@@ -1,0 +1,22 @@
+---
+source: crates/sunrise-tui/src/render.rs
+expression: "frame_to_string(60, 18, &state)"
+---
+ 1:Today  2:Inbox  3:Stream  4:Search  5:Focus              
+┌Focus─────────────────────────────────────────────────────┐
+│[ ] Write quarterly report                                │
+│                                                          │
+│state:     Todo                                           │
+│priority:  2                                              │
+│energy:    high                                           │
+│scheduled: —                                              │
+│due:       1970-01-01T00:00:00Z                           │
+│stream:    Work                                           │
+│deferred:  1                                              │
+│2 constraints (1 hard)                                    │
+│                                                          │
+│Draft the numbers section first.                          │
+│Then review with the team.                                │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ NORMAL

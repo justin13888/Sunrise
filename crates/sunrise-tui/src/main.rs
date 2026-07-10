@@ -33,7 +33,8 @@ use sunrise_core::{Command, Core, CoreConfig, Query, QueryResult, SystemRng, Unl
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::TaskDraft;
 use sunrise_tui::{
-    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, View, ViewState,
+    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, StreamPane, View,
+    ViewState,
 };
 
 type Tty = Terminal<CrosstermBackend<Stdout>>;
@@ -100,17 +101,36 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
         let Event::Key(k) = event::read()? else {
             continue;
         };
-        let Some(action) = dispatch(k.code, state.mode, state.vim_mode) else {
+        let Some(action) = dispatch(k.code, state.mode, state.vim_mode, state.view) else {
             continue;
         };
         match action {
             Action::Quit => break,
+            Action::SwitchView(View::Focus) => {
+                // Focus shows the task selected in the previous view.
+                state.open_focus();
+                refresh(core, &mut state).await;
+            }
             Action::SwitchView(v) => {
                 state.view = v;
                 refresh(core, &mut state).await;
             }
-            Action::Next => state.select_next(),
-            Action::Prev => state.select_prev(),
+            Action::Next => state.nav_next(),
+            Action::Prev => state.nav_prev(),
+            Action::TogglePane => state.toggle_pane(),
+            Action::PaneLeft => state.focus_pane(StreamPane::Streams),
+            Action::PaneRight => state.focus_pane(StreamPane::Tasks),
+            Action::Activate => {
+                if state.view == View::Stream && state.pane == StreamPane::Streams {
+                    // Confirm the highlighted stream: load its tasks and move
+                    // focus to the task pane.
+                    state.pane = StreamPane::Tasks;
+                    refresh(core, &mut state).await;
+                } else if state.selected_task().is_some() {
+                    state.open_focus();
+                    refresh(core, &mut state).await;
+                }
+            }
             Action::Toggle => {
                 if let Some(t) = state.selected_task() {
                     let id = t.id;
@@ -139,9 +159,15 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
                 state.input.clear();
             }
             Action::Escape => {
-                state.mode = Mode::Normal;
-                state.input.clear();
-                state.status.clear();
+                if state.mode == Mode::Normal && state.view == View::Focus {
+                    // Close the Focus view back to where it was opened from.
+                    state.close_focus();
+                    refresh(core, &mut state).await;
+                } else {
+                    state.mode = Mode::Normal;
+                    state.input.clear();
+                    state.status.clear();
+                }
             }
             Action::InsertChar(c) => {
                 if state.input.len() < 512 {
@@ -164,17 +190,12 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
             }
             Action::Submit => {
                 if state.view == View::Search {
-                    // Search is client-side over current task list; in v1 just
-                    // re-fetch the current view's data and filter by substring.
+                    // Full-text search via the core's FTS index. The query
+                    // text stays in `input` so it remains visible above the
+                    // results; Esc clears it.
+                    state.mode = Mode::Normal;
+                    state.status.clear();
                     refresh(core, &mut state).await;
-                    let needle = state.input.to_lowercase();
-                    state.tasks = state
-                        .tasks
-                        .iter()
-                        .filter(|t| t.title.to_lowercase().contains(&needle))
-                        .cloned()
-                        .collect();
-                    state.after_tasks_loaded();
                 } else {
                     // Capture: create a task with the input as its title.
                     let title = state.input.trim().to_string();
@@ -187,10 +208,10 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
                             .await;
                         refresh(core, &mut state).await;
                     }
+                    state.mode = Mode::Normal;
+                    state.input.clear();
+                    state.status.clear();
                 }
-                state.mode = Mode::Normal;
-                state.input.clear();
-                state.status.clear();
             }
         }
     }
@@ -198,16 +219,52 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
 }
 
 async fn refresh(core: &Core, state: &mut ViewState) {
-    let q = match state.view {
-        View::Today => Query::Today {
-            now_ms: now_ms(),
-            contexts: vec![],
-        },
-        View::Inbox => Query::Inbox,
-        View::Stream => Query::Inbox, // v1: no stream picker yet — use Inbox.
-        View::Search => Query::Inbox,
-        View::Focus => Query::Inbox,
-    };
+    match state.view {
+        View::Today => {
+            let q = Query::Today {
+                now_ms: now_ms(),
+                contexts: vec![],
+            };
+            load_tasks(core, state, q).await;
+        }
+        View::Inbox => load_tasks(core, state, Query::Inbox).await,
+        View::Stream => {
+            if let Ok(QueryResult::Streams(rows)) = core.query(Query::StreamList).await {
+                state.streams = rows;
+                state.after_streams_loaded();
+            }
+            match state.selected_stream_row().map(|r| r.id) {
+                Some(id) => load_tasks(core, state, Query::StreamTasks(id)).await,
+                None => {
+                    state.tasks.clear();
+                    state.after_tasks_loaded();
+                }
+            }
+        }
+        View::Search => {
+            let q = Query::Search {
+                text: state.input.clone(),
+                limit: 100,
+            };
+            load_tasks(core, state, q).await;
+        }
+        View::Focus => {
+            let id = state.focused_task.as_ref().map(|t| t.id);
+            if let Some(id) = id {
+                if let Ok(QueryResult::Task(t)) = core.query(Query::EntityById(id)).await {
+                    state.focused_task = Some(*t);
+                }
+                // Stream rows back the "stream: <name>" detail line.
+                if let Ok(QueryResult::Streams(rows)) = core.query(Query::StreamList).await {
+                    state.streams = rows;
+                    state.after_streams_loaded();
+                }
+            }
+        }
+    }
+}
+
+async fn load_tasks(core: &Core, state: &mut ViewState, q: Query) {
     if let Ok(QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = core.query(q).await {
         state.tasks = tasks;
         state.after_tasks_loaded();
