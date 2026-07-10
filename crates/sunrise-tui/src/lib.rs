@@ -33,13 +33,14 @@ pub mod command;
 #[cfg(feature = "images")]
 pub mod images;
 pub mod keymap;
+pub mod livesync;
 pub mod render;
 pub mod view;
 
 pub use command::{parse_command, Cmd};
 pub use keymap::{dispatch, Action, Mode};
 pub use render::{render, render_focus, render_inbox, render_search, render_stream, render_today};
-pub use view::{StreamPane, View, ViewState};
+pub use view::{StreamPane, SyncIndicator, View, ViewState};
 
 /// Help text listing the command-line commands, shown in the status line by
 /// `:help`. Kept short enough to fit a typical status line.

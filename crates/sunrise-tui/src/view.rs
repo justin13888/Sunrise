@@ -3,6 +3,59 @@
 use crate::keymap::Mode;
 use sunrise_core::queries::StreamRow;
 use sunrise_domain::Task;
+use sunrise_sync::SyncState;
+
+/// Compact live-sync indicator rendered on the right of the status line.
+///
+/// A `None` value on [`ViewState::sync`] hides the indicator entirely — that
+/// is the default (unit/render tests and any surface that hasn't wired sync).
+/// The binary always sets it: to [`SyncIndicator::off`] when `SUNRISE_SYNC_URL`
+/// is unset, otherwise to [`SyncIndicator::live`] with the driver's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncIndicator {
+    /// `None` = sync off (no URL configured); `Some(state)` = live driver state.
+    pub state: Option<SyncState>,
+    /// Persisted outbox depth (unacked local ops).
+    pub pending: u32,
+}
+
+impl SyncIndicator {
+    /// The "off" indicator (no `SUNRISE_SYNC_URL`). Still surfaces the pending
+    /// outbox depth so a user knows unsynced local work exists.
+    #[must_use]
+    pub const fn off(pending: u32) -> Self {
+        Self {
+            state: None,
+            pending,
+        }
+    }
+
+    /// Live-driver indicator from a [`SyncState`] plus the outbox depth.
+    #[must_use]
+    pub const fn live(state: SyncState, pending: u32) -> Self {
+        Self {
+            state: Some(state),
+            pending,
+        }
+    }
+
+    /// Compact label: `live` | `catching-up` | `disconnected` | `off`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self.state {
+            None => "off",
+            Some(SyncState::Live) => "live",
+            Some(SyncState::CatchingUp) => "catching-up",
+            Some(SyncState::Disconnected) => "disconnected",
+        }
+    }
+
+    /// Full status text, e.g. `sync: live (0 pending)`.
+    #[must_use]
+    pub fn text(self) -> String {
+        format!("sync: {} ({} pending)", self.label(), self.pending)
+    }
+}
 
 /// Primary views per the parity matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +119,9 @@ pub struct ViewState {
     pub input: String,
     /// One-line status / error displayed at the bottom of every view.
     pub status: String,
+    /// Live-sync indicator shown on the right of the status line. `None` hides
+    /// it; the binary sets it every frame from `Core::query(SyncStatus)`.
+    pub sync: Option<SyncIndicator>,
 }
 
 impl Default for ViewState {
@@ -83,6 +139,7 @@ impl Default for ViewState {
             prev_view: None,
             input: String::new(),
             status: String::new(),
+            sync: None,
         }
     }
 }

@@ -3079,6 +3079,7 @@ dependencies = [
 name = "sunrise-tui"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "crossterm",
  "image",
  "insta",
@@ -3089,6 +3090,9 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-server",
+ "sunrise-sync",
+ "tempfile",
  "tokio",
 ]
 

@@ -2,13 +2,14 @@
 //! the data it needs, and writes widgets. No I/O.
 
 use crate::keymap::Mode;
-use crate::view::{StreamPane, View, ViewState};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use crate::view::{StreamPane, SyncIndicator, View, ViewState};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use sunrise_domain::Task;
+use sunrise_sync::SyncState;
 
 /// Top-level dispatch: pick the renderer that matches the view.
 ///
@@ -103,7 +104,38 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         }
         Mode::Normal => {}
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    // With a sync indicator, split off a right-aligned column for it so the
+    // left status text is never clobbered; otherwise render across the whole
+    // line as before (keeps the sync-off snapshots byte-identical).
+    if let Some(sync) = state.sync {
+        let text = sync.text();
+        let width = u16::try_from(text.chars().count())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(width)])
+            .split(area);
+        f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, sync_style(sync))))
+                .alignment(Alignment::Right),
+            cols[1],
+        );
+    } else {
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+}
+
+/// Color for the sync indicator by driver state.
+fn sync_style(sync: SyncIndicator) -> Style {
+    let color = match sync.state {
+        None => Color::DarkGray,
+        Some(SyncState::Live) => Color::Green,
+        Some(SyncState::CatchingUp) => Color::Yellow,
+        Some(SyncState::Disconnected) => Color::Red,
+    };
+    Style::default().fg(color)
 }
 
 /// Render the Today view: header + task list.
@@ -606,6 +638,28 @@ mod tests {
         state.tasks = vec![fixtures::fake_task(1), fixtures::fake_task(2)];
         state.after_tasks_loaded();
         insta::assert_snapshot!(frame_to_string(60, 14, &state));
+    }
+
+    #[test]
+    fn status_line_shows_live_sync_indicator() {
+        let mut state = ViewState::default();
+        state.sync = Some(SyncIndicator::live(SyncState::CatchingUp, 2));
+        let s = frame_to_string(70, 6, &state);
+        assert!(
+            s.contains("sync: catching-up (2 pending)"),
+            "expected sync indicator, got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn status_line_shows_off_when_sync_disabled() {
+        let mut state = ViewState::default();
+        state.sync = Some(SyncIndicator::off(0));
+        let s = frame_to_string(60, 6, &state);
+        assert!(
+            s.contains("sync: off (0 pending)"),
+            "expected off indicator, got:\n{s}"
+        );
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {

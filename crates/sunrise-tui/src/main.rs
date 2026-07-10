@@ -27,29 +27,56 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
-use std::sync::Arc;
 use std::time::Duration;
-use sunrise_core::{Command, Core, CoreConfig, Query, QueryResult, SystemRng, Unlock};
-use sunrise_crypto::keys::VaultRootKey;
+use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::TaskDraft;
+use sunrise_tui::livesync;
 use sunrise_tui::{
-    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, StreamPane, View,
-    ViewState,
+    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, StreamPane,
+    SyncIndicator, View, ViewState,
 };
 
 type Tty = Terminal<CrosstermBackend<Stdout>>;
+
+/// Fixed dev / self-host vault root shared by every instance. Because both TUI
+/// instances derive per-stream keys from the **same** root, each can decrypt
+/// the other's op envelopes — this is what makes the shared-root two-terminal
+/// sync demo converge. Device identities still differ (the keychain seeds a
+/// fresh id per vault dir). Production derives this from a passphrase or a
+/// completed pairing flow instead of a constant.
+const DEV_ROOT: [u8; 32] = [7u8; 32];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vault_dir = vault_dir();
     std::fs::create_dir_all(&vault_dir).ok();
-    let cfg = CoreConfig::production(vault_dir.clone(), env!("CARGO_PKG_VERSION"));
-    let core = Core::open(cfg, default_unlock()).await?;
+
+    // Dev/demo live-sync wiring (see `livesync`): env-driven, with cert files
+    // for device trust. All three env vars are optional; unset ⇒ offline as
+    // before. Documented env vars:
+    //   SUNRISE_SYNC_URL          ws://127.0.0.1:8443/sync   (relay endpoint)
+    //   SUNRISE_EXPORT_CERT_FILE  path to write this device's cert on startup
+    //   SUNRISE_TRUST_CERT_FILE   path to a peer cert to trust on startup
+    let plan = livesync::plan_from_env(&livesync::SyncEnv::from_process_env());
+    let sync_on = !plan.is_off();
+    let (core, startup_log) = livesync::open_with_plan(
+        vault_dir.clone(),
+        env!("CARGO_PKG_VERSION"),
+        DEV_ROOT,
+        &plan,
+    )
+    .await?;
+    for line in &startup_log {
+        eprintln!("sunrise-tui: {line}");
+    }
 
     let mut term = setup()?;
-    let result = run(&mut term, &core).await;
+    let result = run(&mut term, &core, sync_on).await;
     teardown(&mut term)?;
-    core.close().await.ok();
+    // Non-consuming shutdown: `core` is an `Arc<Core>`, so we can't call the
+    // consuming `close()`. `shutdown()` stops the driver and releases the
+    // driver's transient strong ref so the lock drops when this Arc drops.
+    core.shutdown().await;
     result
 }
 
@@ -61,12 +88,6 @@ fn vault_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(home)
         .join(".sunrise")
         .join("vault")
-}
-
-/// v1 self-host single-user dev mode: derive the vault root from a fixed
-/// constant. Production reads a passphrase or completes a pairing flow.
-fn default_unlock() -> Unlock {
-    Unlock::DevicePaired(VaultRootKey::from_bytes([7u8; 32]))
 }
 
 fn setup() -> Result<Tty, Box<dyn std::error::Error>> {
@@ -84,8 +105,7 @@ fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = Arc::new(SystemRng); // make explicit that we have an RNG injected via core cfg
+async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ViewState::default();
     // Image-preview state (`:preview <path>`). Owned here because Picker and
     // the protocol state are not Clone; render fns borrow them per frame.
@@ -98,6 +118,9 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
     refresh(core, &mut state).await;
 
     loop {
+        // Refresh the status-line sync indicator every iteration so it tracks
+        // the background driver in real time (independent of view refreshes).
+        poll_sync(core, &mut state, sync_on).await;
         term.draw(|f| {
             let area = f.area();
             #[cfg(feature = "images")]
@@ -248,6 +271,19 @@ async fn run(term: &mut Tty, core: &Core) -> Result<(), Box<dyn std::error::Erro
         }
     }
     Ok(())
+}
+
+/// Refresh the status-line sync indicator from the core's live sync status.
+/// Shows `off` (with the DB outbox depth) when no `SUNRISE_SYNC_URL` was set,
+/// otherwise the driver's live state.
+async fn poll_sync(core: &Core, state: &mut ViewState, sync_on: bool) {
+    if let Ok(QueryResult::SyncStatus(s)) = core.query(Query::SyncStatus).await {
+        state.sync = Some(if sync_on {
+            SyncIndicator::live(s.state, s.outbox_pending)
+        } else {
+            SyncIndicator::off(s.outbox_pending)
+        });
+    }
 }
 
 async fn refresh(core: &Core, state: &mut ViewState) {
