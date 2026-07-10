@@ -6,6 +6,22 @@ status: accepted
 
 A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capable; installable; runs without a browser session-by-session.
 
+> **v1 status — WASM core deferred.** The architecture below is the *target*.
+> A gated spike (see [ADR 0012](../11-adr/0012-web-wasm-deferred.md)) found that
+> the only `rusqlite` line integrating `sqlite-wasm-rs` (`0.40`, via
+> `ffi-sqlite-wasm-rs`) requires Rust ≥ 1.91 (`libsqlite3-sys 0.38.1`'s
+> `cfg_select!`), above the workspace MSRV (1.88), and cannot build the native
+> SQLCipher stack unchanged — the spike's hard gate. **v1 web therefore ships the
+> `localStorage` stub** behind `apps/web/src/wasm.ts`'s `loadCore()` seam:
+> in-tab, **unencrypted**, no OPFS, no real `sunrise-core`. It exists so the PWA
+> shell renders for UI development. Revisit when the MSRV moves or a
+> wasm-capable `rusqlite` builds on the pinned toolchain.
+>
+> Note also that even once the WASM path lands, `sqlite-wasm-rs` yields
+> **plaintext SQLite in OPFS** (no SQLCipher key pragmas on wasm) — a
+> spec-accepted v1 web gap — and multi-tab exclusivity moves to the JS layer's
+> `navigator.locks`.
+
 ## Targets
 
 - Latest Chrome, Edge, Safari, Firefox; one major version back supported (best-effort).
