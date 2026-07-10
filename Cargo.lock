@@ -2632,9 +2632,14 @@ dependencies = [
 name = "sunrise-e2e"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "jiff",
  "parking_lot",
+ "proptest",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",

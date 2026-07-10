@@ -7,7 +7,14 @@
     },
     "files": {
         "ignoreUnknown": false,
-        "includes": ["**", "!legacy", "!**/dist", "!**/build", "!**/coverage", "!.claude"]
+        "includes": [
+            "**",
+            "!legacy",
+            "!**/dist",
+            "!**/build",
+            "!**/coverage",
+            "!.claude"
+        ]
     },
     "formatter": {
         "enabled": true,

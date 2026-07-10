@@ -12,6 +12,8 @@
 #![warn(missing_docs)]
 #![allow(clippy::missing_panics_doc)]
 
+pub mod chaos;
+
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;

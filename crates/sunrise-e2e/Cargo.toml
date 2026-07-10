@@ -21,8 +21,13 @@ sunrise-sync = { workspace = true, features = ["ws"] }
 axum = { workspace = true }
 jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+async-trait = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+rand_core = { workspace = true }
 
 [dev-dependencies]
 sunrise-id = { workspace = true }
 parking_lot = { workspace = true }
+proptest = { workspace = true }
 tempfile = "3"
