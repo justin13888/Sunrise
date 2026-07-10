@@ -76,7 +76,7 @@ Compose UI ──▶ ViewModels ──▶ CoreClient (Kotlin wrapper)
 ## Push (FCM)
 
 - Content-less data messages.
-- High-priority for direct-relevance ops (a reminder fired, a sharing action); normal for bulk.
+- `alert` tier for direct-relevance ops (a reminder fired, a sharing action); `silent` tier for background sync.
 - On receipt: schedule a high-priority WorkManager task to drain.
 
 ## OS keystore

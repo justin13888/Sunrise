@@ -1,49 +1,45 @@
-# Sunrise — Specification
+# Sunrise — Design
 
 This directory is the design source of truth for Sunrise: a local-first, end-to-end encrypted productivity system for people running many parallel streams of work (multiple jobs, household, relationships, travel, side projects, etc.).
 
-The implementation in `apps/` and `packages/` is the *previous* prototype and is not load-bearing for these specs. Treat the specs as the target.
+The live v1 implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype now lives in `legacy/` and is not load-bearing for this design.
 
-## How to read these specs
+This tree fully covers the design from first principles; every design decision is asserted with a brief justification; exact dependency pins live in `01-architecture/dependencies.md` (and the ADRs).
 
-Read top-down. Each numbered section builds on the prior ones:
+## How to read
 
-| # | Section | What it answers |
+Read top-down, 00 → 11, then `implementation/`. Each numbered section builds on the prior ones. The section list may grow as the design expands.
+
+| # | Section | What it covers |
 |---|---|---|
-| 00 | [`00-product/`](./00-product) | Who is Sunrise for? What does it do, and not do? |
-| 01 | [`01-architecture/`](./01-architecture) | What are the layers and trust boundaries? |
-| 02 | [`02-domain/`](./02-domain) | What entities and relationships do we model? |
-| 03 | [`03-crypto/`](./03-crypto) | How is data E2E-encrypted? Keys, recovery, sharing. |
-| 04 | [`04-storage/`](./04-storage) | How is data persisted on each client? |
-| 05 | [`05-sync/`](./05-sync) | How do clients converge? CRDT, protocol, conflicts. |
-| 06 | [`06-server/`](./06-server) | What does the server do (and *not* do)? |
+| 00 | [`00-product/`](./00-product) | Who Sunrise is for; what it does and does not do. |
+| 01 | [`01-architecture/`](./01-architecture) | Layers, trust boundaries, deployment; `dependencies.md` (upcoming) pins exact versions. |
+| 02 | [`02-domain/`](./02-domain) | Entities and relationships we model. |
+| 03 | [`03-crypto/`](./03-crypto) | E2E encryption: keys, recovery, sharing, wire formats. |
+| 04 | [`04-storage/`](./04-storage) | How data is persisted on each client. |
+| 05 | [`05-sync/`](./05-sync) | How clients converge: CRDT, transport, protocol, conflicts. |
+| 06 | [`06-server/`](./06-server) | What the server does (and does not). |
 | 07 | [`07-clients/`](./07-clients) | Per-platform: desktop, iOS, Android, web, TUI. |
-| 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…) |
+| 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…). |
 | 09 | [`09-integrations/`](./09-integrations) | External: Google Calendar, iCalendar import/export. |
-| 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, testing, perf. |
-| 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why* not *what*. |
+| 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, logging, versioning, testing, perf. |
+| 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why*, not *what*. |
+| — | [`implementation/`](./implementation) | Living tracker of the build against this design. |
 
-Two operational substrates that every section depends on:
+[`03-crypto/`](./03-crypto) is the cryptographic design of record: algorithms, parameters, wire formats, key lifecycles, and protocol fixtures are byte-exact. Any change to an `accepted` doc requires a superseding ADR in [`11-adr/`](./11-adr), and wire-format changes additionally require a version bump per [`10-cross-cutting/protocol-versioning.md`](./10-cross-cutting/protocol-versioning.md).
 
-- [`10-cross-cutting/logging.md`](./10-cross-cutting/logging.md) — layered structured-logging contract for every package ([ADR-0010](./11-adr/0010-logging-strategy.md)).
-- [`10-cross-cutting/protocol-versioning.md`](./10-cross-cutting/protocol-versioning.md) — explicit version negotiation, capability bits, deprecation policy ([ADR-0009](./11-adr/0009-protocol-versioning-spec.md)).
+Two cross-cutting substrates every section depends on:
+
+- [`10-cross-cutting/logging.md`](./10-cross-cutting/logging.md) — layered structured-logging contract ([ADR-0010](./11-adr/0010-logging-strategy.md)).
+- [`10-cross-cutting/protocol-versioning.md`](./10-cross-cutting/protocol-versioning.md) — version negotiation, capability bits, deprecation policy ([ADR-0009](./11-adr/0009-protocol-versioning-spec.md)).
 
 ## Conventions
 
-- **Status legend** at the top of every spec:
-  `status: accepted | superseded | deprecated`. Every spec in this directory is **accepted (frozen)** for v1; changes require a superseding ADR.
+- **Status legend** — YAML frontmatter on every doc: `status: accepted` (frozen design) or `status: living` (tracks implementation). ADRs use a `**Status:** accepted` line instead.
 - **MUST / SHOULD / MAY** follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
-- **Cross-references** use relative paths: `[envelope format](../03-crypto/data-encryption-format.md)`.
-- **Diagrams** are ASCII first; Mermaid only if absolutely required for clarity.
+- **Cross-references** use relative paths: `[envelope format](./03-crypto/data-encryption-format.md)`.
+- **Diagrams** are ASCII first.
 - **Wire formats** are specified in CDDL or pseudo-Rust struct form, not prose.
-- **Platform-specific** concerns live in `07-clients/<platform>.md`. The shared core spec must be platform-agnostic.
-
-## Glossary
+- **Platform-specific** concerns live in `07-clients/<platform>.md`; the shared core design stays platform-agnostic.
 
 See [`00-product/glossary.md`](./00-product/glossary.md) for shared vocabulary (Stream, Context, Routine, Block, etc.).
-
-## Status
-
-All v1 specs are **accepted**. The cryptography section ([`03-crypto/`](./03-crypto/)) is the cryptographic design of record: algorithms, parameters, wire formats, key lifecycles, and protocol fixtures are byte-exact. Any future change requires a superseding ADR in [`11-adr/`](./11-adr/) and a wire-format version bump.
-
-Each spec section is self-contained: an implementer should be able to read a section straight through and have everything they need to write byte-correct code. Where a topic spans sections, cross-references are explicit. Two cross-cutting documents (`logging.md`, `protocol-versioning.md`) under [`10-cross-cutting/`](./10-cross-cutting/) are read alongside the rest.

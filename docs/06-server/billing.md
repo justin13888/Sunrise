@@ -15,7 +15,7 @@ Self-host has no billing. Skip this spec for self-host operators.
 
 > Family plan is deferred to v2; v1 ships Free and Pro tiers only.
 
-Numbers are placeholders pending real cost analysis. Do not promote them externally before [`../11-roadmap/`](../11-roadmap/) decisions.
+Numbers are placeholders pending real cost analysis; do not promote them externally until pricing is finalized.
 
 ## Stripe model
 

@@ -61,13 +61,12 @@ Implementation: outbound OpBatch order favors the Stream the user is currently v
 
 ## Push priority
 
-Pushes use APNs/FCM priority tiers:
+Pushes use APNs/FCM priority tiers. There are exactly **two** tiers, matching [`../06-server/push-notifications.md`](../06-server/push-notifications.md):
 
 | Sunrise tier | APNs | FCM | Web Push |
 |---|---|---|---|
-| `critical` (block-start reminder) | `apns-priority: 10`, `apns-push-type: alert` | `priority: high` | `Urgency: high` |
-| `normal` (sync wakeup) | `apns-priority: 5`, `apns-push-type: background` | `priority: normal` | `Urgency: normal` |
-| `bulk` (silent re-sync) | `apns-priority: 5`, `apns-push-type: background` | `priority: normal`, `time_to_live: 86400` | `Urgency: low` |
+| `alert` (block-start reminder, mention hand-off) | `apns-priority: 10`, `apns-push-type: alert` | `priority: high` | `Urgency: high` |
+| `silent` (sync wakeup, background re-sync) | `apns-priority: 5`, `apns-push-type: background` | `priority: normal`, `time_to_live: 86400` | `Urgency: normal` |
 
 ## Self-host considerations
 

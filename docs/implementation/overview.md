@@ -1,6 +1,8 @@
-# Implementation Overview
+---
+status: living
+---
 
-`status: living`
+# Implementation Overview
 
 This file tracks the state of the v1 implementation against `docs/`.
 Each phase has a per-section file (added as the surface stabilizes); this

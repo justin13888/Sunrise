@@ -56,6 +56,8 @@ When generation runs and finds N ≥ 2 missed occurrences, `merge` produces exac
 
 We use **RFC 5545 RRULE** (the iCalendar standard) as a baseline. Supported parts: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. Not supported in v1: `BYYEARDAY`, `BYWEEKNO`.
 
+`EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
+
 Sunrise extensions (carried in a parallel field, not in the RRULE string itself):
 
 - **Floating windows.** "Within a 3-day window starting Monday." Useful for non-anchored habits ("3 workouts/week, any 3 days").

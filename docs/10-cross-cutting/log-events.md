@@ -1,6 +1,8 @@
-# Log event catalog
+---
+status: living
+---
 
-`status: living`
+# Log event catalog
 
 This file catalogs every `ev` value emitted across the workspace. Adding a
 new event name requires a one-line entry here so analysts can `grep` for
@@ -82,7 +84,7 @@ for the structured-record schema and grammar.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Transport fell back from T-1 to T-2 to T-3. |
+| `sync.transport.fallback` | warn | Reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005). |
 | `sync.backoff` | warn | Entered exponential backoff. |
 
 ## `srv` (sunrise-server; reserved)

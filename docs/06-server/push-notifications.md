@@ -52,7 +52,7 @@ There are exactly **two** tiers:
 | `alert` | High-priority wake (mention, reminder hand-off). | `10` | `high` | `high` |
 | `silent` | Background/sync wake; user-invisible until client renders. | `5` | `normal` | `normal` |
 
-Anything that previous drafts called "bulk" is treated as `silent`. There is no third tier.
+Any low-priority re-sync a previous draft split into a third tier is now folded into `silent`. There is no third tier.
 
 ## Coalescing
 

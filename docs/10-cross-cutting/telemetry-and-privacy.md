@@ -92,7 +92,7 @@ The server-side observability commitments are in [`../06-server/observability.md
 
 - IP retained ≤14 days.
 - No content; no push tokens in plaintext.
-- Audit log per account-management action retained 90 days.
+- Audit log per account-management action retained 30 days (unified across the system; see [`../06-server/observability.md`](../06-server/observability.md)).
 - Aggregate metrics retained indefinitely (no PII).
 
 ## Privacy policy alignment

@@ -1,4 +1,4 @@
-# ADR 0011 — Layered structured logging
+# 0010 — Layered structured logging
 
 **Status:** accepted
 

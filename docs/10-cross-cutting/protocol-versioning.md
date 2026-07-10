@@ -1,6 +1,8 @@
-# Protocol versioning
+---
+status: accepted
+---
 
-`status: accepted (v1)`
+# Protocol versioning
 
 Sunrise has four independent versioned surfaces. Each evolves on its own schedule. A single client release pins exact versions of all four. The wire-protocol exchange negotiates the highest version both peers understand at session start; mismatch is a hard failure with a known error code.
 

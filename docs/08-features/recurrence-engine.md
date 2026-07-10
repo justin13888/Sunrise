@@ -25,12 +25,15 @@ v1 supports the following RFC 5545 RRULE features. The same subset is reused by 
 | `BYDAY` | yes (e.g. `MO,WE,FR`, `1MO`, `-1FR`) |
 | `BYMONTHDAY` | yes |
 | `BYMONTH` | yes |
-| `BYSETPOS` | no |
+| `BYSETPOS` | yes |
 | `BYHOUR`, `BYMINUTE`, `BYSECOND` | no |
 | `BYWEEKNO`, `BYYEARDAY` | no |
 | `WKST` | yes (default `MO`) |
-| `RDATE`, `EXDATE` | yes |
+| `EXDATE` | yes — maps to `Routine.skip_dates` at import |
+| `RDATE` | no — dropped at import with an `int.import.rrule_lossy` warning |
 | `RSCALE` | no |
+
+`EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
 
 Unsupported properties on import are silently dropped with a `int.import.rrule_lossy` `warn` log. Library: `rrule` crate (Rust) pinned via `Cargo.toml`.
 

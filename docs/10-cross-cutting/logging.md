@@ -1,6 +1,8 @@
-# Logging
+---
+status: accepted
+---
 
-`status: accepted (v1)`
+# Logging
 
 This spec defines the logging contract for every package and binary in the Sunrise workspace. It is one of two operational substrates that every other spec depends on; the other is [protocol-versioning](./protocol-versioning.md).
 
@@ -190,7 +192,7 @@ Each package emits a fixed catalog of `ev` names. New events require a doc entry
 - `sync.frame.recv`, `sync.frame.send` — debug only; includes `kind`, `n_bytes`.
 - `sync.batch.applied`, `sync.batch.rejected`.
 - `sync.snapshot.req`, `sync.snapshot.applied`.
-- `sync.transport.fallback` — on switch from T-1 to T-2 to T-3.
+- `sync.transport.fallback` — reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005).
 - `sync.backoff` — when entering exponential backoff.
 
 ### `sunrise-server` (Bun)
