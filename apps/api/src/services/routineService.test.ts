@@ -2,59 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateRoutineInput } from "./routineService";
 
 vi.mock("../db", async () => {
-    const { default: Database } = await import("better-sqlite3");
-    const { drizzle } = await import("drizzle-orm/better-sqlite3");
-    const schema = await import("../db/schema");
+    const { createTestDb } = await import("../db/testUtils");
 
-    const sqlite = new Database(":memory:");
-    sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT NOT NULL,
-            name TEXT,
-            picture TEXT
-        );
-        CREATE TABLE IF NOT EXISTS oauth_tokens (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id),
-            access_token TEXT NOT NULL,
-            refresh_token TEXT NOT NULL,
-            expires_at INTEGER NOT NULL,
-            scope TEXT
-        );
-        CREATE TABLE IF NOT EXISTS routines (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id),
-            name TEXT NOT NULL,
-            description TEXT,
-            duration TEXT NOT NULL,
-            priority TEXT NOT NULL,
-            flexibility INTEGER NOT NULL,
-            energy_level_required TEXT NOT NULL,
-            category TEXT NOT NULL,
-            frequency TEXT NOT NULL,
-            time_preferences TEXT NOT NULL,
-            availability_windows TEXT NOT NULL,
-            dependencies TEXT NOT NULL,
-            minimum_gap_minutes INTEGER NOT NULL DEFAULT 0,
-            buffer_time_minutes INTEGER NOT NULL DEFAULT 5,
-            conflict_resolution TEXT NOT NULL,
-            can_be_grouped INTEGER NOT NULL DEFAULT 1,
-            preferred_batch_size INTEGER,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            tags TEXT NOT NULL DEFAULT '[]',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        INSERT OR IGNORE INTO users (id, email) VALUES ('user1', 'user1@example.com');
-    `);
+    const { sqlite, db } = createTestDb();
+    sqlite.exec(
+        "INSERT OR IGNORE INTO users (id, email) VALUES ('user1', 'user1@example.com');",
+    );
 
-    const db = drizzle(sqlite, { schema });
     (globalThis as Record<string, unknown>).__testSqliteRoutine = sqlite;
     return { db };
 });
 
-import { RoutineService } from "./routineService";
+import { RoutineService, RoutineValidationError } from "./routineService";
 
 function getSqlite() {
     return (globalThis as Record<string, unknown>).__testSqliteRoutine as {
@@ -278,6 +237,40 @@ describe("RoutineService", () => {
             expect(updated?.category).toBe(created.category);
             expect(updated?.tags).toEqual(created.tags);
         });
+
+        it("clears description when explicitly set to null", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            expect(created.description).toBe("A good workout");
+
+            const updated = await service.updateRoutine(created.id, "user1", {
+                description: null,
+            });
+            expect(updated?.description).toBeUndefined();
+
+            const fetched = await service.getRoutine(created.id, "user1");
+            expect(fetched?.description).toBeUndefined();
+        });
+
+        it("clears preferred_batch_size when explicitly set to null", async () => {
+            const created = await service.createRoutine("user1", {
+                ...BASE_INPUT,
+                preferred_batch_size: 3,
+            });
+            expect(created.preferred_batch_size).toBe(3);
+
+            const updated = await service.updateRoutine(created.id, "user1", {
+                preferred_batch_size: null,
+            });
+            expect(updated?.preferred_batch_size).toBeUndefined();
+        });
+
+        it("leaves description untouched when the patch omits it (undefined)", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            const updated = await service.updateRoutine(created.id, "user1", {
+                name: "Renamed",
+            });
+            expect(updated?.description).toBe("A good workout");
+        });
     });
 
     describe("deleteRoutine", () => {
@@ -320,6 +313,320 @@ describe("RoutineService", () => {
             const remaining = await service.listRoutines("user1");
             expect(remaining).toHaveLength(1);
             expect(remaining[0].id).toBe(r2.id);
+        });
+    });
+
+    describe("input validation on create", () => {
+        it("rejects an empty name after trimming", async () => {
+            await expect(
+                service.createRoutine("user1", { ...BASE_INPUT, name: "   " }),
+            ).rejects.toThrow(/name must not be empty/);
+        });
+
+        it("throws RoutineValidationError for invalid input", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    flexibility: 999,
+                }),
+            ).rejects.toBeInstanceOf(RoutineValidationError);
+        });
+
+        it("rejects a bad enum value", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    priority: "urgent" as never,
+                }),
+            ).rejects.toThrow(/Invalid routine input.*priority/);
+        });
+
+        it("rejects non-positive duration minutes", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    duration: { minutes: 0, flexible: false },
+                }),
+            ).rejects.toThrow(/duration\/minutes/);
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    duration: { minutes: -30, flexible: false },
+                }),
+            ).rejects.toThrow(/duration\/minutes/);
+        });
+
+        it("rejects min_duration greater than max_duration", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    duration: {
+                        minutes: 45,
+                        flexible: true,
+                        min_duration: 90,
+                        max_duration: 30,
+                    },
+                }),
+            ).rejects.toThrow(
+                /min_duration \(90\) must be <= duration\.max_duration/,
+            );
+        });
+
+        it("rejects out-of-range availability window hours and minutes", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    availability_windows: [
+                        {
+                            start_hour: 24,
+                            start_minute: 0,
+                            end_hour: 25,
+                            end_minute: 0,
+                        },
+                    ],
+                }),
+            ).rejects.toThrow(/availability_windows/);
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    availability_windows: [
+                        {
+                            start_hour: 8,
+                            start_minute: 60,
+                            end_hour: 9,
+                            end_minute: 0,
+                        },
+                    ],
+                }),
+            ).rejects.toThrow(/availability_windows/);
+        });
+
+        it("rejects a window that does not start before it ends", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    availability_windows: [
+                        {
+                            start_hour: 10,
+                            start_minute: 0,
+                            end_hour: 10,
+                            end_minute: 0,
+                        },
+                    ],
+                }),
+            ).rejects.toThrow(/must start before it ends/);
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    availability_windows: [
+                        {
+                            start_hour: 18,
+                            start_minute: 0,
+                            end_hour: 9,
+                            end_minute: 0,
+                        },
+                    ],
+                }),
+            ).rejects.toThrow(/must start before it ends/);
+        });
+
+        it("rejects negative gap and buffer minutes", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    minimum_gap_minutes: -1,
+                }),
+            ).rejects.toThrow(/minimum_gap_minutes/);
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    buffer_time_minutes: -1,
+                }),
+            ).rejects.toThrow(/buffer_time_minutes/);
+        });
+
+        it("rejects preferred_batch_size below 1", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    preferred_batch_size: 0,
+                }),
+            ).rejects.toThrow(/preferred_batch_size/);
+        });
+
+        it("rejects out-of-range flexibility", async () => {
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    flexibility: -1,
+                }),
+            ).rejects.toThrow(/flexibility/);
+            await expect(
+                service.createRoutine("user1", {
+                    ...BASE_INPUT,
+                    flexibility: 101,
+                }),
+            ).rejects.toThrow(/flexibility/);
+        });
+
+        it("accepts boundary values: hour 23, minute 59, flexibility 0 and 100", async () => {
+            const atLowerFlexibility = await service.createRoutine("user1", {
+                ...BASE_INPUT,
+                flexibility: 0,
+                availability_windows: [
+                    {
+                        start_hour: 23,
+                        start_minute: 0,
+                        end_hour: 23,
+                        end_minute: 59,
+                    },
+                ],
+            });
+            expect(atLowerFlexibility.flexibility).toBe(0);
+            expect(atLowerFlexibility.availability_windows[0]).toEqual({
+                start_hour: 23,
+                start_minute: 0,
+                end_hour: 23,
+                end_minute: 59,
+            });
+
+            const atUpperFlexibility = await service.createRoutine("user1", {
+                ...BASE_INPUT,
+                flexibility: 100,
+            });
+            expect(atUpperFlexibility.flexibility).toBe(100);
+        });
+    });
+
+    describe("input validation on update", () => {
+        it("rejects an invalid patch", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            await expect(
+                service.updateRoutine(created.id, "user1", {
+                    flexibility: 101,
+                }),
+            ).rejects.toThrow(
+                new RegExp(`Invalid update for routine ${created.id}`),
+            );
+        });
+
+        it("throws RoutineValidationError for an invalid patch", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            await expect(
+                service.updateRoutine(created.id, "user1", {
+                    flexibility: 101,
+                }),
+            ).rejects.toBeInstanceOf(RoutineValidationError);
+        });
+
+        it("rejects a whitespace-only name", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            await expect(
+                service.updateRoutine(created.id, "user1", { name: "  " }),
+            ).rejects.toThrow(/name must not be empty/);
+        });
+
+        it("rejects a patch that makes min_duration exceed max_duration", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            await expect(
+                service.updateRoutine(created.id, "user1", {
+                    duration: {
+                        minutes: 45,
+                        flexible: true,
+                        min_duration: 120,
+                        max_duration: 60,
+                    },
+                }),
+            ).rejects.toThrow(
+                /min_duration \(120\) must be <= duration\.max_duration/,
+            );
+        });
+
+        it("leaves the routine unchanged when the patch is rejected", async () => {
+            const created = await service.createRoutine("user1", BASE_INPUT);
+            await expect(
+                service.updateRoutine(created.id, "user1", {
+                    flexibility: 101,
+                    name: "Should Not Stick",
+                }),
+            ).rejects.toThrow();
+
+            const fetched = await service.getRoutine(created.id, "user1");
+            expect(fetched?.name).toBe(BASE_INPUT.name);
+            expect(fetched?.flexibility).toBe(BASE_INPUT.flexibility);
+        });
+    });
+
+    describe("validation on read", () => {
+        function insertRawRoutine(overrides: {
+            id: string;
+            duration?: string;
+            priority?: string;
+        }) {
+            const duration =
+                overrides.duration ?? '{"minutes":45,"flexible":false}';
+            const priority = overrides.priority ?? "high";
+            getSqlite().exec(`
+                INSERT INTO routines (
+                    id, user_id, name, description, duration, priority,
+                    flexibility, energy_level_required, category, frequency,
+                    time_preferences, availability_windows, dependencies,
+                    minimum_gap_minutes, buffer_time_minutes,
+                    conflict_resolution, can_be_grouped, preferred_batch_size,
+                    enabled, tags, created_at, updated_at
+                ) VALUES (
+                    '${overrides.id}', 'user1', 'Raw Routine', NULL,
+                    '${duration}', '${priority}',
+                    5, 'medium', '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+                    'daily', '["morning"]',
+                    '[{"start_hour":6,"start_minute":0,"end_hour":11,"end_minute":0}]',
+                    '[]', 0, 5, 'reschedule', 0, NULL, 1, '[]', 0, 0
+                );
+            `);
+        }
+
+        it("getRoutine throws naming the id when a JSON column is corrupt", async () => {
+            insertRawRoutine({ id: "corrupt-json", duration: "not json{{" });
+            await expect(
+                service.getRoutine("corrupt-json", "user1"),
+            ).rejects.toThrow(/Routine corrupt-json has corrupt JSON data/);
+        });
+
+        it("corrupt-row errors are internal (not RoutineValidationError)", async () => {
+            insertRawRoutine({ id: "corrupt-internal", duration: "}{" });
+            const error = await service
+                .getRoutine("corrupt-internal", "user1")
+                .then(
+                    () => null,
+                    (e: unknown) => e,
+                );
+            expect(error).toBeInstanceOf(Error);
+            expect(error).not.toBeInstanceOf(RoutineValidationError);
+        });
+
+        it("getRoutine throws naming the id when stored data fails validation", async () => {
+            insertRawRoutine({
+                id: "bad-priority",
+                priority: "urgent",
+            });
+            await expect(
+                service.getRoutine("bad-priority", "user1"),
+            ).rejects.toThrow(/Routine bad-priority failed validation/);
+        });
+
+        it("listRoutines throws instead of silently returning corrupted rows", async () => {
+            await service.createRoutine("user1", BASE_INPUT);
+            insertRawRoutine({ id: "corrupt-in-list", duration: "}{" });
+            await expect(service.listRoutines("user1")).rejects.toThrow(
+                /Routine corrupt-in-list has corrupt JSON data/,
+            );
+        });
+
+        it("valid raw rows read back cleanly", async () => {
+            insertRawRoutine({ id: "clean-row" });
+            const routine = await service.getRoutine("clean-row", "user1");
+            expect(routine?.id).toBe("clean-row");
+            expect(routine?.duration.minutes).toBe(45);
         });
     });
 });

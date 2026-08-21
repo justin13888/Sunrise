@@ -1,4 +1,7 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { createValidator } from "./validation";
+
+export * from "./validation";
 
 // Enum schemas
 export const priorityLevelSchema = Type.Union([
@@ -147,10 +150,10 @@ export const routineSchema = Type.Object({
     duration: durationSchema,
     /** How important this routine is */
     priority: priorityLevelSchema,
-    /** How flexible the scheduling is (0 = rigid, 10 = very flexible) */
+    /** How flexible the scheduling is (0 = rigid, 100 = very flexible) */
     flexibility: Type.Number({
         minimum: 0,
-        maximum: 10,
+        maximum: 100,
         default: 5,
         examples: [2, 5, 8],
     }),
@@ -698,6 +701,29 @@ export const ROUTINE_TEMPLATES: RoutineTemplate[] = [
         ),
     },
 ];
+
+// Prebuilt validators (compiled once, reusable)
+export const durationValidator = createValidator(durationSchema);
+export const timeWindowValidator = createValidator(timeWindowSchema);
+export const dependencyValidator = createValidator(dependencySchema);
+export const routineValidator = createValidator(routineSchema);
+export const routineCategoryDefinitionValidator = createValidator(
+    routineCategoryDefinitionSchema,
+);
+export const routineTemplateValidator = createValidator(routineTemplateSchema);
+
+/** Returns true if `value` is a structurally valid Routine. */
+export function validateRoutine(value: unknown): value is Routine {
+    return routineValidator.check(value);
+}
+
+/**
+ * Returns `value` typed as Routine, or throws an Error with a readable
+ * message describing every validation problem.
+ */
+export function assertRoutine(value: unknown, label = "routine"): Routine {
+    return routineValidator.assert(value, label);
+}
 
 // Quick reschedule options
 export const QUICK_RESCHEDULE_OPTIONS: QuickRescheduleOption[] = [

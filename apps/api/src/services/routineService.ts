@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type {
-    ConflictResolution,
-    Dependency,
-    Duration,
-    EnergyLevel,
-    Frequency,
-    PriorityLevel,
-    Routine,
-    TimeOfDay,
-    TimeWindow,
+import {
+    type ConflictResolution,
+    type Dependency,
+    type Duration,
+    type EnergyLevel,
+    type Frequency,
+    type PriorityLevel,
+    type Routine,
+    routineValidator,
+    type TimeOfDay,
+    type TimeWindow,
 } from "@sunrise/models";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
@@ -35,32 +36,118 @@ export interface CreateRoutineInput {
     tags: string[];
 }
 
-export type UpdateRoutineInput = Partial<CreateRoutineInput>;
+/**
+ * Update patch. `undefined` means "leave unchanged"; an explicit `null` on
+ * the nullable fields (description, preferred_batch_size) clears the value.
+ */
+export type UpdateRoutineInput = Omit<
+    Partial<CreateRoutineInput>,
+    "description" | "preferred_batch_size"
+> & {
+    description?: string | null;
+    preferred_batch_size?: number | null;
+};
+
+/**
+ * Raised when routine input fails validation. Resolvers translate this into
+ * a BAD_USER_INPUT GraphQL error; plain Errors remain internal (masked).
+ */
+export class RoutineValidationError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "RoutineValidationError";
+    }
+}
+
+function describeValidationProblems(value: unknown): string {
+    return routineValidator
+        .errors(value)
+        .map(
+            (issue) =>
+                `${issue.path === "" ? "/" : issue.path}: ${issue.message}`,
+        )
+        .join("; ");
+}
+
+/**
+ * Validates a fully-assembled routine object: structural schema check plus
+ * cross-field constraints the schema cannot express. Throws a
+ * RoutineValidationError with a descriptive message prefixed by `label`.
+ */
+function assertValidRoutine(routine: Routine, label: string): void {
+    if (routine.name.trim().length === 0) {
+        throw new RoutineValidationError(`${label}: name must not be empty`);
+    }
+
+    if (!routineValidator.check(routine)) {
+        throw new RoutineValidationError(
+            `${label}: ${describeValidationProblems(routine)}`,
+        );
+    }
+
+    const { min_duration, max_duration } = routine.duration;
+    if (
+        min_duration !== undefined &&
+        max_duration !== undefined &&
+        min_duration > max_duration
+    ) {
+        throw new RoutineValidationError(
+            `${label}: duration.min_duration (${min_duration}) must be <= duration.max_duration (${max_duration})`,
+        );
+    }
+
+    for (const window of routine.availability_windows) {
+        const start = window.start_hour * 60 + window.start_minute;
+        const end = window.end_hour * 60 + window.end_minute;
+        if (start >= end) {
+            throw new RoutineValidationError(
+                `${label}: availability window must start before it ends (got ${window.start_hour}:${window.start_minute} - ${window.end_hour}:${window.end_minute})`,
+            );
+        }
+    }
+}
 
 function rowToRoutine(row: typeof routines.$inferSelect): Routine {
-    return {
-        id: row.id,
-        name: row.name,
-        description: row.description ?? undefined,
-        duration: JSON.parse(row.duration) as Duration,
-        priority: row.priority as PriorityLevel,
-        flexibility: row.flexibility,
-        energy_level_required: row.energyLevelRequired as EnergyLevel,
-        category: row.category,
-        frequency: row.frequency as Frequency,
-        time_preferences: JSON.parse(row.timePreferences) as TimeOfDay[],
-        availability_windows: JSON.parse(
-            row.availabilityWindows,
-        ) as TimeWindow[],
-        dependencies: JSON.parse(row.dependencies) as Dependency[],
-        minimum_gap_minutes: row.minimumGapMinutes,
-        buffer_time_minutes: row.bufferTimeMinutes,
-        conflict_resolution: row.conflictResolution as ConflictResolution,
-        can_be_grouped: row.canBeGrouped,
-        preferred_batch_size: row.preferredBatchSize ?? undefined,
-        enabled: row.enabled,
-        tags: JSON.parse(row.tags) as string[],
-    };
+    let routine: Routine;
+    try {
+        routine = {
+            id: row.id,
+            name: row.name,
+            description: row.description ?? undefined,
+            duration: JSON.parse(row.duration) as Duration,
+            priority: row.priority as PriorityLevel,
+            flexibility: row.flexibility,
+            energy_level_required: row.energyLevelRequired as EnergyLevel,
+            category: row.category,
+            frequency: row.frequency as Frequency,
+            time_preferences: JSON.parse(row.timePreferences) as TimeOfDay[],
+            availability_windows: JSON.parse(
+                row.availabilityWindows,
+            ) as TimeWindow[],
+            dependencies: JSON.parse(row.dependencies) as Dependency[],
+            minimum_gap_minutes: row.minimumGapMinutes,
+            buffer_time_minutes: row.bufferTimeMinutes,
+            conflict_resolution: row.conflictResolution as ConflictResolution,
+            can_be_grouped: row.canBeGrouped,
+            preferred_batch_size: row.preferredBatchSize ?? undefined,
+            enabled: row.enabled,
+            tags: JSON.parse(row.tags) as string[],
+        };
+    } catch (error) {
+        throw new Error(
+            `Routine ${row.id} has corrupt JSON data: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
+        );
+    }
+
+    if (!routineValidator.check(routine)) {
+        throw new Error(
+            `Routine ${row.id} failed validation: ${describeValidationProblems(routine)}`,
+        );
+    }
+
+    return routine;
 }
 
 export class RoutineService {
@@ -70,6 +157,29 @@ export class RoutineService {
     ): Promise<Routine> {
         const id = randomUUID();
         const now = new Date();
+
+        const candidate: Routine = {
+            id,
+            name: input.name,
+            description: input.description,
+            duration: input.duration,
+            priority: input.priority,
+            flexibility: input.flexibility,
+            energy_level_required: input.energy_level_required,
+            category: input.category,
+            frequency: input.frequency,
+            time_preferences: input.time_preferences,
+            availability_windows: input.availability_windows,
+            dependencies: input.dependencies,
+            minimum_gap_minutes: input.minimum_gap_minutes,
+            buffer_time_minutes: input.buffer_time_minutes,
+            conflict_resolution: input.conflict_resolution,
+            can_be_grouped: input.can_be_grouped,
+            preferred_batch_size: input.preferred_batch_size,
+            enabled: input.enabled,
+            tags: input.tags,
+        };
+        assertValidRoutine(candidate, "Invalid routine input");
 
         await db.insert(routines).values({
             id,
@@ -134,6 +244,15 @@ export class RoutineService {
         const existing = await this.getRoutine(id, userId);
         if (!existing) return null;
 
+        const merged: Routine = { ...existing };
+        for (const [key, value] of Object.entries(input)) {
+            if (value === undefined) continue;
+            // Explicit null clears the (optional) field.
+            (merged as unknown as Record<string, unknown>)[key] =
+                value === null ? undefined : value;
+        }
+        assertValidRoutine(merged, `Invalid update for routine ${id}`);
+
         const updates: Partial<typeof routines.$inferInsert> = {
             updatedAt: new Date(),
         };
@@ -180,11 +299,12 @@ export class RoutineService {
     }
 
     async deleteRoutine(id: string, userId: string): Promise<boolean> {
-        const result = await db
+        const deleted = await db
             .delete(routines)
-            .where(and(eq(routines.id, id), eq(routines.userId, userId)));
+            .where(and(eq(routines.id, id), eq(routines.userId, userId)))
+            .returning({ id: routines.id });
 
-        return result.changes > 0;
+        return deleted.length > 0;
     }
 }
 
