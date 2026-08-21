@@ -13,22 +13,21 @@
         "check": "biome check .",
         "check:fix": "biome check --write .",
         "ci": "biome ci .",
+        "codegen": "bun run --filter '@sunrise/api' codegen && bun run --filter '@sunrise/app' codegen",
         "typecheck": "bun run --filter '*' typecheck",
-        "validate": "bun run ci && bun run typecheck && bun run test:coverage"
+        "validate": "bun run ci && bun run codegen && bun run typecheck && bun run test:coverage"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.3.11",
         "@types/node": "^22.15.24",
         "@vitest/coverage-v8": "4.0.8",
         "@vitest/ui": "^4.0.8",
+        "lefthook": "^1.13.6",
         "typescript": "~5.8.3",
         "vitest": "^4.0.8"
     },
     "workspaces": [
         "apps/*",
         "packages/*"
-    ],
-    "dependencies": {
-        "@sinclair/typebox": "^0.34.33"
-    }
+    ]
 }

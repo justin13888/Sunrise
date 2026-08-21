@@ -7,7 +7,12 @@
     },
     "files": {
         "ignoreUnknown": false,
-        "includes": ["**", "!apps/app/src/routeTree.gen.ts"]
+        "includes": [
+            "**",
+            "!apps/app/src/routeTree.gen.ts",
+            // drizzle-kit-generated migration metadata must stay byte-exact
+            "!apps/api/drizzle/meta"
+        ]
     },
     "formatter": {
         "enabled": true,
