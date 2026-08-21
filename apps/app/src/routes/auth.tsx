@@ -1,10 +1,15 @@
+import { useApolloClient } from "@apollo/client";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
 import {
     useAuthenticateWithCodeMutation,
     useGetAuthUrlQuery,
 } from "../generated/graphql";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export const Route = createFileRoute("/auth")({
     component: AuthComponent,
@@ -12,59 +17,93 @@ export const Route = createFileRoute("/auth")({
 
 function AuthComponent() {
     const router = useRouter();
+    const client = useApolloClient();
+    const runningInTauri = isTauri();
     const [isAuthenticating, setIsAuthenticating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [showCodeInput, setShowCodeInput] = useState(runningInTauri);
+    const [manualCode, setManualCode] = useState("");
 
-    const { data: authUrlData, loading: authUrlLoading } = useGetAuthUrlQuery();
+    const {
+        data: authUrlData,
+        loading: authUrlLoading,
+        error: authUrlError,
+        refetch: refetchAuthUrl,
+    } = useGetAuthUrlQuery({
+        // Show the loading state again while a Retry refetch is in flight.
+        notifyOnNetworkStatusChange: true,
+    });
     const [authenticateWithCode] = useAuthenticateWithCodeMutation();
 
+    // Already signed in? Go straight to the schedule.
     useEffect(() => {
-        // Handle the auth callback from popup
-        const handleMessage = async (event: MessageEvent) => {
-            // Allow messages from the API server (localhost:3000) where OAuth callback is handled
-            const allowedOrigins = [
-                "http://localhost:3000",
-                "http://localhost:1420",
-            ];
-            if (!allowedOrigins.includes(event.origin)) {
-                console.log("Rejected message from origin:", event.origin);
-                return;
-            }
+        if (localStorage.getItem("access_token")) {
+            router.navigate({ to: "/schedule" });
+        }
+    }, [router]);
 
-            console.log("📨 Received message from popup:", event.data);
+    const submitCode = useCallback(
+        async (code: string) => {
+            const trimmed = code.trim();
+            if (!trimmed) return;
+
+            setIsAuthenticating(true);
+            setError(null);
+
+            try {
+                const result = await authenticateWithCode({
+                    variables: { code: trimmed },
+                });
+
+                if (result.data?.authenticateWithCode) {
+                    const { accessToken } = result.data.authenticateWithCode;
+                    localStorage.setItem("access_token", accessToken);
+                    // Drop any cached data from a previous session so the
+                    // new session starts clean.
+                    try {
+                        await client.resetStore();
+                    } catch (resetErr) {
+                        console.error(
+                            "Failed to reset Apollo cache:",
+                            resetErr,
+                        );
+                    }
+                    router.navigate({ to: "/schedule" });
+                }
+            } catch (err) {
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : "Authentication failed",
+                );
+            } finally {
+                setIsAuthenticating(false);
+            }
+        },
+        [authenticateWithCode, client, router],
+    );
+
+    useEffect(() => {
+        // The desktop flow uses the system browser + paste-code input; the
+        // popup message flow only applies on the web.
+        if (runningInTauri) return;
+
+        let apiOrigin: string;
+        try {
+            apiOrigin = new URL(API_URL).origin;
+        } catch (err) {
+            // Malformed VITE_API_URL: skip the popup message listener rather
+            // than crashing the page. The paste-code flow still works.
+            console.error("Invalid API URL, popup sign-in disabled:", err);
+            return;
+        }
+        const handleMessage = (event: MessageEvent) => {
+            // Only accept messages from the API-served OAuth callback page.
+            if (event.origin !== apiOrigin) return;
+            if (event.data?.source !== "sunrise-oauth") return;
 
             if (event.data.code) {
-                setIsAuthenticating(true);
-                setError(null);
-
-                try {
-                    const result = await authenticateWithCode({
-                        variables: { code: event.data.code },
-                    });
-
-                    if (result.data?.authenticateWithCode) {
-                        const { accessToken, user } =
-                            result.data.authenticateWithCode;
-
-                        localStorage.setItem("access_token", accessToken);
-
-                        console.log(
-                            "✅ Successfully authenticated:",
-                            user.email,
-                        );
-
-                        // Navigate to schedule page
-                        router.navigate({ to: "/schedule" });
-                    }
-                } catch (err) {
-                    setError(
-                        err instanceof Error
-                            ? err.message
-                            : "Authentication failed",
-                    );
-                } finally {
-                    setIsAuthenticating(false);
-                }
+                submitCode(event.data.code);
             } else if (event.data.error) {
                 setError(`Authentication error: ${event.data.error}`);
             }
@@ -72,10 +111,24 @@ function AuthComponent() {
 
         window.addEventListener("message", handleMessage);
         return () => window.removeEventListener("message", handleMessage);
-    }, [authenticateWithCode, router]);
+    }, [runningInTauri, submitCode]);
 
-    const handleSignIn = () => {
+    const handleSignIn = async () => {
         if (!authUrlData?.authUrl) return;
+        setError(null);
+
+        if (runningInTauri) {
+            try {
+                await openUrl(authUrlData.authUrl);
+            } catch (err) {
+                setError(
+                    err instanceof Error
+                        ? err.message
+                        : "Failed to open the browser",
+                );
+            }
+            return;
+        }
 
         const popup = window.open(
             authUrlData.authUrl,
@@ -83,8 +136,12 @@ function AuthComponent() {
             "width=500,height=600,scrollbars=yes,resizable=yes",
         );
 
-        // Focus the popup if it exists
-        popup?.focus();
+        if (popup) {
+            popup.focus();
+        } else {
+            // Popup blocked - fall back to the paste-code flow.
+            setShowCodeInput(true);
+        }
     };
 
     if (authUrlLoading) {
@@ -93,6 +150,25 @@ function AuthComponent() {
                 <div className="text-center">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto mb-4"></div>
                     <p>Loading authentication...</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (authUrlError && !authUrlData?.authUrl) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50">
+                <div className="max-w-md w-full bg-white rounded-lg shadow-md p-8 text-center">
+                    <h1 className="text-2xl font-bold text-gray-900 mb-4">
+                        Welcome to Sunrise
+                    </h1>
+                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-6">
+                        Could not reach the sign-in service:{" "}
+                        {authUrlError.message}
+                    </div>
+                    <Button onClick={() => refetchAuthUrl()} className="w-full">
+                        Retry
+                    </Button>
                 </div>
             </div>
         );
@@ -153,6 +229,60 @@ function AuthComponent() {
                             </>
                         )}
                     </Button>
+
+                    {runningInTauri && (
+                        <p className="text-gray-500 text-sm mt-4">
+                            Your browser will open to sign in. Afterwards, copy
+                            the authorization code shown there and paste it
+                            below.
+                        </p>
+                    )}
+
+                    {showCodeInput ? (
+                        <div className="mt-6 text-left">
+                            <label
+                                htmlFor="auth-code"
+                                className="block text-sm font-medium text-gray-700 mb-1"
+                            >
+                                Authorization code
+                            </label>
+                            <div className="flex gap-2">
+                                <input
+                                    id="auth-code"
+                                    type="text"
+                                    value={manualCode}
+                                    onChange={(e) =>
+                                        setManualCode(e.target.value)
+                                    }
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                            submitCode(manualCode);
+                                        }
+                                    }}
+                                    disabled={isAuthenticating}
+                                    className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="Paste authorization code"
+                                />
+                                <Button
+                                    onClick={() => submitCode(manualCode)}
+                                    disabled={
+                                        isAuthenticating || !manualCode.trim()
+                                    }
+                                >
+                                    Submit
+                                </Button>
+                            </div>
+                        </div>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => setShowCodeInput(true)}
+                            className="mt-4 text-sm text-blue-600 hover:text-blue-800 underline"
+                        >
+                            Having trouble with the popup? Paste an
+                            authorization code instead
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

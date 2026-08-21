@@ -1,68 +1,20 @@
-import { gql, useSubscription } from "@apollo/client";
 import type { CalendarEvent } from "../generated/graphql";
-
-const EVENT_CREATED_SUBSCRIPTION = gql`
-  subscription OnEventCreated($calendarId: ID) {
-    eventCreated(calendarId: $calendarId) {
-      id
-      calendarId
-      summary
-      description
-      location
-      start {
-        dateTime
-        date
-        timeZone
-      }
-      end {
-        dateTime
-        date
-        timeZone
-      }
-      status
-      htmlLink
-    }
-  }
-`;
-
-const EVENT_UPDATED_SUBSCRIPTION = gql`
-  subscription OnEventUpdated($calendarId: ID) {
-    eventUpdated(calendarId: $calendarId) {
-      id
-      calendarId
-      summary
-      description
-      location
-      start {
-        dateTime
-        date
-        timeZone
-      }
-      end {
-        dateTime
-        date
-        timeZone
-      }
-      status
-      htmlLink
-    }
-  }
-`;
-
-const EVENT_DELETED_SUBSCRIPTION = gql`
-  subscription OnEventDeleted($calendarId: ID) {
-    eventDeleted(calendarId: $calendarId) {
-      id
-      calendarId
-    }
-  }
-`;
+import {
+    useOnEventCreatedSubscription,
+    useOnEventDeletedSubscription,
+    useOnEventUpdatedSubscription,
+} from "../generated/graphql";
 
 interface EventSubscriptionHookResult {
     loading: boolean;
     error?: Error;
 }
 
+/**
+ * Subscribes to event created/updated/deleted for the given calendar.
+ * Subscriptions are skipped until a calendarId is provided (the server
+ * publishes real calendar ids, so pass the resolved id, not "primary").
+ */
 export function useEventSubscriptions(
     calendarId?: string,
     options?: {
@@ -71,11 +23,10 @@ export function useEventSubscriptions(
         onEventDeleted?: (payload: { id: string; calendarId: string }) => void;
     },
 ): EventSubscriptionHookResult {
-    // Subscribe to event created
-    const { loading: createdLoading, error: createdError } = useSubscription(
-        EVENT_CREATED_SUBSCRIPTION,
-        {
+    const { loading: createdLoading, error: createdError } =
+        useOnEventCreatedSubscription({
             variables: { calendarId },
+            skip: !calendarId,
             onData: ({ data }) => {
                 if (data.data?.eventCreated && options?.onEventCreated) {
                     options.onEventCreated(
@@ -83,15 +34,12 @@ export function useEventSubscriptions(
                     );
                 }
             },
-            skip: !calendarId,
-        },
-    );
+        });
 
-    // Subscribe to event updated
-    const { loading: updatedLoading, error: updatedError } = useSubscription(
-        EVENT_UPDATED_SUBSCRIPTION,
-        {
+    const { loading: updatedLoading, error: updatedError } =
+        useOnEventUpdatedSubscription({
             variables: { calendarId },
+            skip: !calendarId,
             onData: ({ data }) => {
                 if (data.data?.eventUpdated && options?.onEventUpdated) {
                     options.onEventUpdated(
@@ -99,23 +47,18 @@ export function useEventSubscriptions(
                     );
                 }
             },
-            skip: !calendarId,
-        },
-    );
+        });
 
-    // Subscribe to event deleted
-    const { loading: deletedLoading, error: deletedError } = useSubscription(
-        EVENT_DELETED_SUBSCRIPTION,
-        {
+    const { loading: deletedLoading, error: deletedError } =
+        useOnEventDeletedSubscription({
             variables: { calendarId },
+            skip: !calendarId,
             onData: ({ data }) => {
                 if (data.data?.eventDeleted && options?.onEventDeleted) {
                     options.onEventDeleted(data.data.eventDeleted);
                 }
             },
-            skip: !calendarId,
-        },
-    );
+        });
 
     return {
         loading: createdLoading || updatedLoading || deletedLoading,

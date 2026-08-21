@@ -36,9 +36,18 @@ const errorLink = onError(({ graphQLErrors, networkError }) => {
                 extensions,
             );
 
-            // Handle authentication errors
+            // Handle authentication errors: clear the dead session and send
+            // the user back to the login screen instead of failing silently.
             if (extensions?.code === "UNAUTHENTICATED") {
                 localStorage.removeItem("access_token");
+                // apolloClient is defined below; this callback only runs at
+                // request time, so referencing it lazily here is safe.
+                apolloClient.clearStore().catch(() => {
+                    // Ignore in-flight query rejections caused by the reset.
+                });
+                if (window.location.pathname !== "/auth") {
+                    window.location.assign("/auth");
+                }
             }
         });
     }

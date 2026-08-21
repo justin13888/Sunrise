@@ -1,5 +1,5 @@
 import { DEFAULT_ROUTINE_CATEGORIES } from "@sunrise/models";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import {
     AlertCircle,
     Battery,
@@ -12,13 +12,12 @@ import {
     Edit2,
     Eye,
     EyeOff,
-    MoreVertical,
     Plus,
     Settings,
     Trash2,
     Zap,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     ConflictResolution,
     type DependencyRelationship,
@@ -30,6 +29,9 @@ import {
     useCreateRoutineMutation,
     useDeleteRoutineMutation,
     useGetRoutinesQuery,
+    useOnRoutineCreatedSubscription,
+    useOnRoutineDeletedSubscription,
+    useOnRoutineUpdatedSubscription,
     useUpdateRoutineMutation,
 } from "../generated/graphql";
 
@@ -91,7 +93,7 @@ const DEFAULT_CREATE_INPUT = {
     description: "",
     duration: { minutes: 30, flexible: false },
     priority: PriorityLevel.Medium,
-    flexibility: 5,
+    flexibility: 50,
     energyLevelRequired: EnergyLevel.Medium,
     category: DEFAULT_ROUTINE_CATEGORIES[0]?.id || "",
     frequency: Frequency.Daily,
@@ -113,10 +115,39 @@ const DEFAULT_CREATE_INPUT = {
 };
 
 function RoutinesPage() {
+    const router = useRouter();
     const { data, loading, error, refetch } = useGetRoutinesQuery();
     const [updateRoutine] = useUpdateRoutineMutation();
-    const [deleteRoutineMutation] = useDeleteRoutineMutation();
+    const [deleteRoutineMutation, { loading: deletingRoutine }] =
+        useDeleteRoutineMutation();
     const [createRoutineMutation] = useCreateRoutineMutation();
+
+    // Keep the list in sync with changes made elsewhere (other clients).
+    // Skip until the routines query has returned, so we never open
+    // subscriptions before the session is known to be authenticated.
+    const subscriptionsReady = data !== undefined;
+    useOnRoutineCreatedSubscription({
+        skip: !subscriptionsReady,
+        onData: () => refetch(),
+    });
+    useOnRoutineUpdatedSubscription({
+        skip: !subscriptionsReady,
+        onData: () => refetch(),
+    });
+    useOnRoutineDeletedSubscription({
+        skip: !subscriptionsReady,
+        onData: () => refetch(),
+    });
+
+    // Redirect to auth when unauthenticated, like schedule.tsx does.
+    useEffect(() => {
+        const isUnauthenticated = error?.graphQLErrors.some(
+            (gqlError) => gqlError.extensions?.code === "UNAUTHENTICATED",
+        );
+        if (isUnauthenticated) {
+            router.navigate({ to: "/auth" });
+        }
+    }, [error, router]);
 
     const routines = data?.routines ?? [];
 
@@ -128,17 +159,42 @@ function RoutinesPage() {
         [selectedRoutineId, routines],
     );
 
-    const [editMode, setEditMode] = useState(false);
+    // Id of the routine the edit form was seeded from. The form is only
+    // shown while it matches the selected routine, so selecting another
+    // routine never shows stale edit fields.
+    const [editingRoutineId, setEditingRoutineId] = useState<string | null>(
+        null,
+    );
     const [editName, setEditName] = useState("");
     const [editDescription, setEditDescription] = useState("");
     const [editDurationMinutes, setEditDurationMinutes] = useState(30);
     const [editPriority, setEditPriority] = useState<PriorityLevel>(
         PriorityLevel.Medium,
     );
-    const [editFlexibility, setEditFlexibility] = useState(5);
+    const [editFlexibility, setEditFlexibility] = useState(50);
+    const editMode =
+        editingRoutineId !== null && editingRoutineId === selectedRoutineId;
+
+    // Discard stale edit state whenever the selection moves to another
+    // routine (opening an edit re-seeds the fields via openEdit).
+    useEffect(() => {
+        setEditingRoutineId((current) =>
+            current !== null && current !== selectedRoutineId ? null : current,
+        );
+    }, [selectedRoutineId]);
 
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [createInput, setCreateInput] = useState({ ...DEFAULT_CREATE_INPUT });
+    const [deletingRoutineId, setDeletingRoutineId] = useState<string | null>(
+        null,
+    );
+
+    // Inline error shown in the detail panel while editing.
+    const [editError, setEditError] = useState<string | null>(null);
+    // Inline error shown in the create modal.
+    const [createError, setCreateError] = useState<string | null>(null);
+    // Dismissible banner for toggle/delete failures.
+    const [bannerError, setBannerError] = useState<string | null>(null);
 
     const [expandedCategories, setExpandedCategories] = useState(
         new Set([
@@ -147,7 +203,6 @@ function RoutinesPage() {
             "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         ]),
     );
-    const [viewMode, setViewMode] = useState("list");
 
     const routinesByCategory: Map<string, GqlRoutine[]> = useMemo(() => {
         return routines.reduce((acc, routine) => {
@@ -185,19 +240,72 @@ function RoutinesPage() {
         });
     };
 
+    const mutationErrorMessage = (err: unknown, fallback: string) =>
+        err instanceof Error && err.message ? err.message : fallback;
+
+    // Client-side validation shared by create and edit.
+    const validateRoutineFields = (fields: {
+        name: string;
+        durationMinutes: number;
+        flexibility: number;
+    }): string | null => {
+        if (!fields.name.trim()) {
+            return "Name is required.";
+        }
+        if (
+            !Number.isFinite(fields.durationMinutes) ||
+            fields.durationMinutes < 5 ||
+            fields.durationMinutes > 480
+        ) {
+            return "Duration must be between 5 and 480 minutes.";
+        }
+        if (
+            !Number.isFinite(fields.flexibility) ||
+            fields.flexibility < 0 ||
+            fields.flexibility > 100
+        ) {
+            return "Flexibility must be between 0 and 100.";
+        }
+        return null;
+    };
+
     const toggleRoutineEnabled = async (routine: GqlRoutine) => {
-        await updateRoutine({
-            variables: { id: routine.id, input: { enabled: !routine.enabled } },
-        });
+        setBannerError(null);
+        try {
+            await updateRoutine({
+                variables: {
+                    id: routine.id,
+                    input: { enabled: !routine.enabled },
+                },
+            });
+        } catch (err) {
+            setBannerError(
+                mutationErrorMessage(
+                    err,
+                    `Failed to ${routine.enabled ? "disable" : "enable"} "${routine.name}".`,
+                ),
+            );
+            return;
+        }
         refetch();
     };
 
     const handleDeleteRoutine = async (routineId: string) => {
-        await deleteRoutineMutation({ variables: { id: routineId } });
+        setBannerError(null);
+        try {
+            await deleteRoutineMutation({ variables: { id: routineId } });
+        } catch (err) {
+            setDeletingRoutineId(null);
+            setBannerError(
+                mutationErrorMessage(err, "Failed to delete the routine."),
+            );
+            return;
+        }
         if (selectedRoutineId === routineId) {
             setSelectedRoutineId(null);
-            setEditMode(false);
+            setEditingRoutineId(null);
         }
+        setDeletingRoutineId(null);
         refetch();
     };
 
@@ -207,57 +315,91 @@ function RoutinesPage() {
         setEditDurationMinutes(routine.duration.minutes);
         setEditPriority(routine.priority);
         setEditFlexibility(routine.flexibility);
-        setEditMode(true);
+        setEditError(null);
+        setEditingRoutineId(routine.id);
     };
 
     const handleSaveEdit = async () => {
         if (!selectedRoutine) return;
-        await updateRoutine({
-            variables: {
-                id: selectedRoutine.id,
-                input: {
-                    name: editName,
-                    description: editDescription || null,
-                    duration: {
-                        minutes: editDurationMinutes,
-                        flexible: selectedRoutine.duration.flexible,
-                        minDuration: selectedRoutine.duration.minDuration,
-                        maxDuration: selectedRoutine.duration.maxDuration,
-                    },
-                    priority: editPriority,
-                    flexibility: editFlexibility,
-                },
-            },
+        setEditError(null);
+        const validationError = validateRoutineFields({
+            name: editName,
+            durationMinutes: editDurationMinutes,
+            flexibility: editFlexibility,
         });
-        setEditMode(false);
+        if (validationError) {
+            setEditError(validationError);
+            return;
+        }
+        try {
+            await updateRoutine({
+                variables: {
+                    id: selectedRoutine.id,
+                    input: {
+                        name: editName.trim(),
+                        description: editDescription || null,
+                        duration: {
+                            minutes: editDurationMinutes,
+                            flexible: selectedRoutine.duration.flexible,
+                            minDuration: selectedRoutine.duration.minDuration,
+                            maxDuration: selectedRoutine.duration.maxDuration,
+                        },
+                        priority: editPriority,
+                        flexibility: editFlexibility,
+                    },
+                },
+            });
+        } catch (err) {
+            setEditError(
+                mutationErrorMessage(err, "Failed to save the routine."),
+            );
+            return;
+        }
+        setEditingRoutineId(null);
         refetch();
     };
 
     const handleCreate = async () => {
-        if (!createInput.name.trim()) return;
-        await createRoutineMutation({
-            variables: {
-                input: {
-                    name: createInput.name,
-                    description: createInput.description || null,
-                    duration: createInput.duration,
-                    priority: createInput.priority,
-                    flexibility: createInput.flexibility,
-                    energyLevelRequired: createInput.energyLevelRequired,
-                    category: createInput.category,
-                    frequency: createInput.frequency,
-                    timePreferences: createInput.timePreferences,
-                    availabilityWindows: createInput.availabilityWindows,
-                    dependencies: createInput.dependencies,
-                    minimumGapMinutes: createInput.minimumGapMinutes,
-                    bufferTimeMinutes: createInput.bufferTimeMinutes,
-                    conflictResolution: createInput.conflictResolution,
-                    canBeGrouped: createInput.canBeGrouped,
-                    enabled: createInput.enabled,
-                    tags: createInput.tags,
-                },
-            },
+        setCreateError(null);
+        const validationError = validateRoutineFields({
+            name: createInput.name,
+            durationMinutes: createInput.duration.minutes,
+            flexibility: createInput.flexibility,
         });
+        if (validationError) {
+            setCreateError(validationError);
+            return;
+        }
+        try {
+            await createRoutineMutation({
+                variables: {
+                    input: {
+                        name: createInput.name.trim(),
+                        description: createInput.description || null,
+                        duration: createInput.duration,
+                        priority: createInput.priority,
+                        flexibility: createInput.flexibility,
+                        energyLevelRequired: createInput.energyLevelRequired,
+                        category: createInput.category,
+                        frequency: createInput.frequency,
+                        timePreferences: createInput.timePreferences,
+                        availabilityWindows: createInput.availabilityWindows,
+                        dependencies: createInput.dependencies,
+                        minimumGapMinutes: createInput.minimumGapMinutes,
+                        bufferTimeMinutes: createInput.bufferTimeMinutes,
+                        conflictResolution: createInput.conflictResolution,
+                        canBeGrouped: createInput.canBeGrouped,
+                        enabled: createInput.enabled,
+                        tags: createInput.tags,
+                    },
+                },
+            });
+        } catch (err) {
+            setCreateError(
+                mutationErrorMessage(err, "Failed to create the routine."),
+            );
+            return;
+        }
         setShowCreateModal(false);
         setCreateInput({ ...DEFAULT_CREATE_INPUT });
         refetch();
@@ -285,6 +427,21 @@ function RoutinesPage() {
 
     return (
         <div className="max-w-7xl mx-auto p-6">
+            {/* Toggle/delete failure banner */}
+            {bannerError && (
+                <div className="mb-4 flex items-center justify-between bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg">
+                    <span>{bannerError}</span>
+                    <button
+                        type="button"
+                        onClick={() => setBannerError(null)}
+                        className="ml-4 font-medium text-red-700 hover:text-red-900"
+                        aria-label="Dismiss error"
+                    >
+                        Dismiss
+                    </button>
+                </div>
+            )}
+
             {/* Header */}
             <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
@@ -298,20 +455,6 @@ function RoutinesPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
-                        <button
-                            type="button"
-                            onClick={() =>
-                                setViewMode(
-                                    viewMode === "list" ? "timeline" : "list",
-                                )
-                            }
-                            className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2"
-                        >
-                            <Calendar className="w-4 h-4" />
-                            {viewMode === "list"
-                                ? "Timeline View"
-                                : "List View"}
-                        </button>
                         <button
                             type="button"
                             onClick={() => setShowCreateModal(true)}
@@ -435,26 +578,17 @@ function RoutinesPage() {
                                                 }
                                                 /{categoryRoutines.length}
                                             </span>
-                                            <div className="ml-auto relative">
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) =>
-                                                        e.stopPropagation()
-                                                    }
-                                                    className="p-1 hover:bg-gray-200 rounded"
-                                                >
-                                                    <MoreVertical className="w-4 h-4 text-gray-400" />
-                                                </button>
-                                            </div>
                                         </div>
                                     </button>
 
                                     {expandedCategories.has(categoryId) && (
                                         <div className="divide-y divide-gray-100">
                                             {categoryRoutines.map((routine) => (
-                                                <button
+                                                // biome-ignore lint/a11y/useSemanticElements: the row contains nested action buttons, so it cannot be a native <button>
+                                                <div
                                                     key={routine.id}
-                                                    type="button"
+                                                    role="button"
+                                                    tabIndex={0}
                                                     className={`w-full text-left p-4 hover:bg-gray-50 transition-colors cursor-pointer ${
                                                         selectedRoutineId ===
                                                         routine.id
@@ -466,6 +600,17 @@ function RoutinesPage() {
                                                             routine.id,
                                                         )
                                                     }
+                                                    onKeyDown={(e) => {
+                                                        if (
+                                                            e.key === "Enter" ||
+                                                            e.key === " "
+                                                        ) {
+                                                            e.preventDefault();
+                                                            setSelectedRoutineId(
+                                                                routine.id,
+                                                            );
+                                                        }
+                                                    }}
                                                 >
                                                     <div className="flex items-center justify-between">
                                                         <div className="flex-1">
@@ -506,7 +651,7 @@ function RoutinesPage() {
                                                                     {
                                                                         routine.flexibility
                                                                     }
-                                                                    /10
+                                                                    /100
                                                                 </span>
                                                             </div>
                                                         </div>
@@ -552,7 +697,7 @@ function RoutinesPage() {
                                                                     e,
                                                                 ) => {
                                                                     e.stopPropagation();
-                                                                    handleDeleteRoutine(
+                                                                    setDeletingRoutineId(
                                                                         routine.id,
                                                                     );
                                                                 }}
@@ -562,7 +707,7 @@ function RoutinesPage() {
                                                             </button>
                                                         </div>
                                                     </div>
-                                                </button>
+                                                </div>
                                             ))}
                                         </div>
                                     )}
@@ -587,9 +732,10 @@ function RoutinesPage() {
                                         <>
                                             <button
                                                 type="button"
-                                                onClick={() =>
-                                                    setEditMode(false)
-                                                }
+                                                onClick={() => {
+                                                    setEditingRoutineId(null);
+                                                    setEditError(null);
+                                                }}
                                                 className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
                                             >
                                                 Cancel
@@ -618,6 +764,11 @@ function RoutinesPage() {
 
                             {editMode ? (
                                 <div className="space-y-4">
+                                    {editError && (
+                                        <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+                                            {editError}
+                                        </div>
+                                    )}
                                     <div>
                                         <label
                                             htmlFor="editName"
@@ -665,6 +816,8 @@ function RoutinesPage() {
                                             <input
                                                 id="editDuration"
                                                 type="number"
+                                                min={5}
+                                                max={480}
                                                 value={editDurationMinutes}
                                                 onChange={(e) =>
                                                     setEditDurationMinutes(
@@ -715,13 +868,14 @@ function RoutinesPage() {
                                             htmlFor="editFlexibility"
                                             className="block text-sm font-medium text-gray-700 mb-1"
                                         >
-                                            Flexibility ({editFlexibility}/10)
+                                            Flexibility ({editFlexibility}
+                                            /100)
                                         </label>
                                         <input
                                             id="editFlexibility"
                                             type="range"
                                             min="0"
-                                            max="10"
+                                            max="100"
                                             value={editFlexibility}
                                             onChange={(e) =>
                                                 setEditFlexibility(
@@ -862,7 +1016,7 @@ function RoutinesPage() {
                                                     {
                                                         selectedRoutine.flexibility
                                                     }
-                                                    /10
+                                                    /100
                                                 </span>
                                             </div>
                                             <div className="flex justify-between">
@@ -930,11 +1084,16 @@ function RoutinesPage() {
 
             {/* Create Routine Modal */}
             {showCreateModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
                     <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-xl">
                         <h2 className="text-lg font-semibold mb-4">
                             New Routine
                         </h2>
+                        {createError && (
+                            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
+                                {createError}
+                            </div>
+                        )}
                         <div className="space-y-3">
                             <div>
                                 <label
@@ -988,6 +1147,8 @@ function RoutinesPage() {
                                     <input
                                         id="createDuration"
                                         type="number"
+                                        min={5}
+                                        max={480}
                                         value={createInput.duration.minutes}
                                         onChange={(e) =>
                                             setCreateInput((p) => ({
@@ -1102,6 +1263,7 @@ function RoutinesPage() {
                                 onClick={() => {
                                     setShowCreateModal(false);
                                     setCreateInput({ ...DEFAULT_CREATE_INPUT });
+                                    setCreateError(null);
                                 }}
                                 className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
                             >
@@ -1114,6 +1276,41 @@ function RoutinesPage() {
                                 className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                             >
                                 Create
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete confirmation */}
+            {deletingRoutineId && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm mx-4">
+                        <h2 className="text-lg font-semibold mb-2">
+                            Delete Routine
+                        </h2>
+                        <p className="text-gray-600 text-sm mb-4">
+                            Are you sure you want to delete this routine? This
+                            cannot be undone.
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setDeletingRoutineId(null)}
+                                disabled={deletingRoutine}
+                                className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    handleDeleteRoutine(deletingRoutineId)
+                                }
+                                disabled={deletingRoutine}
+                                className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                            >
+                                {deletingRoutine ? "Deleting..." : "Delete"}
                             </button>
                         </div>
                     </div>

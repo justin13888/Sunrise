@@ -8,6 +8,7 @@ import {
     useGetCalendarsQuery,
     useGetEventsQuery,
     useGetMeQuery,
+    useLogoutMutation,
     useUpdateEventMutation,
 } from "../generated/graphql";
 import { useEventSubscriptions } from "../hooks/useEventSubscriptions";
@@ -16,22 +17,38 @@ interface EventFormData {
     summary: string;
     description: string;
     location: string;
+    allDay: boolean;
     startDate: string;
     startTime: string;
     endDate: string;
     endTime: string;
 }
 
+// Build a YYYY-MM-DD string from LOCAL date components (toISOString would
+// shift the date across midnight for users behind/ahead of UTC).
+const toDateStr = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const toTimeStr = (d: Date) =>
+    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+// Parse a YYYY-MM-DD string as a LOCAL date. `new Date("2024-01-01")` is
+// parsed as UTC midnight, which renders one day off in negative-UTC zones.
+const parseLocalDate = (date: string) => new Date(`${date}T00:00:00`);
+
+const addDays = (date: string, days: number): string => {
+    const d = parseLocalDate(date);
+    d.setDate(d.getDate() + days);
+    return toDateStr(d);
+};
+
 const emptyForm = (): EventFormData => {
     const now = new Date();
     const inOneHour = new Date(now.getTime() + 60 * 60 * 1000);
-    const toDateStr = (d: Date) => d.toISOString().slice(0, 10);
-    const toTimeStr = (d: Date) =>
-        `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     return {
         summary: "",
         description: "",
         location: "",
+        allDay: false,
         startDate: toDateStr(now),
         startTime: toTimeStr(now),
         endDate: toDateStr(inOneHour),
@@ -44,27 +61,58 @@ function formToDateTime(date: string, time: string): string {
 }
 
 function eventToForm(event: CalendarEvent): EventFormData {
-    const parseDateTime = (dt?: string | null, d?: string | null) => {
-        if (dt) {
-            const parsed = new Date(dt);
-            return {
-                date: parsed.toISOString().slice(0, 10),
-                time: `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`,
-            };
-        }
-        if (d) return { date: d, time: "00:00" };
-        return { date: "", time: "" };
-    };
-    const start = parseDateTime(event.start.dateTime, event.start.date);
-    const end = parseDateTime(event.end.dateTime, event.end.date);
-    return {
+    const base = {
         summary: event.summary,
         description: event.description || "",
         location: event.location || "",
+    };
+    if (!event.start.dateTime && event.start.date) {
+        // All-day event: Google uses an EXCLUSIVE end date, so show the
+        // user the last day the event actually covers (end minus one day).
+        const startDate = event.start.date;
+        const endDate = event.end.date
+            ? addDays(event.end.date, -1)
+            : startDate;
+        return {
+            ...base,
+            allDay: true,
+            startDate,
+            startTime: "00:00",
+            endDate,
+            endTime: "00:00",
+        };
+    }
+    const parseDateTime = (dt?: string | null) => {
+        if (dt) {
+            const parsed = new Date(dt);
+            return { date: toDateStr(parsed), time: toTimeStr(parsed) };
+        }
+        return { date: "", time: "" };
+    };
+    const start = parseDateTime(event.start.dateTime);
+    const end = parseDateTime(event.end.dateTime);
+    return {
+        ...base,
+        allDay: false,
         startDate: start.date,
         startTime: start.time,
         endDate: end.date,
         endTime: end.time,
+    };
+}
+
+// Build the start/end mutation input from the form. All-day events are sent
+// as date-only values with Google's exclusive end date (shown end + 1 day).
+function formToEventTimes(form: EventFormData) {
+    if (form.allDay) {
+        return {
+            start: { date: form.startDate },
+            end: { date: addDays(form.endDate, 1) },
+        };
+    }
+    return {
+        start: { dateTime: formToDateTime(form.startDate, form.startTime) },
+        end: { dateTime: formToDateTime(form.endDate, form.endTime) },
     };
 }
 
@@ -74,6 +122,7 @@ interface EventFormProps {
     onCancel: () => void;
     isSaving: boolean;
     title: string;
+    error?: string | null;
 }
 
 function EventForm({
@@ -82,15 +131,23 @@ function EventForm({
     onCancel,
     isSaving,
     title,
+    error,
 }: EventFormProps) {
     const [form, setForm] = useState<EventFormData>(initialData);
-    const set = (key: keyof EventFormData, value: string) =>
-        setForm((f) => ({ ...f, [key]: value }));
+    const set = <K extends keyof EventFormData>(
+        key: K,
+        value: EventFormData[K],
+    ) => setForm((f) => ({ ...f, [key]: value }));
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
                 <h2 className="text-lg font-semibold mb-4">{title}</h2>
+                {error && (
+                    <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded">
+                        {error}
+                    </div>
+                )}
                 <div className="space-y-3">
                     <div>
                         <label
@@ -108,6 +165,21 @@ function EventForm({
                             placeholder="Event title"
                             required
                         />
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <input
+                            id="ef-all-day"
+                            type="checkbox"
+                            checked={form.allDay}
+                            onChange={(e) => set("allDay", e.target.checked)}
+                            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <label
+                            htmlFor="ef-all-day"
+                            className="text-sm font-medium text-gray-700"
+                        >
+                            All-day
+                        </label>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
@@ -127,23 +199,25 @@ function EventForm({
                                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                         </div>
-                        <div>
-                            <label
-                                htmlFor="ef-start-time"
-                                className="block text-sm font-medium text-gray-700 mb-1"
-                            >
-                                Start time
-                            </label>
-                            <input
-                                id="ef-start-time"
-                                type="time"
-                                value={form.startTime}
-                                onChange={(e) =>
-                                    set("startTime", e.target.value)
-                                }
-                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                        </div>
+                        {!form.allDay && (
+                            <div>
+                                <label
+                                    htmlFor="ef-start-time"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Start time
+                                </label>
+                                <input
+                                    id="ef-start-time"
+                                    type="time"
+                                    value={form.startTime}
+                                    onChange={(e) =>
+                                        set("startTime", e.target.value)
+                                    }
+                                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+                        )}
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div>
@@ -161,21 +235,25 @@ function EventForm({
                                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                         </div>
-                        <div>
-                            <label
-                                htmlFor="ef-end-time"
-                                className="block text-sm font-medium text-gray-700 mb-1"
-                            >
-                                End time
-                            </label>
-                            <input
-                                id="ef-end-time"
-                                type="time"
-                                value={form.endTime}
-                                onChange={(e) => set("endTime", e.target.value)}
-                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                        </div>
+                        {!form.allDay && (
+                            <div>
+                                <label
+                                    htmlFor="ef-end-time"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    End time
+                                </label>
+                                <input
+                                    id="ef-end-time"
+                                    type="time"
+                                    value={form.endTime}
+                                    onChange={(e) =>
+                                        set("endTime", e.target.value)
+                                    }
+                                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                            </div>
+                        )}
                     </div>
                     <div>
                         <label
@@ -243,11 +321,19 @@ function ScheduleComponent() {
     const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(
         null,
     );
-    const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+    const [deletingEvent, setDeletingEvent] = useState<{
+        id: string;
+        calendarId: string;
+    } | null>(null);
+    // Inline error shown in the create/edit modal.
+    const [formError, setFormError] = useState<string | null>(null);
+    // Inline error shown in the delete confirmation dialog.
+    const [deleteError, setDeleteError] = useState<string | null>(null);
 
     const [createEvent, { loading: creating }] = useCreateEventMutation();
     const [updateEvent, { loading: updating }] = useUpdateEventMutation();
     const [deleteEvent, { loading: deleting }] = useDeleteEventMutation();
+    const [logout] = useLogoutMutation();
 
     // Memoize time range to prevent refetches on every render
     const [timeRange] = useState(() => ({
@@ -276,6 +362,18 @@ function ScheduleComponent() {
             errorPolicy: "all",
         });
 
+    // Resolve the "primary" alias to the real calendar id once calendars load,
+    // so subscription filters match the real ids published by the server.
+    useEffect(() => {
+        if (selectedCalendarId !== "primary") return;
+        const primaryCalendar = calendarsData?.calendars?.find(
+            (calendar) => calendar.primary,
+        );
+        if (primaryCalendar) {
+            setSelectedCalendarId(primaryCalendar.id);
+        }
+    }, [calendarsData, selectedCalendarId]);
+
     // Get events for the selected calendar with pagination
     const {
         data: eventsData,
@@ -296,41 +394,44 @@ function ScheduleComponent() {
     });
 
     // Subscribe to real-time event updates
-    useEventSubscriptions(selectedCalendarId, {
-        onEventCreated: useCallback(
-            (event: CalendarEvent) => {
-                console.log("📅 New event created:", event);
-                // Apollo cache will automatically update due to matching ID
-                // But we can also manually refetch if needed
-                refetchEvents();
-            },
-            [refetchEvents],
-        ),
+    const { error: subscriptionError } = useEventSubscriptions(
+        selectedCalendarId === "primary" ? undefined : selectedCalendarId,
+        {
+            onEventCreated: useCallback(
+                (event: CalendarEvent) => {
+                    console.log("📅 New event created:", event);
+                    // Apollo cache will automatically update due to matching ID
+                    // But we can also manually refetch if needed
+                    refetchEvents();
+                },
+                [refetchEvents],
+            ),
 
-        onEventUpdated: useCallback(
-            (event: CalendarEvent) => {
-                console.log("📝 Event updated:", event);
-                // Apollo cache will automatically update
-                refetchEvents();
-            },
-            [refetchEvents],
-        ),
+            onEventUpdated: useCallback(
+                (event: CalendarEvent) => {
+                    console.log("📝 Event updated:", event);
+                    // Apollo cache will automatically update
+                    refetchEvents();
+                },
+                [refetchEvents],
+            ),
 
-        onEventDeleted: useCallback(
-            (payload: { id: string; calendarId: string }) => {
-                console.log("🗑️ Event deleted:", payload);
-                // Remove from cache
-                client.cache.evict({
-                    id: client.cache.identify({
-                        __typename: "CalendarEvent",
-                        id: payload.id,
-                    }),
-                });
-                client.cache.gc();
-            },
-            [client],
-        ),
-    });
+            onEventDeleted: useCallback(
+                (payload: { id: string; calendarId: string }) => {
+                    console.log("🗑️ Event deleted:", payload);
+                    // Remove from cache
+                    client.cache.evict({
+                        id: client.cache.identify({
+                            __typename: "CalendarEvent",
+                            id: payload.id,
+                        }),
+                    });
+                    client.cache.gc();
+                },
+                [client],
+            ),
+        },
+    );
 
     // Redirect to auth if not authenticated
     useEffect(() => {
@@ -348,8 +449,20 @@ function ScheduleComponent() {
         }
     }, [userError, userLoading, router, isRedirecting]);
 
-    const handleLogout = () => {
+    const handleLogout = async () => {
+        try {
+            await logout();
+        } catch (err) {
+            // Even if the server-side logout fails, clear the local session.
+            console.error("Logout mutation failed:", err);
+        }
         localStorage.removeItem("access_token");
+        // Drop all cached data so the next login starts from a clean slate.
+        try {
+            await client.clearStore();
+        } catch (err) {
+            console.error("Failed to clear Apollo cache:", err);
+        }
         router.navigate({ to: "/auth" });
     };
 
@@ -358,79 +471,84 @@ function ScheduleComponent() {
             return;
         }
 
+        // The Apollo typePolicies merge function handles appending edges.
         fetchMore({
             variables: {
                 after: eventsData.events.pageInfo.endCursor,
             },
-            updateQuery: (prev, { fetchMoreResult }) => {
-                if (!fetchMoreResult) return prev;
-
-                return {
-                    events: {
-                        ...fetchMoreResult.events,
-                        edges: [
-                            ...prev.events.edges,
-                            ...fetchMoreResult.events.edges,
-                        ],
-                    },
-                };
-            },
         });
     };
 
+    const mutationErrorMessage = (err: unknown, fallback: string) =>
+        err instanceof Error && err.message ? err.message : fallback;
+
     const handleCreateEvent = async (form: EventFormData) => {
         if (!form.summary.trim()) return;
-        await createEvent({
-            variables: {
-                input: {
-                    calendarId: selectedCalendarId,
-                    summary: form.summary,
-                    description: form.description || undefined,
-                    location: form.location || undefined,
-                    start: {
-                        dateTime: formToDateTime(
-                            form.startDate,
-                            form.startTime,
-                        ),
-                    },
-                    end: {
-                        dateTime: formToDateTime(form.endDate, form.endTime),
+        setFormError(null);
+        try {
+            await createEvent({
+                variables: {
+                    input: {
+                        calendarId: selectedCalendarId,
+                        summary: form.summary,
+                        description: form.description || undefined,
+                        location: form.location || undefined,
+                        ...formToEventTimes(form),
                     },
                 },
-            },
-        });
+            });
+        } catch (err) {
+            setFormError(
+                mutationErrorMessage(err, "Failed to create the event."),
+            );
+            return;
+        }
         setShowCreateForm(false);
         refetchEvents();
     };
 
     const handleUpdateEvent = async (form: EventFormData) => {
         if (!editingEvent || !form.summary.trim()) return;
-        await updateEvent({
-            variables: {
-                id: editingEvent.id,
-                input: {
-                    summary: form.summary,
-                    description: form.description || undefined,
-                    location: form.location || undefined,
-                    start: {
-                        dateTime: formToDateTime(
-                            form.startDate,
-                            form.startTime,
-                        ),
-                    },
-                    end: {
-                        dateTime: formToDateTime(form.endDate, form.endTime),
+        setFormError(null);
+        try {
+            await updateEvent({
+                variables: {
+                    id: editingEvent.id,
+                    input: {
+                        calendarId: editingEvent.calendarId,
+                        summary: form.summary,
+                        description: form.description || undefined,
+                        location: form.location || undefined,
+                        ...formToEventTimes(form),
                     },
                 },
-            },
-        });
+            });
+        } catch (err) {
+            setFormError(
+                mutationErrorMessage(err, "Failed to update the event."),
+            );
+            return;
+        }
         setEditingEvent(null);
         refetchEvents();
     };
 
-    const handleDeleteEvent = async (eventId: string) => {
-        await deleteEvent({ variables: { id: eventId } });
-        setDeletingEventId(null);
+    const handleDeleteEvent = async (target: {
+        id: string;
+        calendarId: string;
+    }) => {
+        setDeleteError(null);
+        try {
+            await deleteEvent({
+                variables: { id: target.id, calendarId: target.calendarId },
+            });
+        } catch (err) {
+            setDeleteError(
+                mutationErrorMessage(err, "Failed to delete the event."),
+            );
+            return;
+        }
+        setDeletingEvent(null);
         refetchEvents();
     };
 
@@ -442,7 +560,9 @@ function ScheduleComponent() {
             return new Date(dateTime).toLocaleString();
         }
         if (date) {
-            return new Date(date).toLocaleDateString();
+            // Parse date-only strings as local time; new Date("YYYY-MM-DD")
+            // is UTC midnight and shows the previous day west of UTC.
+            return new Date(`${date}T00:00:00`).toLocaleDateString();
         }
         return "No date";
     };
@@ -532,6 +652,12 @@ function ScheduleComponent() {
                 </header>
 
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                    {subscriptionError && (
+                        <div className="mb-4 bg-yellow-50 border border-yellow-200 text-yellow-800 text-sm px-4 py-2 rounded">
+                            Live updates unavailable:{" "}
+                            {subscriptionError.message}
+                        </div>
+                    )}
                     <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
                         {/* Sidebar - Calendars */}
                         <div className="lg:col-span-1">
@@ -827,8 +953,12 @@ function ScheduleComponent() {
                                                                             <button
                                                                                 type="button"
                                                                                 onClick={() =>
-                                                                                    setDeletingEventId(
-                                                                                        event.id,
+                                                                                    setDeletingEvent(
+                                                                                        {
+                                                                                            id: event.id,
+                                                                                            calendarId:
+                                                                                                event.calendarId,
+                                                                                        },
                                                                                     )
                                                                                 }
                                                                                 className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded"
@@ -906,8 +1036,12 @@ function ScheduleComponent() {
                     title="New Event"
                     initialData={emptyForm()}
                     onSave={handleCreateEvent}
-                    onCancel={() => setShowCreateForm(false)}
+                    onCancel={() => {
+                        setShowCreateForm(false);
+                        setFormError(null);
+                    }}
                     isSaving={creating}
+                    error={formError}
                 />
             )}
 
@@ -917,13 +1051,17 @@ function ScheduleComponent() {
                     title="Edit Event"
                     initialData={eventToForm(editingEvent)}
                     onSave={handleUpdateEvent}
-                    onCancel={() => setEditingEvent(null)}
+                    onCancel={() => {
+                        setEditingEvent(null);
+                        setFormError(null);
+                    }}
                     isSaving={updating}
+                    error={formError}
                 />
             )}
 
             {/* Delete confirmation */}
-            {deletingEventId && (
+            {deletingEvent && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
                     <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
                         <h2 className="text-lg font-semibold mb-2">
@@ -933,18 +1071,24 @@ function ScheduleComponent() {
                             Are you sure you want to delete this event? This
                             cannot be undone.
                         </p>
+                        {deleteError && (
+                            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded">
+                                {deleteError}
+                            </div>
+                        )}
                         <div className="flex gap-3 justify-end">
                             <Button
                                 variant="outline"
-                                onClick={() => setDeletingEventId(null)}
+                                onClick={() => {
+                                    setDeletingEvent(null);
+                                    setDeleteError(null);
+                                }}
                                 disabled={deleting}
                             >
                                 Cancel
                             </Button>
                             <Button
-                                onClick={() =>
-                                    handleDeleteEvent(deletingEventId)
-                                }
+                                onClick={() => handleDeleteEvent(deletingEvent)}
                                 disabled={deleting}
                                 className="bg-red-600 hover:bg-red-700 text-white"
                             >

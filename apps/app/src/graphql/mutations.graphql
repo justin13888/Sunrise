@@ -80,8 +80,8 @@ mutation UpdateEvent($id: ID!, $input: UpdateEventInput!) {
     }
 }
 
-mutation DeleteEvent($id: ID!) {
-    deleteEvent(id: $id)
+mutation DeleteEvent($id: ID!, $calendarId: ID) {
+    deleteEvent(id: $id, calendarId: $calendarId)
 }
 
 mutation CreateRoutine($input: CreateRoutineInput!) {

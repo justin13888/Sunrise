@@ -8,106 +8,106 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root";
-import { Route as AuthRouteImport } from "./routes/auth";
-import { Route as IndexRouteImport } from "./routes/index";
-import { Route as RoutinesRouteImport } from "./routes/routines";
-import { Route as ScheduleRouteImport } from "./routes/schedule";
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as ScheduleRouteImport } from './routes/schedule'
+import { Route as RoutinesRouteImport } from './routes/routines'
+import { Route as AuthRouteImport } from './routes/auth'
+import { Route as IndexRouteImport } from './routes/index'
 
 const ScheduleRoute = ScheduleRouteImport.update({
-    id: "/schedule",
-    path: "/schedule",
-    getParentRoute: () => rootRouteImport,
-} as any);
+  id: '/schedule',
+  path: '/schedule',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RoutinesRoute = RoutinesRouteImport.update({
-    id: "/routines",
-    path: "/routines",
-    getParentRoute: () => rootRouteImport,
-} as any);
+  id: '/routines',
+  path: '/routines',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthRoute = AuthRouteImport.update({
-    id: "/auth",
-    path: "/auth",
-    getParentRoute: () => rootRouteImport,
-} as any);
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
-    id: "/",
-    path: "/",
-    getParentRoute: () => rootRouteImport,
-} as any);
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
-    "/": typeof IndexRoute;
-    "/auth": typeof AuthRoute;
-    "/routines": typeof RoutinesRoute;
-    "/schedule": typeof ScheduleRoute;
+  '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/routines': typeof RoutinesRoute
+  '/schedule': typeof ScheduleRoute
 }
 export interface FileRoutesByTo {
-    "/": typeof IndexRoute;
-    "/auth": typeof AuthRoute;
-    "/routines": typeof RoutinesRoute;
-    "/schedule": typeof ScheduleRoute;
+  '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/routines': typeof RoutinesRoute
+  '/schedule': typeof ScheduleRoute
 }
 export interface FileRoutesById {
-    __root__: typeof rootRouteImport;
-    "/": typeof IndexRoute;
-    "/auth": typeof AuthRoute;
-    "/routines": typeof RoutinesRoute;
-    "/schedule": typeof ScheduleRoute;
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/routines': typeof RoutinesRoute
+  '/schedule': typeof ScheduleRoute
 }
 export interface FileRouteTypes {
-    fileRoutesByFullPath: FileRoutesByFullPath;
-    fullPaths: "/" | "/auth" | "/routines" | "/schedule";
-    fileRoutesByTo: FileRoutesByTo;
-    to: "/" | "/auth" | "/routines" | "/schedule";
-    id: "__root__" | "/" | "/auth" | "/routines" | "/schedule";
-    fileRoutesById: FileRoutesById;
+  fileRoutesByFullPath: FileRoutesByFullPath
+  fullPaths: '/' | '/auth' | '/routines' | '/schedule'
+  fileRoutesByTo: FileRoutesByTo
+  to: '/' | '/auth' | '/routines' | '/schedule'
+  id: '__root__' | '/' | '/auth' | '/routines' | '/schedule'
+  fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-    IndexRoute: typeof IndexRoute;
-    AuthRoute: typeof AuthRoute;
-    RoutinesRoute: typeof RoutinesRoute;
-    ScheduleRoute: typeof ScheduleRoute;
+  IndexRoute: typeof IndexRoute
+  AuthRoute: typeof AuthRoute
+  RoutinesRoute: typeof RoutinesRoute
+  ScheduleRoute: typeof ScheduleRoute
 }
 
-declare module "@tanstack/react-router" {
-    interface FileRoutesByPath {
-        "/schedule": {
-            id: "/schedule";
-            path: "/schedule";
-            fullPath: "/schedule";
-            preLoaderRoute: typeof ScheduleRouteImport;
-            parentRoute: typeof rootRouteImport;
-        };
-        "/routines": {
-            id: "/routines";
-            path: "/routines";
-            fullPath: "/routines";
-            preLoaderRoute: typeof RoutinesRouteImport;
-            parentRoute: typeof rootRouteImport;
-        };
-        "/auth": {
-            id: "/auth";
-            path: "/auth";
-            fullPath: "/auth";
-            preLoaderRoute: typeof AuthRouteImport;
-            parentRoute: typeof rootRouteImport;
-        };
-        "/": {
-            id: "/";
-            path: "/";
-            fullPath: "/";
-            preLoaderRoute: typeof IndexRouteImport;
-            parentRoute: typeof rootRouteImport;
-        };
+declare module '@tanstack/react-router' {
+  interface FileRoutesByPath {
+    '/schedule': {
+      id: '/schedule'
+      path: '/schedule'
+      fullPath: '/schedule'
+      preLoaderRoute: typeof ScheduleRouteImport
+      parentRoute: typeof rootRouteImport
     }
+    '/routines': {
+      id: '/routines'
+      path: '/routines'
+      fullPath: '/routines'
+      preLoaderRoute: typeof RoutinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+  }
 }
 
 const rootRouteChildren: RootRouteChildren = {
-    IndexRoute: IndexRoute,
-    AuthRoute: AuthRoute,
-    RoutinesRoute: RoutinesRoute,
-    ScheduleRoute: ScheduleRoute,
-};
+  IndexRoute: IndexRoute,
+  AuthRoute: AuthRoute,
+  RoutinesRoute: RoutinesRoute,
+  ScheduleRoute: ScheduleRoute,
+}
 export const routeTree = rootRouteImport
-    ._addFileChildren(rootRouteChildren)
-    ._addFileTypes<FileRouteTypes>();
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>()

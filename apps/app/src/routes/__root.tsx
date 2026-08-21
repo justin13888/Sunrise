@@ -1,8 +1,13 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+import { useEffect } from "react";
+import { startSessionRefresh } from "../lib/sessionRefresh";
 
-export const Route = createRootRoute({
-    component: () => (
+function RootComponent() {
+    // Keep the access token fresh for the lifetime of the app.
+    useEffect(() => startSessionRefresh(), []);
+
+    return (
         <>
             <nav className="bg-white border-b border-gray-200 shadow-sm">
                 <div className="max-w-7xl mx-auto px-6 py-4">
@@ -38,7 +43,11 @@ export const Route = createRootRoute({
             <main className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50">
                 <Outlet />
             </main>
-            <TanStackRouterDevtools />
+            {import.meta.env.DEV && <TanStackRouterDevtools />}
         </>
-    ),
+    );
+}
+
+export const Route = createRootRoute({
+    component: RootComponent,
 });
