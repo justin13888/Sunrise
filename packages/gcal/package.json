@@ -12,11 +12,10 @@
         "@types/bun": "latest"
     },
     "peerDependencies": {
-        "google-auth-library": "^10.1.0",
-        "googleapis-common": "^8.0.0",
         "typescript": "^5.0.0"
     },
     "dependencies": {
+        "google-auth-library": "^10.1.0",
         "googleapis": "150.0.1"
     }
 }

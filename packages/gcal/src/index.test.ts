@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/suspicious/noExplicitAny: test mocks and private field access */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { GoogleCalendarService, getClientFromRefreshToken } from "./index";
+import { GoogleCalendarService } from "./index";
 
 // Use vi.hoisted so variables are available in vi.mock factory (which is hoisted to top)
 const mockOAuth2Instance = vi.hoisted(() => ({
@@ -19,6 +19,16 @@ const mockOAuth2Instance = vi.hoisted(() => ({
     credentials: { refresh_token: "mock-refresh-token" },
 }));
 
+const mockUserInfoGet = vi.hoisted(() =>
+    vi.fn().mockResolvedValue({
+        data: {
+            email: "user@example.com",
+            name: "Test User",
+            picture: "https://example.com/avatar.png",
+        },
+    }),
+);
+
 // Mock googleapis - OAuth2 must use a regular function (not arrow) to support `new`
 vi.mock("googleapis", () => ({
     google: {
@@ -27,6 +37,11 @@ vi.mock("googleapis", () => ({
                 return mockOAuth2Instance;
             }),
         },
+        oauth2: vi.fn().mockImplementation(() => ({
+            userinfo: {
+                get: mockUserInfoGet,
+            },
+        })),
         calendar: vi.fn().mockReturnValue({
             events: {
                 list: vi.fn().mockResolvedValue({
@@ -47,6 +62,14 @@ vi.mock("googleapis", () => ({
                         ],
                     },
                 }),
+                get: vi.fn().mockResolvedValue({
+                    data: {
+                        id: "event1",
+                        summary: "Test Event 1",
+                        start: { dateTime: "2025-11-10T10:00:00Z" },
+                        end: { dateTime: "2025-11-10T11:00:00Z" },
+                    },
+                }),
                 insert: vi.fn().mockResolvedValue({
                     data: {
                         id: "new-event-id",
@@ -55,7 +78,7 @@ vi.mock("googleapis", () => ({
                         end: { dateTime: "2025-12-01T10:00:00Z" },
                     },
                 }),
-                update: vi.fn().mockResolvedValue({
+                patch: vi.fn().mockResolvedValue({
                     data: {
                         id: "event1",
                         summary: "Updated Event",
@@ -122,6 +145,23 @@ describe("GoogleCalendarService", () => {
         });
     });
 
+    describe("createAuthenticatedClient", () => {
+        it("should set the provided credentials on the client", () => {
+            service.createAuthenticatedClient({
+                access_token: "access",
+                refresh_token: "refresh",
+                expiry_date: 123456,
+            });
+
+            expect(mockOAuth2Instance.setCredentials).toHaveBeenCalledWith({
+                access_token: "access",
+                refresh_token: "refresh",
+                expiry_date: 123456,
+                token_type: "Bearer",
+            });
+        });
+    });
+
     describe("getAuthUrl", () => {
         it("should generate authorization URL", () => {
             const authUrl = service.getAuthUrl();
@@ -183,31 +223,58 @@ describe("GoogleCalendarService", () => {
         });
     });
 
-    describe("getClientFromRefreshToken (standalone function)", () => {
-        it("should create authenticated client from refresh token", async () => {
-            const refreshToken = "test-refresh-token";
-            const client = await getClientFromRefreshToken(refreshToken);
-            expect(client).toBeDefined();
-        });
+    describe("getUserInfo", () => {
+        const mockAuth = { credentials: {} } as any;
 
-        it("should set refresh token credentials on the client", async () => {
-            const refreshToken = "test-refresh-token";
-            await getClientFromRefreshToken(refreshToken);
+        it("should return email, name, and picture", async () => {
+            const info = await service.getUserInfo(mockAuth);
 
-            expect(mockOAuth2Instance.setCredentials).toHaveBeenCalledWith({
-                refresh_token: refreshToken,
+            expect(info).toEqual({
+                email: "user@example.com",
+                name: "Test User",
+                picture: "https://example.com/avatar.png",
             });
         });
 
-        it("is an exported async function", () => {
-            expect(getClientFromRefreshToken).toBeDefined();
-            expect(typeof getClientFromRefreshToken).toBe("function");
+        it("should call the oauth2 v2 userinfo endpoint with the auth client", async () => {
+            await service.getUserInfo(mockAuth);
+            const { google } = await import("googleapis");
+            expect(google.oauth2).toHaveBeenCalledWith({
+                version: "v2",
+                auth: mockAuth,
+            });
+            expect(mockUserInfoGet).toHaveBeenCalled();
         });
 
-        it("should return an OAuth2Client", async () => {
-            const refreshToken = "test-refresh-token";
-            const client = await getClientFromRefreshToken(refreshToken);
-            expect(client).toBe(mockOAuth2Instance);
+        it("should omit missing name and picture", async () => {
+            mockUserInfoGet.mockResolvedValueOnce({
+                data: { email: "user@example.com" },
+            });
+
+            const info = await service.getUserInfo(mockAuth);
+            expect(info).toEqual({
+                email: "user@example.com",
+                name: undefined,
+                picture: undefined,
+            });
+        });
+
+        it("should throw when Google returns no email", async () => {
+            mockUserInfoGet.mockResolvedValueOnce({
+                data: { name: "No Email" },
+            });
+
+            await expect(service.getUserInfo(mockAuth)).rejects.toThrow(
+                "no email in response",
+            );
+        });
+
+        it("should propagate API errors", async () => {
+            mockUserInfoGet.mockRejectedValueOnce(new Error("userinfo failed"));
+
+            await expect(service.getUserInfo(mockAuth)).rejects.toThrow(
+                "userinfo failed",
+            );
         });
     });
 
@@ -228,6 +295,39 @@ describe("GoogleCalendarService", () => {
             expect(google.calendar).toHaveBeenCalled();
         });
 
+        it("should pass timeMin/timeMax strings through to the API", async () => {
+            await service.listEvents(
+                mockAuth,
+                "primary",
+                20,
+                undefined,
+                "2025-11-01T00:00:00.000Z",
+                "2025-12-01T00:00:00.000Z",
+            );
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.list).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    timeMin: "2025-11-01T00:00:00.000Z",
+                    timeMax: "2025-12-01T00:00:00.000Z",
+                }),
+            );
+        });
+
+        it("should not default timeMin when it is not provided", async () => {
+            await service.listEvents(mockAuth);
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.list).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    timeMin: undefined,
+                    timeMax: undefined,
+                }),
+            );
+        });
+
         it("should respect custom maxResults parameter", async () => {
             const result = await service.listEvents(mockAuth, "primary", 5);
             expect(result).toBeDefined();
@@ -242,10 +342,6 @@ describe("GoogleCalendarService", () => {
         it("should include credentials in result", async () => {
             const result = await service.listEvents(mockAuth);
             expect(result).toHaveProperty("credentials");
-        });
-
-        it("should handle API errors", async () => {
-            expect(service.listEvents).toBeDefined();
         });
     });
 
@@ -277,9 +373,42 @@ describe("GoogleCalendarService", () => {
             const result = await service.listCalendars(mockAuth);
             expect(result).toHaveProperty("credentials");
         });
+    });
 
-        it("should handle API errors", async () => {
-            expect(service.listCalendars).toBeDefined();
+    describe("getEvent", () => {
+        const mockAuth = { credentials: {} } as any;
+
+        it("should fetch a single event", async () => {
+            const event = await service.getEvent(mockAuth, "primary", "event1");
+            expect(event.id).toBe("event1");
+            expect(event.summary).toBe("Test Event 1");
+        });
+
+        it("should call events.get with correct params", async () => {
+            await service.getEvent(mockAuth, "work-calendar", "event1");
+            const { google } = await import("googleapis");
+            const calendarInstance = (google.calendar as any).mock.results[0]
+                ?.value;
+            expect(calendarInstance.events.get).toHaveBeenCalledWith({
+                calendarId: "work-calendar",
+                eventId: "event1",
+            });
+        });
+
+        it("should propagate API errors (e.g. 404)", async () => {
+            const { google } = await import("googleapis");
+            (google.calendar as any).mockImplementationOnce(() => ({
+                events: {
+                    get: vi.fn().mockRejectedValue(
+                        Object.assign(new Error("Not Found"), {
+                            code: 404,
+                        }),
+                    ),
+                },
+            }));
+            await expect(
+                service.getEvent(mockAuth, "primary", "missing"),
+            ).rejects.toThrow("Not Found");
         });
     });
 
@@ -344,7 +473,7 @@ describe("GoogleCalendarService", () => {
             expect(result.summary).toBe("Updated Event");
         });
 
-        it("should call events.update with correct params", async () => {
+        it("should call events.patch with correct params", async () => {
             await service.updateEvent(
                 mockAuth,
                 "primary",
@@ -354,7 +483,7 @@ describe("GoogleCalendarService", () => {
             const { google } = await import("googleapis");
             const calendarInstance = (google.calendar as any).mock.results[0]
                 ?.value;
-            expect(calendarInstance.events.update).toHaveBeenCalledWith({
+            expect(calendarInstance.events.patch).toHaveBeenCalledWith({
                 calendarId: "primary",
                 eventId: "event1",
                 requestBody: updatedEvent,
@@ -365,7 +494,7 @@ describe("GoogleCalendarService", () => {
             const { google } = await import("googleapis");
             (google.calendar as any).mockImplementationOnce(() => ({
                 events: {
-                    update: vi.fn().mockRejectedValue(new Error("Not found")),
+                    patch: vi.fn().mockRejectedValue(new Error("Not found")),
                 },
             }));
             await expect(
@@ -426,11 +555,12 @@ describe("GoogleCalendarService", () => {
             const tokens = await service.getTokensFromCode("auth-code");
             expect(tokens.refresh_token).toBeTruthy();
 
-            // 3. Use standalone helper to get client, then list events
-            const client = await getClientFromRefreshToken(
-                tokens.refresh_token ?? "",
-            );
-            const result = await service.listEvents(client as any);
+            // 3. Build an authenticated client, then list events
+            const client = service.createAuthenticatedClient({
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+            });
+            const result = await service.listEvents(client);
             expect(result.items).toBeDefined();
         });
 
