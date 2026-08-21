@@ -7,7 +7,7 @@ export interface UserTokens {
     accessToken: string;
     refreshToken: string;
     expiresAt: Date;
-    email?: string;
+    email: string;
     name?: string;
     picture?: string;
 }
@@ -22,14 +22,14 @@ export class TokenStore {
             .insert(users)
             .values({
                 id: userId,
-                email: tokens.email || "unknown", // Constraint requires email
+                email: tokens.email,
                 name: tokens.name,
                 picture: tokens.picture,
             })
             .onConflictDoUpdate({
                 target: users.id,
                 set: {
-                    email: tokens.email || "unknown",
+                    email: tokens.email,
                     name: tokens.name,
                     picture: tokens.picture,
                 },
@@ -55,6 +55,13 @@ export class TokenStore {
             });
     }
 
+    /**
+     * Returns the stored tokens for a user, or null if none exist.
+     *
+     * Tokens are returned even if the Google access token is expired: the
+     * refresh token is the durable credential, and callers refresh access
+     * tokens via the Google client as needed.
+     */
     async getTokens(userId: string): Promise<UserTokens | null> {
         const result = await db
             .select({
@@ -62,26 +69,20 @@ export class TokenStore {
                 user: users,
             })
             .from(oauthTokens)
-            .leftJoin(users, eq(oauthTokens.userId, users.id))
+            .innerJoin(users, eq(oauthTokens.userId, users.id))
             .where(eq(oauthTokens.userId, userId))
             .get();
 
         if (!result) return null;
 
-        // Return null for expired or soon-to-expire tokens (5-minute buffer)
-        const bufferMs = 5 * 60 * 1000;
-        if (result.tokens.expiresAt.getTime() <= Date.now() + bufferMs) {
-            return null;
-        }
-
         return {
-            userId: result.user?.id || userId,
+            userId: result.user.id,
             accessToken: result.tokens.accessToken,
             refreshToken: result.tokens.refreshToken,
             expiresAt: result.tokens.expiresAt,
-            email: result.user?.email || undefined,
-            name: result.user?.name || undefined,
-            picture: result.user?.picture || undefined,
+            email: result.user.email,
+            name: result.user.name || undefined,
+            picture: result.user.picture || undefined,
         };
     }
 
@@ -89,9 +90,16 @@ export class TokenStore {
         await db.delete(oauthTokens).where(eq(oauthTokens.userId, userId));
     }
 
+    /**
+     * Returns the IDs of users that currently have stored OAuth tokens
+     * (i.e. logged-out users are excluded).
+     */
     async getAllUserIds(): Promise<string[]> {
-        const results = await db.select({ id: users.id }).from(users).all();
-        return results.map((r) => r.id);
+        const results = await db
+            .selectDistinct({ userId: oauthTokens.userId })
+            .from(oauthTokens)
+            .all();
+        return results.map((r) => r.userId);
     }
 }
 
