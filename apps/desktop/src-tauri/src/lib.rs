@@ -14,6 +14,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use sunrise_core::{Command, Core, CoreConfig, Query, SystemRng, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 
+// TODO(desktop): no OAuth entry point is exposed to the renderer. The loopback
+// `redirect_uri` in `sunrise_integrations::gcal::OAuthFlow` is the right shape
+// for this shell — a Tauri WebView cannot open a popup or use `window.opener`,
+// so the browser-popup flow the v0 web app depended on is simply unavailable
+// here. Still missing: a command that opens the consent URL in the *system*
+// browser, and a loopback listener on the configured `redirect_uri` that
+// captures the code, with a paste fallback for when that port is taken.
+
+// TODO(desktop): there is no `tauri.conf.json`, so this shell ships without a
+// CSP. Set one before bundling, scoped to the origins the renderer actually
+// talks to.
+
 static CORE: OnceLock<Mutex<Option<Arc<Core>>>> = OnceLock::new();
 
 fn slot() -> &'static Mutex<Option<Arc<Core>>> {

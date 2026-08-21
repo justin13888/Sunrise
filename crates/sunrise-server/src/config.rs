@@ -3,6 +3,17 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// TODO(server): this config is accepted unvalidated. Add a checked constructor
+// that fails fast at startup instead of serving a half-configured process:
+//   - `allowed_origins: Vec<String>` to feed the CORS allowlist (see
+//     `crate::build_router`).
+//   - Reject placeholder or absent signing secrets outside self-host mode. A
+//     secret that falls back to a literal default ships that default to
+//     production, and every token it signs is forgeable.
+//   - Require `oidc_issuer` whenever the verifier is not `NullVerifier`.
+//     `NullVerifier` maps every caller onto one identity and is single-tenant
+//     only.
+
 /// Server configuration. Read from `sunrise.toml` (production) or built
 /// programmatically (tests).
 #[derive(Debug, Clone, Serialize, Deserialize)]

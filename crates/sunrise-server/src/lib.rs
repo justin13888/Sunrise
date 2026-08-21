@@ -47,6 +47,12 @@ pub use state::{Clock, ServerState, SystemClock};
 
 use axum::Router;
 
+// TODO(server): no CORS layer is mounted. Once browser clients (apps/web) call
+// this router directly it needs an exact-match origin allowlist sourced from
+// `ServerConfig`. Do not reflect arbitrary origins back, and never pair a
+// wildcard origin with credentials — v0 shipped `origin: "*", credentials:
+// true`, which leaves the whole API surface reachable from any page.
+
 /// Build the public Axum router with all v1 routes wired.
 #[must_use]
 pub fn build_router(state: ServerState) -> Router {

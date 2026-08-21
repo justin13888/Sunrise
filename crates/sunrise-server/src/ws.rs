@@ -129,6 +129,15 @@ async fn sync_loop(
 
     // Subscriptions: channels this connection is currently subscribed to.
     let mut subs: Vec<tokio::sync::broadcast::Receiver<RelayFrame>> = Vec::new();
+    // TODO(server): this session is never authenticated. `/sync` upgrades any
+    // socket, and every session resolves to the same synthetic account, so a
+    // Subscribe frame from one client is served frames belonging to any other
+    // — the same cross-tenant subscription leak the v0 API shipped. Before any
+    // multi-tenant deployment: take the bearer at upgrade time, run it through
+    // the `TokenVerifier` on `ServerState`, derive `account` from the verified
+    // `Subject`, and reject Subscribe frames naming an account that subject
+    // does not own. Fanout scoping has to be enforced here; filtering on the
+    // client is not a control.
     // Default account hash (single-tenant self-host until OIDC wires up).
     let account = single_tenant_account_hash();
 
