@@ -1,14 +1,13 @@
 /** biome-ignore-all lint/suspicious/noExplicitAny: Resolve generally don't know about a specific type */
+import type { calendar_v3 } from "@sunrise/gcal";
+import type { Routine } from "@sunrise/models";
 import { GraphQLError } from "graphql";
 import { filter, pipe } from "graphql-yoga";
 import type { GraphQLContext } from "../context";
 import {
-    GqlAttendeeResponseStatus,
     GqlConflictResolution,
     GqlDependencyRelationship,
     GqlEnergyLevel,
-    GqlEventStatus,
-    GqlEventVisibility,
     GqlFrequency,
     GqlPriorityLevel,
     type GqlResolvers,
@@ -16,13 +15,98 @@ import {
 } from "../generated/resolvers-types";
 import { signJWT } from "../services/jwt";
 import { pubsub } from "../services/pubsub";
-import { routineService } from "../services/routineService";
+import {
+    RoutineValidationError,
+    routineService,
+} from "../services/routineService";
 import { tokenStore } from "../services/tokenStore";
 import { ensureAuth, ensureUser } from "./auth";
 import { DateTimeScalar } from "./date-time";
+import { mapGCalCalendar, mapGCalEvent, mapReminderInput } from "./mappers";
 import { URLScalar } from "./url";
 
-// TODO: Finish implementing these resolvers
+/** Opaque per-edge cursor. Pagination itself uses Google page tokens: pass
+ * `pageInfo.endCursor` as `after` to fetch the next page. */
+function toCursor(eventId: string): string {
+    return Buffer.from(`gcal:${eventId}`).toString("base64");
+}
+
+/** Google caps events.list maxResults at 250. */
+const MAX_PAGE_SIZE = 250;
+
+/** Clamp the requested page size to Google's supported 1..250 range. */
+function clampFirst(first: number | null | undefined): number {
+    return Math.min(Math.max(first ?? 20, 1), MAX_PAGE_SIZE);
+}
+
+/**
+ * Guard against edge cursors being passed as `after`: pagination uses Google
+ * page tokens (pageInfo.endCursor), not the per-edge cursors, and forwarding
+ * an edge cursor would send junk to Google.
+ */
+function assertNotEdgeCursor(after: string): void {
+    let decoded: string | undefined;
+    try {
+        decoded = Buffer.from(after, "base64").toString("utf8");
+    } catch {
+        // Not base64-decodable: cannot be one of our edge cursors.
+        return;
+    }
+    if (decoded?.startsWith("gcal:")) {
+        throw new GraphQLError(
+            "The `after` argument must be pageInfo.endCursor, not an edge cursor",
+            { extensions: { code: "BAD_USER_INPUT" } },
+        );
+    }
+}
+
+/** Map RoutineValidationError to BAD_USER_INPUT; rethrow everything else. */
+function rethrowRoutineError(error: unknown): never {
+    if (error instanceof RoutineValidationError) {
+        throw new GraphQLError(error.message, {
+            extensions: { code: "BAD_USER_INPUT" },
+        });
+    }
+    throw error;
+}
+
+/** Convert a DateTime scalar value (Date or ISO string) for the Google API. */
+function toIso(value?: Date | string | null): string | undefined {
+    return value ? new Date(value).toISOString() : undefined;
+}
+
+function isNotFoundError(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const e = error as {
+        code?: unknown;
+        status?: unknown;
+        response?: { status?: unknown };
+    };
+    return e.code === 404 || e.status === 404 || e.response?.status === 404;
+}
+
+function toEventConnection(
+    items: calendar_v3.Schema$Event[],
+    nextPageToken: string | null | undefined,
+    calendarId: string,
+) {
+    const edges = items.map((event) => ({
+        cursor: toCursor(event.id || ""),
+        node: mapGCalEvent(event, calendarId),
+    }));
+
+    return {
+        edges,
+        pageInfo: {
+            hasNextPage: !!nextPageToken,
+            hasPreviousPage: false, // Google Calendar API doesn't support backward pagination
+            startCursor: edges.length > 0 ? edges[0].cursor : null,
+            endCursor: nextPageToken ?? null,
+        },
+        totalCount: null, // Google Calendar API doesn't provide total count
+    };
+}
+
 export const resolvers: GqlResolvers = {
     DateTime: DateTimeScalar,
     URL: URLScalar,
@@ -45,17 +129,9 @@ export const resolvers: GqlResolvers = {
                     refresh_token: refreshToken,
                 });
                 const calendars = await calendarService.listCalendars(auth);
-                return calendars.items.map((cal) => ({
-                    id: cal.id || "",
-                    summary: cal.summary || "",
-                    description: cal.description,
-                    primary: cal.primary || false,
-                    accessRole: mapAccessRole(cal.accessRole),
-                    backgroundColor: cal.backgroundColor,
-                    foregroundColor: cal.foregroundColor,
-                    timeZone: cal.timeZone,
-                }));
+                return calendars.items.map(mapGCalCalendar);
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to fetch calendars: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
@@ -78,17 +154,9 @@ export const resolvers: GqlResolvers = {
                     });
                 }
 
-                return {
-                    id: calendar.id || "",
-                    summary: calendar.summary || "",
-                    description: calendar.description,
-                    primary: calendar.primary || false,
-                    accessRole: mapAccessRole(calendar.accessRole),
-                    backgroundColor: calendar.backgroundColor,
-                    foregroundColor: calendar.foregroundColor,
-                    timeZone: calendar.timeZone,
-                };
+                return mapGCalCalendar(calendar);
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to fetch calendar: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
@@ -97,6 +165,15 @@ export const resolvers: GqlResolvers = {
 
         events: async (_, args, context: GraphQLContext) => {
             const { refreshToken, calendarService } = ensureAuth(context);
+            const calendarId = args.calendarId || "primary";
+            if (args.after) assertNotEdgeCursor(args.after);
+
+            // "Upcoming by default": when no window is given at all, start
+            // the listing at now. An explicit timeMin/timeMax wins.
+            const timeMin =
+                args.timeMin == null && args.timeMax == null
+                    ? new Date().toISOString()
+                    : toIso(args.timeMin);
 
             try {
                 const auth = calendarService.createAuthenticatedClient({
@@ -104,102 +181,40 @@ export const resolvers: GqlResolvers = {
                 });
                 const result = await calendarService.listEvents(
                     auth,
-                    args.calendarId || "primary",
-                    args.first || 20,
+                    calendarId,
+                    clampFirst(args.first),
                     args.after || undefined,
-                    args.timeMin || undefined,
-                    args.timeMax || undefined,
+                    timeMin,
+                    toIso(args.timeMax),
                     args.orderBy === "UPDATED" ? "updated" : "startTime",
                 );
 
-                const edges = result.items.map((event) => ({
-                    cursor: event.id || "",
-                    node: {
-                        id: event.id || "",
-                        calendarId: args.calendarId || "primary",
-                        summary: event.summary || "",
-                        description: event.description,
-                        location: event.location,
-                        start: {
-                            dateTime: event.start?.dateTime
-                                ? new Date(event.start.dateTime)
-                                : undefined,
-                            date: event.start?.date,
-                            timeZone: event.start?.timeZone,
-                        },
-                        end: {
-                            dateTime: event.end?.dateTime
-                                ? new Date(event.end.dateTime)
-                                : undefined,
-                            date: event.end?.date,
-                            timeZone: event.end?.timeZone,
-                        },
-                        status: mapEventStatus(event.status),
-                        visibility: mapEventVisibility(event.visibility),
-                        creator: event.creator
-                            ? {
-                                  email: event.creator.email || "",
-                                  displayName: event.creator.displayName,
-                                  self: event.creator.self,
-                              }
-                            : undefined,
-                        organizer: event.organizer
-                            ? {
-                                  email: event.organizer.email || "",
-                                  displayName: event.organizer.displayName,
-                                  self: event.organizer.self,
-                              }
-                            : undefined,
-                        attendees: event.attendees?.map((attendee) => ({
-                            email: attendee.email || "",
-                            displayName: attendee.displayName,
-                            self: attendee.self,
-                            responseStatus: mapAttendeeResponse(
-                                attendee.responseStatus,
-                            ),
-                        })),
-                        htmlLink: event.htmlLink || "",
-                        created: new Date(event.created || Date.now()),
-                        updated: new Date(event.updated || Date.now()),
-                    },
-                }));
-
-                return {
-                    edges,
-                    pageInfo: {
-                        hasNextPage: !!result.nextPageToken,
-                        hasPreviousPage: false, // Google Calendar API doesn't support backward pagination
-                        startCursor: edges.length > 0 ? edges[0].cursor : null,
-                        endCursor:
-                            result.nextPageToken ||
-                            (edges.length > 0
-                                ? edges[edges.length - 1].cursor
-                                : null),
-                    },
-                    totalCount: null, // Google Calendar API doesn't provide total count
-                };
+                return toEventConnection(
+                    result.items,
+                    result.nextPageToken,
+                    calendarId,
+                );
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to fetch events: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
             }
         },
 
-        event: async (_, { id }, context: GraphQLContext) => {
+        event: async (_, { id, calendarId }, context: GraphQLContext) => {
             const { refreshToken, calendarService } = ensureAuth(context);
+            const targetCalendarId = calendarId || "primary";
 
-            // For now, we'll get all events and find the specific one
-            // In production, you'd want to use the Calendar API's get method
             try {
                 const auth = calendarService.createAuthenticatedClient({
                     refresh_token: refreshToken,
                 });
-                const result = await calendarService.listEvents(
+                const event = await calendarService.getEvent(
                     auth,
-                    "primary",
-                    100,
+                    targetCalendarId,
+                    id,
                 );
-                const event = result.items.find((e) => e.id === id);
 
                 if (!event) {
                     throw new GraphQLError("Event not found", {
@@ -207,55 +222,14 @@ export const resolvers: GqlResolvers = {
                     });
                 }
 
-                return {
-                    id: event.id || "",
-                    calendarId: "primary", // Would need to be tracked properly
-                    summary: event.summary || "",
-                    description: event.description,
-                    location: event.location,
-                    start: {
-                        dateTime: event.start?.dateTime
-                            ? new Date(event.start.dateTime)
-                            : undefined,
-                        date: event.start?.date,
-                        timeZone: event.start?.timeZone,
-                    },
-                    end: {
-                        dateTime: event.end?.dateTime
-                            ? new Date(event.end.dateTime)
-                            : undefined,
-                        date: event.end?.date,
-                        timeZone: event.end?.timeZone,
-                    },
-                    status: mapEventStatus(event.status),
-                    visibility: mapEventVisibility(event.visibility),
-                    creator: event.creator
-                        ? {
-                              email: event.creator.email || "",
-                              displayName: event.creator.displayName,
-                              self: event.creator.self,
-                          }
-                        : undefined,
-                    organizer: event.organizer
-                        ? {
-                              email: event.organizer.email || "",
-                              displayName: event.organizer.displayName,
-                              self: event.organizer.self,
-                          }
-                        : undefined,
-                    attendees: event.attendees?.map((attendee) => ({
-                        email: attendee.email || "",
-                        displayName: attendee.displayName,
-                        self: attendee.self,
-                        responseStatus: mapAttendeeResponse(
-                            attendee.responseStatus,
-                        ),
-                    })),
-                    htmlLink: event.htmlLink || "",
-                    created: new Date(event.created || Date.now()),
-                    updated: new Date(event.updated || Date.now()),
-                };
+                return mapGCalEvent(event, targetCalendarId);
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
+                if (isNotFoundError(error)) {
+                    throw new GraphQLError("Event not found", {
+                        extensions: { code: "NOT_FOUND" },
+                    });
+                }
                 throw new GraphQLError(`Failed to fetch event: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
@@ -289,16 +263,12 @@ export const resolvers: GqlResolvers = {
                 if (!tokens.access_token || !tokens.refresh_token) {
                     throw new GraphQLError(
                         "Failed to get tokens from authorization code",
+                        { extensions: { code: "AUTH_ERROR" } },
                     );
                 }
 
-                // TODO: In production, you'd:
-                // 1. Extract and validate user info from JWT token
-                // 2. Create/update user record in database
-                // 3. Use proper user ID from token
-
-                // Get user info from Google using the access token
-                // IMPORTANT: This must succeed - we don't use fallback values
+                // Get user info from Google using the freshly issued tokens.
+                // IMPORTANT: This must succeed - we don't use fallback values.
                 let userInfo: {
                     email: string;
                     name: string;
@@ -306,46 +276,17 @@ export const resolvers: GqlResolvers = {
                 };
 
                 try {
-                    // Create a temporary OAuth client to get user info
-                    const { OAuth2Client } = await import(
-                        "google-auth-library"
-                    );
-                    const oauth2Client = new OAuth2Client();
-                    oauth2Client.setCredentials({
+                    const auth = calendarService.createAuthenticatedClient({
                         access_token: tokens.access_token,
                         refresh_token: tokens.refresh_token,
                     });
-
-                    console.log(
-                        "🔍 Attempting to fetch user info from Google...",
-                    );
-                    const { google } = await import("googleapis");
-                    const oauth2 = google.oauth2({
-                        version: "v2",
-                        auth: oauth2Client,
-                    });
-                    const userInfoResponse = await oauth2.userinfo.get();
-
-                    console.log(
-                        "🔍 User info response:",
-                        JSON.stringify(userInfoResponse.data, null, 2),
-                    );
-
-                    if (
-                        !userInfoResponse.data ||
-                        !userInfoResponse.data.email
-                    ) {
-                        throw new Error(
-                            "Failed to get user info from Google - no email in response",
-                        );
-                    }
+                    const info = await calendarService.getUserInfo(auth);
 
                     userInfo = {
-                        email: userInfoResponse.data.email,
-                        name:
-                            userInfoResponse.data.name ||
-                            userInfoResponse.data.email, // Use email as name if name not provided
-                        picture: userInfoResponse.data.picture || undefined,
+                        email: info.email,
+                        // Use email as name if name not provided
+                        name: info.name || info.email,
+                        picture: info.picture,
                     };
 
                     console.log(
@@ -353,12 +294,10 @@ export const resolvers: GqlResolvers = {
                         userInfo.email,
                     );
                 } catch (userInfoError) {
-                    console.error("❌ Could not fetch user info from Google:");
-                    console.error("Error details:", userInfoError);
-                    if (userInfoError instanceof Error) {
-                        console.error("Error message:", userInfoError.message);
-                        console.error("Error stack:", userInfoError.stack);
-                    }
+                    console.error(
+                        "❌ Could not fetch user info from Google:",
+                        userInfoError,
+                    );
                     throw new GraphQLError(
                         "Failed to fetch user information from Google. " +
                             "This may be because the required OAuth scopes (userinfo.email, userinfo.profile) were not granted. " +
@@ -375,9 +314,9 @@ export const resolvers: GqlResolvers = {
                     );
                 }
 
-                // Use the email as a stable user ID (in production, this would be a database ID)
-                // We hash or encode it to make it URL-safe and consistent
-                const userId = `google-${Buffer.from(userInfo.email).toString("base64").replace(/[/+=]/g, "")}`;
+                // Use the email as a stable user ID (in production, this would be a database ID).
+                // base64url is URL-safe and collision-free (no characters stripped).
+                const userId = `google-${Buffer.from(userInfo.email).toString("base64url")}`;
 
                 const user = {
                     id: userId,
@@ -416,6 +355,7 @@ export const resolvers: GqlResolvers = {
                     expiresIn,
                 };
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 console.error("Authentication failed:", error);
                 throw new GraphQLError(`Authentication failed: ${error}`, {
                     extensions: { code: "AUTH_ERROR" },
@@ -463,6 +403,7 @@ export const resolvers: GqlResolvers = {
                     expiresIn,
                 };
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 console.error("Token refresh failed:", error);
                 throw new GraphQLError(`Token refresh failed: ${error}`, {
                     extensions: { code: "AUTH_ERROR" },
@@ -484,7 +425,7 @@ export const resolvers: GqlResolvers = {
         },
 
         createEvent: async (_, { input }, context: GraphQLContext) => {
-            const { refreshToken, calendarService } = ensureAuth(context);
+            const { user, refreshToken, calendarService } = ensureAuth(context);
 
             try {
                 const auth = calendarService.createAuthenticatedClient({
@@ -498,28 +439,31 @@ export const resolvers: GqlResolvers = {
                         description: input.description || undefined,
                         location: input.location || undefined,
                         start: {
-                            dateTime: input.start.dateTime?.toISOString(),
+                            dateTime: toIso(input.start.dateTime),
                             date: input.start.date || undefined,
                             timeZone: input.start.timeZone || undefined,
                         },
                         end: {
-                            dateTime: input.end.dateTime?.toISOString(),
+                            dateTime: toIso(input.end.dateTime),
                             date: input.end.date || undefined,
                             timeZone: input.end.timeZone || undefined,
                         },
                         attendees: input.attendees?.map((email: string) => ({
                             email,
                         })),
+                        reminders: mapReminderInput(input.reminders),
                     },
                 );
 
                 const gqlEvent = mapGCalEvent(event, input.calendarId);
                 pubsub.publish("eventCreated", {
+                    userId: user.id,
                     calendarId: input.calendarId,
                     event: gqlEvent,
                 });
                 return gqlEvent;
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to create event: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
@@ -527,17 +471,15 @@ export const resolvers: GqlResolvers = {
         },
 
         updateEvent: async (_, { id, input }, context: GraphQLContext) => {
-            const { refreshToken, calendarService } = ensureAuth(context);
-
-            // Default to primary calendar; calendarId can be added to UpdateEventInput in the future
-            const calendarId = "primary";
+            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const calendarId = input.calendarId || "primary";
 
             try {
                 const auth = calendarService.createAuthenticatedClient({
                     refresh_token: refreshToken,
                 });
 
-                const eventData: Record<string, unknown> = {};
+                const eventData: calendar_v3.Schema$Event = {};
                 if (input.summary !== undefined && input.summary !== null)
                     eventData.summary = input.summary;
                 if (input.description !== undefined)
@@ -546,13 +488,13 @@ export const resolvers: GqlResolvers = {
                     eventData.location = input.location;
                 if (input.start)
                     eventData.start = {
-                        dateTime: input.start.dateTime?.toISOString(),
+                        dateTime: toIso(input.start.dateTime),
                         date: input.start.date || undefined,
                         timeZone: input.start.timeZone || undefined,
                     };
                 if (input.end)
                     eventData.end = {
-                        dateTime: input.end.dateTime?.toISOString(),
+                        dateTime: toIso(input.end.dateTime),
                         date: input.end.date || undefined,
                         timeZone: input.end.timeZone || undefined,
                     };
@@ -560,6 +502,8 @@ export const resolvers: GqlResolvers = {
                     eventData.attendees = input.attendees.map(
                         (email: string) => ({ email }),
                     );
+                if (input.reminders)
+                    eventData.reminders = mapReminderInput(input.reminders);
 
                 const event = await calendarService.updateEvent(
                     auth,
@@ -570,32 +514,36 @@ export const resolvers: GqlResolvers = {
 
                 const gqlEvent = mapGCalEvent(event, calendarId);
                 pubsub.publish("eventUpdated", {
+                    userId: user.id,
                     calendarId,
                     event: gqlEvent,
                 });
                 return gqlEvent;
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to update event: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
             }
         },
 
-        deleteEvent: async (_, { id }, context: GraphQLContext) => {
-            const { refreshToken, calendarService } = ensureAuth(context);
-            const calendarId = "primary";
+        deleteEvent: async (_, { id, calendarId }, context: GraphQLContext) => {
+            const { user, refreshToken, calendarService } = ensureAuth(context);
+            const targetCalendarId = calendarId || "primary";
 
             try {
                 const auth = calendarService.createAuthenticatedClient({
                     refresh_token: refreshToken,
                 });
-                await calendarService.deleteEvent(auth, calendarId, id);
+                await calendarService.deleteEvent(auth, targetCalendarId, id);
                 pubsub.publish("eventDeleted", {
-                    calendarId,
-                    payload: { id, calendarId },
+                    userId: user.id,
+                    calendarId: targetCalendarId,
+                    payload: { id, calendarId: targetCalendarId },
                 });
                 return true;
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(`Failed to delete event: ${error}`, {
                     extensions: { code: "CALENDAR_ERROR" },
                 });
@@ -604,86 +552,26 @@ export const resolvers: GqlResolvers = {
 
         createRoutine: async (_, { input }, context: GraphQLContext) => {
             const { user } = ensureUser(context);
-            const routine = await routineService.createRoutine(user.id, {
-                name: input.name,
-                description: input.description ?? undefined,
-                duration: {
-                    minutes: input.duration.minutes,
-                    flexible: input.duration.flexible,
-                    min_duration: input.duration.minDuration ?? undefined,
-                    max_duration: input.duration.maxDuration ?? undefined,
-                },
-                priority: mapGqlPriority(input.priority),
-                flexibility: input.flexibility,
-                energy_level_required: mapGqlEnergyLevel(
-                    input.energyLevelRequired,
-                ),
-                category: input.category,
-                frequency: mapGqlFrequency(input.frequency),
-                time_preferences: input.timePreferences.map(mapGqlTimeOfDay),
-                availability_windows: input.availabilityWindows.map((w) => ({
-                    start_hour: w.startHour,
-                    start_minute: w.startMinute,
-                    end_hour: w.endHour,
-                    end_minute: w.endMinute,
-                })),
-                dependencies: input.dependencies.map((d) => ({
-                    routine_id: d.routineId,
-                    relationship: mapGqlDependencyRelationship(d.relationship),
-                    buffer_minutes: d.bufferMinutes ?? undefined,
-                })),
-                minimum_gap_minutes: input.minimumGapMinutes,
-                buffer_time_minutes: input.bufferTimeMinutes,
-                conflict_resolution: mapGqlConflictResolution(
-                    input.conflictResolution,
-                ),
-                can_be_grouped: input.canBeGrouped,
-                preferred_batch_size: input.preferredBatchSize ?? undefined,
-                enabled: input.enabled,
-                tags: input.tags,
-            });
-            const gqlRoutine = mapRoutine(routine);
-            pubsub.publish("routineCreated", { routine: gqlRoutine });
-            return gqlRoutine;
-        },
-
-        updateRoutine: async (_, { id, input }, context: GraphQLContext) => {
-            const { user } = ensureUser(context);
-            const updated = await routineService.updateRoutine(id, user.id, {
-                ...(input.name != null && { name: input.name }),
-                ...(input.description !== undefined && {
+            let routine: Routine;
+            try {
+                routine = await routineService.createRoutine(user.id, {
+                    name: input.name,
                     description: input.description ?? undefined,
-                }),
-                ...(input.duration != null && {
                     duration: {
                         minutes: input.duration.minutes,
                         flexible: input.duration.flexible,
                         min_duration: input.duration.minDuration ?? undefined,
                         max_duration: input.duration.maxDuration ?? undefined,
                     },
-                }),
-                ...(input.priority != null && {
                     priority: mapGqlPriority(input.priority),
-                }),
-                ...(input.flexibility != null && {
                     flexibility: input.flexibility,
-                }),
-                ...(input.energyLevelRequired != null && {
                     energy_level_required: mapGqlEnergyLevel(
                         input.energyLevelRequired,
                     ),
-                }),
-                ...(input.category != null && {
                     category: input.category,
-                }),
-                ...(input.frequency != null && {
                     frequency: mapGqlFrequency(input.frequency),
-                }),
-                ...(input.timePreferences != null && {
                     time_preferences:
                         input.timePreferences.map(mapGqlTimeOfDay),
-                }),
-                ...(input.availabilityWindows != null && {
                     availability_windows: input.availabilityWindows.map(
                         (w) => ({
                             start_hour: w.startHour,
@@ -692,8 +580,6 @@ export const resolvers: GqlResolvers = {
                             end_minute: w.endMinute,
                         }),
                     ),
-                }),
-                ...(input.dependencies != null && {
                     dependencies: input.dependencies.map((d) => ({
                         routine_id: d.routineId,
                         relationship: mapGqlDependencyRelationship(
@@ -701,34 +587,121 @@ export const resolvers: GqlResolvers = {
                         ),
                         buffer_minutes: d.bufferMinutes ?? undefined,
                     })),
-                }),
-                ...(input.minimumGapMinutes != null && {
                     minimum_gap_minutes: input.minimumGapMinutes,
-                }),
-                ...(input.bufferTimeMinutes != null && {
                     buffer_time_minutes: input.bufferTimeMinutes,
-                }),
-                ...(input.conflictResolution != null && {
                     conflict_resolution: mapGqlConflictResolution(
                         input.conflictResolution,
                     ),
-                }),
-                ...(input.canBeGrouped != null && {
                     can_be_grouped: input.canBeGrouped,
-                }),
-                ...(input.preferredBatchSize !== undefined && {
                     preferred_batch_size: input.preferredBatchSize ?? undefined,
-                }),
-                ...(input.enabled != null && { enabled: input.enabled }),
-                ...(input.tags != null && { tags: input.tags }),
+                    enabled: input.enabled,
+                    tags: input.tags,
+                });
+            } catch (error) {
+                rethrowRoutineError(error);
+            }
+            const gqlRoutine = mapRoutine(routine);
+            pubsub.publish("routineCreated", {
+                userId: user.id,
+                routine: gqlRoutine,
             });
+            return gqlRoutine;
+        },
+
+        updateRoutine: async (_, { id, input }, context: GraphQLContext) => {
+            const { user } = ensureUser(context);
+            let updated: Routine | null;
+            try {
+                updated = await routineService.updateRoutine(id, user.id, {
+                    ...(input.name != null && { name: input.name }),
+                    // Explicit null clears the description; undefined leaves it.
+                    ...(input.description !== undefined && {
+                        description: input.description,
+                    }),
+                    ...(input.duration != null && {
+                        duration: {
+                            minutes: input.duration.minutes,
+                            flexible: input.duration.flexible,
+                            min_duration:
+                                input.duration.minDuration ?? undefined,
+                            max_duration:
+                                input.duration.maxDuration ?? undefined,
+                        },
+                    }),
+                    ...(input.priority != null && {
+                        priority: mapGqlPriority(input.priority),
+                    }),
+                    ...(input.flexibility != null && {
+                        flexibility: input.flexibility,
+                    }),
+                    ...(input.energyLevelRequired != null && {
+                        energy_level_required: mapGqlEnergyLevel(
+                            input.energyLevelRequired,
+                        ),
+                    }),
+                    ...(input.category != null && {
+                        category: input.category,
+                    }),
+                    ...(input.frequency != null && {
+                        frequency: mapGqlFrequency(input.frequency),
+                    }),
+                    ...(input.timePreferences != null && {
+                        time_preferences:
+                            input.timePreferences.map(mapGqlTimeOfDay),
+                    }),
+                    ...(input.availabilityWindows != null && {
+                        availability_windows: input.availabilityWindows.map(
+                            (w) => ({
+                                start_hour: w.startHour,
+                                start_minute: w.startMinute,
+                                end_hour: w.endHour,
+                                end_minute: w.endMinute,
+                            }),
+                        ),
+                    }),
+                    ...(input.dependencies != null && {
+                        dependencies: input.dependencies.map((d) => ({
+                            routine_id: d.routineId,
+                            relationship: mapGqlDependencyRelationship(
+                                d.relationship,
+                            ),
+                            buffer_minutes: d.bufferMinutes ?? undefined,
+                        })),
+                    }),
+                    ...(input.minimumGapMinutes != null && {
+                        minimum_gap_minutes: input.minimumGapMinutes,
+                    }),
+                    ...(input.bufferTimeMinutes != null && {
+                        buffer_time_minutes: input.bufferTimeMinutes,
+                    }),
+                    ...(input.conflictResolution != null && {
+                        conflict_resolution: mapGqlConflictResolution(
+                            input.conflictResolution,
+                        ),
+                    }),
+                    ...(input.canBeGrouped != null && {
+                        can_be_grouped: input.canBeGrouped,
+                    }),
+                    // Explicit null clears the batch size; undefined leaves it.
+                    ...(input.preferredBatchSize !== undefined && {
+                        preferred_batch_size: input.preferredBatchSize,
+                    }),
+                    ...(input.enabled != null && { enabled: input.enabled }),
+                    ...(input.tags != null && { tags: input.tags }),
+                });
+            } catch (error) {
+                rethrowRoutineError(error);
+            }
             if (!updated) {
                 throw new GraphQLError("Routine not found", {
                     extensions: { code: "NOT_FOUND" },
                 });
             }
             const gqlRoutine = mapRoutine(updated);
-            pubsub.publish("routineUpdated", { routine: gqlRoutine });
+            pubsub.publish("routineUpdated", {
+                userId: user.id,
+                routine: gqlRoutine,
+            });
             return gqlRoutine;
         },
 
@@ -740,7 +713,10 @@ export const resolvers: GqlResolvers = {
                     extensions: { code: "NOT_FOUND" },
                 });
             }
-            pubsub.publish("routineDeleted", { payload: { id } });
+            pubsub.publish("routineDeleted", {
+                userId: user.id,
+                payload: { id },
+            });
             return true;
         },
     },
@@ -748,6 +724,12 @@ export const resolvers: GqlResolvers = {
     Calendar: {
         events: async (parent, args, context: GraphQLContext) => {
             const { refreshToken, calendarService } = ensureAuth(context);
+            if (args.after) assertNotEdgeCursor(args.after);
+
+            const timeMin =
+                args.timeMin == null && args.timeMax == null
+                    ? new Date().toISOString()
+                    : toIso(args.timeMin);
 
             try {
                 const auth = calendarService.createAuthenticatedClient({
@@ -756,79 +738,19 @@ export const resolvers: GqlResolvers = {
                 const result = await calendarService.listEvents(
                     auth,
                     parent.id,
-                    args.first || 20,
+                    clampFirst(args.first),
                     args.after || undefined,
-                    args.timeMin || undefined,
-                    args.timeMax || undefined,
+                    timeMin,
+                    toIso(args.timeMax),
                 );
 
-                const edges = result.items.map((event) => ({
-                    cursor: event.id || "",
-                    node: {
-                        id: event.id || "",
-                        calendarId: parent.id,
-                        summary: event.summary || "",
-                        description: event.description,
-                        location: event.location,
-                        start: {
-                            dateTime: event.start?.dateTime
-                                ? new Date(event.start.dateTime)
-                                : undefined,
-                            date: event.start?.date,
-                            timeZone: event.start?.timeZone,
-                        },
-                        end: {
-                            dateTime: event.end?.dateTime
-                                ? new Date(event.end.dateTime)
-                                : undefined,
-                            date: event.end?.date,
-                            timeZone: event.end?.timeZone,
-                        },
-                        status: mapEventStatus(event.status),
-                        visibility: mapEventVisibility(event.visibility),
-                        creator: event.creator
-                            ? {
-                                  email: event.creator.email || "",
-                                  displayName: event.creator.displayName,
-                                  self: event.creator.self,
-                              }
-                            : undefined,
-                        organizer: event.organizer
-                            ? {
-                                  email: event.organizer.email || "",
-                                  displayName: event.organizer.displayName,
-                                  self: event.organizer.self,
-                              }
-                            : undefined,
-                        attendees: event.attendees?.map((attendee) => ({
-                            email: attendee.email || "",
-                            displayName: attendee.displayName,
-                            self: attendee.self,
-                            responseStatus: mapAttendeeResponse(
-                                attendee.responseStatus,
-                            ),
-                        })),
-                        htmlLink: event.htmlLink || "",
-                        created: new Date(event.created || Date.now()),
-                        updated: new Date(event.updated || Date.now()),
-                    },
-                }));
-
-                return {
-                    edges,
-                    pageInfo: {
-                        hasNextPage: !!result.nextPageToken,
-                        hasPreviousPage: false,
-                        startCursor: edges.length > 0 ? edges[0].cursor : null,
-                        endCursor:
-                            result.nextPageToken ||
-                            (edges.length > 0
-                                ? edges[edges.length - 1].cursor
-                                : null),
-                    },
-                    totalCount: null,
-                };
+                return toEventConnection(
+                    result.items,
+                    result.nextPageToken,
+                    parent.id,
+                );
             } catch (error) {
+                if (error instanceof GraphQLError) throw error;
                 throw new GraphQLError(
                     `Failed to fetch calendar events: ${error}`,
                     {
@@ -839,16 +761,19 @@ export const resolvers: GqlResolvers = {
         },
     },
 
+    // All subscriptions are user-scoped: every published payload carries the
+    // owning userId and each subscriber only receives their own events.
     Subscription: {
         eventCreated: {
             subscribe: (_, { calendarId }, context: GraphQLContext) => {
-                ensureAuth(context);
+                const { user } = ensureAuth(context);
 
                 return pipe(
                     pubsub.subscribe("eventCreated"),
                     filter(
-                        ({ calendarId: eventCalendarId }) =>
-                            !calendarId || eventCalendarId === calendarId,
+                        (payload) =>
+                            payload.userId === user.id &&
+                            (!calendarId || payload.calendarId === calendarId),
                     ),
                 ) as AsyncIterable<{ eventCreated: any }>;
             },
@@ -857,13 +782,14 @@ export const resolvers: GqlResolvers = {
 
         eventUpdated: {
             subscribe: (_, { calendarId }, context: GraphQLContext) => {
-                ensureAuth(context);
+                const { user } = ensureAuth(context);
 
                 return pipe(
                     pubsub.subscribe("eventUpdated"),
                     filter(
-                        ({ calendarId: eventCalendarId }) =>
-                            !calendarId || eventCalendarId === calendarId,
+                        (payload) =>
+                            payload.userId === user.id &&
+                            (!calendarId || payload.calendarId === calendarId),
                     ),
                 ) as AsyncIterable<{ eventUpdated: any }>;
             },
@@ -872,13 +798,14 @@ export const resolvers: GqlResolvers = {
 
         eventDeleted: {
             subscribe: (_, { calendarId }, context: GraphQLContext) => {
-                ensureAuth(context);
+                const { user } = ensureAuth(context);
 
                 return pipe(
                     pubsub.subscribe("eventDeleted"),
                     filter(
-                        ({ calendarId: eventCalendarId }) =>
-                            !calendarId || eventCalendarId === calendarId,
+                        (payload) =>
+                            payload.userId === user.id &&
+                            (!calendarId || payload.calendarId === calendarId),
                     ),
                 ) as AsyncIterable<{ eventDeleted: any }>;
             },
@@ -887,201 +814,38 @@ export const resolvers: GqlResolvers = {
 
         routineCreated: {
             subscribe: (_, __, context: GraphQLContext) => {
-                ensureUser(context);
-                return pubsub.subscribe("routineCreated") as AsyncIterable<{
-                    routine: any;
-                }>;
+                const { user } = ensureUser(context);
+                return pipe(
+                    pubsub.subscribe("routineCreated"),
+                    filter((payload) => payload.userId === user.id),
+                ) as AsyncIterable<{ routine: any }>;
             },
             resolve: (payload: { routine: any }) => payload.routine,
         },
 
         routineUpdated: {
             subscribe: (_, __, context: GraphQLContext) => {
-                ensureUser(context);
-                return pubsub.subscribe("routineUpdated") as AsyncIterable<{
-                    routine: any;
-                }>;
+                const { user } = ensureUser(context);
+                return pipe(
+                    pubsub.subscribe("routineUpdated"),
+                    filter((payload) => payload.userId === user.id),
+                ) as AsyncIterable<{ routine: any }>;
             },
             resolve: (payload: { routine: any }) => payload.routine,
         },
 
         routineDeleted: {
             subscribe: (_, __, context: GraphQLContext) => {
-                ensureUser(context);
-                return pubsub.subscribe("routineDeleted") as AsyncIterable<{
-                    payload: any;
-                }>;
+                const { user } = ensureUser(context);
+                return pipe(
+                    pubsub.subscribe("routineDeleted"),
+                    filter((payload) => payload.userId === user.id),
+                ) as AsyncIterable<{ payload: any }>;
             },
             resolve: (payload: { payload: any }) => payload.payload,
         },
     },
 };
-
-// Map a Google Calendar event to a GQL CalendarEvent object
-function mapGCalEvent(event: any, calendarId: string) {
-    return {
-        id: event.id || "",
-        calendarId,
-        summary: event.summary || "",
-        description: event.description,
-        location: event.location,
-        start: {
-            dateTime: event.start?.dateTime
-                ? new Date(event.start.dateTime)
-                : undefined,
-            date: event.start?.date,
-            timeZone: event.start?.timeZone,
-        },
-        end: {
-            dateTime: event.end?.dateTime
-                ? new Date(event.end.dateTime)
-                : undefined,
-            date: event.end?.date,
-            timeZone: event.end?.timeZone,
-        },
-        status: mapEventStatusEnum(event.status),
-        visibility: mapEventVisibilityEnum(event.visibility),
-        creator: event.creator
-            ? {
-                  email: event.creator.email || "",
-                  displayName: event.creator.displayName,
-                  self: event.creator.self,
-              }
-            : undefined,
-        organizer: event.organizer
-            ? {
-                  email: event.organizer.email || "",
-                  displayName: event.organizer.displayName,
-                  self: event.organizer.self,
-              }
-            : undefined,
-        attendees: event.attendees?.map((attendee: any) => ({
-            email: attendee.email || "",
-            displayName: attendee.displayName,
-            self: attendee.self,
-            responseStatus: mapAttendeeResponseEnum(attendee.responseStatus),
-        })),
-        htmlLink: event.htmlLink || "",
-        created: new Date(event.created || Date.now()),
-        updated: new Date(event.updated || Date.now()),
-    };
-}
-
-function mapEventStatusEnum(status?: string | null): GqlEventStatus {
-    switch (status) {
-        case "confirmed":
-            return GqlEventStatus.Confirmed;
-        case "tentative":
-            return GqlEventStatus.Tentative;
-        case "cancelled":
-            return GqlEventStatus.Cancelled;
-        default:
-            return GqlEventStatus.Confirmed;
-    }
-}
-
-function mapEventVisibilityEnum(
-    visibility?: string | null,
-): GqlEventVisibility {
-    switch (visibility) {
-        case "default":
-            return GqlEventVisibility.Default;
-        case "public":
-            return GqlEventVisibility.Public;
-        case "private":
-            return GqlEventVisibility.Private;
-        case "confidential":
-            return GqlEventVisibility.Confidential;
-        default:
-            return GqlEventVisibility.Default;
-    }
-}
-
-function mapAttendeeResponseEnum(
-    response?: string | null,
-): GqlAttendeeResponseStatus {
-    switch (response) {
-        case "needsAction":
-            return GqlAttendeeResponseStatus.NeedsAction;
-        case "declined":
-            return GqlAttendeeResponseStatus.Declined;
-        case "tentative":
-            return GqlAttendeeResponseStatus.Tentative;
-        case "accepted":
-            return GqlAttendeeResponseStatus.Accepted;
-        default:
-            return GqlAttendeeResponseStatus.NeedsAction;
-    }
-}
-
-// Helper functions to map Google Calendar API values to GraphQL enum values
-function mapAccessRole(role?: string | null) {
-    switch (role) {
-        case "none":
-            return "NONE";
-        case "freeBusyReader":
-            return "FREE_BUSY_READER";
-        case "reader":
-            return "READER";
-        case "writer":
-            return "WRITER";
-        case "owner":
-            return "OWNER";
-        default:
-            return "NONE";
-    }
-}
-
-function mapEventStatus(
-    status?: string | null,
-): "CONFIRMED" | "TENTATIVE" | "CANCELLED" {
-    switch (status) {
-        case "confirmed":
-            return "CONFIRMED";
-        case "tentative":
-            return "TENTATIVE";
-        case "cancelled":
-            return "CANCELLED";
-        default:
-            return "CONFIRMED";
-    }
-}
-
-function mapEventVisibility(
-    visibility?: string | null,
-): "DEFAULT" | "PUBLIC" | "PRIVATE" | "CONFIDENTIAL" {
-    switch (visibility) {
-        case "default":
-            return "DEFAULT";
-        case "public":
-            return "PUBLIC";
-        case "private":
-            return "PRIVATE";
-        case "confidential":
-            return "CONFIDENTIAL";
-        default:
-            return "DEFAULT";
-    }
-}
-
-function mapAttendeeResponse(
-    response?: string | null,
-): "NEEDS_ACTION" | "DECLINED" | "TENTATIVE" | "ACCEPTED" {
-    switch (response) {
-        case "needsAction":
-            return "NEEDS_ACTION";
-        case "declined":
-            return "DECLINED";
-        case "tentative":
-            return "TENTATIVE";
-        case "accepted":
-            return "ACCEPTED";
-        default:
-            return "NEEDS_ACTION";
-    }
-}
-
-import type { Routine } from "@sunrise/models";
 
 function mapRoutine(routine: Routine) {
     return {

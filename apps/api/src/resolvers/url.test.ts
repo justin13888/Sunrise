@@ -5,7 +5,7 @@ import { URLScalar } from "./url";
 
 describe("URLScalar", () => {
     describe("serialize", () => {
-        it("should serialize string to string", () => {
+        it("should serialize a valid URL string as-is", () => {
             const url = "https://example.com";
             const result = URLScalar.serialize(url);
             expect(result).toBe(url);
@@ -17,27 +17,29 @@ describe("URLScalar", () => {
             expect(result).toBe("https://example.com/path");
         });
 
-        it("should serialize number to string", () => {
-            const result = URLScalar.serialize(123);
-            expect(result).toBe("123");
+        it("should throw for non-string values", () => {
+            expect(() => URLScalar.serialize(123)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.serialize(null)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.serialize(undefined)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.serialize({ url: "test" })).toThrow(
+                "value must be a URL string",
+            );
         });
 
-        it('should serialize null to string "null"', () => {
-            const result = URLScalar.serialize(null);
-            expect(result).toBe("null");
+        it("should throw for invalid URL strings", () => {
+            expect(() => URLScalar.serialize("not a url")).toThrow(
+                "is not a valid URL",
+            );
+            expect(() => URLScalar.serialize("")).toThrow("is not a valid URL");
         });
 
-        it('should serialize undefined to string "undefined"', () => {
-            const result = URLScalar.serialize(undefined);
-            expect(result).toBe("undefined");
-        });
-
-        it("should serialize object to string", () => {
-            const result = URLScalar.serialize({ url: "test" });
-            expect(result).toBe("[object Object]");
-        });
-
-        it("should handle various URL formats", () => {
+        it("should handle various valid URL formats", () => {
             const urls = [
                 "http://example.com",
                 "https://example.com",
@@ -57,33 +59,37 @@ describe("URLScalar", () => {
     });
 
     describe("parseValue", () => {
-        it("should parse string to string", () => {
+        it("should parse a valid URL string as-is", () => {
             const url = "https://example.com";
             const result = URLScalar.parseValue(url);
             expect(result).toBe(url);
         });
 
-        it("should parse number to string", () => {
-            const result = URLScalar.parseValue(123);
-            expect(result).toBe("123");
+        it("should throw for non-string values", () => {
+            expect(() => URLScalar.parseValue(123)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.parseValue(null)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.parseValue(undefined)).toThrow(
+                "value must be a URL string",
+            );
+            expect(() => URLScalar.parseValue({ url: "test" })).toThrow(
+                "value must be a URL string",
+            );
         });
 
-        it('should parse null to string "null"', () => {
-            const result = URLScalar.parseValue(null);
-            expect(result).toBe("null");
+        it("should throw for invalid URL strings", () => {
+            expect(() => URLScalar.parseValue("not a url")).toThrow(
+                "is not a valid URL",
+            );
+            expect(() => URLScalar.parseValue("")).toThrow(
+                "is not a valid URL",
+            );
         });
 
-        it('should parse undefined to string "undefined"', () => {
-            const result = URLScalar.parseValue(undefined);
-            expect(result).toBe("undefined");
-        });
-
-        it("should parse object to string", () => {
-            const result = URLScalar.parseValue({ url: "test" });
-            expect(result).toBe("[object Object]");
-        });
-
-        it("should handle various URL formats", () => {
+        it("should handle various valid URL formats", () => {
             const urls = [
                 "http://example.com",
                 "https://example.com/path",
@@ -99,12 +105,8 @@ describe("URLScalar", () => {
             });
         });
 
-        it("should handle empty string", () => {
-            const result = URLScalar.parseValue("");
-            expect(result).toBe("");
-        });
-
-        it("should handle URL with special characters", () => {
+        it("should accept URLs whose path contains spaces", () => {
+            // The WHATWG parser encodes spaces, so this remains parseable
             const url = "https://example.com/path with spaces";
             const result = URLScalar.parseValue(url);
             expect(result).toBe(url);
@@ -165,22 +167,22 @@ describe("URLScalar", () => {
             );
         });
 
-        it("should handle empty string literal", () => {
-            const ast = {
+        it("should throw for invalid URL string literals", () => {
+            const emptyAst = {
                 kind: Kind.STRING,
                 value: "",
             } as const;
-            const result = URLScalar.parseLiteral(ast as any, {});
-            expect(result).toBe("");
-        });
+            expect(() => URLScalar.parseLiteral(emptyAst as any, {})).toThrow(
+                "is not a valid URL",
+            );
 
-        it("should handle URL with special characters in literal", () => {
-            const ast = {
+            const invalidAst = {
                 kind: Kind.STRING,
-                value: "https://example.com/path?query=hello world",
+                value: "not a url",
             } as const;
-            const result = URLScalar.parseLiteral(ast as any, {});
-            expect(result).toBe("https://example.com/path?query=hello world");
+            expect(() => URLScalar.parseLiteral(invalidAst as any, {})).toThrow(
+                "is not a valid URL",
+            );
         });
     });
 
@@ -218,16 +220,16 @@ describe("URLScalar", () => {
             expect(result).toBe(url);
         });
 
-        it("should handle relative URLs", () => {
-            const url = "/relative/path";
-            const result = URLScalar.parseValue(url);
-            expect(result).toBe(url);
+        it("should reject relative URLs", () => {
+            expect(() => URLScalar.parseValue("/relative/path")).toThrow(
+                "is not a valid URL",
+            );
         });
 
-        it("should handle protocol-relative URLs", () => {
-            const url = "//example.com/path";
-            const result = URLScalar.parseValue(url);
-            expect(result).toBe(url);
+        it("should reject protocol-relative URLs", () => {
+            expect(() => URLScalar.parseValue("//example.com/path")).toThrow(
+                "is not a valid URL",
+            );
         });
 
         it("should handle data URLs", () => {

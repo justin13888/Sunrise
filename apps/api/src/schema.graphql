@@ -16,7 +16,7 @@ type Query {
         after: String
         orderBy: EventOrderBy = START_TIME
     ): EventConnection!
-    event(id: ID!): CalendarEvent
+    event(id: ID!, calendarId: ID): CalendarEvent
 
     # Auth operations
     authUrl: String!
@@ -35,7 +35,7 @@ type Mutation {
     # Event operations
     createEvent(input: CreateEventInput!): CalendarEvent!
     updateEvent(id: ID!, input: UpdateEventInput!): CalendarEvent!
-    deleteEvent(id: ID!): Boolean!
+    deleteEvent(id: ID!, calendarId: ID): Boolean!
 
     # Routine operations
     createRoutine(input: CreateRoutineInput!): Routine!
@@ -94,7 +94,7 @@ type CalendarEvent {
     attendees: [EventParticipant!]
     recurringEventId: ID
     originalStartTime: EventDateTime
-    htmlLink: URL!
+    htmlLink: URL
     created: DateTime!
     updated: DateTime!
 }
@@ -202,6 +202,7 @@ input CreateEventInput {
 }
 
 input UpdateEventInput {
+    calendarId: ID
     summary: String
     description: String
     location: String

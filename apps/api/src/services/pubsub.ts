@@ -7,12 +7,22 @@ import type {
 } from "../generated/resolvers-types";
 
 export type PubSubEvents = {
-    eventCreated: [{ calendarId: string; event: GqlCalendarEvent }];
-    eventUpdated: [{ calendarId: string; event: GqlCalendarEvent }];
-    eventDeleted: [{ calendarId: string; payload: GqlEventDeletedPayload }];
-    routineCreated: [{ routine: GqlRoutine }];
-    routineUpdated: [{ routine: GqlRoutine }];
-    routineDeleted: [{ payload: GqlRoutineDeletedPayload }];
+    eventCreated: [
+        { userId: string; calendarId: string; event: GqlCalendarEvent },
+    ];
+    eventUpdated: [
+        { userId: string; calendarId: string; event: GqlCalendarEvent },
+    ];
+    eventDeleted: [
+        {
+            userId: string;
+            calendarId: string;
+            payload: GqlEventDeletedPayload;
+        },
+    ];
+    routineCreated: [{ userId: string; routine: GqlRoutine }];
+    routineUpdated: [{ userId: string; routine: GqlRoutine }];
+    routineDeleted: [{ userId: string; payload: GqlRoutineDeletedPayload }];
 };
 
 export const pubsub = createPubSub<PubSubEvents>();

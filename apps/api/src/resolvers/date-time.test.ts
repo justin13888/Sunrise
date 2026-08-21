@@ -32,6 +32,15 @@ describe("DateTimeScalar", () => {
             );
         });
 
+        it("should throw for invalid Date objects and non-parseable strings", () => {
+            expect(() => DateTimeScalar.serialize(new Date("invalid"))).toThrow(
+                "DateTime cannot serialize an invalid Date",
+            );
+            expect(() => DateTimeScalar.serialize("not-a-date")).toThrow(
+                "not a valid date-time",
+            );
+        });
+
         it("should handle different Date formats", () => {
             const dates = [
                 new Date("2025-01-01"),
@@ -85,10 +94,13 @@ describe("DateTimeScalar", () => {
             );
         });
 
-        it("should create Date even for invalid date strings", () => {
-            // Note: new Date('invalid') creates Invalid Date but doesn't throw
-            const result = DateTimeScalar.parseValue("invalid");
-            expect(result).toBeInstanceOf(Date);
+        it("should throw for non-parseable date strings", () => {
+            expect(() => DateTimeScalar.parseValue("invalid")).toThrow(
+                "not a valid date-time",
+            );
+            expect(() => DateTimeScalar.parseValue("")).toThrow(
+                "not a valid date-time",
+            );
         });
     });
 
@@ -146,13 +158,22 @@ describe("DateTimeScalar", () => {
             ).toThrow("Value must be an ISO string literal");
         });
 
-        it("should handle empty string literal", () => {
-            const ast = {
+        it("should throw for non-parseable string literals", () => {
+            const emptyAst = {
                 kind: Kind.STRING,
                 value: "",
             } as const;
-            const result = DateTimeScalar.parseLiteral(ast as any, {});
-            expect(result).toBeInstanceOf(Date);
+            expect(() =>
+                DateTimeScalar.parseLiteral(emptyAst as any, {}),
+            ).toThrow("not a valid date-time");
+
+            const invalidAst = {
+                kind: Kind.STRING,
+                value: "not-a-date",
+            } as const;
+            expect(() =>
+                DateTimeScalar.parseLiteral(invalidAst as any, {}),
+            ).toThrow("not a valid date-time");
         });
     });
 

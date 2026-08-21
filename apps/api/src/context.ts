@@ -7,12 +7,19 @@ export interface GraphQLContext {
     user?: User;
     refreshToken?: string;
     calendarService: GoogleCalendarService;
-    req: Request;
+    req?: Request;
 }
 
-export async function createContext(req: Request): Promise<GraphQLContext> {
-    const authHeader = req.headers.get("authorization");
-
+/**
+ * Build a GraphQL context from an Authorization header value.
+ *
+ * Used by both the HTTP transport (header taken from the request) and the
+ * WebSocket transport (header taken from graphql-ws connectionParams).
+ */
+export async function createContextFromAuthHeader(
+    authHeader?: string | null,
+    req?: Request,
+): Promise<GraphQLContext> {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -62,4 +69,8 @@ export async function createContext(req: Request): Promise<GraphQLContext> {
         calendarService,
         req,
     };
+}
+
+export async function createContext(req: Request): Promise<GraphQLContext> {
+    return createContextFromAuthHeader(req.headers.get("authorization"), req);
 }
