@@ -10,6 +10,7 @@
 
 use crate::capture::{now_ts, parse_line, preview_line, unresolved_note};
 use crate::command::parse_command;
+use crate::edit::parse_edit;
 use crate::keymap::{Action, Mode};
 use crate::view::{Prompt, StreamPane, View, ViewState};
 use crate::{apply_command, AppEffect};
@@ -117,7 +118,30 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
     // to accidentally quit the app; every other key dismisses and then does
     // its normal job.
     if state.show_help && !matches!(action, Action::ToggleHelp) {
+        // Movement scrolls the overlay instead of dismissing it: the key list
+        // is taller than a minimum-size terminal, so an overlay that could not
+        // be scrolled would document only its first screenful.
+        //
+        // `HELP_ROWS` is a generous upper bound rather than the real content
+        // height, which only the renderer knows. Over-scrolling shows a short
+        // last page; the renderer clamps what it actually draws.
+        const HELP_ROWS: usize = 128;
+        let half = isize::try_from(state.half_page_rows()).unwrap_or(1);
+        let step = match action {
+            Action::Next => Some(1),
+            Action::Prev => Some(-1),
+            Action::PageDown | Action::HalfPageDown => Some(half),
+            Action::PageUp | Action::HalfPageUp => Some(-half),
+            Action::GotoTop => Some(isize::MIN / 2),
+            Action::GotoBottom => Some(isize::MAX / 2),
+            _ => None,
+        };
+        if let Some(delta) = step {
+            state.scroll_help(delta, HELP_ROWS);
+            return Outcome::None;
+        }
         state.show_help = false;
+        state.help_scroll = 0;
         if matches!(action, Action::Escape | Action::Quit) {
             return Outcome::None;
         }
@@ -280,6 +304,20 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             },
             None => no_selection(state),
         },
+        Action::Annotate => {
+            let ids = state.operand_ids();
+            if ids.is_empty() {
+                return no_selection(state);
+            }
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::Annotate(ids));
+            state.input.clear();
+            state.status =
+                "annotate: !1-5 %low|med|high ~30m ^when due:when @ctx @-ctx #stream · - clears"
+                    .into();
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
         Action::Defer => {
             let ids = state.operand_ids();
             if ids.is_empty() {
@@ -354,6 +392,7 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::ToggleHelp => {
             state.show_help = !state.show_help;
+            state.help_scroll = 0;
             Outcome::None
         }
         Action::BeginSearch => {
@@ -695,6 +734,10 @@ fn no_selection(state: &mut ViewState) -> Outcome {
 /// per keystroke — the parser is a single pass over a short line and reads no
 /// I/O; the stream list it resolves against is already in memory.
 fn refresh_capture_preview(state: &mut ViewState, now_ms: u64) {
+    if let Some(Prompt::Annotate(_)) = state.prompt.as_ref() {
+        refresh_annotate_preview(state, now_ms);
+        return;
+    }
     if state.prompt != Some(Prompt::Capture) {
         state.capture_preview = None;
         return;
@@ -711,6 +754,90 @@ fn refresh_capture_preview(state: &mut ViewState, now_ms: u64) {
         line.push_str(&note);
     }
     state.capture_preview = Some(line);
+}
+
+/// Re-describe the annotate buffer under the input line.
+///
+/// An annotate line changes *existing* data, often several tasks at once, so
+/// the stakes of a mistyped token are higher than in capture: the preview says
+/// what will change before Enter commits it.
+fn refresh_annotate_preview(state: &mut ViewState, now_ms: u64) {
+    let text = state.input.trimmed();
+    if text.is_empty() {
+        state.capture_preview = None;
+        return;
+    }
+    let edit = parse_edit(text, &state.streams, &state.contexts, now_ms, &state.tz);
+    let mut line = edit.preview(&state.streams, &state.contexts, &state.tz);
+    if let Some(note) = edit.error_note() {
+        line.push_str("  ");
+        line.push_str(&note);
+    }
+    state.capture_preview = Some(line);
+}
+
+/// Turn an annotate line into the commands it means for `ids`.
+///
+/// A stream move is `PromoteToStream` and everything else is one `UpdateTask`
+/// per task; both can appear in the same line, and the move goes first so the
+/// patch lands on the task where it ends up.
+fn annotate_outcome(state: &mut ViewState, ids: &[EntityRef], text: &str, now_ms: u64) -> Outcome {
+    let edit = parse_edit(text, &state.streams, &state.contexts, now_ms, &state.tz);
+    if edit.is_empty() {
+        // Nothing applied — keep the prompt open rather than reporting a
+        // successful edit that changed nothing.
+        state.prompt = Some(Prompt::Annotate(ids.to_vec()));
+        state.status = edit
+            .error_note()
+            .unwrap_or_else(|| "annotate: nothing to change".into());
+        return Outcome::None;
+    }
+    let label = state.operand_label();
+    let mut cmds: Vec<Command> = Vec::new();
+    for id in ids {
+        // A task that has scrolled out of the list still has a patch to
+        // receive — but the context arithmetic needs its current set, so a
+        // task we cannot see is patched without touching contexts.
+        let task = state
+            .tasks
+            .iter()
+            .find(|t| t.id == *id)
+            .or(state.focused_task.as_ref().filter(|t| t.id == *id));
+        if let Some(stream) = edit.stream() {
+            cmds.push(Command::PromoteToStream { id: *id, stream });
+        }
+        let current: Vec<EntityRef> = task
+            .map(|t| t.contexts.iter().copied().collect())
+            .unwrap_or_default();
+        let patch = edit.patch_for(&current);
+        if !patch_is_empty(&patch) {
+            cmds.push(Command::UpdateTask { id: *id, patch });
+        }
+    }
+    state.reset_to_normal();
+    finish_operator(state, "annotated", &label);
+    if let Some(note) = edit.error_note() {
+        state.status = note;
+    }
+    Outcome::submit_all(cmds)
+}
+
+/// Whether a patch would change nothing (a move-only annotate line).
+fn patch_is_empty(p: &TaskPatch) -> bool {
+    p.title.is_none()
+        && p.body.is_none()
+        && p.stream_id.is_none()
+        && p.contexts.is_none()
+        && p.state.is_none()
+        && p.priority.is_none()
+        && p.energy.is_none()
+        && p.estimated_duration_s.is_none()
+        && p.scheduled_at.is_none()
+        && p.due_at.is_none()
+        && p.scheduling_constraints.is_none()
+        && p.blocked_by.is_none()
+        && p.assignee.is_none()
+        && p.archived.is_none()
 }
 
 /// Turn a capture line into a `CreateTask`, reporting anything the parser
@@ -929,6 +1056,13 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                 name: text,
                 ..Default::default()
             })))
+        }
+        Some(Prompt::Annotate(ids)) => {
+            if text.is_empty() {
+                state.reset_to_normal();
+                return Outcome::None;
+            }
+            annotate_outcome(state, &ids, &text, now_ms)
         }
         Some(Prompt::Search) => {
             // Keep `input` — it is both the live query and the text shown in
@@ -1298,6 +1432,94 @@ manual"
         s.tasks.insert(0, gone);
         s.after_tasks_loaded();
         assert_eq!(s.marked_ids().len(), 1);
+    }
+
+    #[test]
+    fn movement_scrolls_the_help_overlay_instead_of_dismissing_it() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('?'));
+        assert!(s.show_help);
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert!(s.show_help, "j must scroll, not dismiss");
+        assert_eq!(s.help_scroll, 1);
+        let _ = press(&mut s, KeyCode::Char('k'));
+        assert_eq!(s.help_scroll, 0);
+        // Anything that is not movement still dismisses, as before.
+        let _ = press(&mut s, KeyCode::Char('c'));
+        assert!(!s.show_help);
+        assert_eq!(s.help_scroll, 0);
+    }
+
+    #[test]
+    fn annotate_reaches_the_facets_no_other_key_could_touch() {
+        let mut s = inbox_state();
+        s.contexts = vec![crate::view::fixtures::context_row(1, "deep-work")];
+        let id = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char('A'));
+        assert_eq!(s.mode, Mode::Insert);
+        type_text(&mut s, "!1 %high ~45m @deep-work");
+        assert!(s.capture_preview.as_deref().unwrap().contains("!1"));
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id: got, patch } => {
+                    assert_eq!(got, id);
+                    assert_eq!(patch.priority, Some(Some(1)));
+                    assert_eq!(patch.energy, Some(Some(sunrise_domain::Energy::High)));
+                    assert_eq!(patch.estimated_duration_s, Some(Some(45 * 60)));
+                    assert_eq!(patch.contexts.as_deref().map(<[_]>::len), Some(1));
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn annotate_applies_to_the_whole_marked_set_in_one_prompt() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        let _ = press(&mut s, KeyCode::Char(' '));
+        let _ = press(&mut s, KeyCode::Char('A'));
+        type_text(&mut s, "!3");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::SubmitMany(cmds) => {
+                assert_eq!(cmds.len(), 2);
+                assert!(cmds.iter().all(|c| matches!(
+                    c,
+                    Command::UpdateTask { patch, .. } if patch.priority == Some(Some(3))
+                )));
+            }
+            other => panic!("expected SubmitMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn annotate_can_both_move_and_patch_in_one_line() {
+        let mut s = inbox_state();
+        s.streams = vec![crate::view::fixtures::stream_row(9, "Travel", 0)];
+        let _ = press(&mut s, KeyCode::Char('A'));
+        type_text(&mut s, "#travel !2");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::SubmitMany(cmds) => {
+                // The move goes first, so the patch lands where the task ends up.
+                assert!(matches!(cmds[0], Command::PromoteToStream { .. }));
+                assert!(matches!(cmds[1], Command::UpdateTask { .. }));
+            }
+            other => panic!("expected SubmitMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_annotate_line_that_changes_nothing_keeps_the_prompt_open() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('A'));
+        type_text(&mut s, "tomorow");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert_eq!(s.mode, Mode::Insert);
+        assert!(matches!(s.prompt, Some(Prompt::Annotate(_))));
+        assert!(s.status.contains("not an edit token"));
     }
 
     #[test]

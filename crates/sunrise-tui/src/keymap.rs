@@ -102,6 +102,9 @@ pub enum Action {
     EditTitle,
     /// Edit the selected task's note body in `$EDITOR` (`E`).
     EditBody,
+    /// Annotate the selected task(s) — priority, energy, estimate, due date,
+    /// contexts, stream — with the capture sigils (`A`).
+    Annotate,
     /// Schedule the selected task (`s`), prompting for a when-expression.
     Schedule,
     /// Enter visual (multi-select) mode (`V`).
@@ -217,6 +220,7 @@ impl Action {
             Self::Capture => "capture",
             Self::EditTitle => "edit_title",
             Self::EditBody => "edit_body",
+            Self::Annotate => "annotate",
             Self::Schedule => "schedule",
             Self::VisualMode => "visual",
             Self::MarkToggle => "mark_toggle",
@@ -622,6 +626,13 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::EditBody,
         Some(("E", "edit body in $EDITOR")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('A'),
+        Scope::Any,
+        Action::Annotate,
+        Some(("A", "annotate facets")),
     ),
     b(
         Mode::Normal,
@@ -1148,6 +1159,13 @@ pub static BINDINGS: &[Binding] = &[
     ),
     b(
         Mode::Visual,
+        KeyCode::Char('A'),
+        Scope::Any,
+        Action::Annotate,
+        Some(("A", "annotate the selection")),
+    ),
+    b(
+        Mode::Visual,
         KeyCode::Char('d'),
         Scope::Any,
         Action::Defer,
@@ -1216,6 +1234,13 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::Schedule,
         Some(("s", "schedule (prompts)")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('A'),
+        Scope::Any,
+        Action::Annotate,
+        Some(("A", "annotate this task")),
     ),
     b(
         Mode::Triage,
@@ -2273,6 +2298,29 @@ help    = \"#\"
             assert_eq!(
                 map.dispatch(KeyCode::Char('D'), mods, Mode::Normal, true, View::Today),
                 Some(Action::Delete)
+            );
+        }
+    }
+
+    #[test]
+    fn help_text_fits_the_two_column_overlay() {
+        // The overlay falls back to two columns at the 80x24 minimum, which
+        // leaves 25 characters for a description after the padded key column.
+        // A longer one is silently clipped, so the row documents nothing —
+        // exactly the failure this table exists to prevent.
+        const KEYS_WIDTH: usize = 11;
+        const DESC_WIDTH: usize = 25;
+        for binding in BINDINGS {
+            let Some((keys, desc)) = binding.help else {
+                continue;
+            };
+            assert!(
+                keys.chars().count() <= KEYS_WIDTH,
+                "key label {keys:?} is wider than the {KEYS_WIDTH}-column gutter"
+            );
+            assert!(
+                desc.chars().count() <= DESC_WIDTH,
+                "help text {desc:?} is wider than the {DESC_WIDTH}-column description"
             );
         }
     }

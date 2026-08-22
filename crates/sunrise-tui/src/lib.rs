@@ -15,6 +15,9 @@
 //!   ([`capture`]) — `#stream @context ^when !priority ~duration`.
 //! - Visual (multi-select) and Inbox triage modes, both driven by the same
 //!   reducer, so bulk operations are one testable command list.
+//! - An **annotate** prompt ([`edit`]) that reaches every remaining
+//!   `TaskPatch` facet — priority, energy, estimate, due date, contexts —
+//!   with the capture sigils the user already knows, in bulk.
 //! - A real single-line editor behind every prompt ([`input::InputLine`]):
 //!   caret motions, word motions, the readline chords, and bracketed paste.
 //! - User key remapping from `~/.config/sunrise/keys.toml` ([`keymap::Keymap`]).
@@ -47,6 +50,7 @@
 
 pub mod capture;
 pub mod command;
+pub mod edit;
 pub mod editor;
 #[cfg(feature = "images")]
 pub mod images;
@@ -59,6 +63,7 @@ pub mod view;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd, FocusCmd};
+pub use edit::{parse_edit, EditError, TaskEdit};
 pub use editor::{edit_bytes, resolve_editor, EditorExit};
 pub use input::InputLine;
 pub use keymap::{

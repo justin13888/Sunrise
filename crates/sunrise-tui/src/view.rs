@@ -136,6 +136,10 @@ pub enum Prompt {
     CreateStream,
     /// Free-text search query (`/`).
     Search,
+    /// Annotate one or more tasks with the edit grammar (`A`) — see
+    /// [`crate::edit`]. Carries a list so a marked or visual set is one
+    /// prompt, not one per task.
+    Annotate(Vec<EntityRef>),
 }
 
 /// State for the modal move-to-stream picker (`m`).
@@ -557,6 +561,10 @@ pub struct ViewState {
     pub picker: Option<StreamPicker>,
     /// Whether the `?` help overlay is visible.
     pub show_help: bool,
+    /// First help row shown, so the overlay can scroll. The Normal-mode
+    /// section alone is taller than a minimum-size terminal, and an overlay
+    /// that silently clips half the keys documents nothing.
+    pub help_scroll: usize,
     /// Paired devices listed by `:devices`, shown as an overlay. `None` hides
     /// it; dismissed by the next keypress like the help overlay.
     pub devices: Option<Vec<DeviceRow>>,
@@ -621,6 +629,7 @@ impl Default for ViewState {
             prompt: None,
             picker: None,
             show_help: false,
+            help_scroll: 0,
             devices: None,
             pending_g: false,
             visual_anchor: None,
@@ -689,6 +698,14 @@ impl ViewState {
     /// Move the stream selection up by one, wrapping at the start.
     pub fn stream_prev(&mut self) {
         self.selected_stream = wrap_prev(self.streams.len(), self.selected_stream);
+    }
+
+    /// Scroll the help overlay by `delta` rows, clamped to `max_scroll`.
+    pub fn scroll_help(&mut self, delta: isize, max_scroll: usize) {
+        let want = isize::try_from(self.help_scroll)
+            .unwrap_or(0)
+            .saturating_add(delta);
+        self.help_scroll = usize::try_from(want.max(0)).unwrap_or(0).min(max_scroll);
     }
 
     /// Apply selection bookkeeping after `routines` has changed.

@@ -130,7 +130,7 @@ fn render_chrome(
         render_focus_stats(f, area, state, stats);
     }
     if state.show_help {
-        render_help(f, area, &state.keymap, state.mode);
+        render_help(f, area, state);
     }
 }
 
@@ -1117,33 +1117,77 @@ fn render_triage(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
 /// Falls back to two columns when the single-column form would not fit; the
 /// split is by line rather than by section, because the Normal-mode section
 /// alone is taller than a minimum-size terminal.
-fn render_help(f: &mut Frame<'_>, area: Rect, keymap: &Keymap, mode: Mode) {
-    let lines = help_lines(keymap, mode);
+fn render_help(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let lines = help_lines(&state.keymap, state.mode);
+    // Reserve the borders and one footer row; whatever is left is the window.
+    let rows = usize::from(area.height).saturating_sub(3).max(1);
+    let two_col = lines.len() > rows;
+    // Two columns double the rows a page holds, which is what keeps the
+    // common case (Normal mode on an 80x24 terminal) a single page.
+    let per_page = if two_col { rows * 2 } else { rows };
+    let max_scroll = lines.len().saturating_sub(per_page);
+    let start = state.help_scroll.min(max_scroll);
+    let window: Vec<Line<'static>> = lines.iter().skip(start).take(per_page).cloned().collect();
+
+    let footer = if max_scroll == 0 {
+        "? or Esc to close".to_string()
+    } else {
+        format!(
+            "{}-{} of {} · j/k scroll · ? or Esc to close",
+            start + 1,
+            (start + window.len()).min(lines.len()),
+            lines.len()
+        )
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Keys — ? or Esc to close")
+        .title("Keys")
         .border_style(Style::default().fg(Color::Yellow));
 
-    if lines.len() + 2 <= area.height as usize {
-        let rect = centered(area, 72, u16::try_from(lines.len() + 2).unwrap_or(u16::MAX));
-        f.render_widget(Clear, rect);
-        f.render_widget(Paragraph::new(lines).block(block), rect);
-        return;
-    }
-
-    let cut = lines.len().div_ceil(2);
-    let (left, right) = lines.split_at(cut);
-    let rows = left.len().max(right.len());
-    let rect = centered(area, 78, u16::try_from(rows + 2).unwrap_or(u16::MAX));
+    let body_rows = if two_col {
+        window.len().div_ceil(2)
+    } else {
+        window.len()
+    };
+    let width = if two_col { 78 } else { 72 };
+    let rect = centered(
+        area,
+        width,
+        u16::try_from(body_rows + 3).unwrap_or(u16::MAX),
+    );
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
-    f.render_widget(Paragraph::new(left.to_vec()), cols[0]);
-    f.render_widget(Paragraph::new(right.to_vec()), cols[1]);
+    if two_col {
+        let cut = window.len().div_ceil(2);
+        let (left, right) = window.split_at(cut);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(split[0]);
+        f.render_widget(Paragraph::new(left.to_vec()), cols[0]);
+        f.render_widget(Paragraph::new(right.to_vec()), cols[1]);
+    } else {
+        f.render_widget(Paragraph::new(window), split[0]);
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            footer,
+            Style::default().fg(Color::Gray),
+        ))),
+        split[1],
+    );
+}
+
+/// Total help rows for `mode` — what the overlay can scroll through.
+#[must_use]
+pub fn help_row_count(keymap: &Keymap, mode: Mode) -> usize {
+    help_lines(keymap, mode).len()
 }
 
 /// Which keymap sections the overlay shows in `mode`: Normal always (those keys
@@ -1621,18 +1665,24 @@ mod tests {
             state.mode = mode;
             let wanted = crate::render::help_modes(mode);
             for (w, h) in [(100, 40), (MIN_WIDTH, MIN_HEIGHT)] {
-                let s = guarded_frame(w, h, &state);
+                // Scroll the overlay to the bottom a page at a time and union
+                // what each page showed: the list is taller than a minimum
+                // terminal, so "reachable" is the honest assertion, not
+                // "visible at once".
+                let mut seen = String::new();
+                let total = crate::render::help_row_count(&state.keymap, mode);
+                for step in 0..=total {
+                    state.help_scroll = step;
+                    seen.push_str(&guarded_frame(w, h, &state));
+                }
                 for (section, rows) in crate::help_sections() {
                     if !wanted.contains(&section) {
                         continue;
                     }
-                    assert!(
-                        s.contains(section),
-                        "{w}x{h} missing section {section}:\n{s}"
-                    );
+                    assert!(seen.contains(section), "{w}x{h} missing section {section}");
                     for (keys, desc) in rows {
-                        assert!(s.contains(&keys), "{w}x{h} missing keys {keys:?}:\n{s}");
-                        assert!(s.contains(desc), "{w}x{h} missing text {desc:?}:\n{s}");
+                        assert!(seen.contains(&keys), "{w}x{h} missing keys {keys:?}");
+                        assert!(seen.contains(desc), "{w}x{h} missing text {desc:?}");
                     }
                 }
             }
