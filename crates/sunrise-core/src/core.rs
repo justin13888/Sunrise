@@ -348,6 +348,49 @@ impl Core {
         Ok(())
     }
 
+    /// Parse a capture line into a [`sunrise_domain::TaskDraft`], resolving
+    /// `#stream` against this vault's streams.
+    ///
+    /// Clients could call [`sunrise_domain::capture::parse`] directly, but they
+    /// would each have to re-implement the same glue — fetch the stream list,
+    /// map it to `NamedRef`s, supply the clock. Doing it once here keeps the
+    /// clients thin and guarantees every surface resolves names identically,
+    /// which is the property `docs/08-features/inbox-and-capture.md` actually
+    /// asks for.
+    ///
+    /// `tz` is a parameter rather than config so the function stays pure with
+    /// respect to the host: the caller decides whether that is the system zone
+    /// or a fixed one, and tests can pin it.
+    ///
+    /// Contexts are not resolved yet — `@name` will report as
+    /// [`sunrise_domain::capture::Unresolved::UnknownContext`] — because
+    /// Context has no command path or query in the core, so there is nothing
+    /// to resolve against. When Context CRUD lands, pass the list here.
+    pub async fn capture(
+        &self,
+        input: &str,
+        tz: &jiff::tz::TimeZone,
+    ) -> Result<sunrise_domain::capture::Capture, CoreError> {
+        use sunrise_domain::capture::NamedRef;
+        let streams = match self.query(Query::StreamList).await? {
+            QueryResult::Streams(rows) => rows,
+            _ => Vec::new(),
+        };
+        let refs: Vec<NamedRef<'_>> = streams
+            .iter()
+            .filter(|s| !s.archived)
+            .map(|s| NamedRef {
+                id: s.id,
+                name: s.name.as_str(),
+            })
+            .collect();
+        let now = jiff::Timestamp::from_millisecond(
+            i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
+        )
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        Ok(sunrise_domain::capture::parse(input, now, tz, &refs, &[]))
+    }
+
     /// App identity string (`<semver>+<platform>`) for the sync `Hello`.
     pub(crate) fn app_string(&self) -> &str {
         &self.cfg.app
@@ -616,6 +659,56 @@ mod tests {
             count(&core)
         );
         core.shutdown().await;
+    }
+
+    /// `Core::capture` must resolve `#stream` against the vault's real streams,
+    /// which is the whole reason it exists rather than callers invoking the
+    /// domain parser directly.
+    #[tokio::test]
+    async fn capture_resolves_streams_from_the_vault() {
+        use sunrise_domain::capture::Unresolved;
+        use sunrise_domain::StreamDraft;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let created = core
+            .submit(Command::CreateStream(StreamDraft {
+                name: "travel".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let stream_id = created.entity;
+
+        let tz = jiff::tz::TimeZone::UTC;
+        let c = core
+            .capture("Renew passport #travel !2", &tz)
+            .await
+            .unwrap();
+        assert_eq!(c.draft.title, "Renew passport");
+        assert_eq!(c.draft.stream_id, Some(stream_id));
+        assert_eq!(c.draft.priority, Some(2));
+        assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
+
+        // The parsed draft must be directly submittable — the point of the API.
+        core.submit(Command::CreateTask(c.draft)).await.unwrap();
+
+        // An unknown stream is reported, not silently dropped.
+        let c2 = core.capture("Something #nope", &tz).await.unwrap();
+        assert_eq!(c2.draft.stream_id, None);
+        assert!(matches!(
+            c2.unresolved.as_slice(),
+            [Unresolved::UnknownStream(_)]
+        ));
+
+        // The synthetic Inbox row is resolvable by name too.
+        let c3 = core.capture("Triage me #inbox", &tz).await.unwrap();
+        assert_eq!(
+            c3.draft.stream_id,
+            Some(sunrise_domain::inbox::inbox_stream_ref())
+        );
+
+        core.close().await.unwrap();
     }
 
     /// Starting the timer twice must not spawn two tasks.
