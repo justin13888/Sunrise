@@ -1,10 +1,15 @@
 [package]
 name = "sunrise-desktop"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-authors.workspace = true
+# NOTE: these are literals, not `*.workspace = true`. This crate declares its
+# own `[workspace]` below to keep Tauri out of the main cargo build, which
+# makes it a workspace *root* — so there is no outer `[workspace.package]` for
+# it to inherit from, and the inherited form failed to parse at all. Keep these
+# in sync with the root Cargo.toml by hand.
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "AGPL-3.0-only"
+authors = ["Sunrise contributors"]
 publish = false
 
 # This crate is a Tauri shell that links sunrise-core. We don't include it
