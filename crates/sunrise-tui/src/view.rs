@@ -6,8 +6,9 @@ use jiff::Timestamp;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
-    break_after, materialization_horizon_days, Energy, FocusKind, FocusStats, Routine, Segment,
-    SessionLength, Task, TaskTemplate, UnblockCascade,
+    break_after, materialization_horizon_days, DailyReview, Energy, FocusKind, FocusStats,
+    ReviewSnapshot, Routine, Segment, SessionLength, Task, TaskTemplate, Trends, UnblockCascade,
+    WeeklyReview,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -81,8 +82,11 @@ pub enum View {
     Search,
     /// Focus mode: one-task fullscreen.
     Focus,
-    /// Routines: read-only listing of recurring templates.
+    /// Routines: recurring templates, with full CRUD.
     Routines,
+    /// Review: the weekly review flow, the daily glance, the trends and the
+    /// saved-snapshot history.
+    Review,
 }
 
 /// Which pane of the Browse view has keyboard focus.
@@ -173,6 +177,109 @@ pub enum Prompt {
     /// [`crate::edit`]. Carries a list so a marked or visual set is one
     /// prompt, not one per task.
     Annotate(Vec<EntityRef>),
+}
+
+/// Which panel of the Review view is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPane {
+    /// The five-step weekly review.
+    Weekly,
+    /// The 60-second daily glance.
+    Daily,
+    /// Twelve-week completed / deferred / created trends.
+    Trends,
+    /// Saved review snapshots, newest first.
+    History,
+}
+
+impl ReviewPane {
+    /// Next panel in Tab order.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Weekly => Self::Daily,
+            Self::Daily => Self::Trends,
+            Self::Trends => Self::History,
+            Self::History => Self::Weekly,
+        }
+    }
+
+    /// Tab label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Weekly => "Weekly",
+            Self::Daily => "Daily",
+            Self::Trends => "Trends",
+            Self::History => "History",
+        }
+    }
+}
+
+/// Everything the Review view reads.
+///
+/// Every field is a query result held verbatim: the review, the glance, the
+/// trend fold and the saved snapshots are all assembled by
+/// `sunrise_domain`, so nothing here recomputes a number the core already
+/// decided. That is what stops the screen and a snapshot saved from it
+/// disagreeing.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewState {
+    /// Which panel is showing.
+    pub pane: ReviewPane,
+    /// The assembled weekly review for [`Self::week_start_ms`].
+    pub weekly: Option<Box<WeeklyReview>>,
+    /// The daily glance.
+    pub daily: Option<Box<DailyReview>>,
+    /// The trend fold.
+    pub trends: Option<Box<Trends>>,
+    /// Saved snapshots, newest window first.
+    pub history: Vec<ReviewSnapshot>,
+    /// Which week is under review; `None` is the week containing "now".
+    /// Moved by `[` and `]`, which is the whole of "review last week".
+    pub week_start_ms: Option<u64>,
+    /// First visible row of the current panel.
+    pub scroll: usize,
+    /// Furthest [`Self::scroll`] may go: total panel rows less one screenful,
+    /// refreshed by the runtime from the real terminal height. Clamping to a
+    /// guess would either strand the last lines off-screen or let the panel
+    /// scroll into empty space.
+    pub max_scroll: usize,
+}
+
+impl Default for ReviewPane {
+    fn default() -> Self {
+        Self::Weekly
+    }
+}
+
+impl ReviewState {
+    /// Move to the previous or next week, keeping `None` meaning "this week"
+    /// until the user actually steps away from it.
+    pub fn shift_week(&mut self, weeks: i64) {
+        /// One civil week in milliseconds. The review's own window is the
+        /// authority on where a week starts; this only moves between them.
+        const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        let base = self
+            .week_start_ms
+            .or_else(|| self.weekly.as_ref().map(|w| w.window.start_ms));
+        let Some(base) = base else { return };
+        let shifted = i64::try_from(base)
+            .unwrap_or(0)
+            .saturating_add(weeks * WEEK_MS);
+        self.week_start_ms = Some(u64::try_from(shifted.max(0)).unwrap_or(0));
+        self.scroll = 0;
+    }
+
+    /// Scroll the current panel, clamped to what it actually rendered.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let want = isize::try_from(self.scroll)
+            .unwrap_or(0)
+            .saturating_add(delta);
+        self.scroll = usize::try_from(want.max(0))
+            .unwrap_or(0)
+            .min(self.max_scroll);
+    }
 }
 
 /// A row of the Browse sidebar, identified by kind so one prompt can serve
@@ -678,6 +785,9 @@ pub struct ViewState {
     /// Focus-session state: the running session, the planner queue, the
     /// folded stats. See [`FocusState`].
     pub focus: FocusState,
+    /// Review-view state: the weekly review, the glance, the trends, the
+    /// saved snapshots. See [`ReviewState`].
+    pub review: ReviewState,
     /// Visible rows in the focused list, refreshed once per frame by the
     /// binary from the real terminal size. Drives the page-jump keys; a
     /// default is kept so the reducer is usable with no terminal at all.
@@ -727,6 +837,7 @@ impl Default for ViewState {
             tz: jiff::tz::TimeZone::UTC,
             keymap: Keymap::default(),
             focus: FocusState::default(),
+            review: ReviewState::default(),
             viewport_rows: DEFAULT_VIEWPORT_ROWS,
             now_ms: 0,
         }
@@ -938,6 +1049,8 @@ impl ViewState {
             // The Focus view's list is the planner queue: `j`/`k`/`gg`/`G`
             // pick what to work on next without needing keys of their own.
             View::Focus => ActiveList::FocusPlan,
+            // The Review view is a page, not a list: the cursor keys scroll it.
+            View::Review => ActiveList::Review,
             _ => ActiveList::Tasks,
         }
     }
@@ -950,6 +1063,7 @@ impl ViewState {
             ActiveList::Contexts => {
                 self.selected_context = wrap_next(self.contexts.len(), self.selected_context);
             }
+            ActiveList::Review => self.review.scroll_by(1),
             ActiveList::Routines => {
                 self.selected_routine = wrap_next(self.routines.len(), self.selected_routine);
             }
@@ -968,6 +1082,7 @@ impl ViewState {
             ActiveList::Contexts => {
                 self.selected_context = wrap_prev(self.contexts.len(), self.selected_context);
             }
+            ActiveList::Review => self.review.scroll_by(-1),
             ActiveList::Routines => {
                 self.selected_routine = wrap_prev(self.routines.len(), self.selected_routine);
             }
@@ -981,11 +1096,19 @@ impl ViewState {
 
     /// Jump the focused list's cursor to its first row (`gg`).
     pub fn nav_first(&mut self) {
+        if matches!(self.active_list(), ActiveList::Review) {
+            self.review.scroll = 0;
+            return;
+        }
         self.nav_to(|_| 0);
     }
 
     /// Jump the focused list's cursor to its last row (`G`).
     pub fn nav_last(&mut self) {
+        if matches!(self.active_list(), ActiveList::Review) {
+            self.review.scroll_by(isize::MAX / 2);
+            return;
+        }
         self.nav_to(|len| len - 1);
     }
 
@@ -995,9 +1118,14 @@ impl ViewState {
     /// end of a long list would lose the user's place entirely, and unlike a
     /// single-step `j` there is no cheap way to tell it happened.
     pub fn nav_by(&mut self, delta: isize) {
+        if matches!(self.active_list(), ActiveList::Review) {
+            self.review.scroll_by(delta);
+            return;
+        }
         let current = match self.active_list() {
             ActiveList::Streams => self.selected_stream,
             ActiveList::Contexts => self.selected_context,
+            ActiveList::Review => Some(self.review.scroll),
             ActiveList::Routines => self.selected_routine,
             ActiveList::FocusPlan => self.focus.selected,
             ActiveList::Tasks => self.selected,
@@ -1039,6 +1167,8 @@ impl ViewState {
         let len = match list {
             ActiveList::Streams => self.streams.len(),
             ActiveList::Contexts => self.contexts.len(),
+            // Handled by `scroll_by`, which clamps to the rendered row count.
+            ActiveList::Review => 0,
             ActiveList::Routines => self.routines.len(),
             ActiveList::FocusPlan => self.focus.plan.len(),
             ActiveList::Tasks => self.tasks.len(),
@@ -1050,6 +1180,7 @@ impl ViewState {
         match list {
             ActiveList::Streams => self.selected_stream = idx,
             ActiveList::Contexts => self.selected_context = idx,
+            ActiveList::Review => {}
             ActiveList::Routines => self.selected_routine = idx,
             ActiveList::FocusPlan => {
                 self.focus.selected = idx;
@@ -1436,6 +1567,8 @@ impl ViewState {
 enum ActiveList {
     /// The Browse sidebar's context list.
     Contexts,
+    /// The Review view's scrolling panel.
+    Review,
     /// The task list (Today / Inbox / Search / Stream's right pane).
     Tasks,
     /// The Stream view's left pane.

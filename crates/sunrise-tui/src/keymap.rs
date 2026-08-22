@@ -111,6 +111,12 @@ pub enum Action {
     VisualMode,
     /// Toggle the mark on the row under the cursor (`Space`), then step down.
     MarkToggle,
+    /// Cycle the Review view's panel (Tab).
+    NextReviewPane,
+    /// Step the reviewed week back (`[`) or forward (`]`).
+    ShiftWeek(i8),
+    /// Save a review snapshot for the reviewed week (Enter in the Review view).
+    SaveReview,
     /// Drop every mark (`Ctrl-Space` / `:unmark`).
     MarkClear,
     /// Enter Inbox triage mode (`t`).
@@ -217,6 +223,7 @@ impl Action {
             Self::SwitchView(View::Search) => "view_search",
             Self::SwitchView(View::Focus) => "view_focus",
             Self::SwitchView(View::Routines) => "view_routines",
+            Self::SwitchView(View::Review) => "view_review",
             Self::Next => "next",
             Self::Prev => "prev",
             Self::GotoTop => "goto_top",
@@ -234,6 +241,10 @@ impl Action {
             Self::Schedule => "schedule",
             Self::VisualMode => "visual",
             Self::MarkToggle => "mark_toggle",
+            Self::NextReviewPane => "next_review_pane",
+            Self::ShiftWeek(n) if *n < 0 => "prev_week",
+            Self::ShiftWeek(_) => "next_week",
+            Self::SaveReview => "save_review",
             Self::MarkClear => "mark_clear",
             Self::Triage => "triage",
             Self::TriageKeep => "triage_keep",
@@ -410,7 +421,7 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Char('1'),
         Scope::Any,
         Action::SwitchView(View::Today),
-        Some(("1 - 6", "switch view")),
+        Some(("1 - 7", "switch view")),
     ),
     b(
         Mode::Normal,
@@ -446,6 +457,45 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::SwitchView(View::Routines),
         None,
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('7'),
+        Scope::Any,
+        Action::SwitchView(View::Review),
+        None,
+    ),
+    // ---- Review view ----
+    // Scoped rows must precede the general ones they shadow: `dispatch` takes
+    // the first match, so a `Scope::Any` Tab or Enter earlier in the table
+    // would make these unreachable.
+    b(
+        Mode::Normal,
+        KeyCode::Tab,
+        Scope::In(View::Review),
+        Action::NextReviewPane,
+        Some(("Tab", "weekly/daily/trends")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('['),
+        Scope::In(View::Review),
+        Action::ShiftWeek(-1),
+        Some(("[ / ]", "previous / next week")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char(']'),
+        Scope::In(View::Review),
+        Action::ShiftWeek(1),
+        None,
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Enter,
+        Scope::In(View::Review),
+        Action::SaveReview,
+        Some(("Enter", "save this review")),
     ),
     b(
         Mode::Normal,

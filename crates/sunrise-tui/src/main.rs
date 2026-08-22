@@ -760,12 +760,68 @@ async fn refresh(core: &Core, state: &mut ViewState) {
                 state.after_routines_loaded();
             }
         }
+        View::Review => refresh_review(core, state).await,
         View::Focus => {
             let id = state.focused_task.as_ref().map(|t| t.id);
             if let Some(id) = id {
                 if let Ok(QueryResult::Task(t)) = core.query(Query::EntityById(id)).await {
                     state.focused_task = Some(*t);
                 }
+            }
+        }
+    }
+}
+
+/// Load whichever Review panel is showing.
+///
+/// One panel, one query: the weekly review is an expensive fold over the whole
+/// op log, and running all four on every refresh would make the view cost four
+/// folds to show one of them. The trends panel piggybacks on the weekly fold
+/// when it is already loaded, since `WeeklyReview` carries the same `Trends`
+/// the standalone query returns.
+async fn refresh_review(core: &Core, state: &mut ViewState) {
+    /// Weeks of history the trend panel shows (the spec's "last 12 weeks").
+    const TREND_WEEKS: u32 = 12;
+    /// How far back the daily glance looks: yesterday evening to now.
+    const GLANCE_MS: u64 = 18 * 60 * 60 * 1000;
+    /// Saved reviews listed in History.
+    const HISTORY_LIMIT: u32 = 50;
+
+    let now_ms = core.now_ms();
+    match state.review.pane {
+        sunrise_tui::ReviewPane::Weekly => {
+            let q = Query::WeeklyReview {
+                week_start_ms: state.review.week_start_ms,
+                now_ms,
+            };
+            if let Ok(QueryResult::WeeklyReview(w)) = core.query(q).await {
+                state.review.weekly = Some(w);
+            }
+        }
+        sunrise_tui::ReviewPane::Daily => {
+            let q = Query::DailyReview {
+                since_ms: now_ms.saturating_sub(GLANCE_MS),
+                now_ms,
+            };
+            if let Ok(QueryResult::DailyReview(d)) = core.query(q).await {
+                state.review.daily = Some(d);
+            }
+        }
+        sunrise_tui::ReviewPane::Trends => {
+            let q = Query::StreamTrends {
+                weeks: TREND_WEEKS,
+                now_ms,
+            };
+            if let Ok(QueryResult::Trends(t)) = core.query(q).await {
+                state.review.trends = Some(t);
+            }
+        }
+        sunrise_tui::ReviewPane::History => {
+            let q = Query::ReviewHistory {
+                limit: HISTORY_LIMIT,
+            };
+            if let Ok(QueryResult::ReviewSnapshots(rows)) = core.query(q).await {
+                state.review.history = rows;
             }
         }
     }

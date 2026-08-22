@@ -2,7 +2,7 @@
 source: crates/sunrise-tui/src/render.rs
 expression: "frame_to_string(80, 10, &state)"
 ---
- 1:Today  2:Inbox  3:Stream  4:Search  5:Focus  6:Routines                      
+ 1:Today  2:Inbox  3:Stream  4:Search  5:Focus  6:Routines  7:Review            
 Sunrise — Today    (0 tasks)                                                    
 ────────────────────────────────────────────────────────────────────────────────
 ┌Tasks─────────────────────────────────────────────────────────────────────────┐

@@ -106,6 +106,7 @@ fn render_chrome(
             View::Routines => {
                 render_routines(f, chunks[1], &state.routines, state.selected_routine)
             }
+            View::Review => render_review(f, chunks[1], state),
         }
     }
     if let Some(text) = state.capture_preview.as_ref() {
@@ -180,6 +181,7 @@ fn render_tab_bar(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         make("Search", View::Search, '4'),
         make("Focus", View::Focus, '5'),
         make("Routines", View::Routines, '6'),
+        make("Review", View::Review, '7'),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -1053,6 +1055,366 @@ fn routine_line(r: &RoutineRow) -> String {
     format!("{}{paused} — {} · next {next}{streak}", r.title, r.rrule)
 }
 
+/// The Review view: the five-step weekly review, the daily glance, the trend
+/// fold, and the saved-snapshot history — one panel at a time.
+///
+/// `docs/08-features/reviews-and-stats.md` calls periodic review "the most
+/// important habit Sunrise wants to enable". The core assembles all of it
+/// (`WeeklyReview`, `DailyReview`, `Trends`, `ReviewHistory`) and no client
+/// showed a single line of it. Everything below is projection only: the counts
+/// are the ones the fold produced, so a snapshot saved from this screen can
+/// never disagree with what the screen said.
+/// How many rows the Review panel currently holds.
+///
+/// Exposed so the reducer can clamp scrolling to real content without being
+/// able to render: the panels are assembled from query results, so their
+/// height is a pure function of state.
+#[must_use]
+pub fn review_rows(state: &ViewState) -> usize {
+    match state.review.pane {
+        crate::ReviewPane::Weekly => weekly_lines(state).len(),
+        crate::ReviewPane::Daily => daily_lines(state).len(),
+        crate::ReviewPane::Trends => trend_lines(state).len(),
+        crate::ReviewPane::History => history_lines(state).len(),
+    }
+}
+
+/// Draw the Review view: one panel at a time, with its own tab bar.
+pub fn render_review(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    render_review_tabs(f, rows[0], state);
+
+    let lines = match state.review.pane {
+        crate::ReviewPane::Weekly => weekly_lines(state),
+        crate::ReviewPane::Daily => daily_lines(state),
+        crate::ReviewPane::Trends => trend_lines(state),
+        crate::ReviewPane::History => history_lines(state),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(review_title(state));
+    let inner_rows = usize::from(block.inner(rows[1]).height);
+    let start = state.review.scroll.min(lines.len().saturating_sub(1));
+    let window: Vec<Line<'static>> = lines.iter().skip(start).take(inner_rows).cloned().collect();
+    f.render_widget(Paragraph::new(window).block(block), rows[1]);
+
+    let hint = match state.review.pane {
+        crate::ReviewPane::Weekly => {
+            " Tab panel · [ ] week · Enter save snapshot · :export trends csv"
+        }
+        crate::ReviewPane::Daily => " Tab panel · the 60-second glance",
+        crate::ReviewPane::Trends => " Tab panel · :export trends csv",
+        crate::ReviewPane::History => " Tab panel · saved snapshots, newest first",
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::Gray),
+        ))),
+        rows[2],
+    );
+}
+
+/// The Review view's own panel bar.
+fn render_review_tabs(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let mut spans = Vec::new();
+    for pane in [
+        crate::ReviewPane::Weekly,
+        crate::ReviewPane::Daily,
+        crate::ReviewPane::Trends,
+        crate::ReviewPane::History,
+    ] {
+        let style = if pane == state.review.pane {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(format!(" {} ", pane.label()), style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Panel title, naming the window under review so `[` and `]` are legible.
+fn review_title(state: &ViewState) -> String {
+    match state.review.pane {
+        crate::ReviewPane::Weekly => match state.review.weekly.as_ref() {
+            Some(w) => format!(
+                "Weekly review — {} to {}",
+                day_stamp(w.window.start_ms, &state.tz),
+                day_stamp(w.window.end_ms.saturating_sub(1), &state.tz)
+            ),
+            None => "Weekly review".into(),
+        },
+        crate::ReviewPane::Daily => "Daily glance".into(),
+        crate::ReviewPane::Trends => "Trends — last 12 weeks".into(),
+        crate::ReviewPane::History => "Saved reviews".into(),
+    }
+}
+
+/// A heading line inside a review panel.
+fn heading(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// A dimmed "nothing here" line — an empty step is a result, not a blank.
+fn quiet(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {text}"),
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
+/// Up to `max` task titles, with a count line when the list is longer.
+fn task_lines(tasks: &[sunrise_domain::Task], max: usize, empty: &str) -> Vec<Line<'static>> {
+    if tasks.is_empty() {
+        return vec![quiet(empty)];
+    }
+    let mut out: Vec<Line<'static>> = tasks
+        .iter()
+        .take(max)
+        .map(|t| Line::from(format!("  · {}", t.title)))
+        .collect();
+    if tasks.len() > max {
+        out.push(quiet(&format!("… and {} more", tasks.len() - max)));
+    }
+    out
+}
+
+/// The five steps, in the order the spec walks them.
+fn weekly_lines(state: &ViewState) -> Vec<Line<'static>> {
+    /// Titles listed before a step collapses into a count. Enough to recognise
+    /// the week; past that the list stops being a review and starts being a
+    /// backlog.
+    const MAX_LISTED: usize = 6;
+    let Some(w) = state.review.weekly.as_ref() else {
+        return vec![quiet("loading…")];
+    };
+    let mut out = vec![
+        Line::from(Span::styled(
+            format!(
+                "completed {} · deferred {} · dropped {} · created {} · reopened {}",
+                w.totals.completed,
+                w.totals.deferred,
+                w.totals.dropped,
+                w.totals.created,
+                w.totals.reopened
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        heading("1 · Per-stream"),
+    ];
+    if w.streams.is_empty() {
+        out.push(quiet("no active streams in this window"));
+    }
+    for s in &w.streams {
+        out.push(Line::from(Span::styled(
+            format!(
+                "  {} — {} done · {} deferred · {} untouched",
+                s.name,
+                s.completed.len(),
+                s.deferred.len(),
+                s.created_untouched.len()
+            ),
+            Style::default().fg(Color::Cyan),
+        )));
+        // The spec collapses completions and lists defers in full: a defer is
+        // a decision to revisit, and revisiting is what a review is for.
+        for t in s.deferred.iter().take(MAX_LISTED) {
+            out.push(Line::from(format!("      deferred: {}", t.title)));
+        }
+        if let Some(fs) = s.focus.as_ref() {
+            out.push(Line::from(format!(
+                "      focus: {} over {} session(s)",
+                fmt_duration_ms(fs.focused_ms),
+                fs.sessions
+            )));
+        }
+    }
+    out.push(Line::from(""));
+    out.push(heading(&format!("2 · Inbox ({})", w.inbox.len())));
+    out.extend(task_lines(&w.inbox, MAX_LISTED, "inbox is clear"));
+    out.push(Line::from(""));
+    out.push(heading("3 · Routines"));
+    if w.drifting_routines.is_empty() {
+        out.push(quiet("no routine is drifting"));
+    }
+    for d in &w.drifting_routines {
+        out.push(Line::from(Span::styled(
+            format!(
+                "  {} — {} of {} missed ({:.0}%) · suggest pausing or re-cadencing",
+                d.title,
+                d.missed,
+                d.expected,
+                d.drift * 100.0
+            ),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    for st in w.streaks.iter().take(MAX_LISTED) {
+        out.push(Line::from(format!("  {} — streak {}", st.title, st.streak)));
+    }
+    out.push(Line::from(""));
+    out.push(heading(&format!("4 · Slipped ({})", w.slipped.len())));
+    out.extend(task_lines(&w.slipped, MAX_LISTED, "nothing slipped"));
+    out.push(Line::from(""));
+    out.push(heading("5 · Focus"));
+    out.push(Line::from(format!(
+        "  {} focused across {} session(s) · {}",
+        fmt_duration_ms(w.focus.total_focused_ms),
+        w.focus.work_sessions,
+        calibration_line(w.focus.overall.as_ref())
+    )));
+    out
+}
+
+/// The 60-second glance.
+fn daily_lines(state: &ViewState) -> Vec<Line<'static>> {
+    /// The glance is meant to be read standing up.
+    const MAX_LISTED: usize = 8;
+    let Some(d) = state.review.daily.as_ref() else {
+        return vec![quiet("loading…")];
+    };
+    let mut out = vec![heading(&format!("Recent captures ({})", d.inbox.len()))];
+    out.extend(task_lines(&d.inbox, MAX_LISTED, "nothing new to clear"));
+    out.push(Line::from(""));
+    out.push(heading(&format!("Today ({})", d.today.len())));
+    out.extend(task_lines(&d.today, MAX_LISTED, "nothing planned"));
+    out.push(Line::from(""));
+    // The spec's "Any blocker for today?" prompt, answered rather than asked.
+    out.push(heading(&format!("Blocked ({})", d.blocked.len())));
+    out.extend(task_lines(
+        &d.blocked,
+        MAX_LISTED,
+        "nothing is waiting on anything",
+    ));
+    out
+}
+
+/// Twelve weeks of completed / deferred / created, as a text sparkline.
+fn trend_lines(state: &ViewState) -> Vec<Line<'static>> {
+    let Some(t) = state.review.trends.as_ref() else {
+        return vec![quiet("loading…")];
+    };
+    if t.overall.is_empty() {
+        return vec![quiet("no activity yet")];
+    }
+    let peak = t
+        .overall
+        .iter()
+        .map(|b| b.completed.max(b.deferred).max(b.created))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let mut out = vec![
+        heading("Whole vault"),
+        Line::from(Span::styled(
+            "  week          completed        deferred  created",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+    for b in &t.overall {
+        out.push(Line::from(vec![
+            Span::raw(format!("  {}  ", day_stamp(b.week_start_ms, &state.tz))),
+            Span::styled(
+                bar(b.completed, peak, 12),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(format!(" {:>3}", b.completed)),
+            Span::styled(
+                format!("  {:>6}", b.deferred),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(format!("  {:>7}", b.created)),
+        ]));
+    }
+    for line in &t.per_stream {
+        let name = state
+            .streams
+            .iter()
+            .find(|s| s.id == line.stream)
+            .map_or_else(|| line.stream.to_str(), |s| s.name.clone());
+        let done: i64 = line.weeks.iter().map(|b| b.completed).sum();
+        let deferred: i64 = line.weeks.iter().map(|b| b.deferred).sum();
+        out.push(Line::from(format!(
+            "  {name} — {done} completed · {deferred} deferred over the window"
+        )));
+    }
+    out
+}
+
+/// A `████░░` bar, integer arithmetic only.
+fn bar(value: i64, peak: i64, width: usize) -> String {
+    if peak <= 0 || width == 0 {
+        return " ".repeat(width);
+    }
+    let v = value.max(0);
+    let filled = usize::try_from(v.saturating_mul(i64::try_from(width).unwrap_or(0)) / peak)
+        .unwrap_or(0)
+        .min(width);
+    let mut out = String::with_capacity(width);
+    for i in 0..width {
+        out.push(if i < filled { '█' } else { '·' });
+    }
+    out
+}
+
+/// Saved snapshots, newest first — the spec's "queryable in History".
+fn history_lines(state: &ViewState) -> Vec<Line<'static>> {
+    if state.review.history.is_empty() {
+        return vec![quiet(
+            "no saved reviews — Enter on the Weekly panel saves one",
+        )];
+    }
+    let mut out = Vec::new();
+    for snap in &state.review.history {
+        out.push(Line::from(Span::styled(
+            format!(
+                "{} to {}",
+                day_stamp(snap.window_start_ms, &state.tz),
+                day_stamp(snap.window_end_ms.saturating_sub(1), &state.tz)
+            ),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        out.push(Line::from(format!(
+            "  completed {} · deferred {} · dropped {} · created {}",
+            snap.totals.completed, snap.totals.deferred, snap.totals.dropped, snap.totals.created
+        )));
+        if let Some(note) = snap.note.as_ref() {
+            out.push(Line::from(format!("  note: {note}")));
+        }
+        out.push(Line::from(""));
+    }
+    out
+}
+
+/// `2026-03-02` in the user's zone.
+fn day_stamp(ms: u64, tz: &jiff::tz::TimeZone) -> String {
+    let Ok(ts) = i64::try_from(ms).map(jiff::Timestamp::from_millisecond) else {
+        return "?".into();
+    };
+    let Ok(ts) = ts else { return "?".into() };
+    let d = ts.to_zoned(tz.clone()).date();
+    format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
+}
+
 /// Modal move-to-stream picker (`m`), drawn over the current view.
 fn render_stream_picker(f: &mut Frame<'_>, area: Rect, picker: &StreamPicker) {
     let height = u16::try_from(picker.rows.len().min(12) + 2).unwrap_or(u16::MAX);
@@ -1717,6 +2079,128 @@ mod tests {
         assert!(s.contains("2026-03-02"), "got:\n{s}");
         // And the view is reachable from the tab bar.
         assert!(s.contains("6:Routines"), "got:\n{s}");
+    }
+
+    #[test]
+    fn the_review_view_walks_the_specs_five_steps() {
+        use sunrise_domain::{ReviewTotals, ReviewWindow, StreamReview, Trends, WeeklyReview};
+        let mut state = ViewState::default();
+        state.view = View::Review;
+        let mut slipped = fixtures::fake_task(4);
+        slipped.title = "renew the passport".into();
+        let mut deferred = fixtures::fake_task(5);
+        deferred.title = "call the plumber".into();
+        state.review.weekly = Some(Box::new(WeeklyReview {
+            window: ReviewWindow {
+                start_ms: 1_767_225_600_000,
+                end_ms: 1_767_830_400_000,
+            },
+            streams: vec![StreamReview {
+                stream: fixtures::stream_row(7, "Work", 0).id,
+                name: "Work".into(),
+                completed: vec![fixtures::fake_task(1)],
+                deferred: vec![deferred],
+                created_untouched: Vec::new(),
+                focus: None,
+                trend: Vec::new(),
+            }],
+            inbox: vec![fixtures::fake_task(2)],
+            drifting_routines: Vec::new(),
+            streaks: Vec::new(),
+            slipped: vec![slipped],
+            totals: ReviewTotals {
+                completed: 4,
+                deferred: 1,
+                dropped: 0,
+                created: 2,
+                reopened: 0,
+            },
+            focus: sunrise_domain::FocusStats {
+                sessions: 2,
+                work_sessions: 2,
+                running: 0,
+                total_focused_ms: 3_600_000,
+                interruptions: 0,
+                per_stream: Vec::new(),
+                per_energy: Vec::new(),
+                overall: None,
+                top_interruptions: Vec::new(),
+            },
+            trends: Trends {
+                week_starts: Vec::new(),
+                overall: Vec::new(),
+                per_stream: Vec::new(),
+            },
+        }));
+        let s = guarded_frame(100, 34, &state);
+        assert!(s.contains("7:Review"), "reachable from the tab bar:\n{s}");
+        assert!(s.contains("Weekly review — 2026-01-01"), "got:\n{s}");
+        assert!(s.contains("completed 4"), "the totals:\n{s}");
+        assert!(s.contains("1 · Per-stream"), "step 1:\n{s}");
+        assert!(s.contains("Work — 1 done"), "per-stream counts:\n{s}");
+        // The spec lists defers in full: a defer is a decision to revisit,
+        // and revisiting is what the review is for.
+        assert!(s.contains("call the plumber"), "step 1 defers:\n{s}");
+        assert!(s.contains("2 · Inbox (1)"), "step 2:\n{s}");
+        assert!(s.contains("3 · Routines"), "step 3:\n{s}");
+        assert!(s.contains("4 · Slipped (1)"), "step 4:\n{s}");
+        assert!(s.contains("renew the passport"), "step 4 list:\n{s}");
+        assert!(s.contains("5 · Focus"), "step 5:\n{s}");
+    }
+
+    #[test]
+    fn an_empty_review_step_reads_as_a_result_not_a_blank() {
+        use sunrise_domain::{ReviewTotals, ReviewWindow, Trends, WeeklyReview};
+        let mut state = ViewState::default();
+        state.view = View::Review;
+        state.review.weekly = Some(Box::new(WeeklyReview {
+            window: ReviewWindow {
+                start_ms: 1_767_225_600_000,
+                end_ms: 1_767_830_400_000,
+            },
+            streams: Vec::new(),
+            inbox: Vec::new(),
+            drifting_routines: Vec::new(),
+            streaks: Vec::new(),
+            slipped: Vec::new(),
+            totals: ReviewTotals {
+                completed: 0,
+                deferred: 0,
+                dropped: 0,
+                created: 0,
+                reopened: 0,
+            },
+            focus: sunrise_domain::FocusStats {
+                sessions: 0,
+                work_sessions: 0,
+                running: 0,
+                total_focused_ms: 0,
+                interruptions: 0,
+                per_stream: Vec::new(),
+                per_energy: Vec::new(),
+                overall: None,
+                top_interruptions: Vec::new(),
+            },
+            trends: Trends {
+                week_starts: Vec::new(),
+                overall: Vec::new(),
+                per_stream: Vec::new(),
+            },
+        }));
+        let s = guarded_frame(100, 34, &state);
+        assert!(s.contains("inbox is clear"), "got:\n{s}");
+        assert!(s.contains("nothing slipped"), "got:\n{s}");
+        assert!(s.contains("no routine is drifting"), "got:\n{s}");
+    }
+
+    #[test]
+    fn the_history_panel_says_how_to_fill_itself() {
+        let mut state = ViewState::default();
+        state.view = View::Review;
+        state.review.pane = crate::ReviewPane::History;
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("no saved reviews"), "got:\n{s}");
+        assert!(s.contains("Enter on the Weekly panel"), "got:\n{s}");
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //!   Browse sidebar covering both domain axes (Streams and Contexts) and full
 //!   CRUD over each.
 //! - Routine CRUD, with plain-English recurrence ([`recur`]).
+//! - The Review view: the five-step weekly review, the daily glance, the
+//!   twelve-week trends, and the saved-snapshot history.
 //! - Vim-style modal navigation (default-on per the parity matrix), with the
 //!   keymap and the `?` help overlay derived from one binding table.
 //! - Focus sessions ([`view::FocusState`]): the ranked planner queue, a live
@@ -75,14 +77,14 @@ pub use keymap::{
 };
 pub use recur::parse_recurrence;
 pub use render::{
-    fits, render, render_focus, render_inbox, render_routines, render_search, render_stream,
-    render_today, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
+    fits, render, render_focus, render_inbox, render_review, render_routines, render_search,
+    render_stream, render_today, review_rows, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
-    BrowseTarget, CascadeReport, FocusState, Prompt, RoutineRow, StreamPane, StreamPicker,
-    SyncIndicator, View, ViewState,
+    BrowseTarget, CascadeReport, DeleteTarget, FocusState, Prompt, ReviewPane, ReviewState,
+    RoutineRow, SidebarRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState,
 };
 
 /// Help text listing the command-line commands, shown in the status line by

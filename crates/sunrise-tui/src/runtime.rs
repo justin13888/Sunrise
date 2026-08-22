@@ -169,6 +169,14 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
     }
 
+    // The Review panel is a page, not a list, so its scroll bound is the
+    // rendered row count less one screenful. Recomputed before every action
+    // because a synced op can change the panel's height under the cursor.
+    if state.view == View::Review {
+        let rows = crate::render::review_rows(state);
+        state.review.max_scroll = rows.saturating_sub(state.viewport_rows);
+    }
+
     match action {
         Action::Quit => Outcome::Quit,
         Action::SwitchView(View::Focus) => {
@@ -471,6 +479,18 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::SkipOccurrence => skip_occurrence(state),
+        Action::NextReviewPane => {
+            state.review.pane = state.review.pane.next();
+            state.review.scroll = 0;
+            state.status.clear();
+            // Each panel is a different query; the runtime reloads on refresh.
+            Outcome::Refresh
+        }
+        Action::ShiftWeek(n) => {
+            state.review.shift_week(i64::from(n));
+            Outcome::Refresh
+        }
+        Action::SaveReview => save_review(state),
         Action::ToggleArchive => toggle_archive(state),
         Action::TogglePause => toggle_pause(state),
         Action::ToggleHelp => {
@@ -627,6 +647,30 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// Save a snapshot of the review currently on screen.
+///
+/// The draft is built by `WeeklyReview::to_draft`, from the assembled review
+/// itself, so the saved counts are the ones the user just read
+/// (`docs/08-features/reviews-and-stats.md` step 5). Recomputing them here
+/// would let a snapshot disagree with the screen it was saved from — which is
+/// exactly the thing a review artefact must never do.
+fn save_review(state: &mut ViewState) -> Outcome {
+    if state.review.pane != crate::ReviewPane::Weekly {
+        state.status = "Tab to the Weekly panel to save a review".into();
+        return Outcome::None;
+    }
+    let Some(weekly) = state.review.weekly.as_ref() else {
+        state.status = "the review has not loaded yet".into();
+        return Outcome::None;
+    };
+    let draft = weekly.to_draft(None);
+    state.status = format!(
+        "review saved — {} completed, {} deferred, {} dropped",
+        draft.totals.completed, draft.totals.deferred, draft.totals.dropped
+    );
+    Outcome::Submit(Box::new(Command::SaveReviewSnapshot(draft)))
 }
 
 /// Shared "no routine is selected" response.
@@ -823,6 +867,9 @@ fn pause_routine(state: &mut ViewState) -> Outcome {
 /// follows the selection live. Everywhere else a cursor move is pure state and
 /// the next repaint is enough.
 fn after_nav(state: &mut ViewState) -> Outcome {
+    if state.view == View::Review {
+        return Outcome::None;
+    }
     if state.view == View::Stream && state.pane.is_sidebar() && state.sync_browse_from_cursor() {
         return Outcome::Refresh;
     }
@@ -2155,6 +2202,117 @@ manual"
             }
             other => panic!("expected Submit, got {other:?}"),
         }
+    }
+
+    fn review_state() -> ViewState {
+        let mut s = ViewState::default();
+        s.view = View::Review;
+        s.viewport_rows = 10;
+        s.review.weekly = Some(Box::new(sunrise_domain::WeeklyReview {
+            window: sunrise_domain::ReviewWindow {
+                start_ms: NOW_MS,
+                end_ms: NOW_MS + 7 * 24 * 60 * 60 * 1000,
+            },
+            streams: Vec::new(),
+            inbox: Vec::new(),
+            drifting_routines: Vec::new(),
+            streaks: Vec::new(),
+            slipped: Vec::new(),
+            totals: sunrise_domain::ReviewTotals {
+                completed: 8,
+                deferred: 3,
+                dropped: 1,
+                created: 5,
+                reopened: 0,
+            },
+            focus: sunrise_domain::FocusStats {
+                sessions: 0,
+                work_sessions: 0,
+                running: 0,
+                total_focused_ms: 0,
+                interruptions: 0,
+                per_stream: Vec::new(),
+                per_energy: Vec::new(),
+                overall: None,
+                top_interruptions: Vec::new(),
+            },
+            trends: sunrise_domain::Trends {
+                week_starts: Vec::new(),
+                overall: Vec::new(),
+                per_stream: Vec::new(),
+            },
+        }));
+        s
+    }
+
+    #[test]
+    fn tab_cycles_the_review_panels_and_reloads_each() {
+        let mut s = review_state();
+        assert_eq!(s.review.pane, crate::ReviewPane::Weekly);
+        // Each panel is a different query, so switching owes a refresh.
+        assert!(matches!(press(&mut s, KeyCode::Tab), Outcome::Refresh));
+        assert_eq!(s.review.pane, crate::ReviewPane::Daily);
+        let _ = press(&mut s, KeyCode::Tab);
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(s.review.pane, crate::ReviewPane::History);
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(s.review.pane, crate::ReviewPane::Weekly);
+    }
+
+    #[test]
+    fn brackets_walk_the_reviewed_week() {
+        let mut s = review_state();
+        let start = NOW_MS;
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('[')),
+            Outcome::Refresh
+        ));
+        let week = 7 * 24 * 60 * 60 * 1000;
+        assert_eq!(s.review.week_start_ms, Some(start - week));
+        let _ = press(&mut s, KeyCode::Char(']'));
+        assert_eq!(s.review.week_start_ms, Some(start));
+    }
+
+    #[test]
+    fn enter_saves_a_snapshot_of_the_review_on_screen() {
+        // The counts must be the ones the user just read: a snapshot that
+        // recomputed them could disagree with the screen it was saved from.
+        let mut s = review_state();
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::SaveReviewSnapshot(d) => {
+                    assert_eq!(d.totals.completed, 8);
+                    assert_eq!(d.totals.deferred, 3);
+                    assert_eq!(d.window_start_ms, NOW_MS);
+                }
+                other => panic!("expected SaveReviewSnapshot, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(s.status.contains("review saved"));
+    }
+
+    #[test]
+    fn saving_is_refused_from_the_panels_that_are_not_a_review() {
+        let mut s = review_state();
+        s.review.pane = crate::ReviewPane::Trends;
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert!(s.status.contains("Weekly panel"), "{}", s.status);
+    }
+
+    #[test]
+    fn the_review_panel_scrolls_and_clamps_to_its_own_content() {
+        let mut s = review_state();
+        let rows = crate::render::review_rows(&s);
+        s.viewport_rows = 2;
+        for _ in 0..200 {
+            let _ = press(&mut s, KeyCode::Char('j'));
+        }
+        assert_eq!(s.review.scroll, rows.saturating_sub(2));
+        for _ in 0..200 {
+            let _ = press(&mut s, KeyCode::Char('k'));
+        }
+        assert_eq!(s.review.scroll, 0);
     }
 
     #[test]

@@ -77,7 +77,9 @@ pub fn parse_command(input: &str) -> Cmd {
         "q" | "quit" => Cmd::Quit,
         "help" | "h" => Cmd::ShowHelp,
         "view" => match rest.split_whitespace().next() {
-            None => Cmd::Error("usage: :view <today|inbox|stream|search|focus|routines>".into()),
+            None => {
+                Cmd::Error("usage: :view <today|inbox|stream|search|focus|routines|review>".into())
+            }
             Some(arg) => match parse_view(arg) {
                 Some(v) => Cmd::SwitchView(v),
                 None => Cmd::Error(format!("unknown view: {arg}")),
@@ -152,6 +154,7 @@ fn parse_view(arg: &str) -> Option<View> {
         "search" | "4" => Some(View::Search),
         "focus" | "5" => Some(View::Focus),
         "routines" | "routine" | "6" => Some(View::Routines),
+        "review" | "stats" | "7" => Some(View::Review),
         _ => None,
     }
 }
