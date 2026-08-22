@@ -18,6 +18,7 @@
 use crate::view::View;
 use crossterm::event::KeyCode;
 use std::path::PathBuf;
+use sunrise_domain::InterruptionReason;
 
 /// Mode for the modal editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,15 @@ pub enum Mode {
     /// Triage mode (`t`): the Inbox is presented one task at a time and every
     /// key is a decision (`docs/08-features/inbox-and-capture.md`).
     Triage,
+    /// A focus session is running (`docs/08-features/focus-mode.md`). The
+    /// session owns the keyboard and offers the few actions the spec names —
+    /// complete, defer, capture-aside — plus the break and the interruption
+    /// log. Entered and left by the *session*, never by a bare keypress:
+    /// [`crate::ViewState::after_focus_loaded`] takes the keyboard when a
+    /// running session appears and gives it back when one ends.
+    Focus,
+    /// The one-tap interruption-reason chooser (`i` during a session).
+    Interrupt,
 }
 
 impl Mode {
@@ -54,6 +64,8 @@ impl Mode {
             Self::Picker => "PICK",
             Self::Visual => "VISUAL",
             Self::Triage => "TRIAGE",
+            Self::Focus => "FOCUS",
+            Self::Interrupt => "INTERRUPT",
         }
     }
 }
@@ -126,6 +138,22 @@ pub enum Action {
     /// First half of a `gg` chord: arm the pending-`g` latch. The runtime
     /// turns the second `g` into [`Action::GotoTop`].
     GotoPrefix,
+    /// Start a focus session on the current pick (`F`, or Enter on a planner
+    /// row).
+    StartFocus,
+    /// End the running focus session without completing the task
+    /// (`Esc` / `q` while a session runs).
+    EndFocus,
+    /// Capture a mid-session thought into the **Inbox** without leaving the
+    /// session (`a`).
+    CaptureAside,
+    /// Open the one-tap interruption-reason chooser (`i`).
+    Interrupt,
+    /// Log an interruption with this reason (one tap in the chooser).
+    InterruptReason(InterruptionReason),
+    /// End the running work segment and start the break the pomodoro cycle
+    /// owes (`b`).
+    TakeBreak,
 }
 
 impl Action {
@@ -171,6 +199,15 @@ impl Action {
             Self::InsertChar(_) => "insert_char",
             Self::Backspace => "backspace",
             Self::Submit => "submit",
+            Self::StartFocus => "start_focus",
+            Self::EndFocus => "end_focus",
+            Self::CaptureAside => "capture_aside",
+            Self::Interrupt => "interrupt",
+            Self::InterruptReason(InterruptionReason::SelfInterrupt) => "interrupt_self",
+            Self::InterruptReason(InterruptionReason::Meeting) => "interrupt_meeting",
+            Self::InterruptReason(InterruptionReason::Blocked) => "interrupt_blocked",
+            Self::InterruptReason(InterruptionReason::Other) => "interrupt_other",
+            Self::TakeBreak => "take_break",
         }
     }
 }
@@ -313,6 +350,13 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::SwitchView(View::Focus),
         Some(("f", "focus selected task")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('F'),
+        Scope::Any,
+        Action::StartFocus,
+        Some(("F", "start a focus session")),
     ),
     b(
         Mode::Normal,
@@ -753,6 +797,109 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::ToggleHelp,
         Some(("?", "toggle this help")),
+    ),
+    // ---- Focus mode (a session is running) ----
+    // `docs/08-features/focus-mode.md` §Composition: "three actions only —
+    // complete, defer, capture-aside", plus the break and the interruption
+    // log the same document defines.
+    b(
+        Mode::Focus,
+        KeyCode::Char('x'),
+        Scope::Any,
+        Action::Toggle,
+        Some(("x", "complete, end session")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('d'),
+        Scope::Any,
+        Action::Defer,
+        Some(("d", "defer (prompts)")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('a'),
+        Scope::Any,
+        Action::CaptureAside,
+        Some(("a", "capture aside → Inbox")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('i'),
+        Scope::Any,
+        Action::Interrupt,
+        Some(("i", "log an interruption")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('b'),
+        Scope::Any,
+        Action::TakeBreak,
+        Some(("b", "end, take the break")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Esc,
+        Scope::Any,
+        Action::EndFocus,
+        Some(("Esc / q", "end the session")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('q'),
+        Scope::Any,
+        Action::EndFocus,
+        None,
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char(':'),
+        Scope::Any,
+        Action::BeginCommand,
+        Some((":", "command line")),
+    ),
+    b(
+        Mode::Focus,
+        KeyCode::Char('?'),
+        Scope::Any,
+        Action::ToggleHelp,
+        Some(("?", "toggle this help")),
+    ),
+    // ---- Interruption reason chooser (one tap each) ----
+    b(
+        Mode::Interrupt,
+        KeyCode::Char('s'),
+        Scope::Any,
+        Action::InterruptReason(InterruptionReason::SelfInterrupt),
+        Some(("s", "self-interrupt")),
+    ),
+    b(
+        Mode::Interrupt,
+        KeyCode::Char('m'),
+        Scope::Any,
+        Action::InterruptReason(InterruptionReason::Meeting),
+        Some(("m", "meeting")),
+    ),
+    b(
+        Mode::Interrupt,
+        KeyCode::Char('b'),
+        Scope::Any,
+        Action::InterruptReason(InterruptionReason::Blocked),
+        Some(("b", "blocked")),
+    ),
+    b(
+        Mode::Interrupt,
+        KeyCode::Char('o'),
+        Scope::Any,
+        Action::InterruptReason(InterruptionReason::Other),
+        Some(("o", "other")),
+    ),
+    b(
+        Mode::Interrupt,
+        KeyCode::Esc,
+        Scope::Any,
+        Action::Escape,
+        Some(("Esc", "cancel")),
     ),
 ];
 
@@ -1494,6 +1641,72 @@ help    = \"#\"
     }
 
     #[test]
+    fn focus_keys_only_bind_while_a_session_owns_the_keyboard() {
+        // `F` starts one from anywhere.
+        assert_eq!(
+            d(KeyCode::Char('F'), Mode::Normal, true),
+            Some(Action::StartFocus)
+        );
+        // The session's own keys exist only in its mode, so `a` / `b` / `i`
+        // stay free everywhere else.
+        assert_eq!(
+            d(KeyCode::Char('a'), Mode::Focus, true),
+            Some(Action::CaptureAside)
+        );
+        assert_eq!(d(KeyCode::Char('a'), Mode::Normal, true), None);
+        assert_eq!(
+            d(KeyCode::Char('b'), Mode::Focus, true),
+            Some(Action::TakeBreak)
+        );
+        assert_eq!(d(KeyCode::Char('b'), Mode::Normal, true), None);
+        // Esc and `q` end the session rather than quitting the app.
+        assert_eq!(d(KeyCode::Esc, Mode::Focus, true), Some(Action::EndFocus));
+        assert_eq!(
+            d(KeyCode::Char('q'), Mode::Focus, true),
+            Some(Action::EndFocus)
+        );
+    }
+
+    #[test]
+    fn the_reason_chooser_covers_the_domains_whole_set() {
+        for (key, reason) in [
+            ('s', sunrise_domain::InterruptionReason::SelfInterrupt),
+            ('m', sunrise_domain::InterruptionReason::Meeting),
+            ('b', sunrise_domain::InterruptionReason::Blocked),
+            ('o', sunrise_domain::InterruptionReason::Other),
+        ] {
+            assert_eq!(
+                d(KeyCode::Char(key), Mode::Interrupt, true),
+                Some(Action::InterruptReason(reason))
+            );
+        }
+        assert_eq!(d(KeyCode::Esc, Mode::Interrupt, true), Some(Action::Escape));
+    }
+
+    #[test]
+    fn focus_actions_have_stable_config_names() {
+        // Renaming one of these breaks every user's keys.toml.
+        assert_eq!(Action::StartFocus.name(), "start_focus");
+        assert_eq!(Action::EndFocus.name(), "end_focus");
+        assert_eq!(Action::CaptureAside.name(), "capture_aside");
+        assert_eq!(Action::TakeBreak.name(), "take_break");
+        assert_eq!(
+            Action::InterruptReason(sunrise_domain::InterruptionReason::Blocked).name(),
+            "interrupt_blocked"
+        );
+    }
+
+    #[test]
+    fn start_focus_can_be_remapped_like_any_other_normal_key() {
+        let (map, warnings) = Keymap::from_config(&[("start_focus".to_string(), "z".to_string())]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            map.dispatch(KeyCode::Char('z'), Mode::Normal, true, View::Today),
+            Some(Action::StartFocus)
+        );
+    }
+
+    #[test]
     fn help_sections_are_derived_from_the_binding_table() {
         let sections = help_sections();
         // Sections appear in table order, Normal first.
@@ -1501,6 +1714,8 @@ help    = \"#\"
         let labels: Vec<&str> = sections.iter().map(|(m, _)| *m).collect();
         assert!(labels.contains(&"CONFIRM"), "got sections {labels:?}");
         assert!(labels.contains(&"PICK"), "got sections {labels:?}");
+        assert!(labels.contains(&"FOCUS"), "got sections {labels:?}");
+        assert!(labels.contains(&"INTERRUPT"), "got sections {labels:?}");
 
         // Every documented row's description is non-empty, and every row in
         // the table that opts into help is reachable from `dispatch`.

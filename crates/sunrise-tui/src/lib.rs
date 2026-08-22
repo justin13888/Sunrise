@@ -5,6 +5,10 @@
 //! - Today / Inbox / Stream / Search / Focus / Routines view enum.
 //! - Vim-style modal navigation (default-on per the parity matrix), with the
 //!   keymap and the `?` help overlay derived from one binding table.
+//! - Focus sessions ([`view::FocusState`]): the ranked planner queue, a live
+//!   timer **derived** from the injected clock rather than accumulated,
+//!   one-tap interruption capture, capture-aside into the Inbox, the pomodoro
+//!   break cadence, the unblock cascade, and `:focus stats` calibration.
 //! - A pure Action → `sunrise_core::Command` reducer ([`runtime::apply_action`])
 //!   so every keybinding is unit-testable without a terminal or a `Core`.
 //! - Capture through the shared domain parser, with a live inline preview
@@ -51,7 +55,7 @@ pub mod runtime;
 pub mod view;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
-pub use command::{parse_command, Cmd};
+pub use command::{parse_command, Cmd, FocusCmd};
 pub use editor::{edit_bytes, resolve_editor, EditorExit};
 pub use keymap::{
     dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
@@ -62,13 +66,14 @@ pub use render::{
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use view::{
-    routine_rows, rrule_summary, Prompt, RoutineRow, StreamPane, StreamPicker, SyncIndicator, View,
+    energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
+    CascadeReport, FocusState, Prompt, RoutineRow, StreamPane, StreamPicker, SyncIndicator, View,
     ViewState,
 };
 
 /// Help text listing the command-line commands, shown in the status line by
 /// `:help`. Kept short enough to fit a typical status line.
-pub const HELP_TEXT: &str = ":q  :view <v>  :capture <text>  :open <id>  :devices  :preview <p>";
+pub const HELP_TEXT: &str = ":q  :view <v>  :capture <text>  :open <id>  :devices  :focus stats";
 
 /// A side effect the runtime (`main`) must perform after a command is applied.
 ///
@@ -91,6 +96,9 @@ pub enum AppEffect {
     /// List the paired devices (`:devices`); the runtime runs
     /// `Query::DeviceList` and hands the rows to [`ViewState::show_devices`].
     Devices,
+    /// Run `Query::FocusStats` and show the folded totals + calibration
+    /// factor (`:focus stats`).
+    FocusStats,
 }
 
 /// Apply a parsed [`Cmd`] to `state`, returning an [`AppEffect`] the runtime
@@ -125,8 +133,38 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
         Cmd::Capture(text) => Some(AppEffect::Capture(text)),
         Cmd::Open(id) => Some(AppEffect::Open(id)),
         Cmd::Devices => Some(AppEffect::Devices),
+        Cmd::Focus(focus) => apply_focus_command(focus, state),
         Cmd::Error(msg) => {
             state.status = format!("error: {msg}");
+            None
+        }
+    }
+}
+
+/// Apply a `:focus` sub-command.
+///
+/// Everything except `stats` is a pure state change the next refresh reads:
+/// re-running `Query::FocusPlan` with a new energy budget or session length is
+/// what makes the queue re-rank, so the reducer only has to say "refresh".
+fn apply_focus_command(cmd: FocusCmd, state: &mut ViewState) -> Option<AppEffect> {
+    match cmd {
+        FocusCmd::Stats => Some(AppEffect::FocusStats),
+        FocusCmd::Plan => {
+            if state.view != View::Focus {
+                state.prev_view = Some(state.view);
+                state.view = View::Focus;
+            }
+            state.status = "focus planner — Enter or F starts a session".into();
+            None
+        }
+        FocusCmd::Energy(e) => {
+            state.focus.energy = e;
+            state.status = format!("focus energy budget: {}", view::energy_budget_label(e));
+            None
+        }
+        FocusCmd::Length(l) => {
+            state.focus.length = l;
+            state.status = format!("focus session length: {}", view::length_label(l));
             None
         }
     }
@@ -158,6 +196,50 @@ mod apply_tests {
         let mut state = ViewState::default();
         assert_eq!(apply_command(Cmd::ShowHelp, &mut state), None);
         assert_eq!(state.status, HELP_TEXT);
+    }
+
+    #[test]
+    fn focus_stats_is_an_effect_the_runtime_performs() {
+        let mut state = ViewState::default();
+        assert_eq!(
+            apply_command(parse_command(":focus stats"), &mut state),
+            Some(AppEffect::FocusStats)
+        );
+    }
+
+    #[test]
+    fn focus_plan_opens_the_planner_and_remembers_where_to_go_back_to() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        assert_eq!(
+            apply_command(parse_command(":focus plan"), &mut state),
+            None
+        );
+        assert_eq!(state.view, View::Focus);
+        assert_eq!(state.prev_view, Some(View::Inbox));
+    }
+
+    #[test]
+    fn focus_energy_and_length_are_pure_state_the_next_query_reads() {
+        let mut state = ViewState::default();
+        assert_eq!(
+            apply_command(parse_command(":focus energy high"), &mut state),
+            None
+        );
+        assert_eq!(state.focus.energy, Some(sunrise_domain::Energy::High));
+        assert!(state.status.contains("high"));
+        assert_eq!(
+            apply_command(parse_command(":focus length until-done"), &mut state),
+            None
+        );
+        assert_eq!(state.focus.length, sunrise_domain::SessionLength::UntilDone);
+        assert!(state.status.contains("until done"));
+    }
+
+    #[test]
+    fn the_command_help_line_advertises_focus_stats() {
+        // Stats are only "reachable" if something says how to reach them.
+        assert!(HELP_TEXT.contains(":focus stats"));
     }
 
     #[test]

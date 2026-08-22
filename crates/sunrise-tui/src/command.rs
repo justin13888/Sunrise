@@ -7,6 +7,7 @@
 
 use crate::view::View;
 use std::path::PathBuf;
+use sunrise_domain::{Energy, SessionLength};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// A parsed command-line command.
@@ -29,8 +30,31 @@ pub enum Cmd {
     Open(EntityRef),
     /// List the paired devices (`:devices`).
     Devices,
+    /// Focus-mode command (`:focus …`).
+    Focus(FocusCmd),
     /// Unrecognized or malformed command; carries a status-line message.
     Error(String),
+}
+
+/// The `:focus` sub-commands (`docs/08-features/focus-mode.md`).
+///
+/// The planner's two inputs — the declared **energy budget** and the session
+/// **length** — are set here rather than bound to keys: both are occasional
+/// declarations, and the keymap has no spare mnemonic left for either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusCmd {
+    /// Show focus totals and the estimate-calibration factor
+    /// (`:focus stats`).
+    Stats,
+    /// Open the ranked planner queue (`:focus plan`).
+    Plan,
+    /// Declare the energy budget the planner matches work against
+    /// (`:focus energy low|med|high|any`). `None` is "any", which drops
+    /// energy out of the ranking entirely.
+    Energy(Option<Energy>),
+    /// Choose how the next session is sized
+    /// (`:focus length pomodoro|estimate|until-done`).
+    Length(SessionLength),
 }
 
 /// Parse a command-line string into a [`Cmd`].
@@ -81,7 +105,41 @@ pub fn parse_command(input: &str) -> Cmd {
             },
         },
         "devices" | "device" => Cmd::Devices,
+        "focus" => parse_focus(rest),
         other => Cmd::Error(format!("unknown command: {other}")),
+    }
+}
+
+/// Parse the argument of `:focus`. A bare `:focus` opens the planner, which
+/// is the one thing the command could otherwise only mean.
+fn parse_focus(rest: &str) -> Cmd {
+    let mut words = rest.split_whitespace();
+    let (sub, arg) = (words.next().unwrap_or("plan"), words.next());
+    match sub {
+        "plan" | "planner" => Cmd::Focus(FocusCmd::Plan),
+        "stats" | "stat" => Cmd::Focus(FocusCmd::Stats),
+        "energy" => match arg {
+            None => Cmd::Error("usage: :focus energy <low|med|high|any>".into()),
+            Some("any" | "none") => Cmd::Focus(FocusCmd::Energy(None)),
+            Some("low") => Cmd::Focus(FocusCmd::Energy(Some(Energy::Low))),
+            Some("med" | "medium") => Cmd::Focus(FocusCmd::Energy(Some(Energy::Med))),
+            Some("high") => Cmd::Focus(FocusCmd::Energy(Some(Energy::High))),
+            Some(other) => Cmd::Error(format!("unknown energy: {other}")),
+        },
+        "length" | "len" => match arg {
+            None => Cmd::Error("usage: :focus length <pomodoro|estimate|until-done>".into()),
+            Some("pomodoro" | "pom" | "25m") => {
+                Cmd::Focus(FocusCmd::Length(SessionLength::OnePomodoro))
+            }
+            Some("estimate" | "est") => {
+                Cmd::Focus(FocusCmd::Length(SessionLength::SizedToEstimate))
+            }
+            Some("until-done" | "until" | "open") => {
+                Cmd::Focus(FocusCmd::Length(SessionLength::UntilDone))
+            }
+            Some(other) => Cmd::Error(format!("unknown session length: {other}")),
+        },
+        other => Cmd::Error(format!("unknown :focus command: {other}")),
     }
 }
 
@@ -217,6 +275,64 @@ mod tests {
     fn devices_aliases() {
         assert_eq!(parse_command(":devices"), Cmd::Devices);
         assert_eq!(parse_command(":device"), Cmd::Devices);
+    }
+
+    #[test]
+    fn focus_subcommands_parse() {
+        assert_eq!(parse_command(":focus stats"), Cmd::Focus(FocusCmd::Stats));
+        assert_eq!(parse_command(":focus plan"), Cmd::Focus(FocusCmd::Plan));
+        // A bare `:focus` is the planner: it is the only thing the word could
+        // otherwise mean.
+        assert_eq!(parse_command(":focus"), Cmd::Focus(FocusCmd::Plan));
+    }
+
+    #[test]
+    fn focus_energy_declares_the_planner_budget() {
+        for (arg, want) in [
+            ("low", Some(Energy::Low)),
+            ("med", Some(Energy::Med)),
+            ("high", Some(Energy::High)),
+            ("any", None),
+        ] {
+            assert_eq!(
+                parse_command(&format!(":focus energy {arg}")),
+                Cmd::Focus(FocusCmd::Energy(want))
+            );
+        }
+        assert!(matches!(parse_command(":focus energy"), Cmd::Error(_)));
+        match parse_command(":focus energy sideways") {
+            Cmd::Error(msg) => assert!(msg.contains("sideways")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn focus_length_picks_a_session_length() {
+        assert_eq!(
+            parse_command(":focus length pomodoro"),
+            Cmd::Focus(FocusCmd::Length(SessionLength::OnePomodoro))
+        );
+        assert_eq!(
+            parse_command(":focus length estimate"),
+            Cmd::Focus(FocusCmd::Length(SessionLength::SizedToEstimate))
+        );
+        assert_eq!(
+            parse_command(":focus length until-done"),
+            Cmd::Focus(FocusCmd::Length(SessionLength::UntilDone))
+        );
+        assert!(matches!(parse_command(":focus length"), Cmd::Error(_)));
+        assert!(matches!(
+            parse_command(":focus length forever"),
+            Cmd::Error(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_focus_subcommand_is_error() {
+        match parse_command(":focus wiggle") {
+            Cmd::Error(msg) => assert!(msg.contains("wiggle")),
+            other => panic!("expected error, got {other:?}"),
+        }
     }
 
     #[test]

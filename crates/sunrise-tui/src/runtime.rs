@@ -15,9 +15,10 @@ use crate::view::{Prompt, StreamPane, View, ViewState};
 use crate::{apply_command, AppEffect};
 use std::path::PathBuf;
 use std::time::Duration;
+use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{Command, DomainEvent};
 use sunrise_domain::capture::parse_when;
-use sunrise_domain::{StreamDraft, TaskPatch};
+use sunrise_domain::{FocusKind, InterruptionReason, StreamDraft, TaskPatch};
 use sunrise_id::EntityRef;
 
 /// Work the runtime must do after [`apply_action`] has updated the view state.
@@ -57,6 +58,28 @@ pub enum Outcome {
     ShowDevices,
     /// Load an image into the Focus preview pane (`:preview`).
     Preview(PathBuf),
+    /// Parse this line with `Core::capture_aside` and commit the draft.
+    ///
+    /// Routed through the core rather than through the local
+    /// [`crate::parse_line`] on purpose: `capture_aside` drops any resolved
+    /// `#stream`, so a mid-session thought lands in the **Inbox** whatever
+    /// stream the focused task belongs to
+    /// (`docs/08-features/focus-mode.md` §Capture-aside).
+    CaptureAside(String),
+    /// Submit every command in order, then run `Query::UnblockCascade(task)`
+    /// and report what the completion released.
+    ///
+    /// The cascade is the reason this is not a plain [`Outcome::SubmitMany`]:
+    /// it must be read *after* the completion lands, against the blockers'
+    /// new states.
+    SubmitThenCascade {
+        /// Commands to submit, in order.
+        cmds: Vec<Command>,
+        /// Task whose cascade to read once they have landed.
+        task: EntityRef,
+    },
+    /// Run `Query::FocusStats` and show the folded result (`:focus stats`).
+    ShowFocusStats,
     /// Exit the application.
     Quit,
 }
@@ -105,6 +128,16 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         state.devices = None;
         state.status.clear();
         if matches!(action, Action::Escape | Action::Quit) {
+            return Outcome::None;
+        }
+    }
+    // Ditto `:focus stats`. `EndFocus` is in the dismiss-and-stop set because
+    // Esc *is* `EndFocus` while a session runs: closing an overlay must never
+    // be a way to accidentally end the session behind it.
+    if state.focus.stats.is_some() {
+        state.focus.stats = None;
+        state.status.clear();
+        if matches!(action, Action::Escape | Action::Quit | Action::EndFocus) {
             return Outcome::None;
         }
     }
@@ -161,6 +194,12 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.focus_pane(StreamPane::Tasks);
             Outcome::None
         }
+        // Enter on a planner row starts the session it proposes, so accepting
+        // the top pick is one keypress (`docs/08-features/focus-mode.md`
+        // §Focus Planner).
+        Action::Activate if state.view == View::Focus && !state.focus.is_running() => {
+            start_focus(state)
+        }
         Action::Activate => {
             if state.view == View::Stream && state.pane == StreamPane::Streams {
                 // Confirm the highlighted stream: load its tasks and move
@@ -174,6 +213,9 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 Outcome::None
             }
         }
+        // Completing the task a session is on is two commands and a cascade
+        // read, not the plain bulk-complete path.
+        Action::Toggle if state.focus.is_running() => complete_focused(state),
         Action::Toggle => {
             let ids = state.operand_ids();
             if ids.is_empty() {
@@ -342,7 +384,158 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::Submit => submit(state, now_ms),
+        Action::StartFocus => start_focus(state),
+        Action::EndFocus => end_focus(state),
+        Action::TakeBreak => take_break(state),
+        Action::CaptureAside => {
+            if !state.focus.is_running() {
+                state.status = "capture aside needs a running session".into();
+                return Outcome::None;
+            }
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::CaptureAside);
+            state.input.clear();
+            state.status = "aside → Inbox: Enter to save, Esc to cancel".into();
+            Outcome::None
+        }
+        Action::Interrupt => {
+            if !state.focus.is_running() {
+                return Outcome::None;
+            }
+            state.mode = Mode::Interrupt;
+            state.status = "interrupted by: s self · m meeting · b blocked · o other".into();
+            Outcome::None
+        }
+        Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// Build the `StartFocus` command for whatever the user is pointing at.
+///
+/// The planner cursor and [`ViewState::focused_task`] are kept in step
+/// (`sync_focus_pick`), so "the current pick" is one thing whether the user
+/// arrived from a task list or from the ranked queue.
+fn start_focus(state: &mut ViewState) -> Outcome {
+    if state.focus.is_running() {
+        state.status = "a focus session is already running".into();
+        return Outcome::None;
+    }
+    let target = state
+        .focused_task
+        .as_ref()
+        .filter(|_| state.view == View::Focus)
+        .or_else(|| state.selected_task())
+        .map(|t| (t.id, t.title.clone()));
+    let Some((task_id, title)) = target else {
+        return no_selection(state);
+    };
+    // A new session starts from a clean slate: the previous completion's
+    // cascade is about work that is already done.
+    state.focus.cascade = None;
+    state.status = format!("focusing \"{title}\"");
+    Outcome::Submit(Box::new(Command::StartFocus(FocusStartDraft {
+        task_id,
+        kind: FocusKind::Work,
+        length: state.focus.length,
+        energy: state.focus.energy,
+    })))
+}
+
+/// Close the running session without completing the task.
+///
+/// `actual_focused_ms: None` is load-bearing — it tells the core to freeze the
+/// elapsed span it derives from its own clock, which is why the TUI never has
+/// to accumulate one.
+fn end_focus(state: &mut ViewState) -> Outcome {
+    let Some(session) = state.focus.running_session() else {
+        return Outcome::None;
+    };
+    state.focus.running = None;
+    state.mode = state.resting_mode();
+    state.status = "session ended".into();
+    Outcome::Submit(Box::new(Command::EndFocus {
+        session,
+        actual_focused_ms: None,
+        completed_task: false,
+    }))
+}
+
+/// Complete the focused task and close the session as a completion, then read
+/// the unblock cascade.
+fn complete_focused(state: &mut ViewState) -> Outcome {
+    let (Some(task), Some(session)) = (state.focus.running_task(), state.focus.running_session())
+    else {
+        return Outcome::None;
+    };
+    let title = state.focused_title();
+    state.focus.running = None;
+    state.mode = state.resting_mode();
+    state.status = format!("completed \"{title}\"");
+    Outcome::SubmitThenCascade {
+        // Order matters: the task must be `Done` before the cascade is read,
+        // and the session records the completion rather than causing it — the
+        // session log is never a second writer of task state.
+        cmds: vec![
+            Command::CompleteTask(task),
+            Command::EndFocus {
+                session,
+                actual_focused_ms: None,
+                completed_task: true,
+            },
+        ],
+        task,
+    }
+}
+
+/// End the running work segment and open the break the pomodoro cycle owes.
+///
+/// The 25/5-with-a-long-break-every-fourth arithmetic is not repeated here:
+/// [`sunrise_domain::break_after`] (through [`crate::FocusState::next_segment`])
+/// names the segment for the status line, and the core sizes the break from
+/// the same rule when it sees `FocusKind::Break`.
+fn take_break(state: &mut ViewState) -> Outcome {
+    let (Some(task_id), Some(session)) =
+        (state.focus.running_task(), state.focus.running_session())
+    else {
+        return Outcome::None;
+    };
+    if state.focus.on_break() {
+        state.status = "already on a break".into();
+        return Outcome::None;
+    }
+    let segment = state.focus.next_segment();
+    state.status = format!(
+        "{} — {}",
+        crate::segment_label(segment),
+        state.focused_title()
+    );
+    Outcome::SubmitMany(vec![
+        Command::EndFocus {
+            session,
+            actual_focused_ms: None,
+            completed_task: false,
+        },
+        Command::StartFocus(FocusStartDraft {
+            task_id,
+            kind: FocusKind::Break,
+            length: state.focus.length,
+            energy: state.focus.energy,
+        }),
+    ])
+}
+
+/// Log one interruption against the running session.
+///
+/// Deliberately leaves `focus.running` alone: an interruption is a note in the
+/// distraction journal, not the end of the session
+/// (`docs/08-features/focus-mode.md` §Interruption capture — "no shame UI").
+fn log_interruption(state: &mut ViewState, reason: InterruptionReason) -> Outcome {
+    state.mode = state.resting_mode();
+    let Some(session) = state.focus.running_session() else {
+        return Outcome::None;
+    };
+    state.status = format!("logged interruption: {}", reason.as_str());
+    Outcome::Submit(Box::new(Command::LogInterruption { session, reason }))
 }
 
 /// Shared "nothing is selected" response for the task-scoped bindings.
@@ -418,7 +611,7 @@ fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
         Mode::Confirm => submit_confirm(state),
         Mode::Picker => submit_picker(state),
         Mode::Insert => submit_prompt(state, now_ms),
-        Mode::Normal | Mode::Visual | Mode::Triage => Outcome::None,
+        Mode::Normal | Mode::Visual | Mode::Triage | Mode::Focus | Mode::Interrupt => Outcome::None,
     }
 }
 
@@ -426,7 +619,10 @@ fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
 /// [`Outcome`].
 fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
     let cmd = parse_command(&state.input);
-    state.mode = Mode::Normal;
+    // A running session keeps the keyboard across a `:` detour, the same way a
+    // triage pass does — otherwise `:focus stats` mid-session would silently
+    // drop the user out of the session's key set.
+    state.mode = state.resting_mode();
     state.input.clear();
     match apply_command(cmd, state) {
         Some(AppEffect::Quit) => Outcome::Quit,
@@ -435,6 +631,7 @@ fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
         Some(AppEffect::Capture(text)) => capture_outcome(state, &text, now_ms),
         Some(AppEffect::Open(id)) => Outcome::OpenTask(id),
         Some(AppEffect::Devices) => Outcome::ShowDevices,
+        Some(AppEffect::FocusStats) => Outcome::ShowFocusStats,
         None => Outcome::Refresh,
     }
 }
@@ -494,6 +691,16 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                 return Outcome::None;
             }
             capture_outcome(state, &text, now_ms)
+        }
+        Some(Prompt::CaptureAside) => {
+            // `reset_to_normal` returns to FOCUS mode while a session runs:
+            // an aside must not end or pause the session it was typed during.
+            state.reset_to_normal();
+            if text.is_empty() {
+                return Outcome::None;
+            }
+            state.status = format!("aside → Inbox: \"{text}\"");
+            Outcome::CaptureAside(text)
         }
         Some(Prompt::EditTitle(id)) => {
             if text.is_empty() {
@@ -1663,5 +1870,409 @@ mod tests {
         assert_eq!(parse_defer_ms("soon"), None);
         assert_eq!(parse_defer_ms("2y"), None);
         assert_eq!(parse_defer_ms("-1d"), None);
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::view::fixtures::{ended_work_session, fake_task, plan_row, running_session};
+    use crate::view::CascadeReport;
+    use crossterm::event::KeyCode;
+    use sunrise_domain::{Energy, EnergyFit, InterruptionReason, SessionLength, POMODORO_MS};
+
+    /// Fixed "now" shared with the rest of the reducer tests.
+    const NOW_MS: u64 = 1_767_225_600_000;
+
+    fn press(state: &mut ViewState, key: KeyCode) -> Outcome {
+        let action = state
+            .keymap
+            .dispatch(key, state.mode, state.vim_mode, state.view)
+            .unwrap_or_else(|| panic!("no binding for {key:?} in {:?}", state.mode));
+        apply_action(action, state, NOW_MS)
+    }
+
+    fn inbox_state() -> ViewState {
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        s.tasks = (0u8..3).map(fake_task).collect();
+        s.after_tasks_loaded();
+        s.select_next();
+        s
+    }
+
+    /// A state with a live session on task 1, exactly as a refresh would leave
+    /// it: the session read back from the core, the keyboard handed over.
+    fn session_state() -> ViewState {
+        let task = fake_task(1);
+        let mut s = ViewState::default();
+        s.view = View::Focus;
+        s.focused_task = Some(task.clone());
+        s.focus.running = Some(running_session(task.id, NOW_MS, Some(POMODORO_MS)));
+        s.after_focus_loaded();
+        assert_eq!(s.mode, Mode::Focus);
+        s
+    }
+
+    fn session_id(s: &ViewState) -> EntityRef {
+        s.focus.running_session().expect("a running session")
+    }
+
+    #[test]
+    fn f_starts_a_session_on_the_selected_task() {
+        let mut s = inbox_state();
+        let id = s.selected_task().expect("a selection").id;
+        match press(&mut s, KeyCode::Char('F')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::StartFocus(d) => {
+                    assert_eq!(d.task_id, id);
+                    assert_eq!(d.kind, FocusKind::Work);
+                    // The default sizing uses the estimate the user already
+                    // recorded, chunking when it exceeds a sitting.
+                    assert_eq!(d.length, SessionLength::SizedToEstimate);
+                    assert_eq!(d.energy, None);
+                }
+                other => panic!("expected StartFocus, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f_with_no_selection_says_so_instead_of_starting_something() {
+        let mut s = ViewState::default();
+        assert!(matches!(press(&mut s, KeyCode::Char('F')), Outcome::None));
+        assert_eq!(s.status, "no task selected");
+    }
+
+    #[test]
+    fn the_declared_energy_budget_and_length_reach_the_start_command() {
+        let mut s = inbox_state();
+        s.focus.energy = Some(Energy::Low);
+        s.focus.length = SessionLength::OnePomodoro;
+        match press(&mut s, KeyCode::Char('F')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::StartFocus(d) => {
+                    assert_eq!(d.energy, Some(Energy::Low));
+                    assert_eq!(d.length, SessionLength::OnePomodoro);
+                }
+                other => panic!("expected StartFocus, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_planner_row_starts_that_session() {
+        let mut s = ViewState::default();
+        s.view = View::Focus;
+        s.focus.plan = vec![
+            plan_row(1, 5, EnergyFit::Exact),
+            plan_row(2, 0, EnergyFit::Over),
+        ];
+        s.after_focus_loaded();
+        s.nav_next();
+        let picked = s.focus.plan[1].task.id;
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::StartFocus(d) => assert_eq!(d.task_id, picked),
+                other => panic!("expected StartFocus, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_start_is_refused_while_one_runs() {
+        let mut s = session_state();
+        // `F` is not a FOCUS-mode key, so reach the action directly.
+        assert!(matches!(
+            apply_action(Action::StartFocus, &mut s, NOW_MS),
+            Outcome::None
+        ));
+        assert!(s.status.contains("already running"));
+    }
+
+    #[test]
+    fn esc_ends_the_session_and_lets_the_core_freeze_the_time() {
+        let mut s = session_state();
+        let session = session_id(&s);
+        match press(&mut s, KeyCode::Esc) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::EndFocus {
+                    session: target,
+                    actual_focused_ms,
+                    completed_task,
+                } => {
+                    assert_eq!(target, session);
+                    // `None` = "freeze the span you derive from your own
+                    // clock". The TUI has no accumulated figure to send.
+                    assert_eq!(actual_focused_ms, None);
+                    assert!(!completed_task);
+                }
+                other => panic!("expected EndFocus, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(!s.focus.is_running());
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn q_ends_the_session_too_and_never_quits_the_app() {
+        let mut s = session_state();
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('q')),
+            Outcome::Submit(_)
+        ));
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn completing_mid_session_completes_closes_and_reads_the_cascade() {
+        let mut s = session_state();
+        let task = s.focus.running_task().expect("a task");
+        let session = session_id(&s);
+        match press(&mut s, KeyCode::Char('x')) {
+            Outcome::SubmitThenCascade { cmds, task: target } => {
+                assert_eq!(target, task);
+                assert_eq!(cmds.len(), 2);
+                match &cmds[0] {
+                    Command::CompleteTask(t) => assert_eq!(*t, task),
+                    other => panic!("expected CompleteTask first, got {other:?}"),
+                }
+                match &cmds[1] {
+                    Command::EndFocus {
+                        session: s2,
+                        actual_focused_ms,
+                        completed_task,
+                    } => {
+                        assert_eq!(*s2, session);
+                        assert_eq!(*actual_focused_ms, None);
+                        // The session *records* the completion; it never
+                        // becomes a second writer of task state.
+                        assert!(*completed_task);
+                    }
+                    other => panic!("expected EndFocus second, got {other:?}"),
+                }
+            }
+            other => panic!("expected SubmitThenCascade, got {other:?}"),
+        }
+        assert!(!s.focus.is_running());
+    }
+
+    #[test]
+    fn logging_an_interruption_does_not_end_the_session() {
+        let mut s = session_state();
+        let session = session_id(&s);
+        assert!(matches!(press(&mut s, KeyCode::Char('i')), Outcome::None));
+        assert_eq!(s.mode, Mode::Interrupt);
+        match press(&mut s, KeyCode::Char('m')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::LogInterruption {
+                    session: target,
+                    reason,
+                } => {
+                    assert_eq!(target, session);
+                    assert_eq!(reason, InterruptionReason::Meeting);
+                }
+                other => panic!("expected LogInterruption, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        // The whole point: the clock is still running afterwards.
+        assert!(s.focus.is_running());
+        assert_eq!(s.focus.running_session(), Some(session));
+        assert_eq!(s.mode, Mode::Focus);
+    }
+
+    #[test]
+    fn every_reason_in_the_domains_set_has_a_key_and_none_are_invented() {
+        for (key, reason) in [
+            ('s', InterruptionReason::SelfInterrupt),
+            ('m', InterruptionReason::Meeting),
+            ('b', InterruptionReason::Blocked),
+            ('o', InterruptionReason::Other),
+        ] {
+            let mut s = session_state();
+            let _ = press(&mut s, KeyCode::Char('i'));
+            match press(&mut s, KeyCode::Char(key)) {
+                Outcome::Submit(cmd) => match *cmd {
+                    Command::LogInterruption { reason: got, .. } => assert_eq!(got, reason),
+                    other => panic!("expected LogInterruption, got {other:?}"),
+                },
+                other => panic!("expected Submit, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cancelling_the_reason_chooser_leaves_the_session_running() {
+        let mut s = session_state();
+        let _ = press(&mut s, KeyCode::Char('i'));
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert_eq!(s.mode, Mode::Focus);
+        assert!(s.focus.is_running());
+    }
+
+    #[test]
+    fn capture_aside_routes_through_the_core_and_leaves_the_session_alone() {
+        let mut s = session_state();
+        // The focused task lives in a stream — the destination an ordinary
+        // capture could inherit and an aside must not.
+        s.focused_task.as_mut().expect("a task").stream_id =
+            EntityRef::new(sunrise_id::EntityKind::Stream, [7u8; 16]);
+        let session = session_id(&s);
+        assert!(matches!(press(&mut s, KeyCode::Char('a')), Outcome::None));
+        assert_eq!(s.mode, Mode::Insert);
+        assert_eq!(s.prompt, Some(Prompt::CaptureAside));
+        for c in "call the vet".chars() {
+            let _ = press(&mut s, KeyCode::Char(c));
+        }
+        match press(&mut s, KeyCode::Enter) {
+            // Deliberately *not* `Submit(CreateTask)`: building the draft
+            // locally would let the focused task's stream leak into it. The
+            // runtime hands the line to `Core::capture_aside`, which drops any
+            // `#stream` so the destination is the Inbox.
+            Outcome::CaptureAside(text) => assert_eq!(text, "call the vet"),
+            other => panic!("expected CaptureAside, got {other:?}"),
+        }
+        assert!(s.focus.is_running(), "an aside never ends the session");
+        assert_eq!(s.focus.running_session(), Some(session));
+        assert_eq!(s.mode, Mode::Focus, "and it returns to the session");
+    }
+
+    #[test]
+    fn an_empty_aside_commits_nothing() {
+        let mut s = session_state();
+        let _ = press(&mut s, KeyCode::Char('a'));
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert!(s.focus.is_running());
+    }
+
+    #[test]
+    fn taking_a_break_closes_the_work_segment_and_opens_the_break() {
+        let mut s = session_state();
+        let task = s.focus.running_task().expect("a task");
+        let session = session_id(&s);
+        match press(&mut s, KeyCode::Char('b')) {
+            Outcome::SubmitMany(cmds) => {
+                assert_eq!(cmds.len(), 2);
+                match &cmds[0] {
+                    Command::EndFocus { session: s2, .. } => assert_eq!(*s2, session),
+                    other => panic!("expected EndFocus first, got {other:?}"),
+                }
+                match &cmds[1] {
+                    // The break's *length* is not passed: the core sizes it
+                    // from the same `break_after` rule, so 5-vs-15 is decided
+                    // in one place.
+                    Command::StartFocus(d) => {
+                        assert_eq!(d.task_id, task);
+                        assert_eq!(d.kind, FocusKind::Break);
+                    }
+                    other => panic!("expected StartFocus second, got {other:?}"),
+                }
+            }
+            other => panic!("expected SubmitMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_break_the_status_line_names_comes_from_break_after() {
+        let mut s = session_state();
+        let task = s.focus.running_task().expect("a task");
+        // Three finished work segments plus the one running is the fourth
+        // cycle, so the long break is what is owed.
+        s.focus.sessions = (0u8..3).map(|i| ended_work_session(task, i + 20)).collect();
+        let _ = press(&mut s, KeyCode::Char('b'));
+        assert!(s.status.contains("long break"), "status was {:?}", s.status);
+    }
+
+    #[test]
+    fn a_break_does_not_get_its_own_break() {
+        let mut s = session_state();
+        s.focus
+            .running
+            .as_mut()
+            .expect("a session")
+            .session
+            .start
+            .kind = FocusKind::Break;
+        assert!(matches!(press(&mut s, KeyCode::Char('b')), Outcome::None));
+        assert!(s.status.contains("already on a break"));
+    }
+
+    #[test]
+    fn defer_mid_session_targets_the_focused_task_not_the_list_cursor() {
+        let mut s = session_state();
+        let task = s.focus.running_task().expect("a task");
+        s.tasks = vec![fake_task(9)];
+        s.selected = Some(0);
+        assert!(matches!(press(&mut s, KeyCode::Char('d')), Outcome::None));
+        assert_eq!(s.prompt, Some(Prompt::Defer(vec![task])));
+    }
+
+    #[test]
+    fn focus_stats_is_reachable_from_the_command_line() {
+        let mut s = ViewState::default();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        for c in "focus stats".chars() {
+            let _ = press(&mut s, KeyCode::Char(c));
+        }
+        assert!(matches!(
+            press(&mut s, KeyCode::Enter),
+            Outcome::ShowFocusStats
+        ));
+    }
+
+    #[test]
+    fn the_command_line_hands_the_keyboard_back_to_the_session() {
+        let mut s = session_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        assert_eq!(s.mode, Mode::Command);
+        for c in "focus stats".chars() {
+            let _ = press(&mut s, KeyCode::Char(c));
+        }
+        let _ = press(&mut s, KeyCode::Enter);
+        assert_eq!(s.mode, Mode::Focus, "a `:` detour never orphans a session");
+    }
+
+    #[test]
+    fn declaring_an_energy_budget_re_ranks_the_queue() {
+        let mut s = ViewState::default();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        for c in "focus energy high".chars() {
+            let _ = press(&mut s, KeyCode::Char(c));
+        }
+        // Refresh: the new budget is an input to `Query::FocusPlan`.
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::Refresh));
+        assert_eq!(s.focus.energy, Some(Energy::High));
+    }
+
+    #[test]
+    fn dismissing_the_stats_overlay_with_esc_never_ends_the_session() {
+        let mut s = session_state();
+        s.focus.stats = Some(Box::new(sunrise_domain::fold_focus_stats(&[], NOW_MS)));
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert!(s.focus.stats.is_none());
+        assert!(
+            s.focus.is_running(),
+            "Esc closed the overlay, not the session"
+        );
+    }
+
+    #[test]
+    fn starting_a_session_clears_the_previous_completions_cascade() {
+        let mut s = inbox_state();
+        s.focus.cascade = Some(CascadeReport {
+            cascade: sunrise_domain::UnblockCascade {
+                completed: s.tasks[0].id,
+                released: vec![s.tasks[1].id],
+                still_blocked: Vec::new(),
+            },
+            released: vec!["Deploy".into()],
+        });
+        let _ = press(&mut s, KeyCode::Char('F'));
+        assert!(s.focus.cascade.is_none());
     }
 }

@@ -2,9 +2,12 @@
 
 use crate::keymap::{Keymap, Mode};
 use jiff::Timestamp;
-use sunrise_core::queries::{ContextRow, DeviceRow, StreamRow};
+use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
-use sunrise_domain::{materialization_horizon_days, Routine, Task};
+use sunrise_domain::{
+    break_after, materialization_horizon_days, Energy, FocusKind, FocusStats, Routine, Segment,
+    SessionLength, Task, UnblockCascade,
+};
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
 
@@ -104,6 +107,10 @@ impl StreamPane {
 pub enum Prompt {
     /// Capture a new task (`c`).
     Capture,
+    /// Capture a mid-session thought (`a`). Committed through
+    /// `Core::capture_aside`, so it lands in the Inbox rather than in the
+    /// focused task's stream.
+    CaptureAside,
     /// Edit an existing task's title (`e`).
     EditTitle(EntityRef),
     /// Defer one or more tasks by a typed offset such as `2h` / `3d` (`d`).
@@ -164,6 +171,241 @@ impl StreamPicker {
     #[must_use]
     pub fn selected_row(&self) -> Option<&StreamRow> {
         self.rows.get(self.selected)
+    }
+}
+
+/// Everything the Focus view reads about focus **sessions**
+/// (`docs/08-features/focus-mode.md`).
+///
+/// Every field here is *read through* from the core's queries. In particular
+/// there is no elapsed/remaining field and no tick counter: a running
+/// session's numbers are derived on demand from
+/// [`sunrise_domain::FocusSession::elapsed_ms`] against
+/// [`ViewState::now_ms`], which is what
+/// [ADR-0013](../../../docs/11-adr/0013-focus-session-op-representation.md)
+/// means by "nothing ticking is ever persisted".
+///
+/// Not `PartialEq`: the core's query rows aren't.
+#[derive(Debug, Clone)]
+pub struct FocusState {
+    /// The session with a `start` and no `end` (`Query::RunningFocusSessions`).
+    /// `None` means no session is running — including right after a crash,
+    /// where a dangling start would instead read as *still running*.
+    pub running: Option<FocusSessionRow>,
+    /// The ranked planner queue (`Query::FocusPlan`), best pick first.
+    pub plan: Vec<FocusPlanRow>,
+    /// Cursor into [`Self::plan`].
+    pub selected: Option<usize>,
+    /// Sessions recorded against the focused task
+    /// (`Query::TaskFocusSessions`), newest first. Read-only input to
+    /// [`Self::work_sessions_done`].
+    pub sessions: Vec<FocusSessionRow>,
+    /// Folded focus totals + calibration (`:focus stats`), shown as an
+    /// overlay. `None` hides it.
+    pub stats: Option<Box<FocusStats>>,
+    /// What the last mid-session completion released. Informational; it keeps
+    /// no score.
+    pub cascade: Option<CascadeReport>,
+    /// The energy budget the next session declares (`:focus energy`). `None`
+    /// means "no signal", which drops energy out of the planner ranking.
+    pub energy: Option<Energy>,
+    /// How the next session is sized (`:focus length`).
+    pub length: SessionLength,
+}
+
+impl Default for FocusState {
+    fn default() -> Self {
+        Self {
+            running: None,
+            plan: Vec::new(),
+            selected: None,
+            sessions: Vec::new(),
+            stats: None,
+            cascade: None,
+            energy: None,
+            // Sized to the task's own estimate, chunked when it exceeds one
+            // sitting — the choice that uses the data the user already has.
+            length: SessionLength::SizedToEstimate,
+        }
+    }
+}
+
+impl FocusState {
+    /// Whether a session is running right now.
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// The running session's own id (`fcs_`), for `EndFocus` /
+    /// `LogInterruption`.
+    #[must_use]
+    pub fn running_session(&self) -> Option<EntityRef> {
+        self.running.as_ref().map(|r| r.session.start.id)
+    }
+
+    /// The task the running session is on.
+    #[must_use]
+    pub fn running_task(&self) -> Option<EntityRef> {
+        self.running.as_ref().map(|r| r.session.start.task_id)
+    }
+
+    /// Whether the running session is a break rather than a work segment.
+    #[must_use]
+    pub fn on_break(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|r| r.session.start.kind == FocusKind::Break)
+    }
+
+    /// Wall-clock span of the running session, **derived from `now_ms`** —
+    /// never a number this struct carries.
+    #[must_use]
+    pub fn elapsed_ms(&self, now_ms: u64) -> Option<u64> {
+        self.running.as_ref().map(|r| r.session.elapsed_ms(now_ms))
+    }
+
+    /// Time left against the plan; the inner `None` is an open-ended
+    /// (`until done`) session.
+    #[must_use]
+    pub fn remaining_ms(&self, now_ms: u64) -> Option<Option<u64>> {
+        self.running
+            .as_ref()
+            .map(|r| r.session.remaining_ms(now_ms))
+    }
+
+    /// The highlighted planner row.
+    #[must_use]
+    pub fn selected_plan(&self) -> Option<&FocusPlanRow> {
+        self.selected.and_then(|i| self.plan.get(i))
+    }
+
+    /// Work segments already **finished** against the focused task, counted
+    /// from the session log. Derived on read; the TUI never increments a
+    /// counter of its own, which is what keeps the cycle correct across a
+    /// restart or a session started on another device.
+    #[must_use]
+    pub fn work_sessions_done(&self) -> u32 {
+        let n = self
+            .sessions
+            .iter()
+            .filter(|r| !r.running && r.session.start.kind == FocusKind::Work)
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
+    }
+
+    /// The segment the pomodoro cycle owes once the current one is done —
+    /// [`sunrise_domain::break_after`], not arithmetic repeated here. The
+    /// work segment currently running counts toward the cycle, so the fourth
+    /// one is followed by the long break.
+    #[must_use]
+    pub fn next_segment(&self) -> Segment {
+        let running_work = self
+            .running
+            .as_ref()
+            .is_some_and(|r| r.session.start.kind == FocusKind::Work);
+        break_after(
+            self.work_sessions_done()
+                .saturating_add(u32::from(running_work)),
+        )
+    }
+
+    /// Point the cursor at `focused`'s row when the queue reloads, so a
+    /// refresh under the user's hand does not move the pick.
+    pub fn after_plan_loaded(&mut self, focused: Option<EntityRef>) {
+        self.selected = match focused.and_then(|id| self.plan.iter().position(|r| r.task.id == id))
+        {
+            Some(i) => Some(i),
+            None => clamp_selection(self.plan.len(), self.selected),
+        };
+    }
+}
+
+/// What a mid-session completion released
+/// (`docs/08-features/focus-mode.md` §Unblock cascade), with the released
+/// tasks' titles resolved by the runtime.
+///
+/// Informational by construction: it names what moved and keeps no score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadeReport {
+    /// The graph frontier the core recomputed.
+    pub cascade: UnblockCascade,
+    /// Titles of [`UnblockCascade::released`], in the same order. May be
+    /// shorter than `released` when the runtime capped the lookups.
+    pub released: Vec<String>,
+}
+
+impl CascadeReport {
+    /// One informational line: what this completion released, and how much is
+    /// still waiting on something else.
+    #[must_use]
+    pub fn line(&self) -> String {
+        if self.cascade.is_empty() {
+            return "nothing was waiting on it".into();
+        }
+        let mut parts = vec![if self.released.is_empty() {
+            "released nothing yet".to_string()
+        } else {
+            let names = self
+                .released
+                .iter()
+                .map(|t| format!("\"{t}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("released {names}")
+        }];
+        if !self.cascade.still_blocked.is_empty() {
+            parts.push(format!(
+                "{} still waiting on something else",
+                self.cascade.still_blocked.len()
+            ));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// Human label for a pomodoro segment.
+#[must_use]
+pub const fn segment_label(s: Segment) -> &'static str {
+    match s {
+        Segment::Work => "work",
+        Segment::ShortBreak => "short break",
+        Segment::LongBreak => "long break",
+    }
+}
+
+/// Human label for an energy budget; `None` reads as "any", the value that
+/// drops energy out of the planner ranking.
+#[must_use]
+pub const fn energy_budget_label(e: Option<Energy>) -> &'static str {
+    match e {
+        None => "any",
+        Some(Energy::Low) => "low",
+        Some(Energy::Med) => "med",
+        Some(Energy::High) => "high",
+    }
+}
+
+/// Human label for a session-length choice.
+#[must_use]
+pub const fn length_label(l: SessionLength) -> &'static str {
+    match l {
+        SessionLength::OnePomodoro => "one pomodoro",
+        SessionLength::SizedToEstimate => "sized to estimate",
+        SessionLength::UntilDone => "until done",
+    }
+}
+
+/// `MM:SS`, widening to `H:MM:SS` past an hour. Used for every duration the
+/// Focus view shows, so a timer and a total read the same way.
+#[must_use]
+pub fn fmt_duration_ms(ms: u64) -> String {
+    let total_s = ms / 1000;
+    let (h, m, s) = (total_s / 3600, (total_s % 3600) / 60, total_s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
     }
 }
 
@@ -318,6 +560,17 @@ pub struct ViewState {
     pub tz: jiff::tz::TimeZone,
     /// Active keymap, including any `~/.config/sunrise/keys.toml` overrides.
     pub keymap: Keymap,
+    /// Focus-session state: the running session, the planner queue, the
+    /// folded stats. See [`FocusState`].
+    pub focus: FocusState,
+    /// Last reading of the injected clock (`Core::now_ms`), refreshed once per
+    /// frame by the binary.
+    ///
+    /// **Not a tick counter.** Nothing in the TUI increments it; it is the
+    /// clock value the render pass hands to
+    /// [`sunrise_domain::FocusSession::elapsed_ms`] so a running timer is
+    /// derived rather than accumulated.
+    pub now_ms: u64,
 }
 
 impl Default for ViewState {
@@ -349,6 +602,8 @@ impl Default for ViewState {
             capture_preview: None,
             tz: jiff::tz::TimeZone::UTC,
             keymap: Keymap::default(),
+            focus: FocusState::default(),
+            now_ms: 0,
         }
     }
 }
@@ -419,6 +674,9 @@ impl ViewState {
         match self.view {
             View::Routines => ActiveList::Routines,
             View::Stream if matches!(self.pane, StreamPane::Streams) => ActiveList::Streams,
+            // The Focus view's list is the planner queue: `j`/`k`/`gg`/`G`
+            // pick what to work on next without needing keys of their own.
+            View::Focus => ActiveList::FocusPlan,
             _ => ActiveList::Tasks,
         }
     }
@@ -431,6 +689,10 @@ impl ViewState {
             ActiveList::Routines => {
                 self.selected_routine = wrap_next(self.routines.len(), self.selected_routine);
             }
+            ActiveList::FocusPlan => {
+                self.focus.selected = wrap_next(self.focus.plan.len(), self.focus.selected);
+                self.sync_focus_pick();
+            }
             ActiveList::Tasks => self.select_next(),
         }
     }
@@ -441,6 +703,10 @@ impl ViewState {
             ActiveList::Streams => self.stream_prev(),
             ActiveList::Routines => {
                 self.selected_routine = wrap_prev(self.routines.len(), self.selected_routine);
+            }
+            ActiveList::FocusPlan => {
+                self.focus.selected = wrap_prev(self.focus.plan.len(), self.focus.selected);
+                self.sync_focus_pick();
             }
             ActiveList::Tasks => self.select_prev(),
         }
@@ -463,6 +729,7 @@ impl ViewState {
         let len = match list {
             ActiveList::Streams => self.streams.len(),
             ActiveList::Routines => self.routines.len(),
+            ActiveList::FocusPlan => self.focus.plan.len(),
             ActiveList::Tasks => self.tasks.len(),
         };
         if len == 0 {
@@ -472,6 +739,10 @@ impl ViewState {
         match list {
             ActiveList::Streams => self.selected_stream = idx,
             ActiveList::Routines => self.selected_routine = idx,
+            ActiveList::FocusPlan => {
+                self.focus.selected = idx;
+                self.sync_focus_pick();
+            }
             ActiveList::Tasks => self.selected = idx,
         }
     }
@@ -515,11 +786,7 @@ impl ViewState {
     /// user into the plain Inbox mid-pass. [`Self::exit_triage`] is the only
     /// way out.
     pub fn reset_to_normal(&mut self) {
-        self.mode = if self.triage {
-            Mode::Triage
-        } else {
-            Mode::Normal
-        };
+        self.mode = self.resting_mode();
         self.prompt = None;
         self.picker = None;
         self.pending_g = false;
@@ -541,6 +808,11 @@ impl ViewState {
     /// is active, otherwise just the selected row.
     #[must_use]
     pub fn operand_ids(&self) -> Vec<EntityRef> {
+        // While a session owns the keyboard the operand is the task being
+        // focused on, not whatever row the underlying list cursor sits on.
+        if self.mode == Mode::Focus {
+            return self.focus.running_task().into_iter().collect();
+        }
         match self.visual_range() {
             // Sliced with `get` rather than indexed: a stale range against a
             // list that shrank under a refresh must yield fewer tasks, never a
@@ -560,6 +832,9 @@ impl ViewState {
     /// Label for the current operand set: the task's title, or `"N tasks"`.
     #[must_use]
     pub fn operand_label(&self) -> String {
+        if self.mode == Mode::Focus {
+            return self.focused_title();
+        }
         match self.visual_range() {
             Some((lo, hi)) if hi > lo => format!("{} tasks", hi - lo + 1),
             _ => self
@@ -674,9 +949,78 @@ impl ViewState {
         self.view = self.prev_view.take().unwrap_or(View::Today);
         self.focused_task = None;
     }
+
+    /// The mode a transient mode (prompt, command line, picker, confirmation)
+    /// hands control back to.
+    ///
+    /// A running focus session outranks a triage pass, which outranks Normal:
+    /// capturing an aside mid-session must return to the session, exactly as a
+    /// prompt opened from triage returns to the triage card.
+    #[must_use]
+    pub fn resting_mode(&self) -> Mode {
+        if self.focus.is_running() {
+            Mode::Focus
+        } else if self.triage {
+            Mode::Triage
+        } else {
+            Mode::Normal
+        }
+    }
+
+    /// Title of the task the Focus view is on.
+    ///
+    /// Falls back to the running session's task id: a session recovered from
+    /// another device can be live before its task has been read back, and a
+    /// timer over a blank line reads like a bug.
+    #[must_use]
+    pub fn focused_title(&self) -> String {
+        if let Some(t) = self.focused_task.as_ref() {
+            return t.title.clone();
+        }
+        self.focus
+            .running_task()
+            .map_or_else(String::new, |id| id.to_str())
+    }
+
+    /// Mirror the planner cursor into [`Self::focused_task`], so the detail
+    /// the view shows and the task `F` / Enter would start on are the same
+    /// row the user is looking at.
+    fn sync_focus_pick(&mut self) {
+        if let Some(row) = self.focus.selected_plan() {
+            self.focused_task = Some(row.task.clone());
+        }
+    }
+
+    /// Reconcile the keyboard with the session log after a refresh.
+    ///
+    /// This is the *read* side: a session that appeared — started here,
+    /// recovered after a crash, or merged in from another device — takes over
+    /// the Focus view, and one that ended hands the keyboard back. Only
+    /// Normal mode is taken over, so an open prompt is never yanked away.
+    pub fn after_focus_loaded(&mut self) {
+        let focused = self.focused_task.as_ref().map(|t| t.id);
+        self.focus.after_plan_loaded(focused);
+        if self.focus.is_running() {
+            if self.mode == Mode::Normal {
+                self.mode = Mode::Focus;
+            }
+            if self.view != View::Focus {
+                self.prev_view = Some(self.view);
+                self.view = View::Focus;
+            }
+        } else if self.mode == Mode::Focus {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Show the `:focus stats` overlay.
+    pub fn show_focus_stats(&mut self, stats: Box<FocusStats>) {
+        self.status = "focus stats — any key to close".into();
+        self.focus.stats = Some(stats);
+    }
 }
 
-/// Which of the three selectable lists the cursor keys currently drive.
+/// Which of the selectable lists the cursor keys currently drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveList {
     /// The task list (Today / Inbox / Search / Stream's right pane).
@@ -685,6 +1029,8 @@ enum ActiveList {
     Streams,
     /// The Routines view.
     Routines,
+    /// The Focus view's planner queue.
+    FocusPlan,
 }
 
 /// Clamp an optional selection index to a list of `len` items (first item
@@ -735,12 +1081,76 @@ fn wrap_prev(len: usize, selected: Option<usize>) -> Option<usize> {
 pub(crate) mod fixtures {
     use jiff::Timestamp;
     use std::collections::BTreeSet;
-    use sunrise_core::queries::{ContextRow, StreamRow};
+    use sunrise_core::queries::{ContextRow, FocusPlanRow, FocusSessionRow, StreamRow};
     use sunrise_domain::rrule::RRule;
     use sunrise_domain::{
-        inbox_stream_ref, Routine, RoutineCatchupPolicy, StreamColor, Task, TaskState, TaskTemplate,
+        inbox_stream_ref, Chunk, Energy, EnergyFit, FocusKind, FocusSession, FocusStart, Routine,
+        RoutineCatchupPolicy, SessionPlan, StreamColor, Task, TaskState, TaskTemplate, POMODORO_MS,
     };
     use sunrise_id::{EntityKind, EntityRef};
+
+    /// A **running** work session on `task`: a `start` op with no `end`.
+    ///
+    /// `focused_ms` is seeded with a deliberately absurd value. It is the
+    /// snapshot the query took when it ran, and nothing that renders a live
+    /// timer may use it — the timer derives from the clock instead. A test
+    /// that starts showing `9:59:59` has caught exactly the bug
+    /// `docs/11-adr/0013-…` exists to prevent.
+    pub(crate) fn running_session(
+        task: EntityRef,
+        started_at_ms: u64,
+        planned_ms: Option<u64>,
+    ) -> FocusSessionRow {
+        FocusSessionRow {
+            session: FocusSession {
+                start: FocusStart {
+                    id: EntityRef::new(EntityKind::FocusSession, [42u8; 16]),
+                    task_id: task,
+                    stream_id: inbox_stream_ref(),
+                    started_at_ms,
+                    planned_ms,
+                    energy: Some(Energy::High),
+                    kind: FocusKind::Work,
+                    chunk: Some(Chunk { index: 2, total: 4 }),
+                },
+                end: None,
+                interruptions: Vec::new(),
+            },
+            running: true,
+            focused_ms: 35_999_000,
+        }
+    }
+
+    /// An **ended** work session on `task` — what `break_after` counts.
+    pub(crate) fn ended_work_session(task: EntityRef, idx: u8) -> FocusSessionRow {
+        let mut row = running_session(task, 1_000, Some(POMODORO_MS));
+        row.session.start.id = EntityRef::new(EntityKind::FocusSession, [idx; 16]);
+        row.session.end = Some(sunrise_domain::FocusEnd {
+            session_id: row.session.start.id,
+            ended_at_ms: 1_000 + POMODORO_MS,
+            actual_focused_ms: POMODORO_MS,
+            interruptions: Vec::new(),
+            completed_task: false,
+        });
+        row.running = false;
+        row
+    }
+
+    /// One planner row: a task, its leverage, and its energy fit.
+    pub(crate) fn plan_row(idx: u8, unblocks: u32, energy_fit: EnergyFit) -> FocusPlanRow {
+        let mut task = fake_task(idx);
+        task.title = format!("plan task {idx}");
+        FocusPlanRow {
+            task,
+            unblocks,
+            energy_fit,
+            suggested: SessionPlan {
+                planned_ms: Some(POMODORO_MS),
+                chunk: Some(Chunk { index: 1, total: 4 }),
+            },
+            prior_sessions: 0,
+        }
+    }
 
     /// A minimal task; `idx` seeds the id and title.
     pub(crate) fn fake_task(idx: u8) -> Task {
@@ -1108,5 +1518,219 @@ mod tests {
         assert_eq!(s.prev_view, Some(View::Search));
         s.close_focus();
         assert_eq!(s.view, View::Search);
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::fixtures::{ended_work_session, fake_task, plan_row, running_session};
+    use super::*;
+    use sunrise_domain::{EnergyFit, InterruptionReason, POMODORO_MS};
+    use sunrise_id::{EntityKind, EntityRef};
+
+    fn running_state() -> ViewState {
+        let task = fake_task(1);
+        let mut s = ViewState::default();
+        s.view = View::Focus;
+        s.focused_task = Some(task.clone());
+        s.focus.running = Some(running_session(task.id, 1_000, Some(POMODORO_MS)));
+        s.mode = Mode::Focus;
+        s
+    }
+
+    #[test]
+    fn elapsed_and_remaining_derive_from_the_clock_and_are_never_stored() {
+        let s = running_state();
+        assert_eq!(s.focus.elapsed_ms(1_000), Some(0));
+        assert_eq!(s.focus.elapsed_ms(1_000 + 300_000), Some(300_000));
+        assert_eq!(
+            s.focus.remaining_ms(1_000 + 300_000),
+            Some(Some(POMODORO_MS - 300_000))
+        );
+        // Same value, three clocks, three answers: nothing about the running
+        // timer lives in `FocusState`.
+        assert_eq!(s.focus.elapsed_ms(u64::MAX), Some(u64::MAX - 1_000));
+        assert_eq!(s.focus.remaining_ms(u64::MAX), Some(Some(0)));
+    }
+
+    #[test]
+    fn an_open_ended_session_has_no_remaining() {
+        let task = fake_task(1);
+        let mut s = ViewState::default();
+        s.focus.running = Some(running_session(task.id, 0, None));
+        assert_eq!(s.focus.remaining_ms(999_999), Some(None));
+    }
+
+    #[test]
+    fn work_sessions_done_is_counted_from_the_log_not_a_counter() {
+        let task = fake_task(1);
+        let mut s = running_state();
+        // Only *ended* work segments count; the one currently running has not
+        // happened yet.
+        s.focus.sessions = vec![
+            running_session(task.id, 1_000, Some(POMODORO_MS)),
+            ended_work_session(task.id, 7),
+            ended_work_session(task.id, 8),
+        ];
+        assert_eq!(s.focus.work_sessions_done(), 2);
+        // Two done plus the one running is the third cycle → still a short
+        // break. This is `break_after`, not arithmetic repeated here.
+        assert_eq!(s.focus.next_segment(), Segment::ShortBreak);
+        s.focus.sessions.push(ended_work_session(task.id, 9));
+        assert_eq!(s.focus.work_sessions_done(), 3);
+        // The fourth cycle earns the long break.
+        assert_eq!(s.focus.next_segment(), Segment::LongBreak);
+        assert_eq!(
+            Segment::LongBreak.default_ms(),
+            sunrise_domain::LONG_BREAK_MS
+        );
+    }
+
+    #[test]
+    fn a_running_session_owns_the_resting_mode() {
+        let mut s = running_state();
+        assert_eq!(s.resting_mode(), Mode::Focus);
+        // A prompt opened mid-session hands control back to the session, not
+        // to Normal — the same contract triage has.
+        s.mode = Mode::Insert;
+        s.prompt = Some(Prompt::CaptureAside);
+        s.reset_to_normal();
+        assert_eq!(s.mode, Mode::Focus);
+        assert!(s.prompt.is_none());
+        s.focus.running = None;
+        assert_eq!(s.resting_mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn after_focus_loaded_takes_the_keyboard_and_gives_it_back() {
+        let task = fake_task(1);
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        // A session appears — started here, recovered after a crash, or merged
+        // in from another device; the read side cannot tell and need not.
+        s.focus.running = Some(running_session(task.id, 0, Some(POMODORO_MS)));
+        s.after_focus_loaded();
+        assert_eq!(s.mode, Mode::Focus);
+        assert_eq!(s.view, View::Focus);
+        assert_eq!(s.prev_view, Some(View::Inbox));
+        // ... and when it ends, the keyboard comes back.
+        s.focus.running = None;
+        s.after_focus_loaded();
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn after_focus_loaded_never_yanks_an_open_prompt() {
+        let task = fake_task(1);
+        let mut s = ViewState::default();
+        s.mode = Mode::Insert;
+        s.prompt = Some(Prompt::Capture);
+        s.focus.running = Some(running_session(task.id, 0, Some(POMODORO_MS)));
+        s.after_focus_loaded();
+        assert_eq!(s.mode, Mode::Insert, "a half-typed capture survives");
+    }
+
+    #[test]
+    fn the_planner_cursor_is_the_focus_pick() {
+        let mut s = ViewState::default();
+        s.view = View::Focus;
+        s.focus.plan = vec![
+            plan_row(1, 3, EnergyFit::Exact),
+            plan_row(2, 0, EnergyFit::Under),
+        ];
+        s.after_focus_loaded();
+        assert_eq!(s.focus.selected, Some(0));
+        s.nav_next();
+        assert_eq!(s.focus.selected, Some(1));
+        // The detail pane and the task `F` would start on are the same row.
+        assert_eq!(
+            s.focused_task.as_ref().map(|t| t.id),
+            Some(s.focus.plan[1].task.id)
+        );
+        s.nav_first();
+        assert_eq!(s.focus.selected, Some(0));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_cursor_on_the_task_the_user_picked() {
+        let mut s = ViewState::default();
+        s.view = View::Focus;
+        s.focus.plan = vec![
+            plan_row(1, 3, EnergyFit::Exact),
+            plan_row(2, 1, EnergyFit::Exact),
+        ];
+        s.after_focus_loaded();
+        s.nav_next();
+        let picked = s.focus.plan[1].task.id;
+        // The queue re-ranks under the user's hand: the pick follows the task.
+        s.focus.plan = vec![
+            plan_row(2, 9, EnergyFit::Exact),
+            plan_row(1, 3, EnergyFit::Exact),
+        ];
+        s.after_focus_loaded();
+        assert_eq!(s.focus.selected_plan().map(|r| r.task.id), Some(picked));
+    }
+
+    #[test]
+    fn the_focus_operand_is_the_session_task_not_the_list_cursor() {
+        let mut s = running_state();
+        // The underlying list still has a cursor on something else entirely.
+        s.tasks = vec![fake_task(9)];
+        s.selected = Some(0);
+        assert_eq!(s.operand_ids(), vec![s.focus.running_task().unwrap()]);
+        assert_eq!(s.operand_label(), s.focused_title());
+    }
+
+    #[test]
+    fn the_cascade_names_what_moved_and_keeps_no_score() {
+        let t = |b: u8| EntityRef::new(EntityKind::Task, [b; 16]);
+        let report = CascadeReport {
+            cascade: UnblockCascade {
+                completed: t(1),
+                released: vec![t(2), t(3)],
+                still_blocked: vec![t(4)],
+            },
+            released: vec!["Deploy".into(), "QA".into()],
+        };
+        let line = report.line();
+        assert!(line.contains("\"Deploy\""), "{line}");
+        assert!(line.contains("\"QA\""), "{line}");
+        assert!(line.contains("1 still waiting"), "{line}");
+        // No score, no streak, no congratulation.
+        for banned in ["streak", "score", "congrat", "well done", "point"] {
+            assert!(!line.to_lowercase().contains(banned), "{line}");
+        }
+        let empty = CascadeReport {
+            cascade: UnblockCascade {
+                completed: t(1),
+                released: Vec::new(),
+                still_blocked: Vec::new(),
+            },
+            released: Vec::new(),
+        };
+        assert_eq!(empty.line(), "nothing was waiting on it");
+    }
+
+    #[test]
+    fn durations_read_as_a_timer() {
+        assert_eq!(fmt_duration_ms(0), "00:00");
+        assert_eq!(fmt_duration_ms(59_999), "00:59");
+        assert_eq!(fmt_duration_ms(POMODORO_MS), "25:00");
+        assert_eq!(
+            fmt_duration_ms(3 * 3_600_000 + 4 * 60_000 + 5_000),
+            "3:04:05"
+        );
+    }
+
+    #[test]
+    fn labels_cover_every_choice() {
+        assert_eq!(energy_budget_label(None), "any");
+        assert_eq!(energy_budget_label(Some(Energy::High)), "high");
+        assert_eq!(length_label(SessionLength::OnePomodoro), "one pomodoro");
+        assert_eq!(length_label(SessionLength::UntilDone), "until done");
+        assert_eq!(segment_label(Segment::Work), "work");
+        assert_eq!(segment_label(Segment::LongBreak), "long break");
+        // The reason set is the domain's, not one invented here.
+        assert_eq!(InterruptionReason::Meeting.as_str(), "meeting");
     }
 }

@@ -40,7 +40,8 @@ use sunrise_domain::{NoteBody, TaskPatch};
 use sunrise_tui::livesync;
 use sunrise_tui::runtime::{drain_changes, CHANGE_DEBOUNCE};
 use sunrise_tui::{
-    apply_action, editor, keymap, render, routine_rows, Outcome, SyncIndicator, View, ViewState,
+    apply_action, editor, keymap, render, routine_rows, CascadeReport, Outcome, SyncIndicator,
+    View, ViewState,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -219,6 +220,10 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
         // Refresh the status-line sync indicator every iteration so it tracks
         // the background driver in real time (independent of view refreshes).
         poll_sync(core, &mut state, sync_on).await;
+        // The one place the running timer reads the clock. Nothing accumulates
+        // it: `render` derives elapsed/remaining from this value against the
+        // immutable session record, every frame, from scratch.
+        state.now_ms = core.now_ms();
         term.draw(|f| {
             let area = f.area();
             #[cfg(feature = "images")]
@@ -339,6 +344,40 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 Ok(QueryResult::Devices(rows)) => state.show_devices(rows),
                 _ => state.status = "could not load devices".into(),
             },
+            Outcome::CaptureAside(text) => {
+                // Committed through `Core::capture_aside`, which drops any
+                // `#stream` the parser resolved so the aside lands in the
+                // Inbox rather than in the focused task's stream.
+                match core.capture_aside(&text, &state.tz).await {
+                    Ok(c) => {
+                        if let Err(e) = core.submit(Command::CreateTask(c.draft)).await {
+                            state.status = format!("error: {e}");
+                        }
+                    }
+                    Err(e) => state.status = format!("error: {e}"),
+                }
+                refresh(core, &mut state).await;
+            }
+            Outcome::SubmitThenCascade { cmds, task } => {
+                for cmd in cmds {
+                    if let Err(e) = core.submit(cmd).await {
+                        state.status = format!("error: {e}");
+                    }
+                }
+                state.focus.cascade = load_cascade(core, task).await;
+                refresh(core, &mut state).await;
+            }
+            Outcome::ShowFocusStats => {
+                let q = Query::FocusStats {
+                    stream: None,
+                    since_ms: None,
+                    now_ms: core.now_ms(),
+                };
+                match core.query(q).await {
+                    Ok(QueryResult::FocusStats(s)) => state.show_focus_stats(s),
+                    _ => state.status = "could not load focus stats".into(),
+                }
+            }
             Outcome::Preview(path) => {
                 #[cfg(feature = "images")]
                 match sunrise_tui::images::load_preview(&mut picker, &path) {
@@ -510,6 +549,83 @@ async fn poll_sync(core: &Core, state: &mut ViewState, sync_on: bool) {
     }
 }
 
+/// Read the unblock cascade for a task that was just completed, resolving the
+/// released tasks' titles so the report names work rather than ids.
+///
+/// Informational only: it says what moved and keeps no score, per
+/// `docs/08-features/focus-mode.md` §What we don't do.
+async fn load_cascade(core: &Core, task: sunrise_id::EntityRef) -> Option<CascadeReport> {
+    /// Enough released tasks to make the payoff concrete without turning the
+    /// pane into a list.
+    const MAX_NAMED: usize = 4;
+    let cascade = match core.query(Query::UnblockCascade(task)).await {
+        Ok(QueryResult::UnblockCascade(c)) => *c,
+        _ => return None,
+    };
+    let mut released = Vec::new();
+    for id in cascade.released.iter().take(MAX_NAMED) {
+        if let Ok(QueryResult::Task(t)) = core.query(Query::EntityById(*id)).await {
+            released.push(t.title);
+        }
+    }
+    Some(CascadeReport { cascade, released })
+}
+
+/// Read the focus-session side of the world: the running session (if any), the
+/// ranked planner queue, and the focused task's session log.
+///
+/// `RunningFocusSessions` is read on **every** refresh, not just in the Focus
+/// view: a `start` with no `end` is exactly what a crash — or a session begun
+/// on another device — leaves behind, and `after_focus_loaded` turns that into
+/// the session taking the keyboard back over.
+async fn refresh_focus(core: &Core, state: &mut ViewState) {
+    if let Ok(QueryResult::FocusSessions(rows)) = core.query(Query::RunningFocusSessions).await {
+        state.focus.running = rows
+            .into_iter()
+            .max_by_key(|r| r.session.start.started_at_ms);
+    }
+    // Whatever the session is on wins over the list cursor: the pane must show
+    // the task whose clock is running.
+    if let Some(task) = state.focus.running_task() {
+        if state.focused_task.as_ref().is_none_or(|t| t.id != task) {
+            if let Ok(QueryResult::Task(t)) = core.query(Query::EntityById(task)).await {
+                state.focused_task = Some(*t);
+            }
+        }
+    }
+    if state.view != View::Focus && !state.focus.is_running() {
+        return;
+    }
+    // The planner is the *idle* Focus view; a running session replaces it.
+    if state.focus.is_running() {
+        state.focus.plan.clear();
+    } else if let Ok(QueryResult::FocusPlan(rows)) = core
+        .query(Query::FocusPlan {
+            stream: None,
+            energy: state.focus.energy,
+            length: state.focus.length,
+            limit: 12,
+        })
+        .await
+    {
+        state.focus.plan = rows;
+    }
+    // The session log behind `break_after`: work segments already finished.
+    state.focus.sessions.clear();
+    if let Some(task) = state
+        .focus
+        .running_task()
+        .or_else(|| state.focused_task.as_ref().map(|t| t.id))
+    {
+        if let Ok(QueryResult::FocusSessions(rows)) = core
+            .query(Query::TaskFocusSessions { task, limit: 64 })
+            .await
+        {
+            state.focus.sessions = rows;
+        }
+    }
+}
+
 async fn refresh(core: &Core, state: &mut ViewState) {
     // Streams and contexts back `#stream` / `@context` resolution in capture,
     // the capture preview, and the Focus detail line, so both are loaded for
@@ -522,6 +638,8 @@ async fn refresh(core: &Core, state: &mut ViewState) {
     if let Ok(QueryResult::Contexts(rows)) = core.query(Query::Contexts).await {
         state.contexts = rows;
     }
+    refresh_focus(core, state).await;
+    state.after_focus_loaded();
     // A triage pass always reads the Inbox, whatever the nominal view is.
     if state.triage {
         load_tasks(core, state, Query::Inbox).await;

@@ -2,13 +2,17 @@
 //! the data it needs, and writes widgets. No I/O.
 
 use crate::keymap::{Keymap, Mode};
-use crate::view::{RoutineRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState};
+use crate::view::{
+    energy_budget_label, fmt_duration_ms, length_label, segment_label, RoutineRow, StreamPane,
+    StreamPicker, SyncIndicator, View, ViewState,
+};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
-use sunrise_domain::Task;
+use sunrise_core::queries::{FocusPlanRow, FocusSessionRow};
+use sunrise_domain::{Calibration, EnergyFit, FocusKind, FocusStats, Task};
 use sunrise_sync::SyncState;
 
 /// Minimum terminal width required to render the UI (`docs/07-clients/tui.md`).
@@ -105,6 +109,9 @@ fn render_chrome(
     if let Some(devices) = state.devices.as_ref() {
         render_devices(f, area, devices);
     }
+    if let Some(stats) = state.focus.stats.as_ref() {
+        render_focus_stats(f, area, state, stats);
+    }
     if state.show_help {
         render_help(f, area, &state.keymap, state.mode);
     }
@@ -170,15 +177,21 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Mode::Picker => Style::default().fg(Color::Blue),
         Mode::Visual => Style::default().fg(Color::Magenta),
         Mode::Triage => Style::default().fg(Color::Yellow),
+        Mode::Focus => Style::default().fg(Color::Green),
+        Mode::Interrupt => Style::default().fg(Color::Yellow),
     };
-    let mut spans = vec![
-        Span::styled(
-            format!(" {mode_label} "),
-            style.add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::raw(state.status.clone()),
-    ];
+    let mut spans = vec![Span::styled(
+        format!(" {mode_label} "),
+        style.add_modifier(Modifier::BOLD),
+    )];
+    // A running session is visible from every view, not only the Focus one:
+    // the `:` line can take the user elsewhere while the clock runs.
+    if let Some(chip) = focus_chip(state) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(chip, Style::default().fg(Color::Green)));
+    }
+    spans.push(Span::raw("  "));
+    spans.push(Span::raw(state.status.clone()));
     match state.mode {
         // Command-line entry mirrors vim: the buffer shows after a `:`.
         Mode::Command => {
@@ -206,7 +219,12 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
                 ));
             }
         }
-        Mode::Normal | Mode::Confirm | Mode::Picker | Mode::Triage => {}
+        Mode::Normal
+        | Mode::Confirm
+        | Mode::Picker
+        | Mode::Triage
+        | Mode::Focus
+        | Mode::Interrupt => {}
     }
     // With a sync indicator, split off a right-aligned column for it so the
     // left status text is never clobbered; otherwise render across the whole
@@ -229,6 +247,25 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     } else {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+/// Compact running-session chip for the status line, e.g.
+/// `focus 05:12 / 25:00`.
+///
+/// Both numbers are derived here from [`ViewState::now_ms`] via the domain
+/// read-view; neither is a value the TUI keeps between frames.
+fn focus_chip(state: &ViewState) -> Option<String> {
+    let row = state.focus.running.as_ref()?;
+    let elapsed = fmt_duration_ms(row.session.elapsed_ms(state.now_ms));
+    let kind = if row.session.start.kind == FocusKind::Break {
+        "break"
+    } else {
+        "focus"
+    };
+    Some(match row.session.start.planned_ms {
+        Some(planned) => format!("{kind} {elapsed} / {}", fmt_duration_ms(planned)),
+        None => format!("{kind} {elapsed}"),
+    })
 }
 
 /// Color for the sync indicator by driver state.
@@ -378,6 +415,20 @@ pub fn render_focus(
     state: &ViewState,
     #[cfg(feature = "images")] preview: Option<&mut crate::images::Preview>,
 ) {
+    // A running session takes the whole pane: `docs/08-features/focus-mode.md`
+    // — "TUI: takes over the whole pane; restores on exit".
+    if state.focus.is_running() {
+        render_focus_session(f, area, state);
+        return;
+    }
+    // With a ranked queue loaded, the planner *is* the Focus view: picking
+    // what to work on is the question the view exists to answer, and each row
+    // needs the width to say *why* it is ranked where it is. The attachment
+    // preview — a placeholder for an API core v1 does not have — yields to it.
+    if !state.focus.plan.is_empty() {
+        render_focus_plan(f, area, state);
+        return;
+    }
     let block = Block::default().borders(Borders::ALL).title("Focus");
     let Some(t) = state.focused_task.as_ref() else {
         f.render_widget(Paragraph::new("no task selected").block(block), area);
@@ -442,6 +493,308 @@ pub fn render_focus(
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// The running-session pane: the task, the derived timer, the chunk marker,
+/// the interruption tally, and the actions `docs/08-features/focus-mode.md`
+/// names.
+///
+/// Every number is computed *here*, from [`ViewState::now_ms`] against the
+/// immutable session record — nothing is carried between frames, which is what
+/// ADR-0013's read-view is for. In particular the row's own `focused_ms` (a
+/// snapshot from whenever the query ran) is deliberately not used.
+fn render_focus_session(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let Some(row) = state.focus.running.as_ref() else {
+        return;
+    };
+    let session = &row.session;
+    let start = &session.start;
+    let on_break = start.kind == FocusKind::Break;
+    let accent = if on_break { Color::Blue } else { Color::Green };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(if on_break {
+            "Focus — break"
+        } else {
+            "Focus — session"
+        })
+        .border_style(Style::default().fg(accent));
+    let inner_width = usize::from(block.inner(area).width);
+
+    let elapsed = session.elapsed_ms(state.now_ms);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            state.focused_title(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            timer_line(row, state.now_ms),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )),
+    ];
+    if let Some(planned) = start.planned_ms {
+        lines.push(Line::from(Span::styled(
+            progress_bar(elapsed, planned, inner_width.saturating_sub(2).min(48)),
+            Style::default().fg(accent),
+        )));
+    }
+    lines.push(Line::from(""));
+    if !session.interruptions.is_empty() {
+        lines.push(Line::from(interruption_line(row)));
+    }
+    if !on_break {
+        lines.push(Line::from(format!(
+            "next:      {} (b)",
+            segment_label(state.focus.next_segment())
+        )));
+    }
+    if let Some(t) = state.focused_task.as_ref() {
+        if !t.blocks.is_empty() {
+            lines.push(Line::from(format!(
+                "unblocks:  {} task(s) when this is done",
+                t.blocks.len()
+            )));
+        }
+    }
+    // The unblock cascade: informational, and it keeps no score.
+    if let Some(report) = state.focus.cascade.as_ref() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Done. {}", report.line()),
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "x complete · d defer · a capture aside · i interruption · b break · Esc end",
+        Style::default().fg(Color::Gray),
+    )));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// `05:12 elapsed · 19:48 left · chunk 2 of 4`, all derived from `now_ms`.
+fn timer_line(row: &FocusSessionRow, now_ms: u64) -> String {
+    let session = &row.session;
+    let mut parts = vec![format!(
+        "{} elapsed",
+        fmt_duration_ms(session.elapsed_ms(now_ms))
+    )];
+    parts.push(match session.remaining_ms(now_ms) {
+        Some(0) => "over the plan".to_string(),
+        Some(left) => format!("{} left", fmt_duration_ms(left)),
+        None => "no planned end".to_string(),
+    });
+    if let Some(c) = session.start.chunk {
+        parts.push(format!("chunk {} of {}", c.index, c.total));
+    }
+    parts.join(" · ")
+}
+
+/// `interruptions: 3 (meeting ×2, self ×1)` — the distraction journal, with no
+/// score attached to it.
+fn interruption_line(row: &FocusSessionRow) -> String {
+    let mut counts: std::collections::BTreeMap<&'static str, u32> =
+        std::collections::BTreeMap::new();
+    for i in &row.session.interruptions {
+        *counts.entry(i.reason.as_str()).or_insert(0) += 1;
+    }
+    let detail = counts
+        .iter()
+        .map(|(reason, n)| format!("{reason} ×{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "interrupted: {} ({detail})",
+        row.session.interruptions.len()
+    )
+}
+
+/// A `[####....]` bar. Integer arithmetic throughout: a progress bar is not
+/// worth a float cast that pedantic clippy would (rightly) question.
+fn progress_bar(done: u64, total: u64, width: usize) -> String {
+    if total == 0 || width == 0 {
+        return String::new();
+    }
+    let w = u64::try_from(width).unwrap_or(0);
+    let filled = usize::try_from(done.min(total).saturating_mul(w) / total).unwrap_or(0);
+    let mut out = String::with_capacity(width + 2);
+    out.push('[');
+    for i in 0..width {
+        out.push(if i < filled { '#' } else { '.' });
+    }
+    out.push(']');
+    out
+}
+
+/// The Focus Planner: the ranked queue, each row carrying *why* it sits where
+/// it does (`docs/08-features/focus-mode.md` §Focus Planner).
+fn render_focus_plan(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+    let width = usize::from(rows[0].width).saturating_sub(6);
+    let items: Vec<ListItem<'_>> = state
+        .focus
+        .plan
+        .iter()
+        .map(|r| {
+            ListItem::new(vec![
+                Line::from(truncate(&r.task.title, width)),
+                Line::from(Span::styled(
+                    format!("  {}", truncate(&plan_reason(r), width)),
+                    Style::default().fg(Color::Gray),
+                )),
+            ])
+        })
+        .collect();
+    let title = format!(
+        "Focus Planner — energy {} · {}",
+        energy_budget_label(state.focus.energy),
+        length_label(state.focus.length)
+    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(truncate(
+                    &title,
+                    usize::from(rows[0].width).saturating_sub(2),
+                ))
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Black)
+                .bg(Color::White),
+        )
+        .highlight_symbol("▶ ");
+    let mut st = ListState::default();
+    st.select(state.focus.selected);
+    f.render_stateful_widget(list, rows[0], &mut st);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " Enter / F start · :focus energy high · :focus stats",
+            Style::default().fg(Color::Gray),
+        ))),
+        rows[1],
+    );
+}
+
+/// Why a planner row sits where it does: its leverage and its energy fit —
+/// the two keys `rank_focus_plan` sorts on — plus the session that would open.
+fn plan_reason(row: &FocusPlanRow) -> String {
+    let mut parts = vec![match row.unblocks {
+        0 => "unblocks nothing".to_string(),
+        1 => "unblocks 1 task".to_string(),
+        n => format!("unblocks {n} tasks"),
+    }];
+    parts.push(format!("fit {}", energy_fit_label(row.energy_fit)));
+    parts.push(match row.suggested.planned_ms {
+        Some(ms) => fmt_duration_ms(ms),
+        None => "until done".into(),
+    });
+    if let Some(c) = row.suggested.chunk {
+        parts.push(format!("chunk {} of {}", c.index, c.total));
+    }
+    parts.join(" · ")
+}
+
+/// Label for an energy fit, in the ranking's own order (best first).
+const fn energy_fit_label(fit: EnergyFit) -> &'static str {
+    match fit {
+        EnergyFit::Exact => "exact",
+        EnergyFit::Unknown => "unknown",
+        EnergyFit::Under => "under",
+        EnergyFit::Over => "over",
+    }
+}
+
+/// The `:focus stats` overlay: focus totals plus the estimate-calibration
+/// factor (`docs/08-features/focus-mode.md` §Estimate calibration).
+///
+/// Totals and a factor — no score, no streak, no quota.
+fn render_focus_stats(f: &mut Frame<'_>, area: Rect, state: &ViewState, stats: &FocusStats) {
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(format!(
+            "sessions     {} ({} work, {} running)",
+            stats.sessions, stats.work_sessions, stats.running
+        )),
+        Line::from(format!(
+            "focused      {}",
+            fmt_duration_ms(stats.total_focused_ms)
+        )),
+        Line::from(format!("interrupted  {}", stats.interruptions)),
+        Line::from(format!(
+            "calibration  {}",
+            calibration_line(stats.overall.as_ref())
+        )),
+    ];
+    if !stats.top_interruptions.is_empty() {
+        let top = stats
+            .top_interruptions
+            .iter()
+            .take(4)
+            .map(|t| format!("{} ×{}", t.reason.as_str(), t.count))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        lines.push(Line::from(format!("top breakers {top}")));
+    }
+    for e in &stats.per_energy {
+        lines.push(Line::from(format!(
+            "energy {:<6}{} sessions · {} · {}",
+            energy_budget_label(e.energy),
+            e.sessions,
+            fmt_duration_ms(e.focused_ms),
+            calibration_line(e.calibration.as_ref())
+        )));
+    }
+    for sf in stats.per_stream.iter().take(6) {
+        let name = state
+            .streams
+            .iter()
+            .find(|r| r.id == sf.stream)
+            .map_or_else(|| "?".to_string(), |r| truncate(&r.name, 10));
+        lines.push(Line::from(format!(
+            "stream {name:<7}{} sessions · {} · {}",
+            sf.sessions,
+            fmt_duration_ms(sf.focused_ms),
+            calibration_line(sf.calibration.as_ref())
+        )));
+    }
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let rect = centered(area, 66, height.max(3));
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Focus stats — any key to close")
+                .border_style(Style::default().fg(Color::Blue)),
+        ),
+        rect,
+    );
+}
+
+/// "estimates run ~1.7x long (5 tasks)" — the calibration factor in the words
+/// the spec uses, or a note that there is nothing to calibrate from yet.
+fn calibration_line(c: Option<&Calibration>) -> String {
+    let Some(c) = c else {
+        return "no completed, estimated tasks yet".into();
+    };
+    let noun = if c.samples == 1 { "task" } else { "tasks" };
+    let direction = if c.factor >= 1.0 { "long" } else { "short" };
+    format!(
+        "estimates run ~{:.1}x {direction} ({} {noun})",
+        c.factor, c.samples
+    )
 }
 
 /// Right pane of the Focus view: the loaded image, or the placeholder.
@@ -1162,7 +1515,13 @@ mod tests {
         // both the roomy single-column layout and the two-column fallback at
         // the 80x24 minimum. This is the assertion that keeps the overlay
         // honest when a binding is renamed or added.
-        for mode in [Mode::Normal, Mode::Visual, Mode::Triage] {
+        for mode in [
+            Mode::Normal,
+            Mode::Visual,
+            Mode::Triage,
+            Mode::Focus,
+            Mode::Interrupt,
+        ] {
             let mut state = ViewState::default();
             state.show_help = true;
             state.mode = mode;
@@ -1199,6 +1558,8 @@ mod tests {
                 Mode::Picker,
                 Mode::Visual,
                 Mode::Triage,
+                Mode::Focus,
+                Mode::Interrupt,
             ]
             .into_iter()
             .find(|m| m.label() == section)
@@ -1353,7 +1714,7 @@ mod tests {
         assert!(!row.trim_start().starts_with('c'), "help row was {row:?}");
     }
 
-    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+    pub(super) fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
         let mut out = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
@@ -1363,5 +1724,295 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod focus_render_tests {
+    use super::tests::buffer_text;
+    use super::*;
+    use crate::view::fixtures;
+    use crate::view::CascadeReport;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use sunrise_domain::{
+        fold_focus_stats, EnergyFit, FocusKind, Interruption, InterruptionReason, SessionRecord,
+        UnblockCascade, POMODORO_MS,
+    };
+    use sunrise_id::{EntityKind, EntityRef};
+
+    /// Session start, chosen so `now_ms - started_at` is a round number.
+    const START_MS: u64 = 1_767_225_600_000;
+
+    fn frame(width: u16, height: u16, state: &ViewState) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            #[cfg(feature = "images")]
+            render_chrome(f, area, state, None);
+            #[cfg(not(feature = "images"))]
+            render_chrome(f, area, state);
+        })
+        .unwrap();
+        buffer_text(term.backend().buffer())
+    }
+
+    fn session_state() -> ViewState {
+        let mut t = fixtures::fake_task(1);
+        t.title = "Write quarterly report".into();
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        state.mode = Mode::Focus;
+        state.focused_task = Some(t.clone());
+        state.focus.running = Some(fixtures::running_session(t.id, START_MS, Some(POMODORO_MS)));
+        state.now_ms = START_MS;
+        state
+    }
+
+    #[test]
+    fn a_running_session_shows_a_timer_that_moves_with_the_clock() {
+        let mut state = session_state();
+        let at_start = frame(80, 20, &state);
+        assert!(at_start.contains("Write quarterly report"), "{at_start}");
+        assert!(at_start.contains("00:00 elapsed"), "{at_start}");
+        assert!(at_start.contains("25:00 left"), "{at_start}");
+
+        // Advance only the injected clock. Nothing else about the state moves.
+        let before = state.focus.running.clone().expect("a session");
+        state.now_ms = START_MS + 5 * 60 * 1000;
+        let later = frame(80, 20, &state);
+        assert!(later.contains("05:00 elapsed"), "{later}");
+        assert!(later.contains("20:00 left"), "{later}");
+
+        // ... and the session record is byte-identical: the elapsed time was
+        // derived on read, never accumulated into view state.
+        let after = state.focus.running.as_ref().expect("a session");
+        assert_eq!(
+            before.session.start.started_at_ms,
+            after.session.start.started_at_ms
+        );
+        assert_eq!(before.session.end, after.session.end);
+        assert!(after.session.is_running());
+    }
+
+    #[test]
+    fn the_timer_ignores_the_querys_stale_focused_ms_snapshot() {
+        // The fixture's `focused_ms` is ~10 hours: the value the query froze
+        // when it ran. Rendering it would be the exact bug the read-view
+        // exists to prevent.
+        let state = session_state();
+        let s = frame(80, 20, &state);
+        assert!(s.contains("00:00 elapsed"), "{s}");
+        assert!(!s.contains("9:59:59"), "{s}");
+    }
+
+    #[test]
+    fn the_session_pane_shows_the_chunk_marker_and_the_next_break() {
+        let state = session_state();
+        let s = frame(80, 20, &state);
+        // The fixture's estimate spans four sittings.
+        assert!(s.contains("chunk 2 of 4"), "{s}");
+        // `break_after(1)` — the first cycle earns the short break.
+        assert!(s.contains("short break"), "{s}");
+    }
+
+    #[test]
+    fn the_fourth_cycle_offers_the_long_break() {
+        let mut state = session_state();
+        let task = state.focus.running_task().expect("a task");
+        state.focus.sessions = (0u8..3)
+            .map(|i| fixtures::ended_work_session(task, i + 20))
+            .collect();
+        let s = frame(80, 20, &state);
+        assert!(s.contains("long break"), "{s}");
+    }
+
+    #[test]
+    fn an_open_ended_session_says_so_rather_than_faking_a_deadline() {
+        let mut state = session_state();
+        state
+            .focus
+            .running
+            .as_mut()
+            .expect("a session")
+            .session
+            .start
+            .planned_ms = None;
+        let s = frame(80, 20, &state);
+        assert!(s.contains("no planned end"), "{s}");
+        assert!(!s.contains("left"), "{s}");
+    }
+
+    #[test]
+    fn an_overrun_session_says_it_is_over_the_plan() {
+        let mut state = session_state();
+        state.now_ms = START_MS + POMODORO_MS + 60_000;
+        let s = frame(80, 20, &state);
+        assert!(s.contains("over the plan"), "{s}");
+    }
+
+    #[test]
+    fn interruptions_are_tallied_and_never_scored() {
+        let mut state = session_state();
+        let session = state.focus.running_session().expect("a session");
+        state
+            .focus
+            .running
+            .as_mut()
+            .expect("a session")
+            .session
+            .interruptions = vec![
+            Interruption {
+                session_id: session,
+                at_ms: START_MS + 1_000,
+                reason: InterruptionReason::Meeting,
+            },
+            Interruption {
+                session_id: session,
+                at_ms: START_MS + 2_000,
+                reason: InterruptionReason::Meeting,
+            },
+            Interruption {
+                session_id: session,
+                at_ms: START_MS + 3_000,
+                reason: InterruptionReason::SelfInterrupt,
+            },
+        ];
+        let s = frame(80, 20, &state);
+        assert!(s.contains("interrupted: 3"), "{s}");
+        assert!(s.contains("meeting ×2"), "{s}");
+        for banned in ["streak", "score", "well done"] {
+            assert!(!s.to_lowercase().contains(banned), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_break_pane_reads_as_a_break() {
+        let mut state = session_state();
+        state
+            .focus
+            .running
+            .as_mut()
+            .expect("a session")
+            .session
+            .start
+            .kind = FocusKind::Break;
+        let s = frame(80, 20, &state);
+        assert!(s.contains("Focus — break"), "{s}");
+        // A break is not offered a break of its own.
+        assert!(!s.contains("next:"), "{s}");
+    }
+
+    #[test]
+    fn the_cascade_names_the_released_work_and_congratulates_nobody() {
+        let mut state = session_state();
+        let released = EntityRef::new(EntityKind::Task, [5u8; 16]);
+        state.focus.cascade = Some(CascadeReport {
+            cascade: UnblockCascade {
+                completed: state.focus.running_task().expect("a task"),
+                released: vec![released],
+                still_blocked: Vec::new(),
+            },
+            released: vec!["Deploy".into()],
+        });
+        let s = frame(80, 22, &state);
+        assert!(s.contains("released \"Deploy\""), "{s}");
+        for banned in ["streak", "score", "congrat", "🎉"] {
+            assert!(!s.to_lowercase().contains(banned), "{s}");
+        }
+    }
+
+    #[test]
+    fn the_status_line_carries_the_session_into_every_view() {
+        let mut state = session_state();
+        // The user stepped out to Today with `:view today` — the clock is
+        // still running and must still be visible.
+        state.view = View::Today;
+        state.now_ms = START_MS + 90_000;
+        let s = frame(80, 10, &state);
+        assert!(s.contains("focus 01:30 / 25:00"), "{s}");
+    }
+
+    #[test]
+    fn the_planner_says_why_each_row_is_ranked_where_it_is() {
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        state.focus.plan = vec![
+            fixtures::plan_row(1, 3, EnergyFit::Exact),
+            fixtures::plan_row(2, 0, EnergyFit::Over),
+        ];
+        state.after_focus_loaded();
+        let s = frame(100, 20, &state);
+        assert!(s.contains("Focus Planner"), "{s}");
+        // The two keys `rank_focus_plan` sorts on, spelled out per row.
+        assert!(s.contains("unblocks 3 tasks"), "{s}");
+        assert!(s.contains("fit exact"), "{s}");
+        assert!(s.contains("unblocks nothing"), "{s}");
+        assert!(s.contains("fit over"), "{s}");
+        // And the session the pick would open.
+        assert!(s.contains("chunk 1 of 4"), "{s}");
+        assert!(s.contains("Enter / F start"), "{s}");
+    }
+
+    #[test]
+    fn the_planner_header_shows_the_declared_budget_and_length() {
+        let mut state = ViewState::default();
+        state.view = View::Focus;
+        state.focus.energy = Some(sunrise_domain::Energy::High);
+        state.focus.plan = vec![fixtures::plan_row(1, 1, EnergyFit::Exact)];
+        state.after_focus_loaded();
+        let s = frame(100, 14, &state);
+        assert!(s.contains("energy high"), "{s}");
+        assert!(s.contains("sized to estimate"), "{s}");
+    }
+
+    #[test]
+    fn focus_stats_report_the_calibration_factor_in_the_specs_own_words() {
+        // "Your 30-minute estimates run ~1.7x long": a 30-minute estimate that
+        // actually took 51 minutes.
+        let record = SessionRecord {
+            session: EntityRef::new(EntityKind::FocusSession, [1u8; 16]),
+            task: EntityRef::new(EntityKind::Task, [1u8; 16]),
+            stream: sunrise_domain::inbox_stream_ref(),
+            energy: Some(sunrise_domain::Energy::High),
+            kind: FocusKind::Work,
+            started_at_ms: START_MS,
+            ended_at_ms: Some(START_MS + 51 * 60 * 1000),
+            actual_focused_ms: Some(51 * 60 * 1000),
+            estimated_duration_s: Some(30 * 60),
+            completed_task: true,
+            interruptions: vec![Interruption {
+                session_id: EntityRef::new(EntityKind::FocusSession, [1u8; 16]),
+                at_ms: START_MS + 1_000,
+                reason: InterruptionReason::Meeting,
+            }],
+        };
+        let mut state = ViewState::default();
+        state.streams = vec![fixtures::inbox_row(0)];
+        state.show_focus_stats(Box::new(fold_focus_stats(&[record], START_MS)));
+        let s = frame(90, 20, &state);
+        assert!(s.contains("Focus stats"), "{s}");
+        assert!(s.contains("estimates run ~1.7x long (1 task)"), "{s}");
+        assert!(s.contains("51:00"), "{s}");
+        assert!(s.contains("meeting ×1"), "{s}");
+    }
+
+    #[test]
+    fn focus_stats_say_plainly_when_there_is_nothing_to_calibrate_from() {
+        let mut state = ViewState::default();
+        state.show_focus_stats(Box::new(fold_focus_stats(&[], START_MS)));
+        let s = frame(90, 12, &state);
+        assert!(s.contains("no completed, estimated tasks yet"), "{s}");
+    }
+
+    #[test]
+    fn the_progress_bar_is_derived_and_saturates() {
+        assert_eq!(progress_bar(0, 100, 4), "[....]");
+        assert_eq!(progress_bar(50, 100, 4), "[##..]");
+        assert_eq!(progress_bar(100, 100, 4), "[####]");
+        // A clock past the plan fills the bar rather than overflowing it.
+        assert_eq!(progress_bar(1_000, 100, 4), "[####]");
+        assert_eq!(progress_bar(1, 0, 4), "");
     }
 }
