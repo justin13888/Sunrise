@@ -131,6 +131,11 @@ Recorded because each presented as something other than what it was:
   client could set it — so every vault's graph was empty, every planner row
   read `unblocks 0`, and every cascade was empty. The "ranked by leverage"
   queue had no leverage in it.
+- **`blocked_by` is the set of dependencies, not of unmet ones.** It keeps its
+  members after they finish, so a list row counting it marks a task blocked
+  forever once anything ever blocked it — and the planner, which reads the
+  *derived* count, then disagrees with the list beside it. Both badges now read
+  `Query::Actionable`, which recomputes against the blockers' current states.
 
 - **A crash bricked the vault.** `create_new` plus a `Drop`-only release, with
   `panic = "abort"` in the release profile. Now a real OS advisory lock, proven
@@ -199,7 +204,7 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **1107** tests, 0 failures, 3
+`cargo test --workspace --all-targets` passes **1123** tests, 0 failures, 3
 ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests spawn).
 
 The number is worth more than it used to be. Earlier revisions of this file
