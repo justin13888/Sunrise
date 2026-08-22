@@ -1,0 +1,33 @@
+# Security-review gate, per docs/10-cross-cutting/testing.md §release-gates.
+#
+# Changes under these paths need a security-focused review in addition to the
+# normal one. GitHub enforces this only when the named team exists and branch
+# protection requires review from code owners — the file alone is advisory, so
+# the rule is written here and the enforcement is a repo setting.
+#
+# The list is the spec's, mapped onto real paths:
+#   sunrise-crypto · sunrise-sync · sunrise-server::auth ·
+#   sunrise-storage::migrations · pairing/onboarding paths in sunrise-core
+
+/crates/sunrise-crypto/                  @justin13888
+/crates/sunrise-crypto-test-vectors/     @justin13888
+/crates/sunrise-sync/                    @justin13888
+/crates/sunrise-server/src/auth/         @justin13888
+/crates/sunrise-server/src/ws.rs         @justin13888
+/crates/sunrise-storage/migrations/      @justin13888
+
+# Pairing and onboarding: the key-distribution path. `keychain.rs` holds the
+# vault root and `vault_lock.rs` guards single-writer access, so both belong
+# under the same gate as the pairing crate itself.
+/crates/sunrise-pairing/                 @justin13888
+/crates/sunrise-onboarding/              @justin13888
+/crates/sunrise-core/src/keychain.rs     @justin13888
+/crates/sunrise-core/src/vault_lock.rs   @justin13888
+
+# The gates themselves. A change that weakens a check should be as visible as a
+# change to the thing it checks — the determinism and redaction gates were both
+# silently unenforceable until this session.
+/.github/workflows/                      @justin13888
+/.github/scripts/                        @justin13888
+/clippy.toml                             @justin13888
+/deny.toml                               @justin13888

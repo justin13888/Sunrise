@@ -16,8 +16,19 @@
 //! `darwin-aarch64`, …). Other platforms and the schema fields in
 //! `baseline.json` are preserved on merge.
 //!
-//! Usage: `baseline [CRITERION_DIR] [BASELINE_JSON]`
-//! (defaults: `target/criterion`, `bench/baseline.json`).
+//! Usage:
+//! - `baseline [CRITERION_DIR] [BASELINE_JSON]` — merge current samples in.
+//! - `baseline --check [CRITERION_DIR] [BASELINE_JSON] [TOLERANCE_PCT]` —
+//!   compare without writing, exiting non-zero if any metric regressed by more
+//!   than the tolerance.
+//!
+//! On the tolerance: `docs/10-cross-cutting/testing.md` specifies a 5% gate.
+//! That figure assumes stable hardware. On GitHub's shared runners, run-to-run
+//! variance on these benches routinely exceeds 5%, so a 5% gate there would
+//! fail constantly on noise — which is worse than no gate, because a check
+//! that cries wolf gets ignored. CI therefore runs this with a wide tolerance
+//! to catch order-of-magnitude regressions, and the spec's 5% gate belongs on
+//! dedicated hardware. The default here is the spec's 5%.
 
 // This is a developer CLI tool, not a core hot path: printing a human-readable
 // summary to stdout is intended, and the percentile math casts freely between
@@ -35,8 +46,13 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+/// Default regression tolerance, per `testing.md`.
+const DEFAULT_TOLERANCE_PCT: f64 = 5.0;
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let raw: Vec<String> = std::env::args().collect();
+    let check_mode = raw.iter().any(|a| a == "--check");
+    let args: Vec<String> = raw.into_iter().filter(|a| a != "--check").collect();
     let criterion_dir = args
         .get(1)
         .cloned()
@@ -45,6 +61,10 @@ fn main() -> ExitCode {
         .get(2)
         .cloned()
         .unwrap_or_else(|| "bench/baseline.json".to_string());
+    let tolerance_pct: f64 = args
+        .get(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_TOLERANCE_PCT);
 
     let platform = platform_key();
     println!("baseline: platform = {platform}");
@@ -60,6 +80,15 @@ fn main() -> ExitCode {
         println!("  {key} = {value}");
     }
 
+    if check_mode {
+        return check_against(
+            Path::new(&baseline_path),
+            &platform,
+            &metrics,
+            tolerance_pct,
+        );
+    }
+
     merge_into(Path::new(&baseline_path), &platform, &metrics)
         .expect("merge metrics into baseline.json");
     println!(
@@ -67,6 +96,72 @@ fn main() -> ExitCode {
         metrics.len()
     );
     ExitCode::SUCCESS
+}
+
+/// Compare `metrics` against the recorded baseline for `platform`.
+///
+/// Every metric here is a latency, so *higher is worse* and only upward moves
+/// are regressions. A metric with no recorded baseline (`null`, or a platform
+/// we have never recorded) is reported and skipped rather than treated as a
+/// pass or a failure — there is nothing to compare against, and silently
+/// passing would let an unrecorded platform drift forever.
+fn check_against(
+    baseline_path: &Path,
+    platform: &str,
+    metrics: &[(String, f64)],
+    tolerance_pct: f64,
+) -> ExitCode {
+    let Ok(text) = std::fs::read_to_string(baseline_path) else {
+        println!("baseline: cannot read {}", baseline_path.display());
+        return ExitCode::FAILURE;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+        println!("baseline: {} is not valid JSON", baseline_path.display());
+        return ExitCode::FAILURE;
+    };
+    let recorded = doc.get("platforms").and_then(|p| p.get(platform));
+
+    let mut regressions = Vec::new();
+    let mut compared = 0usize;
+    for (key, current) in metrics {
+        let previous = recorded
+            .and_then(|r| r.get(key))
+            .and_then(serde_json::Value::as_f64);
+        let Some(previous) = previous else {
+            println!("  {key}: no baseline for {platform} — skipped");
+            continue;
+        };
+        if previous <= 0.0 {
+            println!("  {key}: baseline is not positive ({previous}) — skipped");
+            continue;
+        }
+        compared += 1;
+        let delta_pct = (current - previous) / previous * 100.0;
+        let verdict = if delta_pct > tolerance_pct {
+            regressions.push((key.clone(), previous, *current, delta_pct));
+            "REGRESSION"
+        } else if delta_pct < -tolerance_pct {
+            "improved"
+        } else {
+            "ok"
+        };
+        println!("  {key}: {previous:.3} -> {current:.3} ({delta_pct:+.1}%) {verdict}");
+    }
+
+    if compared == 0 {
+        println!(
+            "baseline: nothing comparable for {platform}; not failing on an empty comparison."
+        );
+        return ExitCode::SUCCESS;
+    }
+    if regressions.is_empty() {
+        println!("baseline: {compared} metric(s) within {tolerance_pct:.0}% tolerance.");
+        return ExitCode::SUCCESS;
+    }
+    for (key, prev, cur, pct) in &regressions {
+        println!("::error::{key} regressed {pct:+.1}% ({prev:.3} -> {cur:.3})");
+    }
+    ExitCode::FAILURE
 }
 
 /// Build-target platform key, e.g. `linux-x86_64` or `darwin-aarch64`.

@@ -99,6 +99,24 @@ jobs:
           path: coverage/
           retention-days: 30
 
+  bench-regression:
+    name: Bench regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench
+        run: cargo bench -p sunrise-bench -- --warm-up-time 1 --measurement-time 3
+      - name: Compare against bench/baseline.json
+        # docs/10-cross-cutting/testing.md specifies a 5% gate. That assumes
+        # stable hardware: on GitHub's shared runners these benches vary by well
+        # over 5% between runs, so a 5% gate here would fail on noise — and a
+        # check that cries wolf gets ignored, which is worse than no check. This
+        # runs wide to catch order-of-magnitude regressions; the spec's 5% gate
+        # belongs on dedicated hardware. Re-tighten if this ever runs there.
+        run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
+
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest
