@@ -33,19 +33,19 @@ client*, which is the only measure that matters to a user.
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
-| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession are complete. `Block`, `Note`, `Person`, `Attachment` are structs with no command path |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. `Block`, `Note`, `Person`, `Attachment` are still structs with no command path |
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-tui` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
-| `sunrise-pairing` | 🟧 orphan | `snow` is a declared dependency that appears only in a doc comment. There is no Noise handshake anywhere in the workspace |
+| `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
 | `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds |
-| `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, and metrics are real. Auth, accounts, devices, and blob 2PC are stubs — see below |
-| `sunrise-integrations` | 🟧 orphan | iCal is a subset; GCal is an OAuth-URL builder plus a trait. Neither is reachable |
-| `sunrise-tui` | 🟨 partial | Five views render real Core data and live sync works. **Read-mostly**: uses 3 of 15 Commands — no edit, delete, defer, schedule, move, stream CRUD, or routines |
+| `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is still a stub and remains unauthenticated ([#22](https://github.com/justin13888/Sunrise/issues/22)) |
+| `sunrise-integrations` | 🟨 partial | GCal read-only import is implemented: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID). iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
+| `sunrise-tui` | ✅ live | The v1 client. Today / Inbox / Stream / Search / Focus / Routines, capture through the shared parser with a live preview, edit / delete / defer / schedule / move / stream CRUD, visual-mode bulk operations, triage, `$EDITOR` note bodies, custom keymaps, the full Focus Sessions surface, and non-interactive subcommands (`capture`, `today`, `inbox`, `streams`, `search`) |
 | `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
-| `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines in `bench/baseline.json`. Nothing compares against them |
+| `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
@@ -73,39 +73,68 @@ offset), the v1→v10 migration upgrade tests, and the FTS5 hostile-input propte
 
 ## Known defects
 
-Tracked so they are not rediscovered as surprises:
+Tracked so they are not rediscovered as surprises. Each now has an issue.
 
-- **A skewed clock wins every conflict, permanently.** `lww_wins` trusts raw
-  `env.ts_ms` from the device wall clock, with no HLC and no bound.
-- **Ring eviction is silent data loss.** The client builds real sync cursors and
-  the server discards them, replaying the whole retained ring instead. Past the
-  ring bounds, or across a relay restart, a returning device loses ops with no
-  error. Offline catch-up currently works by accident of ring size.
-- **No in-session op retry.** An unacked op waits for the session to end; the
-  chaos tests script the reconnect the driver should perform itself.
+- **A skewed clock wins every conflict, permanently**
+  ([#21](https://github.com/justin13888/Sunrise/issues/21)). `lww_wins` trusts
+  raw `env.ts_ms` from the device wall clock, with no bound. The naive fix is
+  worse than the bug: clamping against *local* time makes two replicas store
+  different values for the same row, breaking convergence outright. The real
+  answer is an HLC, which is a sealed-envelope change and so a protocol bump.
+- **Ring eviction is silent data loss**
+  ([#19](https://github.com/justin13888/Sunrise/issues/19)). The client builds
+  real sync cursors and the server discards them, replaying the whole retained
+  ring. Past the ring bounds, or across a relay restart, a returning device
+  loses ops with no error. Offline catch-up works by accident of ring size.
+- **No in-session op retry**
+  ([#20](https://github.com/justin13888/Sunrise/issues/20)). An unacked op waits
+  for the session to end; the chaos tests script the reconnect the driver should
+  perform itself, so they prove the *relay* can recover, not that the client does.
+- **Blob storage is a stub and unauthenticated**
+  ([#22](https://github.com/justin13888/Sunrise/issues/22)). The chunk-upload
+  route the `init` response points at is not mounted, so every upload 404s. It
+  also blocks attachments: `Command::AttachFile` and `Query::TaskAttachments` do
+  not exist, which is why the TUI's attachment pane is a placeholder.
+- **Auth is checked once, at the WebSocket upgrade.** A token expiring
+  mid-session does not terminate the connection. `auth.md` specifies an
+  `AUTH_TOKEN_EXPIRED` close and an out-of-band `0x12 RefreshToken` frame;
+  `MsgKind` has no such variant, so it needs a wire-protocol change
+  ([#7](https://github.com/justin13888/Sunrise/issues/7)).
 - **No delete-convergence coverage.** The e2e canonical projection filters
   `deleted = 0`, so no test proves a delete converges.
-- Routines are materialised only at `Core::open` — a long-running TUI never
-  generates new occurrences.
 
-## Not reachable by a user
+## Fixed this cycle
 
-- **Multi-device is impossible.** Every call site hands the Core a literal vault
-  root; the e2e tests pass the *same* `[0x42; 32]` to both replicas. Encryption
-  is real, but key distribution is bypassed entirely and `sunrise-pairing` is
-  never invoked.
-- **`/sync` is unauthenticated.** `ServerState` carries a `TokenVerifier` whose
-  only `.verify(` call sites are in its own unit tests — no production path
-  calls it. Every session resolves to one synthetic account,
-  so a Subscribe from any client is served frames belonging to every other. The
-  relay is dev-only until this is fixed.
-- **Accounts and devices do not persist.** `GET /accounts/me` returns a
-  hardcoded sentinel with `200 OK`; `GET /devices` always returns `[]`.
-- **Blob upload always 404s.** The chunk-upload route the `init` response points
-  at is not mounted; `finalize` verifies hex string lengths and `fetch` returns
-  404 unconditionally.
-- **No middleware.** `tower-http` is declared with `trace, cors, limit` and never
-  imported — no CORS, no request body size limit, no trace layer.
+Recorded because each presented as something other than what it was:
+
+- **A crash bricked the vault.** `create_new` plus a `Drop`-only release, with
+  `panic = "abort"` in the release profile. Now a real OS advisory lock, proven
+  by tests that `SIGKILL` a child process holding it.
+- **A device's own ops lost the LWW tie to each other.** The device-id memcmp is
+  a *cross-device* rule; applied to one device's successive ops it evaluated
+  `dev > dev` and discarded the later one on every remote replica. Reachable by
+  creating a task and patching it in the same millisecond, and it surfaced as a
+  1-in-6 "flaky" e2e rather than as data loss.
+- **Three projections silently dropped data the ops carried**: `blocked_by`
+  (blockers existed only in the op log, so every read returned an empty set) and
+  `Stream.paused` / `paused_until` / `review_cadence` (hardcoded on read). Each
+  presented as a *feature* being unimplemented, and each was only found by
+  writing something that needed the field. Every materialised projection is a
+  place data can vanish quietly.
+- **Bearer tokens could reach the log.** `TraceLayer::new_for_http`'s stock span
+  records the full URI, and `?access_token=` is the documented browser fallback
+  for the sync socket.
+- **Two CI gates were structurally unenforceable.** The determinism and
+  log-redaction gates were shaped `if grep ...; then fail; fi`, which takes the
+  else branch — printing OK — on *every* failure mode, including a missing
+  binary. Both had been green for months while checking nothing.
+- **Multi-device was impossible.** Every call site handed the Core a literal
+  vault root and the e2e passed the *same* `[0x42; 32]` to both replicas.
+  Encryption was real; key distribution was bypassed. `sunrise-pairing` now
+  implements the Noise XX handshake, and the paired-device e2e contains no
+  shared key constant.
+- **`/sync` was unauthenticated and single-tenant**, hashing a fixed constant
+  for the account, so any subscriber received every other subscriber's frames.
 
 ## Removed
 
@@ -135,20 +164,40 @@ Tracked so they are not rediscovered as surprises:
   LWW, now the decided model per [ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
   which supersedes ADR-0003. `crates/sunrise-crdt` and the `loro` dependency are
   deleted; the workspace contains no CRDT library.
-- **CI gates** — the >5% bench-regression gate and `cargo-mutants`
-  (`docs/10-cross-cutting/testing.md`) are not wired. Baselines and the criterion
-  suite that feed the regression gate are in place.
+- **CI gates** — the bench comparison is wired and runs nightly, but
+  **informationally**: on shared runners the same binary reports swings over
+  ±100% against its own baseline from scheduling noise alone, so `testing.md`'s
+  >5% blocking gate needs dedicated hardware. `cargo-mutants` is not wired.
+  `CODEOWNERS` now encodes the security-review gate, though GitHub only enforces
+  it once branch protection requires code-owner review.
 - **`cargo-fuzz` targets** — `testing.md` specifies six; `fuzz/` does not exist.
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **537** tests (down from 544: the
-[ADR-0014](../11-adr/0014-entity-level-lww-merge.md) cleanup deleted 7 tests with
-`sunrise-crdt` and 7 with the dead `sunrise-sync` exports, and added 8 frozen
-crypto-vector tests in place of 1 tautological one). Read the number with a
-caveat: some still exercise orphan crates that no product path reaches, and a
-handful are tautological (see `docs/10-cross-cutting/testing.md`). Prefer the
-reachability column above as the signal.
+`cargo test --workspace --all-targets` passes **959** tests, 0 failures, 3
+ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests spawn).
+
+The number is worth more than it used to be. Earlier revisions of this file
+quoted a count that included ~50 tests over orphan crates no product path
+reached, plus several that asserted nothing:
+
+- `sunrise-crdt`'s tests went with the crate ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
+- The dead `sunrise-sync` exports took 7 tests of unreachable code with them.
+- `sunrise-crypto-test-vectors` had one test that called a pure function twice
+  and compared the results; it is now 8 frozen vectors, verified by mutation —
+  flipping the KDF context to `sunrise.identity_id.v2` fails the suite, which
+  the old sentinel could not detect.
+- The log-redaction proptest ran 1,000 cases asserting that a string it never
+  logged was absent. It now drives a payload through all eight paths a
+  `Plain<T>` can take and asserts the sink saw the redaction markers *as well
+  as* zero payload bytes, so the negative assertion cannot pass vacuously.
+
+Two flakes were found and fixed rather than retried: an order-dependent
+assertion in the context convergence test (ULIDs minted microseconds apart sort
+by their random suffix), and the blocker convergence test, which turned out to
+be reporting a **real** same-device LWW data-loss bug rather than being flaky.
+
+Prefer the reachability column above as the signal.
 
 ```
 cargo test --workspace --all-targets                    # full suite
@@ -161,10 +210,15 @@ bun run validate                                        # no TS tests exist yet
 ## Boots end-to-end
 
 - `cargo run -p sunrise-server` — REST + `/sync` WebSocket relay on
-  `127.0.0.1:8443` (plain HTTP, in-memory store by default, **no auth**).
-- `cargo run -p sunrise-tui` — Ratatui terminal client. Reads the vault
-  directory from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and unlocks
-  with a fixed single-user dev key.
+  `127.0.0.1:8443`. Self-host mode installs the single-tenant `NullVerifier`,
+  and the server now **refuses to bind a non-loopback address** while that is
+  in use, since it maps every caller to one account. Configure an OIDC issuer
+  for multi-user.
+- `cargo run -p sunrise-tui` — the terminal client. Reads the vault directory
+  from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and unlocks with a fixed
+  single-user dev key. Non-interactive subcommands (`capture`, `today`,
+  `inbox`, `streams`, `search`) drive the same vault without a terminal, which
+  is also how `crates/sunrise-tui/tests/cli.rs` exercises the whole stack.
 
 > **Sync in the TUI:** setting `SUNRISE_SYNC_URL`
 > (e.g. `ws://127.0.0.1:8443/sync`) starts the WebSocket sync driver;
@@ -175,6 +229,6 @@ bun run validate                                        # no TS tests exist yet
 > `cargo test -p sunrise-tui --test live_sync` and, end to end, by
 > `cargo test -p sunrise-e2e --test two_core_relay_convergence`.
 >
-> Note the TUI only refreshes on a keypress — it does not subscribe to
-> `Core::changes()`, so an inbound synced task appears on your next keystroke
-> rather than on arrival.
+> The TUI subscribes to `Core::changes()`, so an inbound synced op repaints on
+> arrival rather than on the next keystroke. Bursts coalesce in a 50 ms window,
+> so an N-op catch-up batch repaints once.
