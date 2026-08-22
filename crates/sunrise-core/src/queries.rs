@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    Context, EffectiveTaskState, Energy, EnergyFit, FocusSession, FocusStats, Routine, SessionPlan,
-    Stream, StreamColor, Task, UnblockCascade,
+    ActivityEvent, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit, ExportDataset,
+    ExportFormat, FocusSession, FocusStats, ReviewSnapshot, Routine, SessionPlan, Stream,
+    StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -105,6 +106,67 @@ pub enum Query {
     /// *current* states, so it is correct whether the completion happened here
     /// or merged in from another device. Informational; it keeps no score.
     UnblockCascade(EntityRef),
+    /// **Weekly review** (`docs/08-features/reviews-and-stats.md` §Weekly
+    /// review): every step's list, in one read.
+    ///
+    /// Assembled by the pure `sunrise_domain::build_weekly_review` from four
+    /// folds the engine feeds it — the activity feed, the trend fold, the focus
+    /// fold and the per-Routine drift measure — so the review can never
+    /// disagree with the timeline or the stats screens about what happened.
+    WeeklyReview {
+        /// Start of the week to review; `None` reviews the week containing
+        /// `now_ms`.
+        week_start_ms: Option<u64>,
+        /// "Now" (ms since epoch), from the injected clock. Fixes the week
+        /// grid and prices any still-running focus session.
+        now_ms: u64,
+    },
+    /// **Daily review** (spec §Daily review, off by default): the 60-second
+    /// glance — recent captures, today's plan, and which of it is blocked.
+    DailyReview {
+        /// Start of the glance window (typically yesterday evening).
+        since_ms: u64,
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
+    /// **Per-Stream trends** (spec §Stats): completed / deferred / created per
+    /// week for the last `weeks` civil weeks, whole-vault and per Stream.
+    ///
+    /// Folded from the op log rather than from `tasks.completed_at`, because
+    /// the spec's stability rule ("a re-open decrements the week of the
+    /// *original* completion") needs an instant the materialized register no
+    /// longer holds.
+    StreamTrends {
+        /// How many weeks back to report; clamped to a sane maximum.
+        weeks: u32,
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
+    /// **Activity timeline** for one Task or Stream (spec §Activity timeline):
+    /// user-visible ops only, newest first.
+    ActivityTimeline {
+        /// Task or Stream whose feed to read.
+        entity: EntityRef,
+        /// Maximum number of rows.
+        limit: u32,
+    },
+    /// Saved review snapshots, newest window first — the spec's "queryable in
+    /// History".
+    ReviewHistory {
+        /// Maximum number of rows.
+        limit: u32,
+    },
+    /// **Export** one stats dataset as JSON or CSV (spec §Export).
+    ExportStats {
+        /// Which dataset.
+        dataset: ExportDataset,
+        /// Serialization format.
+        format: ExportFormat,
+        /// Weeks of history for the trend dataset.
+        weeks: u32,
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -151,6 +213,18 @@ pub enum QueryResult {
     FocusStats(Box<FocusStats>),
     /// `UnblockCascade` returns what a completion released.
     UnblockCascade(Box<UnblockCascade>),
+    /// `WeeklyReview` returns the assembled five-step review.
+    WeeklyReview(Box<WeeklyReview>),
+    /// `DailyReview` returns the 60-second glance.
+    DailyReview(Box<DailyReview>),
+    /// `StreamTrends` returns the folded weekly trends.
+    Trends(Box<Trends>),
+    /// `ActivityTimeline` returns one entity's feed, newest first.
+    Activity(Vec<ActivityEvent>),
+    /// `ReviewHistory` returns saved snapshots, newest window first.
+    ReviewSnapshots(Vec<ReviewSnapshot>),
+    /// `ExportStats` returns the rendered document.
+    Export(String),
 }
 
 /// One row of [`Query::FocusPlan`]: a proposal, with the two facts that put it

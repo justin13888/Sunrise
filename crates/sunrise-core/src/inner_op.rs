@@ -27,7 +27,9 @@
 //! [`EntityRef`] (a tombstone marker).
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Context, FocusEnd, FocusStart, Interruption, Routine, Stream, Task};
+use sunrise_domain::{
+    Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine, Stream, Task,
+};
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
 
@@ -69,6 +71,12 @@ pub(crate) enum InnerOp {
     FocusEnd(Box<FocusEnd>),
     /// Log one interruption against a session. Grow-only set semantics.
     FocusInterrupt(Interruption),
+    /// Record a completed weekly review (`docs/08-features/reviews-and-stats.md`
+    /// §Weekly review step 5). Append-only, exactly like the focus family: the
+    /// snapshot is written once under its own `rvw_` id and never edited, so
+    /// two devices reviewing the same week produce two records rather than a
+    /// lost write.
+    ReviewSnapshotCreate(Box<ReviewSnapshot>),
 }
 
 /// The op's effect class, used to pick the materialization path and the emitted
@@ -110,6 +118,7 @@ impl InnerOp {
             Self::FocusStart(_) => "focus.start",
             Self::FocusEnd(_) => "focus.end",
             Self::FocusInterrupt(_) => "focus.interrupt",
+            Self::ReviewSnapshotCreate(_) => "review.snapshot",
         }
     }
 
@@ -122,6 +131,7 @@ impl InnerOp {
             Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
+            Self::ReviewSnapshotCreate(_) => "review_snapshot",
         }
     }
 
@@ -139,6 +149,7 @@ impl InnerOp {
             Self::FocusStart(f) => f.id,
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,
+            Self::ReviewSnapshotCreate(r) => r.id,
         }
     }
 
@@ -149,7 +160,8 @@ impl InnerOp {
             | Self::StreamCreate(_)
             | Self::ContextCreate(_)
             | Self::RoutineCreate(_)
-            | Self::FocusStart(_) => OpEffect::Create,
+            | Self::FocusStart(_)
+            | Self::ReviewSnapshotCreate(_) => OpEffect::Create,
             Self::TaskUpdate(_)
             | Self::StreamUpdate(_)
             | Self::ContextUpdate(_)
@@ -179,6 +191,7 @@ impl InnerOp {
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => {
                 EntityKind::FocusSession
             }
+            Self::ReviewSnapshotCreate(_) => EntityKind::ReviewSnapshot,
         }
     }
 }

@@ -2,8 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ContextDraft, ContextPatch, Energy, InterruptionReason, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    ContextDraft, ContextPatch, Energy, InterruptionReason, ReviewSnapshotDraft, RoutineDraft,
+    RoutinePatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft,
+    TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -146,6 +147,15 @@ pub enum Command {
         /// One-tap reason.
         reason: InterruptionReason,
     },
+    /// Record that a weekly review was completed
+    /// (`docs/08-features/reviews-and-stats.md` §Weekly review step 5).
+    ///
+    /// Mints a fresh `rvw_` id and writes an **append-only** record. This is
+    /// the one fact about a review that is not recomputable from the op log —
+    /// the lists and counts can be re-derived for any past week, but "a human
+    /// sat down and reviewed week W" cannot. Two devices each finishing a
+    /// review of the same week mint different ids, so both survive.
+    SaveReviewSnapshot(ReviewSnapshotDraft),
 }
 
 /// Draft for [`Command::StartFocus`]. The core fills the session id, the

@@ -914,6 +914,209 @@ mod tests {
         );
     }
 
+    /// Build a DB with migrations 0001..0010 applied, stamped `storage_v = 10`,
+    /// simulating a real v10 vault opened by a newer binary.
+    fn seed_v10_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..10] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![10_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v10_db_adds_review_snapshots() {
+        assert!(u32::from(STORAGE_V) >= 11);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v10_db(&conn);
+
+        // A v10 vault carries focus sessions that must survive untouched.
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO focus_sessions
+             (id, task_id, stream_id, started_at_ms, kind)
+             VALUES (?, ?, ?, 1000, 'work')",
+            rusqlite::params![vec![7u8; 16], vec![1u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0011.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        let started: i64 = conn
+            .query_row(
+                "SELECT started_at_ms FROM focus_sessions WHERE id = ?",
+                rusqlite::params![vec![7u8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(started, 1000, "pre-v11 rows survive the upgrade");
+
+        // A snapshot naming a Stream this replica has never materialized still
+        // lands: the table deliberately has no foreign key, because a snapshot
+        // op can overtake the `stream.create` it references.
+        let insert = |id: u8, window_start: i64| {
+            conn.execute(
+                "INSERT OR IGNORE INTO review_snapshots
+                 (id, created_at_ms, window_start_ms, window_end_ms,
+                  completed, deferred, dropped, created, reopened, body)
+                 VALUES (?, 5000, ?, ?, 3, 1, 0, 7, 0, ?)",
+                rusqlite::params![
+                    vec![id; 16],
+                    window_start,
+                    window_start + 604_800_000,
+                    vec![0xA1u8, 0xA2]
+                ],
+            )
+            .unwrap()
+        };
+        insert(0x11, 1000);
+
+        // Append-only + idempotent: re-delivering the same op is one row, and
+        // a second device's review of the SAME week is a *separate* row rather
+        // than an overwrite.
+        insert(0x11, 1000);
+        insert(0x22, 1000);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM review_snapshots WHERE window_start_ms = 1000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "two devices reviewing one week keep both snapshots");
+
+        // History reads newest window first.
+        insert(0x33, 605_800_000);
+        let ids: Vec<Vec<u8>> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM review_snapshots
+                     ORDER BY window_start_ms DESC, created_at_ms DESC, id ASC",
+                )
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            v
+        };
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[0], vec![0x33u8; 16], "most recent window first");
+
+        // Nothing in the schema lets a snapshot be edited after the fact: the
+        // only mutable-looking columns are the LWW pair, which the engine never
+        // writes for an append-only family.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('review_snapshots')")
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            v
+        };
+        assert!(
+            !cols.iter().any(|c| c == "updated_at_ms"),
+            "a snapshot is immutable; there is no update path: {cols:?}"
+        );
+    }
+
+    /// Build a DB with migrations 0001..0011 applied, stamped `storage_v = 11`,
+    /// simulating a real v11 vault opened by a newer binary.
+    fn seed_v11_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..11] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![11_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v11_db_adds_stream_pause_state_with_entity_defaults() {
+        assert!(u32::from(STORAGE_V) >= 12);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v11_db(&conn);
+
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms, name, color)
+             VALUES (?, ?, 1, ?, 0, 0, 0, 'Work', 'sky')",
+            rusqlite::params![vec![3u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // The pre-v12 row survives and takes the Stream entity's own defaults:
+        // not paused, reviewed weekly — which is how the hardcoded row reader
+        // had been behaving all along.
+        let (name, paused, until, cadence): (String, i64, Option<i64>, String) = conn
+            .query_row(
+                "SELECT name, paused, paused_until_ms, review_cadence
+                 FROM streams WHERE stream_id = ?",
+                rusqlite::params![vec![3u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Work", "the existing row is untouched");
+        assert_eq!(paused, 0);
+        assert_eq!(until, None);
+        assert_eq!(cadence, "weekly");
+
+        // And the new columns are writable, which is the whole point: before
+        // v12 a pause had nowhere to persist to.
+        conn.execute(
+            "UPDATE streams SET paused = 1, paused_until_ms = ?, review_cadence = 'monthly'
+             WHERE stream_id = ?",
+            rusqlite::params![9_000_i64, vec![3u8; 16]],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM streams WHERE paused != 0 AND review_cadence = 'monthly'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

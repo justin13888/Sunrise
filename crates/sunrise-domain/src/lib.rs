@@ -18,6 +18,7 @@
     clippy::struct_excessive_bools
 )]
 
+pub mod activity;
 pub mod attachment;
 pub mod block;
 pub mod capture;
@@ -25,19 +26,27 @@ pub mod common;
 pub mod constraint;
 pub mod context;
 pub mod deps;
+pub mod export;
 pub mod focus;
 pub mod inbox;
 pub mod note;
 pub mod person;
+pub mod review;
 pub mod routine;
 pub mod routine_gen;
 pub mod rrule;
 pub mod schema;
+pub mod stats;
 pub mod streak;
 pub mod stream;
 pub mod task;
 pub mod validation;
 
+pub use activity::{
+    changed_task_fields, fold_activity, for_entities as activity_for_entities,
+    for_entity as activity_for_entity, ActivityEvent, ActivityKind, OpPayload, OpRecord,
+    TRACKED_TASK_FIELDS,
+};
 pub use attachment::Attachment;
 pub use block::{Block, BlockDraft};
 pub use common::{Energy, NoteBody};
@@ -52,6 +61,10 @@ pub use context::{
 pub use deps::{
     blocker_is_open, effective_state, is_actionable, DependencyGraph, EffectiveTaskState,
 };
+pub use export::{
+    activity_table, focus_table, streaks_table, trends_table, Cell, ExportDataset, ExportFormat,
+    Table,
+};
 pub use focus::{
     break_after, chunk_count, energy_fit, fold_focus_stats, plan_session, rank_focus_plan,
     unblock_cascade, Calibration, Chunk, EnergyFit, EnergyFocus, FocusEnd, FocusKind, FocusSession,
@@ -62,6 +75,11 @@ pub use focus::{
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use person::Person;
+pub use review::{
+    build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,
+    ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreakRow, StreamReview,
+    WeeklyReview, WeeklyReviewInput,
+};
 pub use routine::{
     materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
     RoutineReviewCadence, TaskTemplate,
@@ -69,6 +87,10 @@ pub use routine::{
 pub use routine_gen::{expand, occurrence_key_at, occurrence_task_id, ExpandError, Occurrence};
 pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
+pub use stats::{
+    days_between, fold_trends, routine_drift, RoutineDrift, StatsError, StreamTrend, Trends,
+    WeekBucket, WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
+};
 pub use streak::{
     StreakOutcome, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE, FORGIVENESS_WINDOW_S,
     MAX_GRACE_WINDOW_S,

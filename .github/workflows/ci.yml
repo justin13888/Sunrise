@@ -5,6 +5,10 @@ on:
     branches: [master, v1-rewrite]
   pull_request:
     branches: [master, v1-rewrite]
+  schedule:
+    # 04:00 UTC daily.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -102,6 +106,11 @@ jobs:
   bench-regression:
     name: Bench regression (informational)
     runs-on: ubuntu-latest
+    # Nightly and on demand only, not on every push. It costs ~9 minutes and,
+    # per the note below, produces a report rather than a verdict — paying that
+    # on every commit for something nobody can act on is waste. testing.md
+    # frames the auto-update as a nightly job anyway.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # NOT a merge gate, deliberately. docs/10-cross-cutting/testing.md specifies
     # a required check that blocks on a >5% regression, and that figure assumes
     # stable hardware. Measured on this runner, the same binary against its own

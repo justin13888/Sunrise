@@ -32,6 +32,9 @@ pub enum EntityKind {
     Identity,
     /// `fcs_` — Focus session (append-only; see ADR-0013).
     FocusSession,
+    /// `rvw_` — Saved review snapshot (append-only; see
+    /// `docs/08-features/reviews-and-stats.md` §Weekly review step 5).
+    ReviewSnapshot,
 }
 
 impl EntityKind {
@@ -50,6 +53,7 @@ impl EntityKind {
             Self::Device => "dev_",
             Self::Identity => "idn_",
             Self::FocusSession => "fcs_",
+            Self::ReviewSnapshot => "rvw_",
         }
     }
 
@@ -69,13 +73,14 @@ impl EntityKind {
             "dev_" => Some(Self::Device),
             "idn_" => Some(Self::Identity),
             "fcs_" => Some(Self::FocusSession),
+            "rvw_" => Some(Self::ReviewSnapshot),
             _ => None,
         }
     }
 
     /// All kinds, in declaration order.
     #[must_use]
-    pub const fn all() -> [Self; 11] {
+    pub const fn all() -> [Self; 12] {
         [
             Self::Task,
             Self::Stream,
@@ -88,6 +93,7 @@ impl EntityKind {
             Self::Device,
             Self::Identity,
             Self::FocusSession,
+            Self::ReviewSnapshot,
         ]
     }
 }
