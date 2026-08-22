@@ -817,6 +817,7 @@ async fn refresh(core: &Core, state: &mut ViewState) {
         state.contexts = rows;
         state.after_contexts_loaded();
     }
+    refresh_deps(core, state).await;
     refresh_focus(core, state).await;
     state.after_focus_loaded();
     // A triage pass always reads the Inbox, whatever the nominal view is.
@@ -943,6 +944,42 @@ fn default_export_path(
         dataset.as_str(),
         format.as_str()
     ))
+}
+
+/// Refresh the derived dependency state every list row reads.
+///
+/// Neither number is stored on a Task: `open_blockers` and `unblocks` are
+/// recomputed by `Query::Actionable` against the blockers' *current* states,
+/// which is what lets a blocker completing anywhere — here or merged in from
+/// another device — flip its dependents with no repair pass. Reading
+/// `blocked_by.len()` instead would mark a task blocked forever once anything
+/// had ever blocked it.
+///
+/// One query per refresh, over open tasks only, so it costs the same
+/// dependency walk the planner already does.
+async fn refresh_deps(core: &Core, state: &mut ViewState) {
+    /// Open tasks whose dependency state is projected. Past this the badges
+    /// are simply absent rather than wrong — `Actionable` returns
+    /// actionable-first, so the tail is the least interesting end of the list.
+    const LIMIT: u32 = 2000;
+    let q = Query::Actionable {
+        stream: None,
+        limit: LIMIT,
+    };
+    if let Ok(QueryResult::Actionable(rows)) = core.query(q).await {
+        state.deps = rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.task.id,
+                    sunrise_tui::Dep {
+                        open_blockers: r.open_blockers,
+                        unblocks: r.unblocks,
+                    },
+                )
+            })
+            .collect();
+    }
 }
 
 /// Load whichever Review panel is showing.

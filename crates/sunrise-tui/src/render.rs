@@ -397,6 +397,7 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         state.visual_range(),
         &marks(state),
         &state.contexts,
+        &state.deps,
         &crate::view::today_groups(tasks, state.now_ms, &state.tz),
         state.now_ms,
         &state.tz,
@@ -1883,6 +1884,7 @@ fn render_task_list(f: &mut Frame<'_>, area: Rect, state: &ViewState, title: &st
         state.visual_range(),
         &marks(state),
         &state.contexts,
+        &state.deps,
         &[],
         state.now_ms,
         &state.tz,
@@ -1907,6 +1909,7 @@ fn render_task_list_full(
     visual: Option<(usize, usize)>,
     marked: &[bool],
     contexts: &[sunrise_core::queries::ContextRow],
+    deps: &std::collections::BTreeMap<sunrise_id::EntityRef, crate::view::Dep>,
     groups: &[(&'static str, usize)],
     now_ms: u64,
     tz: &jiff::tz::TimeZone,
@@ -1985,7 +1988,10 @@ fn render_task_list_full(
         } else {
             Style::default()
         };
-        items.push(ListItem::new(task_row(t, prefix, contexts, now_ms, tz, width)).style(style));
+        let dep = deps.get(&t.id).copied().unwrap_or_default();
+        items.push(
+            ListItem::new(task_row(t, prefix, contexts, dep, now_ms, tz, width)).style(style),
+        );
     }
 
     let list = List::new(items)
@@ -2045,12 +2051,13 @@ fn task_row(
     t: &Task,
     prefix: &str,
     contexts: &[sunrise_core::queries::ContextRow],
+    dep: crate::view::Dep,
     now_ms: u64,
     tz: &jiff::tz::TimeZone,
     width: usize,
 ) -> Line<'static> {
     let head = format!("{prefix}[{}] ", task_state_short(t.state));
-    let meta = task_facets(t, contexts, now_ms, tz);
+    let meta = task_facets(t, contexts, dep, now_ms, tz);
     let meta_width = meta
         .iter()
         .map(|(s, _)| s.chars().count() + 1)
@@ -2078,6 +2085,7 @@ fn task_row(
 fn task_facets(
     t: &Task,
     contexts: &[sunrise_core::queries::ContextRow],
+    dep: crate::view::Dep,
     now_ms: u64,
     tz: &jiff::tz::TimeZone,
 ) -> Vec<(String, Style)> {
@@ -2086,13 +2094,25 @@ fn task_facets(
     let mut out: Vec<(String, Style)> = Vec::new();
     // A blocked task is the one thing here that changes whether you *can*
     // start, so it leads.
-    if !t.blocked_by.is_empty() {
-        // `⊘`, not `⛔`: the emoji is double-width, and the row budgets its
-        // columns by character count, so a wide glyph silently pushes the last
-        // facet off the end.
+    // The count is the **open** blockers, from `Query::Actionable` — not
+    // `blocked_by.len()`. That set keeps its members after they finish, so
+    // counting it marks a task blocked forever once anything ever blocked it.
+    //
+    // `⊘`, not `⛔`: the emoji is double-width, and the row budgets its columns
+    // by character count, so a wide glyph silently pushes the last facet off
+    // the end.
+    if dep.open_blockers > 0 {
         out.push((
-            format!("⊘{}", t.blocked_by.len()),
+            format!("⊘{}", dep.open_blockers),
             Style::default().fg(Color::Red),
+        ));
+    }
+    // Leverage: what finishing this releases. The planner ranks on it, and a
+    // list that hides it makes every row look equally worth doing.
+    if dep.unblocks > 0 {
+        out.push((
+            format!("↑{}", dep.unblocks),
+            Style::default().fg(Color::Green),
         ));
     }
     if let Some(p) = t.priority {
@@ -2555,6 +2575,15 @@ mod tests {
         t.due_at = Some("2025-12-30T09:00:00Z".parse().unwrap());
         t.deferred_count = 2;
         t.blocked_by = std::collections::BTreeSet::from([fixtures::fake_task(9).id]);
+        // The badge reads the *derived* state, not the stored set: a blocker
+        // that has since finished must stop blocking.
+        state.deps.insert(
+            t.id,
+            crate::view::Dep {
+                open_blockers: 1,
+                unblocks: 2,
+            },
+        );
         state.tasks = vec![t];
         state.after_tasks_loaded();
 
@@ -2570,6 +2599,23 @@ mod tests {
             s.contains("⊘1"),
             "blocked leads, since it gates starting:\n{s}"
         );
+    }
+
+    #[test]
+    fn a_finished_blocker_stops_blocking() {
+        // `blocked_by` keeps its members after they complete, so counting the
+        // stored set marks a task blocked forever once anything ever blocked
+        // it. The badge reads `Query::Actionable`'s derived count instead.
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.now_ms = 1_767_225_600_000;
+        let mut t = dated_task(1, "book the movers");
+        t.blocked_by = std::collections::BTreeSet::from([fixtures::fake_task(9).id]);
+        state.tasks = vec![t];
+        state.after_tasks_loaded();
+        // No entry in `deps` — the blocker is done, so nothing is open.
+        let s = guarded_frame(100, 24, &state);
+        assert!(!s.contains('⊘'), "no blocked badge:\n{s}");
     }
 
     #[test]

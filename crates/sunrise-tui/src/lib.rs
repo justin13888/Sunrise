@@ -57,8 +57,8 @@ pub mod capture;
 pub mod command;
 pub mod edit;
 pub mod editor;
-#[cfg(feature = "images")]
 pub mod hit;
+#[cfg(feature = "images")]
 pub mod images;
 pub mod input;
 pub mod keymap;
@@ -88,8 +88,8 @@ pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use undo::{invert, NotUndoable, UndoEntry};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
-    sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, FocusState,
-    Prompt, ReviewPane, ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker,
+    sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, Dep,
+    FocusState, Prompt, ReviewPane, ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker,
     SyncIndicator, View, ViewState,
 };
 pub use views::SavedView;

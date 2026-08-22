@@ -268,8 +268,15 @@ async fn the_activity_feed_says_what_happened_to_one_task() {
     state.show_activity("renew the passport".into(), events);
     let backend = ratatui::backend::TestBackend::new(100, 24);
     let mut term = ratatui::Terminal::new(backend).expect("terminal");
-    term.draw(|f| sunrise_tui::render(f, f.area(), &state, None))
-        .expect("draw");
+    term.draw(|f| {
+        // The preview pane only exists with the `images` feature; the overlay
+        // this test is about does not care either way.
+        #[cfg(feature = "images")]
+        sunrise_tui::render(f, f.area(), &state, None);
+        #[cfg(not(feature = "images"))]
+        sunrise_tui::render(f, f.area(), &state);
+    })
+    .expect("draw");
     let buf = term.backend().buffer().clone();
     let mut s = String::new();
     for y in 0..buf.area.height {

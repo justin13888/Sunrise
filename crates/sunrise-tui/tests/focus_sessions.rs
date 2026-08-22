@@ -435,3 +435,67 @@ async fn a_blocker_written_by_the_client_drops_its_dependent_from_the_planner() 
         "clearing the blockers is not a one-way door"
     );
 }
+
+/// The badge every list row shows for "blocked" is the **derived** count, not
+/// `blocked_by.len()`. The stored set keeps its members after they finish, so
+/// reading it would mark a task blocked forever once anything had ever blocked
+/// it — and the user would have no way to tell why nothing looked startable.
+#[tokio::test]
+async fn the_derived_blocker_count_falls_to_zero_when_the_blocker_completes() {
+    let (_dir, core) = open_core().await;
+    let blocker = task(&core, "wait for the survey", None).await;
+    let dependent = task(&core, "book the movers", None).await;
+    submit(
+        &core,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![blocker]),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+
+    let rows = derived(&core).await;
+    let dep = rows
+        .iter()
+        .find(|r| r.task.id == dependent)
+        .expect("the dependent is listed");
+    assert_eq!(dep.open_blockers, 1);
+    assert_eq!(
+        dep.task.blocked_by.len(),
+        1,
+        "the stored set has one member too — the two agree while it is open"
+    );
+
+    submit(&core, Command::CompleteTask(blocker)).await;
+    let rows = derived(&core).await;
+    let dep = rows
+        .iter()
+        .find(|r| r.task.id == dependent)
+        .expect("still listed");
+    assert_eq!(dep.open_blockers, 0, "nothing is holding it up any more");
+    assert_eq!(
+        dep.task.blocked_by.len(),
+        1,
+        "…while the stored set still names the finished blocker, which is why \
+         the badge must not read it"
+    );
+}
+
+/// `Query::Actionable`'s rows: the derived dependency state every list row
+/// reads.
+async fn derived(core: &Core) -> Vec<sunrise_core::queries::ActionableTask> {
+    match core
+        .query(Query::Actionable {
+            stream: None,
+            limit: 100,
+        })
+        .await
+        .expect("actionable")
+    {
+        QueryResult::Actionable(rows) => rows,
+        other => panic!("expected Actionable, got {other:?}"),
+    }
+}

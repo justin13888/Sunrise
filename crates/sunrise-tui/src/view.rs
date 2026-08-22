@@ -4,6 +4,7 @@ use crate::input::InputLine;
 use crate::keymap::{Keymap, Mode};
 use crate::undo::UndoEntry;
 use jiff::Timestamp;
+use std::collections::BTreeMap;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
@@ -155,6 +156,19 @@ fn today_group(t: &Task, now_ms: u64, tz: &jiff::tz::TimeZone) -> TodayGroup {
         return TodayGroup::Upcoming;
     }
     TodayGroup::Anytime
+}
+
+/// The two derived dependency numbers a list row can show.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Dep {
+    /// Blockers of this task that are **still open**.
+    ///
+    /// Not `blocked_by.len()`: that set keeps its members after they finish,
+    /// so counting it marks a task blocked forever once anything ever blocked
+    /// it.
+    pub open_blockers: u32,
+    /// Open tasks waiting on this one — what finishing it would release.
+    pub unblocks: u32,
 }
 
 /// Rows a list is assumed to show before the runtime has measured the real
@@ -830,6 +844,15 @@ pub struct ViewState {
     pub tasks: Vec<Task>,
     /// Index of the selected task in `tasks`. `None` if the list is empty.
     pub selected: Option<usize>,
+    /// Derived dependency state per open task (`Query::Actionable`), refreshed
+    /// with the list.
+    ///
+    /// Held as a side map rather than folded into `Task` because neither
+    /// number is *stored* on a task: both are recomputed against the blockers'
+    /// current states, which is what makes a blocker completing anywhere —
+    /// locally or merged in from another device — flip its dependents with no
+    /// repair pass.
+    pub deps: BTreeMap<EntityRef, Dep>,
     /// Stream rows for the Stream view (Inbox first, per `Query::StreamList`).
     pub streams: Vec<StreamRow>,
     /// Context rows (`Query::Contexts`), the candidate set `@name` resolves
@@ -962,6 +985,7 @@ impl Default for ViewState {
             mode: Mode::Normal,
             tasks: Vec::new(),
             selected: None,
+            deps: BTreeMap::new(),
             streams: Vec::new(),
             contexts: Vec::new(),
             context_filter: Vec::new(),
