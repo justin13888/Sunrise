@@ -91,6 +91,7 @@ Prompts are a full single-line editor: `←`/`→`, `Home`/`End`, `^A`/`^E`,
 | `:open <tsk_…>` | Jump to a task by id |
 | `:devices` | List paired devices |
 | `:preview <path>` | Render an image inline (Focus view) |
+| `:save <name>` / `:go <name>` / `:views` / `:unsave <name>` | Saved views (view + query + filter), stored in `~/.config/sunrise/views.toml` |
 | `:help` | The full reference |
 
 User-configurable via `~/.config/sunrise/keys.toml`.

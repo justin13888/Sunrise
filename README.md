@@ -226,6 +226,7 @@ It opens (creating if needed) the vault at `$SUNRISE_VAULT` (default `~/.sunrise
 | `:filter @ctx…` | Narrow every list to those contexts (bare `:filter` clears) |
 | `:focus plan` / `stats` / `energy <l\|m\|h>` / `length <p\|e\|u>` | Planner and calibration |
 | `:export <trends\|activity\|focus\|streaks> [json\|csv] [path]` | Write a stats dataset |
+| `:save <name>` / `:go <name>` / `:views` | Save this view, query and filter; recall it; list them |
 | `:open <tsk_…>` / `:devices` / `:preview <path>` | Jump to a task / list devices / show an image |
 | `:help` | The full key and command reference (`?` opens the same overlay) |
 
