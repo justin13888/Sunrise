@@ -77,6 +77,28 @@ impl TaskTemplate {
     }
 }
 
+/// serde `default` for [`Routine::forgiveness_enabled`] (the rule is on by
+/// default, per `docs/02-domain/routines-and-recurrence.md`).
+const fn default_true() -> bool {
+    true
+}
+
+/// serde `skip_serializing_if` companion to [`default_true`].
+///
+/// serde hands `skip_serializing_if` a reference, so the by-reference signature
+/// is forced here rather than chosen.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// serde `skip_serializing_if` for counters that default to zero. Same
+/// by-reference signature requirement as [`is_true`].
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 /// Persisted Routine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Routine {
@@ -120,6 +142,30 @@ pub struct Routine {
     /// Last successful completion (for streak grace).
     #[serde(default)]
     pub last_completed_at: Option<Timestamp>,
+    /// Completion grace window in seconds. `None` = the spec default of 24h
+    /// ([`crate::streak::DEFAULT_GRACE_WINDOW_S`]); clamped to
+    /// [`crate::streak::MAX_GRACE_WINDOW_S`] on read. Absent on the wire when
+    /// unset, so pre-streak fixtures still round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_window_s: Option<u64>,
+    /// Forgiveness rule (one missed occurrence per 30-day window does not reset
+    /// the streak). Enabled by default; only the disabled case hits the wire.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub forgiveness_enabled: bool,
+    /// Anchor of the current streak *and* of its 30-day forgiveness window.
+    /// See [`crate::streak`] for the sliding rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streak_started_at: Option<Timestamp>,
+    /// Forgivenesses consumed since [`Self::streak_started_at`]; reset to 0 on
+    /// every anchor advance.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub forgivenesses_in_window: u32,
+    /// Idempotency keys of the occurrences already counted toward the streak,
+    /// sorted. Entries are occurrence keys (`YYYY-MM-DDTHH:MM`); the full key
+    /// in the spec is this routine's id joined with the entry. Membership is
+    /// permanent (no GC), per `docs/08-features/recurrence-engine.md`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streak_keys: Vec<String>,
     /// Paused.
     #[serde(default)]
     pub paused: bool,
@@ -200,6 +246,11 @@ pub struct RoutinePatch {
     pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
     /// Replace the catchup policy.
     pub catchup_policy: Option<RoutineCatchupPolicy>,
+    /// Set/clear the streak grace window in seconds (`Some(None)` restores the
+    /// 24h default). Clamped to [`crate::streak::MAX_GRACE_WINDOW_S`].
+    pub grace_window_s: Option<Option<u64>>,
+    /// Toggle the streak forgiveness rule.
+    pub forgiveness_enabled: Option<bool>,
     /// Pause / unpause.
     pub paused: Option<bool>,
     /// Set/clear the pause expiry.

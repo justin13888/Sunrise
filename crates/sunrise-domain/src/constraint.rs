@@ -346,6 +346,30 @@ pub fn list_violations(list: &[ScheduleConstraint], zdt: &Zoned) -> Vec<usize> {
         .collect()
 }
 
+/// Violated constraints at `zdt`, split by severity: `(hard, soft)`.
+///
+/// This is the shape callers actually need at a scheduling decision: a
+/// non-empty `hard` list **blocks** the schedule and fails validation, while
+/// `soft` entries never block and only demote ranking in planning views
+/// (`docs/02-domain/scheduling-constraints.md` §Hard vs. soft). Combination
+/// semantics are [`list_violations`]'s.
+#[must_use]
+pub fn violations_by_severity(
+    list: &[ScheduleConstraint],
+    zdt: &Zoned,
+) -> (Vec<ScheduleConstraint>, Vec<ScheduleConstraint>) {
+    let mut hard = Vec::new();
+    let mut soft = Vec::new();
+    for i in list_violations(list, zdt) {
+        let c = list[i];
+        match c.severity {
+            ConstraintSeverity::Hard => hard.push(c),
+            ConstraintSeverity::Soft => soft.push(c),
+        }
+    }
+    (hard, soft)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +640,44 @@ mod tests {
             list_violations(&[a, b], &zoned(2026, 8, 3, 12, 0)),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn violations_split_by_severity() {
+        // A hard weekday rule and a soft evening rule; Saturday 12:00 violates
+        // both, and the caller must be able to tell them apart.
+        let weekdays = ScheduleConstraint {
+            time_of_day: None,
+            days_of_week: WeekdaySet::from_days([
+                Weekday::Mo,
+                Weekday::Tu,
+                Weekday::We,
+                Weekday::Th,
+                Weekday::Fr,
+            ]),
+            date_range: None,
+            severity: ConstraintSeverity::Hard,
+        };
+        let evening = tod(
+            TimeOfDayRange {
+                start: time(18, 0, 0, 0),
+                end: time(22, 0, 0, 0),
+            },
+            ConstraintSeverity::Soft,
+        );
+        let list = [weekdays, evening];
+        let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 8, 12, 0));
+        assert_eq!(hard, vec![weekdays]);
+        assert_eq!(soft, vec![evening]);
+
+        // Monday 19:00 satisfies both.
+        let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 19, 0));
+        assert!(hard.is_empty() && soft.is_empty());
+
+        // Monday 12:00 breaks only the soft one.
+        let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 12, 0));
+        assert!(hard.is_empty());
+        assert_eq!(soft, vec![evening]);
     }
 
     #[test]

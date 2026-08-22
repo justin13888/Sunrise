@@ -119,6 +119,14 @@ fn expected_routine() -> Routine {
         catchup_policy: RoutineCatchupPolicy::Merge,
         streak_counter: 7,
         last_completed_at: Some(ts(R_LAST_COMPLETED)),
+        // Streak-mechanics fields: every one defaults to its "unset" value and
+        // is skipped on the wire in that state, so the chrono-era fixture still
+        // decodes and re-encodes byte-identically.
+        grace_window_s: None,
+        forgiveness_enabled: true,
+        streak_started_at: None,
+        forgivenesses_in_window: 0,
+        streak_keys: Vec::new(),
         paused: true,
         paused_until: Some(ts(R_PAUSED_UNTIL)),
         archived: false,

@@ -14,6 +14,20 @@ use std::sync::Arc;
 pub trait Clock: Send + Sync + std::fmt::Debug {
     /// Current unix time in milliseconds.
     fn now_ms(&self) -> u64;
+
+    /// IANA name of the *device-local* timezone, used to pin the civil
+    /// (zone-less) window dimensions of a Task's scheduling constraints to real
+    /// instants — per `docs/02-domain/scheduling-constraints.md` §Evaluation
+    /// timezone, a Task evaluates in the device zone (a Routine evaluates in
+    /// its own).
+    ///
+    /// Defaulted to `"UTC"` so existing implementors keep compiling and so a
+    /// test that injects only a clock still gets a deterministic zone. Ambient
+    /// timezone state is as much a determinism hazard as an ambient clock, so
+    /// it enters the core through this one injected seam and nowhere else.
+    fn timezone(&self) -> String {
+        "UTC".to_string()
+    }
 }
 
 /// Pluggable randomness source.
@@ -38,6 +52,17 @@ impl Clock for SystemClock {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::ZERO);
         u64::try_from(now.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn timezone(&self) -> String {
+        // `TimeZone::system()` reads the OS zone (TZ / /etc/localtime) and
+        // already falls back to UTC when it cannot resolve one. Only the
+        // production clock consults it; tests inject a fake and get a fixed
+        // zone, so no test outcome depends on the host's timezone.
+        jiff::tz::TimeZone::system()
+            .iana_name()
+            .unwrap_or("UTC")
+            .to_string()
     }
 }
 

@@ -52,17 +52,18 @@ use crate::config::{Clock, Rng};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
-use crate::queries::{ContextRow, DeviceRow, Query, QueryResult, StreamRow};
+use crate::queries::{ActionableTask, ContextRow, DeviceRow, Query, QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::{
-    inbox_stream_ref, materialization_horizon_days, occurrence_task_id, Context, ContextDraft,
-    ContextPatch, NoteBody, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, Task,
-    TaskDraft, TaskPatch, TaskState, TaskTemplate,
+    effective_state, inbox_stream_ref, materialization_horizon_days, occurrence_key_at,
+    occurrence_task_id, violations_by_severity, Context, ContextDraft, ContextPatch,
+    DependencyGraph, NoteBody, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
+    ScheduleConstraint, StreakOutcome, Stream, StreamColor, StreamDraft, StreamPatch,
+    StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, ValidationError,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -192,6 +193,7 @@ impl Engine {
             Query::StreamList => self.query_stream_list(db),
             Query::Contexts => self.query_contexts(db),
             Query::Routines => self.query_routines(db),
+            Query::Actionable { stream, limit } => self.query_actionable(db, stream, limit),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
@@ -242,12 +244,12 @@ impl Engine {
             )?;
             Ok(())
         })?;
-        Ok(CommandResult {
-            entity: EntityRef::new(EntityKind::Device, device_id),
-            state: None,
-            op_id: [0u8; 16],
-            seq: 0,
-        })
+        Ok(CommandResult::new(
+            EntityRef::new(EntityKind::Device, device_id),
+            None,
+            [0u8; 16],
+            0,
+        ))
     }
 
     /// Apply a remote op envelope: idempotent, entity-level last-writer-wins.
@@ -419,6 +421,10 @@ impl Engine {
             deleted: false,
         };
 
+        // Scheduling gate: a `hard` constraint violated by this `scheduled_at`
+        // rejects the create outright; `soft` ones ride back on the result.
+        let soft_violations = self.check_schedule_constraints(&task)?;
+
         let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))?;
         let seq = self.next_seq(db, stream.bytes())?;
 
@@ -426,6 +432,7 @@ impl Engine {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
             insert_task_row(tx, &task, now_ms, &self.keychain.device_id())?;
             insert_task_contexts(tx, &task)?;
+            replace_task_blockers(tx, &task)?;
             ftsr_upsert_task(tx, &task)?;
             self.ops_insert(
                 tx,
@@ -445,12 +452,10 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: task_id,
-            state: Some(TaskState::Todo),
-            op_id,
-            seq,
-        })
+        Ok(
+            CommandResult::new(task_id, Some(TaskState::Todo), op_id, seq)
+                .with_soft_violations(soft_violations),
+        )
     }
 
     fn update_task(
@@ -464,6 +469,15 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
+        let prev_state = task.state;
+        // Which gates this patch has to clear. Scheduling constraints are only
+        // re-evaluated when the patch actually *schedules* (per
+        // docs/02-domain/scheduling-constraints.md a `hard` violation "fails
+        // validation when the user schedules a Task against it") — renaming a
+        // task that already sits outside its window must not be rejected.
+        let touches_schedule =
+            patch.scheduled_at.is_some() || patch.scheduling_constraints.is_some();
+        let touches_blockers = patch.blocked_by.is_some();
 
         if let Some(t) = patch.title {
             task.title = t.trim().to_string();
@@ -523,7 +537,33 @@ impl Engine {
         // sets only `due_at` earlier than the existing `scheduled_at` (or an
         // invalid constraint list) would otherwise pass silently.
         task.validate_invariants()?;
+        if touches_blockers {
+            // Local cycle/self-block check over the dependency index, per
+            // docs/02-domain/tasks.md §Validation. Deliberately local: a cycle
+            // formed concurrently on two devices is broken by the merge
+            // tie-breaker, not here.
+            let graph = read_dependency_graph(db.conn())?;
+            if graph.would_cycle(task.id, &task.blocked_by) {
+                return Err(ValidationError::BlockedByCycle.into());
+            }
+        }
+        let soft_violations = if touches_schedule {
+            self.check_schedule_constraints(&task)?
+        } else {
+            Vec::new()
+        };
         task.updated_at = ms_to_ts(now_ms as i64);
+
+        // Routine streak: the *first* pending -> done transition of an
+        // occurrence moves the counter. `record_occurrence_completion` owns the
+        // grace-window / forgiveness / idempotency rules and reports
+        // `Duplicate` when this occurrence was already counted, in which case
+        // no routine op is emitted at all.
+        let streak_op = if patch.state == Some(TaskState::Done) && prev_state != TaskState::Done {
+            self.streak_advance(db, &task, now_ms)?
+        } else {
+            None
+        };
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
@@ -542,6 +582,7 @@ impl Engine {
             )?;
             update_task_row(tx, &task_for_persist, now_ms, &self.keychain.device_id())?;
             replace_task_contexts(tx, &task_for_persist)?;
+            replace_task_blockers(tx, &task_for_persist)?;
             ftsr_upsert_task(tx, &task_for_persist)?;
             self.ops_insert(
                 tx,
@@ -558,15 +599,94 @@ impl Engine {
                 now_ms,
                 &[],
             )?;
+            // The streak advance is a routine.update op in the SAME
+            // transaction, so the counter can never diverge from the
+            // completion that caused it, and it converges on every other
+            // replica through the ordinary full-state routine LWW path.
+            if let Some((routine, routine_inner)) = &streak_op {
+                let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
+                let routine_op_id = self.fresh_op_id(now_ms);
+                update_routine_row(tx, routine, now_ms, &self.keychain.device_id())?;
+                self.ops_insert(
+                    tx,
+                    &routine_op_id,
+                    &META_STREAM,
+                    routine_seq,
+                    now_ms,
+                    routine_inner,
+                    "routine.update",
+                    "routine",
+                    Some(routine.id.bytes()),
+                    Some(now_ms),
+                    None,
+                    now_ms,
+                    &[],
+                )?;
+            }
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: Some(task.state),
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, Some(task.state), op_id, seq)
+            .with_soft_violations(soft_violations))
+    }
+
+    /// Advance the owning Routine's streak for a task that just went `done`.
+    ///
+    /// Returns the mutated Routine plus its encoded `RoutineUpdate` inner op,
+    /// or `None` when there is nothing to emit: the task is not
+    /// routine-generated, its routine is gone, it carries no occurrence
+    /// instant, or the occurrence was already counted (the idempotency key set
+    /// makes a `done -> todo -> done` round trip a no-op).
+    fn streak_advance(
+        &self,
+        db: &Db,
+        task: &Task,
+        now_ms: u64,
+    ) -> Result<Option<(Routine, Vec<u8>)>, EngineError> {
+        let (Some(rid), Some(occurrence_at)) = (task.routine_id, task.routine_occurrence) else {
+            return Ok(None);
+        };
+        let Some(mut routine) = read_routine(db.conn(), rid.bytes())? else {
+            return Ok(None);
+        };
+        let Ok(key) = occurrence_key_at(&routine.timezone, occurrence_at) else {
+            return Ok(None);
+        };
+        let outcome =
+            routine.record_occurrence_completion(&key, occurrence_at, ms_to_ts(now_ms as i64));
+        if outcome == StreakOutcome::Duplicate {
+            return Ok(None);
+        }
+        routine.updated_at = ms_to_ts(now_ms as i64);
+        let inner = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
+        Ok(Some((routine, inner)))
+    }
+
+    /// Evaluate a Task's `scheduled_at` against its scheduling constraints.
+    ///
+    /// Per `docs/02-domain/scheduling-constraints.md`: window dimensions are
+    /// civil (zone-less) values pinned to instants by the **device-local**
+    /// timezone for a Task, which reaches the engine through the injected
+    /// [`Clock`](crate::config::Clock) rather than from ambient process state.
+    /// A `hard` violation is rejected; the `soft` ones are returned so the
+    /// caller can surface them.
+    fn check_schedule_constraints(
+        &self,
+        task: &Task,
+    ) -> Result<Vec<ScheduleConstraint>, EngineError> {
+        let Some(at) = task.scheduled_at else {
+            return Ok(Vec::new());
+        };
+        if task.scheduling_constraints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
+        let zdt = at.to_zoned(tz);
+        let (hard, soft) = violations_by_severity(&task.scheduling_constraints, &zdt);
+        if !hard.is_empty() {
+            return Err(ValidationError::HardScheduleConstraint.into());
+        }
+        Ok(soft)
     }
 
     fn complete_task(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
@@ -589,6 +709,8 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
         task.scheduled_at = Some(ms_to_ts(to_ms as i64));
         task.deferred_count = task.deferred_count.saturating_add(1);
+        // Deferring *is* scheduling, so it clears the same constraint gate.
+        let soft_violations = self.check_schedule_constraints(&task)?;
         task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
@@ -615,12 +737,8 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: Some(task.state),
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, Some(task.state), op_id, seq)
+            .with_soft_violations(soft_violations))
     }
 
     fn delete_task(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
@@ -656,12 +774,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: Some(task.state),
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, Some(task.state), op_id, seq))
     }
 
     fn promote_task(
@@ -726,12 +839,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: stream_id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(stream_id, None, op_id, seq))
     }
 
     fn update_stream(
@@ -795,12 +903,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     fn delete_stream(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
@@ -838,12 +941,7 @@ impl Engine {
             )?;
             Ok(())
         })?;
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     // ---- context command handlers ----
@@ -898,12 +996,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: ctx_id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(ctx_id, None, op_id, seq))
     }
 
     fn update_context(
@@ -959,12 +1052,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     /// Soft-delete a Context and strip it from every Task carrying it.
@@ -1006,12 +1094,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     // ---- routine command handlers ----
@@ -1035,6 +1118,11 @@ impl Engine {
             catchup_policy: d.catchup_policy,
             streak_counter: 0,
             last_completed_at: None,
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
             archived: false,
@@ -1078,12 +1166,7 @@ impl Engine {
         // `starts_at` and any missed occurrences run the catchup policy).
         self.materialize_one_routine(db, &routine, now_ms)?;
 
-        Ok(CommandResult {
-            entity: routine_id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(routine_id, None, op_id, seq))
     }
 
     fn update_routine(
@@ -1125,6 +1208,12 @@ impl Engine {
         }
         if let Some(c) = patch.catchup_policy {
             routine.catchup_policy = c;
+        }
+        if let Some(g) = patch.grace_window_s {
+            routine.grace_window_s = g;
+        }
+        if let Some(f) = patch.forgiveness_enabled {
+            routine.forgiveness_enabled = f;
         }
         if let Some(p) = patch.paused {
             routine.paused = p;
@@ -1168,12 +1257,7 @@ impl Engine {
         }
         self.materialize_one_routine(db, &routine, now_ms)?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     fn delete_routine(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
@@ -1206,12 +1290,7 @@ impl Engine {
             )?;
             Ok(())
         })?;
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     fn skip_routine_occurrence(
@@ -1293,12 +1372,7 @@ impl Engine {
             Ok(())
         })?;
 
-        Ok(CommandResult {
-            entity: id,
-            state: None,
-            op_id,
-            seq,
-        })
+        Ok(CommandResult::new(id, None, op_id, seq))
     }
 
     fn materialize_routines(&self, db: &mut Db, now_ms: u64) -> Result<CommandResult, EngineError> {
@@ -1307,12 +1381,12 @@ impl Engine {
             self.materialize_one_routine(db, &routine, now_ms)?;
         }
         // No single target entity; return a routine-kind sentinel.
-        Ok(CommandResult {
-            entity: EntityRef::new(EntityKind::Routine, [0u8; 16]),
-            state: None,
-            op_id: [0u8; 16],
-            seq: 0,
-        })
+        Ok(CommandResult::new(
+            EntityRef::new(EntityKind::Routine, [0u8; 16]),
+            None,
+            [0u8; 16],
+            0,
+        ))
     }
 
     /// Expand a routine over `[max(starts_at, materialized_until), now+horizon)`
@@ -1563,6 +1637,79 @@ impl Engine {
             }
         }
         Ok(QueryResult::Tasks(tasks))
+    }
+
+    /// Open tasks with their derived dependency state, ranked for a planner.
+    ///
+    /// Neither `blocked` nor `blocks_others` is stored on a Task — both are
+    /// recomputed here against the blockers' *current* states, which is what
+    /// makes "completing a blocker flips its dependents to actionable" true
+    /// with no repair pass and no extra op, locally or after a merge.
+    ///
+    /// Ordering is the read path a Focus Planner wants: actionable first, then
+    /// by how many open dependents finishing the task would release, then by id
+    /// so the result is deterministic.
+    fn query_actionable(
+        &self,
+        db: &Db,
+        stream: Option<EntityRef>,
+        limit: u32,
+    ) -> Result<QueryResult, EngineError> {
+        if let Some(s) = stream {
+            require_kind(s, EntityKind::Stream)?;
+        }
+        let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
+        // `open_blockers` counts an *unknown* blocker (LEFT JOIN miss) as open:
+        // the op that creates it may simply not have arrived yet, and treating
+        // it as satisfied would flash the task as actionable and then take it
+        // away again.
+        let mut stmt = db.conn().prepare(
+            "SELECT t.id,
+                    (SELECT COUNT(*) FROM task_blockers tb
+                       LEFT JOIN tasks b ON b.id = tb.blocker_id
+                      WHERE tb.task_id = t.id
+                        AND (b.id IS NULL
+                             OR (b.deleted = 0
+                                 AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers,
+                    (SELECT COUNT(*) FROM task_blockers tb2
+                       JOIN tasks d ON d.id = tb2.task_id
+                      WHERE tb2.blocker_id = t.id
+                        AND d.deleted = 0 AND d.archived = 0
+                        AND d.state NOT IN ('done', 'cancelled')) AS unblocks
+             FROM tasks t
+             WHERE t.deleted = 0 AND t.archived = 0
+               AND t.state IN ('todo', 'in_progress')
+               AND (?1 IS NULL OR t.stream_id = ?1)
+             ORDER BY open_blockers ASC, unblocks DESC, t.id ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![stream_blob, limit], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (raw, open_blockers, unblocks) in rows {
+            let mut bytes = [0u8; 16];
+            let take = raw.len().min(16);
+            bytes[..take].copy_from_slice(&raw[..take]);
+            let Some(task) = read_task(db.conn(), &bytes)? else {
+                continue;
+            };
+            let open = u32::try_from(open_blockers.max(0)).unwrap_or(u32::MAX);
+            out.push(ActionableTask {
+                effective_state: effective_state(task.state, open),
+                open_blockers: open,
+                unblocks: u32::try_from(unblocks.max(0)).unwrap_or(u32::MAX),
+                task,
+            });
+        }
+        Ok(QueryResult::Actionable(out))
     }
 
     fn query_stream_tasks(&self, db: &Db, stream: &EntityRef) -> Result<QueryResult, EngineError> {
@@ -2048,6 +2195,12 @@ fn materialize_remote(
                 insert_task_row(tx, t, ts_ms, device)?;
                 insert_task_contexts(tx, t)?;
             }
+            // Dependency edges ride along with the full-state task op. They are
+            // written even when the blockers they name have not arrived on this
+            // replica yet — an unknown blocker reads as still-open, so the
+            // dependent shows blocked until its blocker turns up, whichever
+            // order the two ops land in.
+            replace_task_blockers(tx, t)?;
             ftsr_upsert_task(tx, t)?;
         }
         InnerOp::TaskDelete(_) => {
@@ -2555,6 +2708,69 @@ fn insert_task_contexts(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Replace a task's rows in the dependency index with its current
+/// `blocked_by` set.
+///
+/// The index is what makes both derived directions cheap — `blocked` (forward,
+/// covered by the primary key) and `blocks_others` (reverse, covered by
+/// `task_blockers_by_blocker`). Edges naming a blocker this replica has not
+/// materialized yet are written unchanged: see `0008_task_blockers.sql` for why
+/// the table carries no foreign keys.
+fn replace_task_blockers(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM task_blockers WHERE task_id = ?",
+        params![t.id.bytes().to_vec()],
+    )?;
+    for b in &t.blocked_by {
+        tx.execute(
+            "INSERT OR IGNORE INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
+            params![t.id.bytes().to_vec(), b.bytes().to_vec()],
+        )?;
+    }
+    Ok(())
+}
+
+/// A task's `blocked_by` set, read back out of the dependency index.
+fn read_task_blockers(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> rusqlite::Result<BTreeSet<EntityRef>> {
+    let mut stmt =
+        conn.prepare("SELECT blocker_id FROM task_blockers WHERE task_id = ? ORDER BY blocker_id")?;
+    let rows = stmt.query_map(params![id.to_vec()], |r| r.get::<_, Vec<u8>>(0))?;
+    let mut out = BTreeSet::new();
+    for raw in rows {
+        let raw = raw?;
+        let mut a = [0u8; 16];
+        let take = raw.len().min(16);
+        a[..take].copy_from_slice(&raw[..take]);
+        out.insert(EntityRef::new(EntityKind::Task, a));
+    }
+    Ok(out)
+}
+
+/// The whole dependency graph, for the local submit-time cycle check.
+fn read_dependency_graph(conn: &rusqlite::Connection) -> Result<DependencyGraph, EngineError> {
+    let mut stmt = conn.prepare("SELECT task_id, blocker_id FROM task_blockers")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut graph = DependencyGraph::new();
+    for row in rows {
+        let (task, blocker) = row?;
+        graph.add_edge(task_ref(&task), task_ref(&blocker));
+    }
+    Ok(graph)
+}
+
+/// Widen a stored 16-byte id back into a Task [`EntityRef`].
+fn task_ref(raw: &[u8]) -> EntityRef {
+    let mut a = [0u8; 16];
+    let take = raw.len().min(16);
+    a[..take].copy_from_slice(&raw[..take]);
+    EntityRef::new(EntityKind::Task, a)
+}
+
 fn replace_task_contexts(tx: &Transaction<'_>, t: &Task) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM task_contexts WHERE task_id = ?",
@@ -2674,7 +2890,11 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         completed_at: t.8.map(|m| ms_to_ts(m.max(0))),
         deferred_count: t.9,
         blocks: BTreeSet::new(),
-        blocked_by: BTreeSet::new(),
+        // Restored from the dependency index (migration 0008). Before it
+        // existed, `blocked_by` survived only inside the op-log inner op and
+        // the materialized projection always read back empty, so nothing could
+        // derive `blocked` from it.
+        blocked_by: read_task_blockers(conn, id)?,
         assignee: None,
         routine_id: t.14.map(|b| {
             let mut a = [0u8; 16];
@@ -2819,6 +3039,50 @@ fn decode_blob_opt<T: serde::de::DeserializeOwned + serde::Serialize + Default>(
     }
 }
 
+/// The streak fields of a Routine that migration 0009 projects into the single
+/// `routines.streak_state` blob.
+///
+/// `streak_counter` and `last_completed_at_ms` keep their own columns (0001 /
+/// 0004); these five are read and written as a unit and are opaque to SQL, so
+/// one canonical-CBOR blob beats five more positional columns. All-default
+/// means `NULL`, which is also what every pre-v9 row upgrades into.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct StreakStateProj {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grace_window_s: Option<u64>,
+    #[serde(default)]
+    forgiveness_disabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    streak_started_at_ms: Option<i64>,
+    #[serde(default)]
+    forgivenesses_in_window: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    streak_keys: Vec<String>,
+}
+
+impl StreakStateProj {
+    fn from_routine(r: &Routine) -> Self {
+        Self {
+            grace_window_s: r.grace_window_s,
+            forgiveness_disabled: !r.forgiveness_enabled,
+            streak_started_at_ms: r.streak_started_at.map(|t| t.as_millisecond()),
+            forgivenesses_in_window: r.forgivenesses_in_window,
+            streak_keys: r.streak_keys.clone(),
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Encode the streak projection, storing `NULL` for the all-default state.
+fn encode_streak_state(r: &Routine) -> rusqlite::Result<Option<Vec<u8>>> {
+    let proj = StreakStateProj::from_routine(r);
+    let empty = proj.is_default();
+    encode_blob_opt(&proj, empty)
+}
+
 fn insert_routine_row(
     tx: &Transaction<'_>,
     r: &Routine,
@@ -2834,14 +3098,15 @@ fn insert_routine_row(
     let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
     let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
     let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
+    let streak_blob = encode_streak_state(r)?;
     tx.execute(
         "INSERT INTO routines
          (id, stream_id, rrule, rrule_text, timezone, starts_at_ms, ends_at_ms,
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
           last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
-          lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          streak_state, lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -2863,6 +3128,7 @@ fn insert_routine_row(
             r.paused_until.map(|d| d.as_millisecond()),
             now_ms,
             now_ms,
+            streak_blob,
             lww_ts_ms,
             &lww_device[..],
         ],
@@ -2884,6 +3150,7 @@ fn update_routine_row(
     let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
     let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
     let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
+    let streak_blob = encode_streak_state(r)?;
     tx.execute(
         "UPDATE routines SET
             stream_id = ?, rrule = ?, rrule_text = ?, timezone = ?,
@@ -2891,7 +3158,7 @@ fn update_routine_row(
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
             last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?,
-            lww_ts_ms = ?, lww_device = ?
+            streak_state = ?, lww_ts_ms = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -2912,6 +3179,7 @@ fn update_routine_row(
             r.last_completed_at.map(|d| d.as_millisecond()),
             r.paused_until.map(|d| d.as_millisecond()),
             r.updated_at.as_millisecond(),
+            streak_blob,
             lww_ts_ms,
             &lww_device[..],
             id_blob,
@@ -2960,6 +3228,7 @@ fn routine_from_row(
     paused_until_ms: Option<i64>,
     created_ms: i64,
     updated_ms: i64,
+    streak_state: Option<Vec<u8>>,
 ) -> Result<Routine, EngineError> {
     let rrule = sunrise_domain::RRule::parse(rrule_text)
         .map_err(|e| EngineError::Invalid(format!("stored rrule: {e}")))?;
@@ -2969,6 +3238,9 @@ fn routine_from_row(
         }
         None => return Err(EngineError::Invalid("routine missing template".into())),
     };
+    // NULL (every pre-v9 row, and every routine never completed) decodes to the
+    // all-default streak state.
+    let streak_proj: StreakStateProj = decode_blob_opt(streak_state)?;
     Ok(Routine {
         id: EntityRef::new(EntityKind::Routine, *id),
         created_at: ms_to_ts(created_ms.max(0)),
@@ -2984,6 +3256,11 @@ fn routine_from_row(
         catchup_policy: parse_catchup_policy(catchup),
         streak_counter: streak,
         last_completed_at: last_completed_ms.map(|m| ms_to_ts(m.max(0))),
+        grace_window_s: streak_proj.grace_window_s,
+        forgiveness_enabled: !streak_proj.forgiveness_disabled,
+        streak_started_at: streak_proj.streak_started_at_ms.map(|m| ms_to_ts(m.max(0))),
+        forgivenesses_in_window: streak_proj.forgivenesses_in_window,
+        streak_keys: streak_proj.streak_keys,
         paused: paused != 0,
         paused_until: paused_until_ms.map(|m| ms_to_ts(m.max(0))),
         archived: archived != 0,
@@ -2994,7 +3271,7 @@ fn routine_from_row(
 const ROUTINE_COLUMNS: &str = "rrule_text, timezone, starts_at_ms, ends_at_ms,
      streak_counter, paused, archived, deleted, scheduling_constraints,
      template, skip_dates, skipped_keys, catchup_policy, last_completed_at_ms,
-     paused_until_ms, created_at_ms, updated_at_ms";
+     paused_until_ms, created_at_ms, updated_at_ms, streak_state";
 
 fn read_routine(
     conn: &rusqlite::Connection,
@@ -3024,6 +3301,7 @@ fn read_routine(
                 r.get::<_, Option<i64>>(14)?,
                 r.get::<_, i64>(15)?,
                 r.get::<_, i64>(16)?,
+                r.get::<_, Option<Vec<u8>>>(17)?,
             ))
         })
         .optional()?;
@@ -3032,7 +3310,7 @@ fn read_routine(
     };
     let routine = routine_from_row(
         id, &v.0, v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, &v.12, v.13, v.14, v.15,
-        v.16,
+        v.16, v.17,
     )?;
     Ok(Some(routine))
 }
@@ -3063,6 +3341,7 @@ fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>, EngineErro
                 r.get::<_, Option<i64>>(15)?,
                 r.get::<_, i64>(16)?,
                 r.get::<_, i64>(17)?,
+                r.get::<_, Option<Vec<u8>>>(18)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3073,7 +3352,7 @@ fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>, EngineErro
         id[..take].copy_from_slice(&v.0[..take]);
         out.push(routine_from_row(
             &id, &v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, v.12, &v.13, v.14, v.15,
-            v.16, v.17,
+            v.16, v.17, v.18,
         )?);
     }
     Ok(out)
@@ -4602,6 +4881,11 @@ mod tests {
                 catchup_policy: RoutineCatchupPolicy::Skip,
                 streak_counter: 0,
                 last_completed_at: None,
+                grace_window_s: None,
+                forgiveness_enabled: true,
+                streak_started_at: None,
+                forgivenesses_in_window: 0,
+                streak_keys: Vec::new(),
                 paused: false,
                 paused_until: None,
                 archived: false,
@@ -5381,6 +5665,11 @@ mod tests {
                 catchup_policy: RoutineCatchupPolicy::Skip,
                 streak_counter: 0,
                 last_completed_at: None,
+                grace_window_s: None,
+                forgiveness_enabled: true,
+                streak_started_at: None,
+                forgivenesses_in_window: 0,
+                streak_keys: Vec::new(),
                 paused: false,
                 paused_until: None,
                 archived: false,
@@ -5600,5 +5889,679 @@ mod tests {
 
             proptest::prop_assert_eq!(tasks_projection(&dba), tasks_projection(&dbb));
         }
+    }
+
+    // ---- task dependencies: derived `blocked` + the reverse index ----
+
+    use sunrise_domain::EffectiveTaskState;
+
+    /// Every open task with its derived dependency counts, ranked.
+    fn actionable_rows(e: &Engine, db: &Db) -> Vec<ActionableTask> {
+        match e
+            .query(
+                db,
+                Query::Actionable {
+                    stream: None,
+                    limit: 100,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Actionable(v) => v,
+            _ => panic!("expected Actionable"),
+        }
+    }
+
+    fn row_for(rows: &[ActionableTask], id: EntityRef) -> ActionableTask {
+        rows.iter()
+            .find(|r| r.task.id == id)
+            .unwrap_or_else(|| panic!("no actionable row for {id}"))
+            .clone()
+    }
+
+    fn new_task(e: &Engine, db: &mut Db, title: &str) -> EntityRef {
+        e.apply(
+            db,
+            Command::CreateTask(TaskDraft {
+                title: title.into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity
+    }
+
+    fn set_blockers(
+        e: &Engine,
+        db: &mut Db,
+        task: EntityRef,
+        blockers: Vec<EntityRef>,
+    ) -> Result<CommandResult, EngineError> {
+        e.apply(
+            db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    blocked_by: Some(blockers),
+                    ..Default::default()
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn blocked_by_survives_the_materialized_projection() {
+        // Before migration 0008 the `tasks` table had no blocker columns at
+        // all: `blocked_by` lived only inside the op-log inner op, so every
+        // read came back empty and nothing could derive `blocked` from it.
+        let mut db = db();
+        let e = engine();
+        let blocker = new_task(&e, &mut db, "buy paint");
+        let dependent = new_task(&e, &mut db, "paint the fence");
+        set_blockers(&e, &mut db, dependent, vec![blocker]).unwrap();
+
+        let t = read_task_t(&e, &db, dependent);
+        assert_eq!(
+            t.blocked_by,
+            BTreeSet::from([blocker]),
+            "blocked_by round-trips through the projection"
+        );
+
+        // Replacing the set replaces the index rows, it does not accumulate.
+        set_blockers(&e, &mut db, dependent, vec![]).unwrap();
+        assert!(read_task_t(&e, &db, dependent).blocked_by.is_empty());
+    }
+
+    #[test]
+    fn completing_a_blocker_flips_its_dependents_to_actionable() {
+        let mut db = db();
+        let e = engine();
+        let blocker = new_task(&e, &mut db, "buy paint");
+        let dependent = new_task(&e, &mut db, "paint the fence");
+        set_blockers(&e, &mut db, dependent, vec![blocker]).unwrap();
+
+        let rows = actionable_rows(&e, &db);
+        let dep = row_for(&rows, dependent);
+        assert_eq!(dep.effective_state, EffectiveTaskState::Blocked);
+        assert_eq!(dep.open_blockers, 1);
+        let blk = row_for(&rows, blocker);
+        assert_eq!(blk.effective_state, EffectiveTaskState::Todo);
+        assert_eq!(blk.unblocks, 1, "reverse index: it holds one task back");
+
+        // The whole point: no unblock op, no repair pass — completing the
+        // blocker is enough.
+        e.apply(&mut db, Command::CompleteTask(blocker)).unwrap();
+
+        let rows = actionable_rows(&e, &db);
+        let dep = row_for(&rows, dependent);
+        assert_eq!(dep.effective_state, EffectiveTaskState::Todo);
+        assert_eq!(dep.open_blockers, 0);
+        assert!(
+            !rows.iter().any(|r| r.task.id == blocker),
+            "a done blocker drops out of the open list"
+        );
+        assert_eq!(
+            read_task_t(&e, &db, dependent).blocked_by,
+            BTreeSet::from([blocker]),
+            "the edge itself is kept; only its effect went away"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_or_deleted_blocker_also_releases_its_dependents() {
+        let mut db = db();
+        let e = engine();
+        let cancelled = new_task(&e, &mut db, "wait for legal");
+        let deleted = new_task(&e, &mut db, "chase invoice");
+        let dependent = new_task(&e, &mut db, "ship it");
+        set_blockers(&e, &mut db, dependent, vec![cancelled, deleted]).unwrap();
+        assert_eq!(
+            row_for(&actionable_rows(&e, &db), dependent).open_blockers,
+            2
+        );
+
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: cancelled,
+                patch: TaskPatch {
+                    state: Some(TaskState::Cancelled),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            row_for(&actionable_rows(&e, &db), dependent).open_blockers,
+            1
+        );
+
+        // A tombstoned blocker will never reach `done`; it must not block
+        // forever either.
+        e.apply(&mut db, Command::DeleteTask(deleted)).unwrap();
+        let dep = row_for(&actionable_rows(&e, &db), dependent);
+        assert_eq!(dep.open_blockers, 0);
+        assert_eq!(dep.effective_state, EffectiveTaskState::Todo);
+    }
+
+    #[test]
+    fn actionable_ranks_by_how_much_each_task_unblocks() {
+        // The read path a Focus Planner wants: actionable first, then by the
+        // size of the reverse edge set.
+        let mut db = db();
+        let e = engine();
+        let hub = new_task(&e, &mut db, "unblock everything");
+        let minor = new_task(&e, &mut db, "unblock one thing");
+        let leaf = new_task(&e, &mut db, "unblock nothing");
+        let d1 = new_task(&e, &mut db, "d1");
+        let d2 = new_task(&e, &mut db, "d2");
+        let d3 = new_task(&e, &mut db, "d3");
+        for d in [d1, d2] {
+            set_blockers(&e, &mut db, d, vec![hub]).unwrap();
+        }
+        set_blockers(&e, &mut db, d3, vec![hub, minor]).unwrap();
+
+        let rows = actionable_rows(&e, &db);
+        let order: Vec<EntityRef> = rows.iter().map(|r| r.task.id).collect();
+        assert_eq!(
+            &order[..3],
+            &[hub, minor, leaf][..],
+            "actionable first, most-unblocking first: {order:?}"
+        );
+        assert_eq!(row_for(&rows, hub).unblocks, 3);
+        assert_eq!(row_for(&rows, minor).unblocks, 1);
+        assert_eq!(row_for(&rows, leaf).unblocks, 0);
+        // The three blocked ones sort after every actionable one.
+        for id in [d1, d2, d3] {
+            assert_eq!(
+                row_for(&rows, id).effective_state,
+                EffectiveTaskState::Blocked
+            );
+        }
+        assert!(
+            order.iter().position(|x| *x == d1).unwrap() > 2,
+            "blocked tasks sink below actionable ones"
+        );
+    }
+
+    #[test]
+    fn self_blocking_and_cycles_are_rejected() {
+        let mut db = db();
+        let e = engine();
+        let a = new_task(&e, &mut db, "a");
+        let b = new_task(&e, &mut db, "b");
+        let c = new_task(&e, &mut db, "c");
+
+        assert!(matches!(
+            set_blockers(&e, &mut db, a, vec![a]),
+            Err(EngineError::Validation(
+                sunrise_domain::ValidationError::BlockedByCycle
+            ))
+        ));
+
+        // a <- b <- c, then closing the loop c <- a.
+        set_blockers(&e, &mut db, b, vec![a]).unwrap();
+        set_blockers(&e, &mut db, c, vec![b]).unwrap();
+        assert!(matches!(
+            set_blockers(&e, &mut db, a, vec![c]),
+            Err(EngineError::Validation(
+                sunrise_domain::ValidationError::BlockedByCycle
+            ))
+        ));
+        // The rejected edge left nothing behind.
+        assert!(read_task_t(&e, &db, a).blocked_by.is_empty());
+    }
+
+    // ---- scheduling-constraint enforcement ----
+
+    /// NOW is 2023-11-14T22:13:20Z — a Tuesday evening, outside a 09:00–17:00
+    /// window and inside it ten hours earlier (12:13Z).
+    const OUTSIDE_WINDOW_MS: i64 = NOW;
+    const INSIDE_WINDOW_MS: i64 = NOW - 10 * 3_600_000;
+
+    fn soft_9_to_5() -> ScheduleConstraint {
+        ScheduleConstraint {
+            severity: sunrise_domain::ConstraintSeverity::Soft,
+            ..sample_constraint()
+        }
+    }
+
+    #[test]
+    fn scheduling_against_a_hard_constraint_is_rejected_on_create() {
+        let mut db = db();
+        let e = engine();
+        let err = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "deploy at 10pm".into(),
+                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS)),
+                    scheduling_constraints: vec![sample_constraint()],
+                    ..Default::default()
+                }),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                EngineError::Validation(sunrise_domain::ValidationError::HardScheduleConstraint)
+            ),
+            "got {err:?}"
+        );
+        // Nothing was written.
+        let n: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+
+        // The same constraint at an instant inside the window passes.
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "deploy at noon".into(),
+                scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                scheduling_constraints: vec![sample_constraint()],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_soft_violation_is_surfaced_rather_than_blocking() {
+        let mut db = db();
+        let e = engine();
+        let soft = soft_9_to_5();
+        let res = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "deploy at 10pm".into(),
+                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS)),
+                    scheduling_constraints: vec![soft],
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            res.soft_violations,
+            vec![soft],
+            "a soft violation never blocks, but it must not vanish either"
+        );
+        // Inside the window there is nothing to report.
+        let res = e
+            .apply(
+                &mut db,
+                Command::UpdateTask {
+                    id: res.entity,
+                    patch: TaskPatch {
+                        scheduled_at: Some(Some(ms_to_ts(INSIDE_WINDOW_MS))),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        assert!(res.soft_violations.is_empty());
+    }
+
+    #[test]
+    fn rescheduling_and_deferring_clear_the_same_hard_gate() {
+        let mut db = db();
+        let e = engine();
+        let id = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "deploy".into(),
+                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                    scheduling_constraints: vec![sample_constraint()],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        // Moving it out of the window is rejected...
+        assert!(matches!(
+            e.apply(
+                &mut db,
+                Command::UpdateTask {
+                    id,
+                    patch: TaskPatch {
+                        scheduled_at: Some(Some(ms_to_ts(OUTSIDE_WINDOW_MS))),
+                        ..Default::default()
+                    },
+                },
+            ),
+            Err(EngineError::Validation(
+                sunrise_domain::ValidationError::HardScheduleConstraint
+            ))
+        ));
+        // ... and so is deferring into it, since deferring *is* scheduling.
+        assert!(matches!(
+            e.apply(
+                &mut db,
+                Command::DeferTask {
+                    id,
+                    to_ms: OUTSIDE_WINDOW_MS as u64,
+                },
+            ),
+            Err(EngineError::Validation(
+                sunrise_domain::ValidationError::HardScheduleConstraint
+            ))
+        ));
+        assert_eq!(
+            read_task_t(&e, &db, id).scheduled_at,
+            Some(ms_to_ts(INSIDE_WINDOW_MS)),
+            "both rejections left the schedule untouched"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_edit_is_not_re_gated_by_constraints() {
+        // The rule is "fails validation when the user *schedules* against it",
+        // not "every write to a task that already sits outside its window is
+        // rejected" — otherwise a task could become uneditable.
+        let mut db = db();
+        let e = engine();
+        let id = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "deploy".into(),
+                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        // Attach a hard constraint the current schedule already violates by
+        // moving the schedule and the list in one go is rejected; here we
+        // instead rename a task whose stored list is violated.
+        db.conn()
+            .execute(
+                "UPDATE tasks SET scheduled_at_ms = ?, scheduling_constraints = ? WHERE id = ?",
+                params![
+                    OUTSIDE_WINDOW_MS,
+                    encode_constraints(&[sample_constraint()]).unwrap(),
+                    id.bytes().to_vec()
+                ],
+            )
+            .unwrap();
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    title: Some("deploy (renamed)".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .expect("a rename must not be blocked by an already-violated window");
+        assert!(e.apply(&mut db, Command::CompleteTask(id)).is_ok());
+    }
+
+    // ---- routine streak counter ----
+
+    fn engine_clocked(clock: Arc<FakeClock>) -> Engine {
+        let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+        Engine::new(clock, Arc::new(SystemRng), keychain)
+    }
+
+    fn routine_of(e: &Engine, db: &Db, rid: EntityRef) -> Routine {
+        match e.query(db, Query::EntityById(rid)).unwrap() {
+            QueryResult::Routine(r) => *r,
+            _ => panic!("expected Routine"),
+        }
+    }
+
+    /// The first `n` occurrence task ids of `rid`, with their instants.
+    fn occurrence_tasks(routine: &Routine, n: usize) -> Vec<(EntityRef, i64)> {
+        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
+        routine
+            .occurrences_in(window)
+            .unwrap()
+            .into_iter()
+            .take(n)
+            .map(|o| {
+                (
+                    occurrence_task_id(&routine.id, &o.key),
+                    o.at.as_millisecond(),
+                )
+            })
+            .collect()
+    }
+
+    fn seed_routine(e: &Engine, db: &mut Db) -> (EntityRef, Vec<(EntityRef, i64)>) {
+        let draft = routine_draft(
+            stream_ref(5),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let rid = e.apply(db, Command::CreateRoutine(draft)).unwrap().entity;
+        let routine = routine_of(e, db, rid);
+        let occ = occurrence_tasks(&routine, 4);
+        assert_eq!(occ.len(), 4);
+        (rid, occ)
+    }
+
+    #[test]
+    fn streak_survives_a_gap_inside_grace_and_resets_outside_it() {
+        let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let e = engine_clocked(clock.clone());
+        let mut db = db();
+        let (rid, occ) = seed_routine(&e, &mut db);
+        assert_eq!(routine_of(&e, &db, rid).streak_counter, 0);
+
+        // 1. On time.
+        set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+        e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
+        assert_eq!(routine_of(&e, &db, rid).streak_counter, 1);
+
+        // 2. 23h late — inside the 24h default grace window, streak survives.
+        set_clock(&clock, (occ[1].1 + 23 * 3_600_000) as u64);
+        e.apply(&mut db, Command::CompleteTask(occ[1].0)).unwrap();
+        let r = routine_of(&e, &db, rid);
+        assert_eq!(r.streak_counter, 2, "a gap inside grace keeps the streak");
+        assert_eq!(r.forgivenesses_in_window, 0);
+
+        // 3. 25h late — outside grace. Forgiveness absorbs the first miss.
+        set_clock(&clock, (occ[2].1 + 25 * 3_600_000) as u64);
+        e.apply(&mut db, Command::CompleteTask(occ[2].0)).unwrap();
+        let r = routine_of(&e, &db, rid);
+        assert_eq!(r.streak_counter, 2, "forgiven, not advanced, not reset");
+        assert_eq!(r.forgivenesses_in_window, 1);
+
+        // 4. A second miss in the same 30-day window resets.
+        set_clock(&clock, (occ[3].1 + 25 * 3_600_000) as u64);
+        e.apply(&mut db, Command::CompleteTask(occ[3].0)).unwrap();
+        let r = routine_of(&e, &db, rid);
+        assert_eq!(r.streak_counter, 0, "a gap outside grace resets the streak");
+        assert_eq!(r.streak_started_at, None);
+    }
+
+    #[test]
+    fn re_completing_an_occurrence_never_moves_the_streak() {
+        let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let e = engine_clocked(clock.clone());
+        let mut db = db();
+        let (rid, occ) = seed_routine(&e, &mut db);
+
+        set_clock(&clock, (occ[0].1 + 3_600_000) as u64);
+        e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
+        let after_first = routine_of(&e, &db, rid);
+        assert_eq!(after_first.streak_counter, 1);
+        assert_eq!(after_first.streak_keys.len(), 1);
+        let routine_ops_before = routine_op_count(&db);
+
+        // Resurrect and re-complete, well outside grace. The idempotency key
+        // makes it a no-op — and emits no routine op at all.
+        set_clock(&clock, (occ[0].1 + 10 * DAY_MS) as u64);
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: occ[0].0,
+                patch: TaskPatch {
+                    state: Some(TaskState::Todo),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        e.apply(&mut db, Command::CompleteTask(occ[0].0)).unwrap();
+
+        let after = routine_of(&e, &db, rid);
+        assert_eq!(after.streak_counter, 1);
+        assert_eq!(after.streak_keys, after_first.streak_keys);
+        assert_eq!(
+            routine_op_count(&db),
+            routine_ops_before,
+            "a duplicate completion emits no routine op"
+        );
+    }
+
+    #[test]
+    fn a_non_routine_task_completing_touches_no_routine() {
+        let mut db = db();
+        let e = engine();
+        let id = new_task(&e, &mut db, "one-off");
+        let before = routine_op_count(&db);
+        e.apply(&mut db, Command::CompleteTask(id)).unwrap();
+        assert_eq!(routine_op_count(&db), before);
+    }
+
+    fn routine_op_count(db: &Db) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE inner_kind = 'routine.update'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_streak_advance_converges_to_the_other_replica() {
+        // The completion emits BOTH a task.update and a routine.update in one
+        // transaction, so a replica that never saw the completion still lands
+        // on the same counter.
+        let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let (rid, occ) = seed_routine(&ea, &mut dba);
+        // B learns the routine and the occurrence task.
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.create"))
+            .unwrap();
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
+            .unwrap();
+
+        set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
+        ea.apply(&mut dba, Command::CompleteTask(occ[0].0)).unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, occ[0].0.bytes(), "task.update"),
+        )
+        .unwrap();
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.update"))
+            .unwrap();
+
+        let ra = routine_of(&ea, &dba, rid);
+        let rb = routine_of(&eb, &dbb, rid);
+        assert_eq!(ra.streak_counter, 1);
+        assert_eq!(rb.streak_counter, 1, "streak converged");
+        assert_eq!(ra.streak_keys, rb.streak_keys);
+        assert_eq!(ra.streak_started_at, rb.streak_started_at);
+    }
+
+    // ---- out-of-order dependency ops still converge ----
+
+    fn blocker_edges(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT task_id, blocker_id FROM task_blockers ORDER BY task_id, blocker_id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_dependency_op_that_overtakes_its_blocker_still_converges() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let blocker = new_task(&ea, &mut dba, "buy paint");
+        let dependent = new_task(&ea, &mut dba, "paint the fence");
+        // Each op needs a strictly later stamp than the row it supersedes, or
+        // entity-level LWW discards it as a tie.
+        set_clock(&ca, T0 + 1_000);
+        set_blockers(&ea, &mut dba, dependent, vec![blocker]).unwrap();
+
+        // Deliver the dependent's ops FIRST — B has never heard of the blocker.
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, dependent.bytes()))
+            .unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, dependent.bytes(), "task.update"),
+        )
+        .unwrap();
+
+        let rows = actionable_rows(&eb, &dbb);
+        let dep = row_for(&rows, dependent);
+        assert_eq!(
+            dep.effective_state,
+            EffectiveTaskState::Blocked,
+            "an unknown blocker counts as open, so the task is not flashed as actionable"
+        );
+        assert_eq!(dep.open_blockers, 1);
+        assert!(
+            !rows.iter().any(|r| r.task.id == blocker),
+            "the blocker itself does not exist on B yet"
+        );
+
+        // The blocker's create finally lands, still open.
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, blocker.bytes()))
+            .unwrap();
+        assert_eq!(
+            row_for(&actionable_rows(&eb, &dbb), dependent).open_blockers,
+            1
+        );
+        assert_eq!(row_for(&actionable_rows(&eb, &dbb), blocker).unblocks, 1);
+
+        // A completes it; B applies that op and the dependent frees itself.
+        set_clock(&ca, T0 + 2_000);
+        ea.apply(&mut dba, Command::CompleteTask(blocker)).unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, blocker.bytes(), "task.update"),
+        )
+        .unwrap();
+        let dep = row_for(&actionable_rows(&eb, &dbb), dependent);
+        assert_eq!(dep.effective_state, EffectiveTaskState::Todo);
+        assert_eq!(dep.open_blockers, 0);
+
+        // Both replicas hold the identical dependency index, and re-delivering
+        // every op in reverse changes nothing.
+        assert_eq!(blocker_edges(&dba), blocker_edges(&dbb));
+        for env in all_envelopes(&dba).iter().rev() {
+            eb.apply_remote(&mut dbb, env).unwrap();
+        }
+        assert_eq!(blocker_edges(&dba), blocker_edges(&dbb));
+        assert_eq!(tasks_projection(&dba), tasks_projection(&dbb));
     }
 }

@@ -691,6 +691,104 @@ mod tests {
         .unwrap();
     }
 
+    /// Build a DB with migrations 0001..0007 applied, stamped `storage_v = 7`,
+    /// simulating a real v7 vault opened by a newer binary.
+    fn seed_v7_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..7] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![7_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v7_db_adds_task_blockers_and_routine_streak() {
+        assert!(u32::from(STORAGE_V) >= 9);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v7_db(&conn);
+
+        // A v7 vault carries tasks and routines that must survive untouched.
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, stream_id, title, state)
+             VALUES (?, ?, 'dependent survivor', 'todo')",
+            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO routines
+             (id, stream_id, rrule, timezone, starts_at_ms, streak_counter)
+             VALUES (?, ?, 'FREQ=DAILY', 'UTC', 0, 5)",
+            rusqlite::params![vec![9u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migrations 0008 + 0009.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // Pre-existing rows survived, and the pre-v9 routine reads as
+        // "no streak state yet" rather than as a decode failure.
+        let (title, streak, state): (String, i64, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT t.title, r.streak_counter, r.streak_state
+                 FROM tasks t, routines r WHERE t.id = ? AND r.id = ?",
+                rusqlite::params![vec![1u8; 16], vec![9u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "dependent survivor");
+        assert_eq!(streak, 5);
+        assert_eq!(state, None, "upgraded routines start with default state");
+
+        // The dependency index accepts an edge whose blocker does not exist on
+        // this replica yet — the out-of-order arrival case an FK would break.
+        conn.execute(
+            "INSERT INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
+            rusqlite::params![vec![1u8; 16], vec![0xEEu8; 16]],
+        )
+        .unwrap();
+        // ... and is idempotent on re-apply of the same edge.
+        conn.execute(
+            "INSERT OR IGNORE INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
+            rusqlite::params![vec![1u8; 16], vec![0xEEu8; 16]],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_blockers WHERE blocker_id = ?",
+                rusqlite::params![vec![0xEEu8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "reverse lookup is indexed and deduped");
+
+        // The streak blob column accepts a write.
+        conn.execute(
+            "UPDATE routines SET streak_state = ? WHERE id = ?",
+            rusqlite::params![vec![0xA1u8, 0xA2], vec![9u8; 16]],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

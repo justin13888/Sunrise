@@ -39,6 +39,11 @@ pub enum ValidationError {
     /// stream, or itself.
     #[error("invalid stream parent_id")]
     InvalidStreamParent,
+    /// The requested `scheduled_at` falls outside a `hard` scheduling
+    /// constraint. Per `docs/02-domain/scheduling-constraints.md`, a `hard`
+    /// violation fails validation at submit time; a `soft` one never does.
+    #[error("scheduled_at violates a hard scheduling constraint")]
+    HardScheduleConstraint,
     /// Field-shape violation with structured diagnostic. The string is
     /// dotted-path into the command payload.
     #[error("validation field error at {field}: {constraint}")]
@@ -59,7 +64,9 @@ impl ValidationError {
             Self::DueBeforeScheduled => ErrorCode::ValidationDueBeforeScheduled,
             Self::PayloadTooLarge => ErrorCode::ValidationPayloadTooLarge,
             Self::BlockedByCycle => ErrorCode::ValidationBlockedByCycle,
-            Self::InvalidStreamParent | Self::Field { .. } => ErrorCode::ValidationField,
+            Self::InvalidStreamParent | Self::HardScheduleConstraint | Self::Field { .. } => {
+                ErrorCode::ValidationField
+            }
         }
     }
 }

@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ContextDraft, ContextPatch, RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, TaskDraft,
-    TaskPatch, TaskState,
+    ContextDraft, ContextPatch, RoutineDraft, RoutinePatch, ScheduleConstraint, StreamDraft,
+    StreamPatch, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -121,4 +121,40 @@ pub struct CommandResult {
     pub op_id: [u8; 16],
     /// Sequence number assigned by the core.
     pub seq: u64,
+    /// `soft` scheduling constraints the accepted `scheduled_at` violates.
+    ///
+    /// A `soft` violation never blocks the write (a `hard` one is rejected
+    /// outright with [`sunrise_domain::ValidationError::HardScheduleConstraint`]),
+    /// but it must not vanish silently either: per
+    /// `docs/02-domain/scheduling-constraints.md` it demotes the item in
+    /// planning views and the UI surfaces *which* window was missed. Empty for
+    /// every command that does not schedule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub soft_violations: Vec<ScheduleConstraint>,
+}
+
+impl CommandResult {
+    /// Result for a command that schedules nothing (the common case).
+    #[must_use]
+    pub const fn new(
+        entity: EntityRef,
+        state: Option<TaskState>,
+        op_id: [u8; 16],
+        seq: u64,
+    ) -> Self {
+        Self {
+            entity,
+            state,
+            op_id,
+            seq,
+            soft_violations: Vec::new(),
+        }
+    }
+
+    /// Attach the `soft` constraint violations observed while scheduling.
+    #[must_use]
+    pub fn with_soft_violations(mut self, v: Vec<ScheduleConstraint>) -> Self {
+        self.soft_violations = v;
+        self
+    }
 }

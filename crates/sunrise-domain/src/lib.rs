@@ -24,6 +24,7 @@ pub mod capture;
 pub mod common;
 pub mod constraint;
 pub mod context;
+pub mod deps;
 pub mod inbox;
 pub mod note;
 pub mod person;
@@ -31,6 +32,7 @@ pub mod routine;
 pub mod routine_gen;
 pub mod rrule;
 pub mod schema;
+pub mod streak;
 pub mod stream;
 pub mod task;
 pub mod validation;
@@ -39,12 +41,15 @@ pub use attachment::Attachment;
 pub use block::{Block, BlockDraft};
 pub use common::{Energy, NoteBody};
 pub use constraint::{
-    validate_list as validate_constraint_list, ConstraintError, ConstraintSeverity, DateRange,
-    ScheduleConstraint, TimeOfDayRange, WeekdaySet, MAX_CONSTRAINTS,
+    validate_list as validate_constraint_list, violations_by_severity, ConstraintError,
+    ConstraintSeverity, DateRange, ScheduleConstraint, TimeOfDayRange, WeekdaySet, MAX_CONSTRAINTS,
 };
 pub use context::{
     Context, ContextDraft, ContextFacet, ContextPatch, ENERGY_PREFIX, MAX_CONTEXT_DESCRIPTION_LEN,
     WAITING_ON_PREFIX,
+};
+pub use deps::{
+    blocker_is_open, effective_state, is_actionable, DependencyGraph, EffectiveTaskState,
 };
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
@@ -53,9 +58,13 @@ pub use routine::{
     materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
     RoutineReviewCadence, TaskTemplate,
 };
-pub use routine_gen::{expand, occurrence_task_id, ExpandError, Occurrence};
+pub use routine_gen::{expand, occurrence_key_at, occurrence_task_id, ExpandError, Occurrence};
 pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
+pub use streak::{
+    StreakOutcome, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE, FORGIVENESS_WINDOW_S,
+    MAX_GRACE_WINDOW_S,
+};
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use validation::{

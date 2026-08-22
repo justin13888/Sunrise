@@ -797,6 +797,14 @@ pub(crate) mod fixtures {
             catchup_policy: RoutineCatchupPolicy::Skip,
             streak_counter: 0,
             last_completed_at: None,
+            // Streak bookkeeping (migration 0009). Defaults here: this helper
+            // exists to render a routine row, and no view test asserts streak
+            // behaviour — that lives in sunrise-domain's streak tests.
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            streak_keys: Vec::new(),
             paused: false,
             paused_until: None,
             archived: false,

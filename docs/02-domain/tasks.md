@@ -73,7 +73,9 @@ There is no separate "target deadline" field: `scheduled_at` **is** the target d
 ```
 
 - `done` and `cancelled` are *not* terminal: a task can transition back to `todo`. UI may warn but does not refuse.
-- `blocked` is computed in v1: a task is `blocked` iff `blocked_by` is non-empty AND every blocker's state ≠ `done`/`cancelled`. The persisted `state` field is the user-set state; UI shows effective state.
+- `blocked` is computed in v1: a task is `blocked` iff **any** blocker's state is not `done`/`cancelled`. The persisted `state` field is the user-set state; UI shows effective state.
+
+  > Corrected: this previously read "every blocker's state ≠ done/cancelled", which would make a task actionable as soon as *one* of its prerequisites finished — finishing one of two blockers would unblock it. The implementation uses the `any` reading. A blocker this device has not yet materialized counts as open, so an op that names an unseen blocker converges without a repair pass.
 
 ### `blocked` across the offline boundary
 

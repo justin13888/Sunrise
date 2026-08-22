@@ -414,6 +414,28 @@ pub fn occurrence_task_id(routine_id: &EntityRef, key: &str) -> EntityRef {
     EntityRef::new(EntityKind::Task, bytes)
 }
 
+/// The occurrence key for an already-materialized instant, resolved in `tz`.
+///
+/// Used by the streak counter, which starts from a Task's stored
+/// `routine_occurrence` rather than from a fresh expansion. Every replica holds
+/// the same `routine_occurrence` and the same routine timezone, so every
+/// replica derives the same key — which is what makes the streak's idempotency
+/// set converge.
+///
+/// Note this resolves the *actual* instant's civil datetime. For an occurrence
+/// that DST shifted (see the module docs), that differs from the intended
+/// wall-clock key [`expand`] emitted. The key only has to be stable and unique
+/// per occurrence, and it is both.
+///
+/// # Errors
+///
+/// [`ExpandError::InvalidTimeZone`] if `tz` does not resolve.
+pub fn occurrence_key_at(tz: &str, at: Timestamp) -> Result<String, ExpandError> {
+    let zone = TimeZone::get(tz).map_err(|_| ExpandError::InvalidTimeZone(tz.to_string()))?;
+    let dt = at.to_zoned(zone).datetime();
+    Ok(format_key(dt.date(), dt.time()))
+}
+
 impl Routine {
     /// Expand this routine's occurrences within `window`, applying its
     /// timezone, `starts_at` anchor, `ends_at` upper bound, and skip filters

@@ -1,7 +1,7 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Context, Routine, Stream, StreamColor, Task};
+use sunrise_domain::{Context, EffectiveTaskState, Routine, Stream, StreamColor, Task};
 use sunrise_id::EntityRef;
 
 /// Read query.
@@ -30,6 +30,20 @@ pub enum Query {
     Contexts,
     /// All live (non-deleted) routines.
     Routines,
+    /// Open tasks with their derived dependency state, ordered actionable-first
+    /// and then by how much finishing each one would unblock.
+    ///
+    /// This is the read path for the derived `blocked` / `blocks_others` pair
+    /// from `docs/02-domain/tasks.md`: neither is stored on the Task, both are
+    /// recomputed here from the dependency index against the blockers' *current*
+    /// states, so a blocker completing anywhere (locally or via a merge) flips
+    /// its dependents without any repair pass.
+    Actionable {
+        /// Restrict to one Stream; `None` spans every stream.
+        stream: Option<EntityRef>,
+        /// Maximum number of rows.
+        limit: u32,
+    },
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -66,6 +80,26 @@ pub enum QueryResult {
     Streams(Vec<StreamRow>),
     /// `Contexts` returns context rows, ordered by name.
     Contexts(Vec<ContextRow>),
+    /// `Actionable` returns open tasks plus their derived dependency counts.
+    Actionable(Vec<ActionableTask>),
+}
+
+/// One row of [`Query::Actionable`]: a Task with the two derived dependency
+/// facts that never live on the entity itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionableTask {
+    /// The task. Its `blocked_by` set is populated from the dependency index.
+    pub task: Task,
+    /// User-set state widened with the derived `blocked` case.
+    pub effective_state: EffectiveTaskState,
+    /// How many of `task.blocked_by` are still open. Blockers this replica has
+    /// not materialized yet count as open, so an op that arrives before the
+    /// task it references still reads as blocked rather than as actionable.
+    pub open_blockers: u32,
+    /// How many open tasks are waiting on this one — the derived
+    /// `blocks_others` cardinality, and the ranking signal a Focus Planner
+    /// wants ("what does finishing this release?").
+    pub unblocks: u32,
 }
 
 /// One row of [`Query::StreamList`]. The synthetic Inbox row uses

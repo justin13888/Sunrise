@@ -54,6 +54,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "contexts",
         sql: include_str!("../migrations/0007_contexts.sql"),
     },
+    Migration {
+        id: 8,
+        name: "task_blockers",
+        sql: include_str!("../migrations/0008_task_blockers.sql"),
+    },
+    Migration {
+        id: 9,
+        name: "routine_streak",
+        sql: include_str!("../migrations/0009_routine_streak.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).
