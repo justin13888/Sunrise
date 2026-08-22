@@ -202,8 +202,6 @@ impl Keychain {
         self.signing.public_bytes()
     }
 
-    /// The self-issued device cert bytes (canonical CBOR).
-    #[must_use]
     /// Copy the vault root out, for handing to a newly paired device.
     ///
     /// This is the one operation that deliberately breaks the rule the rest of
@@ -222,6 +220,8 @@ impl Keychain {
         VaultRootKey::from_bytes(*self.vault_root.as_bytes())
     }
 
+    /// The self-issued device cert bytes (canonical CBOR).
+    #[must_use]
     pub fn cert_blob(&self) -> &[u8] {
         &self.cert_blob
     }
