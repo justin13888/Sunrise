@@ -204,6 +204,24 @@ impl Keychain {
 
     /// The self-issued device cert bytes (canonical CBOR).
     #[must_use]
+    /// Copy the vault root out, for handing to a newly paired device.
+    ///
+    /// This is the one operation that deliberately breaks the rule the rest of
+    /// this module exists to enforce — that the vault root never leaves the
+    /// keychain. Pairing is the sole legitimate caller: a second device is
+    /// useless without the root, since every stream key derives from it.
+    ///
+    /// The name is long and unpleasant on purpose. There is no other correct
+    /// use, and anything else calling it is a bug worth noticing in review.
+    /// Callers must send the result only through an authenticated encrypted
+    /// channel (`sunrise_pairing::PairedChannel`) and drop it immediately
+    /// after; it is returned as a `VaultRootKey` so it zeroizes on drop rather
+    /// than as a bare array that would linger.
+    #[must_use]
+    pub fn export_vault_root_for_pairing(&self) -> VaultRootKey {
+        VaultRootKey::from_bytes(*self.vault_root.as_bytes())
+    }
+
     pub fn cert_blob(&self) -> &[u8] {
         &self.cert_blob
     }

@@ -27,6 +27,7 @@ rand_chacha = { workspace = true }
 rand_core = { workspace = true }
 
 [dev-dependencies]
+sunrise-pairing = { workspace = true }
 sunrise-id = { workspace = true }
 parking_lot = { workspace = true }
 proptest = { workspace = true }

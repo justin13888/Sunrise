@@ -429,6 +429,22 @@ impl Core {
         self.cfg.clock.now_ms()
     }
 
+    /// Copy this vault's root key out, for handing to a device being paired.
+    ///
+    /// See [`crate::keychain::Keychain::export_vault_root_for_pairing`] for why
+    /// this exists and why it is named the way it is. Send the result only
+    /// through an authenticated encrypted channel — `sunrise_pairing` provides
+    /// one — and drop it immediately afterwards.
+    ///
+    /// Pairing needs both halves: the new device opens its vault with this root
+    /// (so the two derive identical per-stream keys), and each side must then
+    /// accept the other's [`Self::device_cert`] via `Command::TrustDevice`
+    /// before either will apply the other's ops.
+    #[must_use]
+    pub fn export_vault_root_for_pairing(&self) -> sunrise_crypto::keys::VaultRootKey {
+        self.engine.keychain().export_vault_root_for_pairing()
+    }
+
     /// This device's self-issued cert (canonical CBOR). A peer passes it to
     /// [`Command::TrustDevice`] to accept this device's ops.
     #[must_use]
