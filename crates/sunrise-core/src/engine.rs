@@ -5469,7 +5469,6 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity).title, "A-late");
     }
 
-    #[test]
     /// Regression: a device's own successive ops must not lose to each other.
     ///
     /// The device-id memcmp breaks *cross-device* ties. Applied to one device's
@@ -5495,6 +5494,7 @@ mod tests {
         assert!(lww_wins(1001, &lower, 1000, Some(&higher[..])));
     }
 
+    #[test]
     fn lww_tie_break_higher_device_wins_both_directions() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
         let cb = Arc::new(FakeClock(PLMutex::new(T0)));
