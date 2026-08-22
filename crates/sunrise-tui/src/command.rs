@@ -86,6 +86,75 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (":help", "this list"),
 ];
 
+/// Complete the last word of a partially typed `:` line.
+///
+/// `docs/07-clients/tui.md` calls Command mode "completion-driven" and it had
+/// no completion at all: the only way to learn a command was to have read the
+/// source, and the only way to type one was to get every character right
+/// first time.
+///
+/// Returns the candidates for the word under the cursor — the command name
+/// while the first word is being typed, its argument vocabulary afterwards.
+/// An empty result means "nothing to offer", not "no such command": a free
+/// argument (a path, a capture line) has no vocabulary to complete against and
+/// must not be silently rewritten into one.
+#[must_use]
+pub fn complete(line: &str) -> Vec<String> {
+    let trimmed = line.strip_prefix(':').unwrap_or(line);
+    let ends_in_space = trimmed.ends_with(char::is_whitespace);
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    // The word being completed is the last one, unless a space just ended it.
+    let (head, partial): (&[&str], &str) = if ends_in_space || words.is_empty() {
+        (words.as_slice(), "")
+    } else {
+        words.split_last().map_or((&[], ""), |(p, h)| (h, *p))
+    };
+    let candidates: Vec<&str> = match head {
+        [] => COMMANDS
+            .iter()
+            .map(|(spec, _)| spec.trim_start_matches(':').split(' ').next().unwrap_or(""))
+            .collect(),
+        ["view"] => vec![
+            "today", "inbox", "stream", "search", "focus", "routines", "review",
+        ],
+        ["focus"] => vec!["plan", "stats", "energy", "length"],
+        ["focus", "energy"] => vec!["low", "med", "high", "any"],
+        ["focus", "length"] => vec!["pomodoro", "estimate", "until-done"],
+        ["export"] => vec!["trends", "activity", "focus", "streaks"],
+        ["export", _] => vec!["csv", "json"],
+        _ => vec![],
+    };
+    let mut out: Vec<String> = candidates
+        .into_iter()
+        .filter(|c| c.starts_with(partial))
+        .map(ToString::to_string)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The longest prefix every candidate shares — what Tab commits when the
+/// choice is still ambiguous, exactly as a shell does.
+#[must_use]
+pub fn common_prefix(candidates: &[String]) -> String {
+    let Some(first) = candidates.first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for c in &candidates[1..] {
+        end = end.min(
+            first
+                .char_indices()
+                .zip(c.chars())
+                .take_while(|((_, a), b)| a == b)
+                .last()
+                .map_or(0, |((i, a), _)| i + a.len_utf8()),
+        );
+    }
+    first[..end].to_string()
+}
+
 /// Parse a command-line string into a [`Cmd`].
 ///
 /// A single leading `:` is optional, so both `":q"` and `"q"` parse to
@@ -229,6 +298,67 @@ fn parse_view(arg: &str) -> Option<View> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completion_offers_the_command_names_first() {
+        let names = complete(":");
+        assert!(names.contains(&"view".to_string()), "{names:?}");
+        assert!(names.contains(&"export".to_string()), "{names:?}");
+        // …narrowed by what has been typed.
+        assert_eq!(complete(":ex"), vec!["export".to_string()]);
+        assert_eq!(complete(":devi"), vec!["devices".to_string()]);
+    }
+
+    #[test]
+    fn completion_knows_each_commands_own_vocabulary() {
+        assert!(complete(":view ").contains(&"routines".to_string()));
+        assert_eq!(complete(":view rou"), vec!["routines".to_string()]);
+        assert!(complete(":focus ").contains(&"stats".to_string()));
+        assert_eq!(complete(":focus energy h"), vec!["high".to_string()]);
+        assert!(complete(":export ").contains(&"trends".to_string()));
+        assert!(complete(":export trends ").contains(&"json".to_string()));
+    }
+
+    #[test]
+    fn a_free_argument_has_nothing_to_complete_against() {
+        // A capture line or a path must never be silently rewritten into a
+        // keyword that happens to share a prefix.
+        assert!(complete(":capture buy mi").is_empty());
+        assert!(complete(":open tsk_").is_empty());
+    }
+
+    #[test]
+    fn the_common_prefix_is_what_tab_can_safely_commit() {
+        let c = |v: &[&str]| common_prefix(&v.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(c(&["export"]), "export");
+        assert_eq!(c(&["focus", "foo"]), "fo");
+        assert_eq!(c(&["view", "export"]), "");
+        assert_eq!(c(&[]), "");
+    }
+
+    #[test]
+    fn every_completion_candidate_is_something_the_parser_accepts() {
+        // A completion that produces an unknown command is worse than none:
+        // the user believes the shell told them it was real.
+        for name in complete(":") {
+            assert!(
+                !matches!(parse_command(&format!(":{name}")), Cmd::Error(e) if e.starts_with("unknown command")),
+                "completed {name:?} is not a command"
+            );
+        }
+        for arg in complete(":view ") {
+            assert!(
+                !matches!(parse_command(&format!(":view {arg}")), Cmd::Error(_)),
+                ":view {arg} does not parse"
+            );
+        }
+        for arg in complete(":export ") {
+            assert!(
+                !matches!(parse_command(&format!(":export {arg}")), Cmd::Error(_)),
+                ":export {arg} does not parse"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

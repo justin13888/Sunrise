@@ -143,6 +143,10 @@ pub enum Action {
     TogglePause,
     /// Show the selected entity's activity feed (`L`).
     ShowActivity,
+    /// Complete the `:` line's current word (Tab in Command mode).
+    CompleteCommand,
+    /// Walk the `:` history: `-1` older, `1` newer.
+    RecallHistory(i8),
     /// Undo the last reversible step (`u`).
     Undo,
     /// Redo the step `u` walked back (`^R`).
@@ -264,6 +268,9 @@ impl Action {
             Self::ToggleArchive => "toggle_archive",
             Self::TogglePause => "toggle_pause",
             Self::ShowActivity => "activity",
+            Self::CompleteCommand => "complete_command",
+            Self::RecallHistory(n) if *n < 0 => "history_prev",
+            Self::RecallHistory(_) => "history_next",
             Self::Undo => "undo",
             Self::Redo => "redo",
             Self::ToggleHelp => "help",
@@ -978,6 +985,27 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Backspace,
         Scope::Any,
         Action::Backspace,
+        None,
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Tab,
+        Scope::Any,
+        Action::CompleteCommand,
+        Some(("Tab", "complete")),
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Up,
+        Scope::Any,
+        Action::RecallHistory(-1),
+        Some(("↑ / ↓", "command history")),
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Down,
+        Scope::Any,
+        Action::RecallHistory(1),
         None,
     ),
     b(

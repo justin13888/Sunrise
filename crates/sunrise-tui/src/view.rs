@@ -907,6 +907,11 @@ pub struct ViewState {
     /// Why the last change could not be recorded, so `u` can say "a delete
     /// cannot be undone" instead of "nothing to undo".
     pub last_irreversible: Option<crate::undo::NotUndoable>,
+    /// `:` lines already run, oldest first. Walked with ↑/↓ in Command mode.
+    pub cmd_history: Vec<String>,
+    /// Position in [`Self::cmd_history`] while walking it; `None` means the
+    /// user is on the line they are typing rather than in the history.
+    pub history_pos: Option<usize>,
     /// Visible rows in the focused list, refreshed once per frame by the
     /// binary from the real terminal size. Drives the page-jump keys; a
     /// default is kept so the reducer is usable with no terminal at all.
@@ -961,6 +966,8 @@ impl Default for ViewState {
             undo: Vec::new(),
             redo: Vec::new(),
             last_irreversible: None,
+            cmd_history: Vec::new(),
+            history_pos: None,
             viewport_rows: DEFAULT_VIEWPORT_ROWS,
             now_ms: 0,
         }
@@ -1546,6 +1553,52 @@ impl ViewState {
         if self.selected.is_none_or(|i| i >= remaining) {
             self.exit_triage();
             self.status = "triage complete".into();
+        }
+    }
+
+    /// Remember a `:` line, most recent last.
+    ///
+    /// Consecutive duplicates collapse: re-running the same command twice is
+    /// common and should not cost two presses of ↑ to get past.
+    pub fn push_history(&mut self, line: &str) {
+        /// Lines kept. Long enough to cover a session, short enough that the
+        /// list stays walkable.
+        const MAX_HISTORY: usize = 100;
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        if self.cmd_history.last().map(String::as_str) == Some(line) {
+            return;
+        }
+        if self.cmd_history.len() >= MAX_HISTORY {
+            self.cmd_history.remove(0);
+        }
+        self.cmd_history.push(line.to_string());
+        self.history_pos = None;
+    }
+
+    /// Step through the command history: `-1` is older, `1` is newer.
+    ///
+    /// Walking past the newest end returns to an empty line, which is how
+    /// every shell behaves and the only way back to "I want to type something
+    /// else" without deleting a recalled line by hand.
+    pub fn recall_history(&mut self, direction: i8) {
+        if self.cmd_history.is_empty() {
+            return;
+        }
+        let last = self.cmd_history.len() - 1;
+        self.history_pos = match (self.history_pos, direction) {
+            (None, d) if d < 0 => Some(last),
+            (None, _) => None,
+            (Some(0), d) if d < 0 => Some(0),
+            (Some(i), d) if d < 0 => Some(i - 1),
+            (Some(i), _) if i >= last => None,
+            (Some(i), _) => Some(i + 1),
+        };
+        match self.history_pos {
+            Some(i) => self.input.set(self.cmd_history[i].clone()),
+            None => self.input.clear(),
         }
     }
 

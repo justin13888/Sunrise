@@ -547,6 +547,14 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         Action::SaveReview => save_review(state),
         Action::ToggleArchive => toggle_archive(state),
         Action::TogglePause => toggle_pause(state),
+        Action::CompleteCommand => {
+            complete_command_line(state);
+            Outcome::None
+        }
+        Action::RecallHistory(d) => {
+            state.recall_history(d);
+            Outcome::None
+        }
         Action::ShowActivity => match activity_target(state) {
             Some((id, title)) => Outcome::ShowActivity { entity: id, title },
             None => {
@@ -571,7 +579,8 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.mode = Mode::Command;
             state.prompt = None;
             state.input.clear();
-            state.status.clear();
+            state.history_pos = None;
+            state.status = "Tab completes · ↑ recalls".into();
             Outcome::None
         }
         Action::EnterInsert => {
@@ -792,6 +801,41 @@ fn redo_step(state: &mut ViewState) -> Outcome {
     // stack: walking forward must not destroy the rest of the forward history.
     state.undo.push(entry.flipped());
     Outcome::submit_all(cmds)
+}
+
+/// Tab on the `:` line: commit the longest unambiguous completion, and name
+/// the alternatives when more than one remains.
+///
+/// Shell behaviour, deliberately: completing to the common prefix makes
+/// repeated Tab presses converge, and listing the candidates is what turns the
+/// command line from something you must already know into something you can
+/// discover.
+fn complete_command_line(state: &mut ViewState) {
+    let line = state.input.text().to_string();
+    let candidates = crate::command::complete(&line);
+    if candidates.is_empty() {
+        state.status = "no completion".into();
+        return;
+    }
+    let prefix = crate::command::common_prefix(&candidates);
+    // The word being completed is whatever follows the last space.
+    let head_len = line.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    let typed = &line[head_len..];
+    if prefix.len() > typed.len() {
+        let mut next = line[..head_len].to_string();
+        next.push_str(&prefix);
+        // A single candidate is settled: add the space that starts the next
+        // word, so `:view` + Tab + Tab reaches the view list.
+        if candidates.len() == 1 {
+            next.push(' ');
+        }
+        state.input.set(next);
+    }
+    state.status = if candidates.len() == 1 {
+        String::new()
+    } else {
+        candidates.join("  ")
+    };
 }
 
 /// What `L` reports on: the sidebar row if the Browse sidebar has the
@@ -1387,7 +1431,9 @@ fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
 /// `:`-line submit: parse and apply, mapping the pure [`AppEffect`] onto an
 /// [`Outcome`].
 fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
-    let cmd = parse_command(state.input.text());
+    let line = state.input.text().to_string();
+    let cmd = parse_command(&line);
+    state.push_history(&line);
     // A running session keeps the keyboard across a `:` detour, the same way a
     // triage pass does — otherwise `:focus stats` mid-session would silently
     // drop the user out of the session's key set.
@@ -2416,6 +2462,70 @@ manual"
             },
         }));
         s
+    }
+
+    #[test]
+    fn tab_completes_the_command_line_and_names_the_alternatives() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "ex");
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(
+            s.input, "export ",
+            "a settled completion opens the next word"
+        );
+        let _ = press(&mut s, KeyCode::Tab);
+        // Several candidates: commit the shared prefix (none here) and list.
+        assert!(s.status.contains("trends"), "{}", s.status);
+        assert!(s.status.contains("streaks"), "{}", s.status);
+        type_text(&mut s, "tr");
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(s.input, "export trends ");
+    }
+
+    #[test]
+    fn tab_on_something_uncompletable_says_so_and_types_nothing() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "capture buy mi");
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(s.input, "capture buy mi", "a capture line is free text");
+        assert!(s.status.contains("no completion"));
+    }
+
+    #[test]
+    fn the_command_history_walks_both_ways_and_back_to_a_blank_line() {
+        let mut s = inbox_state();
+        for line in ["view inbox", "view today"] {
+            let _ = press(&mut s, KeyCode::Char(':'));
+            type_text(&mut s, line);
+            let _ = press(&mut s, KeyCode::Enter);
+        }
+        let _ = press(&mut s, KeyCode::Char(':'));
+        let _ = press(&mut s, KeyCode::Up);
+        assert_eq!(s.input, "view today", "newest first");
+        let _ = press(&mut s, KeyCode::Up);
+        assert_eq!(s.input, "view inbox");
+        let _ = press(&mut s, KeyCode::Up);
+        assert_eq!(s.input, "view inbox", "the oldest line holds");
+        let _ = press(&mut s, KeyCode::Down);
+        assert_eq!(s.input, "view today");
+        let _ = press(&mut s, KeyCode::Down);
+        assert!(
+            s.input.is_empty(),
+            "walking off the end returns a blank line"
+        );
+    }
+
+    #[test]
+    fn re_running_the_same_command_does_not_cost_two_presses_of_up() {
+        let mut s = inbox_state();
+        for _ in 0..3 {
+            let _ = press(&mut s, KeyCode::Char(':'));
+            type_text(&mut s, "view today");
+            let _ = press(&mut s, KeyCode::Enter);
+        }
+        assert_eq!(s.cmd_history, vec!["view today".to_string()]);
     }
 
     #[test]
