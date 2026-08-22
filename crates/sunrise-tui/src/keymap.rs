@@ -363,13 +363,16 @@ pub static BINDINGS: &[Binding] = &[
         Action::Escape,
         None,
     ),
-    b(Mode::Normal, KeyCode::Esc, Scope::Any, Action::Quit, None),
+    // Esc is *not* quit. It reflexively means "back out of whatever this is"
+    // to every terminal user alive, and wiring it to teardown means one stray
+    // keypress closes the app — a hazard `q` already covers deliberately.
+    b(Mode::Normal, KeyCode::Esc, Scope::Any, Action::Escape, None),
     b(
         Mode::Normal,
         KeyCode::Char('q'),
         Scope::Any,
         Action::Quit,
-        Some(("q / Esc", "quit")),
+        Some(("q", "quit")),
     ),
     b(
         Mode::Normal,
@@ -1514,7 +1517,7 @@ mod tests {
             d(KeyCode::Char('q'), Mode::Normal, true),
             Some(Action::Quit)
         );
-        assert_eq!(d(KeyCode::Esc, Mode::Normal, true), Some(Action::Quit));
+        assert_eq!(d(KeyCode::Esc, Mode::Normal, true), Some(Action::Escape));
     }
 
     #[test]
@@ -1744,20 +1747,10 @@ help    = \"#\"
             ),
             Some(Action::Capture)
         );
-        // Esc still quits: only the canonical row is rebound, not its aliases.
+        // The uppercase alias still quits: only the canonical row is rebound.
         assert_eq!(
             map.dispatch(
                 KeyCode::Char('Q'),
-                KeyModifiers::NONE,
-                Mode::Normal,
-                true,
-                View::Today
-            ),
-            Some(Action::Quit)
-        );
-        assert_eq!(
-            map.dispatch(
-                KeyCode::Esc,
                 KeyModifiers::NONE,
                 Mode::Normal,
                 true,
@@ -1947,15 +1940,16 @@ help    = \"#\"
     }
 
     #[test]
-    fn esc_in_focus_view_escapes_instead_of_quitting() {
-        assert_eq!(
-            dispatch(KeyCode::Esc, Mode::Normal, true, View::Focus),
-            Some(Action::Escape)
-        );
-        assert_eq!(
-            dispatch(KeyCode::Esc, Mode::Normal, true, View::Today),
-            Some(Action::Quit)
-        );
+    fn esc_never_reaches_quit_from_any_view() {
+        // Esc backs out; `q` quits. Wiring Esc to teardown makes one stray
+        // keypress close the app.
+        for view in [View::Focus, View::Today, View::Inbox, View::Routines] {
+            assert_eq!(
+                dispatch(KeyCode::Esc, Mode::Normal, true, view),
+                Some(Action::Escape),
+                "Esc in {view:?}"
+            );
+        }
     }
 
     #[test]

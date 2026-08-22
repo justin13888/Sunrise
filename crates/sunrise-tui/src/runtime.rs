@@ -369,6 +369,12 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 state.clear_marks();
                 state.status = "marks cleared".into();
                 Outcome::None
+            } else if state.mode == Mode::Normal && state.view != View::Focus {
+                // Nothing to back out of. Say so rather than silently doing
+                // nothing, so a user reaching for "get me out of here" is told
+                // where the exit is.
+                state.status = "nothing to cancel — q to quit, ? for keys".into();
+                Outcome::None
             } else if state.mode == Mode::Visual {
                 state.exit_visual();
                 Outcome::None
@@ -1176,6 +1182,25 @@ manual"
         s.selected = Some(0);
         let _ = press(&mut s, KeyCode::Char(' '));
         assert!(s.marked_ids().is_empty());
+    }
+
+    #[test]
+    fn esc_in_normal_mode_does_not_quit_the_app() {
+        // Reflex-pressing Esc must not tear the client down; `q` is the
+        // deliberate gesture.
+        let mut s = inbox_state();
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert!(s.status.contains("q to quit"));
+        assert!(matches!(press(&mut s, KeyCode::Char('q')), Outcome::Quit));
+    }
+
+    #[test]
+    fn esc_drops_the_marks_before_anything_else() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert!(s.marked.is_empty());
     }
 
     #[test]
