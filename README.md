@@ -82,7 +82,10 @@ cargo run -q -p sunrise-tui -- capture 'Renew passport #inbox ^+6h !1 ~1h'
 cargo run -q -p sunrise-tui -- capture 'Email Sara about Q3'
 cargo run -q -p sunrise-tui -- today
 cargo run -q -p sunrise-tui -- inbox
+cargo run -q -p sunrise-tui -- next               # the planner's ranked picks
 cargo run -q -p sunrise-tui -- search passport
+cargo run -q -p sunrise-tui -- review             # this week, folded
+cargo run -q -p sunrise-tui -- export trends json # to stdout, for jq
 cargo run -q -p sunrise-tui             # ...then the interactive TUI
 ```
 
@@ -92,9 +95,11 @@ so no input is ever silently dropped. `^when` takes `today`, `tonight`,
 `tomorrow`, weekday names (optionally `next friday`), `YYYY-MM-DD`, `+3d` /
 `+2w` / `+6h` / `+90m`, and an optional trailing time (`9am`, `14:30`).
 
-Inside the TUI: `1`–`6` switch views, `c` capture, `e` edit, `d` defer,
-`D` delete, `m` move to stream, `S` new stream, `x` complete, `/` search,
-`:` command mode, and `?` shows every binding.
+Inside the TUI: `1`–`7` (or `gt` / `gi` / `gs` / `g/` / `gf` / `gr` / `gv`)
+switch views; `c` capture, `A` annotate (`!1 %high ~30m @ctx`), `e` edit,
+`d` defer, `s` schedule, `D` delete, `m` move to stream, `Space` mark,
+`b` link blockers, `x` complete, `u` undo, `L` activity, `/` search,
+`:` command mode, and `?` shows every binding and command.
 
 ### End-to-end QA
 
@@ -167,30 +172,66 @@ The TUI opens a real encrypted vault and is the quickest way to exercise the cor
 SUNRISE_VAULT=$(mktemp -d) cargo run -p sunrise-tui
 ```
 
-It opens (creating if needed) the vault at `$SUNRISE_VAULT` (default `~/.sunrise/vault`), unlocked with a fixed single-user dev key. Keys and commands:
+It opens (creating if needed) the vault at `$SUNRISE_VAULT` (default `~/.sunrise/vault`), unlocked with a fixed single-user dev key.
 
-| Input                | Action                                                     |
-| -------------------- | ---------------------------------------------------------- |
-| `1`–`5`              | Switch view: **Today, Inbox, Stream, Search, Focus**       |
-| `↑`/`↓` (or `j`/`k`) | Move selection (vim-style)                                  |
-| `h`/`l`              | In Stream view, move between the streams and tasks panes    |
-| `Enter`              | Activate — confirm a stream, or open the selected task in Focus |
-| `c`                  | Capture a task — type a title, `Enter` to save, `Esc` cancels |
-| `x` / `Space`        | Toggle the selected task complete                          |
-| `/`                  | Search — type a query, `Enter` to commit (FTS5)            |
-| `:`                  | Command mode (see below)                                   |
-| `q` / `Esc`          | Quit / back out                                            |
+**Views** (`1`–`7`, or the `g` chords):
 
-Command mode (`:` opens the command line; the leading `:` is optional):
+| Key | View | What it is |
+| --- | ---- | ---------- |
+| `1` / `gt` | Today | Overdue / Due today / Scheduled / Upcoming / Anytime, grouped |
+| `2` / `gi` | Inbox | Untriaged captures; `t` runs a one-at-a-time triage pass |
+| `3` / `gs` | Browse | Sidebar of **Streams** and **Contexts**; tasks of whichever is open |
+| `4` / `g/` | Search | FTS5 over titles and bodies, re-run on every keystroke |
+| `5` / `gf` | Focus | The ranked planner, then the running session |
+| `6` / `gr` | Routines | Recurring templates, with cadence, next occurrence and streak |
+| `7` / `gv` | Review | Weekly review, daily glance, 12-week trends, saved snapshots |
 
-| Command             | Action                                                     |
-| ------------------- | ---------------------------------------------------------- |
-| `:q` / `:quit`      | Quit                                                       |
-| `:help` / `:h`      | Show help                                                  |
-| `:view <name>`      | Switch view by name or number (`today`…`focus`, or `1`–`5`) |
-| `:preview <path>`   | In Focus, render an image inline (requires the `images` feature) |
+**Selection and movement**
 
-QA flow: capture a few tasks (`c`), complete one (`x`), tour the views (`1`–`5`), open one in Focus (`Enter`) to see full detail including scheduling constraints, run a search (`/` or `:view search`), try `:help`, then quit and re-launch with the same `SUNRISE_VAULT` to confirm data persisted.
+| Input | Action |
+| ----- | ------ |
+| `j`/`k`, `↑`/`↓` | Move the cursor |
+| `gg` / `G`, `Home` / `End` | First / last row |
+| `PgUp`/`PgDn`, `^F`/`^B`, `^D`/`^U` | Page and half-page |
+| `Tab` | Cycle panes (Browse) or panels (Review) |
+| `h` / `l` | Sidebar / tasks (Browse) |
+| `Space` | Mark a row — a non-contiguous multi-selection |
+| `V` then `j`/`k` | Visual range |
+| `^Space` / `Esc` | Clear the marks |
+
+**Acting on tasks** — every operator applies to the marks, else the visual run, else the cursor.
+
+| Input | Action |
+| ----- | ------ |
+| `c` | Capture (`#stream @context ^when !1-5 ~30m *due:when*`), with a live preview |
+| `A` | Annotate: `!1 %high ~45m @home #travel due:friday`; `-` clears a facet |
+| `e` / `E` | Edit the title / the note body in `$EDITOR` |
+| `x` | Toggle done (re-opens a completed task) |
+| `d` / `s` | Defer / schedule (prompts) |
+| `m` / `D` | Move to a stream / delete (confirms) |
+| `b` / `B` | Make the marked tasks block this one / clear its blockers |
+| `L` | Activity feed — what actually happened to this task or stream |
+| `u` / `^R` | Undo / redo |
+| `F` | Start a focus session on the current pick |
+
+**Managing the vault** — in the Browse sidebar, `e` renames the row, `D` deletes it, `a` archives it and `p` pauses a stream. `S` creates a stream, `C` a context, `R` a routine (`water the plants #home ~10m | every 2 days`). In the Routines view `e` edits the cadence, `E` renames, `s` skips the next occurrence.
+
+**Command mode** (`:`; Tab completes, `↑` recalls):
+
+| Command | Action |
+| ------- | ------ |
+| `:q` | Quit |
+| `:view <name>` | Switch view by name or number |
+| `:capture <text>` | Capture without leaving the current view |
+| `:filter @ctx…` | Narrow every list to those contexts (bare `:filter` clears) |
+| `:focus plan` / `stats` / `energy <l\|m\|h>` / `length <p\|e\|u>` | Planner and calibration |
+| `:export <trends\|activity\|focus\|streaks> [json\|csv] [path]` | Write a stats dataset |
+| `:open <tsk_…>` / `:devices` / `:preview <path>` | Jump to a task / list devices / show an image |
+| `:help` | The full key and command reference (`?` opens the same overlay) |
+
+QA flow: capture a few tasks (`c`), annotate one (`A !1 %high ~30m`), mark two with `Space` and defer them together (`d`), complete one (`x`) and undo it (`u`), tour the views, build a dependency (`Space` on a blocker, then `b` on its dependent) and check the planner hides the blocked task (`5`), run a search (`/`), open the Review view (`7`) and save a snapshot (`Enter`), then quit and re-launch with the same `SUNRISE_VAULT` to confirm data persisted.
+
+**Mouse** is off by default because capturing it steals the terminal's own text selection; `SUNRISE_MOUSE=1 cargo run -p sunrise-tui` turns it on. The wheel scrolls and a click moves the cursor — clicks never mutate.
 
 **Image preview:** the `images` feature is on by default, so `:preview <path>` (from the Focus view) renders a PNG or JPEG inline — using the terminal's graphics protocol where available, halfblocks otherwise. Point it at any sample image, e.g. `:preview ~/Pictures/sample.png`. To build without image support: `cargo run -p sunrise-tui --no-default-features`.
 

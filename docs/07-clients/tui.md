@@ -50,21 +50,48 @@ Split-pane layout, vim-flavored navigation:
 
 | Key | Action |
 |---|---|
+| `1`–`7`, `g t` / `g i` / `g s` / `g /` / `g f` / `g r` / `g v` | Switch view |
 | `c` | Quick capture |
+| `A` | Annotate facets (`!1 %high ~30m @ctx due:friday`; `-` clears) |
 | `j`/`k` | Down/up |
-| `h`/`l` | Collapse/expand or navigate panes |
-| `gg` / `G` | Top / bottom |
+| `h`/`l` | Sidebar / tasks pane |
+| `gg` / `G`, `Home`/`End`, `PgUp`/`PgDn`, `^D`/`^U` | Movement |
 | `Enter` | Open detail |
-| `x` | Toggle done |
+| `x` | Toggle done (re-opens a completed task) |
+| `Space` | Mark a row (non-contiguous multi-select); `V` for a range |
 | `d` | Defer (prompt) |
-| `s` | Schedule (prompt) |
+| `s` | Schedule (prompt) — skip the next occurrence in the Routines view |
 | `m` | Move to Stream |
-| `f` | Focus mode |
-| `/` | Search |
-| `:` | Command |
-| `?` | Help |
-| `Tab` | Switch pane |
-| `q` | Quit |
+| `b` / `B` | Marked tasks block this one / clear its blockers |
+| `e` / `E` | Edit title / note body in `$EDITOR` — recurrence / rename in Routines |
+| `S` / `C` / `R` | New Stream / Context / Routine |
+| `a` / `p` | Archive / pause the selected sidebar row |
+| `D` | Delete (confirms) |
+| `L` | Activity feed |
+| `u` / `Ctrl-r` | Undo / redo |
+| `f` / `F` | Focus view / start a focus session |
+| `t` | Triage the Inbox |
+| `/` | Search (re-runs as you type) |
+| `:` | Command line (Tab completes, `↑` recalls) |
+| `?` | Help — keys for the current mode and view, plus every command |
+| `q` | Quit (`Esc` backs out; it does not quit) |
+
+Prompts are a full single-line editor: `←`/`→`, `Home`/`End`, `^A`/`^E`,
+`M-b`/`M-f`, `^W`, `^U`, `^K`, and bracketed paste.
+
+## Commands
+
+| Command | Action |
+|---|---|
+| `:view <name>` | Switch view |
+| `:capture <text>` | Capture without leaving the view |
+| `:filter @ctx…` | Narrow every list to those contexts (bare clears) |
+| `:focus plan\|stats\|energy <l\|m\|h>\|length <p\|e\|u>` | Planner and calibration |
+| `:export <trends\|activity\|focus\|streaks> [json\|csv] [path]` | Write a stats dataset |
+| `:open <tsk_…>` | Jump to a task by id |
+| `:devices` | List paired devices |
+| `:preview <path>` | Render an image inline (Focus view) |
+| `:help` | The full reference |
 
 User-configurable via `~/.config/sunrise/keys.toml`.
 
@@ -91,14 +118,19 @@ Minimum 80 × 24. Below that, the TUI displays `"Sunrise needs at least 80 × 24
 ## SSH-friendly behavior
 
 - Render at the terminal's reported size; respond to resize.
-- Mouse support optional; works without it.
+- Mouse support is opt-in (`SUNRISE_MOUSE=1`): capturing the mouse takes the
+  terminal's own text selection, which is a bad default for a client used
+  inside tmux. When on, the wheel scrolls and a click moves the cursor —
+  clicks never mutate, because a cell-sized target with no hover feedback will
+  eventually be off by one.
 - True color and Unicode glyph fallbacks for monochrome terminals or terminals without UTF-8.
 
 ## Capture from anywhere
 
 - `sunrise capture "Buy milk #errands"` — non-interactive, parses, commits, exits 0. Useful in scripts, vim shortcuts, tmux popups.
-- `sunrise focus next` — picks next Today task and enters focus.
-- `sunrise sync --once` — drain outbox and exit (for cron / CI).
+- `sunrise focus next` — picks the planner's top actionable task and opens a session on it; `sunrise next` lists the picks without starting one.
+- `sunrise sync --once` — drain outbox and exit (for cron / CI). Bounded, not a loop: a scheduled job that hangs because the relay is down is worse than one that fails.
+- `sunrise done <id>…`, `today`, `inbox`, `search`, `streams`, `contexts`, `routines`, `review`, `export <dataset> [json|csv] [path]` — the same reads and writes, scriptable. `export` goes to stdout unless given a path, so it pipes into `jq`.
 
 ## Pairing
 

@@ -33,17 +33,17 @@ client*, which is the only measure that matters to a user.
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
-| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. `Block`, `Note`, `Person`, `Attachment` are still structs with no command path |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. Every one of those now has a client path. `Block`, `Note`, `Person`, `Attachment` are still structs with no command path |
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-tui` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
 | `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
-| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds. Every command kind and every query is now reachable from the TUI except `TrustDevice` (env-driven) and `MaterializeRoutines` (timer-driven) |
 | `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is still a stub and remains unauthenticated ([#22](https://github.com/justin13888/Sunrise/issues/22)) |
 | `sunrise-integrations` | 🟨 partial | GCal read-only import is implemented: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID). iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
-| `sunrise-tui` | ✅ live | The v1 client. Today / Inbox / Stream / Search / Focus / Routines, capture through the shared parser with a live preview, edit / delete / defer / schedule / move / stream CRUD, visual-mode bulk operations, triage, `$EDITOR` note bodies, custom keymaps, the full Focus Sessions surface, and non-interactive subcommands (`capture`, `today`, `inbox`, `streams`, `search`) |
+| `sunrise-tui` | ✅ live | The v1 client, and now the reachability story for most of the core. Seven views (Today grouped by urgency, Inbox, Browse with a Streams **and Contexts** sidebar, Search, Focus, Routines, Review); capture and annotate through the shared parser with live previews; full CRUD over Tasks, Streams, Contexts and Routines; the dependency graph is writable (`b`); marks and visual-range bulk operations; undo/redo; the activity feed; the weekly/daily review, trends, snapshot history and export; a real line editor with the readline chords and bracketed paste; completion and history on the `:` line; optional mouse; and non-interactive subcommands (`capture`, `today`, `inbox`, `next`, `focus`, `done`, `streams`, `contexts`, `routines`, `search`, `review`, `export`, `sync --once`) |
 | `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
@@ -106,6 +106,31 @@ Tracked so they are not rediscovered as surprises. Each now has an issue.
 ## Fixed this cycle
 
 Recorded because each presented as something other than what it was:
+
+- **The activity feed invented transitions that never happened.** All four
+  op-log folds ordered by `(ts_ms, op_id)`, and `op_id` is a ULID whose low
+  bits are random — so two ops one device wrote in the same millisecond sorted
+  arbitrarily. `fold_activity` is a state machine over successive full-state
+  snapshots, so a defer-then-complete pair read backwards is classified against
+  the wrong baseline and reports a **reopen** the user never performed, losing
+  the third event as a no-change update. The same ordering feeds
+  `WeeklyReview`'s counts. Now ordered by `(ts_ms, device_id, seq)` — the
+  authoring device's own causal counter, which is what a state-machine fold
+  needs. Found by wiring the TUI's activity overlay, not by a test.
+- **`x` did not toggle.** Documented as "toggle done", it only ever completed:
+  pressing it on a finished task re-sent `CompleteTask`, which the core accepts
+  as a no-op. There was no path anywhere in the client to re-open a task.
+- **Esc quit the app.** In Normal mode Esc was an alias for quit, so one
+  reflexive keypress tore the client down — including mid-session with unsynced
+  work in the outbox.
+- **The Focus pane's "unblocks N tasks" counted the wrong set.** It read
+  `Task.blocks`, which is the time-**Block**s scheduling the task, not the tasks
+  it releases. It claimed a payoff unrelated to the dependency graph.
+- **The dependency graph had no writer.** `Query::Actionable`, the planner's
+  leverage ranking and `Query::UnblockCascade` all read `blocked_by`, and no
+  client could set it — so every vault's graph was empty, every planner row
+  read `unblocks 0`, and every cascade was empty. The "ranked by leverage"
+  queue had no leverage in it.
 
 - **A crash bricked the vault.** `create_new` plus a `Drop`-only release, with
   `panic = "abort"` in the release profile. Now a real OS advisory lock, proven
@@ -174,7 +199,7 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **959** tests, 0 failures, 3
+`cargo test --workspace --all-targets` passes **1107** tests, 0 failures, 3
 ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests spawn).
 
 The number is worth more than it used to be. Earlier revisions of this file
@@ -196,6 +221,14 @@ Two flakes were found and fixed rather than retried: an order-dependent
 assertion in the context convergence test (ULIDs minted microseconds apart sort
 by their random suffix), and the blocker convergence test, which turned out to
 be reporting a **real** same-device LWW data-loss bug rather than being flaky.
+
+The same ULID-suffix ordering turned up a third time, and the third time it was
+not a test problem at all: the activity fold read same-millisecond ops in
+random order and reported transitions that never happened. Its regression test
+pins the clock so the tie is *always* taken, over twelve independent tasks —
+the old ordering passes with probability (1/6)^12 — and was confirmed failing
+before the fix. A flake and a data bug look identical from the outside; the
+difference is whether anyone reads the assertion.
 
 Prefer the reachability column above as the signal.
 
