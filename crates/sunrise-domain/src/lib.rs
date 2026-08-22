@@ -42,7 +42,10 @@ pub use constraint::{
     validate_list as validate_constraint_list, ConstraintError, ConstraintSeverity, DateRange,
     ScheduleConstraint, TimeOfDayRange, WeekdaySet, MAX_CONSTRAINTS,
 };
-pub use context::Context;
+pub use context::{
+    Context, ContextDraft, ContextFacet, ContextPatch, ENERGY_PREFIX, MAX_CONTEXT_DESCRIPTION_LEN,
+    WAITING_ON_PREFIX,
+};
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use person::Person;
@@ -55,4 +58,6 @@ pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
-pub use validation::{ValidationError, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN};
+pub use validation::{
+    ValidationError, MAX_CONTEXT_NAME_LEN, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN,
+};

@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    ContextDraft, ContextPatch, RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, TaskDraft,
+    TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -49,6 +50,25 @@ pub enum Command {
     },
     /// Soft-delete a Stream.
     DeleteStream(EntityRef),
+    /// Create a Context (cross-cutting tag). Rejected if a live Context
+    /// already carries the same name, compared case-insensitively.
+    CreateContext(ContextDraft),
+    /// Mutate a Context (rename, re-describe, archive/unarchive).
+    ///
+    /// Archiving is *not* deletion: per
+    /// `docs/02-domain/contexts-and-tags.md` an archived Context stays on the
+    /// Tasks that carry it and only drops out of pickers and `@name` capture
+    /// resolution.
+    UpdateContext {
+        /// Target context.
+        id: EntityRef,
+        /// Patch.
+        patch: ContextPatch,
+    },
+    /// Soft-delete a Context, **removing it from every Task that carries it**
+    /// in the same transaction (spec: "Deleting a Context removes it from all
+    /// Tasks").
+    DeleteContext(EntityRef),
     /// Create a Routine and materialize its near-horizon occurrences.
     CreateRoutine(RoutineDraft),
     /// Mutate a Routine. An rrule/timezone/anchor change regenerates future

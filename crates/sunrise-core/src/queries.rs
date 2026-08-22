@@ -1,7 +1,7 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Routine, Stream, StreamColor, Task};
+use sunrise_domain::{Context, Routine, Stream, StreamColor, Task};
 use sunrise_id::EntityRef;
 
 /// Read query.
@@ -26,6 +26,8 @@ pub enum Query {
     SyncStatus,
     /// All streams (plus the synthetic Inbox row), with open-task counts.
     StreamList,
+    /// All live (non-deleted) contexts, with the count of tasks carrying each.
+    Contexts,
     /// All live (non-deleted) routines.
     Routines,
     /// Full-text search over tasks.
@@ -52,6 +54,8 @@ pub enum QueryResult {
     Task(Box<Task>),
     /// `EntityById` may return a routine.
     Routine(Box<Routine>),
+    /// `EntityById` may return a context.
+    Context(Box<Context>),
     /// `Routines` returns all live routines.
     Routines(Vec<Routine>),
     /// Device list rows: (device_id, nickname, platform, is_revoked).
@@ -60,6 +64,8 @@ pub enum QueryResult {
     SyncStatus(crate::events::SyncStatus),
     /// `StreamList` returns stream rows (Inbox first).
     Streams(Vec<StreamRow>),
+    /// `Contexts` returns context rows, ordered by name.
+    Contexts(Vec<ContextRow>),
 }
 
 /// One row of [`Query::StreamList`]. The synthetic Inbox row uses
@@ -76,6 +82,25 @@ pub struct StreamRow {
     pub open_task_count: u64,
     /// Whether the stream is archived (always false for Inbox).
     pub archived: bool,
+}
+
+/// One row of [`Query::Contexts`].
+///
+/// Mirrors [`StreamRow`]: identity plus the one count a picker actually needs,
+/// so listing contexts never costs a per-row follow-up query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextRow {
+    /// Context id.
+    pub id: EntityRef,
+    /// Display name, without the leading `@`.
+    pub name: String,
+    /// Optional description.
+    pub description: Option<String>,
+    /// Archived contexts stay on their tasks but drop out of pickers and
+    /// `@name` capture resolution.
+    pub archived: bool,
+    /// Number of live (non-deleted) tasks carrying this context.
+    pub task_count: u64,
 }
 
 /// One row of [`Query::DeviceList`].

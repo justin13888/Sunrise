@@ -162,12 +162,14 @@ impl Core {
         // Best-effort change publish; receivers are bounded broadcast channels
         // and dropped subscribers are accepted.
         let event = match cmd {
-            Command::CreateTask(_) | Command::CreateStream(_) | Command::CreateRoutine(_) => {
-                DomainEvent::Created(res.entity)
-            }
-            Command::DeleteTask(_) | Command::DeleteStream(_) | Command::DeleteRoutine(_) => {
-                DomainEvent::Deleted(res.entity)
-            }
+            Command::CreateTask(_)
+            | Command::CreateStream(_)
+            | Command::CreateContext(_)
+            | Command::CreateRoutine(_) => DomainEvent::Created(res.entity),
+            Command::DeleteTask(_)
+            | Command::DeleteStream(_)
+            | Command::DeleteContext(_)
+            | Command::DeleteRoutine(_) => DomainEvent::Deleted(res.entity),
             _ => DomainEvent::Updated(res.entity),
         };
         let _ = self.changes_tx.send(event);
@@ -349,7 +351,8 @@ impl Core {
     }
 
     /// Parse a capture line into a [`sunrise_domain::TaskDraft`], resolving
-    /// `#stream` against this vault's streams.
+    /// `#stream` against this vault's streams and `@context` against its
+    /// contexts.
     ///
     /// Clients could call [`sunrise_domain::capture::parse`] directly, but they
     /// would each have to re-implement the same glue — fetch the stream list,
@@ -362,10 +365,11 @@ impl Core {
     /// respect to the host: the caller decides whether that is the system zone
     /// or a fixed one, and tests can pin it.
     ///
-    /// Contexts are not resolved yet — `@name` will report as
-    /// [`sunrise_domain::capture::Unresolved::UnknownContext`] — because
-    /// Context has no command path or query in the core, so there is nothing
-    /// to resolve against. When Context CRUD lands, pass the list here.
+    /// Archived streams and contexts are excluded from the candidate sets: an
+    /// archived entity is one the user has put away, so `@name` resolving to it
+    /// would resurrect it silently. A `@name` with no live match is reported as
+    /// [`sunrise_domain::capture::Unresolved::UnknownContext`] and its text
+    /// stays in the title, so nothing is lost.
     pub async fn capture(
         &self,
         input: &str,
@@ -376,7 +380,11 @@ impl Core {
             QueryResult::Streams(rows) => rows,
             _ => Vec::new(),
         };
-        let refs: Vec<NamedRef<'_>> = streams
+        let contexts = match self.query(Query::Contexts).await? {
+            QueryResult::Contexts(rows) => rows,
+            _ => Vec::new(),
+        };
+        let stream_refs: Vec<NamedRef<'_>> = streams
             .iter()
             .filter(|s| !s.archived)
             .map(|s| NamedRef {
@@ -384,11 +392,25 @@ impl Core {
                 name: s.name.as_str(),
             })
             .collect();
+        let context_refs: Vec<NamedRef<'_>> = contexts
+            .iter()
+            .filter(|c| !c.archived)
+            .map(|c| NamedRef {
+                id: c.id,
+                name: c.name.as_str(),
+            })
+            .collect();
         let now = jiff::Timestamp::from_millisecond(
             i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
         )
         .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        Ok(sunrise_domain::capture::parse(input, now, tz, &refs, &[]))
+        Ok(sunrise_domain::capture::parse(
+            input,
+            now,
+            tz,
+            &stream_refs,
+            &context_refs,
+        ))
     }
 
     /// App identity string (`<semver>+<platform>`) for the sync `Hello`.
@@ -713,6 +735,74 @@ mod tests {
             c3.draft.stream_id,
             Some(sunrise_domain::inbox::inbox_stream_ref())
         );
+
+        core.close().await.unwrap();
+    }
+
+    /// `@context` must resolve end to end: create a Context, capture a line
+    /// mentioning it, submit the draft, and find the task carrying it.
+    #[tokio::test]
+    async fn capture_resolves_contexts_from_the_vault() {
+        use sunrise_domain::capture::Unresolved;
+        use sunrise_domain::{ContextDraft, ContextPatch};
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let tz = jiff::tz::TimeZone::UTC;
+
+        // Before the Context exists, `@errands` is reported, not guessed at,
+        // and its text survives in the title.
+        let miss = core.capture("Buy milk @errands", &tz).await.unwrap();
+        assert!(miss.draft.contexts.is_empty());
+        assert_eq!(miss.draft.title, "Buy milk @errands");
+        assert!(matches!(
+            miss.unresolved.as_slice(),
+            [Unresolved::UnknownContext(n)] if n == "errands"
+        ));
+
+        let ctx = core
+            .submit(Command::CreateContext(ContextDraft {
+                name: "errands".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+
+        let c = core.capture("Buy milk @errands !2", &tz).await.unwrap();
+        assert_eq!(c.draft.title, "Buy milk");
+        assert_eq!(c.draft.contexts, vec![ctx]);
+        assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
+
+        // The parsed draft is directly submittable, and the task keeps the tag.
+        let task = core
+            .submit(Command::CreateTask(c.draft))
+            .await
+            .unwrap()
+            .entity;
+        match core.query(Query::EntityById(task)).await.unwrap() {
+            QueryResult::Task(t) => {
+                assert!(t.contexts.contains(&ctx), "the task carries @errands");
+            }
+            other => panic!("expected Task, got {other:?}"),
+        }
+
+        // Archiving takes it back out of capture resolution.
+        core.submit(Command::UpdateContext {
+            id: ctx,
+            patch: ContextPatch {
+                archived: Some(true),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+        let after = core.capture("Buy bread @errands", &tz).await.unwrap();
+        assert!(after.draft.contexts.is_empty());
+        assert!(matches!(
+            after.unresolved.as_slice(),
+            [Unresolved::UnknownContext(_)]
+        ));
 
         core.close().await.unwrap();
     }

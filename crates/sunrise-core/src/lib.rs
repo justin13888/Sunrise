@@ -59,7 +59,7 @@ pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
 pub use keychain::{Keychain, KeychainError};
-pub use queries::{Query, QueryResult};
+pub use queries::{ContextRow, DeviceRow, Query, QueryResult, StreamRow};
 pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TransportFactory};
 pub use unlock::Unlock;
 pub use vault_lock::{VaultLock, VaultLockError};

@@ -52,17 +52,17 @@ use crate::config::{Clock, Rng};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
-use crate::queries::{DeviceRow, Query, QueryResult, StreamRow};
+use crate::queries::{ContextRow, DeviceRow, Query, QueryResult, StreamRow};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::{
-    inbox_stream_ref, materialization_horizon_days, occurrence_task_id, NoteBody, Routine,
-    RoutineCatchupPolicy, RoutineDraft, RoutinePatch, ScheduleConstraint, Stream, StreamColor,
-    StreamDraft, StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState,
-    TaskTemplate,
+    inbox_stream_ref, materialization_horizon_days, occurrence_task_id, Context, ContextDraft,
+    ContextPatch, NoteBody, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
+    ScheduleConstraint, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, Task,
+    TaskDraft, TaskPatch, TaskState, TaskTemplate,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -167,6 +167,9 @@ impl Engine {
             Command::CreateStream(d) => self.create_stream(db, d),
             Command::UpdateStream { id, patch } => self.update_stream(db, id, patch),
             Command::DeleteStream(id) => self.delete_stream(db, id),
+            Command::CreateContext(d) => self.create_context(db, d),
+            Command::UpdateContext { id, patch } => self.update_context(db, id, patch),
+            Command::DeleteContext(id) => self.delete_context(db, id),
             Command::CreateRoutine(d) => self.create_routine(db, d),
             Command::UpdateRoutine { id, patch } => self.update_routine(db, id, patch),
             Command::DeleteRoutine(id) => self.delete_routine(db, id),
@@ -187,6 +190,7 @@ impl Engine {
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
             Query::StreamList => self.query_stream_list(db),
+            Query::Contexts => self.query_contexts(db),
             Query::Routines => self.query_routines(db),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
@@ -842,6 +846,174 @@ impl Engine {
         })
     }
 
+    // ---- context command handlers ----
+    //
+    // Context lifecycle ops route to the vault-meta log (same as Streams and
+    // routines): a Context is not owned by any one Stream.
+
+    fn create_context(&self, db: &mut Db, d: ContextDraft) -> Result<CommandResult, EngineError> {
+        d.validate()?;
+        let name = Context::validate_name(&d.name)?;
+        let description = Context::validate_description(d.description.as_deref())?;
+        // Names are the handle `@name` capture resolves against, so a second
+        // live Context with the same name (case-insensitively) would make every
+        // such mention permanently ambiguous. Reject it at the source.
+        if let Some(clash) = find_context_by_name(db.conn(), &name, None)? {
+            return Err(EngineError::Invalid(format!(
+                "context name {name:?} is already used by {clash}"
+            )));
+        }
+        let now_ms = self.clock.now_ms();
+        let ctx_id = self.fresh_id(EntityKind::Context, now_ms);
+        let ctx = Context {
+            id: ctx_id,
+            created_at: ms_to_ts(now_ms as i64),
+            updated_at: ms_to_ts(now_ms as i64),
+            name,
+            description,
+            archived: false,
+            deleted: false,
+        };
+
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::ContextCreate(ctx.clone()))?;
+        let seq = self.next_seq(db, &META_STREAM)?;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            insert_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                now_ms,
+                &inner_op,
+                "context.create",
+                "context",
+                Some(ctx_id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+
+        Ok(CommandResult {
+            entity: ctx_id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    fn update_context(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        patch: ContextPatch,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Context)?;
+        patch.validate()?;
+        let now_ms = self.clock.now_ms();
+        let mut ctx = read_context(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("context {id}")))?;
+        if let Some(n) = patch.name {
+            let name = Context::validate_name(&n)?;
+            if let Some(clash) = find_context_by_name(db.conn(), &name, Some(id.bytes()))? {
+                return Err(EngineError::Invalid(format!(
+                    "context name {name:?} is already used by {clash}"
+                )));
+            }
+            ctx.name = name;
+        }
+        if let Some(desc) = patch.description {
+            ctx.description = Context::validate_description(desc.as_deref())?;
+        }
+        // Archiving deliberately leaves `task_contexts` alone: per the spec it
+        // only hides the Context from pickers, it does not strip it from Tasks.
+        if let Some(a) = patch.archived {
+            ctx.archived = a;
+        }
+        ctx.updated_at = ms_to_ts(now_ms as i64);
+
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::ContextUpdate(ctx.clone()))?;
+        let seq = self.next_seq(db, &META_STREAM)?;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            update_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                now_ms,
+                &inner_op,
+                "context.update",
+                "context",
+                Some(ctx.id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+
+        Ok(CommandResult {
+            entity: id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
+    /// Soft-delete a Context and strip it from every Task carrying it.
+    ///
+    /// Per `docs/02-domain/contexts-and-tags.md` the tombstone and the
+    /// membership removal are one transaction: a crash between them would leave
+    /// tasks pointing at a context no picker can show. Remote replicas perform
+    /// the same purge when they apply the `ContextDelete` op, so the two sides
+    /// stay in step without shipping one op per affected Task.
+    fn delete_context(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Context)?;
+        let now_ms = self.clock.now_ms();
+        let mut ctx = read_context(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("context {id}")))?;
+        ctx.deleted = true;
+        ctx.updated_at = ms_to_ts(now_ms as i64);
+
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.id))?;
+        let seq = self.next_seq(db, &META_STREAM)?;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            update_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            purge_context_from_tasks(tx, id.bytes())?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                now_ms,
+                &inner_op,
+                "context.delete",
+                "context",
+                Some(ctx.id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+
+        Ok(CommandResult {
+            entity: id,
+            state: None,
+            op_id,
+            seq,
+        })
+    }
+
     // ---- routine command handlers ----
 
     fn create_routine(&self, db: &mut Db, d: RoutineDraft) -> Result<CommandResult, EngineError> {
@@ -1430,6 +1602,11 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("stream {r}")))?;
                 Ok(QueryResult::Stream(Box::new(s)))
             }
+            EntityKind::Context => {
+                let c = read_context(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("context {r}")))?;
+                Ok(QueryResult::Context(Box::new(c)))
+            }
             EntityKind::Routine => {
                 let rt = read_routine(db.conn(), r.bytes())?
                     .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
@@ -1520,6 +1697,43 @@ impl Engine {
             rows.push(r?);
         }
         Ok(QueryResult::Streams(rows))
+    }
+
+    /// All live contexts with the number of live tasks carrying each.
+    ///
+    /// Archived contexts are still listed (with `archived = true`) — archiving
+    /// hides a Context from pickers, and that is the caller's filter to apply;
+    /// only the tombstone removes it from the list.
+    fn query_contexts(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT c.id, c.name, c.description, c.archived,
+                    (SELECT COUNT(*) FROM task_contexts tc
+                     JOIN tasks t ON t.id = tc.task_id
+                     WHERE tc.context_id = c.id AND t.deleted = 0) AS task_count
+             FROM contexts c
+             WHERE c.deleted = 0
+             ORDER BY c.name COLLATE NOCASE ASC, c.id ASC",
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            let id_blob: Vec<u8> = row.get(0)?;
+            let mut a = [0u8; 16];
+            let take = id_blob.len().min(16);
+            a[..take].copy_from_slice(&id_blob[..take]);
+            let archived: i64 = row.get(3)?;
+            let count: i64 = row.get(4)?;
+            Ok(ContextRow {
+                id: EntityRef::new(EntityKind::Context, a),
+                name: row.get(1)?,
+                description: row.get(2)?,
+                archived: archived != 0,
+                task_count: u64::try_from(count).unwrap_or(0),
+            })
+        })?;
+        let mut rows = Vec::new();
+        for r in mapped {
+            rows.push(r?);
+        }
+        Ok(QueryResult::Contexts(rows))
     }
 
     fn query_search(&self, db: &Db, text: &str, limit: u32) -> Result<QueryResult, EngineError> {
@@ -1808,6 +2022,7 @@ fn materialize_remote(
 ) -> rusqlite::Result<()> {
     let (table, id_col) = match inner.entity_kind() {
         EntityKind::Stream => ("streams", "stream_id"),
+        EntityKind::Context => ("contexts", "id"),
         EntityKind::Routine => ("routines", "id"),
         // Task (and any future kind) key on `id`.
         _ => ("tasks", "id"),
@@ -1850,6 +2065,24 @@ fn materialize_remote(
         InnerOp::StreamDelete(_) => {
             if present {
                 tombstone_stream(tx, target.bytes(), ts_ms, device)?;
+            }
+        }
+        InnerOp::ContextCreate(c) | InnerOp::ContextUpdate(c) => {
+            if present {
+                update_context_row(tx, c, ts_ms, device)?;
+            } else {
+                insert_context_row(tx, c, ts_ms, device)?;
+            }
+        }
+        InnerOp::ContextDelete(_) => {
+            // The membership purge is keyed on the context id alone and is
+            // idempotent, so it runs even when this replica has not yet
+            // materialized the Context row itself (a delete that overtook its
+            // create). That keeps "deleting a Context removes it from all
+            // Tasks" true on every replica that sees the delete.
+            purge_context_from_tasks(tx, target.bytes())?;
+            if present {
+                tombstone_context(tx, target.bytes(), ts_ms, device)?;
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
@@ -2018,6 +2251,184 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         deleted: deleted != 0,
     };
     Ok(Some(stream))
+}
+
+// ---- context table operations ----
+
+fn insert_context_row(
+    tx: &Transaction<'_>,
+    c: &Context,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO contexts
+         (id, name, description, archived, deleted, created_at_ms, updated_at_ms,
+          lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            c.id.bytes().to_vec(),
+            c.name,
+            c.description,
+            c.archived as i64,
+            c.deleted as i64,
+            c.created_at.as_millisecond(),
+            c.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_context_row(
+    tx: &Transaction<'_>,
+    c: &Context,
+    lww_ts_ms: u64,
+    lww_device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE contexts
+         SET name = ?, description = ?, archived = ?, deleted = ?, updated_at_ms = ?,
+             lww_ts_ms = ?, lww_device = ?
+         WHERE id = ?",
+        params![
+            c.name,
+            c.description,
+            c.archived as i64,
+            c.deleted as i64,
+            c.updated_at.as_millisecond(),
+            lww_ts_ms,
+            &lww_device[..],
+            c.id.bytes().to_vec(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Tombstone a materialized context under LWW (delete op won).
+fn tombstone_context(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE contexts SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+         WHERE id = ?",
+        params![ts_ms, ts_ms, &device[..], &id[..]],
+    )?;
+    Ok(())
+}
+
+/// Drop `ctx` from every Task carrying it and refresh those Tasks' FTS rows.
+/// Returns the number of memberships removed. Idempotent.
+fn purge_context_from_tasks(tx: &Transaction<'_>, ctx: &[u8; 16]) -> rusqlite::Result<usize> {
+    let task_ids: Vec<Vec<u8>> = {
+        let mut stmt = tx.prepare("SELECT task_id FROM task_contexts WHERE context_id = ?")?;
+        let rows = stmt.query_map(params![&ctx[..]], |r| r.get::<_, Vec<u8>>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    tx.execute(
+        "DELETE FROM task_contexts WHERE context_id = ?",
+        params![&ctx[..]],
+    )?;
+    for tid in &task_ids {
+        refresh_task_contexts_fts(tx, tid)?;
+    }
+    Ok(task_ids.len())
+}
+
+/// Rewrite a task's `search_idx.contexts` column from its surviving
+/// `task_contexts` rows, so a purged context stops matching search.
+fn refresh_task_contexts_fts(tx: &Transaction<'_>, task_id: &[u8]) -> rusqlite::Result<()> {
+    let joined = {
+        let mut stmt = tx.prepare(
+            "SELECT context_id FROM task_contexts WHERE task_id = ? ORDER BY context_id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| r.get::<_, Vec<u8>>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .map(|raw| {
+                let mut a = [0u8; 16];
+                let take = raw.len().min(16);
+                a[..take].copy_from_slice(&raw[..take]);
+                EntityRef::new(EntityKind::Context, a).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    tx.execute(
+        "UPDATE search_idx SET contexts = ? WHERE kind = 'task' AND id = ?",
+        params![joined, task_id],
+    )?;
+    Ok(())
+}
+
+fn read_context(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> Result<Option<Context>, EngineError> {
+    let row = conn
+        .query_row(
+            "SELECT name, description, archived, deleted, created_at_ms, updated_at_ms
+             FROM contexts WHERE id = ?",
+            params![&id[..]],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((name, description, archived, deleted, created_ms, updated_ms)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(Context {
+        id: EntityRef::new(EntityKind::Context, *id),
+        created_at: ms_to_ts(created_ms.max(0)),
+        updated_at: ms_to_ts(updated_ms.max(0)),
+        name,
+        description,
+        archived: archived != 0,
+        deleted: deleted != 0,
+    }))
+}
+
+/// Find a live Context whose name matches `name` after
+/// [`Context::normalize_name`], excluding `except`.
+///
+/// Comparison happens in Rust rather than via SQL `COLLATE NOCASE`, which only
+/// case-folds ASCII — `@Ärger` and `@ärger` are one name to a user and must be
+/// one name here too.
+fn find_context_by_name(
+    conn: &rusqlite::Connection,
+    name: &str,
+    except: Option<&[u8; 16]>,
+) -> Result<Option<EntityRef>, EngineError> {
+    let wanted = Context::normalize_name(name);
+    let mut stmt = conn.prepare("SELECT id, name FROM contexts WHERE deleted = 0")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id_blob, existing) = row?;
+        let mut a = [0u8; 16];
+        let take = id_blob.len().min(16);
+        a[..take].copy_from_slice(&id_blob[..take]);
+        if except == Some(&a) {
+            continue;
+        }
+        if Context::normalize_name(&existing) == wanted {
+            return Ok(Some(EntityRef::new(EntityKind::Context, a)));
+        }
+    }
+    Ok(None)
 }
 
 fn insert_task_row(
@@ -3003,6 +3414,315 @@ mod tests {
         // used to come back as "" / Slate).
         assert_eq!(st.name, "Work");
         assert_eq!(st.color, StreamColor::Sky);
+    }
+
+    // ---- contexts ----
+
+    fn context_rows(e: &Engine, db: &Db) -> Vec<ContextRow> {
+        match e.query(db, Query::Contexts).unwrap() {
+            QueryResult::Contexts(rows) => rows,
+            other => panic!("expected Contexts, got {other:?}"),
+        }
+    }
+
+    fn new_context(e: &Engine, db: &mut Db, name: &str) -> EntityRef {
+        e.apply(
+            db,
+            Command::CreateContext(ContextDraft {
+                name: name.into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity
+    }
+
+    fn task_context_ids(db: &Db, task: EntityRef) -> BTreeSet<[u8; 16]> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT context_id FROM task_contexts WHERE task_id = ?")
+            .unwrap();
+        let rows = stmt
+            .query_map(params![task.bytes().to_vec()], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap();
+        rows.map(|r| {
+            let raw = r.unwrap();
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&raw[..16]);
+            a
+        })
+        .collect()
+    }
+
+    #[test]
+    fn created_context_is_listed_and_readable_by_id() {
+        let mut db = db();
+        let e = engine();
+        let id = e
+            .apply(
+                &mut db,
+                Command::CreateContext(ContextDraft {
+                    name: "  Errands ".into(),
+                    description: Some("out of the house".into()),
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(id.kind(), EntityKind::Context);
+
+        let rows = context_rows(&e, &db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].name, "Errands", "the name is stored trimmed");
+        assert_eq!(rows[0].description.as_deref(), Some("out of the house"));
+        assert_eq!(rows[0].task_count, 0);
+        assert!(!rows[0].archived);
+
+        match e.query(&db, Query::EntityById(id)).unwrap() {
+            QueryResult::Context(c) => assert_eq!(c.name, "Errands"),
+            other => panic!("expected Context, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_and_invalid_context_names_are_rejected() {
+        let mut db = db();
+        let e = engine();
+        new_context(&e, &mut db, "errands");
+
+        // Same name, different case + padding: still the same handle to a user
+        // typing `@errands`, so it must not create a second context.
+        for dup in ["errands", "  ERRANDS  ", "Errands"] {
+            let err = e
+                .apply(
+                    &mut db,
+                    Command::CreateContext(ContextDraft {
+                        name: dup.into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap_err();
+            assert!(matches!(err, EngineError::Invalid(_)), "{dup}: {err:?}");
+        }
+
+        // Blank and over-length names never reach the store.
+        for bad in [String::from("   "), "x".repeat(65)] {
+            let err = e
+                .apply(
+                    &mut db,
+                    Command::CreateContext(ContextDraft {
+                        name: bad.clone(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap_err();
+            assert!(matches!(err, EngineError::Validation(_)), "{err:?}");
+        }
+
+        // A rename onto an existing name is refused the same way...
+        let other = new_context(&e, &mut db, "home");
+        let err = e
+            .apply(
+                &mut db,
+                Command::UpdateContext {
+                    id: other,
+                    patch: ContextPatch {
+                        name: Some("ERRANDS".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+        // ...but renaming a context to its own name is not a clash.
+        e.apply(
+            &mut db,
+            Command::UpdateContext {
+                id: other,
+                patch: ContextPatch {
+                    name: Some("Home".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(context_rows(&e, &db).len(), 2, "exactly two survived");
+    }
+
+    #[test]
+    fn reserved_prefix_names_are_accepted_verbatim() {
+        // The spec calls `waiting-on:` / `energy:` conventions, not enforced
+        // types — the store must not police them.
+        let mut db = db();
+        let e = engine();
+        for n in ["waiting-on:carlos", "energy:high", "energy:whatever"] {
+            new_context(&e, &mut db, n);
+        }
+        let names: Vec<String> = context_rows(&e, &db).into_iter().map(|r| r.name).collect();
+        assert_eq!(
+            names,
+            vec!["energy:high", "energy:whatever", "waiting-on:carlos"]
+        );
+    }
+
+    #[test]
+    fn deleting_a_context_removes_it_from_every_task_that_carries_it() {
+        let mut db = db();
+        let e = engine();
+        let errands = new_context(&e, &mut db, "errands");
+        let home = new_context(&e, &mut db, "home");
+
+        let mk = |e: &Engine, db: &mut Db, title: &str, ctxs: Vec<EntityRef>| {
+            e.apply(
+                db,
+                Command::CreateTask(TaskDraft {
+                    title: title.into(),
+                    contexts: ctxs,
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity
+        };
+        let both = mk(&e, &mut db, "buy milk", vec![errands, home]);
+        let only_errands = mk(&e, &mut db, "post parcel", vec![errands]);
+        let untagged = mk(&e, &mut db, "think", vec![]);
+
+        let by_name = |rows: Vec<ContextRow>, n: &str| {
+            rows.into_iter().find(|r| r.name == n).expect("row present")
+        };
+        assert_eq!(by_name(context_rows(&e, &db), "errands").task_count, 2);
+
+        e.apply(&mut db, Command::DeleteContext(errands)).unwrap();
+
+        // Gone from the list...
+        let rows = context_rows(&e, &db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "home");
+        // ...and gone from every task that carried it, while the *other*
+        // context on the same task is untouched.
+        assert_eq!(task_context_ids(&db, both), BTreeSet::from([*home.bytes()]));
+        assert!(task_context_ids(&db, only_errands).is_empty());
+        assert!(task_context_ids(&db, untagged).is_empty());
+        assert_eq!(
+            read_task_t(&e, &db, both).contexts,
+            BTreeSet::from([home]),
+            "the task projection agrees"
+        );
+        assert_eq!(by_name(context_rows(&e, &db), "home").task_count, 1);
+
+        // The Today context filter no longer matches the purged context.
+        match e
+            .query(
+                &db,
+                Query::Today {
+                    now_ms: 1_700_000_000_000,
+                    contexts: vec![errands],
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Tasks(t) => assert!(t.is_empty(), "no task still carries it"),
+            other => panic!("expected Tasks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn archiving_a_context_keeps_it_on_its_tasks() {
+        // Per the spec, archiving only hides a Context from the picker.
+        let mut db = db();
+        let e = engine();
+        let ctx = new_context(&e, &mut db, "errands");
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "buy milk".into(),
+                    contexts: vec![ctx],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        e.apply(
+            &mut db,
+            Command::UpdateContext {
+                id: ctx,
+                patch: ContextPatch {
+                    archived: Some(true),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        let rows = context_rows(&e, &db);
+        assert_eq!(rows.len(), 1, "archived contexts are still listed");
+        assert!(rows[0].archived);
+        assert_eq!(rows[0].task_count, 1);
+        assert_eq!(read_task_t(&e, &db, task).contexts, BTreeSet::from([ctx]));
+    }
+
+    #[test]
+    fn context_commands_reject_a_non_context_id() {
+        let mut db = db();
+        let e = engine();
+        let err = e
+            .apply(&mut db, Command::DeleteContext(stream_ref(3)))
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    }
+
+    /// The externally-tagged [`InnerOp`] variant name carried by `op_id`'s
+    /// sealed envelope.
+    fn inner_op_variant(e: &Engine, db: &Db, op_id: &[u8; 16]) -> String {
+        let inner = e.open_op_row(db, op_id).unwrap();
+        let ciborium::value::Value::Map(map) =
+            ciborium::de::from_reader::<ciborium::value::Value, _>(inner.as_slice()).unwrap()
+        else {
+            panic!("inner op must be a map");
+        };
+        match &map[0].0 {
+            ciborium::value::Value::Text(t) => t.clone(),
+            other => panic!("unexpected key {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_ops_seal_their_own_inner_op_variants() {
+        let mut db = db();
+        let e = engine();
+        let create = e
+            .apply(
+                &mut db,
+                Command::CreateContext(ContextDraft {
+                    name: "errands".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &create.op_id), "ContextCreate");
+
+        let upd = e
+            .apply(
+                &mut db,
+                Command::UpdateContext {
+                    id: create.entity,
+                    patch: ContextPatch {
+                        description: Some(Some("errand list".into())),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &upd.op_id), "ContextUpdate");
+
+        let del = e
+            .apply(&mut db, Command::DeleteContext(create.entity))
+            .unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &del.op_id), "ContextDelete");
     }
 
     #[test]
@@ -4139,6 +4859,143 @@ mod tests {
 
     const ROOT: [u8; 32] = [0x5a; 32];
     const T0: u64 = 1_700_000_000_000;
+
+    /// Sealed envelope of the most recent op of `kind` targeting `target`.
+    fn env_for_kind(db: &Db, target: &[u8; 16], kind: &str) -> Vec<u8> {
+        let op_id: Vec<u8> = db
+            .conn()
+            .query_row(
+                "SELECT op_id FROM ops
+                 WHERE target_id = ? AND inner_kind = ?
+                 ORDER BY rowid DESC LIMIT 1",
+                params![&target[..], kind],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut a = [0u8; 16];
+        a.copy_from_slice(&op_id[..16]);
+        env_bytes(db, &a)
+    }
+
+    #[test]
+    fn remote_context_create_and_delete_converge() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        // A creates a context and tags a task with it; B receives both.
+        let ctx = new_context(&ea, &mut dba, "errands");
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "buy milk".into(),
+                    contexts: vec![ctx],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let create_env = env_for_kind(&dba, ctx.bytes(), "context.create");
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &create_env).unwrap(),
+            Some(DomainEvent::Created(r)) if r == ctx
+        ));
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, task.bytes()))
+            .unwrap();
+
+        let rows = context_rows(&eb, &dbb);
+        assert_eq!(rows.len(), 1, "the context reached B");
+        assert_eq!(rows[0].name, "errands");
+        assert_eq!(rows[0].task_count, 1, "and B sees the membership");
+        // Re-delivery is a no-op.
+        assert!(eb.apply_remote(&mut dbb, &create_env).unwrap().is_none());
+
+        // A renames it; B converges under LWW.
+        set_clock(&ca, T0 + 1_000);
+        ea.apply(
+            &mut dba,
+            Command::UpdateContext {
+                id: ctx,
+                patch: ContextPatch {
+                    name: Some("errands & chores".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let upd_env = env_for_kind(&dba, ctx.bytes(), "context.update");
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &upd_env).unwrap(),
+            Some(DomainEvent::Updated(r)) if r == ctx
+        ));
+        assert_eq!(context_rows(&eb, &dbb)[0].name, "errands & chores");
+
+        // A deletes it: B must both drop the context AND strip it from the task.
+        set_clock(&ca, T0 + 2_000);
+        ea.apply(&mut dba, Command::DeleteContext(ctx)).unwrap();
+        let del_env = env_for_kind(&dba, ctx.bytes(), "context.delete");
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &del_env).unwrap(),
+            Some(DomainEvent::Deleted(r)) if r == ctx
+        ));
+        assert!(context_rows(&eb, &dbb).is_empty(), "gone from B's list");
+        assert!(
+            task_context_ids(&dbb, task).is_empty(),
+            "and stripped from B's copy of the task, without an extra task op"
+        );
+        assert_eq!(
+            task_context_ids(&dba, task),
+            task_context_ids(&dbb, task),
+            "both replicas agree"
+        );
+    }
+
+    #[test]
+    fn concurrent_context_renames_converge_to_one_name() {
+        // Both replicas rename the same context at the same instant; the tie is
+        // broken by device id, and both must land on the same winner.
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let ctx = new_context(&ea, &mut dba, "errands");
+        let create_env = env_for_kind(&dba, ctx.bytes(), "context.create");
+        eb.apply_remote(&mut dbb, &create_env).unwrap();
+
+        set_clock(&ca, T0 + 5_000);
+        set_clock(&cb, T0 + 5_000);
+        let rename = |name: &str| Command::UpdateContext {
+            id: ctx,
+            patch: ContextPatch {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+        };
+        ea.apply(&mut dba, rename("from A")).unwrap();
+        eb.apply(&mut dbb, rename("from B")).unwrap();
+
+        let a_env = env_for_kind(&dba, ctx.bytes(), "context.update");
+        let b_env = env_for_kind(&dbb, ctx.bytes(), "context.update");
+        eb.apply_remote(&mut dbb, &a_env).unwrap();
+        ea.apply_remote(&mut dba, &b_env).unwrap();
+
+        let name_a = context_rows(&ea, &dba)[0].name.clone();
+        let name_b = context_rows(&eb, &dbb)[0].name.clone();
+        assert_eq!(name_a, name_b, "both replicas picked the same winner");
+        assert!(name_a == "from A" || name_a == "from B", "{name_a}");
+    }
 
     #[test]
     fn apply_remote_round_trip_materializes_identically() {

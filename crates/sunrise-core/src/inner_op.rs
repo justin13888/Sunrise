@@ -21,7 +21,7 @@
 //! [`EntityRef`] (a tombstone marker).
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Routine, Stream, Task};
+use sunrise_domain::{Context, Routine, Stream, Task};
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
 
@@ -41,6 +41,14 @@ pub(crate) enum InnerOp {
     StreamUpdate(Stream),
     /// Tombstone a stream.
     StreamDelete(EntityRef),
+    /// Create a context (full state).
+    ContextCreate(Context),
+    /// Replace a context's full state.
+    ContextUpdate(Context),
+    /// Tombstone a context. Every replica that applies this op also drops the
+    /// context from every Task carrying it, per
+    /// `docs/02-domain/contexts-and-tags.md`.
+    ContextDelete(EntityRef),
     /// Create a routine (full state). Boxed to keep the enum small.
     RoutineCreate(Box<Routine>),
     /// Replace a routine's full state.
@@ -79,17 +87,22 @@ impl InnerOp {
             Self::StreamCreate(_) => "stream.create",
             Self::StreamUpdate(_) => "stream.update",
             Self::StreamDelete(_) => "stream.delete",
+            Self::ContextCreate(_) => "context.create",
+            Self::ContextUpdate(_) => "context.update",
+            Self::ContextDelete(_) => "context.delete",
             Self::RoutineCreate(_) => "routine.create",
             Self::RoutineUpdate(_) => "routine.update",
             Self::RoutineDelete(_) => "routine.delete",
         }
     }
 
-    /// The op-log `target_kind` tag (`"task"`, `"stream"`, `"routine"`).
+    /// The op-log `target_kind` tag (`"task"`, `"stream"`, `"context"`,
+    /// `"routine"`).
     pub(crate) fn target_kind(&self) -> &'static str {
         match self {
             Self::TaskCreate(_) | Self::TaskUpdate(_) | Self::TaskDelete(_) => "task",
             Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => "stream",
+            Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
         }
     }
@@ -99,23 +112,30 @@ impl InnerOp {
         match self {
             Self::TaskCreate(t) | Self::TaskUpdate(t) => t.id,
             Self::StreamCreate(s) | Self::StreamUpdate(s) => s.id,
+            Self::ContextCreate(c) | Self::ContextUpdate(c) => c.id,
             Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) => rt.id,
-            Self::TaskDelete(r) | Self::StreamDelete(r) | Self::RoutineDelete(r) => *r,
+            Self::TaskDelete(r)
+            | Self::StreamDelete(r)
+            | Self::ContextDelete(r)
+            | Self::RoutineDelete(r) => *r,
         }
     }
 
     /// This op's effect class.
     pub(crate) fn effect(&self) -> OpEffect {
         match self {
-            Self::TaskCreate(_) | Self::StreamCreate(_) | Self::RoutineCreate(_) => {
-                OpEffect::Create
-            }
-            Self::TaskUpdate(_) | Self::StreamUpdate(_) | Self::RoutineUpdate(_) => {
-                OpEffect::Update
-            }
-            Self::TaskDelete(_) | Self::StreamDelete(_) | Self::RoutineDelete(_) => {
-                OpEffect::Delete
-            }
+            Self::TaskCreate(_)
+            | Self::StreamCreate(_)
+            | Self::ContextCreate(_)
+            | Self::RoutineCreate(_) => OpEffect::Create,
+            Self::TaskUpdate(_)
+            | Self::StreamUpdate(_)
+            | Self::ContextUpdate(_)
+            | Self::RoutineUpdate(_) => OpEffect::Update,
+            Self::TaskDelete(_)
+            | Self::StreamDelete(_)
+            | Self::ContextDelete(_)
+            | Self::RoutineDelete(_) => OpEffect::Delete,
         }
     }
 
@@ -125,6 +145,9 @@ impl InnerOp {
             Self::TaskCreate(_) | Self::TaskUpdate(_) | Self::TaskDelete(_) => EntityKind::Task,
             Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => {
                 EntityKind::Stream
+            }
+            Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => {
+                EntityKind::Context
             }
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => {
                 EntityKind::Routine

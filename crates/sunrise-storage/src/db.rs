@@ -595,6 +595,102 @@ mod tests {
         }
     }
 
+    /// Build a DB with migrations 0001..0006 applied, stamped `storage_v = 6`,
+    /// simulating a real v6 vault opened by a newer binary.
+    fn seed_v6_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..6] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![6_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v6_db_adds_contexts_table_and_keeps_memberships() {
+        assert!(u32::from(STORAGE_V) >= 7);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v6_db(&conn);
+
+        // A v6 vault could already carry task↔context memberships (0001 shipped
+        // `task_contexts` long before the `contexts` table existed); they must
+        // survive the upgrade untouched.
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, stream_id, title, state)
+             VALUES (?, ?, 'tagged survivor', 'todo')",
+            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_contexts (task_id, context_id) VALUES (?, ?)",
+            rusqlite::params![vec![1u8; 16], vec![0xAAu8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0007.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        // Pre-existing rows survived.
+        let (title, ctx): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT t.title, tc.context_id
+                 FROM tasks t JOIN task_contexts tc ON tc.task_id = t.id
+                 WHERE t.id = ?",
+                rusqlite::params![vec![1u8; 16]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "tagged survivor");
+        assert_eq!(ctx, vec![0xAAu8; 16]);
+
+        // The new table exists and accepts a Context row with LWW metadata.
+        conn.execute(
+            "INSERT INTO contexts
+             (id, name, description, archived, deleted, created_at_ms, updated_at_ms,
+              lww_ts_ms, lww_device)
+             VALUES (?, 'errands', NULL, 0, 0, 5, 5, 5, ?)",
+            rusqlite::params![vec![0xAAu8; 16], vec![7u8; 16]],
+        )
+        .unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM contexts WHERE id = ?",
+                rusqlite::params![vec![0xAAu8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "errands");
+
+        // Two live contexts may share a name: uniqueness is a command-path rule,
+        // not a schema constraint, so concurrent remote creates cannot wedge the
+        // receive path with a constraint violation.
+        conn.execute(
+            "INSERT INTO contexts (id, name, created_at_ms, updated_at_ms)
+             VALUES (?, 'errands', 6, 6)",
+            rusqlite::params![vec![0xBBu8; 16]],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();
