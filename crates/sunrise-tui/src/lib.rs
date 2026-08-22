@@ -76,8 +76,8 @@ pub use render::{
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
-    CascadeReport, FocusState, Prompt, RoutineRow, StreamPane, StreamPicker, SyncIndicator, View,
-    ViewState,
+    BrowseTarget, CascadeReport, FocusState, Prompt, RoutineRow, StreamPane, StreamPicker,
+    SyncIndicator, View, ViewState,
 };
 
 /// Help text listing the command-line commands, shown in the status line by

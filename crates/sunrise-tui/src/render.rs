@@ -384,36 +384,60 @@ pub fn render_inbox(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     )
 }
 
-/// Render the Stream view: split pane — stream list (with open-task-count
-/// badges) on the left, tasks of the selected stream on the right. The
-/// focused pane gets a highlighted border.
+/// Render the Browse view: a two-list sidebar — Streams above, Contexts below
+/// — and the tasks of whichever sidebar row is open on the right.
+///
+/// The layout is `docs/07-clients/tui.md`'s own: Streams partition the work
+/// and Contexts cut across it, so a sidebar with only Streams leaves half the
+/// domain with no place to stand. The pane holding the keyboard gets a
+/// highlighted border, and the open row keeps a dimmer marker in its list so
+/// the right-hand pane's contents are always attributable.
 pub fn render_stream(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
-    let chunks = Layout::default()
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
-    render_stream_list(f, chunks[0], state);
-    let title = state
-        .selected_stream_row()
-        .map_or_else(|| "Tasks".to_string(), |r| r.name.clone());
+    // The sidebar splits evenly, but never gives the context list so little
+    // room that its border eats the whole thing.
+    let side = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(cols[0]);
+    render_stream_list(f, side[0], state);
+    render_context_list(f, side[1], state);
     render_task_list_styled(
         f,
-        chunks[1],
+        cols[1],
         &state.tasks,
         state.selected,
-        &title,
+        &state.browse_title(),
         pane_border(state, StreamPane::Tasks),
         state.visual_range(),
         &marks(state),
     );
 }
 
-/// Left pane of the Stream view: one row per stream, `Name [open_count]`.
+/// Sidebar, top: one row per stream, `Name [open_count]`.
 fn render_stream_list(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let open = matches!(state.browse_target(), Some(crate::BrowseTarget::Stream(_)));
     let items: Vec<ListItem<'_>> = state
         .streams
         .iter()
-        .map(|s| ListItem::new(format!("{} [{}]", s.name, s.open_task_count)))
+        .map(|s| {
+            let marker = if open && state.browse_target() == Some(crate::BrowseTarget::Stream(s.id))
+            {
+                "•"
+            } else {
+                " "
+            };
+            let row = format!("{marker}{} [{}]", s.name, s.open_task_count);
+            if s.archived {
+                ListItem::new(format!("{row} [archived]"))
+                    .style(Style::default().fg(Color::DarkGray))
+            } else {
+                ListItem::new(row)
+            }
+        })
         .collect();
     let list = List::new(items)
         .block(
@@ -431,6 +455,51 @@ fn render_stream_list(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .highlight_symbol("▶ ");
     let mut s = ListState::default();
     s.select(state.selected_stream);
+    f.render_stateful_widget(list, area, &mut s);
+}
+
+/// Sidebar, bottom: one row per context, `@name [task_count]`.
+fn render_context_list(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let items: Vec<ListItem<'_>> = if state.contexts.is_empty() {
+        vec![ListItem::new("none — press C").style(Style::default().fg(Color::Gray))]
+    } else {
+        state
+            .contexts
+            .iter()
+            .map(|c| {
+                let marker = if state.browse_target() == Some(crate::BrowseTarget::Context(c.id)) {
+                    "•"
+                } else {
+                    " "
+                };
+                let row = format!("{marker}@{} [{}]", c.name, c.task_count);
+                if c.archived {
+                    ListItem::new(format!("{row} [archived]"))
+                        .style(Style::default().fg(Color::DarkGray))
+                } else {
+                    ListItem::new(row)
+                }
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Contexts")
+                .border_style(pane_border(state, StreamPane::Contexts)),
+        )
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Black)
+                .bg(Color::White),
+        )
+        .highlight_symbol("▶ ");
+    let mut s = ListState::default();
+    if !state.contexts.is_empty() {
+        s.select(state.selected_context);
+    }
     f.render_stateful_widget(list, area, &mut s);
 }
 

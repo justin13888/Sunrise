@@ -85,24 +85,47 @@ pub enum View {
     Routines,
 }
 
-/// Which pane of the split Stream view has keyboard focus.
+/// Which pane of the Browse view has keyboard focus.
+///
+/// `docs/07-clients/tui.md` draws the sidebar with **two** lists — Streams
+/// above, Contexts below — because those are the two axes the domain has:
+/// Streams partition the work and Contexts cut across it. A sidebar with only
+/// Streams leaves half the model unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamPane {
-    /// Left pane: the stream list.
+    /// Sidebar, top: the stream list.
     Streams,
-    /// Right pane: tasks of the selected stream.
+    /// Sidebar, bottom: the context list.
+    Contexts,
+    /// Right pane: tasks of whichever sidebar row is selected.
     Tasks,
 }
 
 impl StreamPane {
-    /// The other pane (there are exactly two).
+    /// The next pane in Tab order.
     #[must_use]
-    pub const fn other(self) -> Self {
+    pub const fn next(self) -> Self {
         match self {
-            Self::Streams => Self::Tasks,
+            Self::Streams => Self::Contexts,
+            Self::Contexts => Self::Tasks,
             Self::Tasks => Self::Streams,
         }
     }
+
+    /// Whether this pane is one of the two sidebar lists.
+    #[must_use]
+    pub const fn is_sidebar(self) -> bool {
+        matches!(self, Self::Streams | Self::Contexts)
+    }
+}
+
+/// What the Browse view's task pane is currently listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseTarget {
+    /// One Stream's tasks.
+    Stream(EntityRef),
+    /// Every task carrying one Context, across all Streams.
+    Context(EntityRef),
 }
 
 /// A pending prompt occupying the shared input line (or, for
@@ -538,8 +561,18 @@ pub struct ViewState {
     pub contexts: Vec<ContextRow>,
     /// Index of the selected stream in `streams`. `None` if the list is empty.
     pub selected_stream: Option<usize>,
-    /// Focused pane in the Stream view.
+    /// Index of the selected context in `contexts`. `None` if empty.
+    pub selected_context: Option<usize>,
+    /// Which sidebar list the Browse task pane is following. Held separately
+    /// from the pane focus so moving the cursor into the *other* sidebar list
+    /// does not silently retarget the tasks on the right until Enter.
+    pub browse: Option<BrowseTarget>,
+    /// Focused pane in the Browse view.
     pub pane: StreamPane,
+    /// Which of the two sidebar lists focus returns to from the task pane.
+    /// Remembered so `l` then `h` is a round trip rather than a reset. Set
+    /// through [`ViewState::focus_pane`].
+    pub last_sidebar: StreamPane,
     /// Task shown fullscreen in the Focus view.
     pub focused_task: Option<Task>,
     /// View to return to when Focus is closed with Esc.
@@ -618,7 +651,10 @@ impl Default for ViewState {
             streams: Vec::new(),
             contexts: Vec::new(),
             selected_stream: None,
+            selected_context: None,
+            browse: None,
             pane: StreamPane::Streams,
+            last_sidebar: StreamPane::Streams,
             focused_task: None,
             prev_view: None,
             input: InputLine::new(),
@@ -665,6 +701,96 @@ impl ViewState {
     /// selection to the first row (Inbox — `StreamList` returns it first).
     pub fn after_streams_loaded(&mut self) {
         self.selected_stream = clamp_selection(self.streams.len(), self.selected_stream);
+    }
+
+    /// Apply selection bookkeeping after `contexts` has changed.
+    pub fn after_contexts_loaded(&mut self) {
+        self.selected_context = clamp_selection(self.contexts.len(), self.selected_context);
+    }
+
+    /// The sidebar row the task pane is following, defaulting to the selected
+    /// Stream (Inbox first) before the user has chosen anything.
+    #[must_use]
+    pub fn browse_target(&self) -> Option<BrowseTarget> {
+        self.browse.or_else(|| {
+            self.selected_stream_row()
+                .map(|r| BrowseTarget::Stream(r.id))
+        })
+    }
+
+    /// Selected context row, if any.
+    #[must_use]
+    pub fn selected_context_row(&self) -> Option<&ContextRow> {
+        self.selected_context.and_then(|i| self.contexts.get(i))
+    }
+
+    /// Point the task pane at the sidebar row under the cursor, without
+    /// moving focus.
+    ///
+    /// Called on every sidebar cursor move so the right-hand pane follows the
+    /// selection live: a sidebar you have to press Enter in to see anything is
+    /// a sidebar you cannot browse with.
+    ///
+    /// Returns whether the target changed, so the caller only pays for a
+    /// re-query when it did.
+    pub fn sync_browse_from_cursor(&mut self) -> bool {
+        let target = match self.pane {
+            StreamPane::Streams => self
+                .selected_stream_row()
+                .map(|r| BrowseTarget::Stream(r.id)),
+            StreamPane::Contexts => self
+                .selected_context_row()
+                .map(|r| BrowseTarget::Context(r.id)),
+            StreamPane::Tasks => None,
+        };
+        match target {
+            Some(t) if self.browse != Some(t) => {
+                self.browse = Some(t);
+                // The task cursor belonged to the previous list.
+                self.selected = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Point the Browse task pane at whichever sidebar row is under the cursor.
+    pub fn open_sidebar_row(&mut self) -> bool {
+        let target = match self.pane {
+            StreamPane::Streams => self
+                .selected_stream_row()
+                .map(|r| BrowseTarget::Stream(r.id)),
+            StreamPane::Contexts => self
+                .selected_context_row()
+                .map(|r| BrowseTarget::Context(r.id)),
+            StreamPane::Tasks => None,
+        };
+        match target {
+            Some(t) => {
+                self.browse = Some(t);
+                self.pane = StreamPane::Tasks;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Title for the Browse task pane: the Stream's name, or `@context`.
+    #[must_use]
+    pub fn browse_title(&self) -> String {
+        match self.browse_target() {
+            Some(BrowseTarget::Stream(id)) => self
+                .streams
+                .iter()
+                .find(|s| s.id == id)
+                .map_or_else(|| "Tasks".into(), |s| s.name.clone()),
+            Some(BrowseTarget::Context(id)) => self
+                .contexts
+                .iter()
+                .find(|c| c.id == id)
+                .map_or_else(|| "Tasks".into(), |c| format!("@{}", c.name)),
+            None => "Tasks".into(),
+        }
     }
 
     /// Move selection down by one, wrapping at the end.
@@ -719,6 +845,7 @@ impl ViewState {
         match self.view {
             View::Routines => ActiveList::Routines,
             View::Stream if matches!(self.pane, StreamPane::Streams) => ActiveList::Streams,
+            View::Stream if matches!(self.pane, StreamPane::Contexts) => ActiveList::Contexts,
             // The Focus view's list is the planner queue: `j`/`k`/`gg`/`G`
             // pick what to work on next without needing keys of their own.
             View::Focus => ActiveList::FocusPlan,
@@ -731,6 +858,9 @@ impl ViewState {
     pub fn nav_next(&mut self) {
         match self.active_list() {
             ActiveList::Streams => self.stream_next(),
+            ActiveList::Contexts => {
+                self.selected_context = wrap_next(self.contexts.len(), self.selected_context);
+            }
             ActiveList::Routines => {
                 self.selected_routine = wrap_next(self.routines.len(), self.selected_routine);
             }
@@ -746,6 +876,9 @@ impl ViewState {
     pub fn nav_prev(&mut self) {
         match self.active_list() {
             ActiveList::Streams => self.stream_prev(),
+            ActiveList::Contexts => {
+                self.selected_context = wrap_prev(self.contexts.len(), self.selected_context);
+            }
             ActiveList::Routines => {
                 self.selected_routine = wrap_prev(self.routines.len(), self.selected_routine);
             }
@@ -775,6 +908,7 @@ impl ViewState {
     pub fn nav_by(&mut self, delta: isize) {
         let current = match self.active_list() {
             ActiveList::Streams => self.selected_stream,
+            ActiveList::Contexts => self.selected_context,
             ActiveList::Routines => self.selected_routine,
             ActiveList::FocusPlan => self.focus.selected,
             ActiveList::Tasks => self.selected,
@@ -815,6 +949,7 @@ impl ViewState {
         let list = self.active_list();
         let len = match list {
             ActiveList::Streams => self.streams.len(),
+            ActiveList::Contexts => self.contexts.len(),
             ActiveList::Routines => self.routines.len(),
             ActiveList::FocusPlan => self.focus.plan.len(),
             ActiveList::Tasks => self.tasks.len(),
@@ -825,6 +960,7 @@ impl ViewState {
         let idx = Some(pick(len));
         match list {
             ActiveList::Streams => self.selected_stream = idx,
+            ActiveList::Contexts => self.selected_context = idx,
             ActiveList::Routines => self.selected_routine = idx,
             ActiveList::FocusPlan => {
                 self.focus.selected = idx;
@@ -1003,10 +1139,10 @@ impl ViewState {
     /// Enter visual mode, anchoring on the current row. No-op with no
     /// selection — there would be nothing to anchor to.
     pub fn enter_visual(&mut self) -> bool {
-        // Visual mode selects *tasks*; in the Stream view's left pane the
-        // cursor keys drive the stream list instead, so there is nothing to
+        // Visual mode selects *tasks*; in the Browse sidebar the cursor keys
+        // drive a stream or context list instead, so there is nothing to
         // extend.
-        if self.view == View::Stream && self.pane == StreamPane::Streams {
+        if self.view == View::Stream && self.pane.is_sidebar() {
             return false;
         }
         let Some(i) = self.selected else { return false };
@@ -1076,14 +1212,31 @@ impl ViewState {
         self.devices = Some(rows);
     }
 
-    /// Toggle which Stream-view pane has focus (Tab).
+    /// Cycle the Browse pane focus (Tab): Streams → Contexts → Tasks.
     pub fn toggle_pane(&mut self) {
-        self.pane = self.pane.other();
+        self.focus_pane(self.pane.next());
     }
 
-    /// Focus a specific Stream-view pane (`h` → Streams, `l` → Tasks).
+    /// Move focus into the sidebar (`h`), returning to whichever of its two
+    /// lists was last used rather than always snapping to Streams — otherwise
+    /// the context list is unreachable with one hand on `h`/`l`.
+    pub fn focus_sidebar(&mut self) {
+        if !self.pane.is_sidebar() {
+            self.pane = self.last_sidebar;
+        }
+    }
+
+    /// Move focus to the task pane (`l`).
+    pub fn focus_tasks(&mut self) {
+        self.pane = StreamPane::Tasks;
+    }
+
+    /// Focus a specific Browse pane, remembering the sidebar list.
     pub fn focus_pane(&mut self, pane: StreamPane) {
         self.pane = pane;
+        if pane.is_sidebar() {
+            self.last_sidebar = pane;
+        }
     }
 
     /// Selected task ref, if any.
@@ -1192,6 +1345,8 @@ impl ViewState {
 /// Which of the selectable lists the cursor keys currently drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveList {
+    /// The Browse sidebar's context list.
+    Contexts,
     /// The task list (Today / Inbox / Search / Stream's right pane).
     Tasks,
     /// The Stream view's left pane.
@@ -1593,17 +1748,29 @@ mod tests {
     }
 
     #[test]
-    fn pane_toggle_and_focus() {
+    fn pane_toggle_cycles_all_three_browse_panes() {
         let mut s = ViewState::default();
         assert_eq!(s.pane, StreamPane::Streams);
         s.toggle_pane();
+        assert_eq!(s.pane, StreamPane::Contexts);
+        s.toggle_pane();
         assert_eq!(s.pane, StreamPane::Tasks);
         s.toggle_pane();
         assert_eq!(s.pane, StreamPane::Streams);
-        s.focus_pane(StreamPane::Tasks);
+    }
+
+    #[test]
+    fn h_returns_to_whichever_sidebar_list_was_last_used() {
+        // Always snapping back to Streams would make the context list
+        // unreachable with one hand on `h`/`l`.
+        let mut s = ViewState::default();
+        s.focus_pane(StreamPane::Contexts);
+        s.focus_tasks();
         assert_eq!(s.pane, StreamPane::Tasks);
-        s.focus_pane(StreamPane::Tasks);
-        assert_eq!(s.pane, StreamPane::Tasks);
+        s.focus_sidebar();
+        assert_eq!(s.pane, StreamPane::Contexts);
+        s.focus_sidebar();
+        assert_eq!(s.pane, StreamPane::Contexts);
     }
 
     #[test]

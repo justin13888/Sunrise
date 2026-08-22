@@ -57,8 +57,8 @@ use sunrise_domain::{NoteBody, TaskPatch};
 use sunrise_tui::livesync;
 use sunrise_tui::runtime::{drain_changes, CHANGE_DEBOUNCE};
 use sunrise_tui::{
-    apply_action, editor, keymap, render, routine_rows, CascadeReport, Outcome, SyncIndicator,
-    View, ViewState,
+    apply_action, editor, keymap, render, routine_rows, BrowseTarget, CascadeReport, Outcome,
+    SyncIndicator, View, ViewState,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -714,6 +714,7 @@ async fn refresh(core: &Core, state: &mut ViewState) {
     }
     if let Ok(QueryResult::Contexts(rows)) = core.query(Query::Contexts).await {
         state.contexts = rows;
+        state.after_contexts_loaded();
     }
     refresh_focus(core, state).await;
     state.after_focus_loaded();
@@ -731,8 +732,13 @@ async fn refresh(core: &Core, state: &mut ViewState) {
             load_tasks(core, state, q).await;
         }
         View::Inbox => load_tasks(core, state, Query::Inbox).await,
-        View::Stream => match state.selected_stream_row().map(|r| r.id) {
-            Some(id) => load_tasks(core, state, Query::StreamTasks(id)).await,
+        View::Stream => match state.browse_target() {
+            // The sidebar's two lists answer the domain's two axes: a Stream
+            // partitions work, a Context cuts across every Stream.
+            Some(BrowseTarget::Stream(id)) => load_tasks(core, state, Query::StreamTasks(id)).await,
+            Some(BrowseTarget::Context(id)) => {
+                load_tasks(core, state, Query::ContextTasks(id)).await
+            }
             None => {
                 state.tasks.clear();
                 state.after_tasks_loaded();

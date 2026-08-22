@@ -12,7 +12,7 @@ use crate::capture::{now_ts, parse_line, preview_line, unresolved_note};
 use crate::command::parse_command;
 use crate::edit::parse_edit;
 use crate::keymap::{Action, Mode};
-use crate::view::{Prompt, StreamPane, View, ViewState};
+use crate::view::{Prompt, View, ViewState};
 use crate::{apply_command, AppEffect};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -192,30 +192,30 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 Some(p) => p.next(),
                 None => state.nav_next(),
             }
-            Outcome::None
+            after_nav(state)
         }
         Action::Prev => {
             match state.picker.as_mut() {
                 Some(p) => p.prev(),
                 None => state.nav_prev(),
             }
-            Outcome::None
+            after_nav(state)
         }
         Action::GotoPrefix => {
             if g_armed {
                 state.nav_first();
-            } else {
-                state.pending_g = true;
+                return after_nav(state);
             }
+            state.pending_g = true;
             Outcome::None
         }
         Action::GotoTop => {
             state.nav_first();
-            Outcome::None
+            after_nav(state)
         }
         Action::GotoBottom => {
             state.nav_last();
-            Outcome::None
+            after_nav(state)
         }
         Action::PageDown | Action::PageUp | Action::HalfPageDown | Action::HalfPageUp => {
             let rows = match action {
@@ -233,18 +233,18 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 Some(p) => p.nav_by(delta),
                 None => state.nav_by(delta),
             }
-            Outcome::None
+            after_nav(state)
         }
         Action::TogglePane => {
             state.toggle_pane();
             Outcome::None
         }
         Action::PaneLeft => {
-            state.focus_pane(StreamPane::Streams);
+            state.focus_sidebar();
             Outcome::None
         }
         Action::PaneRight => {
-            state.focus_pane(StreamPane::Tasks);
+            state.focus_tasks();
             Outcome::None
         }
         // Enter on a planner row starts the session it proposes, so accepting
@@ -254,10 +254,10 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             start_focus(state)
         }
         Action::Activate => {
-            if state.view == View::Stream && state.pane == StreamPane::Streams {
-                // Confirm the highlighted stream: load its tasks and move
-                // focus to the task pane.
-                state.pane = StreamPane::Tasks;
+            if state.view == View::Stream && state.pane.is_sidebar() {
+                // Confirm the highlighted sidebar row: point the task pane at
+                // it and move focus there.
+                state.open_sidebar_row();
                 Outcome::Refresh
             } else if state.selected_task().is_some() {
                 state.open_focus();
@@ -544,6 +544,18 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// What a cursor move owes the runtime.
+///
+/// Only one list re-queries when it moves: the Browse sidebar, whose task pane
+/// follows the selection live. Everywhere else a cursor move is pure state and
+/// the next repaint is enough.
+fn after_nav(state: &mut ViewState) -> Outcome {
+    if state.view == View::Stream && state.pane.is_sidebar() && state.sync_browse_from_cursor() {
+        return Outcome::Refresh;
+    }
+    Outcome::None
 }
 
 /// Turn a toggle into the commands it means for `ids`.
@@ -1133,6 +1145,7 @@ pub fn parse_defer_ms(input: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::view::fixtures::{context_row, fake_task, inbox_row, stream_row};
+    use crate::view::StreamPane;
     use crossterm::event::KeyCode;
 
     /// Fixed "now" for deferral arithmetic: 2026-01-01T00:00:00Z.
@@ -1432,6 +1445,73 @@ manual"
         s.tasks.insert(0, gone);
         s.after_tasks_loaded();
         assert_eq!(s.marked_ids().len(), 1);
+    }
+
+    fn browse_state() -> ViewState {
+        let mut s = ViewState::default();
+        s.view = View::Stream;
+        s.streams = vec![inbox_row(1), stream_row(2, "Work", 3)];
+        s.contexts = vec![context_row(1, "home"), context_row(2, "errands")];
+        s.after_streams_loaded();
+        s.after_contexts_loaded();
+        s
+    }
+
+    #[test]
+    fn the_browse_sidebar_reaches_both_axes_of_the_domain() {
+        // Streams partition the work and Contexts cut across it; a sidebar
+        // with only Streams leaves half the model with no place to stand.
+        let mut s = browse_state();
+        assert_eq!(s.pane, StreamPane::Streams);
+        let _ = press(&mut s, KeyCode::Tab);
+        assert_eq!(s.pane, StreamPane::Contexts);
+        // Moving in the context list retargets the task pane live, so the
+        // sidebar can be browsed without pressing Enter on every row.
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('j')),
+            Outcome::Refresh
+        ));
+        assert_eq!(
+            s.browse_target(),
+            Some(crate::BrowseTarget::Context(s.contexts[1].id))
+        );
+        assert_eq!(s.browse_title(), "@errands");
+        // Enter moves focus to the tasks it opened.
+        let _ = press(&mut s, KeyCode::Enter);
+        assert_eq!(s.pane, StreamPane::Tasks);
+    }
+
+    #[test]
+    fn moving_in_the_stream_list_retargets_the_task_pane() {
+        let mut s = browse_state();
+        s.selected_stream = Some(0);
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert_eq!(
+            s.browse_target(),
+            Some(crate::BrowseTarget::Stream(s.streams[1].id))
+        );
+        assert_eq!(s.browse_title(), "Work");
+    }
+
+    #[test]
+    fn the_task_cursor_is_dropped_when_the_sidebar_retargets() {
+        // Holding row 3 across a switch would leave the highlight on an
+        // unrelated task of the new list.
+        let mut s = browse_state();
+        s.tasks = (0u8..4).map(fake_task).collect();
+        s.selected = Some(3);
+        s.pane = StreamPane::Streams;
+        s.selected_stream = Some(0);
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.selected, None);
+    }
+
+    #[test]
+    fn visual_mode_is_refused_in_the_sidebar() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Contexts;
+        let _ = press(&mut s, KeyCode::Char('V'));
+        assert_ne!(s.mode, Mode::Visual);
     }
 
     #[test]

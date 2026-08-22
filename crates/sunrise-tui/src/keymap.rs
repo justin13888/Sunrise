@@ -451,14 +451,14 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Tab,
         Scope::In(View::Stream),
         Action::TogglePane,
-        Some(("Tab", "switch pane (Stream)")),
+        Some(("Tab", "cycle browse panes")),
     ),
     b(
         Mode::Normal,
         KeyCode::Char('h'),
         Scope::InVim(View::Stream),
         Action::PaneLeft,
-        Some(("h / l", "streams / tasks pane")),
+        Some(("h / l", "sidebar / tasks")),
     ),
     b(
         Mode::Normal,

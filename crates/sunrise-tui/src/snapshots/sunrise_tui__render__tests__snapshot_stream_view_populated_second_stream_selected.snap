@@ -4,13 +4,13 @@ expression: "frame_to_string(60, 12, &state)"
 ---
  1:Today  2:Inbox  3:Stream  4:Search  5:Focus  6:Routines  
 ┌Streams─────────┐┌Work────────────────────────────────────┐
-│  Inbox [1]     ││▶ [ ] task 1                            │
-│▶ Work [3]      ││  [ ] task 2                            │
+│   Inbox [1]    ││▶ [ ] task 1                            │
+│▶ •Work [3]     ││  [ ] task 2                            │
 │                ││                                        │
 │                ││                                        │
-│                ││                                        │
-│                ││                                        │
-│                ││                                        │
+└────────────────┘│                                        │
+┌Contexts────────┐│                                        │
+│none — press C  ││                                        │
 │                ││                                        │
 └────────────────┘└────────────────────────────────────────┘
  NORMAL
