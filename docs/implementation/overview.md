@@ -5,120 +5,150 @@ status: living
 # Implementation Overview
 
 This file tracks the state of the v1 implementation against `docs/`.
-Each phase has a per-section file (added as the surface stabilizes); this
-overview is the entry point.
 
-## Phase status
+**How to read this file.** An earlier revision reported most phases as
+"✅ shipped" on the basis that the crate existed and its own tests passed. That
+is a crate-existence checklist, not a feature-completeness one, and it
+overstated the product substantially — several "shipped" crates are not
+reachable from any binary. The table below reports *reachability from a running
+client*, which is the only measure that matters to a user.
 
-| Phase | Crate / Component | Status | Notes |
-|---|---|---|---|
-| 0 | Workspace + CI | ✅ shipped | Cargo + Bun workspace; legacy/ archived |
-| 1 | sunrise-log | ✅ shipped | NDJSON, `Plain<T>`, sinks, throttle, redaction property test (1k cases) |
-| 2 | sunrise-id / error / cbor | ✅ shipped | ULID + EntityRef, error registry, magic prefixes |
-| 3 | sunrise-crypto | ✅ shipped | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact OpEnvelope |
-| 4 | sunrise-domain | ✅ shipped | Task / Stream / Routine entities, RRULE subset parser, validation |
-| 5 | sunrise-crdt | ✅ shipped | Loro StreamDoc, 3-replica convergence proptest |
-| 6 | sunrise-storage | ✅ shipped | SQLCipher schema, op log, blob store, FTS5 |
-| 7 | sunrise-wire-protocol | ✅ shipped | 11-byte frame, 15 msg kinds, Hello/HelloAck |
-| 8 | sunrise-sync | ✅ shipped | State machine, cursors, outbox, backoff, transport trait |
-| 9 | sunrise-pairing / onboarding | ✅ shipped | SAS, QR, account flow, recovery wrapper |
-| 10 | sunrise-core | ✅ shipped | Open / submit / query / changes / sync_status / close + engine pipeline |
-| 11 | sunrise-server | ✅ shipped | REST endpoints, WS relay, typed OpBatch/Ack routing, retained-ring replay, OIDC verifier trait, metrics, blob 2PC, push fanout |
-| 12 | sunrise-tui | ✅ shipped | Today / Inbox / Stream / Search / Focus views, vim keymap, `:` command mode, image preview (`images` feature), insta golden frames, Core integration |
-| 13 | apps/desktop | 🟡 frontend-only | Tauri 2 + React renderer; `bun install` + `bun run tauri dev` to bring up. Native shell wiring is platform-owner work |
-| 14 | apps/web | 🟡 stub (by decision) | Vite + React + Service Worker; localStorage Core stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) (WASM core build deferred — MSRV blocker) |
-| 15 | sunrise-core-bindings | 🟡 scaffolded | JSON-FFI surface; UniFFI annotations follow once iOS / Android land |
-| 16 | sunrise-integrations | ✅ shipped | iCal RFC 5545 subset; GCal OAuth-URL builder + EventSyncer trait |
-| 17 | E2E gating | ✅ shipped | sunrise-e2e flagship convergence + chaos scenarios; sunrise-bench criterion suite + linux-x86_64 baselines in `bench/baseline.json` (CI regression gate deferred — see below) |
+## Legend
 
-## v1 core: complete
+| Mark | Meaning |
+|---|---|
+| ✅ **live** | Implemented, reachable from a shipping binary, and covered by tests that assert behaviour |
+| 🟨 **partial** | Reachable, but a documented part of its spec is missing |
+| 🟧 **orphan** | Crate builds and self-tests pass, but **nothing depends on it** — no product path reaches this code |
+| 🟥 **broken** | Does not build, or does not work when run |
+| ⬜ **deferred** | Deliberately out of scope for v1, with a recorded decision |
 
-The v1 Rust core is feature-complete end to end. Everything from the
-persisted vault through the sync relay and back into a second device now
-runs for real, exercised by the flagship convergence e2e. In summary,
-the following all **landed**:
+## Crate status
 
-- **Docs consolidation** — single `docs/` design tree (this file plus
-  [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)),
-  contradictions reconciled, ADR-0011 (jiff), ADR-0012 (web WASM deferred),
-  and the scheduling-constraints domain spec.
-- **jiff migration** — `chrono` and the unused `time` dependency removed;
-  `jiff` `0.2.32` is the sole datetime library
-  ([ADR-0011](../11-adr/0011-datetime-jiff.md)).
-- **Storage** — migrations 0002–0006 with an auto-upgrade path in
-  `ensure_schema`: stream name/color, scheduling constraints, routine
-  materialization, local identity + persistent outbox + sync cursors, and
-  LWW metadata.
-- **Read queries** — `Query::StreamList` and `Query::Search` (FTS5,
-  hostile-input-safe).
-- **Scheduling constraints** on Task / Routine (hard/soft, OR-within-kind,
-  AND-across-kinds) per
-  [scheduling-constraints.md](../02-domain/scheduling-constraints.md).
-- **Routine generation** — `routine_gen` DST-aware RRULE expansion,
-  Routine CRUD, and deterministic cross-device materialization
-  (blake3 occurrence task ids).
-- **Sync wire layer** — op-envelope sealing (XChaCha + Ed25519, Keychain,
-  vault-root-derived per-stream keys, per-(stream, device) seq); typed
-  `OpBatch` / `Ack` payloads with real stream routing and a relay
-  retained-ring replay buffer; `apply_remote` (idempotent, entity-level
-  LWW, TrustDevice).
-- **WebSocket sync driver** — `Core::start_sync` with live `SyncStatus`,
-  outbox drain, reconnect/backoff, and incremental subscribe.
-- **Flagship e2e** — two `Core`s converge through the relay (live edits,
-  offline catch-up, LWW conflict, routine dedup); the subscribe-own-streams
-  and `Core::shutdown` driver bugs are fixed.
-- **TUI** — command mode (`:q` / `:view` / `:help` / `:preview`), real
-  Stream / Search / Focus views, image preview behind the default-on
-  `images` feature, and insta golden-frame snapshots.
-- **Benchmarks + chaos** — `sunrise-bench` criterion suite (submit,
-  query_today@10k, fts@10k, ws-handshake) with linux-x86_64 baselines
-  populated in `bench/baseline.json`; a chaos harness (seeded
-  drop/corrupt/delay/partition transport) with four scenarios that
-  converge after heal.
+| Crate / Component | Status | Notes |
+|---|---|---|
+| Workspace + CI | ✅ live | Cargo + Bun workspace; `legacy/` archived and excluded |
+| `sunrise-id` | ✅ live | ULID + `EntityRef`, all ten prefixes, client-side generation |
+| `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
+| `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
+| `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
+| `sunrise-crypto-test-vectors` | 🟧 orphan | No consumer. Its single "vector" is an all-zero sentinel and its only test calls one pure function twice |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine are complete. `Block`, `Note`, `Context`, `Person`, `Attachment` are structs with no command path |
+| `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v6) are solid. `BlobStore` has no consumers; 7 tables are never written |
+| `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
+| `sunrise-sync` | 🟨 partial | `WsTransport` and backoff are live. `Outbox`, `Cursor`, `CursorMap`, `SyncStateMachine` are exported dead code with live-looking names — the real implementations are elsewhere |
+| `sunrise-crdt` | 🟧 orphan | **Loro is not in the data path.** Merge is entity-level LWW in SQLite. ADR-0003 is unrealized |
+| `sunrise-log` | 🟧 orphan | No crate calls `sunrise_log::init`, so ADR-0010 and `log-events.md` describe nothing that runs. Two of four documented sinks (`file`, `remote`) do not exist |
+| `sunrise-pairing` | 🟧 orphan | `snow` is a declared dependency that appears only in a doc comment. There is no Noise handshake anywhere in the workspace |
+| `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 3 entities behind 9 op kinds |
+| `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, and metrics are real. Auth, accounts, devices, and blob 2PC are stubs — see below |
+| `sunrise-integrations` | 🟧 orphan | iCal is a subset; GCal is an OAuth-URL builder plus a trait. Neither is reachable |
+| `sunrise-tui` | 🟨 partial | Five views render real Core data and live sync works. **Read-mostly**: uses 2 of 15 Commands — no edit, delete, defer, schedule, move, stream CRUD, or routines |
+| `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
+| `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines in `bench/baseline.json`. Nothing compares against them |
+| `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios |
+| `apps/desktop` | 🟥 broken | See below |
+| `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
+| `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
 
-## Deferred / platform-owner
+## What genuinely works end to end
 
-Deliberately out of scope for the v1 core; owned by platform engineers or
-scheduled for a later phase. None of these block v1.
+The sync path is the strongest thing in the repository, and none of it is faked:
 
-- **Web WASM core** — the PWA stays on the localStorage stub per
-  [ADR-0012](../11-adr/0012-web-wasm-deferred.md) (MSRV blocker on the WASM
-  toolchain). `apps/web/src/wasm.ts` mirrors the Core surface behind a
-  `loadCore()` seam so the WASM build can drop in later.
-- **Desktop Tauri wiring** — `apps/desktop` has the renderer + IPC bridge;
-  the native shell (`bun install && bun run tauri dev`) is platform-owner
-  work. Tauri 2 is excluded from the cargo workspace so the main
-  `cargo build` cycle stays fast.
-- **iOS / Android / UniFFI** — `crates/sunrise-core-bindings` exposes the
-  JSON-FFI surface; UniFFI annotations and xcframework / .aar pipelines are
-  platform-engineer owned.
-- **Apple Focus integration** — not yet wired.
-- **OIDC JWKS verifier** — server ships the verifier *trait*; the JWKS
-  fetch/verify implementation is deferred.
-- **Blob fetch** — server exposes the 2PC stub; the fetch path is deferred.
-- **Merge journal & per-field CRDT** — v1 conflict resolution is
-  entity-level LWW; a merge journal and per-field CRDT are future work.
-- **CI gates** — the >5% bench-regression gate and the `cargo-mutants`
-  mutation-testing gate (`docs/10-cross-cutting/testing.md`) run in the
-  release pipeline, not the v1 core loop. The baseline data and criterion
-  suite that feed the regression gate are already in place.
+- Real `TcpListener` + `axum::serve` running the production router; real WebSocket
+  over real TCP via the production `WsTransport`; real `Hello`/`HelloAck`
+  capability negotiation.
+- Real Ed25519 signing and XChaCha20-Poly1305 sealing under BLAKE3-derived
+  per-stream keys, with signature verification *before* decryption and a
+  trusted-device-cert lookup. Untrusted-device, tampered-envelope, and
+  wrong-key paths all have negative tests.
+- Real SQLCipher vaults, real op log, real persistent outbox.
+- `two_core_relay_convergence` covers live edits, offline catch-up, and an LWW
+  conflict; `routine_materialization_convergence` proves double-materialisation
+  collapses via deterministic occurrence ids. Convergence is asserted under a
+  32-case proptest with reordering and duplication, and under four chaos
+  scenarios (drop, corrupt, delay, partition).
 
-## Workspace test count
+Also solid: the RRULE DST golden vectors (including Lord Howe's 30-minute
+offset), the v1→v6 migration upgrade tests, and the FTS5 hostile-input proptest.
 
-**411** tests pass across the workspace (`cargo test --workspace
---all-targets`, summing the `test result:` lines). The number moves as
-tests are added, so treat it as "400+" rather than an exact contract.
+## Known defects
+
+Tracked so they are not rediscovered as surprises:
+
+- **A crash bricks the vault.** `vault_lock.rs` uses `create_new` with no PID
+  liveness check and releases only on `Drop`, while the release profile sets
+  `panic = "abort"`. The module doc claims `fcntl`/`LockFileEx`; it does not use
+  them.
+- **A skewed clock wins every conflict, permanently.** `lww_wins` trusts raw
+  `env.ts_ms` from the device wall clock, with no HLC and no bound.
+- **Ring eviction is silent data loss.** The client builds real sync cursors and
+  the server discards them, replaying the whole retained ring instead. Past the
+  ring bounds, or across a relay restart, a returning device loses ops with no
+  error. Offline catch-up currently works by accident of ring size.
+- **No in-session op retry.** An unacked op waits for the session to end; the
+  chaos tests script the reconnect the driver should perform itself.
+- **No delete-convergence coverage.** The e2e canonical projection filters
+  `deleted = 0`, so no test proves a delete converges.
+- `Query::Today` accepts a `contexts` filter and silently discards it.
+- Routines are materialised only at `Core::open` — a long-running TUI never
+  generates new occurrences.
+
+## Not reachable by a user
+
+- **Multi-device is impossible.** Every call site hands the Core a literal vault
+  root; the e2e tests pass the *same* `[0x42; 32]` to both replicas. Encryption
+  is real, but key distribution is bypassed entirely and `sunrise-pairing` is
+  never invoked.
+- **`/sync` is unauthenticated.** `ServerState` carries a `TokenVerifier` with
+  zero `.verify(` call sites. Every session resolves to one synthetic account,
+  so a Subscribe from any client is served frames belonging to every other. The
+  relay is dev-only until this is fixed.
+- **Accounts and devices do not persist.** `GET /accounts/me` returns a
+  hardcoded sentinel with `200 OK`; `GET /devices` always returns `[]`.
+- **Blob upload always 404s.** The chunk-upload route the `init` response points
+  at is not mounted; `finalize` verifies hex string lengths and `fetch` returns
+  404 unconditionally.
+- **No middleware.** `tower-http` is declared with `trace, cors, limit` and never
+  imported — no CORS, no request body size limit, no trace layer.
+- **`apps/desktop` does not run.** It now compiles (the manifest inherited from a
+  workspace root that did not apply), but Tauri is not a dependency, there is no
+  `main.rs`, no `tauri.conf.json`, and no `#[tauri::command]` attribute. The
+  renderer calls `query_today`, which does not exist on the Rust side, and the
+  IPC bridge swallows the error — so it renders an empty list forever.
+
+## Deferred by decision
+
+- **Web WASM core** — [ADR-0012](../11-adr/0012-web-wasm-deferred.md); MSRV
+  blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
+- **iOS / Android / UniFFI** — platform-engineer owned.
+- **Apple Focus integration** — not wired.
+- **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level LWW.
+- **CI gates** — the >5% bench-regression gate and `cargo-mutants`
+  (`docs/10-cross-cutting/testing.md`) are not wired. Baselines and the criterion
+  suite that feed the regression gate are in place.
+- **`cargo-fuzz` targets** — `testing.md` specifies six; `fuzz/` does not exist.
+
+## Test suite
+
+`cargo test --workspace --all-targets` passes **411** tests. Read that number
+with two caveats: roughly 50 of them exercise orphan crates that no product path
+reaches, and a handful are tautological (see `docs/10-cross-cutting/testing.md`).
+Treat it as "400+", and prefer the reachability column above as the signal.
 
 ```
-cargo test --workspace --all-targets      # full suite (411 passing)
+cargo test --workspace --all-targets                    # full suite
 cargo clippy --workspace --all-targets -- -D warnings   # clean (pedantic)
-cargo fmt --check                         # clean
+cargo fmt --check                                       # clean
+cargo deny check                                        # clean
+bun run validate                                        # no TS tests exist yet
 ```
 
 ## Boots end-to-end
 
 - `cargo run -p sunrise-server` — REST + `/sync` WebSocket relay on
-  `127.0.0.1:8443` (plain HTTP, in-memory store by default).
+  `127.0.0.1:8443` (plain HTTP, in-memory store by default, **no auth**).
 - `cargo run -p sunrise-tui` — Ratatui terminal client. Reads the vault
   directory from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and unlocks
   with a fixed single-user dev key.
@@ -131,3 +161,7 @@ cargo fmt --check                         # clean
 > Unset, the TUI stays fully offline. The wiring is proven headlessly by
 > `cargo test -p sunrise-tui --test live_sync` and, end to end, by
 > `cargo test -p sunrise-e2e --test two_core_relay_convergence`.
+>
+> Note the TUI only refreshes on a keypress — it does not subscribe to
+> `Core::changes()`, so an inbound synced task appears on your next keystroke
+> rather than on arrival.
