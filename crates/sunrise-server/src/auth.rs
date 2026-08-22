@@ -39,6 +39,17 @@ pub enum AuthError {
 pub trait TokenVerifier: Send + Sync + std::fmt::Debug {
     /// Verify a bearer token; on success, return the subject.
     async fn verify(&self, bearer: &str) -> Result<Subject, AuthError>;
+
+    /// Whether this verifier maps every caller to a single shared identity.
+    ///
+    /// Only [`NullVerifier`] does. The server refuses to bind a non-loopback
+    /// address while one is installed, because doing so publishes one shared
+    /// account namespace to the network. Defaulting to `false` means a new
+    /// verifier is treated as multi-tenant unless it says otherwise — the safe
+    /// direction for a defaulted method.
+    fn is_single_tenant(&self) -> bool {
+        false
+    }
 }
 
 /// Self-host single-tenant verifier — every request maps to the same
@@ -53,6 +64,10 @@ impl TokenVerifier for NullVerifier {
             account_id: "self-host".to_string(),
             email: None,
         })
+    }
+
+    fn is_single_tenant(&self) -> bool {
+        true
     }
 }
 

@@ -61,6 +61,24 @@ impl ServerState {
         }
     }
 
+    /// Whether the installed verifier is the single-tenant self-host one.
+    ///
+    /// Drives the startup refusal in `main` and the operator warning. Asking
+    /// the verifier rather than tracking a separate flag keeps the two from
+    /// drifting apart — the dangerous state is precisely "NullVerifier
+    /// installed", not "some config field says self-host".
+    #[must_use]
+    pub fn is_single_tenant(&self) -> bool {
+        self.token_verifier.is_single_tenant()
+    }
+
+    /// Replace the token verifier (production wiring, and tests).
+    #[must_use]
+    pub fn with_verifier(mut self, verifier: Arc<dyn TokenVerifier>) -> Self {
+        self.token_verifier = verifier;
+        self
+    }
+
     /// Wrap a [`ServerConfig`] with a caller-supplied clock (used by tests).
     #[must_use]
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {

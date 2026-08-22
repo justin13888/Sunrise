@@ -39,12 +39,51 @@ pub fn router() -> Router<ServerState> {
     Router::new().route("/sync", get(handler))
 }
 
-async fn handler(State(state): State<ServerState>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| async move { run_session(socket, state).await })
+async fn handler(
+    State(state): State<ServerState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Authenticate at the *upgrade*, before a single frame is exchanged.
+    // An absent header verifies the empty string: `NullVerifier` (self-host,
+    // single-tenant) accepts it and yields the one synthetic account, while
+    // any real verifier rejects it. So enabling auth is purely a matter of
+    // configuring a verifier — this call site needs no mode flag.
+    let bearer = crate::auth::extract_bearer(&headers).unwrap_or("");
+    let subject = match state.token_verifier.verify(bearer).await {
+        Ok(s) => s,
+        Err(e) => {
+            state.metrics.incr("sunrise_sync_unauthenticated_total");
+            return (
+                StatusCode::UNAUTHORIZED,
+                format!("sync requires a valid bearer token: {e}"),
+            )
+                .into_response();
+        }
+    };
+    // The channel namespace comes from the verified subject, never from the
+    // client. See `account_hash`.
+    let account = account_hash(&subject.account_id);
+    ws.on_upgrade(move |socket| async move { run_session(socket, state, account).await })
+}
+
+/// Channel-namespace hash for a verified account id.
+///
+/// Subscribe frames carry a stream id but **no account**: the account half of
+/// the channel key is derived here from the verified token, so a client cannot
+/// name an account it does not own. That is what makes cross-tenant
+/// subscription impossible rather than merely discouraged — the previous code
+/// hashed a fixed constant, so every session on the server shared one
+/// namespace and any subscriber received every other subscriber's frames.
+fn account_hash(account_id: &str) -> [u8; 16] {
+    let h = blake3::hash(account_id.as_bytes());
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&h.as_bytes()[..16]);
+    out
 }
 
 /// Session lifecycle: negotiate, then enter the sync loop.
-async fn run_session(socket: WebSocket, state: ServerState) {
+async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
     let conn_id = state.relay.next_conn();
     let (mut sink, mut stream) = socket.split();
 
@@ -116,7 +155,7 @@ async fn run_session(socket: WebSocket, state: ServerState) {
     }
 
     // ---- Sync loop ----
-    sync_loop(conn_id, sink, stream, state).await;
+    sync_loop(conn_id, sink, stream, state, account).await;
 }
 
 async fn sync_loop(
@@ -124,22 +163,16 @@ async fn sync_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: ServerState,
+    account: [u8; 16],
 ) {
     use tokio::sync::broadcast::error::RecvError;
 
     // Subscriptions: channels this connection is currently subscribed to.
     let mut subs: Vec<tokio::sync::broadcast::Receiver<RelayFrame>> = Vec::new();
-    // TODO(server): this session is never authenticated. `/sync` upgrades any
-    // socket, and every session resolves to the same synthetic account, so a
-    // Subscribe frame from one client is served frames belonging to any other
-    // — the same cross-tenant subscription leak the v0 API shipped. Before any
-    // multi-tenant deployment: take the bearer at upgrade time, run it through
-    // the `TokenVerifier` on `ServerState`, derive `account` from the verified
-    // `Subject`, and reject Subscribe frames naming an account that subject
-    // does not own. Fanout scoping has to be enforced here; filtering on the
-    // client is not a control.
-    // Default account hash (single-tenant self-host until OIDC wires up).
-    let account = single_tenant_account_hash();
+    // `account` is the channel namespace for this session. It was derived in
+    // `handler` from the *verified* bearer subject and is not influenced by
+    // anything the client sends, so a Subscribe frame can only ever reach
+    // channels this account owns.
 
     loop {
         // Build a select between (a) next inbound WS message and (b)
@@ -345,13 +378,6 @@ fn extract_op_batch(payload: &[u8]) -> Option<OpBatchPayload> {
 
 /// Single-tenant account hash for self-host mode. Production binds this
 /// to the OIDC-validated account-id at handshake.
-fn single_tenant_account_hash() -> [u8; 16] {
-    let h = blake3::hash(b"sunrise.self_host.account.v1");
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h.as_bytes()[..16]);
-    out
-}
-
 /// Fallback handler so the route compiles when ws not present (currently
 /// always present; placeholder for offline-mode builds).
 #[must_use]

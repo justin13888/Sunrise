@@ -47,18 +47,50 @@ pub use state::{Clock, ServerState, SystemClock};
 
 use axum::Router;
 
-// TODO(server): no CORS layer is mounted. Once browser clients (apps/web) call
-// this router directly it needs an exact-match origin allowlist sourced from
-// `ServerConfig`. Do not reflect arbitrary origins back, and never pair a
-// wildcard origin with credentials — v0 shipped `origin: "*", credentials:
-// true`, which leaves the whole API surface reachable from any page.
-
 /// Build the public Axum router with all v1 routes wired.
+///
+/// `tower-http` was a declared dependency with no import anywhere, so the
+/// relay ran with no CORS policy, no request-size limit, and no trace layer.
+/// All three are mounted here now:
+///
+/// - **CORS** is an exact-match allowlist from `ServerConfig::allowed_origins`,
+///   empty by default. Origins are never reflected back, and `*` is rejected at
+///   config validation — a wildcard origin paired with credentials is what made
+///   the v0 API reachable from any page.
+/// - **Body limit** caps request bodies so an unauthenticated POST cannot pin
+///   memory. The relay's own frames ride the WebSocket and are bounded
+///   separately by the wire protocol's frame cap.
+/// - **Trace** gives request spans. It must never log the `?access_token=`
+///   query parameter that browsers use in place of an `Authorization` header.
 #[must_use]
 pub fn build_router(state: ServerState) -> Router {
+    let origins: Vec<axum::http::HeaderValue> = state
+        .config
+        .allowed_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    let cors = if origins.is_empty() {
+        // No browser client is configured: deny every cross-origin request
+        // rather than defaulting to permissive.
+        tower_http::cors::CorsLayer::new()
+    } else {
+        tower_http::cors::CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+            ])
+    };
+    let max_body = state.config.max_body_bytes;
+
     Router::new()
         .nest("/api/v1", routes::api_v1())
         .merge(ws::router())
         .merge(metrics::router())
+        .layer(cors)
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(max_body))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
