@@ -23,6 +23,7 @@ use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use sunrise_storage::{Db, DbError};
 use sunrise_wire_protocol::{CursorEntry, SubscribeEntry};
 use thiserror::Error;
@@ -64,6 +65,10 @@ pub enum CoreError {
     Closed,
 }
 
+/// Default routine-materialization interval, per
+/// `docs/08-features/recurrence-engine.md` §generation-timing.
+pub const ROUTINE_TIMER_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// User-facing handle to the local vault.
 pub struct Core {
     cfg: CoreConfig,
@@ -78,6 +83,9 @@ pub struct Core {
     /// The spawned driver task, if [`Core::start_sync`] has run. Aborted on
     /// `close`/drop so the task never leaks.
     sync_handle: Mutex<Option<JoinHandle<()>>>,
+    /// The periodic routine-materialization task, if
+    /// [`Core::start_routine_timer`] has run. Aborted alongside the driver.
+    routine_handle: Mutex<Option<JoinHandle<()>>>,
     closed: Mutex<bool>,
 }
 
@@ -132,6 +140,7 @@ impl Core {
             sync_tx,
             sync_shared,
             sync_handle: Mutex::new(None),
+            routine_handle: Mutex::new(None),
             closed: Mutex::new(false),
         })
     }
@@ -258,6 +267,11 @@ impl Core {
             h.abort();
             let _ = h.await;
         }
+        let routine = self.routine_handle.lock().take();
+        if let Some(h) = routine {
+            h.abort();
+            let _ = h.await;
+        }
     }
 }
 
@@ -284,6 +298,52 @@ impl Core {
         let shared = self.sync_shared.clone();
         let rng = self.cfg.rng.clone();
         let handle = tokio::spawn(sync_driver::run(weak, shared, factory, rng));
+        *guard = Some(handle);
+        Ok(())
+    }
+
+    /// Start the periodic routine-materialization timer.
+    ///
+    /// `docs/08-features/recurrence-engine.md` §generation-timing requires
+    /// materialization on every app launch **and** on a periodic timer every 6
+    /// hours while running. Only the launch half existed, so a long-running
+    /// client — the TUI, or a desktop app left open over a weekend — would
+    /// never generate occurrences past the horizon it computed at startup.
+    ///
+    /// Idempotent, and safe to skip: a client that never calls this still
+    /// materializes at open. Requires a tokio runtime, which is why it is not
+    /// called from [`Core::open`] — that must stay usable without one.
+    ///
+    /// Materialization is itself idempotent (occurrence ids are derived by
+    /// blake3 from the routine id and occurrence instant), so a tick that
+    /// generates nothing new is free and ticks may safely overlap a sync
+    /// application doing the same work.
+    pub fn start_routine_timer(self: &Arc<Self>, interval: Duration) -> Result<(), CoreError> {
+        let mut guard = self.routine_handle.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        let weak = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // The first tick fires immediately; Core::open already materialized,
+            // so skip it rather than doing the same work twice at startup.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(core) = weak.upgrade() else {
+                    return; // Core dropped; nothing left to do.
+                };
+                if *core.closed.lock() {
+                    return;
+                }
+                let now_ms = core.cfg.clock.now_ms();
+                // Errors are contained: a failed tick must never kill the timer,
+                // or one transient DB lock would silently stop all recurrence
+                // for the rest of the session.
+                let _ = core.submit(Command::MaterializeRoutines { now_ms }).await;
+            }
+        });
         *guard = Some(handle);
         Ok(())
     }
@@ -473,6 +533,104 @@ mod tests {
         let qr = core.query(Query::SyncStatus).await.unwrap();
         assert!(matches!(qr, QueryResult::SyncStatus(_)));
         core.close().await.unwrap();
+    }
+
+    /// `docs/08-features/recurrence-engine.md` requires materialization on a
+    /// periodic timer, not only at launch. Without it a long-running client
+    /// stops generating occurrences once it passes the horizon computed at
+    /// startup — a TUI left open over a weekend simply goes quiet.
+    ///
+    /// Drives it with tokio's paused clock so the test is instant and
+    /// deterministic: the injected `FakeClock` supplies domain time, and
+    /// `tokio::time::advance` fires the timer.
+    #[tokio::test(start_paused = true)]
+    async fn routine_timer_materializes_past_the_launch_horizon() {
+        use sunrise_domain::inbox::inbox_stream_ref;
+        use sunrise_domain::routine::TaskTemplate;
+        use sunrise_domain::rrule::RRule;
+        use sunrise_domain::{RoutineCatchupPolicy, RoutineDraft};
+
+        let dir = tempfile::tempdir().unwrap();
+        let start_ms = 1_700_000_000_000u64;
+        let clock = Arc::new(FakeClock(PLMutex::new(start_ms)));
+        let cfg = CoreConfig {
+            vault_dir: dir.path().to_path_buf(),
+            clock: clock.clone(),
+            rng: Arc::new(SystemRng),
+            app: "0.1.0+test".into(),
+            sync: None,
+        };
+        let core = Arc::new(Core::open(cfg, unlock()).await.unwrap());
+
+        core.submit(Command::CreateRoutine(RoutineDraft {
+            template: TaskTemplate {
+                title: "Water plants".into(),
+                stream_id: inbox_stream_ref(),
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rrule: RRule::parse("FREQ=DAILY").unwrap(),
+            timezone: "UTC".into(),
+            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap()).unwrap(),
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            catchup_policy: RoutineCatchupPolicy::Skip,
+        }))
+        .await
+        .unwrap();
+
+        let count = |core: &Arc<Core>| {
+            let db = core.db.lock();
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM tasks WHERE deleted = 0", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+        };
+        let at_launch = count(&core);
+        assert!(
+            at_launch > 0,
+            "creating a routine must materialize a horizon"
+        );
+
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+
+        // Move domain time well past the launch horizon, then let the timer run.
+        *clock.0.lock() = start_ms + 90 * 24 * 60 * 60 * 1000;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        for _ in 0..50 {
+            if count(&core) > at_launch {
+                break;
+            }
+            tokio::time::advance(Duration::from_secs(61)).await;
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            count(&core) > at_launch,
+            "the periodic timer must extend the horizon; had {at_launch}, still {} after ticks",
+            count(&core)
+        );
+        core.shutdown().await;
+    }
+
+    /// Starting the timer twice must not spawn two tasks.
+    #[tokio::test(start_paused = true)]
+    async fn routine_timer_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(Core::open(cfg(dir.path()), unlock()).await.unwrap());
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+        assert!(core.routine_handle.lock().is_some());
+        core.shutdown().await;
+        assert!(
+            core.routine_handle.lock().is_none(),
+            "shutdown must reap the timer task, not leak it"
+        );
     }
 
     #[tokio::test]
