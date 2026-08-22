@@ -139,6 +139,9 @@ fn render_chrome(
     if let Some(feed) = state.activity.as_ref() {
         render_activity(f, area, feed, &state.tz);
     }
+    if state.show_views {
+        render_saved_views(f, area, &state.saved_views);
+    }
     if let Some(stats) = state.focus.stats.as_ref() {
         render_focus_stats(f, area, state, stats);
     }
@@ -542,7 +545,9 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     let query_line = if state.mode == Mode::Insert && state.prompt == Some(crate::Prompt::Search) {
         Line::from(input_spans(state, "/ "))
     } else {
-        Line::from(format!("/ {}", state.input))
+        // The committed query, not the shared prompt buffer — which by now may
+        // be holding a `:` line typed on top of it.
+        Line::from(format!("/ {}", state.search_query))
     };
     let query = Paragraph::new(query_line)
         .block(Block::default().borders(Borders::ALL).title("Search"))
@@ -1497,6 +1502,44 @@ fn render_devices(f: &mut Frame<'_>, area: Rect, devices: &[sunrise_core::querie
     );
 }
 
+/// The `:views` overlay: the saved views and what each one is.
+///
+/// `docs/07-clients/parity-matrix.md` marks saved searches MUST on every
+/// client. A list the user cannot see is not a saved search, so the overlay
+/// spells out what each name restores rather than just naming it.
+fn render_saved_views(f: &mut Frame<'_>, area: Rect, views: &[crate::SavedView]) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if views.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no saved views — :save <name> stores this view, query and filter",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    for v in views {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<14}", truncate(&v.name, 14)),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(v.describe()),
+        ]));
+    }
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let rect = centered(area, 64, height.max(3));
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Saved views — :go <name> recalls")
+                .border_style(Style::default().fg(Color::Blue)),
+        ),
+        rect,
+    );
+}
+
 /// The `L` overlay: one entity's activity feed, newest first.
 ///
 /// `docs/08-features/reviews-and-stats.md` §Activity timeline — "user-visible
@@ -1973,7 +2016,7 @@ fn empty_hint(state: &ViewState) -> (&'static str, &'static str) {
             "c captures · 2 inbox · 5 planner · ? keys",
         ),
         View::Inbox => ("Inbox is clear", "c captures — it lands here · t triages"),
-        View::Search if state.input.is_empty() => {
+        View::Search if state.search_query.is_empty() => {
             ("Search the vault", "type a query, Enter to run it")
         }
         View::Search => ("No matches", "/ searches again · titles and note bodies"),
@@ -2228,7 +2271,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         let mut state = ViewState::default();
         state.view = View::Search;
-        state.input = "test".into();
+        state.search_query = "test".into();
         term.draw(|f| draw_frame(f, &state)).unwrap();
         let buf = term.backend().buffer();
         let s = buffer_text(buf);
@@ -2404,7 +2447,7 @@ mod tests {
     fn snapshot_search_results() {
         let mut state = ViewState::default();
         state.view = View::Search;
-        state.input = "task".into();
+        state.search_query = "task".into();
         state.tasks = vec![fixtures::fake_task(1), fixtures::fake_task(2)];
         state.after_tasks_loaded();
         insta::assert_snapshot!(frame_to_string(60, 14, &state));

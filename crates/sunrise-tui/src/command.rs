@@ -33,6 +33,14 @@ pub enum Cmd {
     /// Narrow every task list to these contexts (`:filter @home`); an empty
     /// list clears the filter.
     Filter(Vec<String>),
+    /// Save the current view, query and filter under a name (`:save <name>`).
+    SaveView(String),
+    /// Recall a saved view (`:go <name>`).
+    GoView(String),
+    /// List the saved views (`:views`).
+    ListViews,
+    /// Forget a saved view (`:unsave <name>`).
+    ForgetView(String),
     /// Write a stats dataset to a file (`:export <dataset> [json|csv] [path]`).
     Export {
         /// Which dataset.
@@ -85,6 +93,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (":focus length <p|e|u>", "pomodoro / estimate / until done"),
     (":export <dataset>", "trends|activity|focus|streaks"),
     (":filter @ctx…", "narrow lists to contexts (bare clears)"),
+    (":save <name>", "save this view, query and filter"),
+    (":go <name>", "recall a saved view"),
+    (":views", "list the saved views"),
+    (":unsave <name>", "forget a saved view"),
     (":devices", "list paired devices"),
     (":preview <path>", "show an image (Focus view)"),
     (":help", "this list"),
@@ -212,6 +224,19 @@ pub fn parse_command(input: &str) -> Cmd {
             },
         },
         "devices" | "device" => Cmd::Devices,
+        "save" | "sv" => match rest.split_whitespace().next() {
+            None => Cmd::Error("usage: :save <name>".into()),
+            Some(name) => Cmd::SaveView(name.to_string()),
+        },
+        "go" | "g" => match rest.split_whitespace().next() {
+            None => Cmd::Error("usage: :go <saved view>".into()),
+            Some(name) => Cmd::GoView(name.to_string()),
+        },
+        "views" => Cmd::ListViews,
+        "unsave" => match rest.split_whitespace().next() {
+            None => Cmd::Error("usage: :unsave <name>".into()),
+            Some(name) => Cmd::ForgetView(name.to_string()),
+        },
         // Names are resolved by the caller, which holds the context rows.
         "filter" | "f" => Cmd::Filter(
             rest.split_whitespace()

@@ -858,8 +858,18 @@ pub struct ViewState {
     pub focused_task: Option<Task>,
     /// View to return to when Focus is closed with Esc.
     pub prev_view: Option<View>,
-    /// Active text input (capture buffer / search query), with its caret.
+    /// Active text input (capture buffer, `:` line, prompt), with its caret.
+    ///
+    /// One buffer for every prompt, which is why the committed search query
+    /// is **not** kept here — see [`Self::search_query`].
     pub input: InputLine,
+    /// The search the Search view is showing results for.
+    ///
+    /// Held separately from [`Self::input`] because every prompt shares that
+    /// buffer: pressing `:` while in the Search view used to blank it, and the
+    /// next refresh would then search for the empty string and throw the
+    /// results away. The query has to outlive the prompt that typed it.
+    pub search_query: String,
     /// One-line status / error displayed at the bottom of every view.
     pub status: String,
     /// Live-sync indicator shown on the right of the status line. `None` hides
@@ -884,6 +894,11 @@ pub struct ViewState {
     pub devices: Option<Vec<DeviceRow>>,
     /// One entity's activity feed (`L`), newest first. `None` hides it.
     pub activity: Option<ActivityFeed>,
+    /// Saved views, loaded once at startup from `~/.config/sunrise/views.toml`
+    /// and rewritten whenever the set changes.
+    pub saved_views: Vec<crate::views::SavedView>,
+    /// Whether the `:views` overlay is showing.
+    pub show_views: bool,
     /// Latch for the `gg` chord: set by the first `g`, cleared by anything else.
     pub pending_g: bool,
     /// Visual-mode anchor: the row `V` was pressed on. The selection is the
@@ -958,6 +973,7 @@ impl Default for ViewState {
             focused_task: None,
             prev_view: None,
             input: InputLine::new(),
+            search_query: String::new(),
             status: String::new(),
             sync: None,
             routines: Vec::new(),
@@ -968,6 +984,8 @@ impl Default for ViewState {
             help_scroll: 0,
             devices: None,
             activity: None,
+            saved_views: Vec::new(),
+            show_views: false,
             pending_g: false,
             visual_anchor: None,
             marked: Vec::new(),
@@ -1673,6 +1691,63 @@ impl ViewState {
             self.undo.remove(0);
         }
         self.undo.push(entry);
+    }
+
+    /// The current view, query and filter, as a saved view called `name`.
+    ///
+    /// Contexts are captured by **name** rather than by id — see
+    /// [`crate::views`]: an `EntityRef` is vault-local, so an id saved on one
+    /// machine points at nothing on a paired one, and the filter would
+    /// silently resolve to an empty set.
+    #[must_use]
+    pub fn as_saved_view(&self, name: &str) -> crate::views::SavedView {
+        crate::views::SavedView {
+            name: name.to_string(),
+            view: self.view,
+            query: if self.view == View::Search {
+                self.search_query.clone()
+            } else {
+                String::new()
+            },
+            contexts: self
+                .context_filter
+                .iter()
+                .filter_map(|id| self.contexts.iter().find(|c| c.id == *id))
+                .map(|c| c.name.clone())
+                .collect(),
+        }
+    }
+
+    /// Adopt a saved view: switch, restore the query, resolve the filter.
+    ///
+    /// Returns the context names that no longer exist. They are *not* applied
+    /// — a filter resolved to nothing renders a view identical to an empty
+    /// vault — and the caller reports them.
+    pub fn adopt_saved_view(&mut self, saved: &crate::views::SavedView) -> Vec<String> {
+        self.switch_view(saved.view);
+        self.mode = Mode::Normal;
+        self.prompt = None;
+        self.input.clear();
+        if saved.view == View::Search {
+            self.search_query.clone_from(&saved.query);
+        }
+        let mut missing = Vec::new();
+        let mut ids = Vec::new();
+        for name in &saved.contexts {
+            let lower = name.to_lowercase();
+            match self
+                .contexts
+                .iter()
+                .find(|c| c.name.to_lowercase() == lower)
+            {
+                Some(c) => ids.push(c.id),
+                None => missing.push(name.clone()),
+            }
+        }
+        if missing.is_empty() {
+            self.context_filter = ids;
+        }
+        missing
     }
 
     /// Show the activity-feed overlay for `title`.

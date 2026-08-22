@@ -91,6 +91,8 @@ pub enum Outcome {
     },
     /// Run `Query::FocusStats` and show the folded result (`:focus stats`).
     ShowFocusStats,
+    /// Write the saved views back to `~/.config/sunrise/views.toml`.
+    PersistViews,
     /// Render a stats dataset and write it to `path` (`:export`).
     Export {
         /// Which dataset.
@@ -183,6 +185,14 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             return Outcome::None;
         }
         state.activity = None;
+        state.status.clear();
+        if matches!(action, Action::Escape | Action::Quit) {
+            return Outcome::None;
+        }
+    }
+    // The `:views` overlay is informational too.
+    if state.show_views {
+        state.show_views = false;
         state.status.clear();
         if matches!(action, Action::Escape | Action::Quit) {
             return Outcome::None;
@@ -574,9 +584,10 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::BeginSearch => {
-            state.view = View::Search;
+            state.switch_view(View::Search);
             state.mode = Mode::Insert;
             state.prompt = Some(Prompt::Search);
+            state.search_query.clear();
             state.input.clear();
             state.status = "search: type query, Enter to commit, Esc to cancel".into();
             Outcome::None
@@ -598,6 +609,10 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 Prompt::Capture
             });
             state.input.clear();
+            if state.view == View::Search {
+                // Resume the committed query rather than starting over.
+                state.input.set(state.search_query.clone());
+            }
             Outcome::None
         }
         Action::Escape => {
@@ -1193,8 +1208,11 @@ fn pause_routine(state: &mut ViewState) -> Outcome {
 /// and a search you have to commit before seeing anything is a search you
 /// cannot refine. Every other prompt is committed with Enter, so typing into
 /// one costs nothing but a repaint.
-fn after_edit(state: &ViewState) -> Outcome {
+fn after_edit(state: &mut ViewState) -> Outcome {
     if state.prompt == Some(Prompt::Search) {
+        // Mirrored out of the shared prompt buffer so the query survives the
+        // next `:` line, which reuses it.
+        state.search_query = state.input.text().to_string();
         return Outcome::Refresh;
     }
     Outcome::None
@@ -1580,6 +1598,8 @@ fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
         Some(AppEffect::Open(id)) => Outcome::OpenTask(id),
         Some(AppEffect::Devices) => Outcome::ShowDevices,
         Some(AppEffect::FocusStats) => Outcome::ShowFocusStats,
+        Some(AppEffect::PersistViews) => Outcome::PersistViews,
+        Some(AppEffect::Refresh) => Outcome::Refresh,
         Some(AppEffect::Export {
             dataset,
             format,
@@ -1852,8 +1872,7 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
             annotate_outcome(state, &ids, &text, now_ms)
         }
         Some(Prompt::Search) => {
-            // Keep `input` — it is both the live query and the text shown in
-            // the search bar. Only the mode returns to Normal.
+            state.search_query = state.input.text().to_string();
             state.mode = Mode::Normal;
             state.status.clear();
             Outcome::Refresh
@@ -2717,6 +2736,122 @@ manual"
         s.view = View::Inbox;
         let _ = apply_action(Action::Click(Hit::TaskRow(0)), &mut s, NOW_MS);
         assert_eq!(s.selected, None);
+    }
+
+    #[test]
+    fn opening_the_command_line_does_not_wipe_the_search() {
+        // Every prompt shares one input buffer, so `:` used to blank the
+        // search bar and the next refresh would search for the empty string
+        // and throw the results away.
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('/'));
+        type_text(&mut s, "passport");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert_eq!(s.search_query, "passport");
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "devices");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert_eq!(s.search_query, "passport", "the query outlived the prompt");
+    }
+
+    #[test]
+    fn i_resumes_the_committed_query_rather_than_starting_over() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('/'));
+        type_text(&mut s, "passport");
+        let _ = press(&mut s, KeyCode::Enter);
+        let _ = press(&mut s, KeyCode::Char('i'));
+        assert_eq!(s.input, "passport");
+    }
+
+    #[test]
+    fn a_view_can_be_saved_and_recalled_by_name() {
+        let mut s = inbox_state();
+        s.contexts = vec![context_row(1, "errands")];
+        s.view = View::Search;
+        s.search_query = "passport".into();
+        s.context_filter = vec![s.contexts[0].id];
+
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "save trip");
+        assert!(matches!(
+            press(&mut s, KeyCode::Enter),
+            Outcome::PersistViews
+        ));
+        assert_eq!(s.saved_views.len(), 1);
+        assert_eq!(s.saved_views[0].contexts, vec!["errands".to_string()]);
+
+        // Wander off, then come back.
+        s.view = View::Today;
+        s.context_filter.clear();
+        s.search_query.clear();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "go trip");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::Refresh));
+        assert_eq!(s.view, View::Search);
+        assert_eq!(s.search_query, "passport");
+        assert_eq!(s.context_filter, vec![s.contexts[0].id]);
+    }
+
+    #[test]
+    fn saving_the_same_name_twice_replaces_rather_than_duplicates() {
+        let mut s = inbox_state();
+        for view in [View::Today, View::Inbox] {
+            s.view = view;
+            let _ = press(&mut s, KeyCode::Char(':'));
+            type_text(&mut s, "save here");
+            let _ = press(&mut s, KeyCode::Enter);
+        }
+        assert_eq!(s.saved_views.len(), 1);
+        assert_eq!(s.saved_views[0].view, View::Inbox);
+    }
+
+    #[test]
+    fn a_saved_view_whose_context_is_gone_does_not_filter_to_nothing() {
+        // Applying a filter that resolves to an empty set renders a view
+        // indistinguishable from an empty vault.
+        let mut s = inbox_state();
+        s.saved_views = vec![crate::SavedView {
+            name: "trip".into(),
+            view: View::Today,
+            query: String::new(),
+            contexts: vec!["errands".into()],
+        }];
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "go trip");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.context_filter.is_empty());
+        assert!(s.status.contains("no longer exist"), "{}", s.status);
+    }
+
+    #[test]
+    fn recalling_something_that_was_never_saved_says_so() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "go nope");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.status.contains(":views lists them"), "{}", s.status);
+        assert_eq!(s.view, View::Inbox, "and it did not move anywhere");
+    }
+
+    #[test]
+    fn unsave_forgets_one_and_persists_the_rest() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "save here");
+        let _ = press(&mut s, KeyCode::Enter);
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "unsave here");
+        assert!(matches!(
+            press(&mut s, KeyCode::Enter),
+            Outcome::PersistViews
+        ));
+        assert!(s.saved_views.is_empty());
+        // …and forgetting one that is not there changes nothing.
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "unsave here");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.status.contains("no saved view"), "{}", s.status);
     }
 
     #[test]

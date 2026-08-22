@@ -249,6 +249,20 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
         );
     }
     state.keymap = map;
+    // Saved views (`docs/07-clients/parity-matrix.md`: MUST). Loaded once;
+    // rewritten whenever `:save` or `:unsave` changes the set. A malformed
+    // line costs that view and nothing else, exactly as for `keys.toml`.
+    let (saved, view_warnings) =
+        sunrise_tui::views::load(sunrise_tui::views::config_path().as_deref());
+    if !view_warnings.is_empty() {
+        tracing::warn!(
+            ev = "ui.keymap.invalid",
+            n_ops = view_warnings.len() as u64,
+            result = "skipped",
+            "views.toml entries ignored"
+        );
+    }
+    state.saved_views = saved;
     // Image-preview state (`:preview <path>`). Owned here because Picker and
     // the protocol state are not Clone; render fns borrow them per frame.
     // init_picker queries the terminal, so this runs after entering the
@@ -516,6 +530,20 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 path,
             } => {
                 state.status = export_stats(core, dataset, format, path).await;
+            }
+            Outcome::PersistViews => {
+                if let Some(path) = sunrise_tui::views::config_path() {
+                    let body = sunrise_tui::views::to_file(&state.saved_views);
+                    // A failure to persist must not lose the *in-memory* set:
+                    // the views still work for this session, and the status
+                    // line says why they will not survive it.
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    if let Err(e) = std::fs::write(&path, body) {
+                        state.status = format!("could not write {}: {e}", path.display());
+                    }
+                }
             }
             Outcome::ShowFocusStats => {
                 let q = Query::FocusStats {
@@ -830,7 +858,7 @@ async fn refresh(core: &Core, state: &mut ViewState) {
         },
         View::Search => {
             let q = Query::Search {
-                text: state.input.text().to_string(),
+                text: state.search_query.clone(),
                 limit: 100,
             };
             load_tasks(core, state, q).await;

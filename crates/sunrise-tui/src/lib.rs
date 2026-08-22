@@ -68,6 +68,7 @@ pub mod render;
 pub mod runtime;
 pub mod undo;
 pub mod view;
+pub mod views;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd, FocusCmd, COMMANDS};
@@ -91,6 +92,7 @@ pub use view::{
     Prompt, ReviewPane, ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker,
     SyncIndicator, View, ViewState,
 };
+pub use views::SavedView;
 
 /// One-line reminder of where the command reference lives. The reference
 /// itself is a table ([`command::COMMANDS`]) rendered into the `?` overlay: it
@@ -122,6 +124,11 @@ pub enum AppEffect {
     /// Run `Query::FocusStats` and show the folded totals + calibration
     /// factor (`:focus stats`).
     FocusStats,
+    /// Write `~/.config/sunrise/views.toml` back out after the saved-view set
+    /// changed.
+    PersistViews,
+    /// Re-run the active view's query (a saved view was adopted).
+    Refresh,
     /// Render a stats dataset and write it to disk (`:export`).
     Export {
         /// Which dataset.
@@ -172,6 +179,54 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
         Cmd::Filter(names) => {
             apply_filter(&names, state);
             None
+        }
+        Cmd::SaveView(name) => {
+            let saved = state.as_saved_view(&name);
+            state.saved_views.retain(|v| v.name != name);
+            state.saved_views.push(saved);
+            state.saved_views.sort_by(|a, b| a.name.cmp(&b.name));
+            state.status = format!("saved view \"{name}\" — :go {name} recalls it");
+            Some(AppEffect::PersistViews)
+        }
+        Cmd::GoView(name) => {
+            let Some(saved) = state.saved_views.iter().find(|v| v.name == name).cloned() else {
+                state.status = format!("no saved view \"{name}\" — :views lists them");
+                return None;
+            };
+            let missing = state.adopt_saved_view(&saved);
+            state.status = if missing.is_empty() {
+                format!("{name}: {}", saved.describe())
+            } else {
+                // Applying a filter that resolves to nothing would render a
+                // view indistinguishable from an empty vault.
+                format!(
+                    "{name}: context(s) {} no longer exist — filter not applied",
+                    missing.join(", ")
+                )
+            };
+            Some(AppEffect::Refresh)
+        }
+        Cmd::ListViews => {
+            state.show_views = true;
+            state.status = if state.saved_views.is_empty() {
+                ":save <name> stores the current view — any key closes".into()
+            } else {
+                format!(
+                    "{} saved view(s) — :go <name> recalls, any key closes",
+                    state.saved_views.len()
+                )
+            };
+            None
+        }
+        Cmd::ForgetView(name) => {
+            let before = state.saved_views.len();
+            state.saved_views.retain(|v| v.name != name);
+            if state.saved_views.len() == before {
+                state.status = format!("no saved view \"{name}\"");
+                return None;
+            }
+            state.status = format!("forgot \"{name}\"");
+            Some(AppEffect::PersistViews)
         }
         Cmd::Export {
             dataset,
