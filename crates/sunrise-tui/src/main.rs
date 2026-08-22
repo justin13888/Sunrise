@@ -54,6 +54,11 @@ const DEV_ROOT: [u8; 32] = [7u8; 32];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(sub) = args.first() {
+        return cli::run(sub, &args[1..]).await;
+    }
+
     let vault_dir = vault_dir();
     std::fs::create_dir_all(&vault_dir).ok();
 
@@ -340,5 +345,156 @@ async fn load_tasks(core: &Core, state: &mut ViewState, q: Query) {
     if let Ok(QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = core.query(q).await {
         state.tasks = tasks;
         state.after_tasks_loaded();
+    }
+}
+
+/// Non-interactive subcommands.
+///
+/// `docs/08-features/inbox-and-capture.md` lists a TUI subcommand as a
+/// first-class capture surface ("one-shot commit"), and
+/// `docs/07-clients/parity-matrix.md` marks an OS automation surface as MUST
+/// for the TUI. These also make the vault scriptable and testable without a
+/// terminal, which the interactive loop is not.
+///
+/// Deliberately hand-rolled rather than pulling in an arg parser: the surface
+/// is a handful of positional subcommands, and the crate currently has no
+/// dependency that is not already earning its place.
+mod cli {
+    use super::{vault_dir, DEV_ROOT};
+    use sunrise_core::{Command, Core, Query, QueryResult};
+    use sunrise_tui::livesync;
+
+    const USAGE: &str = "\
+sunrise-tui — terminal client for Sunrise
+
+USAGE:
+    sunrise-tui                      launch the interactive TUI
+    sunrise-tui capture <text>...    parse and commit one task, then exit
+    sunrise-tui today                list today's tasks
+    sunrise-tui inbox                list inbox tasks
+    sunrise-tui streams              list streams with open counts
+    sunrise-tui search <query>...    full-text search
+    sunrise-tui help                 show this message
+
+CAPTURE SYNTAX:
+    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
+
+    sunrise-tui capture 'Renew passport #travel ^next saturday !1 ~1h'
+
+ENVIRONMENT:
+    SUNRISE_VAULT   vault directory (default ~/.sunrise/vault)
+";
+
+    /// Dispatch a subcommand. Returns `Ok` on success; the process exit code
+    /// is non-zero only on a real failure, so scripts can branch on it.
+    pub(crate) async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        // A CLI's whole job is writing to stdout; the workspace-wide ban on
+        // print_stdout exists to keep it out of *library* code.
+        #![allow(clippy::print_stdout)]
+        match sub {
+            "help" | "--help" | "-h" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            "--version" | "-V" => {
+                println!("sunrise-tui {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let dir = vault_dir();
+        std::fs::create_dir_all(&dir).ok();
+        // Subcommands are one-shot and offline: opening a sync driver for a
+        // command that exits milliseconds later would just churn the relay.
+        let (core, _log) = livesync::open_with_plan(
+            dir,
+            env!("CARGO_PKG_VERSION"),
+            DEV_ROOT,
+            &livesync::SyncPlan::default(),
+        )
+        .await?;
+
+        let result = dispatch(&core, sub, rest).await;
+        core.shutdown().await;
+        result
+    }
+
+    async fn dispatch(
+        core: &Core,
+        sub: &str,
+        rest: &[String],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        match sub {
+            "capture" => {
+                let text = rest.join(" ");
+                if text.trim().is_empty() {
+                    return Err("capture needs some text; see `sunrise-tui help`".into());
+                }
+                // System zone, so `^tomorrow 9am` means the user's 9am.
+                let tz = jiff::tz::TimeZone::system();
+                let parsed = core.capture(&text, &tz).await?;
+                for u in &parsed.unresolved {
+                    // Warnings go to stderr so stdout stays parseable.
+                    eprintln!("note: {u:?}");
+                }
+                let title = parsed.draft.title.clone();
+                let res = core.submit(Command::CreateTask(parsed.draft)).await?;
+                println!("{}  {title}", res.entity.to_str());
+                Ok(())
+            }
+            "today" => {
+                let q = Query::Today {
+                    now_ms: core.now_ms(),
+                    contexts: vec![],
+                };
+                print_tasks(core.query(q).await?);
+                Ok(())
+            }
+            "inbox" => {
+                print_tasks(core.query(Query::Inbox).await?);
+                Ok(())
+            }
+            "streams" => {
+                if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
+                    for s in rows {
+                        println!(
+                            "{}  {:<24} {} open",
+                            s.id.to_str(),
+                            s.name,
+                            s.open_task_count
+                        );
+                    }
+                }
+                Ok(())
+            }
+            "search" => {
+                let text = rest.join(" ");
+                if text.trim().is_empty() {
+                    return Err("search needs a query".into());
+                }
+                let q = Query::Search { text, limit: 100 };
+                print_tasks(core.query(q).await?);
+                Ok(())
+            }
+            other => Err(format!("unknown subcommand {other:?}; try `sunrise-tui help`").into()),
+        }
+    }
+
+    fn print_tasks(r: QueryResult) {
+        #![allow(clippy::print_stdout)]
+        let tasks = match r {
+            QueryResult::Tasks(t) | QueryResult::StreamTasks(t) => t,
+            _ => return,
+        };
+        for t in tasks {
+            let mark = if t.state == sunrise_domain::TaskState::Done {
+                "x"
+            } else {
+                " "
+            };
+            println!("[{mark}] {}  {}", t.id.to_str(), t.title);
+        }
     }
 }
