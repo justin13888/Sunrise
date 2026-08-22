@@ -7,6 +7,7 @@
 
 use crate::view::View;
 use std::path::PathBuf;
+use sunrise_id::{EntityKind, EntityRef};
 
 /// A parsed command-line command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,13 @@ pub enum Cmd {
     /// parsed; without the `images` cargo feature the runtime reports that
     /// the feature is disabled.
     Preview(PathBuf),
+    /// One-shot capture (`:capture Buy milk #errands !2`). The text goes
+    /// through the same parser the `c` prompt uses.
+    Capture(String),
+    /// Jump to a task by id (`:open tsk_…`), opening it in the Focus view.
+    Open(EntityRef),
+    /// List the paired devices (`:devices`).
+    Devices,
     /// Unrecognized or malformed command; carries a status-line message.
     Error(String),
 }
@@ -58,6 +66,21 @@ pub fn parse_command(input: &str) -> Cmd {
                 Cmd::Preview(PathBuf::from(rest))
             }
         }
+        "capture" | "c" => {
+            if rest.is_empty() {
+                Cmd::Error("usage: :capture <text>".into())
+            } else {
+                Cmd::Capture(rest.to_string())
+            }
+        }
+        "open" => match rest.split_whitespace().next() {
+            None => Cmd::Error("usage: :open <tsk_…>".into()),
+            Some(arg) => match EntityRef::parse(arg, EntityKind::Task) {
+                Ok(id) => Cmd::Open(id),
+                Err(e) => Cmd::Error(format!("not a task id: {arg} ({e})")),
+            },
+        },
+        "devices" | "device" => Cmd::Devices,
         other => Cmd::Error(format!("unknown command: {other}")),
     }
 }
@@ -154,6 +177,46 @@ mod tests {
             other => panic!("expected error, got {other:?}"),
         }
         assert!(matches!(parse_command(":preview   "), Cmd::Error(_)));
+    }
+
+    #[test]
+    fn capture_takes_the_rest_of_the_line() {
+        assert_eq!(
+            parse_command(":capture Buy milk #errands !2"),
+            Cmd::Capture("Buy milk #errands !2".into())
+        );
+        // Interior spacing is preserved; the parser owns the tokenizing.
+        assert_eq!(
+            parse_command(":capture  Renew   passport "),
+            Cmd::Capture("Renew   passport".into())
+        );
+        match parse_command(":capture") {
+            Cmd::Error(msg) => assert!(msg.contains("usage")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_parses_a_task_id() {
+        let id = EntityRef::new(EntityKind::Task, [3u8; 16]);
+        assert_eq!(
+            parse_command(&format!(":open {}", id.to_str())),
+            Cmd::Open(id)
+        );
+        // A stream id is rejected rather than silently opened as a task.
+        let stream = EntityRef::new(EntityKind::Stream, [3u8; 16]);
+        assert!(matches!(
+            parse_command(&format!(":open {}", stream.to_str())),
+            Cmd::Error(_)
+        ));
+        assert!(matches!(parse_command(":open"), Cmd::Error(_)));
+        assert!(matches!(parse_command(":open garbage"), Cmd::Error(_)));
+    }
+
+    #[test]
+    fn devices_aliases() {
+        assert_eq!(parse_command(":devices"), Cmd::Devices);
+        assert_eq!(parse_command(":device"), Cmd::Devices);
     }
 
     #[test]

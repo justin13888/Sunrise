@@ -7,6 +7,12 @@
 //!   keymap and the `?` help overlay derived from one binding table.
 //! - A pure Action → `sunrise_core::Command` reducer ([`runtime::apply_action`])
 //!   so every keybinding is unit-testable without a terminal or a `Core`.
+//! - Capture through the shared domain parser, with a live inline preview
+//!   ([`capture`]) — `#stream @context ^when !priority ~duration`.
+//! - Visual (multi-select) and Inbox triage modes, both driven by the same
+//!   reducer, so bulk operations are one testable command list.
+//! - User key remapping from `~/.config/sunrise/keys.toml` ([`keymap::Keymap`]).
+//! - Note-body editing in `$EDITOR` ([`editor`]).
 //! - Snapshot-testable Ratatui renderers for every primary view, behind an
 //!   80x24 minimum-size guard.
 //!
@@ -33,7 +39,9 @@
     clippy::too_many_lines
 )]
 
+pub mod capture;
 pub mod command;
+pub mod editor;
 #[cfg(feature = "images")]
 pub mod images;
 pub mod keymap;
@@ -42,8 +50,12 @@ pub mod render;
 pub mod runtime;
 pub mod view;
 
+pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd};
-pub use keymap::{dispatch, help_sections, Action, Binding, Mode, Scope, BINDINGS};
+pub use editor::{edit_bytes, resolve_editor, EditorExit};
+pub use keymap::{
+    dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
+};
 pub use render::{
     fits, render, render_focus, render_inbox, render_routines, render_search, render_stream,
     render_today, MIN_HEIGHT, MIN_WIDTH,
@@ -56,7 +68,7 @@ pub use view::{
 
 /// Help text listing the command-line commands, shown in the status line by
 /// `:help`. Kept short enough to fit a typical status line.
-pub const HELP_TEXT: &str = ":q quit  :view <name|1-6>  :preview <path>  ? = all keys";
+pub const HELP_TEXT: &str = ":q  :view <v>  :capture <text>  :open <id>  :devices  :preview <p>";
 
 /// A side effect the runtime (`main`) must perform after a command is applied.
 ///
@@ -69,6 +81,16 @@ pub enum AppEffect {
     /// Load an image file into the Focus-view preview pane (`:preview`).
     /// Only emitted when the `images` cargo feature is enabled.
     Preview(std::path::PathBuf),
+    /// Parse and commit one capture line (`:capture <text>`). The reducer runs
+    /// it through the same parser as the `c` prompt and turns it into a
+    /// `Command::CreateTask`.
+    Capture(String),
+    /// Jump to a task by id (`:open <tsk_…>`); the runtime resolves it with
+    /// `Query::EntityById` and opens the Focus view on it.
+    Open(sunrise_id::EntityRef),
+    /// List the paired devices (`:devices`); the runtime runs
+    /// `Query::DeviceList` and hands the rows to [`ViewState::show_devices`].
+    Devices,
 }
 
 /// Apply a parsed [`Cmd`] to `state`, returning an [`AppEffect`] the runtime
@@ -100,6 +122,9 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
                 None
             }
         }
+        Cmd::Capture(text) => Some(AppEffect::Capture(text)),
+        Cmd::Open(id) => Some(AppEffect::Open(id)),
+        Cmd::Devices => Some(AppEffect::Devices),
         Cmd::Error(msg) => {
             state.status = format!("error: {msg}");
             None

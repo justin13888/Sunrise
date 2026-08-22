@@ -1,7 +1,7 @@
 //! Pure render functions for each view. Each takes a Ratatui `Frame` and
 //! the data it needs, and writes widgets. No I/O.
 
-use crate::keymap::{help_sections, Mode};
+use crate::keymap::{Keymap, Mode};
 use crate::view::{RoutineRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -54,36 +54,59 @@ fn render_chrome(
     state: &ViewState,
     #[cfg(feature = "images")] preview: Option<&mut crate::images::Preview>,
 ) {
+    // The capture preview claims one row directly above the status line, and
+    // only while the capture prompt is open — every other frame keeps the
+    // original three-row layout.
+    let preview_rows = u16::from(state.capture_preview.is_some());
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // tab bar
-            Constraint::Min(1),    // body
-            Constraint::Length(1), // status line
+            Constraint::Length(1),            // tab bar
+            Constraint::Min(1),               // body
+            Constraint::Length(preview_rows), // capture preview
+            Constraint::Length(1),            // status line
         ])
         .split(area);
     render_tab_bar(f, chunks[0], state);
-    match state.view {
-        View::Today => render_today(f, chunks[1], &state.tasks, state.selected),
-        View::Inbox => render_inbox(f, chunks[1], &state.tasks, state.selected),
-        View::Stream => render_stream(f, chunks[1], state),
-        View::Search => render_search(f, chunks[1], state),
-        View::Focus => {
-            #[cfg(feature = "images")]
-            render_focus(f, chunks[1], state, preview);
-            #[cfg(not(feature = "images"))]
-            render_focus(f, chunks[1], state);
+    if state.triage {
+        render_triage(f, chunks[1], state);
+    } else {
+        match state.view {
+            View::Today => render_today(f, chunks[1], state),
+            View::Inbox => render_inbox(f, chunks[1], state),
+            View::Stream => render_stream(f, chunks[1], state),
+            View::Search => render_search(f, chunks[1], state),
+            View::Focus => {
+                #[cfg(feature = "images")]
+                render_focus(f, chunks[1], state, preview);
+                #[cfg(not(feature = "images"))]
+                render_focus(f, chunks[1], state);
+            }
+            View::Routines => {
+                render_routines(f, chunks[1], &state.routines, state.selected_routine)
+            }
         }
-        View::Routines => render_routines(f, chunks[1], &state.routines, state.selected_routine),
     }
-    render_status(f, chunks[2], state);
+    if let Some(text) = state.capture_preview.as_ref() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" ⟶ {text}"),
+                Style::default().fg(Color::Cyan),
+            ))),
+            chunks[2],
+        );
+    }
+    render_status(f, chunks[3], state);
     // Overlays paint last so they sit above the view. At most one is up: the
     // picker owns Mode::Picker, the help overlay is a Normal-mode toggle.
     if let Some(picker) = state.picker.as_ref() {
         render_stream_picker(f, area, picker);
     }
+    if let Some(devices) = state.devices.as_ref() {
+        render_devices(f, area, devices);
+    }
     if state.show_help {
-        render_help(f, area);
+        render_help(f, area, &state.keymap, state.mode);
     }
 }
 
@@ -145,6 +168,8 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Mode::Command => Style::default().fg(Color::Magenta),
         Mode::Confirm => Style::default().fg(Color::Red),
         Mode::Picker => Style::default().fg(Color::Blue),
+        Mode::Visual => Style::default().fg(Color::Magenta),
+        Mode::Triage => Style::default().fg(Color::Yellow),
     };
     let mut spans = vec![
         Span::styled(
@@ -170,7 +195,18 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
                 Style::default().fg(Color::White),
             ));
         }
-        Mode::Normal | Mode::Confirm | Mode::Picker => {}
+        // Visual mode says how much is selected, so a bulk operator is never a
+        // surprise about *how many*.
+        Mode::Visual => {
+            if let Some((lo, hi)) = state.visual_range() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    format!("{} selected", hi - lo + 1),
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+        }
+        Mode::Normal | Mode::Confirm | Mode::Picker | Mode::Triage => {}
     }
     // With a sync indicator, split off a right-aligned column for it so the
     // left status text is never clobbered; otherwise render across the whole
@@ -207,7 +243,8 @@ fn sync_style(sync: SyncIndicator) -> Style {
 }
 
 /// Render the Today view: header + task list.
-pub fn render_today(f: &mut Frame<'_>, area: Rect, tasks: &[Task], selected: Option<usize>) {
+pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let tasks = &state.tasks;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Min(1)])
@@ -225,12 +262,28 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, tasks: &[Task], selected: Opt
     let header = Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(header, chunks[0]);
 
-    render_task_list(f, chunks[1], tasks, selected, "Tasks");
+    render_task_list_styled(
+        f,
+        chunks[1],
+        tasks,
+        state.selected,
+        "Tasks",
+        Style::default(),
+        state.visual_range(),
+    );
 }
 
 /// Render the Inbox view.
-pub fn render_inbox(f: &mut Frame<'_>, area: Rect, tasks: &[Task], selected: Option<usize>) {
-    render_task_list(f, area, tasks, selected, "Inbox")
+pub fn render_inbox(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    render_task_list_styled(
+        f,
+        area,
+        &state.tasks,
+        state.selected,
+        "Inbox",
+        Style::default(),
+        state.visual_range(),
+    )
 }
 
 /// Render the Stream view: split pane — stream list (with open-task-count
@@ -252,6 +305,7 @@ pub fn render_stream(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         state.selected,
         &title,
         pane_border(state, StreamPane::Tasks),
+        state.visual_range(),
     );
 }
 
@@ -301,7 +355,15 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .block(Block::default().borders(Borders::ALL).title("Search"))
         .wrap(Wrap { trim: false });
     f.render_widget(query, chunks[0]);
-    render_task_list(f, chunks[1], &state.tasks, state.selected, "Results");
+    render_task_list_styled(
+        f,
+        chunks[1],
+        &state.tasks,
+        state.selected,
+        "Results",
+        Style::default(),
+        state.visual_range(),
+    );
 }
 
 /// Render the Focus view: task detail on the left, attachment/image preview
@@ -513,29 +575,141 @@ fn render_stream_picker(f: &mut Frame<'_>, area: Rect, picker: &StreamPicker) {
     f.render_stateful_widget(list, rect, &mut st);
 }
 
+/// The `:devices` overlay: the vault's paired devices (`Query::DeviceList`).
+///
+/// Read-only by design — the core has no pair/revoke command yet, so listing is
+/// the whole of what can honestly be offered.
+fn render_devices(f: &mut Frame<'_>, area: Rect, devices: &[sunrise_core::queries::DeviceRow]) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if devices.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no paired devices",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    for d in devices {
+        let id = short_device_id(&d.device_id);
+        let mark = if d.revoked { " [revoked]" } else { "" };
+        lines.push(Line::from(format!(
+            "{id}  {:<18} {}{mark}",
+            truncate(&d.nickname, 18),
+            d.platform
+        )));
+    }
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let rect = centered(area, 60, height.max(3));
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Devices — any key to close")
+                .border_style(Style::default().fg(Color::Blue)),
+        ),
+        rect,
+    );
+}
+
+/// First 8 hex digits of a device id — enough to tell two devices apart in a
+/// list without eating the row.
+fn short_device_id(id: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    id[..4].iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
+/// Triage mode: one Inbox task at a time, with the decision keys spelled out.
+///
+/// `docs/08-features/inbox-and-capture.md` asks for "one-task-at-a-time
+/// presentation, one keypress per outcome"; showing the legend on the card is
+/// what makes the second half discoverable.
+fn render_triage(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    let done = state.selected.unwrap_or(0);
+    let total = state.tasks.len();
+    let title = format!("Triage — {} of {total}", (done + 1).min(total.max(1)));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Yellow));
+    let Some(t) = state.selected_task() else {
+        f.render_widget(
+            Paragraph::new("inbox is empty — nothing to triage")
+                .style(Style::default().fg(Color::Gray))
+                .block(block),
+            area,
+        );
+        return;
+    };
+    let dash = || "—".to_string();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            t.title.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "priority:  {}",
+            t.priority.map_or_else(dash, |p| p.to_string())
+        )),
+        Line::from(format!(
+            "scheduled: {}",
+            t.scheduled_at.map_or_else(dash, |ts| ts.to_string())
+        )),
+        Line::from(format!(
+            "due:       {}",
+            t.due_at.map_or_else(dash, |ts| ts.to_string())
+        )),
+    ];
+    if let Some(body) = t.body.as_ref().filter(|b| !b.is_empty()) {
+        lines.push(Line::from(""));
+        for row in String::from_utf8_lossy(&body.0).lines().take(4) {
+            lines.push(Line::from(row.to_string()));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "k keep · p promote · s schedule · d defer · x done · D delete · Esc leave",
+        Style::default().fg(Color::Cyan),
+    )));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 /// The `?` overlay. Content is generated from the keymap's binding table
 /// (see [`crate::keymap::BINDINGS`]), so it cannot drift from the keymap.
 ///
-/// Falls back to two columns when the single-column form would not fit — at
-/// the 80x24 minimum the full binding list is taller than the screen, and
-/// silently clipping half the keys is worse than a denser layout.
-fn render_help(f: &mut Frame<'_>, area: Rect) {
-    let blocks = help_blocks();
-    let total: usize = blocks.iter().map(Vec::len).sum::<usize>() + blocks.len().saturating_sub(1);
+/// **Contextual**, per `docs/08-features/keyboard.md` ("`?` in any view opens a
+/// contextual cheat sheet"): the always-available Normal-mode keys, plus the
+/// section for the mode the user is actually in. Showing all seven sections at
+/// once stopped fitting an 80x24 terminal when visual and triage modes landed,
+/// and silently clipping half the keys is worse than showing the half that
+/// applies right now.
+///
+/// Falls back to two columns when the single-column form would not fit; the
+/// split is by line rather than by section, because the Normal-mode section
+/// alone is taller than a minimum-size terminal.
+fn render_help(f: &mut Frame<'_>, area: Rect, keymap: &Keymap, mode: Mode) {
+    let lines = help_lines(keymap, mode);
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Keys — ? or Esc to close")
         .border_style(Style::default().fg(Color::Yellow));
 
-    if total + 2 <= area.height as usize {
-        let rect = centered(area, 72, u16::try_from(total + 2).unwrap_or(u16::MAX));
+    if lines.len() + 2 <= area.height as usize {
+        let rect = centered(area, 72, u16::try_from(lines.len() + 2).unwrap_or(u16::MAX));
         f.render_widget(Clear, rect);
-        f.render_widget(Paragraph::new(join_blocks(&blocks)).block(block), rect);
+        f.render_widget(Paragraph::new(lines).block(block), rect);
         return;
     }
 
-    let (left, right) = split_blocks(&blocks, total.div_ceil(2));
-    let (left, right) = (join_blocks(&left), join_blocks(&right));
+    let cut = lines.len().div_ceil(2);
+    let (left, right) = lines.split_at(cut);
     let rows = left.len().max(right.len());
     let rect = centered(area, 78, u16::try_from(rows + 2).unwrap_or(u16::MAX));
     let inner = block.inner(rect);
@@ -545,62 +719,46 @@ fn render_help(f: &mut Frame<'_>, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(inner);
-    f.render_widget(Paragraph::new(left), cols[0]);
-    f.render_widget(Paragraph::new(right), cols[1]);
+    f.render_widget(Paragraph::new(left.to_vec()), cols[0]);
+    f.render_widget(Paragraph::new(right.to_vec()), cols[1]);
 }
 
-/// One renderable block of help lines per keymap section (header + rows).
-fn help_blocks() -> Vec<Vec<Line<'static>>> {
-    help_sections()
-        .into_iter()
-        .map(|(mode, rows)| {
-            let mut lines = vec![Line::from(Span::styled(
-                mode.to_string(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ))];
-            lines.extend(rows.into_iter().map(|(keys, desc)| {
-                Line::from(vec![
-                    Span::styled(format!("  {keys:<11}"), Style::default().fg(Color::Cyan)),
-                    Span::raw(desc.to_string()),
-                ])
-            }));
-            lines
-        })
-        .collect()
+/// Which keymap sections the overlay shows in `mode`: Normal always (those keys
+/// are where the user returns to), plus the current mode's own section.
+#[must_use]
+pub fn help_modes(mode: Mode) -> Vec<&'static str> {
+    if mode == Mode::Normal {
+        vec![Mode::Normal.label()]
+    } else {
+        vec![Mode::Normal.label(), mode.label()]
+    }
 }
 
-/// Flatten blocks into one line list, one blank line between sections.
-fn join_blocks(blocks: &[Vec<Line<'static>>]) -> Vec<Line<'static>> {
+/// Overlay lines: the selected sections, one blank line between them.
+fn help_lines(keymap: &Keymap, mode: Mode) -> Vec<Line<'static>> {
+    let wanted = help_modes(mode);
     let mut out: Vec<Line<'static>> = Vec::new();
-    for b in blocks {
+    for (label, rows) in keymap.help_sections() {
+        if !wanted.contains(&label) {
+            continue;
+        }
         if !out.is_empty() {
             out.push(Line::from(""));
         }
-        out.extend(b.iter().cloned());
+        out.push(Line::from(Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        out.extend(rows.into_iter().map(|(keys, desc)| {
+            Line::from(vec![
+                Span::styled(format!("  {keys:<11}"), Style::default().fg(Color::Cyan)),
+                Span::raw(desc.to_string()),
+            ])
+        }));
     }
     out
-}
-
-/// Split whole sections across two columns, aiming for `target` lines in the
-/// first. Sections are never broken mid-way, and the first column always gets
-/// at least one so the split terminates.
-fn split_blocks(
-    blocks: &[Vec<Line<'static>>],
-    target: usize,
-) -> (Vec<Vec<Line<'static>>>, Vec<Vec<Line<'static>>>) {
-    let mut used = 0usize;
-    let mut cut = 0usize;
-    for (i, b) in blocks.iter().enumerate() {
-        if i > 0 && used + b.len() > target {
-            break;
-        }
-        used += b.len() + usize::from(i > 0);
-        cut = i + 1;
-    }
-    let (l, r) = blocks.split_at(cut.min(blocks.len()));
-    (l.to_vec(), r.to_vec())
 }
 
 /// A centred sub-rect at most `w` x `h`, clamped to `area`.
@@ -624,18 +782,14 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-fn render_task_list(
-    f: &mut Frame<'_>,
-    area: Rect,
-    tasks: &[Task],
-    selected: Option<usize>,
-    title: &str,
-) {
-    render_task_list_styled(f, area, tasks, selected, title, Style::default());
-}
-
-/// [`render_task_list`] with an explicit border style (used by the Stream
-/// view to highlight the focused pane).
+/// Render a task list, with an explicit border style (the Stream view uses it
+/// to highlight the focused pane) and an optional visual-mode selection range.
+///
+/// While a visual run is active every row grows a two-column gutter, marked on
+/// the selected rows: the cursor highlight alone cannot show a *range*, and a
+/// bulk operator must never be ambiguous about what it is about to hit. The
+/// gutter only exists while visual mode is up, so ordinary frames are byte-for-
+/// byte what they were.
 fn render_task_list_styled(
     f: &mut Frame<'_>,
     area: Rect,
@@ -643,12 +797,23 @@ fn render_task_list_styled(
     selected: Option<usize>,
     title: &str,
     border_style: Style,
+    visual: Option<(usize, usize)>,
 ) {
     let items: Vec<ListItem<'_>> = tasks
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             let label = format!("[{}] {}", task_state_short(t.state), t.title);
-            ListItem::new(label)
+            match visual {
+                Some((lo, hi)) if (lo..=hi).contains(&i) => ListItem::new(format!("● {label}"))
+                    .style(
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                Some(_) => ListItem::new(format!("  {label}")),
+                None => ListItem::new(label),
+            }
         })
         .collect();
     let list = List::new(items)
@@ -693,9 +858,10 @@ mod tests {
     fn render_today_with_empty_list() {
         let backend = TestBackend::new(40, 6);
         let mut term = Terminal::new(backend).unwrap();
+        let state = ViewState::default();
         term.draw(|f| {
             let area = f.area();
-            render_today(f, area, &[], None);
+            render_today(f, area, &state);
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -991,20 +1157,56 @@ mod tests {
 
     #[test]
     fn help_overlay_is_rendered_from_the_keymap_table() {
-        let mut state = ViewState::default();
-        state.show_help = true;
-        // Roomy (single column) and at the 80x24 minimum (two columns): every
-        // documented binding must survive both layouts. This is the assertion
-        // that keeps the overlay honest when a binding is renamed or added.
-        for (w, h) in [(100, 40), (MIN_WIDTH, MIN_HEIGHT)] {
-            let s = guarded_frame(w, h, &state);
-            for (mode, rows) in help_sections() {
-                assert!(s.contains(mode), "{w}x{h} missing section {mode}:\n{s}");
-                for (keys, desc) in rows {
-                    assert!(s.contains(keys), "{w}x{h} missing keys {keys:?}:\n{s}");
-                    assert!(s.contains(desc), "{w}x{h} missing text {desc:?}:\n{s}");
+        // The overlay is contextual: Normal-mode keys always, plus the section
+        // for the mode the user is in. Every row of those sections must survive
+        // both the roomy single-column layout and the two-column fallback at
+        // the 80x24 minimum. This is the assertion that keeps the overlay
+        // honest when a binding is renamed or added.
+        for mode in [Mode::Normal, Mode::Visual, Mode::Triage] {
+            let mut state = ViewState::default();
+            state.show_help = true;
+            state.mode = mode;
+            let wanted = crate::render::help_modes(mode);
+            for (w, h) in [(100, 40), (MIN_WIDTH, MIN_HEIGHT)] {
+                let s = guarded_frame(w, h, &state);
+                for (section, rows) in crate::help_sections() {
+                    if !wanted.contains(&section) {
+                        continue;
+                    }
+                    assert!(
+                        s.contains(section),
+                        "{w}x{h} missing section {section}:\n{s}"
+                    );
+                    for (keys, desc) in rows {
+                        assert!(s.contains(&keys), "{w}x{h} missing keys {keys:?}:\n{s}");
+                        assert!(s.contains(desc), "{w}x{h} missing text {desc:?}:\n{s}");
+                    }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_documented_binding_is_reachable_from_some_help_context() {
+        // Contextual filtering must not orphan a section: every mode that has
+        // help rows has to be a mode the overlay can be opened in.
+        for (section, _) in crate::help_sections() {
+            let mode = [
+                Mode::Normal,
+                Mode::Insert,
+                Mode::Command,
+                Mode::Confirm,
+                Mode::Picker,
+                Mode::Visual,
+                Mode::Triage,
+            ]
+            .into_iter()
+            .find(|m| m.label() == section)
+            .expect("a section label is a mode label");
+            assert!(
+                crate::render::help_modes(mode).contains(&section),
+                "{section} keys are documented but never shown"
+            );
         }
     }
 
@@ -1016,7 +1218,7 @@ mod tests {
         state.after_tasks_loaded();
         let id = state.tasks[0].id;
         state.open_stream_picker(
-            id,
+            vec![id],
             "Pay invoice".into(),
             vec![fixtures::inbox_row(1), fixtures::stream_row(7, "Work", 3)],
         );
@@ -1024,6 +1226,131 @@ mod tests {
         assert!(s.contains("move: Pay invoice"), "got:\n{s}");
         assert!(s.contains("Work [3]"), "got:\n{s}");
         assert!(s.contains("PICK"), "expected the PICK mode label:\n{s}");
+    }
+
+    #[test]
+    fn the_capture_preview_renders_under_the_input_line() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.mode = Mode::Insert;
+        state.input = "Buy milk #travel !2".into();
+        state.capture_preview = Some("title \"Buy milk\" · #Travel · !2 · ~1h".into());
+        let s = guarded_frame(100, 24, &state);
+        // The structured reading is on screen, on its own line, above the
+        // status line that still shows the raw text being typed.
+        assert!(s.contains("title \"Buy milk\""), "got:\n{s}");
+        assert!(s.contains("#Travel"), "got:\n{s}");
+        assert!(s.contains("~1h"), "got:\n{s}");
+        assert!(s.contains("> Buy milk #travel !2"), "got:\n{s}");
+    }
+
+    #[test]
+    fn no_preview_row_is_reserved_when_not_capturing() {
+        // The preview must not cost a row (or shift the layout) in the frames
+        // where it has nothing to say.
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.tasks = vec![fixtures::fake_task(1)];
+        state.after_tasks_loaded();
+        let quiet = guarded_frame(100, 24, &state);
+        state.capture_preview = None;
+        assert_eq!(quiet, guarded_frame(100, 24, &state));
+        assert!(!quiet.contains("⟶"), "got:\n{quiet}");
+    }
+
+    #[test]
+    fn visually_selected_rows_are_marked() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.tasks = (0u8..3).map(fixtures::fake_task).collect();
+        state.after_tasks_loaded();
+        state.selected = Some(0);
+        assert!(state.enter_visual());
+        state.selected = Some(1);
+
+        let s = guarded_frame(100, 24, &state);
+        // Rows 0 and 1 carry the selection marker; row 2 does not.
+        assert!(s.contains("● [ ] task 0"), "got:\n{s}");
+        assert!(s.contains("● [ ] task 1"), "got:\n{s}");
+        assert!(s.contains("  [ ] task 2"), "got:\n{s}");
+        assert!(!s.contains("● [ ] task 2"), "row 2 is not selected:\n{s}");
+        // And the status line says how many, so the operator is unambiguous.
+        assert!(s.contains("VISUAL"), "got:\n{s}");
+        assert!(s.contains("2 selected"), "got:\n{s}");
+    }
+
+    #[test]
+    fn the_triage_card_shows_one_task_and_its_decision_keys() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        let mut t = fixtures::fake_task(1);
+        t.title = "Pay invoice".into();
+        t.priority = Some(2);
+        state.tasks = vec![t, fixtures::fake_task(2)];
+        state.after_tasks_loaded();
+        state.enter_triage();
+
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("Triage — 1 of 2"), "got:\n{s}");
+        assert!(s.contains("Pay invoice"), "got:\n{s}");
+        assert!(s.contains("priority:  2"), "got:\n{s}");
+        // One keypress per outcome, spelled out on the card.
+        for key in ["k keep", "p promote", "s schedule", "d defer", "D delete"] {
+            assert!(s.contains(key), "missing {key:?}:\n{s}");
+        }
+        // The other Inbox rows are not shown: triage is one task at a time.
+        assert!(!s.contains("task 2"), "got:\n{s}");
+        assert!(s.contains("TRIAGE"), "got:\n{s}");
+    }
+
+    #[test]
+    fn the_devices_overlay_lists_paired_devices() {
+        use sunrise_core::queries::DeviceRow;
+        let mut state = ViewState::default();
+        state.show_devices(vec![
+            DeviceRow {
+                device_id: [0xab; 16],
+                nickname: "laptop".into(),
+                platform: "linux".into(),
+                revoked: false,
+            },
+            DeviceRow {
+                device_id: [0xcd; 16],
+                nickname: "old phone".into(),
+                platform: "android".into(),
+                revoked: true,
+            },
+        ]);
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("Devices"), "got:\n{s}");
+        assert!(s.contains("laptop"), "got:\n{s}");
+        assert!(s.contains("linux"), "got:\n{s}");
+        assert!(s.contains("abababab"), "got:\n{s}");
+        assert!(s.contains("[revoked]"), "got:\n{s}");
+    }
+
+    #[test]
+    fn an_empty_device_list_says_so() {
+        let mut state = ViewState::default();
+        state.show_devices(Vec::new());
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("no paired devices"), "got:\n{s}");
+    }
+
+    #[test]
+    fn the_help_overlay_advertises_a_remapped_key() {
+        let mut state = ViewState::default();
+        state.show_help = true;
+        let (map, _) = crate::keymap::Keymap::from_config(&[("capture".into(), "n".into())]);
+        state.keymap = map;
+        let s = guarded_frame(100, 40, &state);
+        // The row reads under the key the user actually has to press.
+        let row = s
+            .lines()
+            .find(|l| l.contains("capture a task"))
+            .expect("the capture help row");
+        assert!(row.contains('n'), "help row was {row:?}");
+        assert!(!row.trim_start().starts_with('c'), "help row was {row:?}");
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {

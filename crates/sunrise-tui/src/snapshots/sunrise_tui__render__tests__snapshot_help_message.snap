@@ -11,4 +11,4 @@ Sunrise — Today    (0 tasks)
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- NORMAL   :q quit  :view <name|1-6>  :preview <path>  ? = all keys
+ NORMAL   :q  :view <v>  :capture <text>  :open <id>  :devices  :preview <p>    

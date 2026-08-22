@@ -33,12 +33,14 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use sunrise_core::{Core, Query, QueryResult};
+use sunrise_core::{Command, Core, Query, QueryResult};
+use sunrise_domain::{NoteBody, TaskPatch};
 use sunrise_tui::livesync;
 use sunrise_tui::runtime::{drain_changes, CHANGE_DEBOUNCE};
 use sunrise_tui::{
-    apply_action, dispatch, render, routine_rows, Outcome, SyncIndicator, View, ViewState,
+    apply_action, editor, keymap, render, routine_rows, Outcome, SyncIndicator, View, ViewState,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -116,9 +118,28 @@ fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Re-enter the alternate screen after an external program (the `$EDITOR`
+/// suspend) has had the terminal. Repaints from scratch: the editor left the
+/// real screen in an unknown state, and Ratatui's diffing buffer no longer
+/// describes it.
+fn resume(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    term.backend_mut().execute(EnterAlternateScreen)?;
+    term.hide_cursor()?;
+    term.clear()?;
+    Ok(())
+}
+
 /// How long the loop waits with no input before repainting anyway. Keeps the
 /// status-line sync indicator ticking without busy-looping.
 const IDLE_REDRAW: Duration = Duration::from_millis(200);
+/// How long the input reader waits for a key before releasing the input gate.
+/// Bounds how long the `$EDITOR` suspend waits to take stdin; the wake itself
+/// costs less than the 200 ms idle repaint the loop already does.
+const INPUT_POLL: Duration = Duration::from_millis(100);
+/// How long the input reader sleeps between checks while stdin is handed to a
+/// child process. Only ever runs during an `$EDITOR` session.
+const PAUSED_BACKOFF: Duration = Duration::from_millis(50);
 /// What woke the event loop.
 #[derive(Debug)]
 enum Wake {
@@ -133,7 +154,22 @@ enum Wake {
 }
 
 async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut state = ViewState::default();
+    // The user's zone, resolved once: relative capture/schedule dates
+    // (`^tomorrow`, `9am`) mean the user's day, not UTC. Held on the state so
+    // the reducer stays pure and tests can pin it.
+    let mut state = ViewState {
+        tz: jiff::tz::TimeZone::system(),
+        ..Default::default()
+    };
+    // `~/.config/sunrise/keys.toml` (docs/07-clients/tui.md). Absent is the
+    // normal case and silent; malformed is loud and then falls back to the
+    // defaults, because a typo in a config file must never cost the user a
+    // working keyboard.
+    let (map, key_warnings) = keymap::load_keymap(keymap::keys_config_path().as_deref());
+    for w in &key_warnings {
+        eprintln!("sunrise-tui: {w}");
+    }
+    state.keymap = map;
     // Image-preview state (`:preview <path>`). Owned here because Picker and
     // the protocol state are not Clone; render fns borrow them per frame.
     // init_picker queries the terminal, so this runs after entering the
@@ -143,22 +179,30 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
     #[cfg(feature = "images")]
     let mut preview: Option<sunrise_tui::images::Preview> = None;
 
-    // Terminal input is read on a dedicated OS thread that blocks in
-    // `event::read()` and forwards over an mpsc channel. Chosen over
-    // crossterm's async `EventStream` because that pulls in a `futures` +
-    // `mio` dependency this crate otherwise doesn't need, and because a
-    // blocking read costs nothing while idle — the old `event::poll(200ms)`
-    // loop woke 5x/second forever. Either way the point is the same: input
-    // is now just one arm of a `select!`, so `Core::changes()` can drive a
-    // repaint without the user touching the keyboard.
+    // Terminal input is read on a dedicated OS thread and forwarded over an
+    // mpsc channel. Chosen over crossterm's async `EventStream` because that
+    // pulls in a `futures` + `mio` dependency this crate otherwise doesn't
+    // need; the point is that input is one arm of a `select!`, so
+    // `Core::changes()` can drive a repaint without the user touching the
+    // keyboard.
+    //
+    // The thread polls rather than blocking forever in `event::read()` so that
+    // stdin can be *handed over*: running `$EDITOR` means another process owns
+    // the terminal, and a reader parked inside `read()` would steal its
+    // keystrokes with no way to be called off. See [`InputGate`].
+    let gate = Arc::new(InputGate::default());
+    let reader_gate = Arc::clone(&gate);
     let (key_tx, mut key_rx) = tokio::sync::mpsc::channel::<Event>(64);
-    std::thread::spawn(move || {
-        // Ends when `event::read()` errors or the receiver is dropped (app
-        // exiting); the process tears down either way.
-        while let Ok(ev) = event::read() {
-            if key_tx.blocking_send(ev).is_err() {
-                break;
+    std::thread::spawn(move || loop {
+        match reader_gate.read_one() {
+            // Send outside the gate: a full channel must not pin stdin.
+            Read::Event(ev) => {
+                if key_tx.blocking_send(ev).is_err() {
+                    break;
+                }
             }
+            Read::Idle => {}
+            Read::Closed => break,
         }
     });
 
@@ -225,7 +269,10 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
         if k.kind != KeyEventKind::Press {
             continue;
         }
-        let Some(action) = dispatch(k.code, state.mode, state.vim_mode, state.view) else {
+        let Some(action) = state
+            .keymap
+            .dispatch(k.code, state.mode, state.vim_mode, state.view)
+        else {
             continue;
         };
         match apply_action(action, &mut state, core.now_ms()) {
@@ -238,14 +285,60 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 }
                 refresh(core, &mut state).await;
             }
-            Outcome::OpenStreamPicker { task, title } => {
+            Outcome::SubmitMany(cmds) => {
+                // One refresh for the whole batch. Errors are reported but do
+                // not abort the rest: a bulk op that silently stopped halfway
+                // would be worse than one that finishes and says what failed.
+                let mut failed = 0usize;
+                for cmd in cmds {
+                    if core.submit(cmd).await.is_err() {
+                        failed += 1;
+                    }
+                }
+                if failed > 0 {
+                    state.status = format!("{failed} of the selected tasks failed");
+                }
+                refresh(core, &mut state).await;
+            }
+            Outcome::OpenStreamPicker { tasks, title } => {
                 match core.query(Query::StreamList).await {
                     Ok(QueryResult::Streams(rows)) => {
-                        state.open_stream_picker(task, title, rows);
+                        state.open_stream_picker(tasks, title, rows);
                     }
                     _ => state.status = "could not load streams".into(),
                 }
             }
+            Outcome::EditBody { id, body } => match edit_in_editor(term, &gate, &body) {
+                Ok(Some(new_body)) => {
+                    let patch = TaskPatch {
+                        body: Some((!new_body.is_empty()).then_some(NoteBody(new_body))),
+                        ..Default::default()
+                    };
+                    if let Err(e) = core.submit(Command::UpdateTask { id, patch }).await {
+                        state.status = format!("error: {e}");
+                    } else {
+                        state.status = "body saved".into();
+                    }
+                    refresh(core, &mut state).await;
+                }
+                Ok(None) => state.status = "body unchanged".into(),
+                Err(e) => state.status = format!("editor: {e}"),
+            },
+            Outcome::OpenTask(id) => match core.query(Query::EntityById(id)).await {
+                Ok(QueryResult::Task(t)) => {
+                    state.focused_task = Some(*t);
+                    if state.view != View::Focus {
+                        state.prev_view = Some(state.view);
+                        state.view = View::Focus;
+                    }
+                    refresh(core, &mut state).await;
+                }
+                _ => state.status = format!("no such task: {}", id.to_str()),
+            },
+            Outcome::ShowDevices => match core.query(Query::DeviceList).await {
+                Ok(QueryResult::Devices(rows)) => state.show_devices(rows),
+                _ => state.status = "could not load devices".into(),
+            },
             Outcome::Preview(path) => {
                 #[cfg(feature = "images")]
                 match sunrise_tui::images::load_preview(&mut picker, &path) {
@@ -273,6 +366,137 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// Open `body` in the user's editor and return the edited bytes, or `None` if
+/// nothing changed.
+///
+/// `docs/07-clients/tui.md`: "Long-form note editing: `e` opens the note body
+/// in `$EDITOR` (vim/helix/nano), saves on exit." Bound to `E` here so the
+/// already-tested inline title edit keeps `e`.
+///
+/// The terminal is handed over completely — alternate screen left, raw mode
+/// off — and taken back on return. `gate` is held for the whole handover so the
+/// input reader cannot race the editor for stdin.
+///
+/// Nothing is written back when the editor exits non-zero or leaves the file
+/// byte-identical: an aborted edit (`:cq`, `:q!`) must not overwrite a body.
+fn edit_in_editor(
+    term: &mut Tty,
+    gate: &Arc<InputGate>,
+    body: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
+    let _held = gate.suspend();
+    teardown(term).map_err(|e| e.to_string())?;
+    let result = run_editor_on(body);
+    let resumed = resume(term).map_err(|e| e.to_string());
+    // Restoring the screen matters more than the edit: report a failure to come
+    // back before a failure to edit, because the former leaves the UI unusable.
+    resumed?;
+    result
+}
+
+/// Arbitrates ownership of stdin between the input reader thread and a
+/// suspended-terminal child process (`$EDITOR`).
+///
+/// Two parts, both needed:
+///
+/// * the `Mutex` is held across the reader's `poll` + `read` pair, so a
+///   suspend that acquires it knows no read is in flight and cannot lose a
+///   keystroke to a half-finished one;
+/// * the `paused` flag makes the handover starvation-free. Without it the
+///   reader — which releases the mutex only for the instant between polls —
+///   could re-acquire it ahead of a waiting suspend indefinitely. With it the
+///   reader stops contending entirely, so the suspend waits at most one poll
+///   interval.
+#[derive(Debug, Default)]
+struct InputGate {
+    stdin: Mutex<()>,
+    paused: std::sync::atomic::AtomicBool,
+}
+
+impl InputGate {
+    /// Reader side: poll for one event, yielding stdin while paused.
+    fn read_one(&self) -> Read {
+        if self.paused.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(PAUSED_BACKOFF);
+            return Read::Idle;
+        }
+        let _held = self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match event::poll(INPUT_POLL) {
+            Ok(true) => event::read().map_or(Read::Closed, Read::Event),
+            Ok(false) => Read::Idle,
+            Err(_) => Read::Closed,
+        }
+    }
+
+    /// Suspend side: take stdin until the returned guard drops.
+    fn suspend(&self) -> InputGateGuard<'_> {
+        self.paused
+            .store(true, std::sync::atomic::Ordering::Release);
+        let held = self
+            .stdin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        InputGateGuard {
+            gate: self,
+            _held: held,
+        }
+    }
+}
+
+/// One turn of the input reader loop.
+enum Read {
+    /// A terminal event to forward.
+    Event(Event),
+    /// Nothing arrived within the poll window (or stdin is paused).
+    Idle,
+    /// The terminal is gone; the reader should stop.
+    Closed,
+}
+
+/// Holds stdin for the duration of a terminal suspend; releases it on drop
+/// (including on an early `?` return, which is why this is a guard and not a
+/// pair of calls).
+struct InputGateGuard<'a> {
+    gate: &'a InputGate,
+    _held: std::sync::MutexGuard<'a, ()>,
+}
+
+impl Drop for InputGateGuard<'_> {
+    fn drop(&mut self) {
+        self.gate
+            .paused
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// The editor round trip itself, with the terminal already released.
+///
+/// The decision rules (seed the file, ignore an aborted or unchanged edit,
+/// always clean up) live in `sunrise_tui::editor` where they are unit-tested;
+/// this is only the process spawn.
+fn run_editor_on(body: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    let name = format!("sunrise-note-{}.md", std::process::id());
+    editor::edit_bytes(&std::env::temp_dir(), &name, body, |path| {
+        let (program, args) = editor::resolve_editor(
+            std::env::var("EDITOR").ok().as_deref(),
+            std::env::var("VISUAL").ok().as_deref(),
+        );
+        let status = std::process::Command::new(&program)
+            .args(&args)
+            .arg(path)
+            .status()
+            .map_err(|e| format!("could not run {program}: {e}"))?;
+        Ok(if status.success() {
+            editor::EditorExit::Ok
+        } else {
+            editor::EditorExit::Failed
+        })
+    })
+}
+
 /// Refresh the status-line sync indicator from the core's live sync status.
 /// Shows `off` (with the DB outbox depth) when no `SUNRISE_SYNC_URL` was set,
 /// otherwise the driver's live state.
@@ -287,6 +511,22 @@ async fn poll_sync(core: &Core, state: &mut ViewState, sync_on: bool) {
 }
 
 async fn refresh(core: &Core, state: &mut ViewState) {
+    // Streams and contexts back `#stream` / `@context` resolution in capture,
+    // the capture preview, and the Focus detail line, so both are loaded for
+    // every view rather than only the ones that display them. Two indexed
+    // queries per refresh.
+    if let Ok(QueryResult::Streams(rows)) = core.query(Query::StreamList).await {
+        state.streams = rows;
+        state.after_streams_loaded();
+    }
+    if let Ok(QueryResult::Contexts(rows)) = core.query(Query::Contexts).await {
+        state.contexts = rows;
+    }
+    // A triage pass always reads the Inbox, whatever the nominal view is.
+    if state.triage {
+        load_tasks(core, state, Query::Inbox).await;
+        return;
+    }
     match state.view {
         View::Today => {
             let q = Query::Today {
@@ -296,19 +536,13 @@ async fn refresh(core: &Core, state: &mut ViewState) {
             load_tasks(core, state, q).await;
         }
         View::Inbox => load_tasks(core, state, Query::Inbox).await,
-        View::Stream => {
-            if let Ok(QueryResult::Streams(rows)) = core.query(Query::StreamList).await {
-                state.streams = rows;
-                state.after_streams_loaded();
+        View::Stream => match state.selected_stream_row().map(|r| r.id) {
+            Some(id) => load_tasks(core, state, Query::StreamTasks(id)).await,
+            None => {
+                state.tasks.clear();
+                state.after_tasks_loaded();
             }
-            match state.selected_stream_row().map(|r| r.id) {
-                Some(id) => load_tasks(core, state, Query::StreamTasks(id)).await,
-                None => {
-                    state.tasks.clear();
-                    state.after_tasks_loaded();
-                }
-            }
-        }
+        },
         View::Search => {
             let q = Query::Search {
                 text: state.input.clone(),
@@ -330,11 +564,6 @@ async fn refresh(core: &Core, state: &mut ViewState) {
             if let Some(id) = id {
                 if let Ok(QueryResult::Task(t)) = core.query(Query::EntityById(id)).await {
                     state.focused_task = Some(*t);
-                }
-                // Stream rows back the "stream: <name>" detail line.
-                if let Ok(QueryResult::Streams(rows)) = core.query(Query::StreamList).await {
-                    state.streams = rows;
-                    state.after_streams_loaded();
                 }
             }
         }
@@ -383,6 +612,12 @@ CAPTURE SYNTAX:
 
 ENVIRONMENT:
     SUNRISE_VAULT   vault directory (default ~/.sunrise/vault)
+
+FILES:
+    ~/.config/sunrise/keys.toml   optional key overrides, one `action = \"key\"`
+                                  per line (e.g. capture = \"n\"). Honours
+                                  XDG_CONFIG_HOME. Absent means defaults; a
+                                  malformed file warns and uses defaults.
 ";
 
     /// Dispatch a subcommand. Returns `Ok` on success; the process exit code

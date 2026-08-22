@@ -1,8 +1,8 @@
 //! View enum + view-state.
 
-use crate::keymap::Mode;
+use crate::keymap::{Keymap, Mode};
 use jiff::Timestamp;
-use sunrise_core::queries::StreamRow;
+use sunrise_core::queries::{ContextRow, DeviceRow, StreamRow};
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{materialization_horizon_days, Routine, Task};
 use sunrise_id::EntityRef;
@@ -106,13 +106,18 @@ pub enum Prompt {
     Capture,
     /// Edit an existing task's title (`e`).
     EditTitle(EntityRef),
-    /// Defer a task by a typed offset such as `2h` / `3d` (`d`).
-    Defer(EntityRef),
-    /// Delete a task, gated on an explicit `y` (`D`).
+    /// Defer one or more tasks by a typed offset such as `2h` / `3d` (`d`).
+    /// Carries a list rather than a single id so visual-mode bulk defer and
+    /// single-task defer share one code path.
+    Defer(Vec<EntityRef>),
+    /// Schedule one or more tasks at a typed when-expression (`s`), parsed by
+    /// [`sunrise_domain::capture::parse_when`].
+    Schedule(Vec<EntityRef>),
+    /// Delete tasks, gated on an explicit `y` (`D`).
     ConfirmDelete {
-        /// Task to delete once confirmed.
-        id: EntityRef,
-        /// Title echoed in the confirmation message.
+        /// Tasks to delete once confirmed.
+        ids: Vec<EntityRef>,
+        /// Title (or `"N tasks"`) echoed in the confirmation message.
         title: String,
     },
     /// Create a stream by name (`S`).
@@ -126,9 +131,9 @@ pub enum Prompt {
 /// Not `PartialEq`: `StreamRow` (from the core's query surface) isn't.
 #[derive(Debug, Clone)]
 pub struct StreamPicker {
-    /// Task being moved.
-    pub task: EntityRef,
-    /// Task title, echoed in the picker header.
+    /// Tasks being moved (one row normally, the whole visual run under `V`).
+    pub tasks: Vec<EntityRef>,
+    /// Task title (or `"N tasks"`), echoed in the picker header.
     pub task_title: String,
     /// Candidate destinations (`Query::StreamList`, Inbox first).
     pub rows: Vec<StreamRow>,
@@ -244,6 +249,13 @@ pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
 }
 
 /// Owning struct for the active view.
+///
+/// The several `bool` flags are independent toggles over the *same* state
+/// (vim-mode is a preference, the `gg` latch is a chord, the help overlay and
+/// the triage pass are modes of presentation); folding them into one enum would
+/// force combinations that cannot occur to be spelled out, and combinations
+/// that can occur — help open *during* a triage pass — to be impossible.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct ViewState {
     /// Current view.
@@ -258,6 +270,9 @@ pub struct ViewState {
     pub selected: Option<usize>,
     /// Stream rows for the Stream view (Inbox first, per `Query::StreamList`).
     pub streams: Vec<StreamRow>,
+    /// Context rows (`Query::Contexts`), the candidate set `@name` resolves
+    /// against during capture. Refreshed alongside `streams`.
+    pub contexts: Vec<ContextRow>,
     /// Index of the selected stream in `streams`. `None` if the list is empty.
     pub selected_stream: Option<usize>,
     /// Focused pane in the Stream view.
@@ -283,8 +298,26 @@ pub struct ViewState {
     pub picker: Option<StreamPicker>,
     /// Whether the `?` help overlay is visible.
     pub show_help: bool,
+    /// Paired devices listed by `:devices`, shown as an overlay. `None` hides
+    /// it; dismissed by the next keypress like the help overlay.
+    pub devices: Option<Vec<DeviceRow>>,
     /// Latch for the `gg` chord: set by the first `g`, cleared by anything else.
     pub pending_g: bool,
+    /// Visual-mode anchor: the row `V` was pressed on. The selection is the
+    /// inclusive run between it and [`Self::selected`].
+    pub visual_anchor: Option<usize>,
+    /// Whether Inbox triage mode is running (`t`).
+    pub triage: bool,
+    /// Live capture preview: the parser's structured reading of
+    /// [`Self::input`], recomputed on every keystroke while the capture prompt
+    /// is open (`docs/08-features/inbox-and-capture.md`).
+    pub capture_preview: Option<String>,
+    /// Time zone relative dates are resolved in. Held here rather than read
+    /// from the host inside the reducer, so the reducer stays pure and tests
+    /// can pin the zone. The binary sets it to `TimeZone::system()`.
+    pub tz: jiff::tz::TimeZone,
+    /// Active keymap, including any `~/.config/sunrise/keys.toml` overrides.
+    pub keymap: Keymap,
 }
 
 impl Default for ViewState {
@@ -296,6 +329,7 @@ impl Default for ViewState {
             tasks: Vec::new(),
             selected: None,
             streams: Vec::new(),
+            contexts: Vec::new(),
             selected_stream: None,
             pane: StreamPane::Streams,
             focused_task: None,
@@ -308,7 +342,13 @@ impl Default for ViewState {
             prompt: None,
             picker: None,
             show_help: false,
+            devices: None,
             pending_g: false,
+            visual_anchor: None,
+            triage: false,
+            capture_preview: None,
+            tz: jiff::tz::TimeZone::UTC,
+            keymap: Keymap::default(),
         }
     }
 }
@@ -317,6 +357,16 @@ impl ViewState {
     /// Apply selection bookkeeping after `tasks` has changed.
     pub fn after_tasks_loaded(&mut self) {
         self.selected = clamp_selection(self.tasks.len(), self.selected);
+        // A visual run over rows that no longer exist would operate on the
+        // wrong tasks, and a triage pass over an empty Inbox has nothing left
+        // to decide.
+        self.visual_anchor = self
+            .visual_anchor
+            .and_then(|a| clamp_selection(self.tasks.len(), Some(a)));
+        if self.triage && self.tasks.is_empty() {
+            self.exit_triage();
+            self.status = "triage complete".into();
+        }
     }
 
     /// Apply selection bookkeeping after `streams` has changed. Defaults the
@@ -326,13 +376,26 @@ impl ViewState {
     }
 
     /// Move selection down by one, wrapping at the end.
+    ///
+    /// Visual mode clamps instead of wrapping: wrapping past the last row
+    /// would flip the run to the other side of the anchor and silently retarget
+    /// a bulk operation.
     pub fn select_next(&mut self) {
-        self.selected = wrap_next(self.tasks.len(), self.selected);
+        self.selected = if self.visual_anchor.is_some() {
+            clamp_next(self.tasks.len(), self.selected)
+        } else {
+            wrap_next(self.tasks.len(), self.selected)
+        };
     }
 
-    /// Move selection up by one, wrapping at the start.
+    /// Move selection up by one, wrapping at the start (clamping in visual
+    /// mode — see [`Self::select_next`]).
     pub fn select_prev(&mut self) {
-        self.selected = wrap_prev(self.tasks.len(), self.selected);
+        self.selected = if self.visual_anchor.is_some() {
+            clamp_prev(self.tasks.len(), self.selected)
+        } else {
+            wrap_prev(self.tasks.len(), self.selected)
+        };
     }
 
     /// Move the stream selection down by one, wrapping at the end.
@@ -422,18 +485,22 @@ impl ViewState {
     /// Open the move-to-stream picker over `rows` for `task`, entering
     /// [`Mode::Picker`]. The cursor starts on the task's current stream so
     /// Enter without navigating is a no-op move rather than a surprise.
-    pub fn open_stream_picker(&mut self, task: EntityRef, title: String, rows: Vec<StreamRow>) {
-        let current = self
-            .tasks
-            .iter()
-            .find(|t| t.id == task)
+    pub fn open_stream_picker(
+        &mut self,
+        tasks: Vec<EntityRef>,
+        title: String,
+        rows: Vec<StreamRow>,
+    ) {
+        let current = tasks
+            .first()
+            .and_then(|first| self.tasks.iter().find(|t| t.id == *first))
             .map(|t| t.stream_id);
         let selected = current
             .and_then(|s| rows.iter().position(|r| r.id == s))
             .unwrap_or(0);
         self.status = format!("move \"{title}\" to stream — Enter to choose, Esc to cancel");
         self.picker = Some(StreamPicker {
-            task,
+            tasks,
             task_title: title,
             rows,
             selected,
@@ -442,13 +509,127 @@ impl ViewState {
     }
 
     /// Clear any prompt/picker/help overlay and return to Normal mode.
+    ///
+    /// Triage mode survives this: a prompt opened *from* triage (schedule,
+    /// defer, delete) must hand control back to the triage card, not dump the
+    /// user into the plain Inbox mid-pass. [`Self::exit_triage`] is the only
+    /// way out.
     pub fn reset_to_normal(&mut self) {
-        self.mode = Mode::Normal;
+        self.mode = if self.triage {
+            Mode::Triage
+        } else {
+            Mode::Normal
+        };
         self.prompt = None;
         self.picker = None;
         self.pending_g = false;
+        self.visual_anchor = None;
+        self.capture_preview = None;
         self.input.clear();
         self.status.clear();
+    }
+
+    /// The inclusive `(first, last)` row range visual mode has selected, if
+    /// visual mode is active and the cursor is on a row.
+    #[must_use]
+    pub fn visual_range(&self) -> Option<(usize, usize)> {
+        let (a, b) = (self.visual_anchor?, self.selected?);
+        Some((a.min(b), a.max(b)))
+    }
+
+    /// Ids the next operator applies to: the whole visual run when visual mode
+    /// is active, otherwise just the selected row.
+    #[must_use]
+    pub fn operand_ids(&self) -> Vec<EntityRef> {
+        match self.visual_range() {
+            // Sliced with `get` rather than indexed: a stale range against a
+            // list that shrank under a refresh must yield fewer tasks, never a
+            // panic in the middle of the user's session.
+            Some((lo, hi)) => self
+                .tasks
+                .get(lo..=hi)
+                .or_else(|| self.tasks.get(lo..))
+                .unwrap_or_default()
+                .iter()
+                .map(|t| t.id)
+                .collect(),
+            None => self.selected_task().map(|t| t.id).into_iter().collect(),
+        }
+    }
+
+    /// Label for the current operand set: the task's title, or `"N tasks"`.
+    #[must_use]
+    pub fn operand_label(&self) -> String {
+        match self.visual_range() {
+            Some((lo, hi)) if hi > lo => format!("{} tasks", hi - lo + 1),
+            _ => self
+                .selected_task()
+                .map_or_else(String::new, |t| t.title.clone()),
+        }
+    }
+
+    /// Enter visual mode, anchoring on the current row. No-op with no
+    /// selection — there would be nothing to anchor to.
+    pub fn enter_visual(&mut self) -> bool {
+        // Visual mode selects *tasks*; in the Stream view's left pane the
+        // cursor keys drive the stream list instead, so there is nothing to
+        // extend.
+        if self.view == View::Stream && self.pane == StreamPane::Streams {
+            return false;
+        }
+        let Some(i) = self.selected else { return false };
+        self.visual_anchor = Some(i);
+        self.mode = Mode::Visual;
+        self.status = "visual: j/k extend · x done · d defer · D delete · m move".into();
+        true
+    }
+
+    /// Leave visual mode, dropping the selection.
+    pub fn exit_visual(&mut self) {
+        self.visual_anchor = None;
+        self.mode = Mode::Normal;
+        self.status.clear();
+    }
+
+    /// Enter Inbox triage: switch to the Inbox and present its first task.
+    pub fn enter_triage(&mut self) {
+        self.view = View::Inbox;
+        self.triage = true;
+        self.visual_anchor = None;
+        self.mode = Mode::Triage;
+        self.selected = if self.tasks.is_empty() { None } else { Some(0) };
+    }
+
+    /// Leave triage mode.
+    pub fn exit_triage(&mut self) {
+        self.triage = false;
+        self.mode = Mode::Normal;
+        self.visual_anchor = None;
+    }
+
+    /// Move to the next task in a triage pass, ending the pass when the Inbox
+    /// runs out.
+    ///
+    /// `consumed` says whether the decision removed the task from the Inbox
+    /// (promote / delete / complete): the list shrinks under the cursor, so
+    /// holding the index *is* advancing. Decisions that leave the task in
+    /// place (keep / schedule / defer) step forward instead, or the same card
+    /// would come back forever.
+    pub fn triage_advance(&mut self, consumed: bool) {
+        if !consumed {
+            self.selected = self.selected.map(|i| i + 1);
+        }
+        let remaining = self.tasks.len().saturating_sub(usize::from(consumed));
+        if self.selected.is_none_or(|i| i >= remaining) {
+            self.exit_triage();
+            self.status = "triage complete".into();
+        }
+    }
+
+    /// Show the `:devices` overlay.
+    pub fn show_devices(&mut self, rows: Vec<DeviceRow>) {
+        self.status = format!("{} paired device(s) — any key to close", rows.len());
+        self.devices = Some(rows);
     }
 
     /// Toggle which Stream-view pane has focus (Tab).
@@ -525,6 +706,22 @@ fn wrap_next(len: usize, selected: Option<usize>) -> Option<usize> {
     Some(selected.map_or(0, |i| (i + 1) % len))
 }
 
+/// Next index, stopping at the last row; `None` when empty.
+fn clamp_next(len: usize, selected: Option<usize>) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(selected.map_or(0, |i| (i + 1).min(len - 1)))
+}
+
+/// Previous index, stopping at the first row; `None` when empty.
+fn clamp_prev(len: usize, selected: Option<usize>) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(selected.map_or(0, |i| i.saturating_sub(1)))
+}
+
 /// Previous index with wraparound; `None` when empty.
 fn wrap_prev(len: usize, selected: Option<usize>) -> Option<usize> {
     if len == 0 {
@@ -538,7 +735,7 @@ fn wrap_prev(len: usize, selected: Option<usize>) -> Option<usize> {
 pub(crate) mod fixtures {
     use jiff::Timestamp;
     use std::collections::BTreeSet;
-    use sunrise_core::queries::StreamRow;
+    use sunrise_core::queries::{ContextRow, StreamRow};
     use sunrise_domain::rrule::RRule;
     use sunrise_domain::{
         inbox_stream_ref, Routine, RoutineCatchupPolicy, StreamColor, Task, TaskState, TaskTemplate,
@@ -615,6 +812,17 @@ pub(crate) mod fixtures {
             color: StreamColor::Slate,
             open_task_count: open,
             archived: false,
+        }
+    }
+
+    /// A named context row; `idx` seeds the id.
+    pub(crate) fn context_row(idx: u8, name: &str) -> ContextRow {
+        ContextRow {
+            id: EntityRef::new(EntityKind::Context, [idx; 16]),
+            name: name.into(),
+            description: None,
+            archived: false,
+            task_count: 0,
         }
     }
 

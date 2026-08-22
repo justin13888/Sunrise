@@ -3,9 +3,12 @@
 //! [`apply_action`] is pure over ([`ViewState`], `now_ms`) — it mutates view
 //! state and *returns* the I/O the runtime must perform, rather than doing it.
 //! That keeps every keybinding unit-testable without a terminal or a `Core`:
-//! the tests press a key through [`crate::dispatch`], feed the resulting
-//! [`Action`] here, and assert on the [`Outcome`].
+//! the tests press a key through the state's [`crate::Keymap`], feed the
+//! resulting [`Action`] here, and assert on the [`Outcome`] — including bulk
+//! operations, which return an explicit command list rather than looping in the
+//! binary.
 
+use crate::capture::{now_ts, parse_line, preview_line, unresolved_note};
 use crate::command::parse_command;
 use crate::keymap::{Action, Mode};
 use crate::view::{Prompt, StreamPane, View, ViewState};
@@ -13,7 +16,8 @@ use crate::{apply_command, AppEffect};
 use std::path::PathBuf;
 use std::time::Duration;
 use sunrise_core::{Command, DomainEvent};
-use sunrise_domain::{StreamDraft, TaskDraft, TaskPatch};
+use sunrise_domain::capture::parse_when;
+use sunrise_domain::{StreamDraft, TaskPatch};
 use sunrise_id::EntityRef;
 
 /// Work the runtime must do after [`apply_action`] has updated the view state.
@@ -25,18 +29,53 @@ pub enum Outcome {
     Refresh,
     /// Submit this command to the core, then refresh.
     Submit(Box<Command>),
+    /// Submit every command in order, then refresh once.
+    ///
+    /// Bulk operations live here rather than as a loop in the binary so that a
+    /// visual-mode operator is one testable value: the tests assert the exact
+    /// command list, not that some loop ran the right number of times.
+    SubmitMany(Vec<Command>),
     /// Run `Query::StreamList` and hand the rows to
     /// [`ViewState::open_stream_picker`].
     OpenStreamPicker {
-        /// Task being moved.
-        task: EntityRef,
-        /// Its title, echoed in the picker header.
+        /// Tasks being moved (more than one under visual mode).
+        tasks: Vec<EntityRef>,
+        /// Their title (or `"N tasks"`), echoed in the picker header.
         title: String,
     },
+    /// Open the task's note body in `$EDITOR`, then apply the edited bytes via
+    /// `TaskPatch.body`. The runtime owns the terminal suspend/restore.
+    EditBody {
+        /// Task whose body is being edited.
+        id: EntityRef,
+        /// Current body bytes, used to seed the temp file.
+        body: Vec<u8>,
+    },
+    /// Resolve a task by id (`Query::EntityById`) and open it in Focus.
+    OpenTask(EntityRef),
+    /// Run `Query::DeviceList` and show the result overlay (`:devices`).
+    ShowDevices,
     /// Load an image into the Focus preview pane (`:preview`).
     Preview(PathBuf),
     /// Exit the application.
     Quit,
+}
+
+impl Outcome {
+    /// Wrap a command list in the narrowest outcome that fits: `None` for an
+    /// empty list, [`Outcome::Submit`] for exactly one, [`Outcome::SubmitMany`]
+    /// beyond that.
+    ///
+    /// Keeps "one keypress, one command" the literal shape of a single-row
+    /// operation — a bulk operator is the only thing that produces a batch.
+    #[must_use]
+    fn submit_all(mut cmds: Vec<Command>) -> Self {
+        match cmds.len() {
+            0 => Self::None,
+            1 => Self::Submit(Box::new(cmds.remove(0))),
+            _ => Self::SubmitMany(cmds),
+        }
+    }
 }
 
 /// Maximum characters accepted into the shared input line.
@@ -56,6 +95,15 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
     // its normal job.
     if state.show_help && !matches!(action, Action::ToggleHelp) {
         state.show_help = false;
+        if matches!(action, Action::Escape | Action::Quit) {
+            return Outcome::None;
+        }
+    }
+    // The `:devices` overlay behaves the same way: informational, dismissed by
+    // whatever the user presses next.
+    if state.devices.is_some() {
+        state.devices = None;
+        state.status.clear();
         if matches!(action, Action::Escape | Action::Quit) {
             return Outcome::None;
         }
@@ -126,15 +174,22 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 Outcome::None
             }
         }
-        Action::Toggle => match state.selected_task().map(|t| t.id) {
-            Some(id) => Outcome::Submit(Box::new(Command::CompleteTask(id))),
-            None => Outcome::None,
-        },
+        Action::Toggle => {
+            let ids = state.operand_ids();
+            if ids.is_empty() {
+                return Outcome::None;
+            }
+            let label = state.operand_label();
+            let cmds: Vec<Command> = ids.into_iter().map(Command::CompleteTask).collect();
+            finish_operator(state, "completed", &label);
+            Outcome::submit_all(cmds)
+        }
         Action::Capture => {
             state.mode = Mode::Insert;
             state.prompt = Some(Prompt::Capture);
             state.input.clear();
-            state.status = "capture: type title, Enter to save, Esc to cancel".into();
+            state.status = "capture: #stream ^when !1-5 ~30m — Enter to save, Esc to cancel".into();
+            refresh_capture_preview(state, now_ms);
             Outcome::None
         }
         Action::EditTitle => match state.selected_task().map(|t| (t.id, t.title.clone())) {
@@ -147,32 +202,78 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             }
             None => no_selection(state),
         },
-        Action::Defer => match state.selected_task().map(|t| t.id) {
-            Some(id) => {
-                state.mode = Mode::Insert;
-                state.prompt = Some(Prompt::Defer(id));
-                state.input.clear();
-                state.status = "defer by: 30m / 2h / 3d / 1w (blank = 1d), Esc to cancel".into();
-                Outcome::None
+        Action::EditBody => match state.selected_task().map(|t| (t.id, t.body.clone())) {
+            Some((id, body)) => Outcome::EditBody {
+                id,
+                body: body.map(|b| b.0).unwrap_or_default(),
+            },
+            None => no_selection(state),
+        },
+        Action::Defer => {
+            let ids = state.operand_ids();
+            if ids.is_empty() {
+                return no_selection(state);
             }
-            None => no_selection(state),
-        },
-        Action::Delete => match state.selected_task().map(|t| (t.id, t.title.clone())) {
-            Some((id, title)) => {
-                // Destructive: park in Confirm mode. Nothing is submitted
-                // until the user answers `y`.
-                state.mode = Mode::Confirm;
-                state.input.clear();
-                state.status = format!("delete \"{title}\"? [y/N]");
-                state.prompt = Some(Prompt::ConfirmDelete { id, title });
-                Outcome::None
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::Defer(ids));
+            state.input.clear();
+            state.status = "defer by: 30m / 2h / 3d / 1w (blank = 1d), Esc to cancel".into();
+            Outcome::None
+        }
+        Action::Schedule => {
+            let ids = state.operand_ids();
+            if ids.is_empty() {
+                return no_selection(state);
             }
-            None => no_selection(state),
-        },
-        Action::MoveToStream => match state.selected_task().map(|t| (t.id, t.title.clone())) {
-            Some((task, title)) => Outcome::OpenStreamPicker { task, title },
-            None => no_selection(state),
-        },
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::Schedule(ids));
+            state.input.clear();
+            state.status =
+                "schedule at: today / tomorrow 9am / next friday / 2026-03-01 / +3d".into();
+            Outcome::None
+        }
+        Action::Delete => {
+            let ids = state.operand_ids();
+            if ids.is_empty() {
+                return no_selection(state);
+            }
+            // Destructive: park in Confirm mode. Nothing is submitted
+            // until the user answers `y`.
+            let title = state.operand_label();
+            state.mode = Mode::Confirm;
+            state.input.clear();
+            state.status = format!("delete \"{title}\"? [y/N]");
+            state.prompt = Some(Prompt::ConfirmDelete { ids, title });
+            Outcome::None
+        }
+        Action::MoveToStream => {
+            let tasks = state.operand_ids();
+            if tasks.is_empty() {
+                return no_selection(state);
+            }
+            Outcome::OpenStreamPicker {
+                tasks,
+                title: state.operand_label(),
+            }
+        }
+        Action::VisualMode => {
+            if state.enter_visual() {
+                Outcome::None
+            } else {
+                no_selection(state)
+            }
+        }
+        Action::Triage => {
+            // Always refresh: triage operates on the Inbox, which may not be
+            // the current view. `after_tasks_loaded` ends the pass immediately
+            // if the Inbox turns out to be empty.
+            state.enter_triage();
+            Outcome::Refresh
+        }
+        Action::TriageKeep => {
+            state.triage_advance(false);
+            Outcome::None
+        }
         Action::CreateStream => {
             state.mode = Mode::Insert;
             state.prompt = Some(Prompt::CreateStream);
@@ -211,10 +312,19 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::Escape => {
-            if state.mode == Mode::Normal && state.view == View::Focus {
+            if state.mode == Mode::Visual {
+                state.exit_visual();
+                Outcome::None
+            } else if state.mode == Mode::Triage {
+                state.exit_triage();
+                state.status = "triage cancelled".into();
+                Outcome::None
+            } else if state.mode == Mode::Normal && state.view == View::Focus {
                 state.close_focus();
                 Outcome::Refresh
             } else {
+                // A prompt opened from a triage pass returns to the card;
+                // `reset_to_normal` keeps triage alive for exactly that reason.
                 state.reset_to_normal();
                 Outcome::None
             }
@@ -223,10 +333,12 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             if state.input.len() < MAX_INPUT {
                 state.input.push(c);
             }
+            refresh_capture_preview(state, now_ms);
             Outcome::None
         }
         Action::Backspace => {
             state.input.pop();
+            refresh_capture_preview(state, now_ms);
             Outcome::None
         }
         Action::Submit => submit(state, now_ms),
@@ -239,26 +351,90 @@ fn no_selection(state: &mut ViewState) -> Outcome {
     Outcome::None
 }
 
+/// Re-parse the capture buffer for the inline preview.
+///
+/// `docs/08-features/inbox-and-capture.md`: "Parser runs *as the user types*;
+/// an inline preview shows the structured interpretation." Cheap enough to do
+/// per keystroke — the parser is a single pass over a short line and reads no
+/// I/O; the stream list it resolves against is already in memory.
+fn refresh_capture_preview(state: &mut ViewState, now_ms: u64) {
+    if state.prompt != Some(Prompt::Capture) {
+        state.capture_preview = None;
+        return;
+    }
+    let text = state.input.trim();
+    if text.is_empty() {
+        state.capture_preview = None;
+        return;
+    }
+    let parsed = parse_line(text, &state.streams, &state.contexts, now_ms, &state.tz);
+    let mut line = preview_line(&parsed, &state.streams, &state.contexts, &state.tz);
+    if let Some(note) = unresolved_note(&parsed.unresolved) {
+        line.push_str("  ");
+        line.push_str(&note);
+    }
+    state.capture_preview = Some(line);
+}
+
+/// Turn a capture line into a `CreateTask`, reporting anything the parser
+/// could not apply.
+///
+/// The parser guarantees unresolved text stays in the title; this puts the
+/// matching explanation on the status line, so "nothing typed is silently
+/// discarded" holds all the way to the screen and not just in the data.
+fn capture_outcome(state: &mut ViewState, text: &str, now_ms: u64) -> Outcome {
+    let parsed = parse_line(text, &state.streams, &state.contexts, now_ms, &state.tz);
+    state.status = match unresolved_note(&parsed.unresolved) {
+        Some(note) => note,
+        None => format!("captured \"{}\"", parsed.draft.title),
+    };
+    Outcome::Submit(Box::new(Command::CreateTask(parsed.draft)))
+}
+
+/// Close out a visual-mode operator or a triage decision.
+///
+/// `verb` is the past-tense word for the status line and `label` names what was
+/// operated on (captured *before* the selection is torn down). Visual mode
+/// always ends after one operator (as in vim); triage advances to the next
+/// card.
+fn finish_operator(state: &mut ViewState, verb: &str, label: &str) {
+    let triage = state.triage;
+    if state.visual_anchor.is_some() {
+        state.exit_visual();
+    }
+    state.status = format!("{verb} \"{label}\"");
+    if triage {
+        // Completing/scheduling/deferring leaves the task in the Inbox, so the
+        // cursor has to step forward. Runs last so an end-of-pass message wins
+        // over the per-task one.
+        state.triage_advance(false);
+    }
+}
+
 /// Handle Enter (or `y` in a confirmation) according to the active mode.
 fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
     match state.mode {
-        Mode::Command => submit_command_line(state),
+        Mode::Command => submit_command_line(state, now_ms),
         Mode::Confirm => submit_confirm(state),
         Mode::Picker => submit_picker(state),
         Mode::Insert => submit_prompt(state, now_ms),
-        Mode::Normal => Outcome::None,
+        Mode::Normal | Mode::Visual | Mode::Triage => Outcome::None,
     }
 }
 
 /// `:`-line submit: parse and apply, mapping the pure [`AppEffect`] onto an
 /// [`Outcome`].
-fn submit_command_line(state: &mut ViewState) -> Outcome {
+fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
     let cmd = parse_command(&state.input);
     state.mode = Mode::Normal;
     state.input.clear();
     match apply_command(cmd, state) {
         Some(AppEffect::Quit) => Outcome::Quit,
         Some(AppEffect::Preview(path)) => Outcome::Preview(path),
+        // `:capture` is the same parse as the `c` prompt, by construction.
+        Some(AppEffect::Capture(text)) => capture_outcome(state, &text, now_ms),
+        Some(AppEffect::Open(id)) => Outcome::OpenTask(id),
+        Some(AppEffect::Devices) => Outcome::ShowDevices,
         None => Outcome::Refresh,
     }
 }
@@ -266,11 +442,17 @@ fn submit_command_line(state: &mut ViewState) -> Outcome {
 /// `y` on a confirmation prompt. The only confirmable action in v1 is delete.
 fn submit_confirm(state: &mut ViewState) -> Outcome {
     let prompt = state.prompt.take();
+    let triage = state.triage;
     state.reset_to_normal();
     match prompt {
-        Some(Prompt::ConfirmDelete { id, title }) => {
+        Some(Prompt::ConfirmDelete { ids, title }) => {
             state.status = format!("deleted \"{title}\"");
-            Outcome::Submit(Box::new(Command::DeleteTask(id)))
+            if triage {
+                // A deleted task leaves the Inbox: the list closes up under the
+                // cursor, so holding the index is already "next".
+                state.triage_advance(true);
+            }
+            Outcome::submit_all(ids.into_iter().map(Command::DeleteTask).collect())
         }
         _ => Outcome::None,
     }
@@ -279,6 +461,7 @@ fn submit_confirm(state: &mut ViewState) -> Outcome {
 /// Enter on the move-to-stream picker.
 fn submit_picker(state: &mut ViewState) -> Outcome {
     let picker = state.picker.take();
+    let triage = state.triage;
     state.reset_to_normal();
     let Some(picker) = picker else {
         return Outcome::None;
@@ -288,10 +471,17 @@ fn submit_picker(state: &mut ViewState) -> Outcome {
     };
     let (stream, name) = (row.id, row.name.clone());
     state.status = format!("moved \"{}\" → {name}", picker.task_title);
-    Outcome::Submit(Box::new(Command::PromoteToStream {
-        id: picker.task,
-        stream,
-    }))
+    let cmds = picker
+        .tasks
+        .iter()
+        .map(|id| Command::PromoteToStream { id: *id, stream })
+        .collect();
+    if triage {
+        // Promoting *to* the Inbox leaves the task where it is, so the cursor
+        // must step forward instead of holding.
+        state.triage_advance(stream != sunrise_domain::inbox_stream_ref());
+    }
+    Outcome::submit_all(cmds)
 }
 
 /// Enter on a text prompt (capture / edit / defer / new stream / search).
@@ -303,10 +493,7 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
             if text.is_empty() {
                 return Outcome::None;
             }
-            Outcome::Submit(Box::new(Command::CreateTask(TaskDraft {
-                title: text,
-                ..Default::default()
-            })))
+            capture_outcome(state, &text, now_ms)
         }
         Some(Prompt::EditTitle(id)) => {
             if text.is_empty() {
@@ -325,20 +512,55 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                 },
             }))
         }
-        Some(Prompt::Defer(id)) => match parse_defer_ms(&text) {
+        Some(Prompt::Defer(ids)) => match parse_defer_ms(&text) {
             Some(delta_ms) => {
+                let label = state.operand_label();
+                let to_ms = now_ms.saturating_add(delta_ms);
+                let cmds = ids
+                    .iter()
+                    .map(|id| Command::DeferTask { id: *id, to_ms })
+                    .collect();
                 state.reset_to_normal();
-                Outcome::Submit(Box::new(Command::DeferTask {
-                    id,
-                    to_ms: now_ms.saturating_add(delta_ms),
-                }))
+                finish_operator(state, "deferred", &label);
+                Outcome::submit_all(cmds)
             }
             None => {
-                state.prompt = Some(Prompt::Defer(id));
+                state.prompt = Some(Prompt::Defer(ids));
                 state.status = format!("defer: cannot parse \"{text}\" — try 30m / 2h / 3d / 1w");
                 Outcome::None
             }
         },
+        Some(Prompt::Schedule(ids)) => {
+            // One when-parser for the whole app: the same
+            // `sunrise_domain::capture::parse_when` that backs `^when` in
+            // capture. Anything it declines keeps the prompt open rather than
+            // scheduling a guess.
+            match parse_when(&text, now_ts(now_ms), &state.tz) {
+                Some(at) => {
+                    let label = state.operand_label();
+                    let cmds = ids
+                        .iter()
+                        .map(|id| Command::UpdateTask {
+                            id: *id,
+                            patch: TaskPatch {
+                                scheduled_at: Some(Some(at)),
+                                ..Default::default()
+                            },
+                        })
+                        .collect();
+                    state.reset_to_normal();
+                    finish_operator(state, "scheduled", &label);
+                    Outcome::submit_all(cmds)
+                }
+                None => {
+                    state.prompt = Some(Prompt::Schedule(ids));
+                    state.status = format!(
+                        "schedule: cannot parse \"{text}\" — try today / tomorrow 9am / +3d"
+                    );
+                    Outcome::None
+                }
+            }
+        }
         Some(Prompt::CreateStream) => {
             if text.is_empty() {
                 state.prompt = Some(Prompt::CreateStream);
@@ -419,8 +641,7 @@ pub fn parse_defer_ms(input: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keymap::dispatch;
-    use crate::view::fixtures::{fake_task, inbox_row, stream_row};
+    use crate::view::fixtures::{context_row, fake_task, inbox_row, stream_row};
     use crossterm::event::KeyCode;
 
     /// Fixed "now" for deferral arithmetic: 2026-01-01T00:00:00Z.
@@ -431,7 +652,9 @@ mod tests {
     /// if the key has no binding, so a test that presses an unbound key fails
     /// loudly instead of silently asserting nothing.
     fn press(state: &mut ViewState, key: KeyCode) -> Outcome {
-        let action = dispatch(key, state.mode, state.vim_mode, state.view)
+        let action = state
+            .keymap
+            .dispatch(key, state.mode, state.vim_mode, state.view)
             .unwrap_or_else(|| panic!("no binding for {key:?} in {:?}", state.mode));
         apply_action(action, state, NOW_MS)
     }
@@ -616,14 +839,14 @@ mod tests {
         let title = s.selected_task().expect("selection").title.clone();
 
         let rows = match press(&mut s, KeyCode::Char('m')) {
-            Outcome::OpenStreamPicker { task, title: t } => {
-                assert_eq!(task, id);
+            Outcome::OpenStreamPicker { tasks, title: t } => {
+                assert_eq!(tasks, vec![id]);
                 assert_eq!(t, title);
                 vec![inbox_row(3), stream_row(7, "Work", 2)]
             }
             other => panic!("expected OpenStreamPicker, got {other:?}"),
         };
-        s.open_stream_picker(id, title, rows);
+        s.open_stream_picker(vec![id], title, rows);
         assert_eq!(s.mode, Mode::Picker);
         // The cursor starts on the task's current stream (Inbox).
         assert_eq!(
@@ -653,7 +876,11 @@ mod tests {
     fn escaping_the_picker_moves_nothing() {
         let mut s = inbox_state();
         let id = selected_id(&s);
-        s.open_stream_picker(id, "t".into(), vec![inbox_row(0), stream_row(7, "Work", 0)]);
+        s.open_stream_picker(
+            vec![id],
+            "t".into(),
+            vec![inbox_row(0), stream_row(7, "Work", 0)],
+        );
         let _ = press(&mut s, KeyCode::Char('j'));
         assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
         assert!(s.picker.is_none());
@@ -836,6 +1063,590 @@ mod tests {
         }
         let _ = drain_changes(&mut rx, CHANGE_DEBOUNCE).await;
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Extract the command list from an outcome, whichever shape it took.
+    fn commands(o: Outcome) -> Vec<Command> {
+        match o {
+            Outcome::Submit(c) => vec![*c],
+            Outcome::SubmitMany(cs) => cs,
+            other => panic!("expected commands, got {other:?}"),
+        }
+    }
+
+    /// An Inbox state that also knows about a "Travel" stream, so `#travel`
+    /// resolves the way it would against a real vault.
+    fn inbox_with_streams() -> ViewState {
+        let mut s = inbox_state();
+        s.streams = vec![inbox_row(3), stream_row(7, "Travel", 0)];
+        s.contexts = vec![context_row(11, "errands")];
+        s.after_streams_loaded();
+        s
+    }
+
+    // ---- capture through the parser (docs/08-features/inbox-and-capture.md) ----
+
+    #[test]
+    fn capture_runs_the_line_through_the_parser() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "Buy milk #inbox !2");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateTask(draft) => {
+                    // The annotations are *parsed*, not left in the title.
+                    assert_eq!(draft.title, "Buy milk");
+                    assert_eq!(draft.priority, Some(2));
+                    assert_eq!(draft.stream_id, Some(inbox_row(3).id));
+                }
+                other => panic!("expected CreateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capture_resolves_a_context_against_the_vault() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "Buy milk @errands");
+        // The live preview names the resolved context, and no warning is raised
+        // for a context that exists.
+        let p = s.capture_preview.clone().expect("a preview");
+        assert!(p.contains("@errands"), "got {p}");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateTask(draft) => {
+                    assert_eq!(draft.title, "Buy milk");
+                    assert_eq!(draft.contexts, vec![context_row(11, "errands").id]);
+                }
+                other => panic!("expected CreateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(
+            s.status.starts_with("captured"),
+            "status was {:?}",
+            s.status
+        );
+    }
+
+    #[test]
+    fn capture_parses_stream_schedule_and_duration() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "Renew passport #travel ^tomorrow !1 ~1h");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateTask(draft) => {
+                    assert_eq!(draft.title, "Renew passport");
+                    assert_eq!(draft.stream_id, Some(stream_row(7, "Travel", 0).id));
+                    assert_eq!(draft.priority, Some(1));
+                    assert_eq!(draft.estimated_duration_s, Some(3600));
+                    assert_eq!(
+                        draft.scheduled_at.map(|t| t.to_string()),
+                        Some("2026-01-02T00:00:00Z".to_string())
+                    );
+                }
+                other => panic!("expected CreateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unresolved_stream_is_reported_not_dropped() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "Buy milk #travl");
+        let cmd = press(&mut s, KeyCode::Enter);
+        // The status explains what was not understood ...
+        assert_eq!(s.status, "note: unknown stream \"travl\"");
+        match commands(cmd).remove(0) {
+            // ... and the text itself survives into the title.
+            Command::CreateTask(draft) => assert_eq!(draft.title, "Buy milk #travl"),
+            other => panic!("expected CreateTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_capture_preview_updates_on_every_keystroke() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        // Nothing typed yet: no preview to show.
+        assert_eq!(s.capture_preview, None);
+
+        type_text(&mut s, "Buy milk");
+        assert_eq!(s.capture_preview.as_deref(), Some("title \"Buy milk\""));
+
+        type_text(&mut s, " #travel !2");
+        let p = s.capture_preview.clone().expect("a preview");
+        assert!(p.contains("title \"Buy milk\""), "got {p}");
+        assert!(p.contains("#Travel"), "got {p}");
+        assert!(p.contains("!2"), "got {p}");
+
+        // Backspacing an annotation retracts it from the preview.
+        for _ in 0..3 {
+            let _ = press(&mut s, KeyCode::Backspace);
+        }
+        let p = s.capture_preview.clone().expect("a preview");
+        assert!(!p.contains("!2"), "priority should be gone: {p}");
+
+        // Cancelling clears the preview along with the prompt.
+        let _ = press(&mut s, KeyCode::Esc);
+        assert_eq!(s.capture_preview, None);
+    }
+
+    #[test]
+    fn the_capture_preview_flags_an_unknown_stream_while_typing() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "Buy milk #travl");
+        let p = s.capture_preview.clone().expect("a preview");
+        assert!(p.contains("unknown stream \"travl\""), "got {p}");
+    }
+
+    // ---- `s` = schedule (docs/07-clients/tui.md keybinding table) ----
+
+    #[test]
+    fn schedule_sets_scheduled_at_from_a_when_expression() {
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        assert!(matches!(press(&mut s, KeyCode::Char('s')), Outcome::None));
+        assert_eq!(s.mode, Mode::Insert);
+        type_text(&mut s, "tomorrow 9am");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id: target, patch } => {
+                    assert_eq!(target, id);
+                    assert_eq!(
+                        patch.scheduled_at.flatten().map(|t| t.to_string()),
+                        Some("2026-01-02T09:00:00Z".to_string())
+                    );
+                    // Nothing else moves.
+                    assert!(patch.title.is_none() && patch.state.is_none());
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn schedule_with_unparseable_input_submits_nothing() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('s'));
+        type_text(&mut s, "whenever");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        // The prompt stays open rather than scheduling a guess.
+        assert!(matches!(s.prompt, Some(Prompt::Schedule(_))));
+        assert!(
+            s.status.contains("cannot parse"),
+            "status was {:?}",
+            s.status
+        );
+    }
+
+    #[test]
+    fn schedule_accepts_the_same_forms_the_capture_parser_does() {
+        for expr in [
+            "today",
+            "tomorrow",
+            "next friday",
+            "2026-03-01",
+            "+3d",
+            "9am",
+        ] {
+            let mut s = inbox_state();
+            let _ = press(&mut s, KeyCode::Char('s'));
+            type_text(&mut s, expr);
+            assert!(
+                matches!(press(&mut s, KeyCode::Enter), Outcome::Submit(_)),
+                "`{expr}` should schedule"
+            );
+        }
+    }
+
+    // ---- `V` = visual mode + bulk operators (docs/08-features/keyboard.md) ----
+
+    #[test]
+    fn visual_mode_extends_over_a_run_of_rows() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        assert_eq!(s.mode, Mode::Visual);
+        assert_eq!(s.visual_range(), Some((0, 0)));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.visual_range(), Some((0, 2)));
+        // Extension clamps at the end instead of wrapping round to row 0.
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert_eq!(s.visual_range(), Some((0, 2)));
+    }
+
+    #[test]
+    fn visual_complete_emits_one_command_per_selected_task() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let ids: Vec<EntityRef> = s.tasks.iter().map(|t| t.id).collect();
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let cmds = commands(press(&mut s, KeyCode::Char('x')));
+        assert_eq!(cmds.len(), 3);
+        for (cmd, id) in cmds.iter().zip(&ids) {
+            match cmd {
+                Command::CompleteTask(target) => assert_eq!(target, id),
+                other => panic!("expected CompleteTask, got {other:?}"),
+            }
+        }
+        // One operator, then back to Normal — as in vim.
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.visual_anchor, None);
+    }
+
+    #[test]
+    fn visual_defer_emits_one_command_per_selected_task() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert!(matches!(press(&mut s, KeyCode::Char('d')), Outcome::None));
+        type_text(&mut s, "2h");
+        let cmds = commands(press(&mut s, KeyCode::Enter));
+        assert_eq!(cmds.len(), 2);
+        for cmd in &cmds {
+            match cmd {
+                Command::DeferTask { to_ms, .. } => {
+                    assert_eq!(*to_ms, NOW_MS + 120 * MIN_MS);
+                }
+                other => panic!("expected DeferTask, got {other:?}"),
+            }
+        }
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_delete_is_still_gated_on_the_confirmation() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert!(matches!(press(&mut s, KeyCode::Char('D')), Outcome::None));
+        assert_eq!(s.mode, Mode::Confirm);
+        assert!(s.status.contains("2 tasks"), "status was {:?}", s.status);
+        // Declining deletes nothing.
+        assert!(matches!(press(&mut s, KeyCode::Char('n')), Outcome::None));
+
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('D'));
+        let cmds = commands(press(&mut s, KeyCode::Char('y')));
+        assert_eq!(cmds.len(), 2);
+        assert!(cmds.iter().all(|c| matches!(c, Command::DeleteTask(_))));
+    }
+
+    #[test]
+    fn visual_move_promotes_every_selected_task() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let ids: Vec<EntityRef> = s.tasks.iter().map(|t| t.id).collect();
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let (tasks, title) = match press(&mut s, KeyCode::Char('m')) {
+            Outcome::OpenStreamPicker { tasks, title } => (tasks, title),
+            other => panic!("expected OpenStreamPicker, got {other:?}"),
+        };
+        assert_eq!(tasks, ids);
+        assert_eq!(title, "3 tasks");
+        s.open_stream_picker(tasks, title, vec![inbox_row(3), stream_row(7, "Work", 0)]);
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let cmds = commands(press(&mut s, KeyCode::Enter));
+        assert_eq!(cmds.len(), 3);
+        for (cmd, id) in cmds.iter().zip(&ids) {
+            match cmd {
+                Command::PromoteToStream { id: target, stream } => {
+                    assert_eq!(target, id);
+                    assert_eq!(*stream, stream_row(7, "Work", 0).id);
+                }
+                other => panic!("expected PromoteToStream, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn escape_leaves_visual_mode_without_touching_anything() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.visual_anchor, None);
+        // The cursor stays where the extension left it; nothing was submitted.
+        assert_eq!(s.selected, Some(1));
+    }
+
+    #[test]
+    fn visual_mode_needs_a_selection() {
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        s.after_tasks_loaded();
+        assert!(matches!(press(&mut s, KeyCode::Char('V')), Outcome::None));
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    // ---- `E` = note body in $EDITOR (docs/07-clients/tui.md) ----
+
+    #[test]
+    fn edit_body_hands_the_current_body_to_the_runtime() {
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        let i = s.selected.expect("a selection");
+        s.tasks[i].body = Some(sunrise_domain::NoteBody(b"first draft".to_vec()));
+        match press(&mut s, KeyCode::Char('E')) {
+            Outcome::EditBody { id: target, body } => {
+                assert_eq!(target, id);
+                // NoteBody is opaque bytes, so plain UTF-8 round-trips.
+                assert_eq!(String::from_utf8(body).unwrap(), "first draft");
+            }
+            other => panic!("expected EditBody, got {other:?}"),
+        }
+        // `e` is still the inline title edit.
+        assert!(matches!(press(&mut s, KeyCode::Char('e')), Outcome::None));
+        assert_eq!(s.prompt, Some(Prompt::EditTitle(id)));
+    }
+
+    #[test]
+    fn edit_body_on_a_task_without_one_starts_empty() {
+        let mut s = inbox_state();
+        match press(&mut s, KeyCode::Char('E')) {
+            Outcome::EditBody { body, .. } => assert!(body.is_empty()),
+            other => panic!("expected EditBody, got {other:?}"),
+        }
+    }
+
+    // ---- command mode ----
+
+    #[test]
+    fn colon_capture_goes_through_the_same_parser() {
+        let mut s = inbox_with_streams();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "capture Renew passport #travel !1");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateTask(draft) => {
+                    assert_eq!(draft.title, "Renew passport");
+                    assert_eq!(draft.priority, Some(1));
+                    assert_eq!(draft.stream_id, Some(stream_row(7, "Travel", 0).id));
+                }
+                other => panic!("expected CreateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn colon_open_asks_the_runtime_to_resolve_the_id() {
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, &format!("open {}", id.to_str()));
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::OpenTask(target) => assert_eq!(target, id),
+            other => panic!("expected OpenTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn colon_devices_asks_for_the_device_list() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "devices");
+        assert!(matches!(
+            press(&mut s, KeyCode::Enter),
+            Outcome::ShowDevices
+        ));
+    }
+
+    #[test]
+    fn the_devices_overlay_is_dismissed_by_the_next_key() {
+        let mut s = inbox_state();
+        s.show_devices(Vec::new());
+        assert!(s.devices.is_some());
+        // Esc closes it without quitting the app.
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert!(s.devices.is_none());
+    }
+
+    #[test]
+    fn an_unknown_command_still_errors() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "frobnicate");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::Refresh));
+        assert!(s.status.contains("frobnicate"), "status was {:?}", s.status);
+    }
+
+    // ---- triage (docs/08-features/inbox-and-capture.md) ----
+
+    /// Enter triage the way the runtime does: press `t`, then let the refresh
+    /// the reducer asked for land.
+    fn triage_state() -> ViewState {
+        let mut s = inbox_with_streams();
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('t')),
+            Outcome::Refresh
+        ));
+        s.after_tasks_loaded();
+        s
+    }
+
+    #[test]
+    fn triage_starts_on_the_first_inbox_task() {
+        let mut s = ViewState::default();
+        s.view = View::Today;
+        s.tasks = (0u8..3).map(fake_task).collect();
+        s.after_tasks_loaded();
+        s.select_next();
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('t')),
+            Outcome::Refresh
+        ));
+        assert!(s.triage);
+        assert_eq!(s.view, View::Inbox);
+        assert_eq!(s.mode, Mode::Triage);
+        assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn triage_keep_advances_without_submitting_anything() {
+        let mut s = triage_state();
+        assert!(matches!(press(&mut s, KeyCode::Char('k')), Outcome::None));
+        assert_eq!(s.selected, Some(1));
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert_eq!(s.selected, Some(2));
+        // Keeping the last task ends the pass.
+        let _ = press(&mut s, KeyCode::Char('k'));
+        assert!(!s.triage);
+        assert_eq!(s.mode, Mode::Normal);
+        assert_eq!(s.status, "triage complete");
+    }
+
+    #[test]
+    fn triage_defers_and_moves_on() {
+        let mut s = triage_state();
+        let first = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char('d'));
+        type_text(&mut s, "1d");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::DeferTask { id, .. } => assert_eq!(id, first),
+                other => panic!("expected DeferTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        // A deferred task stays in the Inbox, so the cursor steps forward and
+        // the pass continues.
+        assert!(s.triage);
+        assert_eq!(s.mode, Mode::Triage);
+        assert_eq!(s.selected, Some(1));
+    }
+
+    #[test]
+    fn triage_schedules_the_current_task() {
+        let mut s = triage_state();
+        let first = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char('s'));
+        type_text(&mut s, "tomorrow");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id, patch } => {
+                    assert_eq!(id, first);
+                    assert!(patch.scheduled_at.flatten().is_some());
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert_eq!(s.selected, Some(1));
+    }
+
+    #[test]
+    fn triage_promotes_out_of_the_inbox_and_holds_the_cursor() {
+        let mut s = triage_state();
+        let first = selected_id(&s);
+        let (tasks, title) = match press(&mut s, KeyCode::Char('p')) {
+            Outcome::OpenStreamPicker { tasks, title } => (tasks, title),
+            other => panic!("expected OpenStreamPicker, got {other:?}"),
+        };
+        assert_eq!(tasks, vec![first]);
+        s.open_stream_picker(tasks, title, vec![inbox_row(3), stream_row(7, "Work", 0)]);
+        let _ = press(&mut s, KeyCode::Char('j'));
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::PromoteToStream { id, .. } => assert_eq!(id, first),
+                other => panic!("expected PromoteToStream, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        // The promoted task leaves the Inbox, so the list closes up under a
+        // stationary cursor rather than skipping the next task.
+        assert!(s.triage);
+        assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn triage_delete_still_confirms() {
+        let mut s = triage_state();
+        let first = selected_id(&s);
+        assert!(matches!(press(&mut s, KeyCode::Char('D')), Outcome::None));
+        assert_eq!(s.mode, Mode::Confirm);
+        match press(&mut s, KeyCode::Char('y')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::DeleteTask(id) => assert_eq!(id, first),
+                other => panic!("expected DeleteTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(s.triage, "the pass continues after a delete");
+        assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn escape_leaves_triage() {
+        let mut s = triage_state();
+        assert!(matches!(press(&mut s, KeyCode::Esc), Outcome::None));
+        assert!(!s.triage);
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn triage_over_an_empty_inbox_ends_immediately() {
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        s.after_tasks_loaded();
+        let _ = press(&mut s, KeyCode::Char('t'));
+        // The refresh the reducer asked for finds nothing to triage.
+        s.after_tasks_loaded();
+        assert!(!s.triage);
+        assert_eq!(s.status, "triage complete");
+    }
+
+    #[test]
+    fn a_remapped_key_reaches_the_reducer() {
+        // End-to-end for keys.toml: config → Keymap → dispatch → Command.
+        let (map, warnings) = crate::keymap::Keymap::from_config(&[("capture".into(), "n".into())]);
+        assert!(warnings.is_empty());
+        let mut s = inbox_with_streams();
+        s.keymap = map;
+        let _ = press(&mut s, KeyCode::Char('n'));
+        assert_eq!(s.prompt, Some(Prompt::Capture));
+        type_text(&mut s, "Buy milk");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::Submit(_)));
     }
 
     #[test]

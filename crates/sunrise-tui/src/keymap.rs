@@ -8,9 +8,16 @@
 //! [`dispatch`] resolves a keypress by scanning it in order (first match
 //! wins), and the `?` help overlay is generated from the same rows via
 //! [`help_sections`] — so the help can never drift from the keymap.
+//!
+//! User remapping (`~/.config/sunrise/keys.toml`, per `docs/07-clients/tui.md`)
+//! is layered on top as a [`Keymap`]: a list of *(row index, replacement key)*
+//! overrides against [`BINDINGS`]. Nothing is copied, the table stays the
+//! single source of truth, and the help overlay renders the overridden key
+//! because it reads through the same [`Keymap`].
 
 use crate::view::View;
 use crossterm::event::KeyCode;
+use std::path::PathBuf;
 
 /// Mode for the modal editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +33,12 @@ pub enum Mode {
     Confirm,
     /// Modal picker: a list overlay (e.g. `m` = move-to-stream) has focus.
     Picker,
+    /// Visual mode (`V`): a contiguous run of rows is selected and the next
+    /// operator (`x` / `d` / `D` / `m`) applies to all of them.
+    Visual,
+    /// Triage mode (`t`): the Inbox is presented one task at a time and every
+    /// key is a decision (`docs/08-features/inbox-and-capture.md`).
+    Triage,
 }
 
 impl Mode {
@@ -39,6 +52,8 @@ impl Mode {
             Self::Command => "CMD",
             Self::Confirm => "CONFIRM",
             Self::Picker => "PICK",
+            Self::Visual => "VISUAL",
+            Self::Triage => "TRIAGE",
         }
     }
 }
@@ -65,6 +80,16 @@ pub enum Action {
     Capture,
     /// Edit the selected task's title (`e`).
     EditTitle,
+    /// Edit the selected task's note body in `$EDITOR` (`E`).
+    EditBody,
+    /// Schedule the selected task (`s`), prompting for a when-expression.
+    Schedule,
+    /// Enter visual (multi-select) mode (`V`).
+    VisualMode,
+    /// Enter Inbox triage mode (`t`).
+    Triage,
+    /// Triage decision "keep": leave the task alone and advance (`k`).
+    TriageKeep,
     /// Defer the selected task (`d`), prompting for an offset.
     Defer,
     /// Delete the selected task (`D`), behind a confirmation prompt.
@@ -101,6 +126,53 @@ pub enum Action {
     /// First half of a `gg` chord: arm the pending-`g` latch. The runtime
     /// turns the second `g` into [`Action::GotoTop`].
     GotoPrefix,
+}
+
+impl Action {
+    /// Stable snake_case name used by `~/.config/sunrise/keys.toml` to address
+    /// this action. Names are part of the config contract: renaming one breaks
+    /// every user's key file, so they are chosen once and left alone.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Quit => "quit",
+            Self::SwitchView(View::Today) => "view_today",
+            Self::SwitchView(View::Inbox) => "view_inbox",
+            Self::SwitchView(View::Stream) => "view_stream",
+            Self::SwitchView(View::Search) => "view_search",
+            Self::SwitchView(View::Focus) => "view_focus",
+            Self::SwitchView(View::Routines) => "view_routines",
+            Self::Next => "next",
+            Self::Prev => "prev",
+            Self::GotoTop => "goto_top",
+            Self::GotoBottom => "goto_bottom",
+            Self::GotoPrefix => "goto_prefix",
+            Self::Toggle => "toggle",
+            Self::Capture => "capture",
+            Self::EditTitle => "edit_title",
+            Self::EditBody => "edit_body",
+            Self::Schedule => "schedule",
+            Self::VisualMode => "visual",
+            Self::Triage => "triage",
+            Self::TriageKeep => "triage_keep",
+            Self::Defer => "defer",
+            Self::Delete => "delete",
+            Self::MoveToStream => "move_to_stream",
+            Self::CreateStream => "create_stream",
+            Self::ToggleHelp => "help",
+            Self::BeginSearch => "search",
+            Self::BeginCommand => "command",
+            Self::EnterInsert => "insert",
+            Self::TogglePane => "toggle_pane",
+            Self::PaneLeft => "pane_left",
+            Self::PaneRight => "pane_right",
+            Self::Activate => "activate",
+            Self::Escape => "escape",
+            Self::InsertChar(_) => "insert_char",
+            Self::Backspace => "backspace",
+            Self::Submit => "submit",
+        }
+    }
 }
 
 /// When a [`Binding`] applies, beyond its mode.
@@ -350,10 +422,24 @@ pub static BINDINGS: &[Binding] = &[
     ),
     b(
         Mode::Normal,
+        KeyCode::Char('E'),
+        Scope::Any,
+        Action::EditBody,
+        Some(("E", "edit body in $EDITOR")),
+    ),
+    b(
+        Mode::Normal,
         KeyCode::Char('d'),
         Scope::Any,
         Action::Defer,
         Some(("d", "defer (prompts)")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('s'),
+        Scope::Any,
+        Action::Schedule,
+        Some(("s", "schedule (prompts)")),
     ),
     b(
         Mode::Normal,
@@ -375,6 +461,20 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::CreateStream,
         Some(("S", "create a stream")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('V'),
+        Scope::Any,
+        Action::VisualMode,
+        Some(("V", "visual select")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('t'),
+        Scope::Any,
+        Action::Triage,
+        Some(("t", "triage the inbox")),
     ),
     b(
         Mode::Normal,
@@ -515,7 +615,257 @@ pub static BINDINGS: &[Binding] = &[
         Action::Escape,
         Some(("Esc", "cancel")),
     ),
+    // ---- Visual (multi-select) mode ----
+    // Movement extends the selection: the anchor stays put while the cursor
+    // moves, so the run between them is what the next operator applies to.
+    b(
+        Mode::Visual,
+        KeyCode::Char('j'),
+        Scope::Any,
+        Action::Next,
+        Some(("j/k/↓/↑", "extend the selection")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('k'),
+        Scope::Any,
+        Action::Prev,
+        None,
+    ),
+    b(Mode::Visual, KeyCode::Down, Scope::Any, Action::Next, None),
+    b(Mode::Visual, KeyCode::Up, Scope::Any, Action::Prev, None),
+    b(
+        Mode::Visual,
+        KeyCode::Char('x'),
+        Scope::Any,
+        Action::Toggle,
+        Some(("x", "complete the selection")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('d'),
+        Scope::Any,
+        Action::Defer,
+        Some(("d", "defer the selection")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('D'),
+        Scope::Any,
+        Action::Delete,
+        Some(("D", "delete (confirms)")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('m'),
+        Scope::Any,
+        Action::MoveToStream,
+        Some(("m", "move to a stream")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Esc,
+        Scope::Any,
+        Action::Escape,
+        Some(("V / Esc", "leave visual mode")),
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('V'),
+        Scope::Any,
+        Action::Escape,
+        None,
+    ),
+    b(
+        Mode::Visual,
+        KeyCode::Char('?'),
+        Scope::Any,
+        Action::ToggleHelp,
+        Some(("?", "toggle this help")),
+    ),
+    // ---- Triage mode (one Inbox task at a time) ----
+    b(
+        Mode::Triage,
+        KeyCode::Char('k'),
+        Scope::Any,
+        Action::TriageKeep,
+        Some(("k / Enter", "keep, next task")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Enter,
+        Scope::Any,
+        Action::TriageKeep,
+        None,
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('p'),
+        Scope::Any,
+        Action::MoveToStream,
+        Some(("p", "promote to a stream")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('s'),
+        Scope::Any,
+        Action::Schedule,
+        Some(("s", "schedule (prompts)")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('d'),
+        Scope::Any,
+        Action::Defer,
+        Some(("d", "defer (prompts)")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('D'),
+        Scope::Any,
+        Action::Delete,
+        Some(("D", "delete (confirms)")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('x'),
+        Scope::Any,
+        Action::Toggle,
+        Some(("x", "complete, next task")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Esc,
+        Scope::Any,
+        Action::Escape,
+        Some(("Esc / q", "leave triage")),
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('q'),
+        Scope::Any,
+        Action::Escape,
+        None,
+    ),
+    b(
+        Mode::Triage,
+        KeyCode::Char('?'),
+        Scope::Any,
+        Action::ToggleHelp,
+        Some(("?", "toggle this help")),
+    ),
 ];
+
+/// A resolved keymap: [`BINDINGS`] plus any user overrides loaded from
+/// `~/.config/sunrise/keys.toml`.
+///
+/// An override is stored as *(row index into [`BINDINGS`], replacement key)*
+/// rather than as a rewritten table, so the static table stays the one place a
+/// binding is declared and the help overlay can tell an overridden row from a
+/// default one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keymap {
+    /// Replacement keys, by index into [`BINDINGS`].
+    overrides: Vec<(usize, KeyCode)>,
+}
+
+impl Keymap {
+    /// The key row `i` answers to, after overrides.
+    #[must_use]
+    fn key_at(&self, i: usize) -> KeyCode {
+        self.overrides
+            .iter()
+            .find(|(j, _)| *j == i)
+            .map_or(BINDINGS[i].key, |(_, k)| *k)
+    }
+
+    /// Whether row `i` was remapped by the user.
+    #[must_use]
+    fn is_overridden(&self, i: usize) -> bool {
+        self.overrides.iter().any(|(j, _)| *j == i)
+    }
+
+    /// [`dispatch`], honouring this keymap's overrides.
+    #[must_use]
+    pub fn dispatch(&self, key: KeyCode, mode: Mode, vim_mode: bool, view: View) -> Option<Action> {
+        for (i, binding) in BINDINGS.iter().enumerate() {
+            if binding.mode == mode
+                && self.key_at(i) == key
+                && binding.scope.matches(vim_mode, view)
+            {
+                return Some(binding.action.clone());
+            }
+        }
+        // Fallback: any other printable character feeds the active text input.
+        // This is the one rule that cannot live in the table (it matches every
+        // `Char`), so it runs last, after the table's Esc/Enter/Backspace rows.
+        match (mode, key) {
+            (Mode::Insert | Mode::Command, KeyCode::Char(c)) => Some(Action::InsertChar(c)),
+            _ => None,
+        }
+    }
+
+    /// [`help_sections`], honouring this keymap's overrides: a remapped row is
+    /// listed under the key the user actually has to press.
+    #[must_use]
+    pub fn help_sections(&self) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+        let mut out: Vec<(&'static str, Vec<(String, &'static str)>)> = Vec::new();
+        for (i, binding) in BINDINGS.iter().enumerate() {
+            let Some((keys, desc)) = binding.help else {
+                continue;
+            };
+            // A remapped row's canned key string ("q / Esc") would be a lie, so
+            // it is replaced by the new key's label.
+            let keys = if self.is_overridden(i) {
+                key_label(self.key_at(i))
+            } else {
+                keys.to_string()
+            };
+            let label = binding.mode.label();
+            match out.last_mut() {
+                Some((existing, rows)) if *existing == label => rows.push((keys, desc)),
+                _ => out.push((label, vec![(keys, desc)])),
+            }
+        }
+        out
+    }
+
+    /// Build a keymap from `action = "key"` config pairs.
+    ///
+    /// Each pair rebinds the action's **canonical** Normal-mode row — the one
+    /// that carries the help entry, which is the key the overlay advertises and
+    /// therefore the one the user means. Alias rows (`Esc` for quit, the arrow
+    /// keys for movement) are left alone, so a remap never strips a user of
+    /// their arrows or their Esc. Unknown action names and unparseable keys are
+    /// reported as warnings and skipped: a bad line costs that one binding, not
+    /// the app.
+    #[must_use]
+    pub fn from_config(pairs: &[(String, String)]) -> (Self, Vec<String>) {
+        let mut overrides: Vec<(usize, KeyCode)> = Vec::new();
+        let mut warnings = Vec::new();
+        for (name, key) in pairs {
+            let Some(code) = parse_key(key) else {
+                warnings.push(format!("unknown key {key:?} for action {name:?}"));
+                continue;
+            };
+            let canonical = |want_help: bool| {
+                BINDINGS.iter().position(|b| {
+                    b.mode == Mode::Normal
+                        && b.action.name() == name
+                        && (!want_help || b.help.is_some())
+                })
+            };
+            match canonical(true).or_else(|| canonical(false)) {
+                Some(i) => {
+                    overrides.retain(|(j, _)| *j != i);
+                    overrides.push((i, code));
+                }
+                None => warnings.push(format!("unknown action {name:?}")),
+            }
+        }
+        (Self { overrides }, warnings)
+    }
+}
 
 /// Translate a key event in a given mode (and active view) into an
 /// [`Action`], by scanning [`BINDINGS`] in order.
@@ -527,35 +877,184 @@ pub static BINDINGS: &[Binding] = &[
 /// instead of quitting.
 #[must_use]
 pub fn dispatch(key: KeyCode, mode: Mode, vim_mode: bool, view: View) -> Option<Action> {
-    for binding in BINDINGS {
-        if binding.mode == mode && binding.key == key && binding.scope.matches(vim_mode, view) {
-            return Some(binding.action.clone());
-        }
-    }
-    // Fallback: any other printable character feeds the active text input.
-    // This is the one rule that cannot live in the table (it matches every
-    // `Char`), so it runs last, after the table's Esc/Enter/Backspace rows.
-    match (mode, key) {
-        (Mode::Insert | Mode::Command, KeyCode::Char(c)) => Some(Action::InsertChar(c)),
-        _ => None,
-    }
+    Keymap::default().dispatch(key, mode, vim_mode, view)
 }
 
 /// Help-overlay content, derived from [`BINDINGS`]: one section per mode (in
 /// table order), each holding the `(keys, description)` pairs of the rows that
 /// opted into help.
 #[must_use]
-pub fn help_sections() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
-    let mut out: Vec<(&'static str, Vec<(&'static str, &'static str)>)> = Vec::new();
-    for binding in BINDINGS {
-        let Some(entry) = binding.help else { continue };
-        let label = binding.mode.label();
-        match out.last_mut() {
-            Some((existing, rows)) if *existing == label => rows.push(entry),
-            _ => out.push((label, vec![entry])),
+pub fn help_sections() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    Keymap::default().help_sections()
+}
+
+/// Human label for a key, used by the help overlay for remapped rows.
+#[must_use]
+pub fn key_label(key: KeyCode) -> String {
+    match key {
+        KeyCode::Char(' ') => "Space".into(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "Enter".into(),
+        KeyCode::Esc => "Esc".into(),
+        KeyCode::Tab => "Tab".into(),
+        KeyCode::Backspace => "Backspace".into(),
+        KeyCode::Up => "↑".into(),
+        KeyCode::Down => "↓".into(),
+        KeyCode::Left => "←".into(),
+        KeyCode::Right => "→".into(),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Parse a key name from `keys.toml`: any single character, or one of the
+/// named keys below. Deliberately small — modifier chords are not part of the
+/// TUI keymap, so accepting `ctrl+x` here would promise something the
+/// dispatcher cannot deliver.
+#[must_use]
+pub fn parse_key(s: &str) -> Option<KeyCode> {
+    let t = s.trim();
+    let mut chars = t.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Some(KeyCode::Char(c));
+    }
+    if let Some(n) = t
+        .strip_prefix(['f', 'F'])
+        .and_then(|d| d.parse::<u8>().ok())
+        .filter(|n| (1..=12).contains(n))
+    {
+        return Some(KeyCode::F(n));
+    }
+    match t.to_ascii_lowercase().as_str() {
+        "space" => Some(KeyCode::Char(' ')),
+        "enter" | "return" => Some(KeyCode::Enter),
+        "esc" | "escape" => Some(KeyCode::Esc),
+        "tab" => Some(KeyCode::Tab),
+        "backspace" => Some(KeyCode::Backspace),
+        "up" => Some(KeyCode::Up),
+        "down" => Some(KeyCode::Down),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        _ => None,
+    }
+}
+
+/// Parse the subset of TOML `keys.toml` needs: comments, optional `[table]`
+/// headers, and `action = "key"` pairs.
+///
+/// Hand-rolled on purpose: the workspace has no TOML dependency, and pulling
+/// one in to read a flat list of string pairs would be the largest dependency
+/// in this crate for the smallest grammar in it. Anything outside the subset
+/// is an [`Err`] naming the line, which the caller turns into a startup
+/// warning — a malformed file must never be silently ignored.
+pub fn parse_keys_toml(src: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for (n, raw) in src.lines().enumerate() {
+        let line = strip_comment(raw).trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            if line.ends_with(']') {
+                // Table headers are accepted and ignored: `[keys]` and a flat
+                // file mean the same thing here.
+                continue;
+            }
+            return Err(format!("line {}: unterminated table header", n + 1));
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(format!("line {}: expected `action = \"key\"`", n + 1));
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(format!("line {}: missing action name", n + 1));
+        }
+        let value = value.trim();
+        let quoted = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+        let Some(key) = quoted else {
+            return Err(format!("line {}: value must be a quoted string", n + 1));
+        };
+        out.push((name.to_string(), key.to_string()));
+    }
+    Ok(out)
+}
+
+/// Drop a trailing `#` comment, ignoring `#` inside a quoted value (so
+/// `capture = "#"` survives).
+fn strip_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => return &line[..i],
+            _ => {}
         }
     }
-    out
+    line
+}
+
+/// Where the user's key overrides live (`docs/07-clients/tui.md`), honouring
+/// `XDG_CONFIG_HOME`.
+#[must_use]
+pub fn keys_config_path() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("sunrise").join("keys.toml"));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("sunrise")
+            .join("keys.toml"),
+    )
+}
+
+/// Load the user keymap, falling back to the defaults.
+///
+/// Returns `(keymap, warnings)`. An absent file is the normal case and yields
+/// no warnings; a malformed one yields warnings *and* the default keymap, so
+/// the app always starts with a usable keyboard.
+#[must_use]
+pub fn load_keymap(path: Option<&std::path::Path>) -> (Keymap, Vec<String>) {
+    let Some(path) = path else {
+        return (Keymap::default(), Vec::new());
+    };
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        // Absent (the common case) is silent; anything else — a directory, bad
+        // permissions — is worth saying out loud.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (Keymap::default(), Vec::new())
+        }
+        Err(e) => {
+            return (
+                Keymap::default(),
+                vec![format!("{}: {e}; using default keys", path.display())],
+            )
+        }
+    };
+    match parse_keys_toml(&src) {
+        Ok(pairs) => {
+            let (map, warnings) = Keymap::from_config(&pairs);
+            (
+                map,
+                warnings
+                    .into_iter()
+                    .map(|w| format!("{}: {w}", path.display()))
+                    .collect(),
+            )
+        }
+        Err(e) => (
+            Keymap::default(),
+            vec![format!("{}: {e}; using default keys", path.display())],
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -656,6 +1155,203 @@ mod tests {
             d(KeyCode::Char('/'), Mode::Normal, true),
             Some(Action::BeginSearch)
         );
+    }
+
+    #[test]
+    fn schedule_visual_triage_and_body_bindings() {
+        assert_eq!(
+            d(KeyCode::Char('s'), Mode::Normal, true),
+            Some(Action::Schedule)
+        );
+        assert_eq!(
+            d(KeyCode::Char('E'), Mode::Normal, true),
+            Some(Action::EditBody)
+        );
+        assert_eq!(
+            d(KeyCode::Char('V'), Mode::Normal, true),
+            Some(Action::VisualMode)
+        );
+        assert_eq!(
+            d(KeyCode::Char('t'), Mode::Normal, true),
+            Some(Action::Triage)
+        );
+        // `e` still edits the title — the body binding is additive.
+        assert_eq!(
+            d(KeyCode::Char('e'), Mode::Normal, true),
+            Some(Action::EditTitle)
+        );
+    }
+
+    #[test]
+    fn visual_mode_extends_and_operates() {
+        for (key, action) in [
+            (KeyCode::Char('j'), Action::Next),
+            (KeyCode::Char('k'), Action::Prev),
+            (KeyCode::Down, Action::Next),
+            (KeyCode::Char('x'), Action::Toggle),
+            (KeyCode::Char('d'), Action::Defer),
+            (KeyCode::Char('D'), Action::Delete),
+            (KeyCode::Char('m'), Action::MoveToStream),
+            (KeyCode::Esc, Action::Escape),
+            (KeyCode::Char('V'), Action::Escape),
+        ] {
+            assert_eq!(d(key, Mode::Visual, true), Some(action), "for {key:?}");
+        }
+        // Visual navigation does not depend on vim-mode, and stray keys are
+        // inert rather than being swallowed as text.
+        assert_eq!(
+            d(KeyCode::Char('j'), Mode::Visual, false),
+            Some(Action::Next)
+        );
+        assert_eq!(d(KeyCode::Char('z'), Mode::Visual, true), None);
+    }
+
+    #[test]
+    fn triage_mode_is_one_keypress_per_outcome() {
+        for (key, action) in [
+            (KeyCode::Char('k'), Action::TriageKeep),
+            (KeyCode::Enter, Action::TriageKeep),
+            (KeyCode::Char('p'), Action::MoveToStream),
+            (KeyCode::Char('s'), Action::Schedule),
+            (KeyCode::Char('d'), Action::Defer),
+            (KeyCode::Char('D'), Action::Delete),
+            (KeyCode::Char('x'), Action::Toggle),
+            (KeyCode::Esc, Action::Escape),
+            (KeyCode::Char('q'), Action::Escape),
+        ] {
+            assert_eq!(d(key, Mode::Triage, true), Some(action), "for {key:?}");
+        }
+        assert_eq!(d(KeyCode::Char('z'), Mode::Triage, true), None);
+    }
+
+    #[test]
+    fn every_action_has_a_unique_config_name() {
+        // The config contract: two actions sharing a name would make
+        // `keys.toml` ambiguous.
+        let mut distinct_actions: Vec<(&str, String)> = BINDINGS
+            .iter()
+            .map(|b| (b.action.name(), format!("{:?}", b.action)))
+            .collect();
+        distinct_actions.sort_unstable();
+        distinct_actions.dedup();
+        for w in distinct_actions.windows(2) {
+            assert_ne!(
+                w[0].0, w[1].0,
+                "{:?} and {:?} share a config name",
+                w[0].1, w[1].1
+            );
+        }
+    }
+
+    #[test]
+    fn keys_toml_subset_parses_pairs_headers_and_comments() {
+        let src = "\
+# my keys
+[keys]
+capture = \"n\"    # rebind capture
+quit    = 'Q'
+help    = \"#\"
+";
+        let pairs = parse_keys_toml(src).expect("valid subset");
+        assert_eq!(
+            pairs,
+            vec![
+                ("capture".to_string(), "n".to_string()),
+                ("quit".to_string(), "Q".to_string()),
+                // A `#` inside quotes is a key, not the start of a comment.
+                ("help".to_string(), "#".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn keys_toml_rejects_malformed_lines_by_line_number() {
+        assert!(parse_keys_toml("capture n\n")
+            .expect_err("no `=`")
+            .contains("line 1"));
+        assert!(parse_keys_toml("\n\ncapture = n\n")
+            .expect_err("unquoted value")
+            .contains("line 3"));
+        assert!(parse_keys_toml("[keys\n").is_err());
+        // An empty file is valid and simply changes nothing.
+        assert_eq!(parse_keys_toml("\n# nothing\n"), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn config_overrides_the_key_for_an_action() {
+        let (map, warnings) =
+            Keymap::from_config(&[("capture".into(), "n".into()), ("quit".into(), "Q".into())]);
+        assert!(warnings.is_empty(), "got {warnings:?}");
+        assert_eq!(
+            map.dispatch(KeyCode::Char('n'), Mode::Normal, true, View::Today),
+            Some(Action::Capture)
+        );
+        // The old key no longer captures.
+        assert_ne!(
+            map.dispatch(KeyCode::Char('c'), Mode::Normal, true, View::Today),
+            Some(Action::Capture)
+        );
+        // Esc still quits: only the canonical row is rebound, not its aliases.
+        assert_eq!(
+            map.dispatch(KeyCode::Char('Q'), Mode::Normal, true, View::Today),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            map.dispatch(KeyCode::Esc, Mode::Normal, true, View::Today),
+            Some(Action::Quit)
+        );
+        // The help overlay advertises the key the user must actually press.
+        let rows: Vec<(String, &str)> = map
+            .help_sections()
+            .into_iter()
+            .flat_map(|(_, r)| r)
+            .collect();
+        assert!(
+            rows.iter().any(|(k, d)| k == "n" && *d == "capture a task"),
+            "help still lists the default key: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn config_warns_rather_than_failing_on_bad_entries() {
+        let (map, warnings) = Keymap::from_config(&[
+            ("frobnicate".into(), "z".into()),
+            ("capture".into(), "ctrl+x".into()),
+        ]);
+        assert_eq!(warnings.len(), 2, "got {warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("frobnicate")));
+        assert!(warnings.iter().any(|w| w.contains("ctrl+x")));
+        // Nothing was applied, so the defaults still work.
+        assert_eq!(map, Keymap::default());
+    }
+
+    #[test]
+    fn an_absent_key_file_is_silent() {
+        let (map, warnings) =
+            load_keymap(Some(std::path::Path::new("/nonexistent/sunrise/keys.toml")));
+        assert_eq!(map, Keymap::default());
+        assert!(warnings.is_empty(), "got {warnings:?}");
+        // A `None` path (no HOME) is equally silent.
+        assert!(load_keymap(None).1.is_empty());
+    }
+
+    #[test]
+    fn key_names_round_trip() {
+        for (name, code) in [
+            ("space", KeyCode::Char(' ')),
+            ("enter", KeyCode::Enter),
+            ("Esc", KeyCode::Esc),
+            ("tab", KeyCode::Tab),
+            ("down", KeyCode::Down),
+            ("F5", KeyCode::F(5)),
+            ("x", KeyCode::Char('x')),
+        ] {
+            assert_eq!(parse_key(name), Some(code), "for {name}");
+        }
+        assert_eq!(parse_key("ctrl+a"), None);
+        assert_eq!(parse_key(""), None);
+        assert_eq!(key_label(KeyCode::Char(' ')), "Space");
+        assert_eq!(key_label(KeyCode::Enter), "Enter");
     }
 
     #[test]
