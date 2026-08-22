@@ -7,7 +7,7 @@
 
 use crate::view::View;
 use std::path::PathBuf;
-use sunrise_domain::{Energy, SessionLength};
+use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::{EntityKind, EntityRef};
 
 /// A parsed command-line command.
@@ -30,6 +30,15 @@ pub enum Cmd {
     Open(EntityRef),
     /// List the paired devices (`:devices`).
     Devices,
+    /// Write a stats dataset to a file (`:export <dataset> [json|csv] [path]`).
+    Export {
+        /// Which dataset.
+        dataset: ExportDataset,
+        /// Serialization format.
+        format: ExportFormat,
+        /// Destination; `None` picks a name in the working directory.
+        path: Option<PathBuf>,
+    },
     /// Focus-mode command (`:focus …`).
     Focus(FocusCmd),
     /// Unrecognized or malformed command; carries a status-line message.
@@ -56,6 +65,26 @@ pub enum FocusCmd {
     /// (`:focus length pomodoro|estimate|until-done`).
     Length(SessionLength),
 }
+
+/// The `:` command reference, in the order the help overlay lists it.
+///
+/// A table rather than prose for the same reason the keymap is one: the help
+/// and the parser must not be able to drift. A test asserts every row here
+/// parses to something other than [`Cmd::Error`].
+pub const COMMANDS: &[(&str, &str)] = &[
+    (":q", "quit"),
+    (":view <name>", "switch view (1-7)"),
+    (":capture <text>", "capture a task"),
+    (":open <tsk_…>", "jump to a task by id"),
+    (":focus plan", "open the planner"),
+    (":focus stats", "focus totals + calibration"),
+    (":focus energy <l|m|h>", "declare the energy budget"),
+    (":focus length <p|e|u>", "pomodoro / estimate / until done"),
+    (":export <dataset>", "trends|activity|focus|streaks"),
+    (":devices", "list paired devices"),
+    (":preview <path>", "show an image (Focus view)"),
+    (":help", "this list"),
+];
 
 /// Parse a command-line string into a [`Cmd`].
 ///
@@ -107,8 +136,47 @@ pub fn parse_command(input: &str) -> Cmd {
             },
         },
         "devices" | "device" => Cmd::Devices,
+        "export" => parse_export(rest),
         "focus" => parse_focus(rest),
         other => Cmd::Error(format!("unknown command: {other}")),
+    }
+}
+
+/// Parse `:export <dataset> [json|csv] [path]`.
+///
+/// The dataset is required and the format defaults to CSV: an export is
+/// overwhelmingly headed for a spreadsheet, and a user who wants JSON will say
+/// so. The path is optional because naming a file is the step people skip.
+fn parse_export(rest: &str) -> Cmd {
+    let mut words = rest.split_whitespace();
+    let Some(name) = words.next() else {
+        return Cmd::Error(
+            "usage: :export <trends|activity|focus|streaks> [json|csv] [path]".into(),
+        );
+    };
+    let dataset = match name {
+        "trends" | "trend" => ExportDataset::Trends,
+        "activity" | "timeline" => ExportDataset::Activity,
+        "focus" => ExportDataset::Focus,
+        "streaks" | "streak" => ExportDataset::Streaks,
+        other => return Cmd::Error(format!("unknown dataset: {other}")),
+    };
+    // The format word is optional, so a second word that is not one is taken
+    // as the path rather than rejected.
+    let mut format = ExportFormat::Csv;
+    let mut path: Option<PathBuf> = None;
+    for w in words {
+        match w {
+            "json" => format = ExportFormat::Json,
+            "csv" => format = ExportFormat::Csv,
+            other if path.is_none() => path = Some(PathBuf::from(other)),
+            other => return Cmd::Error(format!("unexpected argument: {other}")),
+        }
+    }
+    Cmd::Export {
+        dataset,
+        format,
+        path,
     }
 }
 

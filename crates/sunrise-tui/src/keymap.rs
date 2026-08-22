@@ -1571,13 +1571,22 @@ impl Keymap {
 
     /// [`help_sections`], honouring this keymap's overrides: a remapped row is
     /// listed under the key the user actually has to press.
+    ///
+    /// Filtered to `view` as well as to the mode. `docs/08-features/keyboard.md`
+    /// asks for "a contextual cheat sheet", and a view-scoped row shown in the
+    /// wrong view is worse than a missing one: the Review view's `[` and `]`
+    /// are listed under NORMAL, and a user reading that in the Inbox would
+    /// press them and get nothing.
     #[must_use]
-    pub fn help_sections(&self) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    pub fn help_sections(&self, view: View) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
         let mut out: Vec<(&'static str, Vec<(String, &'static str)>)> = Vec::new();
         for (i, binding) in BINDINGS.iter().enumerate() {
             let Some((keys, desc)) = binding.help else {
                 continue;
             };
+            if !binding.scope.matches(true, view) {
+                continue;
+            }
             // A remapped row's canned key string ("q / Esc") would be a lie, so
             // it is replaced by the new key's label.
             let keys = if self.is_overridden(i) {
@@ -1648,8 +1657,8 @@ pub fn dispatch(key: KeyCode, mode: Mode, vim_mode: bool, view: View) -> Option<
 /// table order), each holding the `(keys, description)` pairs of the rows that
 /// opted into help.
 #[must_use]
-pub fn help_sections() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
-    Keymap::default().help_sections()
+pub fn help_sections(view: View) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
+    Keymap::default().help_sections(view)
 }
 
 /// Human label for a key, used by the help overlay for remapped rows.
@@ -2090,7 +2099,7 @@ help    = \"#\"
         );
         // The help overlay advertises the key the user must actually press.
         let rows: Vec<(String, &str)> = map
-            .help_sections()
+            .help_sections(View::Today)
             .into_iter()
             .flat_map(|(_, r)| r)
             .collect();
@@ -2360,7 +2369,7 @@ help    = \"#\"
 
     #[test]
     fn help_sections_are_derived_from_the_binding_table() {
-        let sections = help_sections();
+        let sections = help_sections(View::Today);
         // Sections appear in table order, Normal first.
         assert_eq!(sections.first().map(|(m, _)| *m), Some("NORMAL"));
         let labels: Vec<&str> = sections.iter().map(|(m, _)| *m).collect();
@@ -2421,12 +2430,12 @@ help    = \"#\"
 
     #[test]
     fn help_text_fits_the_two_column_overlay() {
-        // The overlay falls back to two columns at the 80x24 minimum, which
-        // leaves 25 characters for a description after the padded key column.
-        // A longer one is silently clipped, so the row documents nothing —
-        // exactly the failure this table exists to prevent.
+        // The overlay is 74 columns wide with a 2-space indent and an
+        // 11-column key gutter, leaving 59 for a description. Anything longer
+        // is silently clipped, so the row documents nothing — exactly the
+        // failure this table exists to prevent.
         const KEYS_WIDTH: usize = 11;
-        const DESC_WIDTH: usize = 25;
+        const DESC_WIDTH: usize = 59;
         for binding in BINDINGS {
             let Some((keys, desc)) = binding.help else {
                 continue;

@@ -457,6 +457,13 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 state.focus.cascade = load_cascade(core, task).await;
                 refresh(core, &mut state).await;
             }
+            Outcome::Export {
+                dataset,
+                format,
+                path,
+            } => {
+                state.status = export_stats(core, dataset, format, path).await;
+            }
             Outcome::ShowFocusStats => {
                 let q = Query::FocusStats {
                     stream: None,
@@ -785,6 +792,67 @@ async fn refresh(core: &Core, state: &mut ViewState) {
     }
 }
 
+/// Render a stats dataset and write it to disk.
+///
+/// Writing a file rather than printing is not a convenience: this binary owns
+/// the alternate screen, and a CSV dumped to stdout lands in the middle of the
+/// user's board where the diffing renderer will never repaint over it. The
+/// status line reports the path, which is the part a user needs next.
+async fn export_stats(
+    core: &Core,
+    dataset: sunrise_domain::ExportDataset,
+    format: sunrise_domain::ExportFormat,
+    path: Option<std::path::PathBuf>,
+) -> String {
+    /// Weeks of history a trend export covers, matching the Review view.
+    const TREND_WEEKS: u32 = 12;
+    let now_ms = core.now_ms();
+    let q = Query::ExportStats {
+        dataset,
+        format,
+        weeks: TREND_WEEKS,
+        now_ms,
+    };
+    let body = match core.query(q).await {
+        Ok(QueryResult::Export(s)) => s,
+        Ok(other) => return format!("export: unexpected result {other:?}"),
+        Err(e) => return format!("export failed: {e}"),
+    };
+    let path = path.unwrap_or_else(|| default_export_path(dataset, format, now_ms));
+    match std::fs::write(&path, body.as_bytes()) {
+        Ok(()) => format!(
+            "exported {} rows to {}",
+            body.lines().count(),
+            path.display()
+        ),
+        Err(e) => format!("could not write {}: {e}", path.display()),
+    }
+}
+
+/// `./sunrise-trends-2026-03-02.csv` — dated, so a second export does not
+/// silently overwrite the first.
+fn default_export_path(
+    dataset: sunrise_domain::ExportDataset,
+    format: sunrise_domain::ExportFormat,
+    now_ms: u64,
+) -> std::path::PathBuf {
+    let day = i64::try_from(now_ms)
+        .ok()
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+        .map_or_else(
+            || "undated".to_string(),
+            |ts| {
+                let d = ts.to_zoned(jiff::tz::TimeZone::system()).date();
+                format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
+            },
+        );
+    std::path::PathBuf::from(format!(
+        "sunrise-{}-{day}.{}",
+        dataset.as_str(),
+        format.as_str()
+    ))
+}
+
 /// Load whichever Review panel is showing.
 ///
 /// One panel, one query: the weekly review is an expensive fold over the whole
@@ -860,19 +928,39 @@ async fn load_tasks(core: &Core, state: &mut ViewState, q: Query) {
 /// dependency that is not already earning its place.
 mod cli {
     use super::{vault_dir, DEV_ROOT};
+    use sunrise_core::commands::FocusStartDraft;
     use sunrise_core::{Command, Core, Query, QueryResult};
+    use sunrise_id::{EntityKind, EntityRef};
     use sunrise_tui::livesync;
+    use sunrise_tui::routine_rows;
 
     const USAGE: &str = "\
 sunrise-tui — terminal client for Sunrise
 
 USAGE:
     sunrise-tui                      launch the interactive TUI
+
+  capture and triage
     sunrise-tui capture <text>...    parse and commit one task, then exit
+    sunrise-tui done <id>...         complete one or more tasks
     sunrise-tui today                list today's tasks
     sunrise-tui inbox                list inbox tasks
-    sunrise-tui streams              list streams with open counts
+    sunrise-tui next                 the focus planner's top picks
     sunrise-tui search <query>...    full-text search
+
+  the vault's shape
+    sunrise-tui streams              list streams with open counts
+    sunrise-tui contexts             list contexts with task counts
+    sunrise-tui routines             list routines with cadence and streak
+
+  review and reporting
+    sunrise-tui review               print this week's review summary
+    sunrise-tui export <dataset> [json|csv] [path]
+                                     trends | activity | focus | streaks
+
+  plumbing
+    sunrise-tui focus <id>           open a focus session on a task
+    sunrise-tui sync --once          drain the outbox and exit (cron / CI)
     sunrise-tui help                 show this message
 
 CAPTURE SYNTAX:
@@ -881,7 +969,8 @@ CAPTURE SYNTAX:
     sunrise-tui capture 'Renew passport #travel ^next saturday !1 ~1h'
 
 ENVIRONMENT:
-    SUNRISE_VAULT   vault directory (default ~/.sunrise/vault)
+    SUNRISE_VAULT      vault directory (default ~/.sunrise/vault)
+    SUNRISE_SYNC_URL   relay endpoint; unset means fully offline
 
 FILES:
     ~/.config/sunrise/keys.toml   optional key overrides, one `action = \"key\"`
@@ -989,8 +1078,255 @@ FILES:
                 print_tasks(core.query(q).await?);
                 Ok(())
             }
+            "done" => done(core, rest).await,
+            "contexts" => {
+                if let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? {
+                    for c in rows {
+                        let mark = if c.archived { " [archived]" } else { "" };
+                        println!(
+                            "{}  @{:<20} {} tasks{mark}",
+                            c.id.to_str(),
+                            c.name,
+                            c.task_count
+                        );
+                    }
+                }
+                Ok(())
+            }
+            "routines" => {
+                if let QueryResult::Routines(rs) = core.query(Query::Routines).await? {
+                    let now = jiff::Timestamp::from_millisecond(
+                        i64::try_from(core.now_ms()).unwrap_or(0),
+                    )
+                    .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+                    for r in routine_rows(&rs, now) {
+                        let next = r.next.map_or_else(|| "-".to_string(), |t| t.to_string());
+                        let paused = if r.paused { " [paused]" } else { "" };
+                        println!(
+                            "{}  {:<28} {:<24} next {next} streak {}{paused}",
+                            r.id.to_str(),
+                            r.title,
+                            r.rrule,
+                            r.streak
+                        );
+                    }
+                }
+                Ok(())
+            }
+            // `docs/07-clients/tui.md` §Capture from anywhere: "sunrise focus
+            // next — picks next Today task and enters focus".
+            "next" => next(core, false).await,
+            "focus" => match rest.first().map(String::as_str) {
+                Some("next") | None => next(core, true).await,
+                Some(id) => focus_on(core, id).await,
+            },
+            "review" => review(core).await,
+            "export" => export(core, rest).await,
+            "sync" => sync_once(core, rest).await,
             other => Err(format!("unknown subcommand {other:?}; try `sunrise-tui help`").into()),
         }
+    }
+
+    /// `done <id>...` — complete tasks by id.
+    async fn done(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        if rest.is_empty() {
+            return Err("done needs at least one task id".into());
+        }
+        for raw in rest {
+            let id = EntityRef::parse(raw, EntityKind::Task)
+                .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+            core.submit(Command::CompleteTask(id)).await?;
+            println!("done  {raw}");
+        }
+        Ok(())
+    }
+
+    /// `next` / `focus next` — the planner's ranked picks, optionally opening
+    /// a session on the top one.
+    ///
+    /// The ranking is the core's (`Query::FocusPlan`), not a re-sort here:
+    /// "what should I do next" must give the same answer in the terminal and
+    /// in the TUI, or one of them is lying.
+    async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        /// Enough to choose from without becoming a list.
+        const PICKS: u32 = 5;
+        let q = Query::FocusPlan {
+            stream: None,
+            energy: None,
+            length: sunrise_domain::SessionLength::OnePomodoro,
+            limit: PICKS,
+        };
+        let QueryResult::FocusPlan(rows) = core.query(q).await? else {
+            return Err("unexpected query result".into());
+        };
+        if rows.is_empty() {
+            println!("nothing actionable — everything is blocked, done, or unscheduled");
+            return Ok(());
+        }
+        for (i, r) in rows.iter().enumerate() {
+            let marker = if i == 0 && start { "▶" } else { " " };
+            println!(
+                "{marker} {}  {:<40} unblocks {}",
+                r.task.id.to_str(),
+                r.task.title,
+                r.unblocks
+            );
+        }
+        if start {
+            let top = &rows[0];
+            core.submit(Command::StartFocus(FocusStartDraft {
+                task_id: top.task.id,
+                kind: sunrise_domain::FocusKind::Work,
+                length: sunrise_domain::SessionLength::OnePomodoro,
+                energy: None,
+            }))
+            .await?;
+            println!("focus started on {}", top.task.title);
+        }
+        Ok(())
+    }
+
+    /// `focus <id>` — open a session on one task.
+    async fn focus_on(core: &Core, raw: &str) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        let id = EntityRef::parse(raw, EntityKind::Task)
+            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+        let res = core
+            .submit(Command::StartFocus(FocusStartDraft {
+                task_id: id,
+                kind: sunrise_domain::FocusKind::Work,
+                length: sunrise_domain::SessionLength::OnePomodoro,
+                energy: None,
+            }))
+            .await?;
+        println!("{}  focus session started", res.entity.to_str());
+        Ok(())
+    }
+
+    /// `review` — this week's counts, the same fold the Review view renders.
+    async fn review(core: &Core) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        let q = Query::WeeklyReview {
+            week_start_ms: None,
+            now_ms: core.now_ms(),
+        };
+        let QueryResult::WeeklyReview(w) = core.query(q).await? else {
+            return Err("unexpected query result".into());
+        };
+        println!(
+            "completed {}  deferred {}  dropped {}  created {}  reopened {}",
+            w.totals.completed,
+            w.totals.deferred,
+            w.totals.dropped,
+            w.totals.created,
+            w.totals.reopened
+        );
+        for s in &w.streams {
+            println!(
+                "  {:<24} {} done · {} deferred · {} untouched",
+                s.name,
+                s.completed.len(),
+                s.deferred.len(),
+                s.created_untouched.len()
+            );
+        }
+        if !w.slipped.is_empty() {
+            println!("slipped:");
+            for t in &w.slipped {
+                println!("  {}  {}", t.id.to_str(), t.title);
+            }
+        }
+        Ok(())
+    }
+
+    /// `export <dataset> [json|csv] [path]`.
+    ///
+    /// With no path the document goes to **stdout**, which is the opposite of
+    /// the interactive `:export` — and correct for the same reason. A CLI's
+    /// stdout is its contract, so `sunrise-tui export trends json | jq` has to
+    /// work; the interactive binary owns the alternate screen, where the same
+    /// bytes would wreck the display.
+    async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        use sunrise_domain::{ExportDataset, ExportFormat};
+        let Some(name) = rest.first() else {
+            return Err("usage: export <trends|activity|focus|streaks> [json|csv] [path]".into());
+        };
+        let dataset = match name.as_str() {
+            "trends" | "trend" => ExportDataset::Trends,
+            "activity" | "timeline" => ExportDataset::Activity,
+            "focus" => ExportDataset::Focus,
+            "streaks" | "streak" => ExportDataset::Streaks,
+            other => return Err(format!("unknown dataset: {other}").into()),
+        };
+        let mut format = ExportFormat::Csv;
+        let mut path: Option<String> = None;
+        for w in &rest[1..] {
+            match w.as_str() {
+                "json" => format = ExportFormat::Json,
+                "csv" => format = ExportFormat::Csv,
+                other if path.is_none() => path = Some(other.to_string()),
+                other => return Err(format!("unexpected argument: {other}").into()),
+            }
+        }
+        let q = Query::ExportStats {
+            dataset,
+            format,
+            weeks: 12,
+            now_ms: core.now_ms(),
+        };
+        let QueryResult::Export(body) = core.query(q).await? else {
+            return Err("unexpected query result".into());
+        };
+        match path {
+            Some(p) => {
+                std::fs::write(&p, body.as_bytes())?;
+                println!("{p}");
+            }
+            None => print!("{body}"),
+        }
+        Ok(())
+    }
+
+    /// `sync --once` — bring the relay up, drain the outbox, exit.
+    ///
+    /// `docs/07-clients/tui.md` names this for cron and CI. It is a *bounded*
+    /// wait, not a loop: a job that hangs forever because the relay is down is
+    /// worse than one that fails, since nothing downstream ever runs.
+    async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        #![allow(clippy::print_stdout)]
+        /// How long to wait for the outbox to empty before giving up.
+        const DEADLINE_MS: u64 = 30_000;
+        /// How often to re-read the outbox depth.
+        const POLL: std::time::Duration = std::time::Duration::from_millis(200);
+
+        if !rest.is_empty() && rest[0] != "--once" {
+            return Err("usage: sync --once".into());
+        }
+        if std::env::var("SUNRISE_SYNC_URL").is_err() {
+            return Err("sync needs SUNRISE_SYNC_URL".into());
+        }
+        // Timed against the core's injected clock rather than `Instant`, which
+        // the workspace lint bans so that time is never read from two sources.
+        let deadline = core.now_ms().saturating_add(DEADLINE_MS);
+        let mut last = u32::MAX;
+        while core.now_ms() < deadline {
+            let QueryResult::SyncStatus(s) = core.query(Query::SyncStatus).await? else {
+                return Err("unexpected query result".into());
+            };
+            if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
+                println!("sync: live, outbox empty");
+                return Ok(());
+            }
+            if s.outbox_pending != last {
+                last = s.outbox_pending;
+                println!("sync: {} pending ({:?})", s.outbox_pending, s.state);
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into())
     }
 
     fn print_tasks(r: QueryResult) {

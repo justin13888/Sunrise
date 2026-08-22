@@ -68,7 +68,7 @@ pub mod runtime;
 pub mod view;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
-pub use command::{parse_command, Cmd, FocusCmd};
+pub use command::{parse_command, Cmd, FocusCmd, COMMANDS};
 pub use edit::{parse_edit, EditError, TaskEdit};
 pub use editor::{edit_bytes, resolve_editor, EditorExit};
 pub use input::InputLine;
@@ -87,9 +87,11 @@ pub use view::{
     ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState,
 };
 
-/// Help text listing the command-line commands, shown in the status line by
-/// `:help`. Kept short enough to fit a typical status line.
-pub const HELP_TEXT: &str = ":q  :view <v>  :capture <text>  :open <id>  :devices  :focus stats";
+/// One-line reminder of where the command reference lives. The reference
+/// itself is a table ([`command::COMMANDS`]) rendered into the `?` overlay: it
+/// stopped fitting a status line, and a clipped list of commands documents
+/// nothing.
+pub const HELP_TEXT: &str = "? keys and commands · : command line · q quit";
 
 /// A side effect the runtime (`main`) must perform after a command is applied.
 ///
@@ -115,6 +117,15 @@ pub enum AppEffect {
     /// Run `Query::FocusStats` and show the folded totals + calibration
     /// factor (`:focus stats`).
     FocusStats,
+    /// Render a stats dataset and write it to disk (`:export`).
+    Export {
+        /// Which dataset.
+        dataset: sunrise_domain::ExportDataset,
+        /// Serialization format.
+        format: sunrise_domain::ExportFormat,
+        /// Destination; `None` picks a name in the working directory.
+        path: Option<std::path::PathBuf>,
+    },
 }
 
 /// Apply a parsed [`Cmd`] to `state`, returning an [`AppEffect`] the runtime
@@ -132,7 +143,11 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
             None
         }
         Cmd::ShowHelp => {
-            state.status = HELP_TEXT.to_string();
+            // The command list outgrew a status line; it lives in the `?`
+            // overlay, which scrolls.
+            state.show_help = true;
+            state.help_scroll = 0;
+            state.status = "keys and commands — j/k scrolls, ? or Esc closes".into();
             None
         }
         Cmd::Preview(path) => {
@@ -149,6 +164,15 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
         Cmd::Capture(text) => Some(AppEffect::Capture(text)),
         Cmd::Open(id) => Some(AppEffect::Open(id)),
         Cmd::Devices => Some(AppEffect::Devices),
+        Cmd::Export {
+            dataset,
+            format,
+            path,
+        } => Some(AppEffect::Export {
+            dataset,
+            format,
+            path,
+        }),
         Cmd::Focus(focus) => apply_focus_command(focus, state),
         Cmd::Error(msg) => {
             state.status = format!("error: {msg}");
@@ -208,10 +232,11 @@ mod apply_tests {
     }
 
     #[test]
-    fn help_sets_status() {
+    fn help_opens_the_overlay_rather_than_a_status_line() {
         let mut state = ViewState::default();
         assert_eq!(apply_command(Cmd::ShowHelp, &mut state), None);
-        assert_eq!(state.status, HELP_TEXT);
+        assert!(state.show_help, "the reference is the `?` overlay");
+        assert_eq!(state.help_scroll, 0);
     }
 
     #[test]
@@ -253,9 +278,38 @@ mod apply_tests {
     }
 
     #[test]
-    fn the_command_help_line_advertises_focus_stats() {
-        // Stats are only "reachable" if something says how to reach them.
-        assert!(HELP_TEXT.contains(":focus stats"));
+    fn every_documented_command_actually_parses() {
+        // The reference and the parser must not be able to drift: a command
+        // listed in help that errors when typed is worse than an undocumented
+        // one, because the user believes it exists.
+        for (spec, desc) in COMMANDS {
+            assert!(!desc.is_empty(), "{spec} has no description");
+            // Everything before the first placeholder is the literal part.
+            let name = spec.split('<').next().unwrap_or(spec).trim();
+            let line = match *spec {
+                s if s.contains("<name>") => format!("{name} today"),
+                s if s.contains("<text>") => format!("{name} buy milk"),
+                s if s.contains("tsk_") => {
+                    format!("{name} tsk_01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                }
+                s if s.contains("<l|m|h>") => format!("{name} high"),
+                s if s.contains("<p|e|u>") => format!("{name} pomodoro"),
+                s if s.contains("<dataset>") => format!("{name} trends"),
+                s if s.contains("<path>") => format!("{name} /tmp/x.png"),
+                _ => (*spec).to_string(),
+            };
+            assert!(
+                !matches!(parse_command(&line), Cmd::Error(_)),
+                "documented command {line:?} does not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn the_help_line_points_at_the_reference() {
+        // Commands are only "reachable" if something says how to reach them.
+        assert!(HELP_TEXT.contains('?'));
+        assert!(COMMANDS.iter().any(|(c, _)| c.starts_with(":focus stats")));
     }
 
     #[test]

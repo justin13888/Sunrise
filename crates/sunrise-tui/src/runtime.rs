@@ -91,6 +91,15 @@ pub enum Outcome {
     },
     /// Run `Query::FocusStats` and show the folded result (`:focus stats`).
     ShowFocusStats,
+    /// Render a stats dataset and write it to `path` (`:export`).
+    Export {
+        /// Which dataset.
+        dataset: sunrise_domain::ExportDataset,
+        /// Serialization format.
+        format: sunrise_domain::ExportFormat,
+        /// Destination; `None` picks a name in the working directory.
+        path: Option<PathBuf>,
+    },
     /// Exit the application.
     Quit,
 }
@@ -1293,6 +1302,15 @@ fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
         Some(AppEffect::Open(id)) => Outcome::OpenTask(id),
         Some(AppEffect::Devices) => Outcome::ShowDevices,
         Some(AppEffect::FocusStats) => Outcome::ShowFocusStats,
+        Some(AppEffect::Export {
+            dataset,
+            format,
+            path,
+        }) => Outcome::Export {
+            dataset,
+            format,
+            path,
+        },
         None => Outcome::Refresh,
     }
 }

@@ -1,14 +1,24 @@
 ---
 source: crates/sunrise-tui/src/render.rs
-expression: "frame_to_string(80, 10, &state)"
+expression: "frame_to_string(80, 20, &state)"
 ---
  1:Today  2:Inbox  3:Stream  4:Search  5:Focus  6:Routines  7:Review            
-Sunrise — Today    (0 tasks)                                                    
-────────────────────────────────────────────────────────────────────────────────
-┌Tasks─────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
- NORMAL   :q  :view <v>  :capture <text>  :open <id>  :devices  :focus stats
+Sun┌Keys────────────────────────────────────────────────────────────────────┐   
+───│NORMAL                                                                  │───
+┌Ta│  q           quit                                                      │──┐
+│  │  1 - 7       switch view                                               │  │
+│  │  f           focus selected task                                       │  │
+│  │  F           start a focus session                                     │  │
+│  │  Enter       open / confirm                                            │  │
+│  │  j / k       down / up                                                 │  │
+│  │  ↓ / ↑       down / up                                                 │  │
+│  │  gg / G      top / bottom                                              │  │
+│  │  PgDn / PgUp page down / up                                            │  │
+│  │  ^D / ^U     half page down / up                                       │  │
+│  │  Home / End  first / last row                                          │  │
+│  │  x           toggle done / reopen                                      │  │
+│  │  Space       mark row (multi-select)                                   │  │
+│  │  ^Space      clear marks                                               │  │
+│  │1-15 of 49 · j/k scroll · ? or Esc to close                             │  │
+└──└────────────────────────────────────────────────────────────────────────┘──┘
+ NORMAL   keys and commands — j/k scrolls, ? or Esc closes

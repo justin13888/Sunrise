@@ -1673,17 +1673,17 @@ fn render_triage(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
 /// split is by line rather than by section, because the Normal-mode section
 /// alone is taller than a minimum-size terminal.
 fn render_help(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
-    let lines = help_lines(&state.keymap, state.mode);
+    let lines = help_lines(&state.keymap, state.mode, state.view);
     // Reserve the borders and one footer row; whatever is left is the window.
-    let rows = usize::from(area.height).saturating_sub(3).max(1);
-    let two_col = lines.len() > rows;
-    // Two columns double the rows a page holds, which is what keeps the
-    // common case (Normal mode on an 80x24 terminal) a single page.
-    let per_page = if two_col { rows * 2 } else { rows };
-    let max_scroll = lines.len().saturating_sub(per_page);
+    let rows = usize::from(area.height).saturating_sub(5).max(1);
+    let max_scroll = lines.len().saturating_sub(rows);
     let start = state.help_scroll.min(max_scroll);
-    let window: Vec<Line<'static>> = lines.iter().skip(start).take(per_page).cloned().collect();
+    let window: Vec<Line<'static>> = lines.iter().skip(start).take(rows).cloned().collect();
 
+    // One column, always. An earlier two-column fallback fitted more rows on
+    // screen at the cost of ~25 characters per description, which silently
+    // clipped the longer ones — a help row that documents half a sentence is
+    // worse than one the user has to scroll to. Scrolling covers the length.
     let footer = if max_scroll == 0 {
         "? or Esc to close".to_string()
     } else {
@@ -1698,38 +1698,19 @@ fn render_help(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .borders(Borders::ALL)
         .title("Keys")
         .border_style(Style::default().fg(Color::Yellow));
-
-    let body_rows = if two_col {
-        window.len().div_ceil(2)
-    } else {
-        window.len()
-    };
-    let width = if two_col { 78 } else { 72 };
     let rect = centered(
         area,
-        width,
-        u16::try_from(body_rows + 3).unwrap_or(u16::MAX),
+        74,
+        u16::try_from(window.len() + 3).unwrap_or(u16::MAX),
     );
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
-
     let split = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
-    if two_col {
-        let cut = window.len().div_ceil(2);
-        let (left, right) = window.split_at(cut);
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(split[0]);
-        f.render_widget(Paragraph::new(left.to_vec()), cols[0]);
-        f.render_widget(Paragraph::new(right.to_vec()), cols[1]);
-    } else {
-        f.render_widget(Paragraph::new(window), split[0]);
-    }
+    f.render_widget(Paragraph::new(window), split[0]);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             footer,
@@ -1741,8 +1722,8 @@ fn render_help(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
 
 /// Total help rows for `mode` — what the overlay can scroll through.
 #[must_use]
-pub fn help_row_count(keymap: &Keymap, mode: Mode) -> usize {
-    help_lines(keymap, mode).len()
+pub fn help_row_count(keymap: &Keymap, mode: Mode, view: View) -> usize {
+    help_lines(keymap, mode, view).len()
 }
 
 /// Which keymap sections the overlay shows in `mode`: Normal always (those keys
@@ -1756,11 +1737,17 @@ pub fn help_modes(mode: Mode) -> Vec<&'static str> {
     }
 }
 
-/// Overlay lines: the selected sections, one blank line between them.
-fn help_lines(keymap: &Keymap, mode: Mode) -> Vec<Line<'static>> {
+/// Overlay lines: the selected keymap sections, then the `:` command
+/// reference.
+///
+/// The command list lives here rather than on the status line because it
+/// stopped fitting one: `:help` printed every command into a single
+/// 80-column row, where the tail was silently clipped and everything past the
+/// cut documented nothing.
+fn help_lines(keymap: &Keymap, mode: Mode, view: View) -> Vec<Line<'static>> {
     let wanted = help_modes(mode);
     let mut out: Vec<Line<'static>> = Vec::new();
-    for (label, rows) in keymap.help_sections() {
+    for (label, rows) in keymap.help_sections(view) {
         if !wanted.contains(&label) {
             continue;
         }
@@ -1775,10 +1762,23 @@ fn help_lines(keymap: &Keymap, mode: Mode) -> Vec<Line<'static>> {
         )));
         out.extend(rows.into_iter().map(|(keys, desc)| {
             Line::from(vec![
-                Span::styled(format!("  {keys:<11}"), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {keys:<12}"), Style::default().fg(Color::Cyan)),
                 Span::raw(desc.to_string()),
             ])
         }));
+    }
+    out.push(Line::from(""));
+    out.push(Line::from(Span::styled(
+        "COMMANDS".to_string(),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (name, desc) in crate::command::COMMANDS {
+        out.push(Line::from(vec![
+            Span::styled(format!("  {name:<22}"), Style::default().fg(Color::Cyan)),
+            Span::raw((*desc).to_string()),
+        ]));
     }
     out
 }
@@ -1982,9 +1982,31 @@ mod tests {
 
     #[test]
     fn snapshot_help_message() {
+        // `:help` opens the scrolling reference; the status line only says so.
         let mut state = ViewState::default();
         let _ = crate::apply_command(crate::parse_command(":help"), &mut state);
-        insta::assert_snapshot!(frame_to_string(80, 10, &state));
+        assert!(state.show_help);
+        insta::assert_snapshot!(frame_to_string(80, 20, &state));
+    }
+
+    #[test]
+    fn the_help_overlay_documents_every_colon_command() {
+        // A command listed in help that errors when typed is worse than an
+        // undocumented one; a command that parses but is listed nowhere is
+        // unreachable. This is the second half of that pair.
+        let mut state = ViewState::default();
+        state.show_help = true;
+        let total = crate::render::help_row_count(&state.keymap, Mode::Normal, state.view);
+        let mut seen = String::new();
+        for step in 0..=total {
+            state.help_scroll = step;
+            seen.push_str(&guarded_frame(MIN_WIDTH, MIN_HEIGHT, &state));
+        }
+        assert!(seen.contains("COMMANDS"), "the section exists");
+        for (spec, desc) in crate::COMMANDS {
+            assert!(seen.contains(spec), "missing {spec:?}");
+            assert!(seen.contains(desc), "missing {desc:?}");
+        }
     }
 
     #[test]
@@ -2343,12 +2365,12 @@ mod tests {
                 // terminal, so "reachable" is the honest assertion, not
                 // "visible at once".
                 let mut seen = String::new();
-                let total = crate::render::help_row_count(&state.keymap, mode);
+                let total = crate::render::help_row_count(&state.keymap, mode, state.view);
                 for step in 0..=total {
                     state.help_scroll = step;
                     seen.push_str(&guarded_frame(w, h, &state));
                 }
-                for (section, rows) in crate::help_sections() {
+                for (section, rows) in crate::help_sections(state.view) {
                     if !wanted.contains(&section) {
                         continue;
                     }
@@ -2366,7 +2388,7 @@ mod tests {
     fn every_documented_binding_is_reachable_from_some_help_context() {
         // Contextual filtering must not orphan a section: every mode that has
         // help rows has to be a mode the overlay can be opened in.
-        for (section, _) in crate::help_sections() {
+        for (section, _) in crate::help_sections(View::Today) {
             let mode = [
                 Mode::Normal,
                 Mode::Insert,
