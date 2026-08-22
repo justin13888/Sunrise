@@ -558,6 +558,8 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.recall_history(d);
             Outcome::None
         }
+        Action::LinkBlockers => link_blockers(state),
+        Action::ClearBlockers => clear_blockers(state),
         Action::ShowActivity => match activity_target(state) {
             Some((id, title)) => Outcome::ShowActivity { entity: id, title },
             None => {
@@ -803,6 +805,73 @@ fn redo_step(state: &mut ViewState) -> Outcome {
     // Pushed directly rather than through `push_undo`, which clears the redo
     // stack: walking forward must not destroy the rest of the forward history.
     state.undo.push(entry.flipped());
+    Outcome::submit_all(cmds)
+}
+
+/// Make the marked tasks block the one under the cursor.
+///
+/// The dependency graph is the load-bearing input to the whole Focus feature:
+/// the planner drops blocked work so the queue is never a dead end, it ranks
+/// by how much finishing a task releases, and the unblock cascade reports what
+/// a completion freed. `Query::Actionable`, `FocusPlanRow.unblocks` and
+/// `Query::UnblockCascade` all read it — and no client could **write** it, so
+/// in practice every vault's graph was empty and every leverage number was
+/// zero.
+///
+/// The gesture reuses the mark set rather than adding a picker: "these, then
+/// that" is how a dependency is stated out loud, and marks already survive the
+/// cursor moving, which is exactly what selecting a blocker and then walking
+/// to its dependent requires.
+fn link_blockers(state: &mut ViewState) -> Outcome {
+    let blockers = state.marked_ids();
+    if blockers.is_empty() {
+        state.status = "blockers: Space-mark what must finish first, then b on the task".into();
+        return Outcome::None;
+    }
+    let Some(target) = state.selected_task().map(|t| (t.id, t.title.clone())) else {
+        return no_selection(state);
+    };
+    let (id, title) = target;
+    if blockers.contains(&id) {
+        // A one-task cycle is the only one reachable from this gesture; the
+        // core rejects longer ones at submit, where the whole graph is known.
+        state.status = "a task cannot block itself".into();
+        return Outcome::None;
+    }
+    // The set replaces rather than extends: `blocked_by` is one LWW register,
+    // so "these block it" has to be the whole answer or a concurrent edit on
+    // another device would drop half of it.
+    let n = blockers.len();
+    state.clear_marks();
+    state.status = format!("{n} task(s) now block \"{title}\"");
+    Outcome::Submit(Box::new(Command::UpdateTask {
+        id,
+        patch: TaskPatch {
+            blocked_by: Some(blockers),
+            ..Default::default()
+        },
+    }))
+}
+
+/// Clear the selection's blockers, so a dependency entered by mistake is not
+/// permanent.
+fn clear_blockers(state: &mut ViewState) -> Outcome {
+    let ids = state.operand_ids();
+    if ids.is_empty() {
+        return no_selection(state);
+    }
+    let label = state.operand_label();
+    let cmds: Vec<Command> = ids
+        .iter()
+        .map(|id| Command::UpdateTask {
+            id: *id,
+            patch: TaskPatch {
+                blocked_by: Some(Vec::new()),
+                ..Default::default()
+            },
+        })
+        .collect();
+    finish_operator(state, "unblocked", &label);
     Outcome::submit_all(cmds)
 }
 
@@ -2529,6 +2598,61 @@ manual"
             let _ = press(&mut s, KeyCode::Enter);
         }
         assert_eq!(s.cmd_history, vec!["view today".to_string()]);
+    }
+
+    #[test]
+    fn marked_tasks_become_the_blockers_of_the_one_under_the_cursor() {
+        // The dependency graph feeds the planner's whole ranking, the
+        // actionable filter and the unblock cascade — and no client could
+        // write it, so every vault's graph was empty and every leverage
+        // number zero.
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let blocker = s.tasks[0].id;
+        let _ = press(&mut s, KeyCode::Char(' ')); // mark row 0, advance
+        let target = s.tasks[1].id;
+        match press(&mut s, KeyCode::Char('b')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id, patch } => {
+                    assert_eq!(id, target);
+                    assert_eq!(patch.blocked_by, Some(vec![blocker]));
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(s.marked.is_empty(), "the gesture spends the marks");
+    }
+
+    #[test]
+    fn b_with_nothing_marked_explains_the_gesture() {
+        let mut s = inbox_state();
+        assert!(matches!(press(&mut s, KeyCode::Char('b')), Outcome::None));
+        assert!(s.status.contains("Space-mark"), "{}", s.status);
+    }
+
+    #[test]
+    fn a_task_cannot_be_made_to_block_itself() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        s.selected = Some(0);
+        assert!(matches!(press(&mut s, KeyCode::Char('b')), Outcome::None));
+        assert!(s.status.contains("cannot block itself"), "{}", s.status);
+    }
+
+    #[test]
+    fn capital_b_clears_the_blockers_again() {
+        let mut s = inbox_state();
+        match press(&mut s, KeyCode::Char('B')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { patch, .. } => {
+                    assert_eq!(patch.blocked_by, Some(vec![]));
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
     }
 
     #[test]

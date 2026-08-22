@@ -362,3 +362,76 @@ async fn the_planner_drops_blocked_work_and_ranks_by_leverage() {
     let after = plan(&core).await;
     assert!(after.iter().any(|r| r.task.id == lonely));
 }
+
+/// The dependency graph is the load-bearing input to the whole Focus feature,
+/// and until the TUI grew `b` there was no way for any client to write one —
+/// so every vault's graph was empty and every leverage number zero. This
+/// proves the write the reducer builds is the one the planner reads.
+#[tokio::test]
+async fn a_blocker_written_by_the_client_drops_its_dependent_from_the_planner() {
+    let (_dir, core) = open_core().await;
+    let blocker = task(&core, "wait for the survey", None).await;
+    let dependent = task(&core, "book the movers", None).await;
+
+    // Exactly the command `link_blockers` builds.
+    submit(
+        &core,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![blocker]),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+
+    let queue = plan(&core).await;
+    assert!(
+        queue.iter().all(|r| r.task.id != dependent),
+        "a blocked task must never be proposed: the planner is not a dead end"
+    );
+    let head = queue
+        .iter()
+        .find(|r| r.task.id == blocker)
+        .expect("the blocker is actionable");
+    assert_eq!(head.unblocks, 1, "and it is ranked by what it releases");
+
+    // Finishing it frees the dependent, with no repair pass.
+    submit(&core, Command::CompleteTask(blocker)).await;
+    let queue = plan(&core).await;
+    assert!(
+        queue.iter().any(|r| r.task.id == dependent),
+        "completing the blocker releases it"
+    );
+
+    // …and `B` puts it back to unblocked from either side.
+    let other = task(&core, "another blocker", None).await;
+    submit(
+        &core,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![other]),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(plan(&core).await.iter().all(|r| r.task.id != dependent));
+    submit(
+        &core,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(Vec::new()),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(
+        plan(&core).await.iter().any(|r| r.task.id == dependent),
+        "clearing the blockers is not a one-way door"
+    );
+}

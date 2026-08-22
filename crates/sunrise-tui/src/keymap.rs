@@ -156,6 +156,10 @@ pub enum Action {
     CompleteCommand,
     /// Walk the `:` history: `-1` older, `1` newer.
     RecallHistory(i8),
+    /// Make the marked tasks block the one under the cursor (`b`).
+    LinkBlockers,
+    /// Clear the selection's blockers (`B`).
+    ClearBlockers,
     /// Undo the last reversible step (`u`).
     Undo,
     /// Redo the step `u` walked back (`^R`).
@@ -280,6 +284,8 @@ impl Action {
             Self::CompleteCommand => "complete_command",
             Self::RecallHistory(n) if *n < 0 => "history_prev",
             Self::RecallHistory(_) => "history_next",
+            Self::LinkBlockers => "link_blockers",
+            Self::ClearBlockers => "clear_blockers",
             Self::Undo => "undo",
             Self::Redo => "redo",
             Self::ToggleHelp => "help",
@@ -803,6 +809,20 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::ShowActivity,
         Some(("L", "activity: what happened")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('b'),
+        Scope::Any,
+        Action::LinkBlockers,
+        Some(("b", "marked tasks block this one")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('B'),
+        Scope::Any,
+        Action::ClearBlockers,
+        Some(("B", "clear blockers")),
     ),
     b(
         Mode::Normal,
@@ -2435,7 +2455,10 @@ help    = \"#\"
             d(KeyCode::Char('b'), Mode::Focus, true),
             Some(Action::TakeBreak)
         );
-        assert_eq!(d(KeyCode::Char('b'), Mode::Normal, true), None);
+        assert_eq!(
+            d(KeyCode::Char('b'), Mode::Normal, true),
+            Some(Action::LinkBlockers)
+        );
         // Esc and `q` end the session rather than quitting the app.
         assert_eq!(d(KeyCode::Esc, Mode::Focus, true), Some(Action::EndFocus));
         assert_eq!(
