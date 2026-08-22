@@ -73,11 +73,36 @@ just validate     # JS/TS: Biome CI + typecheck + coverage
 just rust-test    # Rust: unit tests + cross-crate end-to-end tests
 ```
 
+### Try it in 30 seconds
+
+The terminal client ships non-interactive subcommands, so you can drive a real
+vault without launching the UI:
+
+```bash
+export SUNRISE_VAULT=$(mktemp -d)
+cargo run -q -p sunrise-tui -- capture 'Renew passport #inbox ^+6h !1 ~1h'
+cargo run -q -p sunrise-tui -- capture 'Email Sara about Q3'
+cargo run -q -p sunrise-tui -- today
+cargo run -q -p sunrise-tui -- inbox
+cargo run -q -p sunrise-tui -- search passport
+cargo run -q -p sunrise-tui             # ...then the interactive TUI
+```
+
+Capture syntax is `#stream @context ^when !priority ~duration *due:when*`.
+Anything the parser cannot resolve is reported on stderr and left in the title,
+so no input is ever silently dropped. `^when` takes `today`, `tonight`,
+`tomorrow`, weekday names (optionally `next friday`), `YYYY-MM-DD`, `+3d` /
+`+2w` / `+6h` / `+90m`, and an optional trailing time (`9am`, `14:30`).
+
+Inside the TUI: `1`–`6` switch views, `c` capture, `e` edit, `d` defer,
+`D` delete, `m` move to stream, `S` new stream, `x` complete, `/` search,
+`:` command mode, and `?` shows every binding.
+
 ### End-to-end QA
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today, and cross-device sync is proven end to end by the `sunrise-e2e` convergence test. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md) — and the **desktop** Tauri shell is frontend-only until its native deps are wired. Caveats are called out per surface so QA results aren't misread.
+> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today, and cross-device sync is proven end to end by the `sunrise-e2e` convergence test. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md) — and the **desktop** Tauri shell does not run yet — Tauri itself is not wired in, so treat it as scaffolding rather than a frontend awaiting deps. Caveats are called out per surface so QA results aren't misread.
 
 #### 1. Toolchain check
 
