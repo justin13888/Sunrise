@@ -4468,13 +4468,25 @@ impl Engine {
             // logged locally as `task.defer` but arrives from a peer as
             // `task.update` (both are a full-state `TaskUpdate`), so an
             // inner-kind list would quietly lose one device's defers.
+            //
+            // Ordered by `(ts_ms, device_id, seq)`, **not** by `(ts_ms,
+            // op_id)`. `fold_activity` is a state machine over successive
+            // full-state snapshots, so the order it reads them in *is* the
+            // history it reports. `op_id` is a ULID whose low bits are random,
+            // so two ops a device wrote in the same millisecond used to sort
+            // arbitrarily — and a pair read backwards does not just come out
+            // reordered, it fabricates a transition that never happened
+            // (defer-then-complete read backwards reports a *reopen*).
+            // `(device_id, seq)` is the device's own causal order, which is
+            // exactly what the fold needs; `op_id` stays as a final tiebreak
+            // so the ordering is still total.
             "SELECT op_id, ts_ms, device_id, envelope FROM ops
              WHERE target_kind = 'task'
                AND target_id IN (
                    SELECT DISTINCT target_id FROM ops
                    WHERE target_kind = 'task'
                      AND ts_ms >= ?1 AND target_id IS NOT NULL)
-             ORDER BY ts_ms ASC, op_id ASC",
+             ORDER BY ts_ms ASC, device_id ASC, seq ASC, op_id ASC",
         )?;
         let rows = stmt
             .query_map(params![since], op_row)?
@@ -4500,14 +4512,14 @@ impl Engine {
                 "SELECT op_id, ts_ms, device_id, envelope FROM ops
                  WHERE target_id = ?1
                     OR target_id IN (SELECT id FROM focus_sessions WHERE task_id = ?1)
-                 ORDER BY ts_ms ASC, op_id ASC"
+                 ORDER BY ts_ms ASC, device_id ASC, seq ASC, op_id ASC"
             }
             EntityKind::Stream => {
                 "SELECT op_id, ts_ms, device_id, envelope FROM ops
                  WHERE target_id = ?1
                     OR target_id IN (SELECT id FROM tasks WHERE stream_id = ?1)
                     OR target_id IN (SELECT id FROM focus_sessions WHERE stream_id = ?1)
-                 ORDER BY ts_ms ASC, op_id ASC"
+                 ORDER BY ts_ms ASC, device_id ASC, seq ASC, op_id ASC"
             }
             _ => {
                 return Err(EngineError::Invalid(
@@ -4670,7 +4682,7 @@ impl Engine {
             "SELECT op_id, ts_ms, device_id, envelope FROM ops
              WHERE target_kind = 'focus_session'
                AND ts_ms >= ?1 AND ts_ms < ?2
-             ORDER BY ts_ms ASC, op_id ASC",
+             ORDER BY ts_ms ASC, device_id ASC, seq ASC, op_id ASC",
         )?;
         let rows = stmt
             .query_map(params![since, until], op_row)?
@@ -5385,6 +5397,64 @@ mod tests {
         {
             QueryResult::Tasks(t) => assert!(t.is_empty(), "no task still carries it"),
             other => panic!("expected Tasks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_activity_feed_reports_the_order_things_actually_happened_in() {
+        // `fold_activity` is a state machine over successive full-state
+        // snapshots, so the order it reads ops in *is* the history it reports.
+        // Ordering by `op_id` sorted same-millisecond ops by the random low
+        // bits of a ULID — and a defer-then-complete pair read backwards does
+        // not come out merely reordered, it fabricates a **reopen** that never
+        // happened.
+        //
+        // The clock is fixed, so every op here shares `ts_ms` and the tie is
+        // always taken. Twelve independent tasks make the old behaviour's
+        // chance of passing (1/6)^12.
+        let mut db = db();
+        let e = engine();
+        for i in 0..12 {
+            let id = e
+                .apply(
+                    &mut db,
+                    Command::CreateTask(TaskDraft {
+                        title: format!("task {i}"),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity;
+            e.apply(
+                &mut db,
+                Command::DeferTask {
+                    id,
+                    to_ms: 1_700_000_000_000 + 86_400_000,
+                },
+            )
+            .unwrap();
+            e.apply(&mut db, Command::CompleteTask(id)).unwrap();
+
+            let events = match e
+                .query(
+                    &db,
+                    Query::ActivityTimeline {
+                        entity: id,
+                        limit: 50,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::Activity(rows) => rows,
+                other => panic!("expected Activity, got {other:?}"),
+            };
+            // Newest first.
+            let verbs: Vec<&str> = events.iter().map(|ev| ev.kind.verb()).collect();
+            assert_eq!(
+                verbs,
+                vec!["task.completed", "task.deferred", "task.created"],
+                "task {i}: the feed must not invent a transition"
+            );
         }
     }
 
