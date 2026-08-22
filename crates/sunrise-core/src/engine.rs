@@ -224,6 +224,7 @@ impl Engine {
             Query::Today { now_ms, contexts } => self.query_today(db, now_ms, &contexts),
             Query::Inbox => self.query_stream_tasks(db, &inbox_stream_ref()),
             Query::StreamTasks(s) => self.query_stream_tasks(db, &s),
+            Query::ContextTasks(c) => self.query_context_tasks(db, &c),
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
             Query::StreamList => self.query_stream_list(db),
@@ -2153,6 +2154,38 @@ impl Engine {
                 let id: Vec<u8> = row.get(0)?;
                 Ok(id)
             })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut tasks = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let mut bytes = [0u8; 16];
+            let take = raw.len().min(16);
+            bytes[..take].copy_from_slice(&raw[..take]);
+            if let Some(t) = read_task(db.conn(), &bytes)? {
+                tasks.push(t);
+            }
+        }
+        Ok(QueryResult::StreamTasks(tasks))
+    }
+
+    /// Tasks carrying one Context, newest scheduling first.
+    ///
+    /// Deleted tasks are excluded but *done* ones are not: a Context listing
+    /// is "what is tagged this", and hiding completed work would make the
+    /// count in the picker disagree with the list it opens.
+    fn query_context_tasks(
+        &self,
+        db: &Db,
+        context: &EntityRef,
+    ) -> Result<QueryResult, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT t.id FROM tasks t
+             JOIN task_contexts tc ON tc.task_id = t.id
+             WHERE tc.context_id = ? AND t.deleted = 0
+             ORDER BY COALESCE(t.scheduled_at_ms, t.due_at_ms) ASC, t.id ASC",
+        )?;
+        let blob: Vec<u8> = context.bytes().to_vec();
+        let ids = stmt
+            .query_map(params![blob], |row| row.get::<_, Vec<u8>>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut tasks = Vec::with_capacity(ids.len());
         for raw in ids {
@@ -5350,6 +5383,76 @@ mod tests {
             QueryResult::Tasks(t) => assert!(t.is_empty(), "no task still carries it"),
             other => panic!("expected Tasks, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn context_tasks_lists_across_streams_and_survives_a_purge() {
+        // A Context cuts across Streams, so its listing must too — that is
+        // the whole difference between a Context and a Stream, and a client
+        // cannot offer "stand in @errands" without it.
+        let mut db = db();
+        let e = engine();
+        let errands = new_context(&e, &mut db, "errands");
+        let work = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let inbox_task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "post a letter".into(),
+                    contexts: vec![errands],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let work_task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "collect the parcel".into(),
+                    stream_id: Some(work),
+                    contexts: vec![errands],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "untagged".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let listed = |e: &Engine, db: &Db| match e.query(db, Query::ContextTasks(errands)).unwrap()
+        {
+            QueryResult::StreamTasks(t) => t.into_iter().map(|t| t.id).collect::<BTreeSet<_>>(),
+            other => panic!("expected StreamTasks, got {other:?}"),
+        };
+        assert_eq!(listed(&e, &db), BTreeSet::from([inbox_task, work_task]));
+
+        // Completed work stays listed: hiding it would make the picker's
+        // count disagree with the list it opens.
+        e.apply(&mut db, Command::CompleteTask(inbox_task)).unwrap();
+        assert_eq!(listed(&e, &db), BTreeSet::from([inbox_task, work_task]));
+
+        // Deleting a task drops it; deleting the Context empties the listing,
+        // because the purge removes the tag from every task.
+        e.apply(&mut db, Command::DeleteTask(inbox_task)).unwrap();
+        assert_eq!(listed(&e, &db), BTreeSet::from([work_task]));
+        e.apply(&mut db, Command::DeleteContext(errands)).unwrap();
+        assert!(listed(&e, &db).is_empty());
     }
 
     #[test]

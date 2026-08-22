@@ -22,6 +22,15 @@ pub enum Query {
     Inbox,
     /// All tasks in a single Stream.
     StreamTasks(EntityRef),
+    /// All live tasks carrying one Context.
+    ///
+    /// The Context counterpart of [`Query::StreamTasks`]. Streams partition
+    /// tasks and Contexts cut across them
+    /// (`docs/02-domain/contexts-and-tags.md`), so "everything tagged
+    /// `@errands`" is a first-class listing, not a filter over one Stream —
+    /// and without it a Context is only ever reachable as a capture token,
+    /// never as a place to stand.
+    ContextTasks(EntityRef),
     /// One entity by id.
     EntityById(EntityRef),
     /// Connected device list.
