@@ -2271,13 +2271,14 @@ impl Engine {
             color: StreamColor::Slate,
             open_task_count: u64::try_from(inbox_open).unwrap_or(0),
             archived: false,
+            paused: false,
         });
 
         // Real streams (exclude deleted and the synthetic inbox row, which
         // `ensure_stream_row` may have materialized with an empty name).
         // Ordered case-insensitively by name.
         let mut stmt = db.conn().prepare(
-            "SELECT s.stream_id, s.name, s.color, s.archived,
+            "SELECT s.stream_id, s.name, s.color, s.archived, s.paused,
                     (SELECT COUNT(*) FROM tasks t
                      WHERE t.stream_id = s.stream_id AND t.deleted = 0
                        AND t.state IN ('todo', 'in_progress')) AS open_count
@@ -2290,7 +2291,8 @@ impl Engine {
             let name: String = row.get(1)?;
             let color_str: String = row.get(2)?;
             let archived: i64 = row.get(3)?;
-            let open_count: i64 = row.get(4)?;
+            let paused: i64 = row.get(4)?;
+            let open_count: i64 = row.get(5)?;
             let mut a = [0u8; 16];
             let take = id_blob.len().min(16);
             a[..take].copy_from_slice(&id_blob[..take]);
@@ -2300,6 +2302,7 @@ impl Engine {
                 color: StreamColor::from_str_lossy(&color_str),
                 open_task_count: u64::try_from(open_count).unwrap_or(0),
                 archived: archived != 0,
+                paused: paused != 0,
             })
         })?;
         for r in mapped {

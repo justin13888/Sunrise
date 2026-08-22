@@ -298,6 +298,12 @@ pub struct StreamRow {
     pub open_task_count: u64,
     /// Whether the stream is archived (always false for Inbox).
     pub archived: bool,
+    /// Whether the stream is paused (always false for Inbox).
+    ///
+    /// Projected alongside `archived` because a client cannot offer
+    /// pause/resume without knowing which one the key means, and reading it
+    /// per row through `EntityById` would cost a query per sidebar row.
+    pub paused: bool,
 }
 
 /// One row of [`Query::Contexts`].

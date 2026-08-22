@@ -125,6 +125,12 @@ pub enum Action {
     MoveToStream,
     /// Create a stream (`S`).
     CreateStream,
+    /// Create a context (`C`).
+    CreateContext,
+    /// Archive or unarchive the selected Browse sidebar row (`a`).
+    ToggleArchive,
+    /// Pause or resume the selected Stream or Routine (`p`).
+    TogglePause,
     /// Toggle the `?` help overlay.
     ToggleHelp,
     /// Begin a search (switches to Insert in the search bar).
@@ -231,6 +237,9 @@ impl Action {
             Self::Delete => "delete",
             Self::MoveToStream => "move_to_stream",
             Self::CreateStream => "create_stream",
+            Self::CreateContext => "create_context",
+            Self::ToggleArchive => "toggle_archive",
+            Self::TogglePause => "toggle_pause",
             Self::ToggleHelp => "help",
             Self::BeginSearch => "search",
             Self::BeginCommand => "command",
@@ -668,6 +677,27 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::CreateStream,
         Some(("S", "create a stream")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('C'),
+        Scope::Any,
+        Action::CreateContext,
+        Some(("C", "create a context")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('a'),
+        Scope::Any,
+        Action::ToggleArchive,
+        Some(("a", "archive (sidebar row)")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('p'),
+        Scope::Any,
+        Action::TogglePause,
+        Some(("p", "pause (stream/routine)")),
     ),
     b(
         Mode::Normal,
@@ -2176,13 +2206,17 @@ help    = \"#\"
             d(KeyCode::Char('F'), Mode::Normal, true),
             Some(Action::StartFocus)
         );
-        // The session's own keys exist only in its mode, so `a` / `b` / `i`
-        // stay free everywhere else.
+        // The session's own keys are its mode's, so a key that also exists in
+        // Normal mode resolves to the *session's* meaning while one runs and
+        // never leaks the other way round.
         assert_eq!(
             d(KeyCode::Char('a'), Mode::Focus, true),
             Some(Action::CaptureAside)
         );
-        assert_eq!(d(KeyCode::Char('a'), Mode::Normal, true), None);
+        assert_eq!(
+            d(KeyCode::Char('a'), Mode::Normal, true),
+            Some(Action::ToggleArchive)
+        );
         assert_eq!(
             d(KeyCode::Char('b'), Mode::Focus, true),
             Some(Action::TakeBreak)

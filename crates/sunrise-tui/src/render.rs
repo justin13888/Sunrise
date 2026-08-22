@@ -474,8 +474,7 @@ fn render_context_list(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
                 };
                 let row = format!("{marker}@{} [{}]", c.name, c.task_count);
                 if c.archived {
-                    ListItem::new(format!("{row} [archived]"))
-                        .style(Style::default().fg(Color::DarkGray))
+                    ListItem::new(format!("{row} ⌁")).style(Style::default().fg(Color::DarkGray))
                 } else {
                     ListItem::new(row)
                 }

@@ -148,21 +148,53 @@ pub enum Prompt {
     /// Schedule one or more tasks at a typed when-expression (`s`), parsed by
     /// [`sunrise_domain::capture::parse_when`].
     Schedule(Vec<EntityRef>),
-    /// Delete tasks, gated on an explicit `y` (`D`).
+    /// Delete something, gated on an explicit `y` (`D`).
     ConfirmDelete {
-        /// Tasks to delete once confirmed.
-        ids: Vec<EntityRef>,
+        /// What to delete once confirmed.
+        target: DeleteTarget,
         /// Title (or `"N tasks"`) echoed in the confirmation message.
         title: String,
     },
+    /// Rename a Stream or Context in place (`e` in the Browse sidebar).
+    Rename(SidebarRow),
     /// Create a stream by name (`S`).
     CreateStream,
+    /// Create a context by name (`C`).
+    CreateContext,
     /// Free-text search query (`/`).
     Search,
     /// Annotate one or more tasks with the edit grammar (`A`) — see
     /// [`crate::edit`]. Carries a list so a marked or visual set is one
     /// prompt, not one per task.
     Annotate(Vec<EntityRef>),
+}
+
+/// A row of the Browse sidebar, identified by kind so one prompt can serve
+/// both lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarRow {
+    /// A Stream row.
+    Stream(EntityRef),
+    /// A Context row.
+    Context(EntityRef),
+}
+
+/// What a confirmed `D` removes.
+///
+/// One prompt rather than three: the confirmation gate, its wording and its
+/// `y`-only key handling are identical whatever is being deleted, and three
+/// copies of a destructive path is three chances for one of them to lose the
+/// gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteTarget {
+    /// Tasks (one, a visual run, or the marked set).
+    Tasks(Vec<EntityRef>),
+    /// A whole Stream.
+    Stream(EntityRef),
+    /// A Context — removed from every Task carrying it, per the spec.
+    Context(EntityRef),
+    /// A Routine template. Existing generated tasks survive.
+    Routine(EntityRef),
 }
 
 /// State for the modal move-to-stream picker (`m`).
@@ -722,6 +754,43 @@ impl ViewState {
     #[must_use]
     pub fn selected_context_row(&self) -> Option<&ContextRow> {
         self.selected_context.and_then(|i| self.contexts.get(i))
+    }
+
+    /// The Browse sidebar row under the cursor, with its display name.
+    ///
+    /// `None` outside the Browse sidebar, which is what makes `e`, `D`, `a`
+    /// and `p` mean the sidebar row *there* and the task everywhere else,
+    /// without needing keys of their own.
+    #[must_use]
+    pub fn sidebar_row(&self) -> Option<(SidebarRow, String)> {
+        if self.view != View::Stream {
+            return None;
+        }
+        match self.pane {
+            StreamPane::Streams => self
+                .selected_stream_row()
+                .map(|r| (SidebarRow::Stream(r.id), r.name.clone())),
+            StreamPane::Contexts => self
+                .selected_context_row()
+                .map(|r| (SidebarRow::Context(r.id), format!("@{}", r.name))),
+            StreamPane::Tasks => None,
+        }
+    }
+
+    /// Whether the selected Stream row is paused.
+    #[must_use]
+    pub fn paused_stream_selected(&self) -> bool {
+        self.selected_stream_row().is_some_and(|r| r.paused)
+    }
+
+    /// Whether the selected sidebar row is archived.
+    #[must_use]
+    pub fn sidebar_row_archived(&self) -> bool {
+        match self.pane {
+            StreamPane::Streams => self.selected_stream_row().is_some_and(|r| r.archived),
+            StreamPane::Contexts => self.selected_context_row().is_some_and(|r| r.archived),
+            StreamPane::Tasks => false,
+        }
     }
 
     /// Point the task pane at the sidebar row under the cursor, without
@@ -1554,6 +1623,7 @@ pub(crate) mod fixtures {
             color: StreamColor::Slate,
             open_task_count: open,
             archived: false,
+            paused: false,
         }
     }
 
@@ -1576,6 +1646,7 @@ pub(crate) mod fixtures {
             color: StreamColor::Sky,
             open_task_count: open,
             archived: false,
+            paused: false,
         }
     }
 }

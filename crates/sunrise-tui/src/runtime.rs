@@ -12,14 +12,17 @@ use crate::capture::{now_ts, parse_line, preview_line, unresolved_note};
 use crate::command::parse_command;
 use crate::edit::parse_edit;
 use crate::keymap::{Action, Mode};
-use crate::view::{Prompt, View, ViewState};
+use crate::view::{DeleteTarget, Prompt, SidebarRow, View, ViewState};
 use crate::{apply_command, AppEffect};
 use std::path::PathBuf;
 use std::time::Duration;
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{Command, DomainEvent};
 use sunrise_domain::capture::parse_when;
-use sunrise_domain::{FocusKind, InterruptionReason, StreamDraft, TaskPatch};
+use sunrise_domain::{
+    ContextDraft, ContextPatch, FocusKind, InterruptionReason, RoutinePatch, StreamDraft,
+    StreamPatch, TaskPatch,
+};
 use sunrise_id::EntityRef;
 
 /// Work the runtime must do after [`apply_action`] has updated the view state.
@@ -287,6 +290,15 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             refresh_capture_preview(state, now_ms);
             Outcome::None
         }
+        Action::EditTitle if state.sidebar_row().is_some() => {
+            let (row, name) = state.sidebar_row().expect("just checked");
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::Rename(row));
+            // `@` is display sugar on a context row, not part of its name.
+            state.input.set(name.trim_start_matches('@').to_string());
+            state.status = "rename: Enter to save, Esc to cancel".into();
+            Outcome::None
+        }
         Action::EditTitle => match state.selected_task().map(|t| (t.id, t.title.clone())) {
             Some((id, title)) => {
                 state.mode = Mode::Insert;
@@ -342,17 +354,31 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::Delete => {
-            let ids = state.operand_ids();
-            if ids.is_empty() {
-                return no_selection(state);
-            }
+            // In the Browse sidebar `D` means the row under the cursor; in a
+            // task list it means the operand set. Same key, same gate.
+            let (target, title, warning) = match state.sidebar_row() {
+                Some((SidebarRow::Stream(id), name)) => {
+                    (DeleteTarget::Stream(id), name, " — its tasks go with it")
+                }
+                Some((SidebarRow::Context(id), name)) => (
+                    DeleteTarget::Context(id),
+                    name,
+                    " — removed from every task carrying it",
+                ),
+                None => {
+                    let ids = state.operand_ids();
+                    if ids.is_empty() {
+                        return no_selection(state);
+                    }
+                    (DeleteTarget::Tasks(ids), state.operand_label(), "")
+                }
+            };
             // Destructive: park in Confirm mode. Nothing is submitted
             // until the user answers `y`.
-            let title = state.operand_label();
             state.mode = Mode::Confirm;
             state.input.clear();
-            state.status = format!("delete \"{title}\"? [y/N]");
-            state.prompt = Some(Prompt::ConfirmDelete { ids, title });
+            state.status = format!("delete \"{title}\"{warning}? [y/N]");
+            state.prompt = Some(Prompt::ConfirmDelete { target, title });
             Outcome::None
         }
         Action::MoveToStream => {
@@ -390,6 +416,15 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.status = "new stream: type name, Enter to create, Esc to cancel".into();
             Outcome::None
         }
+        Action::CreateContext => {
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::CreateContext);
+            state.input.clear();
+            state.status = "new context: type a name (no @), Enter to create".into();
+            Outcome::None
+        }
+        Action::ToggleArchive => toggle_archive(state),
+        Action::TogglePause => toggle_pause(state),
         Action::ToggleHelp => {
             state.show_help = !state.show_help;
             state.help_scroll = 0;
@@ -544,6 +579,88 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// Archive or unarchive the Browse sidebar row under the cursor.
+///
+/// Archiving is the non-destructive counterpart of `D`, and the spec leans on
+/// it: an archived Stream or Context stays on the tasks that carry it and only
+/// drops out of pickers and `@name` resolution
+/// (`docs/02-domain/contexts-and-tags.md`). Without a key for it the only way
+/// to retire a finished project was to delete it.
+fn toggle_archive(state: &mut ViewState) -> Outcome {
+    let Some((row, name)) = state.sidebar_row() else {
+        state.status = "archive applies to a stream or context (Browse sidebar)".into();
+        return Outcome::None;
+    };
+    let archived = state.sidebar_row_archived();
+    let verb = if archived { "unarchived" } else { "archived" };
+    state.status = format!("{verb} {name}");
+    Outcome::Submit(Box::new(match row {
+        SidebarRow::Stream(id) => Command::UpdateStream {
+            id,
+            patch: StreamPatch {
+                archived: Some(!archived),
+                ..Default::default()
+            },
+        },
+        SidebarRow::Context(id) => Command::UpdateContext {
+            id,
+            patch: ContextPatch {
+                archived: Some(!archived),
+                ..Default::default()
+            },
+        },
+    }))
+}
+
+/// Pause or resume the selected Stream.
+///
+/// A paused Stream keeps its tasks and stops competing for attention
+/// (`docs/02-domain/streams.md`); the field was already projected and had no
+/// way to be set from any client.
+fn toggle_pause(state: &mut ViewState) -> Outcome {
+    match state.sidebar_row() {
+        Some((SidebarRow::Stream(id), name)) => {
+            let paused = state.paused_stream_selected();
+            let verb = if paused { "resumed" } else { "paused" };
+            state.status = format!("{verb} {name}");
+            Outcome::Submit(Box::new(Command::UpdateStream {
+                id,
+                patch: StreamPatch {
+                    paused: Some(!paused),
+                    // Resuming clears any expiry; a stream cannot be both
+                    // running and scheduled to stop being paused.
+                    paused_until: Some(None),
+                    ..Default::default()
+                },
+            }))
+        }
+        Some((SidebarRow::Context(_), _)) => {
+            state.status = "contexts cannot be paused — a is archive".into();
+            Outcome::None
+        }
+        None => pause_routine(state),
+    }
+}
+
+/// Pause or resume the selected Routine (the Routines view's use of `p`).
+fn pause_routine(state: &mut ViewState) -> Outcome {
+    let Some(row) = state.selected_routine_row() else {
+        state.status = "pause applies to a stream or a routine".into();
+        return Outcome::None;
+    };
+    let (id, paused, title) = (row.id, row.paused, row.title.clone());
+    let verb = if paused { "resumed" } else { "paused" };
+    state.status = format!("{verb} {title}");
+    Outcome::Submit(Box::new(Command::UpdateRoutine {
+        id,
+        patch: RoutinePatch {
+            paused: Some(!paused),
+            paused_until: Some(None),
+            ..Default::default()
+        },
+    }))
 }
 
 /// What a cursor move owes the runtime.
@@ -929,15 +1046,29 @@ fn submit_confirm(state: &mut ViewState) -> Outcome {
     let triage = state.triage;
     state.reset_to_normal();
     match prompt {
-        Some(Prompt::ConfirmDelete { ids, title }) => {
+        Some(Prompt::ConfirmDelete { target, title }) => {
             state.clear_marks();
             state.status = format!("deleted \"{title}\"");
-            if triage {
-                // A deleted task leaves the Inbox: the list closes up under the
-                // cursor, so holding the index is already "next".
-                state.triage_advance(true);
+            match target {
+                DeleteTarget::Tasks(ids) => {
+                    if triage {
+                        // A deleted task leaves the Inbox: the list closes up
+                        // under the cursor, so holding the index is "next".
+                        state.triage_advance(true);
+                    }
+                    Outcome::submit_all(ids.into_iter().map(Command::DeleteTask).collect())
+                }
+                DeleteTarget::Stream(id) => {
+                    // The task pane was showing this stream's tasks.
+                    state.browse = None;
+                    Outcome::Submit(Box::new(Command::DeleteStream(id)))
+                }
+                DeleteTarget::Context(id) => {
+                    state.browse = None;
+                    Outcome::Submit(Box::new(Command::DeleteContext(id)))
+                }
+                DeleteTarget::Routine(id) => Outcome::Submit(Box::new(Command::DeleteRoutine(id))),
             }
-            Outcome::submit_all(ids.into_iter().map(Command::DeleteTask).collect())
         }
         _ => Outcome::None,
     }
@@ -1056,6 +1187,44 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                     Outcome::None
                 }
             }
+        }
+        Some(Prompt::Rename(row)) => {
+            if text.is_empty() {
+                state.prompt = Some(Prompt::Rename(row));
+                state.status = "name cannot be empty".into();
+                return Outcome::None;
+            }
+            state.reset_to_normal();
+            state.status = format!("renamed to {text}");
+            Outcome::Submit(Box::new(match row {
+                SidebarRow::Stream(id) => Command::UpdateStream {
+                    id,
+                    patch: StreamPatch {
+                        name: Some(text),
+                        ..Default::default()
+                    },
+                },
+                SidebarRow::Context(id) => Command::UpdateContext {
+                    id,
+                    patch: ContextPatch {
+                        name: Some(text),
+                        ..Default::default()
+                    },
+                },
+            }))
+        }
+        Some(Prompt::CreateContext) => {
+            if text.is_empty() {
+                state.prompt = Some(Prompt::CreateContext);
+                state.status = "context name cannot be empty".into();
+                return Outcome::None;
+            }
+            state.reset_to_normal();
+            state.status = format!("created @{text}");
+            Outcome::Submit(Box::new(Command::CreateContext(ContextDraft {
+                name: text,
+                description: None,
+            })))
         }
         Some(Prompt::CreateStream) => {
             if text.is_empty() {
@@ -1512,6 +1681,145 @@ manual"
         s.pane = StreamPane::Contexts;
         let _ = press(&mut s, KeyCode::Char('V'));
         assert_ne!(s.mode, Mode::Visual);
+    }
+
+    #[test]
+    fn the_sidebar_renames_the_row_under_the_cursor_not_a_task() {
+        let mut s = browse_state();
+        s.tasks = vec![fake_task(7)];
+        s.selected = Some(0);
+        s.pane = StreamPane::Streams;
+        s.selected_stream = Some(1);
+        let _ = press(&mut s, KeyCode::Char('e'));
+        assert_eq!(s.input, "Work");
+        type_text(&mut s, "!");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateStream { id, patch } => {
+                    assert_eq!(id, s.streams[1].id);
+                    assert_eq!(patch.name.as_deref(), Some("Work!"));
+                }
+                other => panic!("expected UpdateStream, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renaming_a_context_drops_the_display_only_at_sign() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Contexts;
+        s.selected_context = Some(0);
+        let _ = press(&mut s, KeyCode::Char('e'));
+        assert_eq!(s.input, "home", "the @ is sugar, not part of the name");
+    }
+
+    #[test]
+    fn deleting_a_context_says_what_it_will_do_to_the_tasks() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Contexts;
+        s.selected_context = Some(1);
+        let _ = press(&mut s, KeyCode::Char('D'));
+        assert_eq!(s.mode, Mode::Confirm);
+        assert!(s.status.contains("every task carrying it"), "{}", s.status);
+        match press(&mut s, KeyCode::Char('y')) {
+            Outcome::Submit(cmd) => {
+                assert!(matches!(*cmd, Command::DeleteContext(id) if id == s.contexts[1].id));
+            }
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deleting_a_stream_warns_and_needs_the_gate() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Streams;
+        s.selected_stream = Some(1);
+        let _ = press(&mut s, KeyCode::Char('D'));
+        assert!(s.status.contains("tasks go with it"), "{}", s.status);
+        // Anything but `y` cancels, exactly as for a task.
+        assert!(matches!(press(&mut s, KeyCode::Char('n')), Outcome::None));
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn archive_is_the_non_destructive_alternative_to_delete() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Contexts;
+        s.selected_context = Some(0);
+        match press(&mut s, KeyCode::Char('a')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateContext { patch, .. } => assert_eq!(patch.archived, Some(true)),
+                other => panic!("expected UpdateContext, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        // And it flips back.
+        s.contexts[0].archived = true;
+        match press(&mut s, KeyCode::Char('a')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateContext { patch, .. } => assert_eq!(patch.archived, Some(false)),
+                other => panic!("expected UpdateContext, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pause_applies_to_streams_and_says_so_for_contexts() {
+        let mut s = browse_state();
+        s.pane = StreamPane::Streams;
+        s.selected_stream = Some(1);
+        match press(&mut s, KeyCode::Char('p')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateStream { patch, .. } => {
+                    assert_eq!(patch.paused, Some(true));
+                    assert_eq!(patch.paused_until, Some(None));
+                }
+                other => panic!("expected UpdateStream, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        s.pane = StreamPane::Contexts;
+        assert!(matches!(press(&mut s, KeyCode::Char('p')), Outcome::None));
+        assert!(s.status.contains("cannot be paused"));
+    }
+
+    #[test]
+    fn creating_a_context_is_one_key_and_a_name() {
+        let mut s = browse_state();
+        let _ = press(&mut s, KeyCode::Char('C'));
+        assert_eq!(s.mode, Mode::Insert);
+        type_text(&mut s, "errands");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateContext(d) => assert_eq!(d.name, "errands"),
+                other => panic!("expected CreateContext, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p_pauses_a_routine_when_the_routines_view_has_the_cursor() {
+        let mut s = ViewState::default();
+        s.view = View::Routines;
+        s.routines = vec![crate::view::RoutineRow {
+            id: fake_task(1).id,
+            title: "water the plants".into(),
+            rrule: "every day".into(),
+            next: None,
+            paused: false,
+        }];
+        s.after_routines_loaded();
+        s.selected_routine = Some(0);
+        match press(&mut s, KeyCode::Char('p')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateRoutine { patch, .. } => assert_eq!(patch.paused, Some(true)),
+                other => panic!("expected UpdateRoutine, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
     }
 
     #[test]
