@@ -2,9 +2,13 @@
 //!
 //! Implements `docs/07-clients/tui.md` foundation. v1 ships:
 //!
-//! - Today / Inbox / Stream / Search / Focus view enum.
-//! - Vim-style modal navigation (default-on per the parity matrix).
-//! - Snapshot-testable Ratatui renderers for every primary view.
+//! - Today / Inbox / Stream / Search / Focus / Routines view enum.
+//! - Vim-style modal navigation (default-on per the parity matrix), with the
+//!   keymap and the `?` help overlay derived from one binding table.
+//! - A pure Action → `sunrise_core::Command` reducer ([`runtime::apply_action`])
+//!   so every keybinding is unit-testable without a terminal or a `Core`.
+//! - Snapshot-testable Ratatui renderers for every primary view, behind an
+//!   80x24 minimum-size guard.
 //!
 //! The actual TUI runtime (terminal raw mode, event loop, drawing) is in
 //! the bin crate. This library exposes the pure render functions so they
@@ -35,16 +39,24 @@ pub mod images;
 pub mod keymap;
 pub mod livesync;
 pub mod render;
+pub mod runtime;
 pub mod view;
 
 pub use command::{parse_command, Cmd};
-pub use keymap::{dispatch, Action, Mode};
-pub use render::{render, render_focus, render_inbox, render_search, render_stream, render_today};
-pub use view::{StreamPane, SyncIndicator, View, ViewState};
+pub use keymap::{dispatch, help_sections, Action, Binding, Mode, Scope, BINDINGS};
+pub use render::{
+    fits, render, render_focus, render_inbox, render_routines, render_search, render_stream,
+    render_today, MIN_HEIGHT, MIN_WIDTH,
+};
+pub use runtime::{apply_action, parse_defer_ms, Outcome};
+pub use view::{
+    routine_rows, rrule_summary, Prompt, RoutineRow, StreamPane, StreamPicker, SyncIndicator, View,
+    ViewState,
+};
 
 /// Help text listing the command-line commands, shown in the status line by
 /// `:help`. Kept short enough to fit a typical status line.
-pub const HELP_TEXT: &str = ":q quit  :view <today|inbox|stream|search|focus|1-5>  :preview <path>";
+pub const HELP_TEXT: &str = ":q quit  :view <name|1-6>  :preview <path>  ? = all keys";
 
 /// A side effect the runtime (`main`) must perform after a command is applied.
 ///

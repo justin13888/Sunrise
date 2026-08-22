@@ -45,7 +45,7 @@ pub fn parse_command(input: &str) -> Cmd {
         "q" | "quit" => Cmd::Quit,
         "help" | "h" => Cmd::ShowHelp,
         "view" => match rest.split_whitespace().next() {
-            None => Cmd::Error("usage: :view <today|inbox|stream|search|focus>".into()),
+            None => Cmd::Error("usage: :view <today|inbox|stream|search|focus|routines>".into()),
             Some(arg) => match parse_view(arg) {
                 Some(v) => Cmd::SwitchView(v),
                 None => Cmd::Error(format!("unknown view: {arg}")),
@@ -62,7 +62,7 @@ pub fn parse_command(input: &str) -> Cmd {
     }
 }
 
-/// Map a `:view` argument (name or `1..=5`) onto a [`View`].
+/// Map a `:view` argument (name or `1..=6`) onto a [`View`].
 fn parse_view(arg: &str) -> Option<View> {
     match arg {
         "today" | "1" => Some(View::Today),
@@ -70,6 +70,7 @@ fn parse_view(arg: &str) -> Option<View> {
         "stream" | "3" => Some(View::Stream),
         "search" | "4" => Some(View::Search),
         "focus" | "5" => Some(View::Focus),
+        "routines" | "routine" | "6" => Some(View::Routines),
         _ => None,
     }
 }
@@ -99,6 +100,10 @@ mod tests {
         assert_eq!(parse_command(":view stream"), Cmd::SwitchView(View::Stream));
         assert_eq!(parse_command(":view search"), Cmd::SwitchView(View::Search));
         assert_eq!(parse_command(":view focus"), Cmd::SwitchView(View::Focus));
+        assert_eq!(
+            parse_command(":view routines"),
+            Cmd::SwitchView(View::Routines)
+        );
     }
 
     #[test]
@@ -108,6 +113,7 @@ mod tests {
         assert_eq!(parse_command(":view 3"), Cmd::SwitchView(View::Stream));
         assert_eq!(parse_command(":view 4"), Cmd::SwitchView(View::Search));
         assert_eq!(parse_command(":view 5"), Cmd::SwitchView(View::Focus));
+        assert_eq!(parse_command(":view 6"), Cmd::SwitchView(View::Routines));
     }
 
     #[test]

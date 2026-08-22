@@ -1,21 +1,54 @@
 //! Pure render functions for each view. Each takes a Ratatui `Frame` and
 //! the data it needs, and writes widgets. No I/O.
 
-use crate::keymap::Mode;
-use crate::view::{StreamPane, SyncIndicator, View, ViewState};
+use crate::keymap::{help_sections, Mode};
+use crate::view::{RoutineRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use sunrise_domain::Task;
 use sunrise_sync::SyncState;
+
+/// Minimum terminal width required to render the UI (`docs/07-clients/tui.md`).
+pub const MIN_WIDTH: u16 = 80;
+/// Minimum terminal height required to render the UI.
+pub const MIN_HEIGHT: u16 = 24;
+
+/// Whether `area` is large enough for the full UI.
+#[must_use]
+pub const fn fits(area: Rect) -> bool {
+    area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT
+}
 
 /// Top-level dispatch: pick the renderer that matches the view.
 ///
 /// With the `images` feature, `preview` is the runtime-owned image state
 /// for the Focus view's preview pane (`None` when nothing is loaded).
 pub fn render(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &ViewState,
+    #[cfg(feature = "images")] preview: Option<&mut crate::images::Preview>,
+) {
+    // Minimum-size guard. Below 80x24 the split panes degenerate into
+    // unreadable slivers, so render one centred message instead. Purely a
+    // function of `area`, so growing the terminal back restores the UI on the
+    // next frame with no extra state.
+    if !fits(area) {
+        render_too_small(f, area);
+        return;
+    }
+    #[cfg(feature = "images")]
+    render_chrome(f, area, state, preview);
+    #[cfg(not(feature = "images"))]
+    render_chrome(f, area, state);
+}
+
+/// The full UI (tab bar + body + status line + overlays), assuming `area`
+/// already passed the [`fits`] check.
+fn render_chrome(
     f: &mut Frame<'_>,
     area: Rect,
     state: &ViewState,
@@ -41,8 +74,44 @@ pub fn render(
             #[cfg(not(feature = "images"))]
             render_focus(f, chunks[1], state);
         }
+        View::Routines => render_routines(f, chunks[1], &state.routines, state.selected_routine),
     }
     render_status(f, chunks[2], state);
+    // Overlays paint last so they sit above the view. At most one is up: the
+    // picker owns Mode::Picker, the help overlay is a Normal-mode toggle.
+    if let Some(picker) = state.picker.as_ref() {
+        render_stream_picker(f, area, picker);
+    }
+    if state.show_help {
+        render_help(f, area);
+    }
+}
+
+/// The below-minimum-size screen. One centred line, no layout to break.
+fn render_too_small(f: &mut Frame<'_>, area: Rect) {
+    let msg = format!("Sunrise needs at least {MIN_WIDTH} × {MIN_HEIGHT}");
+    let lines = vec![
+        Line::from(Span::styled(
+            msg,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("this terminal is {} × {}", area.width, area.height)),
+    ];
+    let y = area.y + area.height.saturating_sub(2) / 2;
+    let target = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: area.height.min(2),
+    };
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        target,
+    );
 }
 
 fn render_tab_bar(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
@@ -63,20 +132,19 @@ fn render_tab_bar(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         make("Stream", View::Stream, '3'),
         make("Search", View::Search, '4'),
         make("Focus", View::Focus, '5'),
+        make("Routines", View::Routines, '6'),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
 
 fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
-    let mode_label = match state.mode {
-        Mode::Normal => "NORMAL",
-        Mode::Insert => "INSERT",
-        Mode::Command => "CMD",
-    };
+    let mode_label = state.mode.label();
     let style = match state.mode {
         Mode::Normal => Style::default().fg(Color::Cyan),
         Mode::Insert => Style::default().fg(Color::Green),
         Mode::Command => Style::default().fg(Color::Magenta),
+        Mode::Confirm => Style::default().fg(Color::Red),
+        Mode::Picker => Style::default().fg(Color::Blue),
     };
     let mut spans = vec![
         Span::styled(
@@ -102,7 +170,7 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
                 Style::default().fg(Color::White),
             ));
         }
-        Mode::Normal => {}
+        Mode::Normal | Mode::Confirm | Mode::Picker => {}
     }
     // With a sync indicator, split off a right-aligned column for it so the
     // left status text is never clobbered; otherwise render across the whole
@@ -370,6 +438,192 @@ fn constraint_summary(list: &[sunrise_domain::ScheduleConstraint]) -> String {
     format!("{} {noun} ({hard} hard)", list.len())
 }
 
+/// Render the Routines view: one row per live routine, showing its RRULE
+/// summary and next occurrence.
+pub fn render_routines(
+    f: &mut Frame<'_>,
+    area: Rect,
+    routines: &[RoutineRow],
+    selected: Option<usize>,
+) {
+    if routines.is_empty() {
+        f.render_widget(
+            Paragraph::new("no routines — create them from the desktop client (core v1 has no TUI routine CRUD)")
+                .style(Style::default().fg(Color::Gray))
+                .wrap(Wrap { trim: true })
+                .block(Block::default().borders(Borders::ALL).title("Routines")),
+            area,
+        );
+        return;
+    }
+    let items: Vec<ListItem<'_>> = routines
+        .iter()
+        .map(|r| ListItem::new(routine_line(r)))
+        .collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Routines"))
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Black)
+                .bg(Color::White),
+        )
+        .highlight_symbol("▶ ");
+    let mut st = ListState::default();
+    st.select(selected);
+    f.render_stateful_widget(list, area, &mut st);
+}
+
+/// One Routines-view row: `title — <rrule summary> · next <ts>`.
+fn routine_line(r: &RoutineRow) -> String {
+    let next = r
+        .next
+        .map_or_else(|| "none in horizon".to_string(), |t| t.to_string());
+    let paused = if r.paused { " [paused]" } else { "" };
+    format!("{}{paused} — {} · next {next}", r.title, r.rrule)
+}
+
+/// Modal move-to-stream picker (`m`), drawn over the current view.
+fn render_stream_picker(f: &mut Frame<'_>, area: Rect, picker: &StreamPicker) {
+    let height = u16::try_from(picker.rows.len().min(12) + 2).unwrap_or(u16::MAX);
+    let rect = centered(area, 52, height.max(3));
+    let items: Vec<ListItem<'_>> = picker
+        .rows
+        .iter()
+        .map(|r| ListItem::new(format!("{} [{}]", r.name, r.open_task_count)))
+        .collect();
+    let title = format!("move: {}", truncate(&picker.task_title, 40));
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Black)
+                .bg(Color::White),
+        )
+        .highlight_symbol("▶ ");
+    let mut st = ListState::default();
+    st.select(Some(picker.selected));
+    f.render_widget(Clear, rect);
+    f.render_stateful_widget(list, rect, &mut st);
+}
+
+/// The `?` overlay. Content is generated from the keymap's binding table
+/// (see [`crate::keymap::BINDINGS`]), so it cannot drift from the keymap.
+///
+/// Falls back to two columns when the single-column form would not fit — at
+/// the 80x24 minimum the full binding list is taller than the screen, and
+/// silently clipping half the keys is worse than a denser layout.
+fn render_help(f: &mut Frame<'_>, area: Rect) {
+    let blocks = help_blocks();
+    let total: usize = blocks.iter().map(Vec::len).sum::<usize>() + blocks.len().saturating_sub(1);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Keys — ? or Esc to close")
+        .border_style(Style::default().fg(Color::Yellow));
+
+    if total + 2 <= area.height as usize {
+        let rect = centered(area, 72, u16::try_from(total + 2).unwrap_or(u16::MAX));
+        f.render_widget(Clear, rect);
+        f.render_widget(Paragraph::new(join_blocks(&blocks)).block(block), rect);
+        return;
+    }
+
+    let (left, right) = split_blocks(&blocks, total.div_ceil(2));
+    let (left, right) = (join_blocks(&left), join_blocks(&right));
+    let rows = left.len().max(right.len());
+    let rect = centered(area, 78, u16::try_from(rows + 2).unwrap_or(u16::MAX));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+    f.render_widget(Paragraph::new(left), cols[0]);
+    f.render_widget(Paragraph::new(right), cols[1]);
+}
+
+/// One renderable block of help lines per keymap section (header + rows).
+fn help_blocks() -> Vec<Vec<Line<'static>>> {
+    help_sections()
+        .into_iter()
+        .map(|(mode, rows)| {
+            let mut lines = vec![Line::from(Span::styled(
+                mode.to_string(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))];
+            lines.extend(rows.into_iter().map(|(keys, desc)| {
+                Line::from(vec![
+                    Span::styled(format!("  {keys:<11}"), Style::default().fg(Color::Cyan)),
+                    Span::raw(desc.to_string()),
+                ])
+            }));
+            lines
+        })
+        .collect()
+}
+
+/// Flatten blocks into one line list, one blank line between sections.
+fn join_blocks(blocks: &[Vec<Line<'static>>]) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for b in blocks {
+        if !out.is_empty() {
+            out.push(Line::from(""));
+        }
+        out.extend(b.iter().cloned());
+    }
+    out
+}
+
+/// Split whole sections across two columns, aiming for `target` lines in the
+/// first. Sections are never broken mid-way, and the first column always gets
+/// at least one so the split terminates.
+fn split_blocks(
+    blocks: &[Vec<Line<'static>>],
+    target: usize,
+) -> (Vec<Vec<Line<'static>>>, Vec<Vec<Line<'static>>>) {
+    let mut used = 0usize;
+    let mut cut = 0usize;
+    for (i, b) in blocks.iter().enumerate() {
+        if i > 0 && used + b.len() > target {
+            break;
+        }
+        used += b.len() + usize::from(i > 0);
+        cut = i + 1;
+    }
+    let (l, r) = blocks.split_at(cut.min(blocks.len()));
+    (l.to_vec(), r.to_vec())
+}
+
+/// A centred sub-rect at most `w` x `h`, clamped to `area`.
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let width = w.min(area.width);
+    let height = h.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
+/// Truncate `s` to `max` characters, appending an ellipsis when cut.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
 fn render_task_list(
     f: &mut Frame<'_>,
     area: Rect,
@@ -451,13 +705,18 @@ mod tests {
         assert!(s.contains("Tasks"));
     }
 
-    /// Feature-agnostic wrapper for the top-level [`render`] (no preview).
+    /// Feature-agnostic wrapper for the chrome renderer (no preview).
+    ///
+    /// Deliberately calls [`render_chrome`] rather than [`render`]: the view
+    /// snapshots below use small backends to keep their diffs readable, and
+    /// the 80x24 guard on `render` would replace all of them with the
+    /// "too small" screen. The guard has its own contract tests.
     fn draw_frame(f: &mut Frame<'_>, state: &ViewState) {
         let area = f.area();
         #[cfg(feature = "images")]
-        render(f, area, state, None);
+        render_chrome(f, area, state, None);
         #[cfg(not(feature = "images"))]
-        render(f, area, state);
+        render_chrome(f, area, state);
     }
 
     #[test]
@@ -624,7 +883,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
             let area = f.area();
-            render(f, area, &state, Some(&mut preview));
+            render_chrome(f, area, &state, Some(&mut preview));
         })
         .unwrap();
         insta::assert_snapshot!(buffer_text(term.backend().buffer()));
@@ -660,6 +919,111 @@ mod tests {
             s.contains("sync: off (0 pending)"),
             "expected off indicator, got:\n{s}"
         );
+    }
+
+    /// Draw through the **public** [`render`] entry point (size guard
+    /// included) and return the buffer text.
+    fn guarded_frame(width: u16, height: u16, state: &ViewState) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            #[cfg(feature = "images")]
+            render(f, area, state, None);
+            #[cfg(not(feature = "images"))]
+            render(f, area, state);
+        })
+        .unwrap();
+        buffer_text(term.backend().buffer())
+    }
+
+    #[test]
+    fn below_minimum_size_renders_only_the_guard_message() {
+        let state = ViewState::default();
+        for (w, h) in [(79, 24), (80, 23), (40, 10)] {
+            let s = guarded_frame(w, h, &state);
+            assert!(
+                s.contains(&format!("at least {MIN_WIDTH} × {MIN_HEIGHT}")),
+                "{w}x{h} should show the guard, got:\n{s}"
+            );
+            // The broken layout must not be drawn underneath it.
+            assert!(!s.contains("1:Today"), "{w}x{h} still drew the tab bar");
+        }
+    }
+
+    #[test]
+    fn at_minimum_size_the_ui_comes_back() {
+        // Recovery after a resize is stateless: the same state at >= 80x24
+        // renders the real UI again.
+        let state = ViewState::default();
+        let s = guarded_frame(MIN_WIDTH, MIN_HEIGHT, &state);
+        assert!(s.contains("1:Today"), "expected the tab bar, got:\n{s}");
+        assert!(!s.contains("at least"), "guard still showing:\n{s}");
+    }
+
+    #[test]
+    fn routines_view_lists_rrule_summary_and_next_occurrence() {
+        let mut state = ViewState::default();
+        state.view = View::Routines;
+        state.routines = vec![RoutineRow {
+            id: fixtures::fake_task(1).id,
+            title: "Water plants".into(),
+            rrule: "every 2 weeks on Mo".into(),
+            next: Some("2026-03-02T09:00:00Z".parse().unwrap()),
+            paused: false,
+        }];
+        state.after_routines_loaded();
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("Water plants"), "got:\n{s}");
+        assert!(s.contains("every 2 weeks on Mo"), "got:\n{s}");
+        assert!(s.contains("2026-03-02"), "got:\n{s}");
+        // And the view is reachable from the tab bar.
+        assert!(s.contains("6:Routines"), "got:\n{s}");
+    }
+
+    #[test]
+    fn routines_view_without_routines_explains_itself() {
+        let mut state = ViewState::default();
+        state.view = View::Routines;
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("no routines"), "got:\n{s}");
+    }
+
+    #[test]
+    fn help_overlay_is_rendered_from_the_keymap_table() {
+        let mut state = ViewState::default();
+        state.show_help = true;
+        // Roomy (single column) and at the 80x24 minimum (two columns): every
+        // documented binding must survive both layouts. This is the assertion
+        // that keeps the overlay honest when a binding is renamed or added.
+        for (w, h) in [(100, 40), (MIN_WIDTH, MIN_HEIGHT)] {
+            let s = guarded_frame(w, h, &state);
+            for (mode, rows) in help_sections() {
+                assert!(s.contains(mode), "{w}x{h} missing section {mode}:\n{s}");
+                for (keys, desc) in rows {
+                    assert!(s.contains(keys), "{w}x{h} missing keys {keys:?}:\n{s}");
+                    assert!(s.contains(desc), "{w}x{h} missing text {desc:?}:\n{s}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stream_picker_overlay_shows_the_candidates() {
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.tasks = vec![fixtures::fake_task(1)];
+        state.after_tasks_loaded();
+        let id = state.tasks[0].id;
+        state.open_stream_picker(
+            id,
+            "Pay invoice".into(),
+            vec![fixtures::inbox_row(1), fixtures::stream_row(7, "Work", 3)],
+        );
+        let s = guarded_frame(100, 24, &state);
+        assert!(s.contains("move: Pay invoice"), "got:\n{s}");
+        assert!(s.contains("Work [3]"), "got:\n{s}");
+        assert!(s.contains("PICK"), "expected the PICK mode label:\n{s}");
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {

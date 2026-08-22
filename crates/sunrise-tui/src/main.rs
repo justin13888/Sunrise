@@ -3,6 +3,12 @@
 //! v1 scope: stand up the terminal, open a Core against a vault directory
 //! (env: `SUNRISE_VAULT`, default `~/.sunrise/vault`), and render the
 //! current view. Quits on `q` / Esc / `:q`.
+//!
+//! The event loop selects over terminal input *and* `Core::changes()`, so ops
+//! arriving over live sync repaint immediately rather than waiting for the
+//! next keystroke. Everything a keypress does lives in
+//! `sunrise_tui::runtime::apply_action`; this file only performs the I/O that
+//! reducer asks for.
 
 #![allow(
     clippy::print_stderr,
@@ -19,7 +25,7 @@
     clippy::too_many_lines
 )]
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -28,13 +34,13 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::time::Duration;
-use sunrise_core::{Command, Core, Query, QueryResult};
-use sunrise_domain::TaskDraft;
+use sunrise_core::{Core, Query, QueryResult};
 use sunrise_tui::livesync;
+use sunrise_tui::runtime::{drain_changes, CHANGE_DEBOUNCE};
 use sunrise_tui::{
-    apply_command, dispatch, parse_command, render, Action, AppEffect, Mode, StreamPane,
-    SyncIndicator, View, ViewState,
+    apply_action, dispatch, render, routine_rows, Outcome, SyncIndicator, View, ViewState,
 };
+use tokio::sync::broadcast::error::RecvError;
 
 type Tty = Terminal<CrosstermBackend<Stdout>>;
 
@@ -105,6 +111,22 @@ fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// How long the loop waits with no input before repainting anyway. Keeps the
+/// status-line sync indicator ticking without busy-looping.
+const IDLE_REDRAW: Duration = Duration::from_millis(200);
+/// What woke the event loop.
+#[derive(Debug)]
+enum Wake {
+    /// A terminal event arrived.
+    Input(Event),
+    /// Terminal input is gone (reader thread ended); shut down.
+    InputClosed,
+    /// One or more domain events arrived (already debounced+drained).
+    Changed,
+    /// Idle timeout — repaint to refresh the sync indicator.
+    Idle,
+}
+
 async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ViewState::default();
     // Image-preview state (`:preview <path>`). Owned here because Picker and
@@ -115,6 +137,33 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
     let mut picker = sunrise_tui::images::init_picker();
     #[cfg(feature = "images")]
     let mut preview: Option<sunrise_tui::images::Preview> = None;
+
+    // Terminal input is read on a dedicated OS thread that blocks in
+    // `event::read()` and forwards over an mpsc channel. Chosen over
+    // crossterm's async `EventStream` because that pulls in a `futures` +
+    // `mio` dependency this crate otherwise doesn't need, and because a
+    // blocking read costs nothing while idle — the old `event::poll(200ms)`
+    // loop woke 5x/second forever. Either way the point is the same: input
+    // is now just one arm of a `select!`, so `Core::changes()` can drive a
+    // repaint without the user touching the keyboard.
+    let (key_tx, mut key_rx) = tokio::sync::mpsc::channel::<Event>(64);
+    std::thread::spawn(move || {
+        // Ends when `event::read()` errors or the receiver is dropped (app
+        // exiting); the process tears down either way.
+        while let Ok(ev) = event::read() {
+            if key_tx.blocking_send(ev).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Live repaint: every locally-applied *and* remotely-received op is
+    // published here, so an inbound sync batch now redraws immediately.
+    let mut changes = core.changes();
+    // Cleared if the broadcast sender ever goes away, so the select! arm stops
+    // firing instead of spinning on a closed channel.
+    let mut changes_open = true;
+
     refresh(core, &mut state).await;
 
     loop {
@@ -129,145 +178,91 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
             render(f, area, &state);
         })?;
 
-        if !event::poll(Duration::from_millis(200))? {
-            continue;
-        }
-        let Event::Key(k) = event::read()? else {
+        let wake = tokio::select! {
+            ev = key_rx.recv() => match ev {
+                Some(ev) => Wake::Input(ev),
+                None => Wake::InputClosed,
+            },
+            res = changes.recv(), if changes_open => {
+                // `Lagged` means the broadcast buffer overflowed — the exact
+                // events are lost but "something changed" still holds, so a
+                // full refresh is the correct response.
+                if matches!(res, Err(RecvError::Closed)) {
+                    changes_open = false;
+                    Wake::Idle
+                } else {
+                    // Coalesce the rest of the burst: a catch-up batch of N
+                    // ops repaints once, not N times.
+                    drain_changes(&mut changes, CHANGE_DEBOUNCE).await;
+                    Wake::Changed
+                }
+            }
+            () = tokio::time::sleep(IDLE_REDRAW) => Wake::Idle,
+        };
+
+        let ev = match wake {
+            Wake::Idle => continue,
+            Wake::InputClosed => break,
+            Wake::Changed => {
+                refresh(core, &mut state).await;
+                continue;
+            }
+            Wake::Input(ev) => ev,
+        };
+
+        let Event::Key(k) = ev else {
+            // Resize (and everything else) just falls through to the redraw
+            // at the top of the loop; the layout is derived from `f.area()`.
             continue;
         };
+        // Windows and kitty-protocol terminals also report key *release*;
+        // acting on both would double every keystroke.
+        if k.kind != KeyEventKind::Press {
+            continue;
+        }
         let Some(action) = dispatch(k.code, state.mode, state.vim_mode, state.view) else {
             continue;
         };
-        match action {
-            Action::Quit => break,
-            Action::SwitchView(View::Focus) => {
-                // Focus shows the task selected in the previous view.
-                state.open_focus();
+        match apply_action(action, &mut state, core.now_ms()) {
+            Outcome::Quit => break,
+            Outcome::None => {}
+            Outcome::Refresh => refresh(core, &mut state).await,
+            Outcome::Submit(cmd) => {
+                if let Err(e) = core.submit(*cmd).await {
+                    state.status = format!("error: {e}");
+                }
                 refresh(core, &mut state).await;
             }
-            Action::SwitchView(v) => {
-                state.view = v;
-                refresh(core, &mut state).await;
-            }
-            Action::Next => state.nav_next(),
-            Action::Prev => state.nav_prev(),
-            Action::TogglePane => state.toggle_pane(),
-            Action::PaneLeft => state.focus_pane(StreamPane::Streams),
-            Action::PaneRight => state.focus_pane(StreamPane::Tasks),
-            Action::Activate => {
-                if state.view == View::Stream && state.pane == StreamPane::Streams {
-                    // Confirm the highlighted stream: load its tasks and move
-                    // focus to the task pane.
-                    state.pane = StreamPane::Tasks;
-                    refresh(core, &mut state).await;
-                } else if state.selected_task().is_some() {
-                    state.open_focus();
-                    refresh(core, &mut state).await;
-                }
-            }
-            Action::Toggle => {
-                if let Some(t) = state.selected_task() {
-                    let id = t.id;
-                    let _ = core.submit(Command::CompleteTask(id)).await;
-                    refresh(core, &mut state).await;
-                }
-            }
-            Action::Capture => {
-                state.mode = Mode::Insert;
-                state.input.clear();
-                state.status = "capture: type title, Enter to save, Esc to cancel".into();
-            }
-            Action::BeginSearch => {
-                state.view = View::Search;
-                state.mode = Mode::Insert;
-                state.input.clear();
-                state.status = "search: type query, Enter to commit, Esc to cancel".into();
-            }
-            Action::BeginCommand => {
-                state.mode = Mode::Command;
-                state.input.clear();
-                state.status.clear();
-            }
-            Action::EnterInsert => {
-                state.mode = Mode::Insert;
-                state.input.clear();
-            }
-            Action::Escape => {
-                if state.mode == Mode::Normal && state.view == View::Focus {
-                    // Close the Focus view back to where it was opened from.
-                    state.close_focus();
-                    #[cfg(feature = "images")]
-                    {
-                        preview = None;
+            Outcome::OpenStreamPicker { task, title } => {
+                match core.query(Query::StreamList).await {
+                    Ok(QueryResult::Streams(rows)) => {
+                        state.open_stream_picker(task, title, rows);
                     }
-                    refresh(core, &mut state).await;
-                } else {
-                    state.mode = Mode::Normal;
-                    state.input.clear();
-                    state.status.clear();
+                    _ => state.status = "could not load streams".into(),
                 }
             }
-            Action::InsertChar(c) => {
-                if state.input.len() < 512 {
-                    state.input.push(c);
-                }
-            }
-            Action::Backspace => {
-                state.input.pop();
-            }
-            Action::Submit if state.mode == Mode::Command => {
-                // Command-line submit: parse `:…` and apply. `apply_command`
-                // writes any view switch / status message; we handle the effect.
-                let cmd = parse_command(&state.input);
-                state.mode = Mode::Normal;
-                state.input.clear();
-                match apply_command(cmd, &mut state) {
-                    Some(AppEffect::Quit) => break,
-                    Some(AppEffect::Preview(path)) => {
-                        #[cfg(feature = "images")]
-                        match sunrise_tui::images::load_preview(&mut picker, &path) {
-                            Ok(p) => {
-                                preview = Some(p);
-                                state.status = format!("preview: {}", path.display());
-                            }
-                            Err(e) => state.status = e,
-                        }
-                        // Defensive: apply_command only emits this effect when
-                        // the `images` feature is compiled in.
-                        #[cfg(not(feature = "images"))]
-                        {
-                            let _ = path;
-                            state.status = "images feature disabled".into();
-                        }
+            Outcome::Preview(path) => {
+                #[cfg(feature = "images")]
+                match sunrise_tui::images::load_preview(&mut picker, &path) {
+                    Ok(p) => {
+                        preview = Some(p);
+                        state.status = format!("preview: {}", path.display());
                     }
-                    None => refresh(core, &mut state).await,
+                    Err(e) => state.status = e,
+                }
+                // Defensive: apply_command only emits this effect when
+                // the `images` feature is compiled in.
+                #[cfg(not(feature = "images"))]
+                {
+                    let _ = path;
+                    state.status = "images feature disabled".into();
                 }
             }
-            Action::Submit => {
-                if state.view == View::Search {
-                    // Full-text search via the core's FTS index. The query
-                    // text stays in `input` so it remains visible above the
-                    // results; Esc clears it.
-                    state.mode = Mode::Normal;
-                    state.status.clear();
-                    refresh(core, &mut state).await;
-                } else {
-                    // Capture: create a task with the input as its title.
-                    let title = state.input.trim().to_string();
-                    if !title.is_empty() {
-                        let _ = core
-                            .submit(Command::CreateTask(TaskDraft {
-                                title,
-                                ..Default::default()
-                            }))
-                            .await;
-                        refresh(core, &mut state).await;
-                    }
-                    state.mode = Mode::Normal;
-                    state.input.clear();
-                    state.status.clear();
-                }
-            }
+        }
+        // Closing Focus drops any loaded preview with it.
+        #[cfg(feature = "images")]
+        if state.view != View::Focus {
+            preview = None;
         }
     }
     Ok(())
@@ -290,7 +285,7 @@ async fn refresh(core: &Core, state: &mut ViewState) {
     match state.view {
         View::Today => {
             let q = Query::Today {
-                now_ms: now_ms(),
+                now_ms: core.now_ms(),
                 contexts: vec![],
             };
             load_tasks(core, state, q).await;
@@ -316,6 +311,15 @@ async fn refresh(core: &Core, state: &mut ViewState) {
             };
             load_tasks(core, state, q).await;
         }
+        View::Routines => {
+            if let Ok(QueryResult::Routines(rs)) = core.query(Query::Routines).await {
+                let now =
+                    jiff::Timestamp::from_millisecond(i64::try_from(core.now_ms()).unwrap_or(0))
+                        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+                state.routines = routine_rows(&rs, now);
+                state.after_routines_loaded();
+            }
+        }
         View::Focus => {
             let id = state.focused_task.as_ref().map(|t| t.id);
             if let Some(id) = id {
@@ -337,12 +341,4 @@ async fn load_tasks(core: &Core, state: &mut ViewState, q: Query) {
         state.tasks = tasks;
         state.after_tasks_loaded();
     }
-}
-
-fn now_ms() -> u64 {
-    #[allow(clippy::disallowed_methods)]
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or(std::time::Duration::ZERO);
-    u64::try_from(now.as_millis()).unwrap_or(u64::MAX)
 }

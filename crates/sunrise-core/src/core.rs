@@ -397,7 +397,13 @@ impl Core {
     }
 
     /// Injected wall clock, in ms since the Unix epoch.
-    pub(crate) fn now_ms(&self) -> u64 {
+    ///
+    /// Public so clients read time through the same `Clock` the engine does,
+    /// rather than reaching for `SystemTime::now` and needing their own
+    /// determinism-gate exemption. A client that takes time from here inherits
+    /// the injected clock in tests for free.
+    #[must_use]
+    pub fn now_ms(&self) -> u64 {
         self.cfg.clock.now_ms()
     }
 

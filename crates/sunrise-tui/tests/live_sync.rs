@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use sunrise_core::{Command, Core, Query, QueryResult, SyncConfig};
+use sunrise_core::{Command, Core, DomainEvent, Query, QueryResult, SyncConfig};
 use sunrise_domain::TaskDraft;
 use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_sync::SyncState;
@@ -119,6 +119,12 @@ async fn tui_wiring_reaches_live_and_converges() {
     wait_live(&core_a).await;
     wait_live(&core_b).await;
 
+    // The repaint signal the TUI event loop selects on. Subscribe *before* the
+    // remote op so this proves `Core::changes()` publishes for ops arriving
+    // over sync, not just for local submits — that is what makes the TUI
+    // repaint without the user touching a key.
+    let mut changes_a = core_a.changes();
+
     // A task authored on B converges to A over the live session.
     core_b
         .submit(Command::CreateTask(TaskDraft {
@@ -131,6 +137,16 @@ async fn tui_wiring_reaches_live_and_converges() {
 
     // Still Live after applying the remote op.
     assert_eq!(sync_state(&core_a).await, SyncState::Live);
+
+    // ...and A's change stream announced the remotely-authored task.
+    let event = tokio::time::timeout(TIMEOUT, changes_a.recv())
+        .await
+        .expect("changes() published nothing for a remote op")
+        .expect("changes channel closed");
+    assert!(
+        matches!(event, DomainEvent::Created(_) | DomainEvent::Updated(_)),
+        "unexpected domain event: {event:?}"
+    );
 
     core_a.shutdown().await;
     core_b.shutdown().await;

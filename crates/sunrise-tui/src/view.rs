@@ -1,8 +1,11 @@
 //! View enum + view-state.
 
 use crate::keymap::Mode;
+use jiff::Timestamp;
 use sunrise_core::queries::StreamRow;
-use sunrise_domain::Task;
+use sunrise_domain::rrule::RRule;
+use sunrise_domain::{materialization_horizon_days, Routine, Task};
+use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
 
 /// Compact live-sync indicator rendered on the right of the status line.
@@ -70,6 +73,8 @@ pub enum View {
     Search,
     /// Focus mode: one-task fullscreen.
     Focus,
+    /// Routines: read-only listing of recurring templates.
+    Routines,
 }
 
 /// Which pane of the split Stream view has keyboard focus.
@@ -90,6 +95,152 @@ impl StreamPane {
             Self::Tasks => Self::Streams,
         }
     }
+}
+
+/// A pending prompt occupying the shared input line (or, for
+/// [`Prompt::ConfirmDelete`], the confirmation gate). Exactly one prompt can
+/// be active; [`crate::runtime::apply_action`] consumes it on Submit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prompt {
+    /// Capture a new task (`c`).
+    Capture,
+    /// Edit an existing task's title (`e`).
+    EditTitle(EntityRef),
+    /// Defer a task by a typed offset such as `2h` / `3d` (`d`).
+    Defer(EntityRef),
+    /// Delete a task, gated on an explicit `y` (`D`).
+    ConfirmDelete {
+        /// Task to delete once confirmed.
+        id: EntityRef,
+        /// Title echoed in the confirmation message.
+        title: String,
+    },
+    /// Create a stream by name (`S`).
+    CreateStream,
+    /// Free-text search query (`/`).
+    Search,
+}
+
+/// State for the modal move-to-stream picker (`m`).
+///
+/// Not `PartialEq`: `StreamRow` (from the core's query surface) isn't.
+#[derive(Debug, Clone)]
+pub struct StreamPicker {
+    /// Task being moved.
+    pub task: EntityRef,
+    /// Task title, echoed in the picker header.
+    pub task_title: String,
+    /// Candidate destinations (`Query::StreamList`, Inbox first).
+    pub rows: Vec<StreamRow>,
+    /// Highlighted row.
+    pub selected: usize,
+}
+
+impl StreamPicker {
+    /// Move the picker cursor down, wrapping.
+    pub fn next(&mut self) {
+        if !self.rows.is_empty() {
+            self.selected = (self.selected + 1) % self.rows.len();
+        }
+    }
+
+    /// Move the picker cursor up, wrapping.
+    pub fn prev(&mut self) {
+        if !self.rows.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.rows.len() - 1
+            } else {
+                self.selected - 1
+            };
+        }
+    }
+
+    /// The highlighted destination stream, if any.
+    #[must_use]
+    pub fn selected_row(&self) -> Option<&StreamRow> {
+        self.rows.get(self.selected)
+    }
+}
+
+/// One row of the Routines view: the routine's template title, a
+/// human-readable RRULE summary, and its next occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineRow {
+    /// Routine id.
+    pub id: EntityRef,
+    /// Template title.
+    pub title: String,
+    /// Human-readable recurrence summary (e.g. `every 2 weeks on Mo, We`).
+    pub rrule: String,
+    /// Next occurrence at or after "now", if one exists inside the routine's
+    /// materialization horizon.
+    pub next: Option<Timestamp>,
+    /// Whether the routine is paused (no occurrences are generated).
+    pub paused: bool,
+}
+
+/// Human-readable one-line summary of an [`RRule`], for the Routines view.
+#[must_use]
+pub fn rrule_summary(r: &RRule) -> String {
+    use std::fmt::Write as _;
+    use sunrise_domain::rrule::Frequency;
+    let unit = match r.freq {
+        Frequency::Daily => "day",
+        Frequency::Weekly => "week",
+        Frequency::Monthly => "month",
+        Frequency::Yearly => "year",
+    };
+    let mut s = if r.interval <= 1 {
+        format!("every {unit}")
+    } else {
+        format!("every {} {unit}s", r.interval)
+    };
+    if !r.by_day.is_empty() {
+        let days: Vec<String> = r.by_day.iter().map(|d| format!("{d:?}")).collect();
+        s.push_str(" on ");
+        s.push_str(&days.join(", "));
+    }
+    if !r.by_month_day.is_empty() {
+        let days: Vec<String> = r.by_month_day.iter().map(ToString::to_string).collect();
+        s.push_str(" day ");
+        s.push_str(&days.join(", "));
+    }
+    if let Some(c) = r.count {
+        let _ = write!(s, " ×{c}");
+    }
+    if let Some(u) = r.until {
+        let _ = write!(s, " until {u}");
+    }
+    s
+}
+
+/// Project `Query::Routines` output into [`RoutineRow`]s, resolving each
+/// routine's next occurrence at or after `now`.
+///
+/// The lookahead window is the routine's own per-FREQ materialization horizon
+/// (`docs/02-domain/routines-and-recurrence.md`), so a yearly routine still
+/// resolves while a daily one stays cheap. Pure over `now` — no wall clock is
+/// read here, which keeps the projection unit-testable.
+#[must_use]
+pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
+    routines
+        .iter()
+        .map(|r| {
+            let horizon_h = i64::from(materialization_horizon_days(r.rrule.freq)) * 24;
+            let next = now
+                .checked_add(jiff::SignedDuration::from_hours(horizon_h))
+                .ok()
+                .and_then(|end| r.occurrences_in((now, end)).ok())
+                .and_then(|occ| occ.first().map(|o| o.at));
+            RoutineRow {
+                id: r.id,
+                title: r.template.title.clone(),
+                rrule: rrule_summary(&r.rrule),
+                next,
+                paused: r.paused,
+            }
+        })
+        .collect()
 }
 
 /// Owning struct for the active view.
@@ -122,6 +273,18 @@ pub struct ViewState {
     /// Live-sync indicator shown on the right of the status line. `None` hides
     /// it; the binary sets it every frame from `Core::query(SyncStatus)`.
     pub sync: Option<SyncIndicator>,
+    /// Rows of the Routines view (`Query::Routines`, projected at refresh time).
+    pub routines: Vec<RoutineRow>,
+    /// Index of the selected routine. `None` if the list is empty.
+    pub selected_routine: Option<usize>,
+    /// Prompt currently occupying the input line / confirmation gate.
+    pub prompt: Option<Prompt>,
+    /// Active move-to-stream picker overlay.
+    pub picker: Option<StreamPicker>,
+    /// Whether the `?` help overlay is visible.
+    pub show_help: bool,
+    /// Latch for the `gg` chord: set by the first `g`, cleared by anything else.
+    pub pending_g: bool,
 }
 
 impl Default for ViewState {
@@ -140,6 +303,12 @@ impl Default for ViewState {
             input: String::new(),
             status: String::new(),
             sync: None,
+            routines: Vec::new(),
+            selected_routine: None,
+            prompt: None,
+            picker: None,
+            show_help: false,
+            pending_g: false,
         }
     }
 }
@@ -176,23 +345,110 @@ impl ViewState {
         self.selected_stream = wrap_prev(self.streams.len(), self.selected_stream);
     }
 
+    /// Apply selection bookkeeping after `routines` has changed.
+    pub fn after_routines_loaded(&mut self) {
+        self.selected_routine = clamp_selection(self.routines.len(), self.selected_routine);
+    }
+
+    /// Which list the cursor keys drive right now.
+    #[must_use]
+    const fn active_list(&self) -> ActiveList {
+        match self.view {
+            View::Routines => ActiveList::Routines,
+            View::Stream if matches!(self.pane, StreamPane::Streams) => ActiveList::Streams,
+            _ => ActiveList::Tasks,
+        }
+    }
+
     /// Cursor-down in whichever list has keyboard focus (Stream view is
     /// pane-aware; every other view navigates the task list).
     pub fn nav_next(&mut self) {
-        if self.view == View::Stream && self.pane == StreamPane::Streams {
-            self.stream_next();
-        } else {
-            self.select_next();
+        match self.active_list() {
+            ActiveList::Streams => self.stream_next(),
+            ActiveList::Routines => {
+                self.selected_routine = wrap_next(self.routines.len(), self.selected_routine);
+            }
+            ActiveList::Tasks => self.select_next(),
         }
     }
 
     /// Cursor-up counterpart of [`Self::nav_next`].
     pub fn nav_prev(&mut self) {
-        if self.view == View::Stream && self.pane == StreamPane::Streams {
-            self.stream_prev();
-        } else {
-            self.select_prev();
+        match self.active_list() {
+            ActiveList::Streams => self.stream_prev(),
+            ActiveList::Routines => {
+                self.selected_routine = wrap_prev(self.routines.len(), self.selected_routine);
+            }
+            ActiveList::Tasks => self.select_prev(),
         }
+    }
+
+    /// Jump the focused list's cursor to its first row (`gg`).
+    pub fn nav_first(&mut self) {
+        self.nav_to(|_| 0);
+    }
+
+    /// Jump the focused list's cursor to its last row (`G`).
+    pub fn nav_last(&mut self) {
+        self.nav_to(|len| len - 1);
+    }
+
+    /// Shared body of [`Self::nav_first`] / [`Self::nav_last`]: resolve the
+    /// focused list's length, then set its cursor (no-op when empty).
+    fn nav_to(&mut self, pick: impl Fn(usize) -> usize) {
+        let list = self.active_list();
+        let len = match list {
+            ActiveList::Streams => self.streams.len(),
+            ActiveList::Routines => self.routines.len(),
+            ActiveList::Tasks => self.tasks.len(),
+        };
+        if len == 0 {
+            return;
+        }
+        let idx = Some(pick(len));
+        match list {
+            ActiveList::Streams => self.selected_stream = idx,
+            ActiveList::Routines => self.selected_routine = idx,
+            ActiveList::Tasks => self.selected = idx,
+        }
+    }
+
+    /// Selected routine row, if any.
+    #[must_use]
+    pub fn selected_routine_row(&self) -> Option<&RoutineRow> {
+        self.selected_routine.and_then(|i| self.routines.get(i))
+    }
+
+    /// Open the move-to-stream picker over `rows` for `task`, entering
+    /// [`Mode::Picker`]. The cursor starts on the task's current stream so
+    /// Enter without navigating is a no-op move rather than a surprise.
+    pub fn open_stream_picker(&mut self, task: EntityRef, title: String, rows: Vec<StreamRow>) {
+        let current = self
+            .tasks
+            .iter()
+            .find(|t| t.id == task)
+            .map(|t| t.stream_id);
+        let selected = current
+            .and_then(|s| rows.iter().position(|r| r.id == s))
+            .unwrap_or(0);
+        self.status = format!("move \"{title}\" to stream — Enter to choose, Esc to cancel");
+        self.picker = Some(StreamPicker {
+            task,
+            task_title: title,
+            rows,
+            selected,
+        });
+        self.mode = Mode::Picker;
+    }
+
+    /// Clear any prompt/picker/help overlay and return to Normal mode.
+    pub fn reset_to_normal(&mut self) {
+        self.mode = Mode::Normal;
+        self.prompt = None;
+        self.picker = None;
+        self.pending_g = false;
+        self.input.clear();
+        self.status.clear();
     }
 
     /// Toggle which Stream-view pane has focus (Tab).
@@ -239,6 +495,17 @@ impl ViewState {
     }
 }
 
+/// Which of the three selectable lists the cursor keys currently drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveList {
+    /// The task list (Today / Inbox / Search / Stream's right pane).
+    Tasks,
+    /// The Stream view's left pane.
+    Streams,
+    /// The Routines view.
+    Routines,
+}
+
 /// Clamp an optional selection index to a list of `len` items (first item
 /// when unset, last when past the end, `None` when empty).
 fn clamp_selection(len: usize, selected: Option<usize>) -> Option<usize> {
@@ -272,7 +539,10 @@ pub(crate) mod fixtures {
     use jiff::Timestamp;
     use std::collections::BTreeSet;
     use sunrise_core::queries::StreamRow;
-    use sunrise_domain::{inbox_stream_ref, StreamColor, Task, TaskState};
+    use sunrise_domain::rrule::RRule;
+    use sunrise_domain::{
+        inbox_stream_ref, Routine, RoutineCatchupPolicy, StreamColor, Task, TaskState, TaskTemplate,
+    };
     use sunrise_id::{EntityKind, EntityRef};
 
     /// A minimal task; `idx` seeds the id and title.
@@ -304,6 +574,39 @@ pub(crate) mod fixtures {
         }
     }
 
+    /// A minimal live routine: `title`, `rrule` body, anchored at `starts_at`
+    /// in UTC.
+    pub(crate) fn fake_routine(idx: u8, title: &str, rrule: &str, starts_at: &str) -> Routine {
+        Routine {
+            id: EntityRef::new(EntityKind::Routine, [idx; 16]),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
+            template: TaskTemplate {
+                title: title.into(),
+                stream_id: inbox_stream_ref(),
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rrule: RRule::parse(rrule).expect("valid rrule"),
+            timezone: "UTC".into(),
+            starts_at: starts_at.parse().expect("valid timestamp"),
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: RoutineCatchupPolicy::Skip,
+            streak_counter: 0,
+            last_completed_at: None,
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+        }
+    }
+
     /// The synthetic Inbox stream row (`StreamList` returns it first).
     pub(crate) fn inbox_row(open: u64) -> StreamRow {
         StreamRow {
@@ -329,8 +632,104 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{fake_task, inbox_row, stream_row};
+    use super::fixtures::{fake_routine, fake_task, inbox_row, stream_row};
     use super::*;
+
+    /// 2026-01-01T00:00:00Z — the fixed "now" for routine projection tests.
+    fn now() -> Timestamp {
+        "2026-01-01T00:00:00Z".parse().expect("valid timestamp")
+    }
+
+    #[test]
+    fn rrule_summary_reads_as_english() {
+        let daily = fake_routine(1, "t", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        assert_eq!(rrule_summary(&daily.rrule), "every day");
+
+        let biweekly = fake_routine(
+            2,
+            "t",
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE",
+            "2026-01-05T09:00:00Z",
+        );
+        assert_eq!(rrule_summary(&biweekly.rrule), "every 2 weeks on Mo, We");
+
+        let monthly = fake_routine(
+            3,
+            "t",
+            "FREQ=MONTHLY;BYMONTHDAY=1;COUNT=6",
+            "2026-01-01T09:00:00Z",
+        );
+        assert_eq!(rrule_summary(&monthly.rrule), "every month day 1 ×6");
+    }
+
+    #[test]
+    fn routine_rows_resolve_the_next_occurrence() {
+        let daily = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        let rows = routine_rows(&[daily], now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Water plants");
+        assert_eq!(rows[0].rrule, "every day");
+        assert_eq!(
+            rows[0].next,
+            Some("2026-01-01T09:00:00Z".parse().expect("valid timestamp"))
+        );
+    }
+
+    #[test]
+    fn routine_rows_project_a_paused_routine_with_no_next() {
+        let mut r = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        r.paused = true;
+        let rows = routine_rows(&[r], now());
+        assert!(rows[0].paused);
+        assert_eq!(rows[0].next, None);
+    }
+
+    #[test]
+    fn routine_rows_report_no_next_past_the_series_end() {
+        // A daily series that stopped in 2025 has nothing left to schedule.
+        let r = fake_routine(
+            1,
+            "Old habit",
+            "FREQ=DAILY;UNTIL=20250601T000000Z",
+            "2025-01-01T09:00:00Z",
+        );
+        let rows = routine_rows(&[r], now());
+        assert_eq!(rows[0].next, None);
+    }
+
+    #[test]
+    fn routine_navigation_is_independent_of_the_task_cursor() {
+        let mut s = ViewState::default();
+        s.view = View::Routines;
+        s.tasks = (0u8..3).map(fake_task).collect();
+        s.after_tasks_loaded();
+        s.routines = routine_rows(
+            &[
+                fake_routine(1, "a", "FREQ=DAILY", "2026-01-01T09:00:00Z"),
+                fake_routine(2, "b", "FREQ=DAILY", "2026-01-01T10:00:00Z"),
+            ],
+            now(),
+        );
+        s.after_routines_loaded();
+        assert_eq!(s.selected_routine, Some(0));
+        s.nav_next();
+        assert_eq!(s.selected_routine, Some(1));
+        assert_eq!(s.selected, Some(0), "task cursor must not move");
+        s.nav_next();
+        assert_eq!(s.selected_routine, Some(0), "wraps");
+        assert_eq!(
+            s.selected_routine_row().map(|r| r.title.clone()),
+            Some("a".into())
+        );
+    }
+
+    #[test]
+    fn nav_first_and_last_are_no_ops_on_empty_lists() {
+        let mut s = ViewState::default();
+        s.nav_first();
+        s.nav_last();
+        assert_eq!(s.selected, None);
+    }
 
     #[test]
     fn select_next_wraps() {
