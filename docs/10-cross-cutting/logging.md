@@ -6,7 +6,9 @@ status: accepted
 
 This spec defines the logging contract for every package and binary in the Sunrise workspace. It is one of two operational substrates that every other spec depends on; the other is [protocol-versioning](./protocol-versioning.md).
 
-The logging system is **layered**: each package owns its slice and forwards through a single shared sink. Logs are structured, machine-parsable, and redaction-safe by construction. There is exactly one logging API per language; ad-hoc `println!`, `eprintln!`, `console.log`, `print()`, `os_log`, `Log.i()`, etc. are forbidden in shipped code (lint-enforced).
+> **Revised 2026-08.** This document originally specified a bespoke logger — its own levels, dispatch, sinks, span propagation, throttle, and record schema — implemented in `crates/sunrise-log`. That crate was never wired into anything. [ADR-0010](../11-adr/0010-logging-strategy.md#amendment-2026-08-tracing-carries-the-transport) records the decision to hand the transport to **`tracing` + `tracing-subscriber`** and keep only the redaction discipline in-house, and names exactly what was given up. The sections below describe what runs.
+
+Logs are structured, machine-parsable, and redaction-safe by construction. The Rust logging API is `tracing`; ad-hoc `println!`, `eprintln!`, `console.log`, `print()`, `os_log`, `Log.i()`, etc. are forbidden in shipped code (the workspace clippy config denies `print_stdout` and `print_stderr`).
 
 ---
 
@@ -14,7 +16,7 @@ The logging system is **layered**: each package owns its slice and forwards thro
 
 | Goal | Why |
 |---|---|
-| Same log shape on every platform (Rust core, Bun servers, web, iOS, Android, TUI) so a single ingest pipeline parses all of it. | One grep, one schema, one alert rule. |
+| Same log shape from every crate and binary so a single ingest pipeline parses all of it. (The original "six platforms" framing assumed a Bun server and native mobile clients; neither exists — see [ADR-0012](../11-adr/0012-web-wasm-deferred.md) and [ADR-0007](../11-adr/0007-mobile-strategy.md).) | One grep, one schema, one alert rule. |
 | Plaintext user data MUST never reach a log sink. | E2EE app; logs are not encrypted. |
 | Every log line carries enough context to reconstruct a causal chain across packages and devices without including identifiers that could deanonymize a user. | Debuggability without surveillance. |
 | Logging is cheap when disabled and bounded when enabled. | Mobile battery, terminal scrollback, server cost. |
@@ -24,7 +26,7 @@ The logging system is **layered**: each package owns its slice and forwards thro
 
 ## 2. Levels
 
-Five levels, RFC-5424-aligned semantics, mapped 1:1 to `tracing::Level`, `pino` levels, browser console, and platform loggers.
+Five levels, RFC-5424-aligned semantics. In Rust these **are** `tracing::Level`; there is no parallel enum.
 
 | Level | When to use | Default enabled in |
 |---|---|---|
@@ -38,229 +40,329 @@ Five levels, RFC-5424-aligned semantics, mapped 1:1 to `tracing::Level`, `pino` 
 
 **Production default**: `info` and above to disk + remote sink (where applicable); `warn` and above shown in user-facing diagnostic panel.
 
-**Diagnostic mode**: a per-device toggle that raises the in-memory ring buffer to `trace` for 30 minutes (then auto-reverts) and offers the user an "export diagnostic bundle" action. Enabling diagnostic mode is the only way `trace` and most `debug` lines reach a remote sink.
+**Diagnostic mode** (not implemented): a per-device toggle raising verbosity to `trace` for 30 minutes and offering an "export diagnostic bundle" action. It has no code behind it and no sink to feed. Raising verbosity today means setting `SUNRISE_LOG` and restarting.
 
 ---
 
 ## 3. Structured field schema
 
-Every log line is a JSON object with these fields. No additional top-level fields are permitted; package-specific context lives under `ctx`.
+Every log line is a JSON object produced by `tracing-subscriber`'s JSON
+formatter with `flatten_event(true)`, so context fields sit at the top level
+next to the envelope:
 
 ```json
 {
-  "ts":      "2026-05-08T12:34:56.789Z",
-  "lv":      "info",
-  "ev":      "sync.session.opened",
-  "pkg":     "sunrise-sync",
-  "mod":     "sunrise_sync::session",
-  "span":    "01HXYZ...",
-  "trace":   "01HXYZ...",
-  "dev":     "dev_<hash6>",
-  "app":     "1.4.2+macos",
-  "proto":   { "wire": 1, "doc": 1, "crypto": 1 },
-  "ctx":     { "stream_h": "abc123", "epoch": 4 },
-  "msg":     "session opened",
-  "err":     null
+  "timestamp": "2026-05-08T12:34:56.789Z",
+  "level":     "INFO",
+  "message":   "relay session opened",
+  "ev":        "srv.ws.connect",
+  "target":    "sunrise_server::ws",
+  "account_h": "a3f9c1d2",
+  "wire_v":    1,
+  "span":      { "name": "http.request", "method": "GET", "endpoint": "/api/v1/health" }
 }
 ```
 
-Field rules:
-
 | Field | Required | Type | Notes |
 |---|---|---|---|
-| `ts` | yes | RFC 3339 with millisecond precision, UTC, `Z` suffix | Single source of truth for ordering within a device. |
-| `lv` | yes | `"trace"\|"debug"\|"info"\|"warn"\|"error"` | Lowercase. |
-| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name. The first segment is the package's short id (`sync`, `crypto`, `core`, `db`, `ui`, `srv`, `int`, …). New `ev` values require a one-line entry in [`log-events.md`](./log-events.md) so analysts can grep for meaning. |
-| `pkg` | yes | string | Cargo crate name, npm package name, or platform module name. |
-| `mod` | yes | string | Rust module path / TS file path / Swift file / Kotlin class. |
-| `span` | yes | ULID | The current span id (see §4). |
-| `trace` | yes | ULID | The root trace id (see §4). For top-level events `trace == span`. |
-| `dev` | yes | `dev_<8 hex chars>` | `BLAKE3(device_id \|\| device_log_salt, 4)` lowercase hex. 32 bits is enough to distinguish devices in a single user's logs; not reversible to `device_id`. `device_log_salt` is 16 random bytes generated once per install and stored next to `device_salt`. |
-| `app` | yes | `<semver>+<platform>` | e.g. `1.4.2+ios18`, `1.4.2+linux-x86_64`. |
-| `proto` | yes | `{ wire, doc, crypto }` | Numeric protocol version constants from [protocol-versioning](./protocol-versioning.md). Lets you reason about cross-version logs. |
-| `ctx` | yes | object | Free-form package context. Keys MUST come from §6 redaction allowlist; unknown keys are dropped at sink. Always present (empty object if no context). |
-| `msg` | yes | string | Human-readable summary. ≤ 200 bytes. NEVER interpolate plaintext user data; use `ctx` keys. |
-| `err` | no | object \| null | Set on `warn`/`error` with `{ code, kind, retryable, cause }` (see §5). |
+| `timestamp` | yes | RFC 3339, millisecond precision, UTC, `Z` suffix | `sunrise_log::Rfc3339Millis`. Ordering within a process. |
+| `level` | yes | `TRACE`\|`DEBUG`\|`INFO`\|`WARN`\|`ERROR` | `tracing::Level`, uppercase — the formatter's spelling, not ours. |
+| `message` | yes | string | Human-readable summary, ≤ 200 bytes. NEVER interpolate plaintext user data. |
+| `target` | yes | string | The emitting module path. Replaces the old `pkg` + `mod` pair, which were the same information split in two. |
+| `ev` | yes | `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` | Hierarchical event name; first segment is the package short id (`sync`, `db`, `ui`, `srv`, …). New values require an entry in [`log-events.md`](./log-events.md), enforced by `crates/sunrise-log/tests/event_catalog.rs`. |
+| `span` | no | object | The innermost active span: its `name` plus its fields. Absent outside a span. The ancestor list is not emitted. |
+| *context* | — | scalar | Any other top-level key. MUST come from the §6 allowlist; `sunrise_log::RedactionLayer` refuses the event otherwise. |
+| `err_code`, `err_kind`, `retryable`, `cause` | no | see §5 | The error envelope, flattened rather than nested. |
 
-Encoding: NDJSON (one JSON object per `\n`). UTF-8. No trailing whitespace. Implementations MUST reject (drop + bump a counter) any record that fails JSON-schema validation against `schemas/log-record.v1.json`.
+Encoding: NDJSON (one JSON object per `\n`), UTF-8. `schemas/log-record.v1.json`
+describes this shape and is validated against live subscriber output by
+`crates/sunrise-log/tests/record_schema.rs`.
+
+**Dropped from the original schema.** `pkg` and `mod` collapsed into `target`.
+`dev` and `app` are not on every record — there is no `device_log_salt`
+infrastructure, so a `dev` field would have been an unsalted device id or a
+constant. `proto` moved from every record to the binary's startup event
+(`srv.start` / `ui.start`), which costs a join and saves ~50 bytes a line to
+restate three numbers that cannot change while the process lives. See
+[ADR-0010](../11-adr/0010-logging-strategy.md).
 
 ---
 
 ## 4. Trace and span propagation
 
-Every operation has a `trace` id. Every nested step within an operation has a `span` id. Both are ULIDs (26-char Crockford base32).
+Spans are `tracing` spans. `#[instrument]`, `Span::in_scope`, and the automatic
+`Instrument` future adapter give the causal chain, and the current span's
+fields ride every record emitted inside it (the `span` object in §3).
 
-Generation:
-- A new `trace` is started by the entry point that initiates user-visible work: a UI event, a wire-protocol message arrival, a scheduled task firing, an integration sync run.
-- Within a trace, a new `span` is created on every async boundary that cannot reasonably be inferred from `mod` + `ev` alone (sync session, op-batch apply loop, blob upload, KDF run, FTS query).
-- When work crosses a wire-protocol boundary (client → server, device → device via relay), the originating `trace` id is carried in the message header (`x-sunrise-trace` for HTTP, frame field `trace` for WebSocket). The receiver creates a new `span` under that `trace`. This is the **only** identifier that crosses the device boundary in logs; `dev` is per-device and is not propagated.
+Entry points that begin user-visible work open a span: the server opens
+`http.request` per request (`sunrise_server::logging::RequestSpan`) and the
+sync driver's session is one scope. Within it, nested spans are created only
+where `target` + `ev` do not already say which operation is running.
 
-Storage: each runtime keeps the active `(trace, span)` in task-local state — `tracing::Span` (Rust), `AsyncLocalStorage` (Bun), `Zone` (Dart not used; web uses a custom dispatcher). Implementations MUST surface "current span" from any synchronous code path so logging always has the right ids without manual passing.
+**Not implemented: cross-device propagation.** The original spec carried a ULID
+`trace` id across the wire in `x-sunrise-trace` / a `trace` frame field, so a
+client operation and the relay's handling of it shared an id. `tracing` has no
+opinion about wire formats and nothing in `sunrise-wire-protocol` populates
+that field, so a server-side span today is rooted at the server. The `Hello`
+frame already carries an (unused) `trace` string; wiring it is a follow-up, not
+something this revision delivered.
 
 ---
 
 ## 5. Errors
 
-`err` is set on `warn` and `error` records.
+The error envelope is four flat fields, set on `warn` and `error` records:
 
 ```json
-"err": {
-  "code":      "SYNC_AUTH_REJECTED",
-  "kind":      "transient" | "permanent" | "user" | "internal",
-  "retryable": true,
-  "cause":     "string, ≤ 500 bytes, MUST NOT contain plaintext user data"
-}
+"err_code":  "SYNC_AUTH_REJECTED",
+"err_kind":  "transient" | "permanent" | "user" | "internal",
+"retryable": true,
+"cause":     "string, ≤ 500 bytes, MUST NOT contain plaintext user data"
 ```
 
-`code` MUST be a value from the `ErrorCode` enum in [error-handling.md](./error-handling.md). `cause` is the bottom-most `source()` chain message after redaction; if redaction is uncertain, `cause` is omitted.
+Flat rather than a nested `err` object because `tracing` records scalars: a
+nested object would mean serialising a struct into one field and losing the
+ability to filter on `err_code` in an ingest query.
+
+`err_code` MUST be a value from the `ErrorCode` enum in
+[error-handling.md](./error-handling.md). `cause` is the bottom-most `source()`
+chain message after redaction; if redaction is uncertain, `cause` is omitted.
 
 ---
 
 ## 6. Redaction — what may NEVER appear in any log field
 
-The following classes of data MUST NOT appear in `msg`, `ctx`, `err.cause`, span names, or any other log surface, at any level, ever:
+The following classes of data MUST NOT appear in `message`, any context field, `cause`, span names, span fields, or any other log surface, at any level, ever:
 
 - **Plaintext content** of any user-authored entity: task title/body, note body, attachment file name, integration external title, person name, email address (except as described in §6.1), Stream name, Context name, tag value, recurrence rule description, search query, dictation transcript.
 - **Cryptographic key material**: identity private keys, device private keys, wrap keys, stream keys, recovery passphrases, OAuth refresh tokens, push tokens, session secrets, signature private halves.
 - **Authentication tokens in plaintext**: bearer tokens, OAuth access tokens, password fragments, OTP codes.
 - **Stable identifiers** that map to a person across logs: full `device_id`, full `account_id`, full `idn_…` identity id, full `tsk_…`/`stm_…`/etc. entity ids, IP address (server logs may store `/24` IPv4 or `/48` IPv6 prefixes only, see §6.2).
 
-What IS allowed in `ctx`:
+### The allowlist
 
-| Key | Form | Origin |
+The authoritative list is `ALLOWED` in `crates/sunrise-log/src/field.rs` — data,
+not prose, so the enforcement below reads the same thing this section
+describes. Adding a key there is an assertion that values under that name can
+never be user-authored content. Broad shapes:
+
+| Key shape | Form | Origin |
 |---|---|---|
-| `stream_h` | `BLAKE3(stream_id \|\| device_log_salt, 4)` lowercase hex | per-device hash; not correlatable across devices |
-| `task_h`, `block_h`, `routine_h`, etc. | same construction | |
-| `epoch` | small integer | from key-rotation epoch |
-| `seq` | integer | op sequence number |
-| `op_kind` | enum string (e.g. `"task.update"`) | structural, not content |
-| `n_ops`, `n_chunks`, `n_bytes` | counters | |
-| `lat_ms` | latency | |
-| `tier` | enum (`free`/`pro`/...) | server-side, no user link |
-| `provider` | enum (`apns`/`fcm`/`web`/`google_calendar`/...) | |
-| `result` | enum (`ok`/`failed`/`skipped`) | |
+| `stream_h`, `task_h`, `block_h`, `routine_h`, `note_h`, `attachment_h`, `person_h`, `account_h`, `device_h` | first 4 bytes of `BLAKE3(id)`, 8 lowercase hex | Truncated hash of a **high-entropy, machine-minted** id. See §6.1 for why the spec'd salt is omitted. |
+| `epoch`, `seq`, `attempt` | small integer | key-rotation epoch, op sequence, retry count |
+| `op_kind`, `kind`, `result`, `mode`, `tier`, `provider`, `action_kind`, `view`, `aead_alg`, `sig_alg` | enum string | structural, not content |
+| `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped` | counters | |
+| `lat_ms`, `delay_ms` | durations | |
+| `status`, `method`, `endpoint` | HTTP | `endpoint` is **templated** by `sunrise_log::templatize_path`: query string dropped, opaque path segments replaced with `:id`. |
+| `wire_v`, `doc_v`, `crypto_v`, `storage_v`, `from_v`, `to_v`, `app_v` | versions | |
+| `bind`, `relay` | socket address / host | The server's own listen address, and the relay hostname §6.2 sanctions as the stand-in for a client IP. |
+| `err_code`, `err_kind`, `retryable`, `cause` | error envelope | §5 |
+| `ev`, `message` | envelope | §3 |
 
-The `Plain<T>` wrapper (Rust) and equivalent `Plain<T>` types in TS/Swift/Kotlin tag values that originated from plaintext domain data. The logging API rejects `Plain<T>` arguments at the type level — they cannot be formatted into log fields without first calling `.expose()`, which is itself banned in `telemetry/`, `logging/`, and `observability/` modules.
+### How this is enforced
+
+Two independent defences, both in `crates/sunrise-log`:
+
+1. **`Plain<T>` closes the value path.** It implements no `Display`, no
+   `serde::Serialize`, and no `tracing::Value`, and its `Debug` prints the
+   fixed string `Plain<…>`. So `info!(title = plain)` and `info!(title = %plain)`
+   do not compile, and `info!(title = ?plain)` records `Plain<…>`. There is no
+   tracing path that renders the payload. `crates/sunrise-log/tests/redaction.rs`
+   drives random payloads through every one of those paths and asserts the sink
+   saw the marker and not one byte of the payload.
+
+2. **`RedactionLayer` closes the field-name path.** A value that was
+   legitimately `.expose()`d and then logged is not a `Plain<T>` any more, so
+   defence 1 cannot see it. The layer checks every field name on every event
+   from a `sunrise_*` target against the allowlist above and **vetoes the whole
+   event** if one is unrecognised (`Layer::event_enabled` is `AND`-ed across the
+   stack, so a `false` suppresses it for every layer beneath). In debug builds
+   the default is to panic naming the field, so an unvetted name fails CI rather
+   than shipping; in release it drops the record and bumps a counter. Losing a
+   log line beats leaking a task title.
+
+Neither defence covers `message`. A format string is arbitrary text by
+construction; keeping plaintext out of it is what the `.expose()` CI grep is
+for.
+
+Spans are not gated: `on_new_span` has no veto and a span cannot be rewritten
+once created. Sunrise spans are built only by this workspace's own
+`#[instrument]` / `info_span!` sites with allowlisted field names, and defence 1
+still applies to their values.
 
 ### 6.1 Email addresses
 
-Email is **never** logged anywhere. When a diagnostic needs to identify a user across logs, use `account_h = BLAKE3(account_id \|\| log_salt, 4)` rendered as 8 lowercase hex characters. `log_salt` is `device_log_salt` on clients and `server_log_salt` on the server (different salts means client and server hashes for the same account do not correlate without a join — that join is the operator's privileged action).
+Email is **never** logged anywhere. When a diagnostic needs to identify a user
+across logs, use `account_h`: the first 4 bytes of `BLAKE3(account_id)`, 8
+lowercase hex characters (`sunrise_server::logging::account_h`).
+
+**The salt in the original construction is omitted, deliberately.** Its job was
+to stop a *low-entropy* identifier — an email address — from being recovered by
+brute force. Sunrise account ids are not that: `Store::resolve_account` mints
+them as 16 random bytes with no relation to the OIDC subject or the email, so
+there is nothing to enumerate. What a salt would still have bought is
+preventing a client-side and a server-side hash of the same account from being
+joined without the operator's help; clients hash their *own* ids under a
+device-local salt, so that join is already unavailable. The same reasoning
+covers `stream_h` and the other entity hashes, which are also 16 random bytes.
+
+If an id ever becomes derivable from user-supplied input, this stops holding
+and the salt has to come back.
 
 ### 6.2 IP addresses
 
-- Server access logs: store IPv4 truncated to `/24` and IPv6 truncated to `/48`. Full IP MAY be retained in the rate-limiter's in-memory state for at most 60 seconds.
-- Client logs: never log the device's own IP. Connection diagnostics use the relay hostname instead.
+- Server access logs: **no client address is logged at all** in v1. The request
+  span records method and templated endpoint and nothing else, which is
+  stricter than the `/24` / `/48` truncation this section allows. Truncated
+  prefixes become relevant when there is a rate limiter to explain.
+- Client logs: never log the device's own IP. Connection diagnostics use the
+  relay hostname (`relay`), which `sunrise_tui::livesync::relay_host` reduces
+  from the configured URL — dropping any credentials and query string with it.
 
 ### 6.3 CI enforcement
 
-The CI build runs three checks; any failure blocks merge:
+The `log-redaction` job in `.github/workflows/ci.yml` greps
+`\bplain[a-z_]*\.expose[[:space:]]*\(` across the `src` tree of every crate
+that emits log records — today `sunrise-log`, `sunrise-server`, `sunrise-tui`,
+`sunrise-storage`, `sunrise-core`, `sunrise-sync` — plus any `telemetry/`,
+`logging/`, or `observability/` module in any crate. **A crate that starts
+logging must be added to that list.** It runs through
+`.github/scripts/grep-gate.sh`, which fails if none of the paths exist, so the
+gate cannot degrade to a silent no-op the way its predecessor had (it searched
+`packages/sunrise-log/src`, which never existed, and two glob patterns that
+matched nothing).
 
-1. `ripgrep -nP '\bplain[a-z_]*\.expose\(' src/{telemetry,logging,observability}` — no matches allowed.
-2. `cargo clippy -- -D sunrise::log_plaintext` — custom lint that flags any call into `tracing::*!` whose argument types include `Plain<_>`.
-3. `pnpm -r run lint:logging` — typescript rule rejecting `console.*` calls outside `*.dev.ts` and rejecting log calls whose argument set includes any value of type `Plain<*>`.
+Alongside it:
 
-A snapshot test (`tests/log-redaction.rs`) generates 10 000 random log calls across all packages with synthetic `Plain<T>` payloads and asserts that the resulting NDJSON contains none of the synthetic payload bytes.
+- `crates/sunrise-log/tests/redaction.rs` — property tests over both defences
+  above, asserting on the bytes a sink received.
+- `crates/sunrise-log/tests/event_catalog.rs` — every `ev` literal in shipped
+  source is grammatical and catalogued in [`log-events.md`](./log-events.md).
+- `crates/sunrise-log/tests/record_schema.rs` — live records validate against
+  `schemas/log-record.v1.json`, and every top-level key is either the fixed
+  envelope or an allowlisted context key.
+- `crates/sunrise-server/tests/logging.rs` — real requests through the real
+  router: no `?access_token=`, no full entity ids, every field allowlisted.
+
+**Not implemented:** the custom `sunrise::log_plaintext` clippy lint (a
+type-aware lint needs a `dylint` driver, and `Plain<T>` having no `Value` impl
+makes the compiler reject the same code with a plain type error), and the
+TypeScript `lint:logging` rule (there is no TypeScript logging surface —
+ADR-0010's Bun server does not exist).
 
 ---
 
 ## 7. Per-package responsibilities
 
-Each package emits a fixed catalog of `ev` names. New events require a doc entry. The catalog is the contract.
+The catalogue lives in [`log-events.md`](./log-events.md), split into what is
+**implemented** and what is **reserved**. It is the contract, and it is checked:
+`crates/sunrise-log/tests/event_catalog.rs` fails if any `ev` literal in
+`crates/*/src` is missing from it.
 
-### `sunrise-core` (Rust)
-- `core.open.start`, `core.open.ok`, `core.open.failed` — vault open lifecycle.
-- `core.unlock.attempt`, `core.unlock.ok`, `core.unlock.failed` — passphrase / OS keystore unlock. Failures count attempts, never log the passphrase.
-- `core.submit.queued`, `core.submit.applied`, `core.submit.rejected` — operation submission.
-- `core.query.slow` — emitted when any read query exceeds [performance budgets](./performance-budgets.md) p99.
-- `core.shutdown.start`, `core.shutdown.ok`.
+Implemented today: `sunrise-server` (startup, request lifecycle, auth outcome,
+WebSocket session, relay fan-out), `sunrise-storage` (migrations),
+`sunrise-core::sync_driver` + `sunrise-tui::livesync` (session lifecycle,
+backoff), and `sunrise-tui` (startup, keymap, dev pairing).
 
-### `sunrise-crypto`
-- `crypto.kdf.start`, `crypto.kdf.ok` — Argon2id / HKDF runs (with `lat_ms`, never the secret).
-- `crypto.envelope.encrypt`, `crypto.envelope.decrypt`, `crypto.envelope.reject` — `reject` includes `err.code` (e.g. `CRYPTO_AAD_MISMATCH`, `CRYPTO_NON_CANONICAL_CBOR`).
-- `crypto.rotate.start`, `crypto.rotate.complete` — stream/device/identity key rotation.
-- `crypto.sig.verify.failed`.
-
-### `sunrise-storage`
-- `db.migrate.start`, `db.migrate.ok`, `db.migrate.failed` — emits `from_v`/`to_v`.
-- `db.tx.commit`, `db.tx.rollback` — at debug level; `lat_ms`.
-- `db.query.slow` — over budget.
-- `blob.upload.start/ok/failed`, `blob.fetch.start/ok/failed`.
-- `compact.start/ok/failed`.
-
-### `sunrise-sync`
-- `sync.session.opening`, `sync.session.opened`, `sync.session.closed`, `sync.session.error`.
-- `sync.frame.recv`, `sync.frame.send` — debug only; includes `kind`, `n_bytes`.
-- `sync.batch.applied`, `sync.batch.rejected`.
-- `sync.snapshot.req`, `sync.snapshot.applied`.
-- `sync.transport.fallback` — reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005).
-- `sync.backoff` — when entering exponential backoff.
-
-### `sunrise-server` (Bun)
-- `srv.req.start`, `srv.req.end` — HTTP request lifecycle; `lat_ms`, `status`, `endpoint`.
-- `srv.ws.connect`, `srv.ws.disconnect`.
-- `srv.auth.ok`, `srv.auth.rejected` — `rejected` includes the OIDC error code (no token bytes).
-- `srv.quota.warning`, `srv.quota.exceeded`.
-- `srv.relay.fanout` — debug; `n_recipients`.
-- `srv.push.send.ok`, `srv.push.send.failed` — `provider`, `n_devices`.
-
-### Client packages (`sunrise-ui-shared`, platform apps)
-- `ui.view.open`, `ui.view.close` — view name (no entity content).
-- `ui.action` — explicit user actions: `ctx.action_kind`.
-- `ui.error.shown` — when a user-facing error toast is displayed.
-- `ui.input.lat` — debug; keystroke-to-paint p95 sampler.
-
-### `sunrise-integrations`
-- `int.run.start`, `int.run.ok`, `int.run.failed` — `provider`, `n_imported`, `n_exported`.
-- `int.auth.refresh`, `int.auth.expired`.
-- `int.rate_limited` — when an external API returns 429.
+Deliberately not implemented, with reasons, in the catalogue's *Reserved*
+section: the `crypto` hot path, per-transaction storage events, per-keystroke UI
+events, quota and push (no such features), and integrations (no provider).
 
 ---
 
 ## 8. Sinks
 
-Each runtime supports up to four sinks; the binary chooses which to enable.
+`tracing-subscriber` calls this the writer; the binary picks one at startup via
+`sunrise_log::init`.
 
-| Sink | Format | Where it goes |
+| Destination | Format | Who uses it |
 |---|---|---|
-| `stderr` | NDJSON | Always available. Default for servers and dev runs. CLIs use the colorized "pretty" formatter only when stderr is a TTY AND `SUNRISE_LOG_FORMAT=pretty`. |
-| `file` | NDJSON, gzipped on rotation | `~/.local/state/sunrise/log/<binary>.ndjson` (Linux), platform-equivalent path on macOS/Windows/iOS/Android. Rotated at 16 MiB or 24 h, whichever first. Retention: 14 days or 8 rotated files, whichever smaller. |
-| `ring` | NDJSON in memory | 4 MiB circular buffer. Always on. Source for diagnostic-bundle export. |
-| `remote` | NDJSON over HTTPS POST `/api/v1/diagnostics/upload` | Disabled by default. Enabled only during diagnostic mode and only for log records explicitly tagged `share: true` (the bundle exporter does this on the user's behalf). |
+| `stderr` | NDJSON | `sunrise-server`. `SUNRISE_LOG_FORMAT=pretty` switches to a human line — **dev builds only**; a release binary refuses the request and stays on NDJSON, because release output is something a pipeline parses. |
+| file | NDJSON | `sunrise-tui`. `$XDG_STATE_HOME/sunrise/log/sunrise-tui.ndjson`, defaulting to `~/.local/state/sunrise/log/`; override with `SUNRISE_LOG_FILE`. **A full-screen terminal app cannot log to stderr**: a record written while Ratatui holds the alternate screen lands in the middle of the user's board and the diffing renderer never paints over it. If the file cannot be opened the TUI runs with no logging at all — falling back to stderr would trade a missing log for a broken display. |
+| capture | NDJSON | Tests (`sunrise_log::Capture`), so assertions are on the exact bytes a sink would receive. |
 
-A log record reaches a sink only if `record.lv >= sink.min_level`. The `ring` sink always accepts `trace`+. The `remote` sink rejects records lacking `share: true`.
+**Rotation** is a size roll at 16 MiB keeping one previous generation
+(`<name>.ndjson.1`), so a runaway loop costs at most 32 MiB rather than a
+partition. Not gzipped, not time-based, no 14-day retention sweep — see the
+throttling note in §9 for why the size cap is the part that had to exist.
+
+**Removed: the `ring` and `remote` sinks.** `remote` was never implemented and
+had no endpoint behind it; `ring` was implemented but existed only to feed a
+diagnostic-bundle exporter that also does not exist. Both were deleted rather
+than kept as an interface nothing satisfies. Reintroducing `remote` is a
+privacy decision (opt-in only, per the original text), not a plumbing one.
 
 ---
 
 ## 9. Throttling and rate limits
 
-Every package's logger MUST apply a token-bucket rate limit per `(ev, lv)` pair: 100 tokens, refill 10/sec. When the bucket is empty, records are dropped and a single `log.throttled` record is emitted at most once per minute carrying `n_dropped`.
+**Not implemented.** The original spec mandated a token bucket per `(ev, lv)` —
+100 tokens, refill 10/sec — with a once-a-minute `log.throttled` summary.
+`crates/sunrise-log` implemented it and nothing ever called it.
 
-This protects against a runaway loop spamming the file sink and turning a minor bug into an out-of-disk incident.
+`tracing` has no equivalent, and reintroducing one under it means a layer
+holding a `HashMap` keyed by callsite behind a lock on the emit path. That is a
+real cost for a hazard that has two cheaper answers already in place: level
+discipline (`EnvFilter`, and the per-event level choices in the catalogue —
+`srv.req.end` is `debug` precisely so healthy traffic is silent), and the
+16 MiB size roll in §8, which bounds the actual failure mode the throttle
+existed to prevent.
+
+What is genuinely given up: a loop spinning at `warn` on the server will fill
+stderr as fast as the pipeline reads it, and there is no `n_dropped` counter
+to notice it by. If that happens, the bucket comes back as a layer.
 
 ---
 
 ## 10. Bootstrap
 
-Every binary calls `sunrise_log::init(LogConfig)` exactly once at startup, before any other workspace code runs. The config is read from environment variables:
+Every binary installs the subscriber as its **first statement**, before
+anything that could want to log:
+
+```rust
+sunrise_log::init_stderr()?;                       // sunrise-server
+let _ = sunrise_log::init_file("sunrise-tui");     // sunrise-tui
+```
+
+Both assemble the same stack:
+
+```text
+Registry
+  └── EnvFilter        (SUNRISE_LOG)
+      └── RedactionLayer  (§6 — the allowlist veto)
+          └── fmt layer   (NDJSON or pretty, to the §8 destination)
+```
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SUNRISE_LOG` | `info` | Per-target filter directives, `tracing-subscriber` syntax: `info,sunrise_sync=debug`. |
-| `SUNRISE_LOG_FORMAT` | `ndjson` | `ndjson` \| `pretty`. `pretty` is dev-only and refused in release builds. |
-| `SUNRISE_LOG_FILE` | platform default | Override file sink path. |
-| `SUNRISE_LOG_RING_BYTES` | `4194304` | Ring buffer size. |
-| `SUNRISE_LOG_DIAGNOSTIC` | `0` | `1` enables diagnostic mode for 30 min from process start. |
+| `SUNRISE_LOG` | `info` | Per-target filter directives, `tracing-subscriber` syntax: `info,sunrise_sync=debug`. An unparsable value falls back to the default rather than failing startup. |
+| `SUNRISE_LOG_FORMAT` | `ndjson` | `ndjson` \| `pretty`. `pretty` is refused in release builds. An unrecognised value falls back to `ndjson`. |
+| `SUNRISE_LOG_FILE` | platform default | File destination for file-logging binaries. |
 
-Until `init` succeeds, log calls go to a fallback stderr formatter that does not enforce redaction (because the type-level ban is sufficient). After `init`, any uninstalled subscriber path is a panic in dev and a `log.bootstrap.late` `error` in release.
+`SUNRISE_LOG_RING_BYTES` and `SUNRISE_LOG_DIAGNOSTIC` are gone with the sinks
+and the mode they configured (§8, §2).
+
+A log call made before `init` is dropped by `tracing`'s no-op default
+subscriber — which is why `init` goes first rather than being defended against.
+Calling it twice returns `LogError::AlreadyInitialized`; `tracing` allows only
+one global dispatcher.
 
 ---
 
-## 11. Tests required
+## 11. Tests
 
-Every package MUST include:
+| Test | What it holds |
+|---|---|
+| `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
+| `crates/sunrise-log/tests/event_catalog.rs` | Every `ev` literal in `crates/*/src` is grammatical and catalogued. |
+| `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
+| `crates/sunrise-server/tests/logging.rs` | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted, healthy traffic silent at `info`. |
+| `crates/sunrise-tui/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
 
-1. A snapshot test of its `ev` catalog vs. the package contract above. Adding/removing/renaming an `ev` value fails the test until the contract is updated.
-2. A redaction property test: 1 000 random invocations of every public API surface with `Plain<T>` synthetic data; assert no synthetic byte appears in any sink output.
-3. A throttling test: emit 10 000 of the same `ev` in 1 second; assert sink saw ≤ 110 records and exactly one `log.throttled`.
-
-The workspace root has a single `cargo test -p log-conformance && pnpm test:log-conformance` target that aggregates these.
+**Removed: the per-package conformance triple.** The original §11 asked every
+package for an `ev`-catalogue snapshot, a redaction property test, and a
+throttling test, aggregated by a `log-conformance` target. The throttle is gone
+(§9). The snapshot is replaced by the workspace-wide catalogue scan above, which
+tests source against documentation rather than a constant against itself. The
+redaction property test is centralised, because the guarantee it checks is a
+property of `Plain<T>` and `RedactionLayer`, not of each caller.

@@ -32,14 +32,18 @@ crossterm = { workspace = true }
 ratatui-image = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
+sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+sunrise-log = { workspace = true }
 sunrise-sync = { workspace = true, features = ["ws"] }
 
 [dev-dependencies]
 insta = { workspace = true }
+serde_json = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
 axum = { workspace = true }

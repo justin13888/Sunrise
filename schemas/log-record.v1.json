@@ -2,88 +2,58 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://sunrise.example/schemas/log-record.v1.json",
     "title": "Sunrise log record (v1)",
-    "description": "NDJSON record shape per docs/10-cross-cutting/logging.md §3. One record per newline.",
+    "description": "NDJSON record shape per docs/10-cross-cutting/logging.md §3. One record per newline. Produced by tracing-subscriber's JSON formatter with flatten_event(true), so context fields sit at the top level alongside the envelope. Validated against live output by crates/sunrise-log/tests/record_schema.rs.",
     "type": "object",
-    "required": [
-        "ts",
-        "lv",
-        "ev",
-        "pkg",
-        "mod",
-        "span",
-        "trace",
-        "dev",
-        "app",
-        "proto",
-        "ctx",
-        "msg"
-    ],
-    "additionalProperties": false,
+    "required": ["timestamp", "level", "message", "target", "ev"],
     "properties": {
-        "ts": {
+        "timestamp": {
             "type": "string",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
-            "description": "RFC 3339 with millisecond precision in UTC."
+            "description": "RFC 3339 with millisecond precision in UTC (sunrise_log::Rfc3339Millis)."
         },
-        "lv": {
+        "level": {
             "type": "string",
-            "enum": ["trace", "debug", "info", "warn", "error"]
+            "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"],
+            "description": "tracing::Level, uppercase. The five levels of logging.md §2."
+        },
+        "message": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Human-readable summary. MUST NOT interpolate plaintext user data."
+        },
+        "target": {
+            "type": "string",
+            "description": "tracing target: the emitting module path. Replaces the old pkg + mod pair."
         },
         "ev": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
-            "description": "Hierarchical event name."
+            "description": "Hierarchical event name; must be catalogued in docs/10-cross-cutting/log-events.md."
         },
-        "pkg": { "type": "string" },
-        "mod": { "type": "string" },
         "span": {
-            "type": "string",
-            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
-            "description": "ULID, 26-char Crockford base-32."
-        },
-        "trace": {
-            "type": "string",
-            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-        },
-        "dev": {
-            "type": "string",
-            "pattern": "^(dev_[0-9a-f]{8})?$",
-            "description": "dev_<8 hex chars> or empty before init."
-        },
-        "app": { "type": "string" },
-        "proto": {
             "type": "object",
-            "required": ["wire", "doc", "crypto"],
-            "additionalProperties": false,
-            "properties": {
-                "wire": { "type": "integer", "minimum": 0 },
-                "doc": { "type": "integer", "minimum": 0 },
-                "crypto": { "type": "integer", "minimum": 0 }
-            }
+            "description": "Innermost active span: its `name` plus its fields. Present only inside a span; the ancestor list is not emitted (with_span_list(false)).",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
         },
-        "ctx": {
-            "type": "object",
-            "description": "Allowlisted context keys per spec §6. Unknown keys MUST be dropped at the sink.",
-            "additionalProperties": true
-        },
-        "msg": {
+        "err_code": {
             "type": "string",
-            "maxLength": 200
+            "description": "Stable canonical error code from docs/10-cross-cutting/error-handling.md. Set on warn/error."
         },
-        "err": {
-            "type": "object",
-            "required": ["code", "kind", "retryable"],
-            "additionalProperties": false,
-            "properties": {
-                "code": { "type": "string" },
-                "kind": {
-                    "type": "string",
-                    "enum": ["transient", "permanent", "user", "internal"]
-                },
-                "retryable": { "type": "boolean" },
-                "cause": { "type": "string", "maxLength": 500 }
-            }
+        "err_kind": {
+            "type": "string",
+            "enum": ["transient", "permanent", "user", "internal"]
         },
-        "share": { "type": "boolean" }
-    }
+        "retryable": { "type": "boolean" },
+        "cause": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Bottom-most source() message after redaction. MUST NOT contain plaintext user data."
+        }
+    },
+    "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "description": "Additional top-level keys are context fields and MUST come from the allowlist in crates/sunrise-log/src/field.rs, which sunrise_log::RedactionLayer enforces at emit time."
+    },
+    "additionalProperties": true
 }

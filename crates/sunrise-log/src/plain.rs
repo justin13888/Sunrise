@@ -3,14 +3,37 @@
 //! Plaintext domain data (Task title/body, Note body, attachment file name,
 //! integration external title, person name, email, Stream name, Context
 //! name, search query, etc.) crosses module boundaries only inside
-//! `Plain<T>`. The logging API refuses to format `Plain<T>` into any field
-//! by virtue of the `expose()` lint gate (see CI check in
-//! `.github/workflows/ci.yml`).
+//! `Plain<T>`.
 //!
-//! `Plain<T>` deliberately does NOT implement [`Display`], [`Debug`] (in
-//! release builds), [`serde::Serialize`], or [`std::fmt::LowerHex`]. The
-//! only way to read its content is `expose()`, which is banned in
-//! `telemetry/`, `logging/`, and `observability/` modules by a CI grep.
+//! # The guarantee
+//!
+//! `Plain<T>` implements **no `Display`**, **no `serde::Serialize`**, and
+//! **no `tracing::Value`**. Its `Debug` prints the fixed string `Plain<…>`.
+//! Those four facts together close every route a value can take into a
+//! `tracing` record:
+//!
+//! | Call site | Result |
+//! |---|---|
+//! | `info!(title = plain)` | does not compile — no `Value` impl |
+//! | `info!(title = %plain)` | does not compile — no `Display` impl |
+//! | `info!(title = ?plain)` | compiles, records the literal `Plain<…>` |
+//! | `info!(title = field::debug(&plain))` | records the literal `Plain<…>` |
+//! | `info!("{plain:?}")` | records the literal `Plain<…>` |
+//! | span fields, by any of the above | same |
+//!
+//! So the sink cannot see the payload. `tests/redaction.rs` asserts exactly
+//! this, over random payloads, through every one of those paths.
+//!
+//! # The escape hatch, and what guards it
+//!
+//! [`Plain::expose`] returns the inner value, because real code has to render
+//! a task title *somewhere*. Two gates keep that somewhere away from logs:
+//!
+//! * CI greps `\bplain[a-z_]*\.expose[[:space:]]*\(` across every surface
+//!   that logs and rejects a match (`.github/workflows/ci.yml`,
+//!   `log-redaction`);
+//! * an exposed `String` logged under a field name nobody vetted is refused
+//!   at runtime by [`crate::RedactionLayer`].
 //!
 //! See `docs/10-cross-cutting/logging.md` §6.
 
@@ -20,7 +43,8 @@ use zeroize::Zeroize;
 /// Wrapper marking a value as containing plaintext user data.
 ///
 /// Construct via [`Plain::new`]; read back via [`Plain::expose`] (banned in
-/// log/telemetry/observability surfaces).
+/// log/telemetry/observability surfaces). See the module docs for the full
+/// list of formatting paths this closes.
 #[derive(Clone)]
 pub struct Plain<T>(T);
 
@@ -62,8 +86,11 @@ impl<T> fmt::Debug for Plain<T> {
     }
 }
 
-// `Display` is intentionally NOT implemented.
-// `serde::Serialize` is intentionally NOT implemented.
+// `Display` is intentionally NOT implemented — it would make `%plain` compile.
+// `serde::Serialize` is intentionally NOT implemented — it would let the JSON
+// formatter render the payload.
+// `tracing::Value` is intentionally NOT implemented — it would make a bare
+// `info!(field = plain)` compile.
 
 impl<T: Zeroize> Zeroize for Plain<T> {
     fn zeroize(&mut self) {
@@ -93,6 +120,27 @@ mod tests {
     fn expose_returns_inner() {
         let p = Plain::new(String::from("secret"));
         assert_eq!(p.expose(), "secret");
+    }
+
+    #[test]
+    fn debug_is_opaque_for_every_inner_type() {
+        // The opacity must not depend on `T: Debug` doing something sensible.
+        #[derive(Clone)]
+        struct Loud;
+        impl fmt::Debug for Loud {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("SECRET-PAYLOAD")
+            }
+        }
+        assert_eq!(format!("{:?}", Plain::new(Loud)), "Plain<…>");
+        assert_eq!(format!("{:?}", Plain::new(vec![1u8, 2, 3])), "Plain<…>");
+        assert_eq!(format!("{:?}", Plain::new(Some("x"))), "Plain<…>");
+    }
+
+    #[test]
+    fn nesting_does_not_unwrap() {
+        let p = Plain::new(Plain::new("inner"));
+        assert_eq!(format!("{p:?}"), "Plain<…>");
     }
 
     #[test]

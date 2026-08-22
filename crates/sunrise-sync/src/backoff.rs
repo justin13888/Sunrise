@@ -72,6 +72,15 @@ impl Backoff {
         self.attempt = 0;
     }
 
+    /// How many attempts have been recorded since the last reset.
+    ///
+    /// Exposed for the `sync.backoff` log field: "reconnecting in 3.2 s" is
+    /// only actionable next to "…for the 4th time".
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
     /// Whether the policy is exhausted.
     #[must_use]
     pub const fn exhausted(&self) -> bool {
@@ -81,6 +90,17 @@ impl Backoff {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attempt_counter_tracks_record_and_reset() {
+        let mut b = super::Backoff::canonical();
+        assert_eq!(b.attempt(), 0);
+        b.record_attempt();
+        b.record_attempt();
+        assert_eq!(b.attempt(), 2);
+        b.reset();
+        assert_eq!(b.attempt(), 0);
+    }
+
     use super::*;
 
     #[test]

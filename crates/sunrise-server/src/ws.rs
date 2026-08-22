@@ -132,6 +132,17 @@ async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
     ) {
         Ok(a) => a,
         Err(e) => {
+            // The one WebSocket failure an operator cannot diagnose from the
+            // client side: a version/capability mismatch closes the socket
+            // before the client has anything to show a user.
+            tracing::warn!(
+                ev = "srv.ws.rejected",
+                err_code = %e.as_error_code(),
+                err_kind = "permanent",
+                retryable = false,
+                account_h = %crate::logging::id_h(&account),
+                "handshake rejected"
+            );
             let _ =
                 send_error_frame(&mut sink, e.as_error_code(), &format!("negotiation: {e}")).await;
             return;
@@ -150,8 +161,22 @@ async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
         return;
     }
 
+    tracing::info!(
+        ev = "srv.ws.connect",
+        account_h = %crate::logging::id_h(&account),
+        wire_v = u64::from(ack.wire_proto),
+        crypto_v = u64::from(ack.crypto_suite),
+        "relay session opened"
+    );
+
     // ---- Sync loop ----
     sync_loop(conn_id, sink, stream, state, account).await;
+
+    tracing::info!(
+        ev = "srv.ws.disconnect",
+        account_h = %crate::logging::id_h(&account),
+        "relay session closed"
+    );
 }
 
 async fn sync_loop(
@@ -266,6 +291,11 @@ async fn handle_inbound(
                     return true;
                 }
             };
+            tracing::debug!(
+                ev = "srv.ws.subscribe",
+                n_streams = sub.streams.len() as u64,
+                "subscribe frame"
+            );
             for entry in sub.streams {
                 let sid = entry.stream_id;
                 // Atomic snapshot + subscribe: retained frames first, then a
@@ -300,6 +330,16 @@ async fn handle_inbound(
             };
             let stream_id = batch.stream_id;
             let server_first_seen_ms = state.clock.now_ms();
+            // The relay never decrypts an op, so its whole view of a batch is
+            // shape: which stream, how many bytes. That is also everything a
+            // fan-out bug needs — a batch that never reaches a peer shows up
+            // here as a `srv.relay.fanout` with no matching arrival.
+            tracing::debug!(
+                ev = "srv.relay.fanout",
+                stream_h = %crate::logging::id_h(&stream_id),
+                n_bytes = buf.len() as u64,
+                "op batch republished"
+            );
             // Republish the original raw frame bytes verbatim for fan-out.
             state.relay.publish(
                 (account, stream_id),

@@ -166,15 +166,27 @@ jobs:
       - name: Reject .expose() in logging/telemetry/observability surfaces
         run: |
           # docs/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
-          # logging, telemetry, or observability code paths.
+          # code that emits log records.
           #
-          # Of the paths below only crates/sunrise-log/src exists today; the
-          # rest are listed so the gate widens automatically as those surfaces
-          # appear. The runner fails if *none* of them exist, so this cannot
-          # silently degrade to a no-op the way the previous `rg`-based
-          # version did.
+          # The list below is the set of crates that actually call `tracing::*!`
+          # today (ADR-0010, amended). It used to be `crates/sunrise-log/src`
+          # plus three glob patterns that matched nothing and a
+          # `packages/sunrise-log/src` that never existed — a gate over one
+          # orphan crate that no other code could reach.
+          #
+          # **When a crate starts logging, add it here.** The glob patterns are
+          # kept so a future `telemetry/` or `observability/` module in any
+          # crate is covered the moment it appears; `grep-gate.sh` skips paths
+          # that do not exist and fails if *none* do, so this cannot silently
+          # degrade to a no-op.
           .github/scripts/grep-gate.sh \
             "log-redaction" \
             '\bplain[a-z_]*\.expose[[:space:]]*\(' \
             crates/sunrise-log/src \
+            crates/sunrise-server/src \
+            crates/sunrise-tui/src \
+            crates/sunrise-storage/src \
+            crates/sunrise-core/src \
+            crates/sunrise-sync/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+

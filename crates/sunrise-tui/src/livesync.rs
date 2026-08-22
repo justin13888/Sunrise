@@ -118,35 +118,141 @@ pub fn ws_factory(url: &str) -> TransportFactory {
 /// Must be called from within a tokio runtime ([`Core::start_sync`] spawns the
 /// driver task). Every step is best-effort for the demo: a missing/unwritable
 /// cert file is logged, not fatal.
+///
+/// # Two outputs, on purpose
+///
+/// The returned `Vec<String>` is for the *demo*: it names the cert files it
+/// touched, which is exactly what a human running the two-terminal walkthrough
+/// needs to see. Those strings are not log records and must not become them —
+/// a filesystem path carries the operator's home directory, and
+/// `docs/10-cross-cutting/logging.md` §6 does not put that on the allowlist.
+///
+/// The `tracing` events emitted alongside carry the *structure* — did it work,
+/// which relay host, what failed — with no paths in them. Integration tests
+/// read the strings; the log reads the events.
 pub async fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     let mut log = Vec::new();
 
     if let Some(path) = &plan.export_cert {
         match std::fs::write(path, core.device_cert()) {
-            Ok(()) => log.push(format!("exported device cert -> {}", path.display())),
-            Err(e) => log.push(format!("cert export failed ({}): {e}", path.display())),
+            Ok(()) => {
+                tracing::info!(
+                    ev = "ui.pair.cert_exported",
+                    result = "ok",
+                    "device cert written"
+                );
+                log.push(format!("exported device cert -> {}", path.display()));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    ev = "ui.pair.cert_exported",
+                    result = "failed",
+                    err_code = "IO_WRITE_FAILED",
+                    err_kind = "permanent",
+                    retryable = false,
+                    cause = %e,
+                    "device cert not written"
+                );
+                log.push(format!("cert export failed ({}): {e}", path.display()));
+            }
         }
     }
 
     if let Some(path) = &plan.trust_cert {
         match std::fs::read(path) {
             Ok(bytes) => match core.submit(Command::TrustDevice { cert_cbor: bytes }).await {
-                Ok(_) => log.push(format!("trusted peer cert <- {}", path.display())),
-                Err(e) => log.push(format!("trust submit failed: {e}")),
+                Ok(_) => {
+                    tracing::info!(
+                        ev = "ui.pair.peer_trusted",
+                        result = "ok",
+                        "peer cert trusted"
+                    );
+                    log.push(format!("trusted peer cert <- {}", path.display()));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ev = "ui.pair.peer_trusted",
+                        result = "failed",
+                        err_code = "TRUST_SUBMIT_FAILED",
+                        err_kind = "permanent",
+                        retryable = false,
+                        cause = %e,
+                        "peer cert rejected"
+                    );
+                    log.push(format!("trust submit failed: {e}"));
+                }
             },
-            Err(e) => log.push(format!("trust cert not read ({}): {e}", path.display())),
+            Err(e) => {
+                tracing::warn!(
+                    ev = "ui.pair.peer_trusted",
+                    result = "skipped",
+                    err_code = "IO_READ_FAILED",
+                    err_kind = "permanent",
+                    retryable = false,
+                    cause = %e,
+                    "peer cert not read"
+                );
+                log.push(format!("trust cert not read ({}): {e}", path.display()));
+            }
         }
     }
 
     match &plan.sync {
         Some(sc) => match core.start_sync(ws_factory(&sc.url)) {
-            Ok(()) => log.push(format!("sync driver started -> {}", sc.url)),
-            Err(e) => log.push(format!("start_sync failed: {e}")),
+            Ok(()) => {
+                // The relay *host* is the sanctioned connection-diagnostic
+                // identifier (logging.md §6.2); the full URL could carry a
+                // query string, so only the host goes in.
+                tracing::info!(
+                    ev = "sync.session.opening",
+                    relay = %relay_host(&sc.url),
+                    result = "ok",
+                    "sync driver started"
+                );
+                log.push(format!("sync driver started -> {}", sc.url));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    ev = "sync.session.error",
+                    relay = %relay_host(&sc.url),
+                    result = "failed",
+                    err_code = "SYNC_START_FAILED",
+                    err_kind = "transient",
+                    retryable = true,
+                    cause = %e,
+                    "sync driver did not start"
+                );
+                log.push(format!("start_sync failed: {e}"));
+            }
         },
-        None => log.push(format!("sync off (set {ENV_SYNC_URL} to enable)")),
+        None => {
+            tracing::info!(ev = "sync.session.off", result = "skipped", "sync disabled");
+            log.push(format!("sync off (set {ENV_SYNC_URL} to enable)"));
+        }
     }
 
     log
+}
+
+/// The `host[:port]` of a relay URL, for the `relay` log field.
+///
+/// Everything after the authority is dropped: a `ws://…/sync?access_token=…`
+/// must never reach a log, and the host is all a connection diagnostic needs.
+/// Falls back to `"unknown"` rather than echoing an unparsable string back.
+#[must_use]
+pub fn relay_host(url: &str) -> String {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    // Strip any `user:pass@` credential prefix.
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host.is_empty() {
+        "unknown".to_string()
+    } else {
+        host.to_string()
+    }
 }
 
 /// Open a core at `vault_dir` keyed by the shared dev `root`, then execute
@@ -199,6 +305,34 @@ mod tests {
         assert_eq!(plan.export_cert, Some(PathBuf::from("/tmp/self.cbor")));
         assert_eq!(plan.trust_cert, None);
         assert!(!plan.is_off());
+    }
+
+    #[test]
+    fn relay_host_keeps_only_the_authority() {
+        assert_eq!(relay_host("ws://127.0.0.1:8443/sync"), "127.0.0.1:8443");
+        assert_eq!(
+            relay_host("wss://relay.example.com/sync"),
+            "relay.example.com"
+        );
+        assert_eq!(
+            relay_host("relay.example.com:9000"),
+            "relay.example.com:9000"
+        );
+    }
+
+    #[test]
+    fn relay_host_drops_credentials_and_query() {
+        assert_eq!(
+            relay_host("wss://user:hunter2@relay.example/sync?access_token=SECRET"),
+            "relay.example"
+        );
+        assert_eq!(relay_host("ws://h/sync#frag"), "h");
+    }
+
+    #[test]
+    fn relay_host_falls_back_rather_than_echoing_garbage() {
+        assert_eq!(relay_host(""), "unknown");
+        assert_eq!(relay_host("ws:///sync"), "unknown");
     }
 
     #[test]

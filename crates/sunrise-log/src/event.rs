@@ -1,10 +1,20 @@
 //! Event names.
 //!
-//! Per `docs/10-cross-cutting/logging.md` §3, the `ev` field follows the
-//! grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. The first segment is a
-//! short package id; subsequent segments are hierarchical. New event names
-//! require an entry in `docs/10-cross-cutting/log-events.md` (gated by the per-package
-//! catalog snapshot test).
+//! Per `docs/10-cross-cutting/logging.md` §3, every Sunrise log record carries
+//! an `ev` field naming the event, following the grammar
+//! `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. The first segment is a short
+//! package id; subsequent segments are hierarchical.
+//!
+//! `tracing` does not care what goes in a string field, so the catalogue
+//! discipline is enforced from two sides instead:
+//!
+//! * [`EventName::const_new`] validates the grammar at compile time, so
+//!   `const _: EventName = EventName::const_new("srv.req.end");` next to a
+//!   call site turns a malformed name into a build failure;
+//! * `tests/event_catalog.rs` scans the workspace for `ev = "…"` literals and
+//!   fails if any of them is missing from
+//!   `docs/10-cross-cutting/log-events.md`. That is the part that keeps the
+//!   catalogue honest — a name nobody documented cannot ship.
 
 use thiserror::Error;
 
@@ -41,8 +51,8 @@ pub struct EventName(&'static str);
 impl EventName {
     /// Construct from a `&'static str`, validating the grammar at runtime.
     ///
-    /// Used by the `event!` macro to const-fold the literal at the call site;
-    /// invalid names fail compilation rather than runtime.
+    /// Const-folds the literal at the call site, so an invalid name fails
+    /// compilation rather than runtime.
     #[allow(clippy::missing_panics_doc)] // panics caught at const-eval
     pub const fn const_new(s: &'static str) -> Self {
         let bytes = s.as_bytes();
@@ -88,6 +98,16 @@ impl core::fmt::Display for EventName {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.0)
     }
+}
+
+/// Whether `s` satisfies the `ev` grammar.
+///
+/// The `&str` (rather than `&'static str`) entry point, for callers that
+/// check names they did not author — `tests/event_catalog.rs` scans the
+/// workspace with it.
+#[must_use]
+pub fn is_valid_name(s: &str) -> bool {
+    validate(s).is_ok()
 }
 
 fn validate(s: &str) -> Result<(), EventNameError> {
@@ -171,6 +191,24 @@ mod tests {
             EventName::new("sync kdf"),
             Err(EventNameError::BadChar { ch: ' ', .. })
         ));
+    }
+
+    #[test]
+    fn is_valid_name_matches_the_constructor() {
+        for good in ["sync.session.opened", "srv.req.end", "a", "a1.b2_3"] {
+            assert!(is_valid_name(good), "{good} should be valid");
+        }
+        for bad in [
+            "",
+            "Sync",
+            "sync.",
+            "sync..kdf",
+            ".sync",
+            "sync-kdf",
+            "sync kdf",
+        ] {
+            assert!(!is_valid_name(bad), "{bad} should be invalid");
+        }
     }
 
     #[test]

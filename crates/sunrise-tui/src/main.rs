@@ -9,9 +9,24 @@
 //! next keystroke. Everything a keypress does lives in
 //! `sunrise_tui::runtime::apply_action`; this file only performs the I/O that
 //! reducer asks for.
+//!
+//! # Logs go to a file, never to the terminal
+//!
+//! This binary owns the alternate screen. A single line written to stdout or
+//! stderr while Ratatui holds it lands in the middle of the user's board and
+//! the diffing renderer never repaints over it, so the corruption persists
+//! until the next full clear. Every log record therefore goes to
+//! `$XDG_STATE_HOME/sunrise/log/sunrise-tui.ndjson` (default
+//! `~/.local/state/sunrise/log/…`, override with `SUNRISE_LOG_FILE`), which
+//! [`sunrise_log::init_file`] caps at 16 MiB with one kept generation.
+//!
+//! If that file cannot be opened the binary runs **with no logging at all**.
+//! Falling back to stderr would trade a missing log for a broken display, and
+//! that is the wrong way round. `sunrise-tui --version` and the other
+//! subcommands never enter the alternate screen, but they take the same path:
+//! a CLI's stdout is its contract and NDJSON has no business in it.
 
 #![allow(
-    clippy::print_stderr,
     clippy::missing_docs_in_private_items,
     clippy::match_same_arms,
     clippy::doc_markdown,
@@ -35,6 +50,7 @@ use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::{NoteBody, TaskPatch};
 use sunrise_tui::livesync;
@@ -57,6 +73,24 @@ const DEV_ROOT: [u8; 32] = [7u8; 32];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First statement in the process. `init_file` is fallible and its failure
+    // is deliberately swallowed: see the module docs — a TUI that cannot log
+    // is a working TUI, a TUI that logs to stderr is a wrecked screen.
+    // The `Result` is deliberately discarded rather than reported: an
+    // unwritable state directory must not stop the app, and there is nowhere
+    // to report it to that would not be worse than staying quiet.
+    let _ = sunrise_log::init_file("sunrise-tui");
+    // Same shape as `sunrise-server`'s `srv.start`: the protocol versions are
+    // reported once per process rather than on every record.
+    let proto = sunrise_log::ProtoVersions::new(WIRE_PROTO_V, DOC_SCHEMA_V, CRYPTO_SUITE_V);
+    tracing::info!(
+        ev = "ui.start",
+        app_v = env!("CARGO_PKG_VERSION"),
+        wire_v = u64::from(proto.wire),
+        doc_v = u64::from(proto.doc),
+        crypto_v = u64::from(proto.crypto),
+        "sunrise-tui starting"
+    );
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(sub) = args.first() {
         return cli::run(sub, &args[1..]).await;
@@ -80,9 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &plan,
     )
     .await?;
-    for line in &startup_log {
-        eprintln!("sunrise-tui: {line}");
-    }
+    // `startup_log` is the demo banner, not a log: it names cert *file paths*,
+    // which the redaction allowlist does not admit. `livesync::apply_plan`
+    // has already emitted the structured events for the same steps. With the
+    // alternate screen about to open there is nowhere safe to print it, so it
+    // is dropped rather than written over the user's board.
+    drop(startup_log);
 
     let mut term = setup()?;
     let result = run(&mut term, &core, sync_on).await;
@@ -167,8 +204,17 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
     // defaults, because a typo in a config file must never cost the user a
     // working keyboard.
     let (map, key_warnings) = keymap::load_keymap(keymap::keys_config_path().as_deref());
-    for w in &key_warnings {
-        eprintln!("sunrise-tui: {w}");
+    // A keymap warning names the offending action and key, both of which come
+    // from the user's own config file rather than from vault content — but the
+    // *count* is what a support session actually needs, and the file is right
+    // there to read. So the log records how many, not which.
+    if !key_warnings.is_empty() {
+        tracing::warn!(
+            ev = "ui.keymap.invalid",
+            n_ops = key_warnings.len() as u64,
+            result = "skipped",
+            "keys.toml entries ignored; defaults used for them"
+        );
     }
     state.keymap = map;
     // Image-preview state (`:preview <path>`). Owned here because Picker and
@@ -789,8 +835,14 @@ FILES:
                 let tz = jiff::tz::TimeZone::system();
                 let parsed = core.capture(&text, &tz).await?;
                 for u in &parsed.unresolved {
-                    // Warnings go to stderr so stdout stays parseable.
-                    eprintln!("note: {u:?}");
+                    // Warnings go to stderr so stdout stays parseable. This is
+                    // CLI output for the human running the command, not a log
+                    // record — the subcommand path never enters the alternate
+                    // screen, so stderr is safe here and only here.
+                    #[allow(clippy::print_stderr)]
+                    {
+                        eprintln!("note: {u:?}");
+                    }
                 }
                 let title = parsed.draft.title.clone();
                 let res = core.submit(Command::CreateTask(parsed.draft)).await?;

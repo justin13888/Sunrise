@@ -76,11 +76,49 @@ pub async fn authenticate_token(
     // single-tenant) accepts it; every real verifier rejects it. Enabling auth
     // is therefore purely a matter of configuring a verifier.
     let bearer = extract_bearer(headers).unwrap_or("");
-    let subject = state.token_verifier.verify(bearer).await?;
+    // Both failure arms log at `warn` with the stable code and nothing else.
+    // "Which token" is never a loggable question — `bearer` is a credential,
+    // and `ApiError::message` is written to be safe here (see error.rs).
+    let subject = match state.token_verifier.verify(bearer).await {
+        Ok(s) => s,
+        Err(e) => {
+            let api: ApiError = e.into();
+            tracing::warn!(
+                ev = "srv.auth.rejected",
+                err_code = api.code,
+                err_kind = "user",
+                retryable = false,
+                status = api.status.as_u16(),
+                "bearer token rejected"
+            );
+            return Err(api);
+        }
+    };
     let account =
-        state
+        match state
             .store
-            .resolve_account(&subject, state.config.allow_signup, state.clock.now_ms())?;
+            .resolve_account(&subject, state.config.allow_signup, state.clock.now_ms())
+        {
+            Ok(a) => a,
+            Err(e) => {
+                let api: ApiError = e.into();
+                tracing::warn!(
+                    ev = "srv.auth.rejected",
+                    err_code = api.code,
+                    err_kind = "user",
+                    retryable = false,
+                    status = api.status.as_u16(),
+                    "account not resolved"
+                );
+                return Err(api);
+            }
+        };
+    tracing::debug!(
+        ev = "srv.auth.ok",
+        account_h = %crate::logging::account_h(&account.account_id),
+        tier = %account.tier,
+        "bearer accepted"
+    );
     Ok((subject, account))
 }
 

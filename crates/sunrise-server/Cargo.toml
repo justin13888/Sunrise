@@ -28,6 +28,7 @@ ciborium = { workspace = true }
 ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
+hex = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-rustls = { workspace = true }
@@ -43,9 +44,11 @@ tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
+sunrise-log = { workspace = true }
 sunrise-onboarding = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 

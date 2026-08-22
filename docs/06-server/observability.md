@@ -17,10 +17,35 @@ Operate the server without violating the E2EE guarantee.
 `account_h` is defined as:
 
 ```
-account_h = BLAKE3(account_id || server_log_salt, 4)   # lowercase hex, 8 chars
+account_h = BLAKE3(account_id)[..4]   # lowercase hex, 8 chars
 ```
 
-`server_log_salt` is generated once at server initialization and persisted under `<data_dir>/log_salt.bin` (mode 0600). Server logs use `account_h` everywhere; **no email-tagged buffer exists** at any point.
+Implemented in `sunrise_server::logging::account_h`; `id_h` is the same
+construction over a raw 16-byte id (`stream_h`, and the relay's per-session
+account namespace). Server logs use these everywhere; **no email-tagged buffer
+exists** at any point.
+
+> **Amended 2026-08.** This section previously specified
+> `BLAKE3(account_id || server_log_salt, 4)`, with `server_log_salt` generated
+> once at initialisation and persisted at `<data_dir>/log_salt.bin` (mode
+> 0600). The salt is **not** implemented, and the omission is deliberate rather
+> than pending.
+>
+> A salt earns its keep when the pre-image space is small enough to enumerate —
+> which is the case for the email addresses [logging.md
+> §6.1](../10-cross-cutting/logging.md#61-email-addresses) was guarding.
+> Sunrise account ids are not that: `Store::resolve_account` mints them as 16
+> random bytes with no relation to the OIDC subject or the email, so a
+> truncated hash has a 2^128 pre-image space and nothing to brute-force back
+> to. The salt's other job — stopping a client-side and a server-side hash of
+> the same account from being joined without operator action — is already done
+> by clients hashing their *own* ids under a device-local salt.
+>
+> **What this gives up:** two servers sharing an account id produce the same
+> `account_h`, where per-server salts would not. In a self-host world that is a
+> non-issue; in a fleet it is a correlation an operator could otherwise have
+> withheld from themselves. **If an id ever becomes derivable from
+> user-supplied input, the salt has to come back** — and so does the file.
 
 ## What we *never* log
 

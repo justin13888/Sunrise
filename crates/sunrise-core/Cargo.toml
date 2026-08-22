@@ -24,6 +24,7 @@ rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }

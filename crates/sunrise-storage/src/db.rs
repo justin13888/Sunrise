@@ -156,14 +156,37 @@ impl Db {
         let binary_v: u32 = u32::from(STORAGE_V);
         if exists == 0 {
             // Fresh DB: apply all migrations in a single transaction.
+            //
+            // Migrations are logged because they are the one storage operation
+            // that can leave a user unable to open their vault at all, and the
+            // failure arrives with no UI to report it through. Nothing here
+            // touches row content: only migration ids, names, and versions.
+            tracing::info!(
+                ev = "db.migrate.start",
+                from_v = 0u64,
+                to_v = u64::from(binary_v),
+                mode = "fresh",
+                "creating schema"
+            );
             let tx = conn.transaction()?;
             for m in MIGRATIONS {
-                tx.execute_batch(m.sql)
-                    .map_err(|source| DbError::Migration {
+                tx.execute_batch(m.sql).map_err(|source| {
+                    tracing::error!(
+                        ev = "db.migrate.failed",
+                        from_v = 0u64,
+                        to_v = u64::from(m.id),
+                        err_code = "DB_MIGRATION_FAILED",
+                        err_kind = "permanent",
+                        retryable = false,
+                        cause = %source,
+                        "migration failed"
+                    );
+                    DbError::Migration {
                         id: m.id,
                         name: m.name,
                         source,
-                    })?;
+                    }
+                })?;
             }
             // Pin the storage version.
             tx.execute(
@@ -171,6 +194,13 @@ impl Db {
                 rusqlite::params![binary_v, 0],
             )?;
             tx.commit()?;
+            tracing::info!(
+                ev = "db.migrate.ok",
+                from_v = 0u64,
+                to_v = u64::from(binary_v),
+                mode = "fresh",
+                "schema created"
+            );
             return Ok(());
         }
         let db_v: u32 =
@@ -182,14 +212,32 @@ impl Db {
             // Existing DB behind this binary: apply every pending migration
             // (id > db_v) in ascending order inside ONE transaction, then pin
             // the storage version to binary_v.
+            tracing::info!(
+                ev = "db.migrate.start",
+                from_v = u64::from(db_v),
+                to_v = u64::from(binary_v),
+                mode = "upgrade",
+                "applying pending migrations"
+            );
             let tx = conn.transaction()?;
             for m in MIGRATIONS.iter().filter(|m| m.id > db_v) {
-                tx.execute_batch(m.sql)
-                    .map_err(|source| DbError::Migration {
+                tx.execute_batch(m.sql).map_err(|source| {
+                    tracing::error!(
+                        ev = "db.migrate.failed",
+                        from_v = u64::from(db_v),
+                        to_v = u64::from(m.id),
+                        err_code = "DB_MIGRATION_FAILED",
+                        err_kind = "permanent",
+                        retryable = false,
+                        cause = %source,
+                        "migration failed"
+                    );
+                    DbError::Migration {
                         id: m.id,
                         name: m.name,
                         source,
-                    })?;
+                    }
+                })?;
             }
             // applied_at_ms stays 0: the storage layer has no injected clock,
             // matching the fresh-DB path which also writes 0.
@@ -198,6 +246,13 @@ impl Db {
                 rusqlite::params![binary_v, 0],
             )?;
             tx.commit()?;
+            tracing::info!(
+                ev = "db.migrate.ok",
+                from_v = u64::from(db_v),
+                to_v = u64::from(binary_v),
+                mode = "upgrade",
+                "migrations applied"
+            );
         }
         Ok(())
     }

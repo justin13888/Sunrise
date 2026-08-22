@@ -37,7 +37,7 @@ client*, which is the only measure that matters to a user.
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
-| `sunrise-log` | 🟧 orphan | No crate calls `sunrise_log::init`, so ADR-0010 and `log-events.md` describe nothing that runs. Two of four documented sinks (`file`, `remote`) do not exist |
+| `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-tui` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
 | `sunrise-pairing` | 🟧 orphan | `snow` is a declared dependency that appears only in a doc comment. There is no Noise handshake anywhere in the workspace |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
 | `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds |

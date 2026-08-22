@@ -33,6 +33,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod logging;
 pub mod metrics;
 pub mod push;
 pub mod relay;
@@ -45,6 +46,7 @@ pub use auth::oidc::{OidcConfig, OidcVerifier};
 pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier};
 pub use config::ServerConfig;
 pub use error::ApiError;
+pub use logging::{account_h, id_h};
 pub use metrics::Metrics;
 pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushRegistration};
 pub use relay::RelayHub;
@@ -67,7 +69,9 @@ use axum::Router;
 ///   memory. The relay's own frames ride the WebSocket and are bounded
 ///   separately by the wire protocol's frame cap.
 /// - **Trace** gives request spans. It must never log the `?access_token=`
-///   query parameter that browsers use in place of an `Authorization` header.
+///   query parameter that browsers use in place of an `Authorization` header,
+///   so it is [`logging::trace_layer`] rather than `TraceLayer::new_for_http`
+///   with stock callbacks — the stock `MakeSpan` records the full URI.
 #[must_use]
 pub fn build_router(state: ServerState) -> Router {
     let origins: Vec<axum::http::HeaderValue> = state
@@ -97,6 +101,6 @@ pub fn build_router(state: ServerState) -> Router {
         .merge(metrics::router())
         .layer(cors)
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_body))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(logging::trace_layer())
         .with_state(state)
 }

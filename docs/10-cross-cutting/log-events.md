@@ -4,23 +4,83 @@ status: living
 
 # Log event catalog
 
-This file catalogs every `ev` value emitted across the workspace. Adding a
-new event name requires a one-line entry here so analysts can `grep` for
-meaning. The per-package ev-catalog snapshot test references this list.
+Every log record carries an `ev` field naming the event. This file is the
+catalogue: adding a new `ev` value requires a one-line entry here so analysts
+can `grep` for meaning.
 
-See [`logging.md`](./logging.md)
-for the structured-record schema and grammar.
+That rule is **enforced**, not aspirational.
+`crates/sunrise-log/tests/event_catalog.rs` scans every `ev = "…"` literal in
+`crates/*/src` and fails if one is missing from this file, or if a name in
+either place violates the grammar in [`logging.md`](./logging.md) §3.
+
+The **Implemented** tables below are what the workspace emits today. The
+**Reserved** tables are names held for surfaces that do not log yet; they are
+a design contract, not a claim about running code, and the catalogue test does
+not require anything to emit them.
+
+See [`logging.md`](./logging.md) for the record schema and grammar, and
+[ADR-0010](../11-adr/0010-logging-strategy.md) for why the transport is
+`tracing`.
 
 ---
 
-## `log` (sunrise-log self events)
+## Implemented
+
+### `srv` — `sunrise-server`
 
 | Event | Level | Meaning |
 |---|---|---|
-| `log.throttled` | warn | Token-bucket rate limit dropped one or more records for an `(ev, lv)` pair. `ctx.n_dropped` carries the count; `ctx.op_kind` is the throttled event name. |
-| `log.bootstrap.late` | error | A log call landed before `sunrise_log::init` ran. (Reserved; not yet emitted by this crate.) |
+| `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
+| `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
+| `srv.start.refused` | error | Config validation failed; the process is exiting rather than serving. |
+| `srv.stop` | info | `axum::serve` returned; listener closed. |
+| `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
+| `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
+| `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
+| `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
+| `srv.ws.connect` | info | `/sync` session negotiated; `account_h`, negotiated `wire_v`/`crypto_v`. |
+| `srv.ws.rejected` | warn | `/sync` handshake failed negotiation; `err_code`. The client sees a closed socket and cannot diagnose this itself. |
+| `srv.ws.disconnect` | info | `/sync` session ended. |
+| `srv.ws.subscribe` | debug | Subscribe frame processed; `n_streams`. |
+| `srv.relay.fanout` | debug | `OpBatch` republished to a channel; `stream_h`, `n_bytes`. The relay never decrypts, so shape is all it can report. |
 
-## `core` (sunrise-core; reserved)
+### `db` — `sunrise-storage`
+
+| Event | Level | Meaning |
+|---|---|---|
+| `db.migrate.start` | info | Schema work beginning; `from_v`, `to_v`, `mode` (`fresh`/`upgrade`). |
+| `db.migrate.ok` | info | Schema at `to_v`. |
+| `db.migrate.failed` | error | A migration statement failed; `from_v`, `to_v`, `err_code`, `cause`. The one storage failure that leaves a user unable to open a vault at all. |
+
+### `sync` — `sunrise-core::sync_driver`, `sunrise-tui::livesync`
+
+| Event | Level | Meaning |
+|---|---|---|
+| `sync.session.opening` | info | Sync driver started against a relay; `relay` (host only). |
+| `sync.session.opened` | info | Every subscribed stream caught up and the outbox drained — the driver is `Live`; `n_streams`. |
+| `sync.session.closed` | info | Session ended; `result` distinguishes a clean shutdown from a drop. |
+| `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |
+| `sync.session.off` | info | No relay configured; running offline. |
+| `sync.backoff` | debug | Waiting before reconnect; `attempt`, `delay_ms`. A reconnect storm is visible as a run of these. |
+
+### `ui` — `sunrise-tui`
+
+| Event | Level | Meaning |
+|---|---|---|
+| `ui.start` | info | TUI starting; `app_v` and the protocol versions. |
+| `ui.keymap.invalid` | warn | `keys.toml` entries were ignored; `n_ops` counts them. The file itself is right there to read, so the log records how many, not which. |
+| `ui.pair.cert_exported` | info/warn | Dev cert export step of the two-terminal demo; `result`. Never the path. |
+| `ui.pair.peer_trusted` | info/warn | Dev peer-trust step; `result`, `err_code` on failure. |
+
+---
+
+## Reserved
+
+These names are held for surfaces that do not emit yet. They stay here because
+the shape of what those surfaces should say has been decided; nothing enforces
+them until code uses them.
+
+### `core` (sunrise-core)
 
 | Event | Level | Meaning |
 |---|---|---|
@@ -37,27 +97,29 @@ for the structured-record schema and grammar.
 | `core.shutdown.start` | info | Shutdown initiated. |
 | `core.shutdown.ok` | info | Shutdown complete. |
 
-## `crypto` (sunrise-crypto; reserved)
+### `crypto` (sunrise-crypto)
+
+Deliberately unimplemented in v1. Per-envelope logging in the crypto path is
+the highest-risk, lowest-yield instrumentation in the workspace: it sits in the
+hot loop, and every field it could add is either a constant or one refactor
+away from being a plaintext handle.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `crypto.kdf.start` | debug | KDF run started; `ctx.lat_ms` on the matching ok. |
+| `crypto.kdf.start` | debug | KDF run started; `lat_ms` on the matching ok. |
 | `crypto.kdf.ok` | debug | KDF run completed. |
 | `crypto.envelope.encrypt` | debug | Op envelope sealed. |
 | `crypto.envelope.decrypt` | debug | Op envelope opened. |
-| `crypto.envelope.reject` | warn | Envelope rejected; `err.code` carries reason (e.g. `CRYPTO_AAD_MISMATCH`, `CRYPTO_NON_CANONICAL_CBOR`). |
-| `crypto.rotate.start` | info | Stream/device/identity key rotation started. |
+| `crypto.envelope.reject` | warn | Envelope rejected; `err_code` carries the reason. |
+| `crypto.rotate.start` | info | Key rotation started. |
 | `crypto.rotate.complete` | info | Rotation finished. |
 | `crypto.sig.verify.failed` | warn | Signature verification failed. |
 
-## `db` (sunrise-storage; reserved)
+### `db` / `blob` / `compact` (sunrise-storage, beyond migrations)
 
 | Event | Level | Meaning |
 |---|---|---|
-| `db.migrate.start` | info | Schema migration begin; `ctx.from_v`/`to_v`. |
-| `db.migrate.ok` | info | Schema migration complete. |
-| `db.migrate.failed` | error | Schema migration failed. |
-| `db.tx.commit` | debug | Transaction committed; `ctx.lat_ms`. |
+| `db.tx.commit` | debug | Transaction committed; `lat_ms`. |
 | `db.tx.rollback` | debug | Transaction rolled back. |
 | `db.query.slow` | warn | Query exceeded budget. |
 | `blob.upload.start` | debug | Blob upload begin. |
@@ -70,14 +132,10 @@ for the structured-record schema and grammar.
 | `compact.ok` | info | Compaction complete. |
 | `compact.failed` | error | Compaction failed. |
 
-## `sync` (sunrise-sync; reserved)
+### `sync` (frame-level)
 
 | Event | Level | Meaning |
 |---|---|---|
-| `sync.session.opening` | debug | Sync session opening. |
-| `sync.session.opened` | info | Sync session live. |
-| `sync.session.closed` | info | Sync session closed cleanly. |
-| `sync.session.error` | warn | Sync session terminated with error. |
 | `sync.frame.recv` | debug | Wire frame received. |
 | `sync.frame.send` | debug | Wire frame sent. |
 | `sync.batch.applied` | debug | Op batch applied. |
@@ -85,35 +143,38 @@ for the structured-record schema and grammar.
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
 | `sync.transport.fallback` | warn | Reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005). |
-| `sync.backoff` | warn | Entered exponential backoff. |
 
-## `srv` (sunrise-server; reserved)
+### `srv` (quota and push)
+
+Unimplemented because the features are: there is no quota enforcement and the
+only push provider is `LoggingProvider`, which increments a metric.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `srv.req.start` | debug | HTTP request begin. |
-| `srv.req.end` | debug | HTTP request end; `ctx.lat_ms`, `ctx.status`, `ctx.endpoint`. |
-| `srv.ws.connect` | info | WebSocket connection opened. |
-| `srv.ws.disconnect` | info | WebSocket connection closed. |
-| `srv.auth.ok` | debug | OIDC auth accepted. |
-| `srv.auth.rejected` | warn | OIDC auth rejected. |
 | `srv.quota.warning` | warn | Quota soft cap reached. |
 | `srv.quota.exceeded` | warn | Quota hard cap exceeded. |
-| `srv.relay.fanout` | debug | Op fanned out to peers. |
-| `srv.push.send.ok` | info | Push delivered. |
+| `srv.push.send.ok` | info | Push delivered; `provider`, `n_devices`. |
 | `srv.push.send.failed` | warn | Push delivery failed. |
 
-## `ui` (clients; reserved)
+### `ui` (interaction)
+
+Per-interaction UI logging is deliberately absent. `ui.input.lat` and
+`ui.action` fire on the keystroke path of a full-screen app whose log is a file
+on the user's own disk; the cost is real and the debugging value is close to
+zero, because the reducer (`sunrise_tui::runtime::apply_action`) is a pure
+function that unit-tests without any of it.
 
 | Event | Level | Meaning |
 |---|---|---|
 | `ui.view.open` | info | View opened (no entity content). |
 | `ui.view.close` | info | View closed. |
-| `ui.action` | info | User action; `ctx.action_kind`. |
+| `ui.action` | info | User action; `action_kind`. |
 | `ui.error.shown` | warn | User-facing error toast displayed. |
 | `ui.input.lat` | debug | Keystroke-to-paint latency sample. |
 
-## `int` (integrations; reserved)
+### `int` (sunrise-integrations)
+
+No provider is wired in v1.
 
 | Event | Level | Meaning |
 |---|---|---|

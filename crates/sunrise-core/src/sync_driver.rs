@@ -261,14 +261,29 @@ pub(crate) async fn run(
             () = shared.shutdown_notified() => break,
             res = connect_fut => res,
         };
-        let transport = if let Ok(t) = connected {
-            backoff.reset();
-            t
-        } else {
-            if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
-                break;
+        let transport = match connected {
+            Ok(t) => {
+                backoff.reset();
+                t
             }
-            continue;
+            Err(e) => {
+                // "The client isn't syncing" is the single most common
+                // support question, and this is the line that answers it:
+                // the relay is unreachable, here is what the socket said.
+                tracing::warn!(
+                    ev = "sync.session.error",
+                    err_code = "SYNC_CONNECT_FAILED",
+                    err_kind = "transient",
+                    retryable = true,
+                    result = "failed",
+                    cause = %e,
+                    "relay connect failed"
+                );
+                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+                    break;
+                }
+                continue;
+            }
         };
 
         // A session needs the Core alive; if it's gone, stop.
@@ -276,6 +291,14 @@ pub(crate) async fn run(
         let end = session(&core, &shared, transport).await;
         drop(core);
         shared.set_state(SyncState::Disconnected);
+        tracing::info!(
+            ev = "sync.session.closed",
+            result = match end {
+                SessionEnd::Shutdown => "ok",
+                SessionEnd::Disconnected => "failed",
+            },
+            "sync session ended"
+        );
         match end {
             SessionEnd::Shutdown => break,
             SessionEnd::Disconnected => {
@@ -303,6 +326,12 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
         backoff.reset();
         Duration::from_millis(30_000)
     };
+    tracing::debug!(
+        ev = "sync.backoff",
+        attempt = u64::from(backoff.attempt()),
+        delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+        "waiting before reconnect"
+    );
     tokio::select! {
         biased;
         () = shared.shutdown_notified() => false,
@@ -590,6 +619,15 @@ fn maybe_live(
     let pending = core.sync_pending().unwrap_or(0);
     if pending == 0 && subscribed.iter().all(|s| caught_up.contains(s)) {
         shared.set_state(SyncState::Live);
+        // `Live` is the state a user cares about ("am I synced?"), and it is
+        // the only one the driver reaches by *inference* rather than by a
+        // wire event — so it is worth a line saying what the inference was
+        // over.
+        tracing::info!(
+            ev = "sync.session.opened",
+            n_streams = subscribed.len() as u64,
+            "sync session live"
+        );
     }
 }
 

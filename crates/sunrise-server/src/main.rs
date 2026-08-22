@@ -6,17 +6,24 @@
 //!
 //! v1 self-host scope: REST endpoints + (deferred) WebSocket relay.
 //! Configuration via TOML; defaults bind 127.0.0.1:8443.
-
-// Binary may print startup banner on stderr — sanctioned for the
-// self-host CLI entry. Production deployments use the structured
-// logging surface for everything else (Phase 17 wires it up).
-#![allow(clippy::print_stderr)]
+//!
+//! Logging is installed first, before anything that could want to log. A
+//! server's output is something an ingest pipeline parses, so it is NDJSON on
+//! stderr; `SUNRISE_LOG` tunes verbosity and `SUNRISE_LOG_FORMAT=pretty`
+//! switches to a human line in dev builds. See
+//! `docs/10-cross-cutting/logging.md` §10.
 
 use std::sync::Arc;
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
+use sunrise_log::ProtoVersions;
 use sunrise_server::{build_router, config::ServerConfig, state::ServerState, OidcVerifier};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First statement in the process: everything below this line can log, and
+    // nothing above it needs to.
+    sunrise_log::init_stderr()?;
+
     let cfg = ServerConfig::default();
     let bind = cfg.bind.clone();
 
@@ -33,18 +40,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // namespace to the network, so we refuse to start rather than serving and
     // leaking.
     let single_tenant = state.is_single_tenant();
-    state.config.validate(single_tenant)?;
+    if let Err(e) = state.config.validate(single_tenant) {
+        tracing::error!(
+            ev = "srv.start.refused",
+            err_code = "CONFIG_INVALID",
+            err_kind = "permanent",
+            retryable = false,
+            cause = %e,
+            "refusing to start"
+        );
+        return Err(e.into());
+    }
 
     let app = build_router(state);
 
-    eprintln!("sunrise-server listening on {bind}");
+    // The protocol versions ride the startup line rather than every record —
+    // see `sunrise_log::proto` for why that trade was made. Both binaries
+    // report them through the same struct so the two startup records have the
+    // same shape.
+    let proto = ProtoVersions::new(WIRE_PROTO_V, DOC_SCHEMA_V, CRYPTO_SUITE_V);
+    tracing::info!(
+        ev = "srv.start",
+        bind = %bind,
+        mode = if single_tenant { "single_tenant" } else { "multi_tenant" },
+        app_v = env!("CARGO_PKG_VERSION"),
+        wire_v = u64::from(proto.wire),
+        doc_v = u64::from(proto.doc),
+        crypto_v = u64::from(proto.crypto),
+        "sunrise-server listening"
+    );
     if single_tenant {
-        eprintln!(
-            "sunrise-server: SELF-HOST MODE — every connection maps to one account. \
-             Loopback only; configure an OIDC issuer for multi-user use."
+        tracing::warn!(
+            ev = "srv.start.single_tenant",
+            mode = "single_tenant",
+            "every connection maps to one account; loopback only, configure an OIDC issuer for multi-user use"
         );
     }
+
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, app).await?;
+
+    tracing::info!(ev = "srv.stop", "listener closed");
     Ok(())
 }

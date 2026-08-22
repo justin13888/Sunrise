@@ -7,23 +7,22 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Layered NDJSON logging contract with redaction-safe Plain<T> wrappers"
+description = "Redaction layer and subscriber bootstrap for tracing-based Sunrise logging"
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 parking_lot = { workspace = true }
-once_cell = { workspace = true }
-arc-swap = { workspace = true }
 thiserror = { workspace = true }
-blake3 = { workspace = true }
-hex = { workspace = true }
 zeroize = { workspace = true }
-smallvec = { workspace = true }
+# The sanctioned wall-clock read for log timestamps; see `src/time.rs` for why
+# this crate is exempt from the injected-`Clock` rule.
+jiff = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 serde_json = { workspace = true }
+jsonschema = { workspace = true }
