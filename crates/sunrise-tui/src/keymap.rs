@@ -504,7 +504,7 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Char('x'),
         Scope::Any,
         Action::Toggle,
-        Some(("x / Space", "toggle done")),
+        Some(("x", "toggle done / reopen")),
     ),
     b(
         Mode::Normal,

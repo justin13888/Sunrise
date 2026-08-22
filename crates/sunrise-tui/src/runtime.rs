@@ -222,8 +222,8 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 return Outcome::None;
             }
             let label = state.operand_label();
-            let cmds: Vec<Command> = ids.into_iter().map(Command::CompleteTask).collect();
-            finish_operator(state, "completed", &label);
+            let (cmds, verb) = toggle_cmds(state, &ids);
+            finish_operator(state, verb, &label);
             Outcome::submit_all(cmds)
         }
         Action::Capture => {
@@ -465,6 +465,53 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
+    }
+}
+
+/// Turn a toggle into the commands it means for `ids`.
+///
+/// `x` is documented as **toggle done**, and until now it only ever completed:
+/// pressing it on a finished task re-sent `CompleteTask`, which the core
+/// accepts as a no-op, so the key silently did nothing and there was no way at
+/// all to re-open a task from the TUI. A user who ticks the wrong row had to
+/// leave the app.
+///
+/// Reopening goes through `TaskPatch.state` rather than a dedicated command
+/// because the core has no `ReopenTask`, and `Todo` (not `InProgress`) is the
+/// destination: the task is back on the list, and how far along it is is a
+/// separate claim the user can make themselves.
+///
+/// A mixed selection resolves in the direction of the majority verb rather
+/// than flipping each row independently: `x` over a run that is half done
+/// should finish the run, not invert it into a half-open one.
+fn toggle_cmds(state: &ViewState, ids: &[EntityRef]) -> (Vec<Command>, &'static str) {
+    use sunrise_domain::TaskState;
+    let is_done = |id: &EntityRef| {
+        state
+            .tasks
+            .iter()
+            .find(|t| t.id == *id)
+            .or(state.focused_task.as_ref().filter(|t| t.id == *id))
+            .is_some_and(|t| t.state == TaskState::Done)
+    };
+    let done = ids.iter().filter(|id| is_done(id)).count();
+    if done * 2 > ids.len() {
+        let cmds = ids
+            .iter()
+            .map(|id| Command::UpdateTask {
+                id: *id,
+                patch: TaskPatch {
+                    state: Some(TaskState::Todo),
+                    ..Default::default()
+                },
+            })
+            .collect();
+        (cmds, "reopened")
+    } else {
+        (
+            ids.iter().copied().map(Command::CompleteTask).collect(),
+            "completed",
+        )
     }
 }
 
@@ -1072,6 +1119,44 @@ manual"
                 other => panic!("expected CompleteTask, got {other:?}"),
             },
             other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toggle_reopens_a_completed_task() {
+        use sunrise_domain::TaskState;
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        let i = s.selected.expect("a selection");
+        s.tasks[i].state = TaskState::Done;
+        match press(&mut s, KeyCode::Char('x')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id: got, patch } => {
+                    assert_eq!(got, id);
+                    assert_eq!(patch.state, Some(TaskState::Todo));
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(s.status.contains("reopened"));
+    }
+
+    #[test]
+    fn a_mixed_run_finishes_rather_than_inverting() {
+        use sunrise_domain::TaskState;
+        let mut s = inbox_state();
+        s.tasks[0].state = TaskState::Done;
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        match press(&mut s, KeyCode::Char('x')) {
+            Outcome::SubmitMany(cmds) => {
+                assert_eq!(cmds.len(), 3);
+                assert!(cmds.iter().all(|c| matches!(c, Command::CompleteTask(_))));
+            }
+            other => panic!("expected SubmitMany, got {other:?}"),
         }
     }
 
