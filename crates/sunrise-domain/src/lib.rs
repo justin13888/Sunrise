@@ -20,6 +20,7 @@
 
 pub mod attachment;
 pub mod block;
+pub mod capture;
 pub mod common;
 pub mod constraint;
 pub mod context;

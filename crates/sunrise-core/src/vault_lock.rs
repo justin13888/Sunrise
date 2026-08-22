@@ -366,7 +366,11 @@ mod tests {
                 let hold = Arc::clone(&hold);
                 std::thread::spawn(move || {
                     start.wait();
-                    let guard = VaultLock::acquire(&path, u32::try_from(i).unwrap(), "2026-05-08T12:00:00Z");
+                    let guard = VaultLock::acquire(
+                        &path,
+                        u32::try_from(i).unwrap(),
+                        "2026-05-08T12:00:00Z",
+                    );
                     let won = guard.is_ok();
                     // Keep any acquired lock alive until every thread has had
                     // its turn, then release.
