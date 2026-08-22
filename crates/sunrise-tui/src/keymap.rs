@@ -156,6 +156,10 @@ pub enum Action {
     CompleteCommand,
     /// Walk the `:` history: `-1` older, `1` newer.
     RecallHistory(i8),
+    /// A click resolved to a target ([`crate::hit::Hit`]). Never produced by a
+    /// key: the mouse is the only source, and it goes through the same reducer
+    /// so a click and a keypress cannot diverge.
+    Click(crate::hit::Hit),
     /// Make the marked tasks block the one under the cursor (`b`).
     LinkBlockers,
     /// Clear the selection's blockers (`B`).
@@ -284,6 +288,7 @@ impl Action {
             Self::CompleteCommand => "complete_command",
             Self::RecallHistory(n) if *n < 0 => "history_prev",
             Self::RecallHistory(_) => "history_next",
+            Self::Click(_) => "click",
             Self::LinkBlockers => "link_blockers",
             Self::ClearBlockers => "clear_blockers",
             Self::Undo => "undo",

@@ -12,7 +12,7 @@ use crate::capture::{now_ts, parse_line, preview_line, unresolved_note};
 use crate::command::parse_command;
 use crate::edit::parse_edit;
 use crate::keymap::{Action, Mode};
-use crate::view::{DeleteTarget, Prompt, SidebarRow, View, ViewState};
+use crate::view::{DeleteTarget, Prompt, SidebarRow, StreamPane, View, ViewState};
 use crate::{apply_command, AppEffect};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -558,6 +558,7 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.recall_history(d);
             Outcome::None
         }
+        Action::Click(hit) => apply_click(state, hit),
         Action::LinkBlockers => link_blockers(state),
         Action::ClearBlockers => clear_blockers(state),
         Action::ShowActivity => match activity_target(state) {
@@ -806,6 +807,51 @@ fn redo_step(state: &mut ViewState) -> Outcome {
     // stack: walking forward must not destroy the rest of the forward history.
     state.undo.push(entry.flipped());
     Outcome::submit_all(cmds)
+}
+
+/// Move the cursor to whatever was clicked.
+///
+/// A click only ever *selects*. It never completes, opens or deletes: a mouse
+/// in a terminal is imprecise — cell-sized targets, no hover feedback, a
+/// scroll wheel that can arrive as a click on some multiplexers — and a
+/// gesture that mutates on a single imprecise press is a gesture that will
+/// eventually mutate the wrong row. The keyboard stays the only way to act.
+fn apply_click(state: &mut ViewState, hit: crate::hit::Hit) -> Outcome {
+    use crate::hit::Hit;
+    match hit {
+        Hit::Tab(view) => {
+            state.switch_view(view);
+            Outcome::Refresh
+        }
+        Hit::TaskRow(row) => {
+            if state.view == View::Stream {
+                state.focus_pane(StreamPane::Tasks);
+            }
+            // Clamped, not wrapped: clicking past the last row means the empty
+            // space below it, and jumping to row 0 would be a surprise.
+            if state.tasks.is_empty() {
+                return Outcome::None;
+            }
+            state.selected = Some(row.min(state.tasks.len() - 1));
+            Outcome::None
+        }
+        Hit::StreamRow(row) => {
+            if state.streams.is_empty() {
+                return Outcome::None;
+            }
+            state.focus_pane(StreamPane::Streams);
+            state.selected_stream = Some(row.min(state.streams.len() - 1));
+            after_nav(state)
+        }
+        Hit::ContextRow(row) => {
+            if state.contexts.is_empty() {
+                return Outcome::None;
+            }
+            state.focus_pane(StreamPane::Contexts);
+            state.selected_context = Some(row.min(state.contexts.len() - 1));
+            after_nav(state)
+        }
+    }
 }
 
 /// Make the marked tasks block the one under the cursor.
@@ -2611,6 +2657,66 @@ manual"
             let _ = press(&mut s, KeyCode::Enter);
         }
         assert_eq!(s.cmd_history, vec!["view today".to_string()]);
+    }
+
+    #[test]
+    fn a_click_only_ever_moves_the_cursor() {
+        // A mouse in a terminal is imprecise — cell targets, no hover, and a
+        // wheel that some multiplexers deliver as a click. A gesture that
+        // mutates on one imprecise press will eventually hit the wrong row.
+        use crate::hit::Hit;
+        let mut s = inbox_state();
+        assert!(matches!(
+            apply_action(Action::Click(Hit::TaskRow(2)), &mut s, NOW_MS),
+            Outcome::None
+        ));
+        assert_eq!(s.selected, Some(2));
+        assert_eq!(s.tasks[2].state, sunrise_domain::TaskState::Todo);
+    }
+
+    #[test]
+    fn a_click_past_the_last_row_clamps_rather_than_wrapping() {
+        use crate::hit::Hit;
+        let mut s = inbox_state();
+        let _ = apply_action(Action::Click(Hit::TaskRow(99)), &mut s, NOW_MS);
+        assert_eq!(s.selected, Some(s.tasks.len() - 1));
+    }
+
+    #[test]
+    fn clicking_a_tab_switches_view() {
+        use crate::hit::Hit;
+        let mut s = inbox_state();
+        assert!(matches!(
+            apply_action(Action::Click(Hit::Tab(View::Routines)), &mut s, NOW_MS),
+            Outcome::Refresh
+        ));
+        assert_eq!(s.view, View::Routines);
+    }
+
+    #[test]
+    fn clicking_a_sidebar_row_focuses_its_pane_and_retargets() {
+        use crate::hit::Hit;
+        let mut s = browse_state();
+        s.pane = StreamPane::Tasks;
+        assert!(matches!(
+            apply_action(Action::Click(Hit::ContextRow(1)), &mut s, NOW_MS),
+            Outcome::Refresh
+        ));
+        assert_eq!(s.pane, StreamPane::Contexts);
+        assert_eq!(s.selected_context, Some(1));
+        assert_eq!(
+            s.browse_target(),
+            Some(crate::BrowseTarget::Context(s.contexts[1].id))
+        );
+    }
+
+    #[test]
+    fn clicking_an_empty_list_does_nothing() {
+        use crate::hit::Hit;
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        let _ = apply_action(Action::Click(Hit::TaskRow(0)), &mut s, NOW_MS);
+        assert_eq!(s.selected, None);
     }
 
     #[test]

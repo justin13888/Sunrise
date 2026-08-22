@@ -88,6 +88,15 @@ fn render_chrome(
             Constraint::Length(1),            // status line
         ])
         .split(area);
+    // The mouse resolves clicks against `hit::layout`, which describes this
+    // same split. Asserted rather than commented: two copies of a layout drift
+    // the first time a row moves, and the failure is silent — clicks land one
+    // row off and the user blames the mouse.
+    debug_assert_eq!(
+        crate::hit::layout(area, state.capture_preview.is_some()).body,
+        chunks[1],
+        "hit::layout has drifted from render_chrome"
+    );
     render_tab_bar(f, chunks[0], state);
     if state.triage {
         render_triage(f, chunks[1], state);
@@ -166,27 +175,23 @@ fn render_too_small(f: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_tab_bar(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
-    let make = |label: &str, view: View, key: char| {
-        let style = if view == state.view {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        Span::styled(format!(" {key}:{label} "), style)
-    };
-    let line = Line::from(vec![
-        make("Today", View::Today, '1'),
-        make("Inbox", View::Inbox, '2'),
-        make("Stream", View::Stream, '3'),
-        make("Search", View::Search, '4'),
-        make("Focus", View::Focus, '5'),
-        make("Routines", View::Routines, '6'),
-        make("Review", View::Review, '7'),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    // Drawn from `hit::TABS`, which is also what a click is resolved against,
+    // so a renamed or reordered tab moves its clickable columns with it.
+    let spans: Vec<Span<'_>> = crate::hit::TABS
+        .iter()
+        .map(|(label, view, key)| {
+            let style = if *view == state.view {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            Span::styled(format!(" {key}:{label} "), style)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {

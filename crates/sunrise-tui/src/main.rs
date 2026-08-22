@@ -41,7 +41,10 @@
 )]
 
 use crossterm::event::{self, Event, KeyEventKind};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    MouseButton, MouseEventKind,
+};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -152,12 +155,29 @@ fn setup() -> Result<Tty, Box<dyn std::error::Error>> {
     // paste into the wrong pane deletes tasks. Terminals that do not support
     // it ignore the sequence, so the failure mode is the old behaviour.
     stdout.execute(EnableBracketedPaste)?;
+    // Mouse capture is **opt-in** (`SUNRISE_MOUSE=1`). Capturing steals the
+    // terminal's own selection and copy, which is a bad trade to force on a
+    // client whose users live in tmux and copy text out of panes all day —
+    // and `docs/07-clients/tui.md` makes mouse support optional and insists
+    // the TUI works without it.
+    if mouse_enabled() {
+        stdout.execute(EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     Ok(Terminal::new(backend)?)
 }
 
+/// Whether to capture the mouse. Off unless `SUNRISE_MOUSE` is set to
+/// something other than `0`.
+fn mouse_enabled() -> bool {
+    std::env::var("SUNRISE_MOUSE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
 fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     disable_raw_mode()?;
+    if mouse_enabled() {
+        term.backend_mut().execute(DisableMouseCapture)?;
+    }
     term.backend_mut().execute(DisableBracketedPaste)?;
     term.backend_mut().execute(LeaveAlternateScreen)?;
     term.show_cursor()?;
@@ -172,6 +192,9 @@ fn resume(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     term.backend_mut().execute(EnterAlternateScreen)?;
     term.backend_mut().execute(EnableBracketedPaste)?;
+    if mouse_enabled() {
+        term.backend_mut().execute(EnableMouseCapture)?;
+    }
     term.hide_cursor()?;
     term.clear()?;
     Ok(())
@@ -359,6 +382,28 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                         }
                         continue;
                     }
+                }
+            }
+            Event::Mouse(m) => {
+                let area = term.size()?;
+                let area = ratatui::layout::Rect {
+                    x: 0,
+                    y: 0,
+                    width: area.width,
+                    height: area.height,
+                };
+                match m.kind {
+                    // The wheel drives the same cursor keys, so scrolling a
+                    // list and pressing `j` cannot diverge.
+                    MouseEventKind::ScrollDown => keymap::Action::Next,
+                    MouseEventKind::ScrollUp => keymap::Action::Prev,
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        match sunrise_tui::hit(area, &state, m.column, m.row) {
+                            Some(h) => keymap::Action::Click(h),
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
                 }
             }
             // Resize (and everything else) just falls through to the redraw
@@ -991,6 +1036,8 @@ CAPTURE SYNTAX:
 ENVIRONMENT:
     SUNRISE_VAULT      vault directory (default ~/.sunrise/vault)
     SUNRISE_SYNC_URL   relay endpoint; unset means fully offline
+    SUNRISE_MOUSE      set to 1 to capture the mouse (off by default, because
+                       capturing steals the terminal's own text selection)
 
 FILES:
     ~/.config/sunrise/keys.toml   optional key overrides, one `action = \"key\"`

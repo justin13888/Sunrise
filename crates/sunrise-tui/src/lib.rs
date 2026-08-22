@@ -58,6 +58,7 @@ pub mod command;
 pub mod edit;
 pub mod editor;
 #[cfg(feature = "images")]
+pub mod hit;
 pub mod images;
 pub mod input;
 pub mod keymap;
@@ -72,6 +73,7 @@ pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd, FocusCmd, COMMANDS};
 pub use edit::{parse_edit, EditError, TaskEdit};
 pub use editor::{edit_bytes, resolve_editor, EditorExit};
+pub use hit::{hit, Hit};
 pub use input::InputLine;
 pub use keymap::{
     dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
