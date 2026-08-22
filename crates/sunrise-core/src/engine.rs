@@ -1336,22 +1336,47 @@ impl Engine {
         &self,
         db: &Db,
         now_ms: u64,
-        _contexts: &[EntityRef],
+        contexts: &[EntityRef],
     ) -> Result<QueryResult, EngineError> {
         // Today = (a) tasks scheduled within today's local-day window OR
         //         (b) tasks due_at <= now + 24h, AND not done/deleted.
         // For v1 we use a simple rolling 24h window forward from `now_ms`.
         let window_end = now_ms.saturating_add(24 * 60 * 60 * 1000);
-        let mut stmt = db.conn().prepare(
+
+        // `contexts` is an OR-set filter per docs/02-domain/contexts-and-tags.md:
+        // an empty slice means "no filter", and a non-empty one keeps tasks
+        // carrying at least one of the named contexts. The placeholders are
+        // generated from the slice length and every value is still bound, so
+        // no caller-controlled bytes reach the SQL text.
+        let ctx_clause = if contexts.is_empty() {
+            String::new()
+        } else {
+            let placeholders = std::iter::repeat_n("?", contexts.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                " AND EXISTS (SELECT 1 FROM task_contexts tc
+                              WHERE tc.task_id = tasks.id
+                                AND tc.context_id IN ({placeholders}))"
+            )
+        };
+        let sql = format!(
             "SELECT id FROM tasks
              WHERE deleted = 0 AND archived = 0
                AND state != 'done' AND state != 'cancelled'
                AND ((scheduled_at_ms IS NOT NULL AND scheduled_at_ms <= ?)
-                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?))
-             ORDER BY COALESCE(scheduled_at_ms, due_at_ms) ASC",
-        )?;
+                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?)){ctx_clause}
+             ORDER BY COALESCE(scheduled_at_ms, due_at_ms) ASC"
+        );
+        let mut stmt = db.conn().prepare(&sql)?;
+
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(window_end), Box::new(window_end)];
+        for c in contexts {
+            bound.push(Box::new(c.bytes().to_vec()));
+        }
         let ids = stmt
-            .query_map(params![window_end, window_end], |row| {
+            .query_map(rusqlite::params_from_iter(bound.iter()), |row| {
                 let id: Vec<u8> = row.get(0)?;
                 Ok(id)
             })?
@@ -3099,6 +3124,93 @@ mod tests {
         let titles: Vec<_> = tasks.iter().map(|t| t.title.clone()).collect();
         assert!(titles.contains(&"soon".to_string()));
         assert!(!titles.contains(&"far".to_string()));
+    }
+
+    #[test]
+    fn today_query_filters_by_context() {
+        // `Query::Today`'s `contexts` field used to be bound to `_contexts` and
+        // dropped on the floor, so callers got an unfiltered list back with no
+        // error. Assert the filter is honoured in all three modes: empty slice
+        // means no filter, a matching context narrows, and a non-matching one
+        // excludes.
+        let mut db = db();
+        let e = engine();
+        let now = 1_700_000_000_000u64;
+        let due_soon = ms_to_ts((now + 3_600_000) as i64);
+
+        let home = EntityRef::new(EntityKind::Context, [0xA1; 16]);
+        let work = EntityRef::new(EntityKind::Context, [0xB2; 16]);
+
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "at home".into(),
+                due_at: Some(due_soon),
+                contexts: vec![home],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "at work".into(),
+                due_at: Some(due_soon),
+                contexts: vec![work],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "anywhere".into(),
+                due_at: Some(due_soon),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let titles = |contexts: Vec<EntityRef>| -> Vec<String> {
+            match e
+                .query(
+                    &db,
+                    Query::Today {
+                        now_ms: now,
+                        contexts,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::Tasks(v) => v.iter().map(|t| t.title.clone()).collect(),
+                _ => panic!("expected Tasks"),
+            }
+        };
+
+        // No filter: everything in the window.
+        let all = titles(vec![]);
+        assert_eq!(
+            all.len(),
+            3,
+            "unfiltered Today should return all 3: {all:?}"
+        );
+
+        // Single context: only the task carrying it.
+        let only_home = titles(vec![home]);
+        assert_eq!(only_home, vec!["at home".to_string()]);
+
+        // Multiple contexts are an OR-set, and a context-less task is excluded
+        // by any non-empty filter.
+        let mut both = titles(vec![home, work]);
+        both.sort();
+        assert_eq!(both, vec!["at home".to_string(), "at work".to_string()]);
+
+        // A context nothing carries yields nothing — not everything.
+        let unused = EntityRef::new(EntityKind::Context, [0xC3; 16]);
+        assert!(
+            titles(vec![unused]).is_empty(),
+            "an unmatched context must exclude, not fall through to unfiltered"
+        );
     }
 
     #[test]
