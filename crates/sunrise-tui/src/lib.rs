@@ -15,6 +15,8 @@
 //!   ([`capture`]) — `#stream @context ^when !priority ~duration`.
 //! - Visual (multi-select) and Inbox triage modes, both driven by the same
 //!   reducer, so bulk operations are one testable command list.
+//! - A real single-line editor behind every prompt ([`input::InputLine`]):
+//!   caret motions, word motions, the readline chords, and bracketed paste.
 //! - User key remapping from `~/.config/sunrise/keys.toml` ([`keymap::Keymap`]).
 //! - Note-body editing in `$EDITOR` ([`editor`]).
 //! - Snapshot-testable Ratatui renderers for every primary view, behind an
@@ -48,6 +50,7 @@ pub mod command;
 pub mod editor;
 #[cfg(feature = "images")]
 pub mod images;
+pub mod input;
 pub mod keymap;
 pub mod livesync;
 pub mod render;
@@ -57,6 +60,7 @@ pub mod view;
 pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd, FocusCmd};
 pub use editor::{edit_bytes, resolve_editor, EditorExit};
+pub use input::InputLine;
 pub use keymap::{
     dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
 };

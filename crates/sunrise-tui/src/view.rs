@@ -1,5 +1,6 @@
 //! View enum + view-state.
 
+use crate::input::InputLine;
 use crate::keymap::{Keymap, Mode};
 use jiff::Timestamp;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
@@ -523,8 +524,8 @@ pub struct ViewState {
     pub focused_task: Option<Task>,
     /// View to return to when Focus is closed with Esc.
     pub prev_view: Option<View>,
-    /// Active text input (capture buffer / search query).
-    pub input: String,
+    /// Active text input (capture buffer / search query), with its caret.
+    pub input: InputLine,
     /// One-line status / error displayed at the bottom of every view.
     pub status: String,
     /// Live-sync indicator shown on the right of the status line. `None` hides
@@ -587,7 +588,7 @@ impl Default for ViewState {
             pane: StreamPane::Streams,
             focused_task: None,
             prev_view: None,
-            input: String::new(),
+            input: InputLine::new(),
             status: String::new(),
             sync: None,
             routines: Vec::new(),

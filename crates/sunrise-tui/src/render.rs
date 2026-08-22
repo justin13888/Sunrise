@@ -196,17 +196,11 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         // Command-line entry mirrors vim: the buffer shows after a `:`.
         Mode::Command => {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!(":{}", state.input),
-                Style::default().fg(Color::White),
-            ));
+            spans.extend(input_spans(state, ":"));
         }
         Mode::Insert => {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("> {}", state.input),
-                Style::default().fg(Color::White),
-            ));
+            spans.extend(input_spans(state, "> "));
         }
         // Visual mode says how much is selected, so a bulk operator is never a
         // surprise about *how many*.
@@ -247,6 +241,36 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     } else {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+/// The active input line, drawn with a visible block caret.
+///
+/// A caret the user cannot see is the same as no caret at all, and the status
+/// line has no room for a real terminal cursor to be parked in (the sync
+/// indicator owns the right-hand column, and the prompt moves between the
+/// status line and the search bar). So the character under the caret is drawn
+/// reversed, and an end-of-line caret becomes a reversed space.
+fn input_spans(state: &ViewState, prefix: &str) -> Vec<Span<'static>> {
+    let text = state.input.text();
+    let at = state.input.cursor();
+    let caret = Style::default().add_modifier(Modifier::REVERSED);
+    let plain = Style::default().fg(Color::White);
+    let mut spans = vec![Span::styled(prefix.to_string(), plain)];
+    let (head, rest) = text.split_at(at);
+    if !head.is_empty() {
+        spans.push(Span::styled(head.to_string(), plain));
+    }
+    match rest.chars().next() {
+        Some(c) => {
+            spans.push(Span::styled(c.to_string(), caret));
+            let tail = &rest[c.len_utf8()..];
+            if !tail.is_empty() {
+                spans.push(Span::styled(tail.to_string(), plain));
+            }
+        }
+        None => spans.push(Span::styled(" ".to_string(), caret)),
+    }
+    spans
 }
 
 /// Compact running-session chip for the status line, e.g.
@@ -388,7 +412,14 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
         .split(area);
-    let query = Paragraph::new(format!("/ {}", state.input))
+    // The caret only belongs in the bar while the query is being typed; in
+    // Normal mode the bar is a record of what was searched for.
+    let query_line = if state.mode == Mode::Insert && state.prompt == Some(crate::Prompt::Search) {
+        Line::from(input_spans(state, "/ "))
+    } else {
+        Line::from(format!("/ {}", state.input))
+    };
+    let query = Paragraph::new(query_line)
         .block(Block::default().borders(Borders::ALL).title("Search"))
         .wrap(Wrap { trim: false });
     f.render_widget(query, chunks[0]);

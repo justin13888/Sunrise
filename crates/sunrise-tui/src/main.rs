@@ -41,6 +41,7 @@
 )]
 
 use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -145,12 +146,19 @@ fn setup() -> Result<Tty, Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    // Bracketed paste turns a pasted block into one `Event::Paste` instead of
+    // a burst of synthetic keystrokes. Without it a pasted URL is dispatched
+    // character by character through the *normal-mode* keymap, which is how a
+    // paste into the wrong pane deletes tasks. Terminals that do not support
+    // it ignore the sequence, so the failure mode is the old behaviour.
+    stdout.execute(EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     Ok(Terminal::new(backend)?)
 }
 
 fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     disable_raw_mode()?;
+    term.backend_mut().execute(DisableBracketedPaste)?;
     term.backend_mut().execute(LeaveAlternateScreen)?;
     term.show_cursor()?;
     Ok(())
@@ -163,6 +171,7 @@ fn teardown(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
 fn resume(term: &mut Tty) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     term.backend_mut().execute(EnterAlternateScreen)?;
+    term.backend_mut().execute(EnableBracketedPaste)?;
     term.hide_cursor()?;
     term.clear()?;
     Ok(())
@@ -310,21 +319,38 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
             Wake::Input(ev) => ev,
         };
 
-        let Event::Key(k) = ev else {
+        let action = match ev {
+            // A bracketed paste is one action, whatever it contains — and it
+            // is only ever text, so it is dropped outside a text prompt rather
+            // than being replayed as commands.
+            Event::Paste(text) => {
+                if matches!(state.mode, keymap::Mode::Insert | keymap::Mode::Command) {
+                    keymap::Action::InsertStr(text)
+                } else {
+                    state.status = "paste: open a prompt first (c to capture)".into();
+                    continue;
+                }
+            }
+            Event::Key(k) => {
+                // Windows and kitty-protocol terminals also report key
+                // *release*; acting on both would double every keystroke.
+                if k.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match state.keymap.dispatch(
+                    k.code,
+                    k.modifiers,
+                    state.mode,
+                    state.vim_mode,
+                    state.view,
+                ) {
+                    Some(a) => a,
+                    None => continue,
+                }
+            }
             // Resize (and everything else) just falls through to the redraw
             // at the top of the loop; the layout is derived from `f.area()`.
-            continue;
-        };
-        // Windows and kitty-protocol terminals also report key *release*;
-        // acting on both would double every keystroke.
-        if k.kind != KeyEventKind::Press {
-            continue;
-        }
-        let Some(action) = state
-            .keymap
-            .dispatch(k.code, state.mode, state.vim_mode, state.view)
-        else {
-            continue;
+            _ => continue,
         };
         match apply_action(action, &mut state, core.now_ms()) {
             Outcome::Quit => break,
@@ -709,7 +735,7 @@ async fn refresh(core: &Core, state: &mut ViewState) {
         },
         View::Search => {
             let q = Query::Search {
-                text: state.input.clone(),
+                text: state.input.text().to_string(),
                 limit: 100,
             };
             load_tasks(core, state, q).await;

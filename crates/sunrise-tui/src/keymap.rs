@@ -16,7 +16,7 @@
 //! because it reads through the same [`Keymap`].
 
 use crate::view::View;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 use sunrise_domain::InterruptionReason;
 
@@ -131,8 +131,30 @@ pub enum Action {
     Escape,
     /// Append a character to the active input (Insert/Command mode).
     InsertChar(char),
+    /// Insert a whole string at the caret — a bracketed paste.
+    InsertStr(String),
     /// Backspace in the active input.
     Backspace,
+    /// Delete the character under the caret (`Delete`).
+    DeleteForward,
+    /// Move the caret one character left.
+    CursorLeft,
+    /// Move the caret one character right.
+    CursorRight,
+    /// Move the caret to the start of the line (`Ctrl-A` / `Home`).
+    CursorHome,
+    /// Move the caret to the end of the line (`Ctrl-E` / `End`).
+    CursorEnd,
+    /// Move the caret one word left (`Alt-b`).
+    CursorWordLeft,
+    /// Move the caret one word right (`Alt-f`).
+    CursorWordRight,
+    /// Delete the word before the caret (`Ctrl-W`).
+    DeleteWordBack,
+    /// Delete from the caret to the start of the line (`Ctrl-U`).
+    KillToStart,
+    /// Delete from the caret to the end of the line (`Ctrl-K`).
+    KillToEnd,
     /// Submit the current input (Enter).
     Submit,
     /// First half of a `gg` chord: arm the pending-`g` latch. The runtime
@@ -197,7 +219,18 @@ impl Action {
             Self::Activate => "activate",
             Self::Escape => "escape",
             Self::InsertChar(_) => "insert_char",
+            Self::InsertStr(_) => "insert_str",
             Self::Backspace => "backspace",
+            Self::DeleteForward => "delete_forward",
+            Self::CursorLeft => "cursor_left",
+            Self::CursorRight => "cursor_right",
+            Self::CursorHome => "cursor_home",
+            Self::CursorEnd => "cursor_end",
+            Self::CursorWordLeft => "cursor_word_left",
+            Self::CursorWordRight => "cursor_word_right",
+            Self::DeleteWordBack => "delete_word_back",
+            Self::KillToStart => "kill_to_start",
+            Self::KillToEnd => "kill_to_end",
             Self::Submit => "submit",
             Self::StartFocus => "start_focus",
             Self::EndFocus => "end_focus",
@@ -252,6 +285,11 @@ pub struct Binding {
     pub mode: Mode,
     /// The key.
     pub key: KeyCode,
+    /// Modifiers that must be held. [`KeyModifiers::NONE`] for the ordinary
+    /// rows; a chord row (`Ctrl-W`) names its own. Shift is normalised away
+    /// before comparison (see [`Keymap::dispatch`]) because an uppercase
+    /// `KeyCode::Char('D')` already carries it.
+    pub mods: KeyModifiers,
     /// Extra applicability conditions.
     pub scope: Scope,
     /// Action produced.
@@ -272,11 +310,36 @@ const fn b(
     Binding {
         mode,
         key,
+        mods: KeyModifiers::NONE,
         scope,
         action,
         help,
     }
 }
+
+/// [`b`] for a chord row: the same, with modifiers that must be held.
+const fn bm(
+    mode: Mode,
+    key: KeyCode,
+    mods: KeyModifiers,
+    scope: Scope,
+    action: Action,
+    help: Option<(&'static str, &'static str)>,
+) -> Binding {
+    Binding {
+        mode,
+        key,
+        mods,
+        scope,
+        action,
+        help,
+    }
+}
+
+/// `Ctrl`, spelled once.
+const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+/// `Alt`, spelled once.
+const ALT: KeyModifiers = KeyModifiers::ALT;
 
 /// The single source of truth for the keymap. Scanned in order by
 /// [`dispatch`]; the first row whose mode, key and scope all match wins, so
@@ -570,6 +633,97 @@ pub static BINDINGS: &[Binding] = &[
         Action::Backspace,
         Some(("Backspace", "erase a char")),
     ),
+    b(
+        Mode::Insert,
+        KeyCode::Left,
+        Scope::Any,
+        Action::CursorLeft,
+        Some(("← / →", "move the caret")),
+    ),
+    b(
+        Mode::Insert,
+        KeyCode::Right,
+        Scope::Any,
+        Action::CursorRight,
+        None,
+    ),
+    b(
+        Mode::Insert,
+        KeyCode::Home,
+        Scope::Any,
+        Action::CursorHome,
+        Some(("Home / End", "line start / end")),
+    ),
+    b(
+        Mode::Insert,
+        KeyCode::End,
+        Scope::Any,
+        Action::CursorEnd,
+        None,
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('a'),
+        CTRL,
+        Scope::Any,
+        Action::CursorHome,
+        Some(("^A / ^E", "line start / end")),
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('e'),
+        CTRL,
+        Scope::Any,
+        Action::CursorEnd,
+        None,
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('b'),
+        ALT,
+        Scope::Any,
+        Action::CursorWordLeft,
+        Some(("M-b / M-f", "word left / right")),
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('f'),
+        ALT,
+        Scope::Any,
+        Action::CursorWordRight,
+        None,
+    ),
+    b(
+        Mode::Insert,
+        KeyCode::Delete,
+        Scope::Any,
+        Action::DeleteForward,
+        Some(("Del", "delete under caret")),
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('w'),
+        CTRL,
+        Scope::Any,
+        Action::DeleteWordBack,
+        Some(("^W", "delete word back")),
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('u'),
+        CTRL,
+        Scope::Any,
+        Action::KillToStart,
+        Some(("^U / ^K", "kill to start / end")),
+    ),
+    bm(
+        Mode::Insert,
+        KeyCode::Char('k'),
+        CTRL,
+        Scope::Any,
+        Action::KillToEnd,
+        None,
+    ),
     // ---- Command mode (`:`) ----
     b(
         Mode::Command,
@@ -590,6 +744,97 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Backspace,
         Scope::Any,
         Action::Backspace,
+        None,
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Left,
+        Scope::Any,
+        Action::CursorLeft,
+        Some(("← / →", "move the caret")),
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Right,
+        Scope::Any,
+        Action::CursorRight,
+        None,
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Home,
+        Scope::Any,
+        Action::CursorHome,
+        Some(("Home / End", "line start / end")),
+    ),
+    b(
+        Mode::Command,
+        KeyCode::End,
+        Scope::Any,
+        Action::CursorEnd,
+        None,
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('a'),
+        CTRL,
+        Scope::Any,
+        Action::CursorHome,
+        Some(("^A / ^E", "line start / end")),
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('e'),
+        CTRL,
+        Scope::Any,
+        Action::CursorEnd,
+        None,
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('b'),
+        ALT,
+        Scope::Any,
+        Action::CursorWordLeft,
+        Some(("M-b / M-f", "word left / right")),
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('f'),
+        ALT,
+        Scope::Any,
+        Action::CursorWordRight,
+        None,
+    ),
+    b(
+        Mode::Command,
+        KeyCode::Delete,
+        Scope::Any,
+        Action::DeleteForward,
+        Some(("Del", "delete under caret")),
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('w'),
+        CTRL,
+        Scope::Any,
+        Action::DeleteWordBack,
+        Some(("^W", "delete word back")),
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('u'),
+        CTRL,
+        Scope::Any,
+        Action::KillToStart,
+        Some(("^U / ^K", "kill to start / end")),
+    ),
+    bm(
+        Mode::Command,
+        KeyCode::Char('k'),
+        CTRL,
+        Scope::Any,
+        Action::KillToEnd,
         None,
     ),
     // ---- Confirmation prompt ----
@@ -933,10 +1178,25 @@ impl Keymap {
     }
 
     /// [`dispatch`], honouring this keymap's overrides.
+    ///
+    /// `mods` carries the held modifiers. Shift is masked off before the
+    /// comparison: a shifted letter already arrives as an uppercase
+    /// `KeyCode::Char`, so requiring `SHIFT` as well would make `D` unreachable
+    /// on every terminal that reports it — and matching it loosely would let
+    /// `Ctrl-D` fall through to the plain `d` row.
     #[must_use]
-    pub fn dispatch(&self, key: KeyCode, mode: Mode, vim_mode: bool, view: View) -> Option<Action> {
+    pub fn dispatch(
+        &self,
+        key: KeyCode,
+        mods: KeyModifiers,
+        mode: Mode,
+        vim_mode: bool,
+        view: View,
+    ) -> Option<Action> {
+        let mods = mods.difference(KeyModifiers::SHIFT);
         for (i, binding) in BINDINGS.iter().enumerate() {
             if binding.mode == mode
+                && binding.mods == mods
                 && self.key_at(i) == key
                 && binding.scope.matches(vim_mode, view)
             {
@@ -946,8 +1206,11 @@ impl Keymap {
         // Fallback: any other printable character feeds the active text input.
         // This is the one rule that cannot live in the table (it matches every
         // `Char`), so it runs last, after the table's Esc/Enter/Backspace rows.
+        // Chords are excluded — an unbound `Ctrl-<x>` must not type an `x`.
         match (mode, key) {
-            (Mode::Insert | Mode::Command, KeyCode::Char(c)) => Some(Action::InsertChar(c)),
+            (Mode::Insert | Mode::Command, KeyCode::Char(c)) if mods.is_empty() => {
+                Some(Action::InsertChar(c))
+            }
             _ => None,
         }
     }
@@ -1024,7 +1287,7 @@ impl Keymap {
 /// instead of quitting.
 #[must_use]
 pub fn dispatch(key: KeyCode, mode: Mode, vim_mode: bool, view: View) -> Option<Action> {
-    Keymap::default().dispatch(key, mode, vim_mode, view)
+    Keymap::default().dispatch(key, KeyModifiers::NONE, mode, vim_mode, view)
 }
 
 /// Help-overlay content, derived from [`BINDINGS`]: one section per mode (in
@@ -1039,6 +1302,11 @@ pub fn help_sections() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
 #[must_use]
 pub fn key_label(key: KeyCode) -> String {
     match key {
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        KeyCode::Delete => "Del".into(),
+        KeyCode::PageUp => "PgUp".into(),
+        KeyCode::PageDown => "PgDn".into(),
         KeyCode::Char(' ') => "Space".into(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "Enter".into(),
@@ -1082,6 +1350,11 @@ pub fn parse_key(s: &str) -> Option<KeyCode> {
         "down" => Some(KeyCode::Down),
         "left" => Some(KeyCode::Left),
         "right" => Some(KeyCode::Right),
+        "home" => Some(KeyCode::Home),
+        "end" => Some(KeyCode::End),
+        "delete" | "del" => Some(KeyCode::Delete),
+        "pageup" | "pgup" => Some(KeyCode::PageUp),
+        "pagedown" | "pgdn" => Some(KeyCode::PageDown),
         _ => None,
     }
 }
@@ -1207,7 +1480,7 @@ pub fn load_keymap(path: Option<&std::path::Path>) -> (Keymap, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     /// Shorthand: dispatch in the Today view (the default context).
     fn d(key: KeyCode, mode: Mode, vim: bool) -> Option<Action> {
@@ -1430,21 +1703,45 @@ help    = \"#\"
             Keymap::from_config(&[("capture".into(), "n".into()), ("quit".into(), "Q".into())]);
         assert!(warnings.is_empty(), "got {warnings:?}");
         assert_eq!(
-            map.dispatch(KeyCode::Char('n'), Mode::Normal, true, View::Today),
+            map.dispatch(
+                KeyCode::Char('n'),
+                KeyModifiers::NONE,
+                Mode::Normal,
+                true,
+                View::Today
+            ),
             Some(Action::Capture)
         );
         // The old key no longer captures.
         assert_ne!(
-            map.dispatch(KeyCode::Char('c'), Mode::Normal, true, View::Today),
+            map.dispatch(
+                KeyCode::Char('c'),
+                KeyModifiers::NONE,
+                Mode::Normal,
+                true,
+                View::Today
+            ),
             Some(Action::Capture)
         );
         // Esc still quits: only the canonical row is rebound, not its aliases.
         assert_eq!(
-            map.dispatch(KeyCode::Char('Q'), Mode::Normal, true, View::Today),
+            map.dispatch(
+                KeyCode::Char('Q'),
+                KeyModifiers::NONE,
+                Mode::Normal,
+                true,
+                View::Today
+            ),
             Some(Action::Quit)
         );
         assert_eq!(
-            map.dispatch(KeyCode::Esc, Mode::Normal, true, View::Today),
+            map.dispatch(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+                Mode::Normal,
+                true,
+                View::Today
+            ),
             Some(Action::Quit)
         );
         // The help overlay advertises the key the user must actually press.
@@ -1701,7 +1998,13 @@ help    = \"#\"
         let (map, warnings) = Keymap::from_config(&[("start_focus".to_string(), "z".to_string())]);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
-            map.dispatch(KeyCode::Char('z'), Mode::Normal, true, View::Today),
+            map.dispatch(
+                KeyCode::Char('z'),
+                KeyModifiers::NONE,
+                Mode::Normal,
+                true,
+                View::Today
+            ),
             Some(Action::StartFocus)
         );
     }
@@ -1727,6 +2030,47 @@ help    = \"#\"
     }
 
     #[test]
+    fn a_chord_never_falls_through_to_typing_its_letter() {
+        // `Ctrl-W` must delete a word, and an *unbound* chord must do nothing
+        // — typing a bare `w` because Ctrl was held is the failure mode this
+        // guards.
+        let map = Keymap::default();
+        assert_eq!(
+            map.dispatch(
+                KeyCode::Char('w'),
+                KeyModifiers::CONTROL,
+                Mode::Insert,
+                true,
+                View::Today
+            ),
+            Some(Action::DeleteWordBack)
+        );
+        assert_eq!(
+            map.dispatch(
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL,
+                Mode::Insert,
+                true,
+                View::Today
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn shift_is_normalised_away_so_capitals_still_reach_their_rows() {
+        // Terminals differ on whether they report SHIFT alongside an already
+        // uppercase char; both readings must find the `D` row.
+        let map = Keymap::default();
+        for mods in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+            assert_eq!(
+                map.dispatch(KeyCode::Char('D'), mods, Mode::Normal, true, View::Today),
+                Some(Action::Delete)
+            );
+        }
+    }
+
+    #[test]
     fn every_help_row_is_a_live_binding() {
         // Guards against the overlay documenting a key that no longer
         // dispatches: each help-carrying row must resolve through `dispatch`
@@ -1740,9 +2084,12 @@ help    = \"#\"
                 _ => View::Today,
             };
             assert_eq!(
-                dispatch(binding.key, binding.mode, true, view).as_ref(),
+                Keymap::default()
+                    .dispatch(binding.key, binding.mods, binding.mode, true, view)
+                    .as_ref(),
                 Some(&binding.action),
-                "binding {:?} in {:?} does not dispatch",
+                "binding {:?}+{:?} in {:?} does not dispatch",
+                binding.mods,
                 binding.key,
                 binding.mode
             );

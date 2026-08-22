@@ -238,7 +238,7 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Some((id, title)) => {
                 state.mode = Mode::Insert;
                 state.prompt = Some(Prompt::EditTitle(id));
-                state.input = title;
+                state.input.set(title);
                 state.status = "edit title: Enter to save, Esc to cancel".into();
                 Outcome::None
             }
@@ -372,14 +372,72 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             }
         }
         Action::InsertChar(c) => {
-            if state.input.len() < MAX_INPUT {
-                state.input.push(c);
+            if state.input.len() + c.len_utf8() <= MAX_INPUT {
+                state.input.insert_char(c);
+            }
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
+        Action::InsertStr(text) => {
+            // A paste is clamped as a whole rather than truncated mid-way: a
+            // half-inserted paste is worse than a refused one, because the
+            // user cannot tell which half made it.
+            if state.input.len() + text.len() <= MAX_INPUT {
+                state.input.insert_str(&text);
+            } else {
+                state.status = "paste too long for this prompt".into();
             }
             refresh_capture_preview(state, now_ms);
             Outcome::None
         }
         Action::Backspace => {
-            state.input.pop();
+            state.input.backspace();
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
+        Action::DeleteForward => {
+            state.input.delete_forward();
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
+        // Caret motions never re-parse: the text is unchanged, so the capture
+        // preview under it is still correct.
+        Action::CursorLeft => {
+            state.input.left();
+            Outcome::None
+        }
+        Action::CursorRight => {
+            state.input.right();
+            Outcome::None
+        }
+        Action::CursorHome => {
+            state.input.home();
+            Outcome::None
+        }
+        Action::CursorEnd => {
+            state.input.end();
+            Outcome::None
+        }
+        Action::CursorWordLeft => {
+            state.input.word_left();
+            Outcome::None
+        }
+        Action::CursorWordRight => {
+            state.input.word_right();
+            Outcome::None
+        }
+        Action::DeleteWordBack => {
+            state.input.delete_word_back();
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
+        Action::KillToStart => {
+            state.input.kill_to_start();
+            refresh_capture_preview(state, now_ms);
+            Outcome::None
+        }
+        Action::KillToEnd => {
+            state.input.kill_to_end();
             refresh_capture_preview(state, now_ms);
             Outcome::None
         }
@@ -555,7 +613,7 @@ fn refresh_capture_preview(state: &mut ViewState, now_ms: u64) {
         state.capture_preview = None;
         return;
     }
-    let text = state.input.trim();
+    let text = state.input.trimmed();
     if text.is_empty() {
         state.capture_preview = None;
         return;
@@ -618,7 +676,7 @@ fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
 /// `:`-line submit: parse and apply, mapping the pure [`AppEffect`] onto an
 /// [`Outcome`].
 fn submit_command_line(state: &mut ViewState, now_ms: u64) -> Outcome {
-    let cmd = parse_command(&state.input);
+    let cmd = parse_command(state.input.text());
     // A running session keeps the keyboard across a `:` detour, the same way a
     // triage pass does — otherwise `:focus stats` mid-session would silently
     // drop the user out of the session's key set.
@@ -683,7 +741,7 @@ fn submit_picker(state: &mut ViewState) -> Outcome {
 
 /// Enter on a text prompt (capture / edit / defer / new stream / search).
 fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
-    let text = state.input.trim().to_string();
+    let text = state.input.trimmed().to_string();
     match state.prompt.take() {
         Some(Prompt::Capture) => {
             state.reset_to_normal();
@@ -861,7 +919,13 @@ mod tests {
     fn press(state: &mut ViewState, key: KeyCode) -> Outcome {
         let action = state
             .keymap
-            .dispatch(key, state.mode, state.vim_mode, state.view)
+            .dispatch(
+                key,
+                crossterm::event::KeyModifiers::NONE,
+                state.mode,
+                state.vim_mode,
+                state.view,
+            )
             .unwrap_or_else(|| panic!("no binding for {key:?} in {:?}", state.mode));
         apply_action(action, state, NOW_MS)
     }
@@ -902,6 +966,100 @@ mod tests {
         }
         assert_eq!(s.mode, Mode::Normal);
         assert!(s.input.is_empty());
+    }
+
+    /// Press a chord (a key with modifiers held).
+    fn press_mod(
+        state: &mut ViewState,
+        key: KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> Outcome {
+        let action = state
+            .keymap
+            .dispatch(key, mods, state.mode, state.vim_mode, state.view)
+            .unwrap_or_else(|| panic!("no binding for {mods:?}+{key:?} in {:?}", state.mode));
+        apply_action(action, state, NOW_MS)
+    }
+
+    #[test]
+    fn the_caret_can_go_back_and_fix_a_typo_mid_line() {
+        // The whole point of the editable line: a mistake three words back
+        // used to cost the entire capture.
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "buy milkk today");
+        for _ in 0..6 {
+            let _ = press(&mut s, KeyCode::Left);
+        }
+        let _ = press(&mut s, KeyCode::Backspace);
+        assert_eq!(s.input, "buy milk today");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateTask(d) => assert_eq!(d.title, "buy milk today"),
+                other => panic!("expected CreateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn readline_chords_edit_the_prompt() {
+        use crossterm::event::KeyModifiers as M;
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "buy milk today");
+        let _ = press_mod(&mut s, KeyCode::Char('w'), M::CONTROL);
+        assert_eq!(s.input, "buy milk ");
+        let _ = press_mod(&mut s, KeyCode::Char('a'), M::CONTROL);
+        assert_eq!(s.input.cursor(), 0);
+        let _ = press_mod(&mut s, KeyCode::Char('k'), M::CONTROL);
+        assert!(s.input.is_empty());
+    }
+
+    #[test]
+    fn the_capture_preview_follows_an_edit_made_behind_the_caret() {
+        // The preview is the user's only confirmation that `#stream` resolved;
+        // it must re-parse on a mid-line edit, not only on an append.
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "milk !2 later");
+        assert!(s.capture_preview.as_deref().unwrap().contains("!2"));
+        // Walk back onto the priority digit and raise it.
+        for _ in 0..6 {
+            let _ = press(&mut s, KeyCode::Left);
+        }
+        let _ = press(&mut s, KeyCode::Backspace);
+        let _ = press(&mut s, KeyCode::Char('1'));
+        let preview = s.capture_preview.as_deref().unwrap();
+        assert!(preview.contains("!1"), "{preview}");
+        assert!(!preview.contains("!2"), "{preview}");
+    }
+
+    #[test]
+    fn a_paste_lands_at_the_caret_as_one_edit() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        type_text(&mut s, "read ");
+        let _ = apply_action(
+            Action::InsertStr(
+                "the
+manual"
+                    .into(),
+            ),
+            &mut s,
+            NOW_MS,
+        );
+        assert_eq!(s.input, "read themanual");
+    }
+
+    #[test]
+    fn an_over_long_paste_is_refused_whole_rather_than_truncated() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('c'));
+        let huge = "x".repeat(MAX_INPUT + 1);
+        let _ = apply_action(Action::InsertStr(huge), &mut s, NOW_MS);
+        assert!(s.input.is_empty());
+        assert!(s.status.contains("too long"));
     }
 
     #[test]
@@ -1887,7 +2045,13 @@ mod focus_tests {
     fn press(state: &mut ViewState, key: KeyCode) -> Outcome {
         let action = state
             .keymap
-            .dispatch(key, state.mode, state.vim_mode, state.view)
+            .dispatch(
+                key,
+                crossterm::event::KeyModifiers::NONE,
+                state.mode,
+                state.vim_mode,
+                state.view,
+            )
             .unwrap_or_else(|| panic!("no binding for {key:?} in {:?}", state.mode));
         apply_action(action, state, NOW_MS)
     }
