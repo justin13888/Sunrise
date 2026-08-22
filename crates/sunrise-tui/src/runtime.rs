@@ -149,8 +149,19 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::Refresh
         }
         Action::SwitchView(v) => {
-            state.view = v;
+            state.switch_view(v);
             Outcome::Refresh
+        }
+        Action::MarkToggle => {
+            if !state.toggle_mark() {
+                return no_selection(state);
+            }
+            Outcome::None
+        }
+        Action::MarkClear => {
+            state.clear_marks();
+            state.status = "marks cleared".into();
+            Outcome::None
         }
         Action::Next => {
             match state.picker.as_mut() {
@@ -354,7 +365,11 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::Escape => {
-            if state.mode == Mode::Visual {
+            if state.mode == Mode::Normal && !state.marked.is_empty() {
+                state.clear_marks();
+                state.status = "marks cleared".into();
+                Outcome::None
+            } else if state.mode == Mode::Visual {
                 state.exit_visual();
                 Outcome::None
             } else if state.mode == Mode::Triage {
@@ -700,6 +715,10 @@ fn finish_operator(state: &mut ViewState, verb: &str, label: &str) {
     if state.visual_anchor.is_some() {
         state.exit_visual();
     }
+    // A mark set is spent by the operator that reads it. Leaving it standing
+    // would make the *next* keypress a second bulk operation over rows the
+    // user has stopped thinking about.
+    state.clear_marks();
     state.status = format!("{verb} \"{label}\"");
     if triage {
         // Completing/scheduling/deferring leaves the task in the Inbox, so the
@@ -748,6 +767,7 @@ fn submit_confirm(state: &mut ViewState) -> Outcome {
     state.reset_to_normal();
     match prompt {
         Some(Prompt::ConfirmDelete { ids, title }) => {
+            state.clear_marks();
             state.status = format!("deleted \"{title}\"");
             if triage {
                 // A deleted task leaves the Inbox: the list closes up under the
@@ -772,6 +792,7 @@ fn submit_picker(state: &mut ViewState) -> Outcome {
         return Outcome::None;
     };
     let (stream, name) = (row.id, row.name.clone());
+    state.clear_marks();
     state.status = format!("moved \"{}\" → {name}", picker.task_title);
     let cmds = picker
         .tasks
@@ -1120,6 +1141,78 @@ manual"
             },
             other => panic!("expected Submit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn space_marks_rows_and_operators_apply_to_the_marked_set() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let first = s.tasks[0].id;
+        let third = s.tasks[2].id;
+        // Space marks and advances, so marking row 0 then row 2 is
+        // Space, j, Space.
+        let _ = press(&mut s, KeyCode::Char(' '));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char(' '));
+        assert_eq!(s.marked_ids(), vec![first, third]);
+        assert!(s.status.contains("2 marked"));
+        // The cursor has moved on; the operator still means the marks.
+        match press(&mut s, KeyCode::Char('x')) {
+            Outcome::SubmitMany(cmds) => {
+                assert_eq!(cmds.len(), 2);
+                assert!(matches!(cmds[0], Command::CompleteTask(id) if id == first));
+                assert!(matches!(cmds[1], Command::CompleteTask(id) if id == third));
+            }
+            other => panic!("expected SubmitMany, got {other:?}"),
+        }
+        assert!(s.marked.is_empty(), "an operator spends the mark set");
+    }
+
+    #[test]
+    fn space_on_a_marked_row_unmarks_it() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        assert!(s.marked_ids().is_empty());
+    }
+
+    #[test]
+    fn ctrl_space_drops_every_mark() {
+        use crossterm::event::KeyModifiers as M;
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        let _ = press_mod(&mut s, KeyCode::Char(' '), M::CONTROL);
+        assert!(s.marked.is_empty());
+        assert!(s.status.contains("cleared"));
+    }
+
+    #[test]
+    fn marks_do_not_follow_the_user_into_another_view() {
+        // An operator in the Inbox must never silently mean rows ticked in
+        // Today, with nothing on screen saying so.
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        assert_eq!(s.marked_ids().len(), 1);
+        let _ = press(&mut s, KeyCode::Char('1'));
+        assert!(s.marked.is_empty());
+    }
+
+    #[test]
+    fn a_mark_on_a_row_that_left_the_view_is_not_an_operand() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char(' '));
+        let gone = s.tasks.remove(0);
+        s.after_tasks_loaded();
+        assert!(s.marked_ids().is_empty());
+        // …but it is not destroyed: the row coming back restores the mark.
+        s.tasks.insert(0, gone);
+        s.after_tasks_loaded();
+        assert_eq!(s.marked_ids().len(), 1);
     }
 
     #[test]

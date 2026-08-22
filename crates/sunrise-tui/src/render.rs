@@ -220,6 +220,19 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         | Mode::Focus
         | Mode::Interrupt => {}
     }
+    // A mark set outlives the keypress that made it and survives the cursor
+    // moving away, so the count has to be on screen the whole time it is live
+    // — otherwise the next operator is a surprise about how many.
+    let n_marked = state.marked_ids().len();
+    if n_marked > 0 && state.mode != Mode::Visual {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("{n_marked} marked"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     // With a sync indicator, split off a right-aligned column for it so the
     // left status text is never clobbered; otherwise render across the whole
     // line as before (keeps the sync-off snapshots byte-identical).
@@ -241,6 +254,11 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     } else {
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+/// Per-row mark flags for the task list, in row order.
+fn marks(state: &ViewState) -> Vec<bool> {
+    (0..state.tasks.len()).map(|i| state.is_marked(i)).collect()
 }
 
 /// The active input line, drawn with a visible block caret.
@@ -331,6 +349,7 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         "Tasks",
         Style::default(),
         state.visual_range(),
+        &marks(state),
     );
 }
 
@@ -344,6 +363,7 @@ pub fn render_inbox(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         "Inbox",
         Style::default(),
         state.visual_range(),
+        &marks(state),
     )
 }
 
@@ -367,6 +387,7 @@ pub fn render_stream(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         &title,
         pane_border(state, StreamPane::Tasks),
         state.visual_range(),
+        &marks(state),
     );
 }
 
@@ -431,6 +452,7 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         "Results",
         Style::default(),
         state.visual_range(),
+        &marks(state),
     );
 }
 
@@ -1182,21 +1204,35 @@ fn render_task_list_styled(
     title: &str,
     border_style: Style,
     visual: Option<(usize, usize)>,
+    marked: &[bool],
 ) {
+    // The gutter appears only while something is multi-selected, so an
+    // ordinary frame is byte-for-byte what it was.
+    let gutter = visual.is_some() || marked.iter().any(|m| *m);
     let items: Vec<ListItem<'_>> = tasks
         .iter()
         .enumerate()
         .map(|(i, t)| {
             let label = format!("[{}] {}", task_state_short(t.state), t.title);
-            match visual {
-                Some((lo, hi)) if (lo..=hi).contains(&i) => ListItem::new(format!("● {label}"))
-                    .style(
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                Some(_) => ListItem::new(format!("  {label}")),
-                None => ListItem::new(label),
+            if !gutter {
+                return ListItem::new(label);
+            }
+            let in_run = visual.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
+            let is_marked = marked.get(i).copied().unwrap_or(false);
+            // A mark is the stronger claim — it survives the cursor moving —
+            // so it wins the glyph and the colour where both apply.
+            match (is_marked, in_run) {
+                (true, _) => ListItem::new(format!("✓ {label}")).style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                (false, true) => ListItem::new(format!("● {label}")).style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                (false, false) => ListItem::new(format!("  {label}")),
             }
         })
         .collect();

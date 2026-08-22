@@ -549,6 +549,11 @@ pub struct ViewState {
     /// Visual-mode anchor: the row `V` was pressed on. The selection is the
     /// inclusive run between it and [`Self::selected`].
     pub visual_anchor: Option<usize>,
+    /// Rows marked with `Space` — a **non-contiguous** multi-selection, held
+    /// by id rather than by index so a refresh that reorders or shortens the
+    /// list cannot silently re-target an operator
+    /// (`docs/08-features/keyboard.md`: "Multi-select toggle — Space").
+    pub marked: Vec<EntityRef>,
     /// Whether Inbox triage mode is running (`t`).
     pub triage: bool,
     /// Live capture preview: the parser's structured reading of
@@ -599,6 +604,7 @@ impl Default for ViewState {
             devices: None,
             pending_g: false,
             visual_anchor: None,
+            marked: Vec::new(),
             triage: false,
             capture_preview: None,
             tz: jiff::tz::TimeZone::UTC,
@@ -805,14 +811,72 @@ impl ViewState {
         Some((a.min(b), a.max(b)))
     }
 
-    /// Ids the next operator applies to: the whole visual run when visual mode
-    /// is active, otherwise just the selected row.
+    /// Rows currently marked *and* still visible, in list order.
+    ///
+    /// Filtered against `tasks` on every read rather than pruned on refresh: a
+    /// mark on a row that a sync just moved out of this view must not silently
+    /// become part of the next bulk operation, but it also must not be
+    /// destroyed — coming back to the view restores it.
+    #[must_use]
+    pub fn marked_ids(&self) -> Vec<EntityRef> {
+        self.tasks
+            .iter()
+            .filter(|t| self.marked.contains(&t.id))
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// Whether the task at row `i` is marked.
+    #[must_use]
+    pub fn is_marked(&self, i: usize) -> bool {
+        self.tasks
+            .get(i)
+            .is_some_and(|t| self.marked.contains(&t.id))
+    }
+
+    /// Toggle the mark on the selected row and step down, so marking a set is
+    /// one key held rather than a key and a motion alternated.
+    pub fn toggle_mark(&mut self) -> bool {
+        let Some(id) = self.selected_task().map(|t| t.id) else {
+            return false;
+        };
+        match self.marked.iter().position(|m| *m == id) {
+            Some(i) => {
+                self.marked.remove(i);
+            }
+            None => self.marked.push(id),
+        }
+        self.select_next();
+        let n = self.marked_ids().len();
+        self.status = match n {
+            0 => "no rows marked".to_string(),
+            1 => "1 marked · operators apply to marked rows".to_string(),
+            n => format!("{n} marked · operators apply to marked rows"),
+        };
+        true
+    }
+
+    /// Drop every mark.
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+    }
+
+    /// Ids the next operator applies to, in precedence order: the marked set,
+    /// then the visual run, then the row under the cursor.
+    ///
+    /// Marks win over the cursor because they are the *explicit* statement —
+    /// a user who has ticked four rows and then moves the cursor has not
+    /// changed their mind about the four.
     #[must_use]
     pub fn operand_ids(&self) -> Vec<EntityRef> {
         // While a session owns the keyboard the operand is the task being
         // focused on, not whatever row the underlying list cursor sits on.
         if self.mode == Mode::Focus {
             return self.focus.running_task().into_iter().collect();
+        }
+        let marked = self.marked_ids();
+        if !marked.is_empty() {
+            return marked;
         }
         match self.visual_range() {
             // Sliced with `get` rather than indexed: a stale range against a
@@ -835,6 +899,18 @@ impl ViewState {
     pub fn operand_label(&self) -> String {
         if self.mode == Mode::Focus {
             return self.focused_title();
+        }
+        match self.marked_ids().len() {
+            0 => {}
+            1 => {
+                let id = self.marked_ids()[0];
+                return self
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map_or_else(String::new, |t| t.title.clone());
+            }
+            n => return format!("{n} tasks"),
         }
         match self.visual_range() {
             Some((lo, hi)) if hi > lo => format!("{} tasks", hi - lo + 1),
@@ -865,6 +941,18 @@ impl ViewState {
         self.visual_anchor = None;
         self.mode = Mode::Normal;
         self.status.clear();
+    }
+
+    /// Switch to `view`, dropping marks made in the one being left.
+    ///
+    /// Marks are per-list: carrying them across would let an operator run in
+    /// the Inbox on rows the user ticked in Today, with nothing on screen
+    /// saying so.
+    pub fn switch_view(&mut self, view: View) {
+        if view != self.view {
+            self.clear_marks();
+        }
+        self.view = view;
     }
 
     /// Enter Inbox triage: switch to the Inbox and present its first task.

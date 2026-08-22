@@ -98,6 +98,10 @@ pub enum Action {
     Schedule,
     /// Enter visual (multi-select) mode (`V`).
     VisualMode,
+    /// Toggle the mark on the row under the cursor (`Space`), then step down.
+    MarkToggle,
+    /// Drop every mark (`Ctrl-Space` / `:unmark`).
+    MarkClear,
     /// Enter Inbox triage mode (`t`).
     Triage,
     /// Triage decision "keep": leave the task alone and advance (`k`).
@@ -203,6 +207,8 @@ impl Action {
             Self::EditBody => "edit_body",
             Self::Schedule => "schedule",
             Self::VisualMode => "visual",
+            Self::MarkToggle => "mark_toggle",
+            Self::MarkClear => "mark_clear",
             Self::Triage => "triage",
             Self::TriageKeep => "triage_keep",
             Self::Defer => "defer",
@@ -510,8 +516,16 @@ pub static BINDINGS: &[Binding] = &[
         Mode::Normal,
         KeyCode::Char(' '),
         Scope::Any,
-        Action::Toggle,
-        None,
+        Action::MarkToggle,
+        Some(("Space", "mark row (multi-select)")),
+    ),
+    bm(
+        Mode::Normal,
+        KeyCode::Char(' '),
+        CTRL,
+        Scope::Any,
+        Action::MarkClear,
+        Some(("^Space", "clear marks")),
     ),
     b(
         Mode::Normal,
@@ -923,6 +937,13 @@ pub static BINDINGS: &[Binding] = &[
     ),
     b(Mode::Visual, KeyCode::Down, Scope::Any, Action::Next, None),
     b(Mode::Visual, KeyCode::Up, Scope::Any, Action::Prev, None),
+    b(
+        Mode::Visual,
+        KeyCode::Char(' '),
+        Scope::Any,
+        Action::MarkToggle,
+        Some(("Space", "mark row (multi-select)")),
+    ),
     b(
         Mode::Visual,
         KeyCode::Char('x'),
