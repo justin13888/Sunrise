@@ -3,7 +3,7 @@
 //! These run the **real binary** against a real vault via
 //! `CARGO_BIN_EXE_sunrise-tui` (a path cargo sets for integration tests), so
 //! they cover the whole stack — arg parsing, `Core::open`, the vault lock,
-//! SQLCipher persistence, the capture parser, and the query path — without a
+//! `SQLCipher` persistence, the capture parser, and the query path — without a
 //! terminal and without a new dependency.
 //!
 //! Everything the interactive TUI does goes through the same `Core` API, so a
