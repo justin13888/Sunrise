@@ -32,17 +32,11 @@ fn two_tenant_verifier() -> StaticVerifier {
     let mut allowed = HashMap::new();
     allowed.insert(
         "alice-token".to_string(),
-        Subject {
-            account_id: "alice".into(),
-            email: None,
-        },
+        Subject::new("https://idp.example", "alice"),
     );
     allowed.insert(
         "bob-token".to_string(),
-        Subject {
-            account_id: "bob".into(),
-            email: None,
-        },
+        Subject::new("https://idp.example", "bob"),
     );
     StaticVerifier { allowed }
 }

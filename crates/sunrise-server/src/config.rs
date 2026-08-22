@@ -11,8 +11,39 @@ pub struct ServerConfig {
     pub bind: String,
     /// Server's published version string.
     pub server_app_v: String,
-    /// Optional OIDC issuer URL.
+    /// Optional OIDC issuer URL. `None` leaves the self-host
+    /// [`crate::NullVerifier`] in place.
     pub oidc_issuer: Option<String>,
+    /// OIDC client id. Tokens must carry it in `aud`; see
+    /// `docs/06-server/auth.md` §per-request-auth.
+    pub oidc_client_id: Option<String>,
+    /// Whether a first login with no matching account provisions one.
+    ///
+    /// Per `docs/06-server/auth.md`: with this false the server rejects
+    /// unknown-account tokens with `403 AUTH_SIGNUP_DISABLED` even though the
+    /// IdP issued them. It is a server-side guard, not a sign-up UX — the IdP
+    /// still owns invite codes, allow-lists and captchas.
+    ///
+    /// Defaults to `true`, which is what makes a fresh self-host binary usable
+    /// without a provisioning step. An operator who fronts a public IdP is
+    /// expected to turn it off once their accounts exist.
+    #[serde(default = "default_allow_signup")]
+    pub allow_signup: bool,
+    /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory on
+    /// authenticated REST requests (`header_sig_v1`).
+    ///
+    /// Off by default so a single-binary self-host works before any device is
+    /// registered. When a binding *is* present it is always verified, whatever
+    /// this says — the flag governs whether absence is tolerated, never whether
+    /// a bad signature is.
+    #[serde(default)]
+    pub require_device_sig: bool,
+    /// Clock skew tolerated on token `exp`/`nbf`, in seconds.
+    #[serde(default = "default_token_leeway_secs")]
+    pub token_leeway_secs: u64,
+    /// JWKS cache lifetime used when the issuer publishes no `Cache-Control`.
+    #[serde(default = "default_jwks_ttl_secs")]
+    pub jwks_default_ttl_secs: u64,
     /// Self-host SQLite path (None = ephemeral in-memory, suitable for
     /// tests).
     pub sqlite_path: Option<PathBuf>,
@@ -32,6 +63,21 @@ pub struct ServerConfig {
 /// a blob-finalize manifest) and far below anything that would pressure memory.
 const fn default_max_body_bytes() -> usize {
     2 * 1024 * 1024
+}
+
+const fn default_allow_signup() -> bool {
+    true
+}
+
+/// One minute, the usual allowance for unsynchronised consumer clocks.
+const fn default_token_leeway_secs() -> u64 {
+    60
+}
+
+/// Five minutes. Long enough that the JWKS is not refetched per request, short
+/// enough that a key the issuer retires stops being accepted promptly.
+const fn default_jwks_ttl_secs() -> u64 {
+    300
 }
 
 /// Why a [`ServerConfig`] was rejected at startup.
@@ -55,6 +101,24 @@ pub enum ConfigError {
     /// Nonsensical body cap.
     #[error("max_body_bytes must be greater than zero")]
     ZeroBodyLimit,
+    /// An OIDC issuer without the client id that tokens must be audienced to.
+    #[error(
+        "oidc_issuer is set but oidc_client_id is not: without it there is no `aud` to check, \
+         and any token the issuer minted for any relying party would be accepted here"
+    )]
+    MissingClientId,
+    /// An issuer URL we will not fetch metadata from.
+    #[error(
+        "oidc_issuer {0:?} must be an https:// URL: a JWKS fetched over plaintext is a JWKS an \
+         on-path attacker can replace"
+    )]
+    InsecureIssuer(String),
+    /// Device signatures demanded with no way to tell devices apart.
+    #[error(
+        "require_device_sig is set while the single-tenant self-host verifier is in use: every \
+         caller maps to one account, so a device signature binds nothing"
+    )]
+    DeviceSigWithoutOidc,
 }
 
 impl ServerConfig {
@@ -81,6 +145,17 @@ impl ServerConfig {
         if self.max_body_bytes == 0 {
             return Err(ConfigError::ZeroBodyLimit);
         }
+        if let Some(issuer) = &self.oidc_issuer {
+            if self.oidc_client_id.is_none() {
+                return Err(ConfigError::MissingClientId);
+            }
+            if !issuer.starts_with("https://") {
+                return Err(ConfigError::InsecureIssuer(issuer.clone()));
+            }
+        }
+        if self.require_device_sig && single_tenant {
+            return Err(ConfigError::DeviceSigWithoutOidc);
+        }
         Ok(())
     }
 }
@@ -104,6 +179,11 @@ impl Default for ServerConfig {
             bind: "127.0.0.1:8443".into(),
             server_app_v: env!("CARGO_PKG_VERSION").into(),
             oidc_issuer: None,
+            oidc_client_id: None,
+            allow_signup: default_allow_signup(),
+            require_device_sig: false,
+            token_leeway_secs: default_token_leeway_secs(),
+            jwks_default_ttl_secs: default_jwks_ttl_secs(),
             sqlite_path: None,
             blob_root: None,
             allowed_origins: Vec::new(),
@@ -180,6 +260,46 @@ mod tests {
         let mut c = cfg("127.0.0.1:8443");
         c.max_body_bytes = 0;
         assert_eq!(c.validate(true), Err(ConfigError::ZeroBodyLimit));
+    }
+
+    /// An issuer with no client id means no `aud` to check, which means every
+    /// token that issuer ever minted — for any relying party — verifies here.
+    #[test]
+    fn an_issuer_without_a_client_id_is_refused() {
+        let mut c = cfg("0.0.0.0:8443");
+        c.oidc_issuer = Some("https://idp.example".into());
+        assert_eq!(c.validate(false), Err(ConfigError::MissingClientId));
+        c.oidc_client_id = Some("sunrise".into());
+        assert!(c.validate(false).is_ok());
+    }
+
+    #[test]
+    fn a_plaintext_issuer_is_refused() {
+        let mut c = cfg("0.0.0.0:8443");
+        c.oidc_issuer = Some("http://idp.example".into());
+        c.oidc_client_id = Some("sunrise".into());
+        assert!(matches!(
+            c.validate(false),
+            Err(ConfigError::InsecureIssuer(_))
+        ));
+    }
+
+    /// Demanding a device signature while every caller resolves to the same
+    /// synthetic account is a setting that reads as security and provides
+    /// none; refuse it rather than let an operator believe it did something.
+    #[test]
+    fn device_signatures_are_meaningless_under_the_self_host_verifier() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.require_device_sig = true;
+        assert_eq!(c.validate(true), Err(ConfigError::DeviceSigWithoutOidc));
+        assert!(c.validate(false).is_ok());
+    }
+
+    /// A fresh self-host binary has to be able to provision its own first
+    /// account, so the guard ships open.
+    #[test]
+    fn signup_is_allowed_by_default() {
+        assert!(ServerConfig::default().allow_signup);
     }
 
     #[test]

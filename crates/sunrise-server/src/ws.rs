@@ -44,34 +44,30 @@ async fn handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    // Authenticate at the *upgrade*, before a single frame is exchanged.
-    // An absent header verifies the empty string: `NullVerifier` (self-host,
-    // single-tenant) accepts it and yields the one synthetic account, while
-    // any real verifier rejects it. So enabling auth is purely a matter of
-    // configuring a verifier — this call site needs no mode flag.
-    let bearer = crate::auth::extract_bearer(&headers).unwrap_or("");
-    let subject = match state.token_verifier.verify(bearer).await {
-        Ok(s) => s,
+    // Authenticate at the *upgrade*, before a single frame is exchanged. The
+    // same pipeline the REST routes run, minus device binding: an upgrade
+    // carries no body to sign. Resolving the account here is also what applies
+    // `allow_signup` to sync — a server with sign-up off must not relay for an
+    // account it never provisioned.
+    let account_id = match crate::auth::request::authenticate_token(&state, &headers).await {
+        Ok((_subject, account)) => account.account_id,
         Err(e) => {
             state.metrics.incr("sunrise_sync_unauthenticated_total");
-            return (
-                StatusCode::UNAUTHORIZED,
-                format!("sync requires a valid bearer token: {e}"),
-            )
-                .into_response();
+            return e.into_response();
         }
     };
-    // The channel namespace comes from the verified subject, never from the
+    // The channel namespace comes from the verified account, never from the
     // client. See `account_hash`.
-    let account = account_hash(&subject.account_id);
+    let account = account_hash(&account_id);
     ws.on_upgrade(move |socket| async move { run_session(socket, state, account).await })
 }
 
-/// Channel-namespace hash for a verified account id.
+/// Channel-namespace hash for a resolved account id.
 ///
 /// Subscribe frames carry a stream id but **no account**: the account half of
-/// the channel key is derived here from the verified token, so a client cannot
-/// name an account it does not own. That is what makes cross-tenant
+/// the channel key is derived here from the account the verified token's
+/// `(iss, sub)` resolves to, so a client cannot name an account it does not
+/// own. That is what makes cross-tenant
 /// subscription impossible rather than merely discouraged — the previous code
 /// hashed a fixed constant, so every session on the server shared one
 /// namespace and any subscriber received every other subscriber's frames.
@@ -376,8 +372,6 @@ fn extract_op_batch(payload: &[u8]) -> Option<OpBatchPayload> {
     OpBatchPayload::decode(payload).ok()
 }
 
-/// Single-tenant account hash for self-host mode. Production binds this
-/// to the OIDC-validated account-id at handshake.
 /// Fallback handler so the route compiles when ws not present (currently
 /// always present; placeholder for offline-mode builds).
 #[must_use]

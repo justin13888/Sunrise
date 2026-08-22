@@ -23,8 +23,11 @@ pub enum PushPlatform {
 /// One push registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushRegistration {
-    /// Owning device id (16 raw bytes; hex-encoded).
-    pub device_id_hex: String,
+    /// Owning device id — Crockford base-32 of 16 bytes, as issued by
+    /// `POST /api/v1/devices`. The `device_id_hex` alias is accepted so
+    /// clients written against the pre-persistence shape keep parsing.
+    #[serde(alias = "device_id_hex")]
+    pub device_id: String,
     /// Platform.
     pub platform: PushPlatform,
     /// Provider-specific token (APNs hex, FCM string, WebPush JSON-encoded).
@@ -95,7 +98,7 @@ mod tests {
         let p = LoggingProvider::new(m.clone());
         let intent = PushIntent {
             registration: PushRegistration {
-                device_id_hex: "00".repeat(16),
+                device_id: "0000000000000000000000000Z".into(),
                 platform: PushPlatform::Fcm,
                 token: "abc".into(),
             },

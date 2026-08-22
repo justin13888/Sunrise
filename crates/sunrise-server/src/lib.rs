@@ -6,8 +6,9 @@
 //! - Self-host single-binary mode (`./sunrise-server -c sunrise.toml`).
 //! - WebSocket endpoint at `/sync` (handshake stub; OpBatch fanout
 //!   ships in Phase 17 once the engine in `sunrise-core` is wired).
-//! - OIDC token validation interface (verifier trait; production binds
-//!   to a JWKS HTTP fetch).
+//! - OIDC token validation: the [`auth::TokenVerifier`] seam plus
+//!   [`auth::oidc::OidcVerifier`], a JWKS-backed implementation.
+//! - Account + device persistence in SQLite ([`store`]).
 //!
 //! The library is testable in isolation: [`build_router`] returns an
 //! `axum::Router` that integration tests can drive via tower::ServiceExt.
@@ -31,19 +32,24 @@
 
 pub mod auth;
 pub mod config;
+pub mod error;
 pub mod metrics;
 pub mod push;
 pub mod relay;
 pub mod routes;
 pub mod state;
+pub mod store;
 pub mod ws;
 
+pub use auth::oidc::{OidcConfig, OidcVerifier};
 pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier};
 pub use config::ServerConfig;
+pub use error::ApiError;
 pub use metrics::Metrics;
 pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushRegistration};
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
+pub use store::{Account, Device, Store, StoreError};
 
 use axum::Router;
 

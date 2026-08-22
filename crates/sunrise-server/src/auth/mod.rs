@@ -1,22 +1,81 @@
-//! OIDC token validation interface.
+//! Server authentication: OIDC token verification and device binding.
 //!
-//! Production binds to a JWKS HTTP fetch + RS256 verify; v1 self-host
-//! ships the `NullVerifier` (single-tenant: every request maps to the
-//! same synthetic identity) and a `StaticJwksVerifier` test helper.
-//! Adding a real JWKS-fetching impl is a follow-up that doesn't change
-//! this trait surface.
+//! Per `docs/06-server/auth.md`, Sunrise issues no tokens of its own. Every
+//! authenticated request carries an OIDC access token minted by the configured
+//! issuer, and the server's whole job is to *verify* it and map it onto an
+//! account by `(iss, sub)`.
+//!
+//! Layout:
+//!
+//! - [`TokenVerifier`] — the seam. Everything auth-shaped goes through it.
+//! - [`oidc::OidcVerifier`] — the real thing: JWKS-backed signature check plus
+//!   `iss` / `aud` / `exp` / `nbf` validation.
+//! - [`http`] — the injectable HTTP surface the verifier fetches JWKS over, so
+//!   the verifier is testable without a network.
+//! - [`device_sig`] — `header_sig_v1` request signing (`X-Sunrise-Device-Sig`).
+//! - [`request`] — the per-request pipeline handlers call: bearer → subject →
+//!   account row → device binding.
+//! - [`NullVerifier`] — self-host single-tenant escape hatch.
+
+pub mod device_sig;
+pub mod http;
+pub mod oidc;
+pub mod request;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Subject extracted from a verified token.
+/// Principal extracted from a verified token.
+///
+/// The identity that matters is the pair `(issuer, subject)`: `docs/06-server/
+/// auth.md` keys the account row on it, and it is the only identifier a client
+/// cannot influence. Everything downstream — the relay's channel namespace, the
+/// account lookup — is derived from [`Subject::principal_key`] rather than from
+/// anything in the request body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Subject {
-    /// Stable account-id (synthetic in self-host mode; OIDC `sub` in prod).
-    pub account_id: String,
-    /// Email if present.
+    /// OIDC `iss` claim. Distinguishes IdPs when a self-host deployment
+    /// federates more than one.
+    pub issuer: String,
+    /// OIDC `sub` claim — the IdP's stable user identifier.
+    pub subject: String,
+    /// OIDC `email` claim, if the token carried one. Discovery only; auth never
+    /// depends on it.
     pub email: Option<String>,
+    /// The `https://sunrise.app/device_id` claim, if present. Checked against
+    /// the `X-Sunrise-Device` header as defence in depth.
+    pub device_id: Option<String>,
+}
+
+impl Subject {
+    /// Construct a subject from the two claims that identify it.
+    #[must_use]
+    pub fn new(issuer: impl Into<String>, subject: impl Into<String>) -> Self {
+        Self {
+            issuer: issuer.into(),
+            subject: subject.into(),
+            email: None,
+            device_id: None,
+        }
+    }
+
+    /// Attach an email claim.
+    #[must_use]
+    pub fn with_email(mut self, email: impl Into<String>) -> Self {
+        self.email = Some(email.into());
+        self
+    }
+
+    /// A collision-free flattening of `(issuer, subject)`.
+    ///
+    /// The separator is US (`0x1f`), which cannot appear in a URL-shaped `iss`
+    /// or in a `sub`; concatenating without one would let an issuer choose a
+    /// `sub` that impersonates another issuer's principal.
+    #[must_use]
+    pub fn principal_key(&self) -> String {
+        format!("{}\u{1f}{}", self.issuer, self.subject)
+    }
 }
 
 /// Token verification error.
@@ -28,6 +87,9 @@ pub enum AuthError {
     /// Signature / claim validation failed.
     #[error("invalid token: {0}")]
     Invalid(String),
+    /// Token is well-formed and correctly signed but past its `exp`.
+    #[error("token expired")]
+    Expired,
     /// OIDC provider unreachable / JWKS fetch failed.
     #[error("oidc transport: {0}")]
     Transport(String),
@@ -52,6 +114,9 @@ pub trait TokenVerifier: Send + Sync + std::fmt::Debug {
     }
 }
 
+/// The issuer string [`NullVerifier`] stamps on its one synthetic principal.
+pub const SELF_HOST_ISSUER: &str = "urn:sunrise:self-host";
+
 /// Self-host single-tenant verifier — every request maps to the same
 /// synthetic subject. NEVER use in multi-tenant deployments.
 #[derive(Debug, Default, Clone, Copy)]
@@ -60,10 +125,7 @@ pub struct NullVerifier;
 #[async_trait]
 impl TokenVerifier for NullVerifier {
     async fn verify(&self, _bearer: &str) -> Result<Subject, AuthError> {
-        Ok(Subject {
-            account_id: "self-host".to_string(),
-            email: None,
-        })
+        Ok(Subject::new(SELF_HOST_ISSUER, "self-host"))
     }
 
     fn is_single_tenant(&self) -> bool {
@@ -104,7 +166,15 @@ mod tests {
     async fn null_verifier_accepts_anything() {
         let v = NullVerifier;
         let s = v.verify("anything").await.unwrap();
-        assert_eq!(s.account_id, "self-host");
+        assert_eq!(s.subject, "self-host");
+    }
+
+    /// `ws_handshake.rs` connects with no `Authorization` header at all, which
+    /// the upgrade path turns into `verify("")`. Self-host mode survives only
+    /// because that case is accepted.
+    #[tokio::test]
+    async fn null_verifier_accepts_the_empty_bearer() {
+        assert!(NullVerifier.verify("").await.is_ok());
     }
 
     #[tokio::test]
@@ -116,15 +186,20 @@ mod tests {
     #[tokio::test]
     async fn static_verifier_accepts_known() {
         let mut v = StaticVerifier::default();
-        v.allowed.insert(
-            "secret".into(),
-            Subject {
-                account_id: "alice".into(),
-                email: Some("a@b".into()),
-            },
-        );
+        v.allowed
+            .insert("secret".into(), Subject::new("iss", "alice"));
         let s = v.verify("secret").await.unwrap();
-        assert_eq!(s.account_id, "alice");
+        assert_eq!(s.subject, "alice");
+    }
+
+    /// Two principals that differ only by where the issuer ends and the subject
+    /// begins must not collapse onto one key — that would be an account
+    /// takeover across federated issuers.
+    #[test]
+    fn principal_key_cannot_be_forged_by_a_hostile_sub() {
+        let honest = Subject::new("https://idp.example", "alice");
+        let attacker = Subject::new("https://idp.example/alice", "");
+        assert_ne!(honest.principal_key(), attacker.principal_key());
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::auth::{NullVerifier, TokenVerifier};
 use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
+use crate::store::{Store, StoreError};
 use std::sync::Arc;
 
 /// Pluggable wall-clock; tests inject a fake.
@@ -37,6 +38,8 @@ pub struct ServerState {
     pub clock: Arc<dyn Clock>,
     /// Token verifier used by authenticated routes.
     pub token_verifier: Arc<dyn TokenVerifier>,
+    /// Account + device persistence.
+    pub store: Arc<Store>,
     /// Metric registry; cheap to clone.
     pub metrics: Metrics,
     /// Blob store root (self-host filesystem path).
@@ -45,8 +48,29 @@ pub struct ServerState {
 
 impl ServerState {
     /// Wrap a [`ServerConfig`] with default production clock + empty relay.
+    ///
+    /// # Panics
+    ///
+    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened. Use
+    /// [`ServerState::try_new`] where that is a condition to report rather than
+    /// a reason to abort; the binary entrypoint does. An in-memory store — the
+    /// `sqlite_path: None` case every test takes — has nothing to fail on.
     #[must_use]
     pub fn new(config: ServerConfig) -> Self {
+        Self::try_new(config).expect("open account store")
+    }
+
+    /// Wrap a [`ServerConfig`], reporting store-open failure.
+    pub fn try_new(config: ServerConfig) -> Result<Self, StoreError> {
+        let store = Store::open(config.sqlite_path.as_deref())?;
+        Ok(Self::assemble(
+            config,
+            Arc::new(SystemClock),
+            Arc::new(store),
+        ))
+    }
+
+    fn assemble(config: ServerConfig, clock: Arc<dyn Clock>, store: Arc<Store>) -> Self {
         let blob_root = config
             .blob_root
             .clone()
@@ -54,8 +78,9 @@ impl ServerState {
         Self {
             config: Arc::new(config),
             relay: RelayHub::new(),
-            clock: Arc::new(SystemClock),
+            clock,
             token_verifier: Arc::new(NullVerifier),
+            store,
             metrics: Metrics::new(),
             blob_root: Arc::new(blob_root),
         }
@@ -80,19 +105,13 @@ impl ServerState {
     }
 
     /// Wrap a [`ServerConfig`] with a caller-supplied clock (used by tests).
+    ///
+    /// # Panics
+    ///
+    /// As [`ServerState::new`].
     #[must_use]
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {
-        let blob_root = config
-            .blob_root
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("sunrise-self-host-blobs"));
-        Self {
-            config: Arc::new(config),
-            relay: RelayHub::new(),
-            clock,
-            token_verifier: Arc::new(NullVerifier),
-            metrics: Metrics::new(),
-            blob_root: Arc::new(blob_root),
-        }
+        let store = Store::open(config.sqlite_path.as_deref()).expect("open account store");
+        Self::assemble(config, clock, Arc::new(store))
     }
 }

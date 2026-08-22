@@ -49,6 +49,23 @@ argon2 = { version = "0.5", default-features = false, features = ["std", "alloc"
 subtle = { version = "2.5", default-features = false }
 zeroize = { version = "1.8", default-features = false, features = ["alloc", "derive"] }
 
+# --- OIDC / JWT ---
+# `jsonwebtoken` 9.x with `use_pem` off. Rationale (see
+# `crates/sunrise-server/src/auth/oidc.rs`): MIT, and the only backend it
+# links is `ring`, which rustls already pulls into this workspace — so the
+# whole JWT/JWKS surface costs exactly one new crate in the lock file.
+# 10.x/11.x dropped ring for a choice of `aws-lc-rs` (C, cmake+bindgen build)
+# or `rust_crypto` (drags in `rsa` 0.9, which carries the unpatched
+# RUSTSEC-2023-0071 Marvin advisory and would red `cargo deny check`).
+# Dropping `use_pem` sheds `pem` + `simple_asn1`: JWKS keys arrive as
+# base64url `n`/`e` components, never PEM.
+jsonwebtoken = { version = "9.3", default-features = false }
+# HTTPS for the JWKS/discovery fetch. `ring` + `webpki-tokio` reuse the rustls
+# stack and Mozilla root bundle already in the tree; `aws-lc-rs` (the default)
+# would add a C toolchain dependency for no gain here.
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "webpki-tokio"] }
+http-body-util = { version = "0.1", default-features = false }
+
 # --- TLS / transport ---
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
@@ -59,7 +76,10 @@ rusqlite = { version = "0.31", default-features = false, features = ["bundled-sq
 
 # --- async runtime / web ---
 tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
-axum = { version = "0.7", default-features = false, features = ["json", "ws", "http1", "http2", "tokio", "tracing"] }
+# `original-uri` keeps the pre-nesting request target available to handlers.
+# `Router::nest` rewrites `Uri` to the path *inside* the nest, and the device
+# signature covers the target the client actually sent.
+axum = { version = "0.7", default-features = false, features = ["json", "ws", "http1", "http2", "original-uri", "tokio", "tracing"] }
 hyper = { version = "1.5", default-features = false, features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
