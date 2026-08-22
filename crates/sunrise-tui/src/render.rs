@@ -26,6 +26,23 @@ pub const fn fits(area: Rect) -> bool {
     area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT
 }
 
+/// Rows the focused list can actually show in a terminal `height` rows tall,
+/// which is what the page keys must move by.
+///
+/// Derived from the same constants [`render_chrome`] lays out with — one row
+/// of tab bar, one of status line, the optional capture-preview row, and the
+/// list's own two border rows — so a page jump lands exactly one screenful
+/// away rather than approximately.
+#[must_use]
+pub fn viewport_rows(height: u16, capture_preview: bool) -> usize {
+    /// Tab bar + status line.
+    const CHROME_ROWS: u16 = 2;
+    /// Top and bottom border of the list block.
+    const LIST_BORDER_ROWS: u16 = 2;
+    let used = CHROME_ROWS + LIST_BORDER_ROWS + u16::from(capture_preview);
+    usize::from(height.saturating_sub(used)).max(1)
+}
+
 /// Top-level dispatch: pick the renderer that matches the view.
 ///
 /// With the `images` feature, `preview` is the runtime-owned image state
@@ -1273,6 +1290,16 @@ mod tests {
     use sunrise_domain::{
         ConstraintSeverity, DateRange, Energy, NoteBody, ScheduleConstraint, WeekdaySet,
     };
+
+    #[test]
+    fn viewport_rows_matches_what_the_layout_actually_leaves_for_the_list() {
+        // 24 rows: 1 tab bar + 1 status + 2 list borders = 20 usable.
+        assert_eq!(viewport_rows(24, false), 20);
+        // The capture preview claims one more.
+        assert_eq!(viewport_rows(24, true), 19);
+        // Never zero, whatever the terminal claims.
+        assert_eq!(viewport_rows(1, true), 1);
+    }
 
     #[test]
     fn render_today_with_empty_list() {

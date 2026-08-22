@@ -64,6 +64,10 @@ impl SyncIndicator {
     }
 }
 
+/// Rows a list is assumed to show before the runtime has measured the real
+/// terminal — the body height of the 80x24 minimum, less the chrome.
+pub const DEFAULT_VIEWPORT_ROWS: usize = 20;
+
 /// Primary views per the parity matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -166,6 +170,18 @@ impl StreamPicker {
                 self.selected - 1
             };
         }
+    }
+
+    /// Move the picker cursor by `delta`, clamping at both ends.
+    pub fn nav_by(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let last = self.rows.len() - 1;
+        let want = isize::try_from(self.selected)
+            .unwrap_or(0)
+            .saturating_add(delta);
+        self.selected = usize::try_from(want.max(0)).unwrap_or(0).min(last);
     }
 
     /// The highlighted destination stream, if any.
@@ -569,6 +585,10 @@ pub struct ViewState {
     /// Focus-session state: the running session, the planner queue, the
     /// folded stats. See [`FocusState`].
     pub focus: FocusState,
+    /// Visible rows in the focused list, refreshed once per frame by the
+    /// binary from the real terminal size. Drives the page-jump keys; a
+    /// default is kept so the reducer is usable with no terminal at all.
+    pub viewport_rows: usize,
     /// Last reading of the injected clock (`Core::now_ms`), refreshed once per
     /// frame by the binary.
     ///
@@ -610,6 +630,7 @@ impl Default for ViewState {
             tz: jiff::tz::TimeZone::UTC,
             keymap: Keymap::default(),
             focus: FocusState::default(),
+            viewport_rows: DEFAULT_VIEWPORT_ROWS,
             now_ms: 0,
         }
     }
@@ -727,6 +748,48 @@ impl ViewState {
     /// Jump the focused list's cursor to its last row (`G`).
     pub fn nav_last(&mut self) {
         self.nav_to(|len| len - 1);
+    }
+
+    /// Move the focused list's cursor by `delta` rows, clamping at both ends.
+    ///
+    /// Clamps rather than wraps: a page jump that silently wrapped to the far
+    /// end of a long list would lose the user's place entirely, and unlike a
+    /// single-step `j` there is no cheap way to tell it happened.
+    pub fn nav_by(&mut self, delta: isize) {
+        let current = match self.active_list() {
+            ActiveList::Streams => self.selected_stream,
+            ActiveList::Routines => self.selected_routine,
+            ActiveList::FocusPlan => self.focus.selected,
+            ActiveList::Tasks => self.selected,
+        }
+        .unwrap_or(0);
+        self.nav_to(|len| {
+            let last = len.saturating_sub(1);
+            let want = isize::try_from(current).unwrap_or(0).saturating_add(delta);
+            usize::try_from(want.max(0)).unwrap_or(0).min(last)
+        });
+    }
+
+    /// Rows one page holds — the visible height of the focused list, set by
+    /// the runtime from the real terminal size each frame.
+    ///
+    /// Held on the state rather than passed to the reducer because a page is a
+    /// property of the *viewport*, and the reducer must stay a pure function of
+    /// state: a test that wants a five-row page sets one.
+    #[must_use]
+    pub const fn page_rows(&self) -> usize {
+        self.viewport_rows
+    }
+
+    /// Half a page, at least one row (`^D` / `^U`).
+    #[must_use]
+    pub const fn half_page_rows(&self) -> usize {
+        let half = self.viewport_rows / 2;
+        if half == 0 {
+            1
+        } else {
+            half
+        }
     }
 
     /// Shared body of [`Self::nav_first`] / [`Self::nav_last`]: resolve the

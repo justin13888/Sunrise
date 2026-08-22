@@ -66,7 +66,7 @@ pub use keymap::{
 };
 pub use render::{
     fits, render, render_focus, render_inbox, render_routines, render_search, render_stream,
-    render_today, MIN_HEIGHT, MIN_WIDTH,
+    render_today, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use view::{

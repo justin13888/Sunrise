@@ -279,6 +279,11 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
         // it: `render` derives elapsed/remaining from this value against the
         // immutable session record, every frame, from scratch.
         state.now_ms = core.now_ms();
+        // A "page" is a screenful of the list the user is looking at, so the
+        // page keys need the real terminal size. Measured here, once per
+        // frame, and read by the reducer — which stays pure.
+        state.viewport_rows =
+            render::viewport_rows(term.size()?.height, state.capture_preview.is_some());
         term.draw(|f| {
             let area = f.area();
             #[cfg(feature = "images")]

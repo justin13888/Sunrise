@@ -193,6 +193,24 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.nav_last();
             Outcome::None
         }
+        Action::PageDown | Action::PageUp | Action::HalfPageDown | Action::HalfPageUp => {
+            let rows = match action {
+                Action::PageDown | Action::PageUp => state.page_rows(),
+                _ => state.half_page_rows(),
+            };
+            let delta = isize::try_from(rows).unwrap_or(1);
+            let delta = match action {
+                Action::PageUp | Action::HalfPageUp => -delta,
+                _ => delta,
+            };
+            match state.picker.as_mut() {
+                // The picker is a short overlay list of its own; paging it
+                // means paging the picker, not the list behind it.
+                Some(p) => p.nav_by(delta),
+                None => state.nav_by(delta),
+            }
+            Outcome::None
+        }
         Action::TogglePane => {
             state.toggle_pane();
             Outcome::None
@@ -1182,6 +1200,48 @@ manual"
         s.selected = Some(0);
         let _ = press(&mut s, KeyCode::Char(' '));
         assert!(s.marked_ids().is_empty());
+    }
+
+    #[test]
+    fn page_keys_move_by_a_screenful_and_clamp_at_the_ends() {
+        use crossterm::event::KeyModifiers as M;
+        let mut s = ViewState::default();
+        s.view = View::Inbox;
+        s.tasks = (0u8..30).map(fake_task).collect();
+        s.after_tasks_loaded();
+        s.selected = Some(0);
+        s.viewport_rows = 10;
+
+        let _ = press(&mut s, KeyCode::PageDown);
+        assert_eq!(s.selected, Some(10));
+        let _ = press_mod(&mut s, KeyCode::Char('d'), M::CONTROL);
+        assert_eq!(s.selected, Some(15));
+        let _ = press_mod(&mut s, KeyCode::Char('u'), M::CONTROL);
+        assert_eq!(s.selected, Some(10));
+        let _ = press(&mut s, KeyCode::PageUp);
+        assert_eq!(s.selected, Some(0));
+        // Clamps rather than wrapping: a page jump that silently teleported to
+        // the far end would lose the user's place with nothing to say so.
+        let _ = press(&mut s, KeyCode::PageUp);
+        assert_eq!(s.selected, Some(0));
+        let _ = press(&mut s, KeyCode::End);
+        assert_eq!(s.selected, Some(29));
+        let _ = press(&mut s, KeyCode::PageDown);
+        assert_eq!(s.selected, Some(29));
+        let _ = press(&mut s, KeyCode::Home);
+        assert_eq!(s.selected, Some(0));
+    }
+
+    #[test]
+    fn a_page_is_half_a_row_at_worst_never_zero() {
+        // A one-row viewport must still move the cursor: `^D` that does
+        // nothing reads as a broken key.
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        s.viewport_rows = 1;
+        assert_eq!(s.half_page_rows(), 1);
+        let _ = apply_action(Action::HalfPageDown, &mut s, NOW_MS);
+        assert_eq!(s.selected, Some(1));
     }
 
     #[test]
