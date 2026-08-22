@@ -112,7 +112,11 @@ enum TodayGroup {
     DueToday,
     /// Planned for today.
     Scheduled,
-    /// Pulled in with no date of its own.
+    /// Dated, but later than today. `Query::Today` uses a rolling 24-hour
+    /// window, so tomorrow morning's work legitimately appears in the list —
+    /// and calling it "Anytime" would say the opposite of what it is.
+    Upcoming,
+    /// Pulled in with no date at all.
     Anytime,
 }
 
@@ -122,6 +126,7 @@ impl TodayGroup {
             Self::Overdue => "Overdue",
             Self::DueToday => "Due today",
             Self::Scheduled => "Scheduled",
+            Self::Upcoming => "Upcoming",
             Self::Anytime => "Anytime",
         }
     }
@@ -145,6 +150,9 @@ fn today_group(t: &Task, now_ms: u64, tz: &jiff::tz::TimeZone) -> TodayGroup {
     }
     if t.scheduled_at.is_some_and(|s| day_of(s) == today) {
         return TodayGroup::Scheduled;
+    }
+    if t.due_at.is_some() || t.scheduled_at.is_some() {
+        return TodayGroup::Upcoming;
     }
     TodayGroup::Anytime
 }

@@ -2561,9 +2561,11 @@ mod tests {
         due.due_at = Some("2026-01-01T17:00:00Z".parse().unwrap());
         let mut sched = dated_task(3, "standup");
         sched.scheduled_at = Some("2026-01-01T09:00:00Z".parse().unwrap());
+        let mut soon = dated_task(5, "collect the parcel");
+        soon.scheduled_at = Some("2026-01-02T09:00:00Z".parse().unwrap());
         let anytime = dated_task(4, "read the manual");
 
-        state.tasks = vec![anytime, sched, due, overdue];
+        state.tasks = vec![anytime, soon, sched, due, overdue];
         crate::view::sort_today(&mut state.tasks, now_ms, &tz);
         state.after_tasks_loaded();
 
@@ -2577,12 +2579,13 @@ mod tests {
                 "renew the passport",
                 "file the tax return",
                 "standup",
+                "collect the parcel",
                 "read the manual"
             ],
             "group order, worst first"
         );
         let s = guarded_frame(100, 24, &state);
-        for label in ["Overdue", "Due today", "Scheduled", "Anytime"] {
+        for label in ["Overdue", "Due today", "Scheduled", "Upcoming", "Anytime"] {
             assert!(s.contains(label), "missing the {label} header:\n{s}");
         }
     }
