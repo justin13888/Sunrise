@@ -8,25 +8,12 @@ no-default-features = false
 [advisories]
 version = 2
 ignore = [
-    # ---- Reaches us only through `loro` (sunrise-crdt) ----
-    # All "unmaintained" advisories, not vulnerabilities, and none has an
-    # upgrade path: the `im` immutable-collections family was archived
-    # upstream, and `heapless` 0.7 pins `atomic-polyfill` transitively.
+    # The `im` / `bitmaps` / `sized-chunks` / `atomic-polyfill` suppressions that
+    # used to live here reached us only through `loro`. `sunrise-crdt` and the
+    # `loro` dependency were deleted by ADR-0014, `cargo deny check advisories`
+    # stopped reporting all four, and the entries were removed rather than left
+    # behind as stale suppressions.
     #
-    # These are expected to disappear entirely once `sunrise-crdt` is removed
-    # (ADR superseding 0003) — `loro` is its only consumer. Re-run
-    # `cargo deny check advisories` after that lands and DELETE any entry that
-    # stops being reported, rather than leaving a stale suppression behind.
-    { id = "RUSTSEC-2026-0248", reason = "im: unmaintained; via loro. Expected to vanish with sunrise-crdt." },
-    { id = "RUSTSEC-2026-0247", reason = "bitmaps: unmaintained; via im <- loro. Expected to vanish with sunrise-crdt." },
-    { id = "RUSTSEC-2026-0251", reason = "sized-chunks: unmaintained; via im <- loro. Expected to vanish with sunrise-crdt." },
-    # `cargo tree -i atomic-polyfill -e normal --workspace` prints nothing: it is
-    # a target-conditional dep of heapless 0.7 for targets without native
-    # atomics, so it sits in Cargo.lock but is never compiled for anything we
-    # ship. No runtime exposure at all.
-    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill: unmaintained; in the lockfile via heapless <- postcard <- loro but never compiled on any target we build." },
-
-    # ---- Survives the sunrise-crdt removal ----
     # `paste` is archived but is a compile-time-only proc macro reached through
     # `ratatui`, which we depend on directly (ADR-0006). No runtime exposure and
     # no replacement available upstream; revisit when ratatui drops it.
@@ -56,14 +43,22 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # MPL-2.0 stopped being matched when `loro` went (it reached us through
+    # `im`, which is MPL-2.0). Kept anyway, like the two below: these are
+    # policy statements about licences we accept, not suppressions of a
+    # problem, and `OpenSSL` / `Unicode-DFS-2016` have been unmatched since
+    # before ADR-0014. cargo-deny reports all three as
+    # `license-not-encountered` warnings and still exits 0.
     "MPL-2.0",
     "OpenSSL",
     # Mozilla's CA bundle, reached through tokio-tungstenite (ADR-0005).
     # A data licence, permissive, and AGPL-compatible. Permanent.
     "CDLA-Permissive-2.0",
     # Boost Software Licence — OSI-approved, permissive, AGPL-compatible.
-    # Reached through `xxhash-rust` <- loro, so it is expected to become
-    # unused once sunrise-crdt is removed; drop this entry if so.
+    # Annotated here as reaching us via `xxhash-rust` <- loro and therefore
+    # droppable with sunrise-crdt. That was wrong: after the ADR-0014 deletion
+    # `cargo deny list` still reports BSL-1.0 for `ryu` (float formatting, via
+    # `serde_json`), which is not going anywhere. Permanent.
     "BSL-1.0",
 ]
 confidence-threshold = 0.9

@@ -1,16 +1,16 @@
-//! Sync state machine + cursors + outbox + transport trait.
+//! Sync session vocabulary + transport trait.
 //!
-//! Per `docs/05-sync/`. The state machine is transport-agnostic — concrete
-//! WebSocket / HTTP-long-poll transports plug in via the [`Transport`]
-//! trait. Phase 11 (server) and the per-platform clients in Phase 13+ will
-//! provide implementations.
+//! Per `docs/05-sync/`. This crate holds only the transport-agnostic pieces
+//! the sync driver needs; the driver itself — connection lifecycle, cursor
+//! tracking, and outbound queueing — lives in `sunrise-core::sync_driver`,
+//! and the durable outbox is `sunrise_storage::Outbox`.
 //!
 //! v1 surface:
-//! - [`SyncState`] state machine.
-//! - [`Cursor`] per `(stream_id, originating_device_id, last_applied_seq)`.
-//! - [`Outbox`] FIFO of outbound op envelopes.
-//! - [`Backoff`] exponential backoff with jitter.
-//! - [`Transport`] async trait the state machine drives.
+//! - [`SyncState`] — the session state a driver reports to the UI.
+//! - [`Backoff`] — exponential backoff with jitter.
+//! - [`Transport`] — async trait the driver drives.
+//! - [`WsTransport`] — the production WebSocket client transport (`ws`
+//!   feature).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -21,17 +21,13 @@
 )]
 
 pub mod backoff;
-pub mod cursor;
-pub mod outbox;
 pub mod state;
 pub mod transport;
 #[cfg(feature = "ws")]
 pub mod ws;
 
 pub use backoff::Backoff;
-pub use cursor::{Cursor, CursorMap};
-pub use outbox::Outbox;
-pub use state::{SyncState, SyncStateMachine, SyncStateTransition};
+pub use state::SyncState;
 pub use transport::{Transport, TransportError};
 #[cfg(feature = "ws")]
 pub use ws::WsTransport;

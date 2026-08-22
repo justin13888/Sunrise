@@ -1,6 +1,14 @@
 # 0003 — CRDT: Loro over Automerge
 
-**Status:** accepted
+**Status:** superseded by [0014](./0014-entity-level-lww-merge.md)
+
+> This decision was **never realized**. `crates/sunrise-crdt` was written
+> against `loro` but nothing in the workspace ever depended on it; merge has
+> always run on entity-level LWW in SQLite. The crate and the `loro` dependency
+> are deleted. See [ADR-0014](./0014-entity-level-lww-merge.md) for the merge
+> model that actually ships, what it gives up, and what would bring a CRDT
+> library back. The comparison below is retained as the record of the original
+> evaluation.
 
 ## Context
 

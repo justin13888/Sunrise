@@ -4,6 +4,16 @@ status: accepted
 
 # CRDT Design
 
+> **This document describes target state, not v1.**
+> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003:
+> Sunrise v1 merges at **entity granularity with last-writer-wins in SQLite**
+> (`sunrise-core::engine::lww_wins`, migration `0006_lww_metadata.sql`) and
+> ships **no CRDT library**. The per-field types below — OR-Sets, PN-counters,
+> RichText, fractional-index lists — are the design we would adopt when
+> collaborative note bodies or per-field merge become real requirements. See
+> [`../implementation/overview.md`](../implementation/overview.md) for what is
+> actually live.
+
 ## Choice of CRDT library
 
 **Loro** (Rust, with WASM bindings). See [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md).
@@ -19,7 +29,7 @@ Automerge was the alternative; rejected for v1 due to slower mobile performance 
 
 ### Version pinning
 
-`loro = "1.12"` (major+minor pin in `Cargo.toml`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)); upgrading requires a superseding ADR. The `1.0 → 1.12` move is ratified as accepting upstream fixes on the pre-`2.0` line. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "1.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
+**No `loro` pin exists any more** — the dependency was removed by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) and `Cargo.toml` declares no CRDT library; the paragraph below records the pinning policy that would apply if one is reintroduced. Previously `loro = "1.12"` (major+minor pin in `Cargo.toml`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)); upgrading requires a superseding ADR. The `1.0 → 1.12` move is ratified as accepting upstream fixes on the pre-`2.0` line. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "1.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
 
 ## Document layout
 

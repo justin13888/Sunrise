@@ -7,14 +7,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Sync state machine, cursors, outbox, transport trait"
+description = "Sync session states, backoff, and the transport trait"
 
 [lints]
 workspace = true
 
 [features]
 # Concrete WebSocket client transport (`WsTransport`). Off by default so the
-# state-machine surface stays runtime-agnostic; the clients / e2e opt in.
+# transport surface stays runtime-agnostic; the clients / e2e opt in.
 ws = ["dep:tokio-tungstenite", "dep:futures-util"]
 
 [dependencies]
@@ -22,9 +22,6 @@ async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-sunrise-cbor = { workspace = true }
-sunrise-error = { workspace = true }
-sunrise-wire-protocol = { workspace = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 

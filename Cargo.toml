@@ -54,11 +54,6 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
-# --- CRDT (ADR-0003; pin major+minor for v1) ---
-# Pinned to a recent stable 1.x; tighter exact-pin policy returns at the
-# Phase 17 lockdown.
-loro = { version = "1.12", default-features = false }
-
 # --- storage ---
 rusqlite = { version = "0.31", default-features = false, features = ["bundled-sqlcipher", "blob", "trace"] }
 
@@ -146,7 +141,6 @@ sunrise-cbor = { path = "crates/sunrise-cbor", version = "0.1.0" }
 sunrise-crypto = { path = "crates/sunrise-crypto", version = "0.1.0" }
 sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors", version = "0.1.0" }
 sunrise-domain = { path = "crates/sunrise-domain", version = "0.1.0" }
-sunrise-crdt = { path = "crates/sunrise-crdt", version = "0.1.0" }
 sunrise-storage = { path = "crates/sunrise-storage", version = "0.1.0" }
 sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol", version = "0.1.0" }
 sunrise-sync = { path = "crates/sunrise-sync", version = "0.1.0" }

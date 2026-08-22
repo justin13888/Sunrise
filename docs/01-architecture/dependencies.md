@@ -17,7 +17,6 @@ superseding decision named in the **Governing decision** column.
 
 | Purpose | Crate | Version (Cargo.lock) | Governing decision | Notes |
 |---|---|---|---|---|
-| CRDT document store | `loro` | 1.12.0 | [ADR-0003](../11-adr/0003-crdt-loro-vs-automerge.md), [crdt-design.md](../05-sync/crdt-design.md) | Pinned major+minor for v1; exact-pin policy returns at v1 release lockdown. Snapshot format compatibility guaranteed within `1.x`. |
 | Signatures (identity, device keys) | `ed25519-dalek` | 2.2.0 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen crypto suite; consumed only by `sunrise-crypto`. |
 | Key agreement (X25519 / DHKEM) | `x25519-dalek` | 2.0.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
 | AEAD (XChaCha20-Poly1305) | `chacha20poly1305` | 0.10.1 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Frozen; `sunrise-crypto` only. |
@@ -66,14 +65,15 @@ Majors only; exact ranges live in the per-package `package.json` files.
 Five places where doc prose had drifted from the real manifest / lockfile.
 Each is now reconciled to reality.
 
-### a. `loro` — doc pin vs. lockfile
+### a. `loro` — removed; there is no CRDT library
 
-`docs/05-sync/crdt-design.md` previously carried an exact `1.0` pin. The real
-resolved version is **1.12.0** (`loro = "1.12"` in `[workspace.dependencies]`).
-`crdt-design.md` has been corrected to the real pin. The rule stands: upgrades
-require a superseding ADR. The `1.0 → 1.12` move is ratified here as accepting
-upstream fixes on the pre-`2.0` line; snapshot format compatibility is
-guaranteed by the library within `1.x`.
+An earlier revision of this table pinned `loro 1.12.0` as the "CRDT document
+store". [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003:
+the Loro layer (`crates/sunrise-crdt`) was never depended on by anything, merge
+runs on entity-level LWW in SQLite, and both the crate and the `loro` entry in
+`[workspace.dependencies]` are deleted. **No CRDT library is in the dependency
+graph.** Removing it also dropped the `im` / `bitmaps` / `sized-chunks` /
+`atomic-polyfill` RUSTSEC suppressions from `deny.toml`.
 
 ### b. `hpke` — declared, not yet consumed
 

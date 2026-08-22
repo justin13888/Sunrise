@@ -32,12 +32,11 @@ client*, which is the only measure that matters to a user.
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
-| `sunrise-crypto-test-vectors` | 🟧 orphan | No consumer, despite its own doc comment claiming it is "consumed only by the `sunrise-crypto` test suite". Its one vector pairs a real public key with a zero sentinel instead of a frozen expected value, so it cannot detect a BLAKE3 derivation change — which is the entire purpose of a test-vector crate |
+| `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
 | `sunrise-domain` | 🟨 partial | Task / Stream / Routine are complete. `Block`, `Note`, `Context`, `Person`, `Attachment` are structs with no command path |
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v6) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
-| `sunrise-sync` | 🟨 partial | `WsTransport` and backoff are live. `Outbox`, `Cursor`, `CursorMap`, `SyncStateMachine` are exported dead code with live-looking names — the real implementations are elsewhere |
-| `sunrise-crdt` | 🟧 orphan | **Loro is not in the data path.** Merge is entity-level LWW in SQLite. ADR-0003 is unrealized |
+| `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | 🟧 orphan | No crate calls `sunrise_log::init`, so ADR-0010 and `log-events.md` describe nothing that runs. Two of four documented sinks (`file`, `remote`) do not exist |
 | `sunrise-pairing` | 🟧 orphan | `snow` is a declared dependency that appears only in a doc comment. There is no Noise handshake anywhere in the workspace |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
@@ -120,7 +119,10 @@ Tracked so they are not rediscovered as surprises:
   blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
 - **iOS / Android / UniFFI** — platform-engineer owned.
 - **Apple Focus integration** — not wired.
-- **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level LWW.
+- **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level
+  LWW, now the decided model per [ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
+  which supersedes ADR-0003. `crates/sunrise-crdt` and the `loro` dependency are
+  deleted; the workspace contains no CRDT library.
 - **CI gates** — the >5% bench-regression gate and `cargo-mutants`
   (`docs/10-cross-cutting/testing.md`) are not wired. Baselines and the criterion
   suite that feed the regression gate are in place.
@@ -128,10 +130,13 @@ Tracked so they are not rediscovered as surprises:
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **411** tests. Read that number
-with two caveats: roughly 50 of them exercise orphan crates that no product path
-reaches, and a handful are tautological (see `docs/10-cross-cutting/testing.md`).
-Treat it as "400+", and prefer the reachability column above as the signal.
+`cargo test --workspace --all-targets` passes **537** tests (down from 544: the
+[ADR-0014](../11-adr/0014-entity-level-lww-merge.md) cleanup deleted 7 tests with
+`sunrise-crdt` and 7 with the dead `sunrise-sync` exports, and added 8 frozen
+crypto-vector tests in place of 1 tautological one). Read the number with a
+caveat: some still exercise orphan crates that no product path reaches, and a
+handful are tautological (see `docs/10-cross-cutting/testing.md`). Prefer the
+reachability column above as the signal.
 
 ```
 cargo test --workspace --all-targets                    # full suite

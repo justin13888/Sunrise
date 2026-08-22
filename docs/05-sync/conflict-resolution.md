@@ -4,6 +4,11 @@ status: accepted
 
 # Conflict Resolution
 
+> **Target state.** v1 resolves *every* field by entity-level LWW over
+> `(ts_ms, device_id)` — the "Scalar" row below applied to the whole entity.
+> The OR-Set, PN-counter, list, and RichText policies are not implemented; see
+> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md).
+
 The CRDT framework deterministically merges most concurrent edits. This spec documents the *deliberate* policy choices for cases where the framework offers options.
 
 ## Default policies

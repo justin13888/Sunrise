@@ -75,4 +75,4 @@ Each domain entity maps to a CRDT subtree. See [`../05-sync/crdt-design.md`](../
 - Sets (e.g. contexts on a task) are observed-remove sets.
 - Counters (e.g. routine streak) are PN-counters.
 
-This maps directly into Loro's data model (see [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md)).
+This maps directly into Loro's data model (see [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md)) — **target state**. ADR-0003 is superseded by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md): v1 merges at entity granularity with LWW in SQLite and ships no CRDT library.

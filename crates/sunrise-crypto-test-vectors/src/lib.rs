@@ -1,41 +1,195 @@
 //! Frozen byte-exact test vectors for the v1 crypto suite.
 //!
-//! Every entry here MUST stay byte-stable across releases; any change is a
-//! crypto-suite version bump per `docs/03-crypto/key-rotation.md`. The crate
-//! is consumed only by the `sunrise-crypto` test suite; the binary form is
-//! committed as `vectors/*.{cbor,json}` files.
+//! Every value here is a **literal**, produced once by running the v1
+//! implementation and then pinned. Nothing in this crate calls
+//! `sunrise-crypto` — it has no dependencies at all — so a vector can only
+//! agree with the implementation if the implementation still produces the
+//! same bytes. That is the whole point: if a BLAKE3, CBOR, Ed25519, or
+//! XChaCha20-Poly1305 change shifts a single byte, the assertions in
+//! `sunrise-crypto/tests/frozen_vectors.rs` fail.
+//!
+//! The vectors are asserted by the `sunrise-crypto` test suite, which
+//! dev-depends on this crate. Keeping them here rather than inline keeps the
+//! frozen data reviewable as data, and keeps the dependency arrow pointing
+//! away from the implementation.
+//!
+//! **These values MUST NOT change.** A change is a crypto-suite version bump
+//! per `docs/03-crypto/key-rotation.md`, not a test fix. Regenerate only
+//! alongside a new suite id.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![allow(clippy::doc_markdown)]
 
-/// Identity-id derivation: ID_S_pub = `[0x07; 32]`.
-pub const IDENTITY_ID_PUB_07: ([u8; 32], [u8; 16]) = (
-    [
-        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
-        0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
-        0x07, 0x07,
-    ],
-    // Computed by `BLAKE3.derive_key("sunrise.identity_id.v1", [0x07; 32], 16)`.
-    // The actual bytes are asserted at test time — we leave the constant as
-    // a sentinel array (all-zero) and have the test do the live derivation
-    // for the comparison. This avoids hard-coding values that would drift if
-    // BLAKE3 implementations change minor versions.
-    [0u8; 16],
-);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sunrise_crypto::identity_id_from_pub;
-
-    #[test]
-    fn identity_id_derivation_is_stable() {
-        let (pub_bytes, _) = IDENTITY_ID_PUB_07;
-        let a = identity_id_from_pub(&pub_bytes);
-        let b = identity_id_from_pub(&pub_bytes);
-        assert_eq!(a, b);
-        // Sanity: it's not all-zero.
-        assert_ne!(a, [0u8; 16]);
+/// Decode a lowercase hex literal into a fixed-size byte array at compile
+/// time. A length or digit mistake in a frozen vector is a compile error.
+const fn hex<const N: usize>(s: &str) -> [u8; N] {
+    let b = s.as_bytes();
+    assert!(b.len() == N * 2, "hex literal has wrong length for [u8; N]");
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = (nibble(b[2 * i]) << 4) | nibble(b[2 * i + 1]);
+        i += 1;
     }
+    out
+}
+
+const fn nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        _ => panic!("hex literal must be lowercase [0-9a-f]"),
+    }
+}
+
+/// One `identity_id_from_pub` vector.
+///
+/// `identity_id = BLAKE3.derive_key("sunrise.identity_id.v1", ID_S_pub, 16)`
+/// per `docs/03-crypto/identity-and-device-keys.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct IdentityIdVector {
+    /// 32-byte Ed25519 identity public key (`ID_S_pub`).
+    pub id_s_pub: [u8; 32],
+    /// Expected 16-byte identity id.
+    pub identity_id: [u8; 16],
+}
+
+/// Identity-id derivation vectors: two edge inputs, one high-entropy-looking
+/// input, and one real Ed25519 public key ([`DEVICE_SIGNING_PUBLIC`]).
+pub const IDENTITY_ID_VECTORS: [IdentityIdVector; 4] = [
+    IdentityIdVector {
+        id_s_pub: [0x00; 32],
+        identity_id: hex("b8355ed7bc4b713084929f9f19e79ae0"),
+    },
+    IdentityIdVector {
+        id_s_pub: [0x07; 32],
+        identity_id: hex("9346b7f6a212ee8c4b0853db80dcc4bd"),
+    },
+    IdentityIdVector {
+        id_s_pub: [0xff; 32],
+        identity_id: hex("a4b22132fd9c429e88f1b6d1fd982803"),
+    },
+    IdentityIdVector {
+        id_s_pub: DEVICE_SIGNING_PUBLIC,
+        identity_id: hex("88976dc38fa242d7c9e3fc58988f560d"),
+    },
+];
+
+/// One `BLAKE3.derive_key` vector, 32 bytes of output.
+#[derive(Debug, Clone, Copy)]
+pub struct KdfVector {
+    /// Domain-separation context string.
+    pub context: &'static str,
+    /// Key material fed to the XOF.
+    pub key_material: &'static [u8],
+    /// Expected first 32 output bytes.
+    pub out_32: [u8; 32],
+}
+
+/// `BLAKE3.derive_key` vectors covering distinct contexts and an empty input.
+pub const KDF_VECTORS: [KdfVector; 3] = [
+    KdfVector {
+        context: "sunrise.identity_id.v1",
+        key_material: b"key material",
+        out_32: hex("247b6daa254cc8174c1b48d1697ad291a44ca9f3f912902dc156ce6930a92e15"),
+    },
+    KdfVector {
+        context: "sunrise.test.v1",
+        key_material: b"key",
+        out_32: hex("be9e3c34435d157172abb4bab0c939377a39914a19393f4f568ac48f3c1197ac"),
+    },
+    KdfVector {
+        context: "sunrise.stream_key.v1",
+        key_material: b"",
+        out_32: hex("2ad1ddabad95f545528301b9913d266b8262bd8824fb03c70b6f1f9e0b61a2c5"),
+    },
+];
+
+/// `stream_root_init(&[0x00; 16])`.
+pub const STREAM_ROOT_INIT_ZERO: [u8; 32] =
+    hex("f40b1d6b076e1213c777608945e6a49bf84fd08f53616e6463b994dc46414c68");
+
+/// Stream id used by the merkle chain below and by the envelope vectors.
+pub const STREAM_ID: [u8; 16] = [0x22; 16];
+
+/// `stream_root_init(&STREAM_ID)`.
+pub const STREAM_ROOT_0: [u8; 32] =
+    hex("eeee782bd75d80542092184249af6b92acdbb29a91b92f8576491679a68bb466");
+
+/// `stream_root_step(&STREAM_ROOT_0, b"a")`.
+pub const STREAM_ROOT_1: [u8; 32] =
+    hex("5fb332b958a0000f159ee90c1377b54991b404ee0ca2f59163348eaaa0152525");
+
+/// `stream_root_step(&STREAM_ROOT_1, b"b")`.
+pub const STREAM_ROOT_2: [u8; 32] =
+    hex("53d7f37110ab645251f591091da6320770cfc0b80700e05aa77128fa39ccd145");
+
+/// Ed25519 signing-key seed used by the envelope vectors. Ed25519 signing is
+/// deterministic, so a fixed seed pins the signature bytes exactly.
+pub const DEVICE_SIGNING_SECRET: [u8; 32] = [0x11; 32];
+
+/// The Ed25519 public key for [`DEVICE_SIGNING_SECRET`].
+pub const DEVICE_SIGNING_PUBLIC: [u8; 32] =
+    hex("d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737");
+
+/// Device id used by the envelope vectors.
+pub const DEVICE_ID: [u8; 16] = [0x33; 16];
+
+/// Inner-op bytes fed to `encode_envelope` in both envelope vectors.
+pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
+
+/// `aead_alg = 0` control envelope: plaintext payload, signature only.
+///
+/// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
+/// ts_ms = 1_700_000_000_000, AeadAlgId::None, epoch = 0, nonce = [0; 24],
+/// stream_key = None, DEVICE_SIGNING_SECRET)`.
+pub mod signed_only_envelope {
+    /// `seq` field.
+    pub const SEQ: u64 = 7;
+    /// `ts_ms` field.
+    pub const TS_MS: u64 = 1_700_000_000_000;
+    /// `epoch` field (MUST be 0 when `aead_alg = 0`).
+    pub const EPOCH: u32 = 0;
+    /// `nonce` field (unused when `aead_alg = 0`).
+    pub const NONCE: [u8; 24] = [0x00; 24];
+    /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
+    pub const ENCODED: [u8; 181] = super::hex(concat!(
+        "5352020001ab010102502222222222222222222222222222222203503333",
+        "33333333333333333333333333330407051b0000018bcfe5680006000701",
+        "08000958180000000000000000000000000000000000000000000000000a",
+        "57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840636f6f",
+        "63be85686bb3ef9f4a8ad77bb8ac615fd78600256f79796dc500f6eba20e",
+        "a6be0abe7a0edded5da05848d7fb53591b0c6936c84830fd6ecaf6e71d71",
+        "01",
+    ));
+}
+
+/// `aead_alg = 1` envelope: payload sealed with XChaCha20-Poly1305 under a
+/// fixed stream key and a fixed nonce, so the ciphertext is reproducible.
+///
+/// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
+/// ts_ms = 1_700_000_000_001, AeadAlgId::XChaCha20Poly1305, epoch = 3,
+/// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
+pub mod sealed_envelope {
+    /// `seq` field.
+    pub const SEQ: u64 = 9;
+    /// `ts_ms` field.
+    pub const TS_MS: u64 = 1_700_000_000_001;
+    /// `epoch` field.
+    pub const EPOCH: u32 = 3;
+    /// `nonce` field.
+    pub const NONCE: [u8; 24] = [0x55; 24];
+    /// Stream key the payload is sealed under.
+    pub const STREAM_KEY: [u8; 32] = [0x44; 32];
+    /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
+    pub const ENCODED: [u8; 198] = super::hex(concat!(
+        "5352020001ab010102502222222222222222222222222222222203503333",
+        "33333333333333333333333333330409051b0000018bcfe5680106010701",
+        "08030958185555555555555555555555555555555555555555555555550a",
+        "58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8a6589e3cf2",
+        "bf886a73abfa01053e87b90b5840db95f00724cb5514027cf27ebe55e313",
+        "c73a7a08786dcc9017e3aa8522d4191d70fe387f106a0d130b20bccab717",
+        "46991e5d8f9b025d4ee5de6ed2f9b0dd9501",
+    ));
 }

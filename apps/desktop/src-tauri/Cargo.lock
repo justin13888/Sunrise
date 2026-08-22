@@ -1085,9 +1085,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
- "sunrise-cbor",
- "sunrise-error",
- "sunrise-wire-protocol",
  "thiserror 1.0.69",
  "tokio",
 ]

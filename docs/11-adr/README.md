@@ -20,7 +20,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 |---|---|---|
 | 0001 | [Bun workspace for app code](./0001-bun-workspace.md) | accepted |
 | 0002 | [Shared core in Rust](./0002-shared-core-rust.md) | accepted |
-| 0003 | [CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md) | accepted |
+| 0003 | [CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md) | superseded by 0014 |
 | 0004 | [Crypto primitives selection](./0004-crypto-primitives.md) | accepted |
 | 0005 | [WebSocket as default sync transport](./0005-sync-transport.md) | accepted |
 | 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | accepted |
@@ -31,6 +31,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
 | 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted |
 | 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | proposed |
+| 0014 | [Entity-level LWW in SQLite is the v1 merge model](./0014-entity-level-lww-merge.md) | accepted |
 
 ## When to write a new ADR
 
