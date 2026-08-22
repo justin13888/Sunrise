@@ -18,18 +18,22 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-// The Core API is async by design (FFI seam expects async); some current
-// stub implementations don't yet await internally because the engine
-// that drives storage / sync hooks in via Phase 11. Lint relaxations
-// here are scoped to the in-flight stub state and tighten in Phase 17.
+// The Core API is async by design (the FFI seam expects async); a few methods
+// don't await internally yet, hence `unused_async`. The remaining entries are
+// style-only.
+//
+// `clippy::disallowed_methods` is deliberately NOT allowed here. It is the
+// determinism gate from docs/01-architecture/shared-core.md, and this is the
+// crate that gate exists to protect — a blanket allow disabled it in exactly
+// the wrong place. The two legitimate clock call sites carry their own
+// narrowly-scoped `#[allow]` with a justification.
 #![allow(
     clippy::doc_markdown,
     clippy::missing_errors_doc,
     clippy::module_name_repetitions,
     clippy::unused_async,
     clippy::map_unwrap_or,
-    clippy::manual_let_else,
-    clippy::disallowed_methods
+    clippy::manual_let_else
 )]
 
 pub mod commands;

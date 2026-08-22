@@ -99,6 +99,31 @@ jobs:
           path: coverage/
           retention-days: 30
 
+  determinism:
+    name: Determinism gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject ambient RNG in core crates
+        run: |
+          set -euo pipefail
+          # docs/01-architecture/shared-core.md §determinism-rules — randomness
+          # comes from the injected `CoreConfig::rng`, never from an ambient
+          # thread-local source.
+          #
+          # This lives here rather than in clippy.toml's `disallowed-methods`
+          # because clippy resolves those paths only inside crates that depend
+          # on `rand` directly. Everywhere else the entry degraded to a clippy
+          # *config* warning, which `-D warnings` does not catch — so the rule
+          # was unenforced across most of the workspace. A grep binds in every
+          # crate regardless of its dependency graph.
+          if rg -nP '\brand::(thread_rng|random)\s*\(|\bthread_rng\s*\(\)' \
+              crates/*/src crates/*/tests crates/*/benches 2>/dev/null; then
+            echo "::error::Ambient RNG used; take randomness from CoreConfig::rng."
+            exit 1
+          fi
+          echo "OK: no ambient RNG in core crates."
+
   log-redaction:
     name: Log redaction gate
     runs-on: ubuntu-latest

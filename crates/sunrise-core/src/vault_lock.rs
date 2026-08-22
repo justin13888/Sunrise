@@ -48,6 +48,13 @@ impl VaultLock {
     ///
     /// `pid` and `started_at_iso` are written into the lock file so the
     /// next attempted holder can surface them in [`VaultLockError::AlreadyHeld`].
+    // `Instant::now` is the determinism gate's disallowed monotonic clock, and
+    // the exemption is deliberate: this is an OS-resource acquisition retry
+    // loop, not a domain operation. Nothing here reaches the op log, so it
+    // cannot affect replica convergence. The injected `Clock` is explicitly the
+    // wrong tool — it is a *wall* clock, so a clock adjustment mid-acquire
+    // would skew or hang the timeout.
+    #[allow(clippy::disallowed_methods)]
     pub fn acquire(
         vault_dir: &Path,
         pid: u32,
