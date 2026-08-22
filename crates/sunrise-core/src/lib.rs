@@ -13,8 +13,13 @@
 //! 4. No threads spawned except by the core's tokio runtime.
 //!
 //! Single-writer guarantee: exactly one [`Core`] per vault path per
-//! process. The vault lock file (`core.lock`) is acquired with `fcntl`
-//! (Unix) or `LockFileEx` (Windows) — see [`vault_lock`].
+//! process. Enforced by two mechanisms: an OS advisory lock on
+//! `<vault>/core.lock` (`flock` on Unix, `LockFileEx` on Windows, via `fs4`)
+//! for cross-process exclusion, plus a process-local registry of canonicalized
+//! vault paths for same-process exclusion — which the OS lock alone cannot
+//! guarantee, since `flock` degrades to per-process `fcntl` semantics over
+//! NFS. The OS releases its half on process death by any means, so a crash
+//! cannot strand the vault. See [`vault_lock`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

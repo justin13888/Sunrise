@@ -106,7 +106,7 @@ name = "STORAGE_VAULT_LOCKED"
 kind = "transient"
 retryable = true
 since = "v1"
-docs = "Per docs/01-architecture/shared-core.md: another process holds core.lock."
+docs = "Per docs/01-architecture/shared-core.md: the vault is already open, either by another process holding the OS lock on core.lock or by another Core in this process."
 
 [[code]]
 id = 302

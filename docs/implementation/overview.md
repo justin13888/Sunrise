@@ -77,10 +77,6 @@ offset), the v1→v6 migration upgrade tests, and the FTS5 hostile-input proptes
 
 Tracked so they are not rediscovered as surprises:
 
-- **A crash bricks the vault.** `vault_lock.rs` uses `create_new` with no PID
-  liveness check and releases only on `Drop`, while the release profile sets
-  `panic = "abort"`. The module doc claims `fcntl`/`LockFileEx`; it does not use
-  them.
 - **A skewed clock wins every conflict, permanently.** `lww_wins` trusts raw
   `env.ts_ms` from the device wall clock, with no HLC and no bound.
 - **Ring eviction is silent data loss.** The client builds real sync cursors and

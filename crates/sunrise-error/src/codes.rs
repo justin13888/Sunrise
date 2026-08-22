@@ -42,7 +42,8 @@ pub enum ErrorCode {
     // Storage
     /// Local storage full.
     StorageQuotaExceeded,
-    /// Another process holds `core.lock`.
+    /// The vault is already open — another process holds the OS lock on
+    /// `core.lock`, or another `Core` in this process holds it.
     StorageVaultLocked,
     /// Local DB schema is newer than this binary supports.
     StorageVTooNew,
