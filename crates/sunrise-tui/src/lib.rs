@@ -83,8 +83,9 @@ pub use render::{
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
-    ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, FocusState, Prompt, ReviewPane,
-    ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker, SyncIndicator, View, ViewState,
+    sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, FocusState,
+    Prompt, ReviewPane, ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker,
+    SyncIndicator, View, ViewState,
 };
 
 /// One-line reminder of where the command reference lives. The reference

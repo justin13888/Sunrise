@@ -57,8 +57,8 @@ use sunrise_domain::{NoteBody, TaskPatch};
 use sunrise_tui::livesync;
 use sunrise_tui::runtime::{drain_changes, CHANGE_DEBOUNCE};
 use sunrise_tui::{
-    apply_action, editor, keymap, render, routine_rows, BrowseTarget, CascadeReport, Outcome,
-    SyncIndicator, View, ViewState,
+    apply_action, editor, keymap, render, routine_rows, sort_today, BrowseTarget, CascadeReport,
+    Outcome, SyncIndicator, View, ViewState,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -745,11 +745,19 @@ async fn refresh(core: &Core, state: &mut ViewState) {
     }
     match state.view {
         View::Today => {
+            let now_ms = core.now_ms();
             let q = Query::Today {
-                now_ms: core.now_ms(),
+                now_ms,
                 contexts: vec![],
             };
             load_tasks(core, state, q).await;
+            // The view is grouped (overdue / due today / scheduled / anytime),
+            // and the grouping only reads as one if the rows are in group
+            // order. Sorted here rather than in the query because the grouping
+            // is a *civil-day* question in the user's zone, which the core
+            // deliberately does not know.
+            sort_today(&mut state.tasks, now_ms, &state.tz);
+            state.after_tasks_loaded();
         }
         View::Inbox => load_tasks(core, state, Query::Inbox).await,
         View::Stream => match state.browse_target() {

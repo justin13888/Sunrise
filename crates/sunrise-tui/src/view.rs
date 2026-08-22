@@ -65,6 +65,89 @@ impl SyncIndicator {
     }
 }
 
+/// Group a Today list into the sections `docs/07-clients/tui.md` draws.
+///
+/// Returns `(label, first_row)` pairs against a list **already sorted** into
+/// group order by [`sort_today`], so the renderer only has to know where each
+/// run starts. Kept here, pure, because "is this overdue?" is a civil-day
+/// question in the user's zone — not an elapsed-hours one — and that is the
+/// kind of arithmetic that is wrong for six months before anyone notices.
+#[must_use]
+pub fn today_groups(
+    tasks: &[Task],
+    now_ms: u64,
+    tz: &jiff::tz::TimeZone,
+) -> Vec<(&'static str, usize)> {
+    let mut out = Vec::new();
+    let mut last: Option<TodayGroup> = None;
+    for (i, t) in tasks.iter().enumerate() {
+        let g = today_group(t, now_ms, tz);
+        if last != Some(g) {
+            out.push((g.label(), i));
+            last = Some(g);
+        }
+    }
+    out
+}
+
+/// Sort a Today list into group order, then by time within each group.
+pub fn sort_today(tasks: &mut [Task], now_ms: u64, tz: &jiff::tz::TimeZone) {
+    tasks.sort_by_key(|t| {
+        (
+            today_group(t, now_ms, tz) as u8,
+            t.due_at.or(t.scheduled_at),
+            std::cmp::Reverse(t.priority),
+            t.id,
+        )
+    });
+}
+
+/// Which Today section a task belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TodayGroup {
+    /// Past its deadline, or planned for a day that has already gone.
+    Overdue,
+    /// Due today.
+    DueToday,
+    /// Planned for today.
+    Scheduled,
+    /// Pulled in with no date of its own.
+    Anytime,
+}
+
+impl TodayGroup {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Overdue => "Overdue",
+            Self::DueToday => "Due today",
+            Self::Scheduled => "Scheduled",
+            Self::Anytime => "Anytime",
+        }
+    }
+}
+
+/// Classify one task. Whole civil days in `tz`: a task due tomorrow must not
+/// fall into "today" because it happens to be 23:30 now.
+fn today_group(t: &Task, now_ms: u64, tz: &jiff::tz::TimeZone) -> TodayGroup {
+    let Ok(Ok(now)) = i64::try_from(now_ms).map(Timestamp::from_millisecond) else {
+        return TodayGroup::Anytime;
+    };
+    let today = now.to_zoned(tz.clone()).date();
+    let day_of = |ts: Timestamp| ts.to_zoned(tz.clone()).date();
+    if t.due_at.is_some_and(|d| day_of(d) < today)
+        || t.scheduled_at.is_some_and(|s| day_of(s) < today)
+    {
+        return TodayGroup::Overdue;
+    }
+    if t.due_at.is_some_and(|d| day_of(d) == today) {
+        return TodayGroup::DueToday;
+    }
+    if t.scheduled_at.is_some_and(|s| day_of(s) == today) {
+        return TodayGroup::Scheduled;
+    }
+    TodayGroup::Anytime
+}
+
 /// Rows a list is assumed to show before the runtime has measured the real
 /// terminal — the body height of the 80x24 minimum, less the chrome.
 pub const DEFAULT_VIEWPORT_ROWS: usize = 20;

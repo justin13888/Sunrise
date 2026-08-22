@@ -363,7 +363,7 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     let header = Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(header, chunks[0]);
 
-    render_task_list_styled(
+    render_task_list_full(
         f,
         chunks[1],
         tasks,
@@ -372,21 +372,16 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Style::default(),
         state.visual_range(),
         &marks(state),
+        &state.contexts,
+        &crate::view::today_groups(tasks, state.now_ms, &state.tz),
+        state.now_ms,
+        &state.tz,
     );
 }
 
 /// Render the Inbox view.
 pub fn render_inbox(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
-    render_task_list_styled(
-        f,
-        area,
-        &state.tasks,
-        state.selected,
-        "Inbox",
-        Style::default(),
-        state.visual_range(),
-        &marks(state),
-    )
+    render_task_list(f, area, state, "Inbox", Style::default())
 }
 
 /// Render the Browse view: a two-list sidebar — Streams above, Contexts below
@@ -410,15 +405,12 @@ pub fn render_stream(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .split(cols[0]);
     render_stream_list(f, side[0], state);
     render_context_list(f, side[1], state);
-    render_task_list_styled(
+    render_task_list(
         f,
         cols[1],
-        &state.tasks,
-        state.selected,
+        state,
         &state.browse_title(),
         pane_border(state, StreamPane::Tasks),
-        state.visual_range(),
-        &marks(state),
     );
 }
 
@@ -534,16 +526,7 @@ pub fn render_search(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .block(Block::default().borders(Borders::ALL).title("Search"))
         .wrap(Wrap { trim: false });
     f.render_widget(query, chunks[0]);
-    render_task_list_styled(
-        f,
-        chunks[1],
-        &state.tasks,
-        state.selected,
-        "Results",
-        Style::default(),
-        state.visual_range(),
-        &marks(state),
-    );
+    render_task_list(f, chunks[1], state, "Results", Style::default());
 }
 
 /// Render the Focus view: task detail on the left, attachment/image preview
@@ -692,13 +675,22 @@ fn render_focus_session(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
             segment_label(state.focus.next_segment())
         )));
     }
-    if let Some(t) = state.focused_task.as_ref() {
-        if !t.blocks.is_empty() {
-            lines.push(Line::from(format!(
-                "unblocks:  {} task(s) when this is done",
-                t.blocks.len()
-            )));
-        }
+    // `Task.blocks` is the set of time-**Blocks** scheduling this task, not the
+    // tasks it unblocks; counting it here claimed a payoff that has nothing to
+    // do with the dependency graph. The real figure is the planner's, which
+    // derives it from the graph — so it is read from the row the session was
+    // started on, and simply omitted when there is none.
+    if let Some(unblocks) = state
+        .focus
+        .plan
+        .iter()
+        .find(|r| Some(r.task.id) == state.focus.running_task())
+        .map(|r| r.unblocks)
+        .filter(|n| *n > 0)
+    {
+        lines.push(Line::from(format!(
+            "unblocks:  {unblocks} task(s) when this is done"
+        )));
     }
     // The unblock cascade: informational, and it keeps no score.
     if let Some(report) = state.focus.cascade.as_ref() {
@@ -1050,7 +1042,7 @@ fn routine_line(r: &RoutineRow) -> String {
     let next = r
         .next
         .map_or_else(|| "none in horizon".to_string(), |t| t.to_string());
-    let paused = if r.paused { " ⏸" } else { "" };
+    let paused = if r.paused { " ‖" } else { "" };
     let streak = match r.streak {
         0 => String::new(),
         n => format!(" · streak {n}"),
@@ -1812,7 +1804,31 @@ fn truncate(s: &str, max: usize) -> String {
 /// bulk operator must never be ambiguous about what it is about to hit. The
 /// gutter only exists while visual mode is up, so ordinary frames are byte-for-
 /// byte what they were.
-fn render_task_list_styled(
+fn render_task_list(f: &mut Frame<'_>, area: Rect, state: &ViewState, title: &str, border: Style) {
+    render_task_list_full(
+        f,
+        area,
+        &state.tasks,
+        state.selected,
+        title,
+        border,
+        state.visual_range(),
+        &marks(state),
+        &state.contexts,
+        &[],
+        state.now_ms,
+        &state.tz,
+    );
+}
+
+/// The task list, with the facet column and optional group headers.
+///
+/// `groups` is a list of `(label, first_row)` pairs: a header is drawn above
+/// the task at `first_row`. Selection stays indexed by *task*, and the
+/// renderer maps it onto the display row, so inserting headers cannot
+/// silently re-target a keypress.
+#[allow(clippy::too_many_arguments)]
+fn render_task_list_full(
     f: &mut Frame<'_>,
     area: Rect,
     tasks: &[Task],
@@ -1821,44 +1837,63 @@ fn render_task_list_styled(
     border_style: Style,
     visual: Option<(usize, usize)>,
     marked: &[bool],
+    contexts: &[sunrise_core::queries::ContextRow],
+    groups: &[(&'static str, usize)],
+    now_ms: u64,
+    tz: &jiff::tz::TimeZone,
 ) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string())
+        .border_style(border_style);
+    let width = usize::from(block.inner(area).width);
     // The gutter appears only while something is multi-selected, so an
     // ordinary frame is byte-for-byte what it was.
     let gutter = visual.is_some() || marked.iter().any(|m| *m);
-    let items: Vec<ListItem<'_>> = tasks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let label = format!("[{}] {}", task_state_short(t.state), t.title);
-            if !gutter {
-                return ListItem::new(label);
-            }
+
+    let mut items: Vec<ListItem<'_>> = Vec::new();
+    // Display row of each task, so the cursor can be translated once headers
+    // are interleaved.
+    let mut row_of_task: Vec<usize> = Vec::with_capacity(tasks.len());
+    for (i, t) in tasks.iter().enumerate() {
+        if let Some((label, _)) = groups.iter().find(|(_, first)| *first == i) {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("── {label} "),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ))));
+        }
+        row_of_task.push(items.len());
+        let prefix = if gutter {
             let in_run = visual.is_some_and(|(lo, hi)| (lo..=hi).contains(&i));
             let is_marked = marked.get(i).copied().unwrap_or(false);
             // A mark is the stronger claim — it survives the cursor moving —
-            // so it wins the glyph and the colour where both apply.
+            // so it wins the glyph where both apply.
             match (is_marked, in_run) {
-                (true, _) => ListItem::new(format!("✓ {label}")).style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                (false, true) => ListItem::new(format!("● {label}")).style(
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                (false, false) => ListItem::new(format!("  {label}")),
+                (true, _) => "✓ ",
+                (false, true) => "● ",
+                (false, false) => "  ",
             }
-        })
-        .collect();
+        } else {
+            ""
+        };
+        let style = if marked.get(i).copied().unwrap_or(false) {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if visual.is_some_and(|(lo, hi)| (lo..=hi).contains(&i)) {
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(task_row(t, prefix, contexts, now_ms, tz, width)).style(style));
+    }
+
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title.to_string())
-                .border_style(border_style),
-        )
+        .block(block)
         .highlight_style(
             Style::default()
                 .add_modifier(Modifier::BOLD)
@@ -1867,8 +1902,170 @@ fn render_task_list_styled(
         )
         .highlight_symbol("▶ ");
     let mut s = ListState::default();
-    s.select(selected);
+    s.select(selected.and_then(|i| row_of_task.get(i).copied()));
     f.render_stateful_widget(list, area, &mut s);
+}
+
+/// One task row: the state box and the title on the left, the facets that
+/// change what you would do about it on the right.
+///
+/// Rows used to be `[ ] title` and nothing else. Every facet the capture
+/// parser can set — priority, contexts, estimate, due date — was invisible in
+/// every list, so the only way to see whether a task was due tomorrow or
+/// blocked on something else was to open it one at a time. A planner you have
+/// to open each row of is not a planner.
+///
+/// The facets are right-aligned and the title is truncated to fit, rather than
+/// the reverse: a truncated *title* is still recognisable, a truncated due
+/// date is a wrong one.
+fn task_row(
+    t: &Task,
+    prefix: &str,
+    contexts: &[sunrise_core::queries::ContextRow],
+    now_ms: u64,
+    tz: &jiff::tz::TimeZone,
+    width: usize,
+) -> Line<'static> {
+    let head = format!("{prefix}[{}] ", task_state_short(t.state));
+    let meta = task_facets(t, contexts, now_ms, tz);
+    let meta_width = meta
+        .iter()
+        .map(|(s, _)| s.chars().count() + 1)
+        .sum::<usize>();
+    // Two columns for the highlight symbol the List widget prepends.
+    let room = width
+        .saturating_sub(2)
+        .saturating_sub(head.chars().count())
+        .saturating_sub(meta_width);
+    let title = truncate(&t.title, room.max(8));
+    let pad = room.saturating_sub(title.chars().count());
+
+    let mut spans = vec![Span::raw(head), Span::raw(title)];
+    if !meta.is_empty() {
+        spans.push(Span::raw(" ".repeat(pad)));
+        for (text, style) in meta {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(text, style));
+        }
+    }
+    Line::from(spans)
+}
+
+/// The right-hand facet column, in a fixed order so rows scan vertically.
+fn task_facets(
+    t: &Task,
+    contexts: &[sunrise_core::queries::ContextRow],
+    now_ms: u64,
+    tz: &jiff::tz::TimeZone,
+) -> Vec<(String, Style)> {
+    /// Contexts shown before the row collapses to a count.
+    const MAX_CONTEXTS: usize = 2;
+    let mut out: Vec<(String, Style)> = Vec::new();
+    // A blocked task is the one thing here that changes whether you *can*
+    // start, so it leads.
+    if !t.blocked_by.is_empty() {
+        // `⊘`, not `⛔`: the emoji is double-width, and the row budgets its
+        // columns by character count, so a wide glyph silently pushes the last
+        // facet off the end.
+        out.push((
+            format!("⊘{}", t.blocked_by.len()),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    if let Some(p) = t.priority {
+        // 1 is the most urgent, so the colour ramp runs the other way.
+        let color = match p {
+            1 => Color::Red,
+            2 => Color::LightRed,
+            3 => Color::Yellow,
+            _ => Color::DarkGray,
+        };
+        out.push((format!("!{p}"), Style::default().fg(color)));
+    }
+    if let Some(e) = t.energy {
+        out.push((
+            match e {
+                sunrise_domain::Energy::Low => "%low".into(),
+                sunrise_domain::Energy::Med => "%med".into(),
+                sunrise_domain::Energy::High => "%high".into(),
+            },
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    let named: Vec<&str> = t
+        .contexts
+        .iter()
+        .filter_map(|id| contexts.iter().find(|c| c.id == *id))
+        .map(|c| c.name.as_str())
+        .collect();
+    for name in named.iter().take(MAX_CONTEXTS) {
+        out.push((format!("@{name}"), Style::default().fg(Color::Cyan)));
+    }
+    if named.len() > MAX_CONTEXTS {
+        out.push((
+            format!("+{}", named.len() - MAX_CONTEXTS),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    if let Some(secs) = t.estimated_duration_s {
+        out.push((
+            format!("~{}", short_duration(secs)),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    // A deadline outranks a plan: show `due` when there is one, otherwise the
+    // scheduled slot, never both — two dates in a list row read as a range.
+    if let Some(due) = t.due_at {
+        let (text, overdue) = relative_day(due, now_ms, tz);
+        out.push((
+            text,
+            Style::default().fg(if overdue { Color::Red } else { Color::Yellow }),
+        ));
+    } else if let Some(at) = t.scheduled_at {
+        let (text, past) = relative_day(at, now_ms, tz);
+        out.push((
+            text,
+            Style::default().fg(if past { Color::Yellow } else { Color::Green }),
+        ));
+    }
+    if t.deferred_count > 0 {
+        out.push((
+            format!("↻{}", t.deferred_count),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    out
+}
+
+/// `-2d` / `today` / `+3d`, plus whether it is in the past.
+///
+/// Whole civil days in the user's zone, not elapsed hours: "due tomorrow" must
+/// not read as "today" because it is 23:30 now.
+fn relative_day(at: jiff::Timestamp, now_ms: u64, tz: &jiff::tz::TimeZone) -> (String, bool) {
+    let Ok(Ok(now)) = i64::try_from(now_ms).map(jiff::Timestamp::from_millisecond) else {
+        return (String::new(), false);
+    };
+    let today = now.to_zoned(tz.clone()).date();
+    let then = at.to_zoned(tz.clone()).date();
+    let days = then.since(today).map(|d| d.get_days()).unwrap_or(0);
+    let text = match days {
+        0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        -1 => "yesterday".to_string(),
+        d if d < 0 => format!("{d}d"),
+        d => format!("+{d}d"),
+    };
+    (text, days < 0)
+}
+
+/// `1800` → `30m`, `5400` → `1h30`.
+fn short_duration(secs: u64) -> String {
+    let (h, m) = (secs / 3600, (secs % 3600) / 60);
+    match (h, m) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h{m:02}"),
+    }
 }
 
 const fn task_state_short(s: sunrise_domain::TaskState) -> &'static str {
@@ -2209,6 +2406,127 @@ mod tests {
         assert!(s.contains("2026-03-02"), "got:\n{s}");
         // And the view is reachable from the tab bar.
         assert!(s.contains("6:Routines"), "got:\n{s}");
+    }
+
+    /// A task with the facets a list row must surface.
+    fn dated_task(idx: u8, title: &str) -> sunrise_domain::Task {
+        let mut t = fixtures::fake_task(idx);
+        t.title = title.into();
+        t
+    }
+
+    #[test]
+    fn a_task_row_shows_the_facets_that_change_what_you_would_do() {
+        // Rows used to be `[ ] title` and nothing else: every facet capture
+        // could set was invisible in every list, so the only way to see
+        // whether something was due tomorrow or blocked was to open it.
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.contexts = vec![fixtures::context_row(1, "home")];
+        state.now_ms = 1_767_225_600_000; // 2026-01-01T00:00:00Z
+        let mut t = dated_task(1, "Pay the invoice");
+        t.priority = Some(1);
+        t.energy = Some(sunrise_domain::Energy::High);
+        t.estimated_duration_s = Some(1800);
+        t.contexts = std::collections::BTreeSet::from([state.contexts[0].id]);
+        t.due_at = Some("2025-12-30T09:00:00Z".parse().unwrap());
+        t.deferred_count = 2;
+        t.blocked_by = std::collections::BTreeSet::from([fixtures::fake_task(9).id]);
+        state.tasks = vec![t];
+        state.after_tasks_loaded();
+
+        let s = guarded_frame(120, 24, &state);
+        assert!(s.contains("Pay the invoice"), "got:\n{s}");
+        assert!(s.contains("!1"), "priority:\n{s}");
+        assert!(s.contains("%high"), "energy:\n{s}");
+        assert!(s.contains("@home"), "context:\n{s}");
+        assert!(s.contains("~30m"), "estimate:\n{s}");
+        assert!(s.contains("-2d"), "an overdue deadline reads as days:\n{s}");
+        assert!(s.contains("↻2"), "the defer count:\n{s}");
+        assert!(
+            s.contains("⊘1"),
+            "blocked leads, since it gates starting:\n{s}"
+        );
+    }
+
+    #[test]
+    fn a_row_truncates_its_title_rather_than_its_dates() {
+        // A truncated title is still recognisable; a truncated due date is a
+        // wrong one.
+        let mut state = ViewState::default();
+        state.view = View::Inbox;
+        state.now_ms = 1_767_225_600_000;
+        let mut t = dated_task(1, &"a very long title ".repeat(10));
+        t.priority = Some(2);
+        t.due_at = Some("2026-01-05T09:00:00Z".parse().unwrap());
+        state.tasks = vec![t];
+        state.after_tasks_loaded();
+        let s = guarded_frame(80, 24, &state);
+        assert!(s.contains('…'), "the title is cut:\n{s}");
+        assert!(s.contains("!2"), "the facets survive:\n{s}");
+        assert!(s.contains("+4d"), "the facets survive:\n{s}");
+    }
+
+    #[test]
+    fn today_is_grouped_the_way_the_spec_draws_it() {
+        let now_ms = 1_767_225_600_000; // 2026-01-01T00:00:00Z
+        let tz = jiff::tz::TimeZone::UTC;
+        let mut state = ViewState::default();
+        state.view = View::Today;
+        state.now_ms = now_ms;
+
+        let mut overdue = dated_task(1, "renew the passport");
+        overdue.due_at = Some("2025-12-28T09:00:00Z".parse().unwrap());
+        let mut due = dated_task(2, "file the tax return");
+        due.due_at = Some("2026-01-01T17:00:00Z".parse().unwrap());
+        let mut sched = dated_task(3, "standup");
+        sched.scheduled_at = Some("2026-01-01T09:00:00Z".parse().unwrap());
+        let anytime = dated_task(4, "read the manual");
+
+        state.tasks = vec![anytime, sched, due, overdue];
+        crate::view::sort_today(&mut state.tasks, now_ms, &tz);
+        state.after_tasks_loaded();
+
+        assert_eq!(
+            state
+                .tasks
+                .iter()
+                .map(|t| t.title.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "renew the passport",
+                "file the tax return",
+                "standup",
+                "read the manual"
+            ],
+            "group order, worst first"
+        );
+        let s = guarded_frame(100, 24, &state);
+        for label in ["Overdue", "Due today", "Scheduled", "Anytime"] {
+            assert!(s.contains(label), "missing the {label} header:\n{s}");
+        }
+    }
+
+    #[test]
+    fn a_group_header_does_not_re_target_the_cursor() {
+        // Headers are display rows the selection index must skip; getting this
+        // wrong silently points every operator at the wrong task.
+        let now_ms = 1_767_225_600_000;
+        let tz = jiff::tz::TimeZone::UTC;
+        let mut state = ViewState::default();
+        state.view = View::Today;
+        state.now_ms = now_ms;
+        let mut overdue = dated_task(1, "overdue one");
+        overdue.due_at = Some("2025-12-28T09:00:00Z".parse().unwrap());
+        state.tasks = vec![overdue, dated_task(2, "anytime one")];
+        crate::view::sort_today(&mut state.tasks, now_ms, &tz);
+        state.after_tasks_loaded();
+        state.selected = Some(1);
+        let s = guarded_frame(100, 24, &state);
+        // The highlight marker must sit on the second *task*, not on a header.
+        let marked: Vec<&str> = s.lines().filter(|l| l.contains('▶')).collect();
+        assert_eq!(marked.len(), 1, "exactly one highlighted row:\n{s}");
+        assert!(marked[0].contains("anytime one"), "got {marked:?}");
     }
 
     #[test]
