@@ -345,12 +345,20 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 match state.keymap.dispatch(
                     k.code,
                     k.modifiers,
-                    state.mode,
+                    state.dispatch_mode(),
                     state.vim_mode,
                     state.view,
                 ) {
                     Some(a) => a,
-                    None => continue,
+                    // An unbound key while a `g` chord is half-typed abandons
+                    // it: leaving the latch armed would make the *next*
+                    // keypress a jump the user did not ask for.
+                    None => {
+                        if state.cancel_chord() {
+                            state.status.clear();
+                        }
+                        continue;
+                    }
                 }
             }
             // Resize (and everything else) just falls through to the redraw

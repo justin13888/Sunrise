@@ -49,6 +49,14 @@ pub enum Mode {
     Focus,
     /// The one-tap interruption-reason chooser (`i` during a session).
     Interrupt,
+    /// The `g` chord is half-typed: the next key completes it
+    /// (`docs/08-features/keyboard.md` — `g t`, `g i`, `gg`).
+    ///
+    /// A latch rather than a real mode from the user's point of view: it lasts
+    /// exactly one keystroke and every key in it is a jump. It exists as a
+    /// `Mode` so the second key's meaning lives in [`BINDINGS`] with all the
+    /// others, instead of a chord table nothing else can see.
+    Goto,
 }
 
 impl Mode {
@@ -66,6 +74,7 @@ impl Mode {
             Self::Triage => "TRIAGE",
             Self::Focus => "FOCUS",
             Self::Interrupt => "INTERRUPT",
+            Self::Goto => "GOTO",
         }
     }
 }
@@ -596,7 +605,7 @@ pub static BINDINGS: &[Binding] = &[
         KeyCode::Char('g'),
         Scope::Any,
         Action::GotoPrefix,
-        Some(("gg / G", "top / bottom")),
+        Some(("g… / G", "chord / bottom")),
     ),
     b(
         Mode::Normal,
@@ -851,6 +860,70 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Vim,
         Action::EnterInsert,
         Some(("i", "insert mode")),
+    ),
+    // ---- `g` chords ----
+    b(
+        Mode::Goto,
+        KeyCode::Char('g'),
+        Scope::Any,
+        Action::GotoTop,
+        Some(("gg", "top of the list")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('t'),
+        Scope::Any,
+        Action::SwitchView(View::Today),
+        Some(("gt", "Today")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('i'),
+        Scope::Any,
+        Action::SwitchView(View::Inbox),
+        Some(("gi", "Inbox")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('s'),
+        Scope::Any,
+        Action::SwitchView(View::Stream),
+        Some(("gs", "Browse (streams)")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('/'),
+        Scope::Any,
+        Action::SwitchView(View::Search),
+        Some(("g/", "Search")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('f'),
+        Scope::Any,
+        Action::SwitchView(View::Focus),
+        Some(("gf", "Focus")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('r'),
+        Scope::Any,
+        Action::SwitchView(View::Routines),
+        Some(("gr", "Routines")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Char('v'),
+        Scope::Any,
+        Action::SwitchView(View::Review),
+        Some(("gv", "Review")),
+    ),
+    b(
+        Mode::Goto,
+        KeyCode::Esc,
+        Scope::Any,
+        Action::Escape,
+        Some(("Esc", "cancel the chord")),
     ),
     // ---- Insert mode (capture / edit / defer / stream name) ----
     b(

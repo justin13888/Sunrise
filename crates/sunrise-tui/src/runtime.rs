@@ -272,6 +272,9 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 return after_nav(state);
             }
             state.pending_g = true;
+            state.status =
+                "g… g top · t today · i inbox · s browse · / search · f focus · r routines · v review"
+                    .into();
             Outcome::None
         }
         Action::GotoTop => {
@@ -1424,7 +1427,9 @@ fn submit(state: &mut ViewState, now_ms: u64) -> Outcome {
         Mode::Confirm => submit_confirm(state),
         Mode::Picker => submit_picker(state),
         Mode::Insert => submit_prompt(state, now_ms),
-        Mode::Normal | Mode::Visual | Mode::Triage | Mode::Focus | Mode::Interrupt => Outcome::None,
+        Mode::Normal | Mode::Visual | Mode::Triage | Mode::Focus | Mode::Interrupt | Mode::Goto => {
+            Outcome::None
+        }
     }
 }
 
@@ -1798,17 +1803,28 @@ mod tests {
     /// if the key has no binding, so a test that presses an unbound key fails
     /// loudly instead of silently asserting nothing.
     fn press(state: &mut ViewState, key: KeyCode) -> Outcome {
-        let action = state
-            .keymap
-            .dispatch(
-                key,
-                crossterm::event::KeyModifiers::NONE,
-                state.mode,
-                state.vim_mode,
-                state.view,
-            )
-            .unwrap_or_else(|| panic!("no binding for {key:?} in {:?}", state.mode));
-        apply_action(action, state, NOW_MS)
+        press_mod(state, key, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// Press a chord (a key with modifiers held), mirroring the binary's own
+    /// dispatch — including that an unbound key abandons a half-typed `g`.
+    fn press_mod(
+        state: &mut ViewState,
+        key: KeyCode,
+        mods: crossterm::event::KeyModifiers,
+    ) -> Outcome {
+        let action =
+            state
+                .keymap
+                .dispatch(key, mods, state.dispatch_mode(), state.vim_mode, state.view);
+        match action {
+            Some(a) => apply_action(a, state, NOW_MS),
+            None if state.cancel_chord() => Outcome::None,
+            None => panic!(
+                "no binding for {mods:?}+{key:?} in {:?}",
+                state.dispatch_mode()
+            ),
+        }
     }
 
     /// Type a string into the active prompt.
@@ -1847,19 +1863,6 @@ mod tests {
         }
         assert_eq!(s.mode, Mode::Normal);
         assert!(s.input.is_empty());
-    }
-
-    /// Press a chord (a key with modifiers held).
-    fn press_mod(
-        state: &mut ViewState,
-        key: KeyCode,
-        mods: crossterm::event::KeyModifiers,
-    ) -> Outcome {
-        let action = state
-            .keymap
-            .dispatch(key, mods, state.mode, state.vim_mode, state.view)
-            .unwrap_or_else(|| panic!("no binding for {mods:?}+{key:?} in {:?}", state.mode));
-        apply_action(action, state, NOW_MS)
     }
 
     #[test]
@@ -3064,12 +3067,50 @@ manual"
 
     #[test]
     fn an_intervening_key_disarms_the_gg_latch() {
+        // A half-typed chord followed by something that is not part of one
+        // abandons the chord and does nothing else. Letting the stray key also
+        // run its normal action would mean `g` then a typo both cancels and
+        // moves, and the user cannot tell which happened.
         let mut s = inbox_state();
         s.selected = Some(2);
         let _ = press(&mut s, KeyCode::Char('g'));
-        let _ = press(&mut s, KeyCode::Char('k')); // moves to 1, clears latch
-        let _ = press(&mut s, KeyCode::Char('g')); // arms again, does not jump
-        assert_eq!(s.selected, Some(1));
+        let _ = press(&mut s, KeyCode::Char('k'));
+        assert_eq!(s.selected, Some(2), "the stray key did nothing");
+        assert!(!s.pending_g, "and the chord is gone");
+        let _ = press(&mut s, KeyCode::Char('g'));
+        assert_eq!(s.selected, Some(2), "one g does not jump");
+        let _ = press(&mut s, KeyCode::Char('g'));
+        assert_eq!(s.selected, Some(0), "two does");
+    }
+
+    #[test]
+    fn g_chords_jump_between_views() {
+        // `docs/08-features/keyboard.md`: Today is `g t`, Inbox is `g i`.
+        let mut s = inbox_state();
+        for (key, view) in [
+            ('t', View::Today),
+            ('i', View::Inbox),
+            ('s', View::Stream),
+            ('/', View::Search),
+            ('f', View::Focus),
+            ('r', View::Routines),
+            ('v', View::Review),
+        ] {
+            let _ = press(&mut s, KeyCode::Char('g'));
+            assert!(matches!(
+                press(&mut s, KeyCode::Char(key)),
+                Outcome::Refresh
+            ));
+            assert_eq!(s.view, view, "g{key}");
+        }
+    }
+
+    #[test]
+    fn a_chord_key_keeps_its_own_meaning_outside_the_chord() {
+        // `t` is triage and `s` schedules; the chord must not steal either.
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('t'));
+        assert!(s.triage, "t alone still triages");
     }
 
     #[test]
@@ -3797,7 +3838,7 @@ mod focus_tests {
             .dispatch(
                 key,
                 crossterm::event::KeyModifiers::NONE,
-                state.mode,
+                state.dispatch_mode(),
                 state.vim_mode,
                 state.view,
             )

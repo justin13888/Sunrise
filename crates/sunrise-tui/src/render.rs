@@ -201,6 +201,7 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Mode::Triage => Style::default().fg(Color::Yellow),
         Mode::Focus => Style::default().fg(Color::Green),
         Mode::Interrupt => Style::default().fg(Color::Yellow),
+        Mode::Goto => Style::default().fg(Color::Blue),
     };
     let mut spans = vec![Span::styled(
         format!(" {mode_label} "),
@@ -240,7 +241,8 @@ fn render_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         | Mode::Picker
         | Mode::Triage
         | Mode::Focus
-        | Mode::Interrupt => {}
+        | Mode::Interrupt
+        | Mode::Goto => {}
     }
     // A mark set outlives the keypress that made it and survives the cursor
     // moving away, so the count has to be on screen the whole time it is live
@@ -376,6 +378,7 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         &crate::view::today_groups(tasks, state.now_ms, &state.tz),
         state.now_ms,
         &state.tz,
+        empty_hint(state),
     );
 }
 
@@ -1722,10 +1725,13 @@ pub fn help_row_count(keymap: &Keymap, mode: Mode, view: View) -> usize {
 /// are where the user returns to), plus the current mode's own section.
 #[must_use]
 pub fn help_modes(mode: Mode) -> Vec<&'static str> {
-    if mode == Mode::Normal {
-        vec![Mode::Normal.label()]
+    // GOTO rides along with NORMAL: the chord is started from Normal mode and
+    // lasts one keystroke, so nobody is ever *in* it long enough to press `?`.
+    // Listing it only under its own label would document it nowhere.
+    if mode == Mode::Normal || mode == Mode::Goto {
+        vec![Mode::Normal.label(), Mode::Goto.label()]
     } else {
-        vec![Mode::Normal.label(), mode.label()]
+        vec![Mode::Normal.label(), Mode::Goto.label(), mode.label()]
     }
 }
 
@@ -1818,6 +1824,7 @@ fn render_task_list(f: &mut Frame<'_>, area: Rect, state: &ViewState, title: &st
         &[],
         state.now_ms,
         &state.tz,
+        empty_hint(state),
     );
 }
 
@@ -1841,6 +1848,7 @@ fn render_task_list_full(
     groups: &[(&'static str, usize)],
     now_ms: u64,
     tz: &jiff::tz::TimeZone,
+    empty: (&str, &str),
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1850,6 +1858,32 @@ fn render_task_list_full(
     // The gutter appears only while something is multi-selected, so an
     // ordinary frame is byte-for-byte what it was.
     let gutter = visual.is_some() || marked.iter().any(|m| *m);
+
+    // An empty list is the whole screen for a new user, and an empty bordered
+    // box says nothing about what to do next. Every view that can be empty
+    // answers that instead.
+    if tasks.is_empty() {
+        let (headline, hint) = empty;
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    headline.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    hint.to_string(),
+                    Style::default().fg(Color::Gray),
+                )),
+            ])
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(block),
+            area,
+        );
+        return;
+    }
 
     let mut items: Vec<ListItem<'_>> = Vec::new();
     // Display row of each task, so the cursor can be translated once headers
@@ -1904,6 +1938,33 @@ fn render_task_list_full(
     let mut s = ListState::default();
     s.select(selected.and_then(|i| row_of_task.get(i).copied()));
     f.render_stateful_widget(list, area, &mut s);
+}
+
+/// What an empty list should say.
+///
+/// Chosen by the caller rather than sniffed from the pane title: the Browse
+/// pane's title is the stream or context being looked at, and "this stream is
+/// empty" is a different sentence from "your inbox is clear". The hints name
+/// keys rather than describing features — a user staring at an empty screen
+/// needs the next keystroke, not a tour.
+fn empty_hint(state: &ViewState) -> (&'static str, &'static str) {
+    match state.view {
+        View::Today => (
+            "Nothing due or scheduled for today",
+            "c captures · 2 inbox · 5 planner · ? keys",
+        ),
+        View::Inbox => ("Inbox is clear", "c captures — it lands here · t triages"),
+        View::Search if state.input.is_empty() => {
+            ("Search the vault", "type a query, Enter to run it")
+        }
+        View::Search => ("No matches", "/ searches again · titles and note bodies"),
+        View::Stream if state.browse.is_none() => (
+            "Pick a stream or context",
+            "j/k moves in the sidebar · Tab switches list",
+        ),
+        View::Stream => ("Nothing here yet", "c captures · m moves one in"),
+        _ => ("Nothing here yet", "c captures a task"),
+    }
 }
 
 /// One task row: the state box and the title on the left, the facets that
@@ -2717,6 +2778,7 @@ mod tests {
                 Mode::Triage,
                 Mode::Focus,
                 Mode::Interrupt,
+                Mode::Goto,
             ]
             .into_iter()
             .find(|m| m.label() == section)

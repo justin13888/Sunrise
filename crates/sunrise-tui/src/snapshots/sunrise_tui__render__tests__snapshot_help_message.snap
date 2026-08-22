@@ -12,13 +12,13 @@ Sun┌Keys───────────────────────�
 │  │  Enter       open / confirm                                            │  │
 │  │  j / k       down / up                                                 │  │
 │  │  ↓ / ↑       down / up                                                 │  │
-│  │  gg / G      top / bottom                                              │  │
+│  │  g… / G      chord / bottom                                            │  │
 │  │  PgDn / PgUp page down / up                                            │  │
 │  │  ^D / ^U     half page down / up                                       │  │
 │  │  Home / End  first / last row                                          │  │
 │  │  x           toggle done / reopen                                      │  │
 │  │  Space       mark row (multi-select)                                   │  │
 │  │  ^Space      clear marks                                               │  │
-│  │1-15 of 50 · j/k scroll · ? or Esc to close                             │  │
+│  │1-15 of 61 · j/k scroll · ? or Esc to close                             │  │
 └──└────────────────────────────────────────────────────────────────────────┘──┘
  NORMAL   keys and commands — j/k scrolls, ? or Esc closes

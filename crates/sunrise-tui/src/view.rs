@@ -1169,6 +1169,26 @@ impl ViewState {
         self.selected_routine = clamp_selection(self.routines.len(), self.selected_routine);
     }
 
+    /// The mode a keypress should be dispatched in.
+    ///
+    /// [`Mode::Goto`] while the `g` chord is half-typed, so the second key's
+    /// meaning comes from the binding table like every other key rather than
+    /// from a chord table nothing else can see.
+    #[must_use]
+    pub const fn dispatch_mode(&self) -> Mode {
+        if self.pending_g {
+            Mode::Goto
+        } else {
+            self.mode
+        }
+    }
+
+    /// Abandon a half-typed chord. Returns whether one was pending, so the
+    /// runtime can tell "the chord was cancelled" from "that key does nothing".
+    pub fn cancel_chord(&mut self) -> bool {
+        std::mem::take(&mut self.pending_g)
+    }
+
     /// Which list the cursor keys drive right now.
     #[must_use]
     const fn active_list(&self) -> ActiveList {

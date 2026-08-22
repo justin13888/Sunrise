@@ -5,10 +5,10 @@ expression: "frame_to_string(60, 12, &state)"
  1:Today  2:Inbox  3:Stream  4:Search  5:Focus  6:Routines  
 ┌Streams─────────┐┌Tasks───────────────────────────────────┐
 │                ││                                        │
+│                ││        Pick a stream or context        │
 │                ││                                        │
-│                ││                                        │
-│                ││                                        │
-└────────────────┘│                                        │
+│                ││ j/k moves in the sidebar · Tab switches│
+└────────────────┘│                  list                  │
 ┌Contexts────────┐│                                        │
 │none — press C  ││                                        │
 │                ││                                        │
