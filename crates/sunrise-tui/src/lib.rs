@@ -167,6 +167,10 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
         Cmd::Capture(text) => Some(AppEffect::Capture(text)),
         Cmd::Open(id) => Some(AppEffect::Open(id)),
         Cmd::Devices => Some(AppEffect::Devices),
+        Cmd::Filter(names) => {
+            apply_filter(&names, state);
+            None
+        }
         Cmd::Export {
             dataset,
             format,
@@ -182,6 +186,48 @@ pub fn apply_command(cmd: Cmd, state: &mut ViewState) -> Option<AppEffect> {
             None
         }
     }
+}
+
+/// Resolve `:filter`'s context names against the live rows and set the filter.
+///
+/// Names are resolved here rather than in the parser because the parser is
+/// pure over a string and the candidate set lives on the view state. An
+/// unknown name is reported and *not* applied: silently filtering to nothing
+/// would look identical to "you have no tasks".
+fn apply_filter(names: &[String], state: &mut ViewState) {
+    if names.is_empty() {
+        state.context_filter.clear();
+        state.status = "filter cleared".into();
+        return;
+    }
+    let mut ids = Vec::new();
+    let mut unknown = Vec::new();
+    for name in names {
+        let lower = name.to_lowercase();
+        match state
+            .contexts
+            .iter()
+            .find(|c| c.name.to_lowercase() == lower)
+            .or_else(|| {
+                let mut hits = state
+                    .contexts
+                    .iter()
+                    .filter(|c| c.name.to_lowercase().starts_with(&lower));
+                match (hits.next(), hits.next()) {
+                    (Some(c), None) => Some(c),
+                    _ => None,
+                }
+            }) {
+            Some(c) => ids.push(c.id),
+            None => unknown.push(name.clone()),
+        }
+    }
+    if !unknown.is_empty() {
+        state.status = format!("no such context: {}", unknown.join(", "));
+        return;
+    }
+    state.context_filter = ids;
+    state.status = format!("filtered to {}", state.context_filter_label());
 }
 
 /// Apply a `:focus` sub-command.

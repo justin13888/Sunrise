@@ -632,7 +632,7 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 state.input.insert_char(c);
             }
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::InsertStr(text) => {
             // A paste is clamped as a whole rather than truncated mid-way: a
@@ -644,17 +644,17 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
                 state.status = "paste too long for this prompt".into();
             }
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::Backspace => {
             state.input.backspace();
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::DeleteForward => {
             state.input.delete_forward();
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         // Caret motions never re-parse: the text is unchanged, so the capture
         // preview under it is still correct.
@@ -685,17 +685,17 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         Action::DeleteWordBack => {
             state.input.delete_word_back();
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::KillToStart => {
             state.input.kill_to_start();
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::KillToEnd => {
             state.input.kill_to_end();
             refresh_capture_preview(state, now_ms);
-            Outcome::None
+            after_edit(state)
         }
         Action::Submit => submit(state, now_ms),
         Action::StartFocus => start_focus(state),
@@ -1139,6 +1139,19 @@ fn pause_routine(state: &mut ViewState) -> Outcome {
             ..Default::default()
         },
     }))
+}
+
+/// What an edit to the input line owes the runtime.
+///
+/// Search re-runs on every keystroke: FTS5 is indexed, the query is bounded,
+/// and a search you have to commit before seeing anything is a search you
+/// cannot refine. Every other prompt is committed with Enter, so typing into
+/// one costs nothing but a repaint.
+fn after_edit(state: &ViewState) -> Outcome {
+    if state.prompt == Some(Prompt::Search) {
+        return Outcome::Refresh;
+    }
+    Outcome::None
 }
 
 /// What a cursor move owes the runtime.
@@ -2598,6 +2611,62 @@ manual"
             let _ = press(&mut s, KeyCode::Enter);
         }
         assert_eq!(s.cmd_history, vec!["view today".to_string()]);
+    }
+
+    #[test]
+    fn search_re_runs_on_every_keystroke() {
+        // A search you have to commit before seeing anything is a search you
+        // cannot refine.
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('/'));
+        assert!(matches!(
+            press(&mut s, KeyCode::Char('m')),
+            Outcome::Refresh
+        ));
+        assert!(matches!(
+            press(&mut s, KeyCode::Backspace),
+            Outcome::Refresh
+        ));
+        // Every other prompt is committed with Enter and costs only a repaint.
+        let _ = press(&mut s, KeyCode::Esc);
+        let _ = press(&mut s, KeyCode::Char('c'));
+        assert!(matches!(press(&mut s, KeyCode::Char('m')), Outcome::None));
+    }
+
+    #[test]
+    fn filter_narrows_every_list_to_the_named_contexts() {
+        let mut s = inbox_state();
+        s.contexts = vec![context_row(1, "home"), context_row(2, "errands")];
+        s.tasks[0].contexts = std::collections::BTreeSet::from([s.contexts[0].id]);
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "filter @home");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert_eq!(s.context_filter, vec![s.contexts[0].id]);
+        assert_eq!(s.context_filter_label(), "@home");
+
+        s.apply_context_filter();
+        s.after_tasks_loaded();
+        assert_eq!(s.tasks.len(), 1, "only the tagged task survives");
+
+        // A bare `:filter` clears it.
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "filter");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.context_filter.is_empty());
+        assert!(s.status.contains("cleared"));
+    }
+
+    #[test]
+    fn an_unknown_context_is_reported_rather_than_filtering_to_nothing() {
+        // Applying it would render an empty view that looks exactly like an
+        // empty vault.
+        let mut s = inbox_state();
+        s.contexts = vec![context_row(1, "home")];
+        let _ = press(&mut s, KeyCode::Char(':'));
+        type_text(&mut s, "filter @nope");
+        let _ = press(&mut s, KeyCode::Enter);
+        assert!(s.context_filter.is_empty());
+        assert!(s.status.contains("no such context"), "{}", s.status);
     }
 
     #[test]

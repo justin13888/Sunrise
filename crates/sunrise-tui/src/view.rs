@@ -827,6 +827,11 @@ pub struct ViewState {
     /// Context rows (`Query::Contexts`), the candidate set `@name` resolves
     /// against during capture. Refreshed alongside `streams`.
     pub contexts: Vec<ContextRow>,
+    /// Contexts every task list is narrowed to (`:filter @home @errands`).
+    /// Empty means no filter. An OR-set, per
+    /// `docs/02-domain/contexts-and-tags.md`: a task matches if it carries any
+    /// of them.
+    pub context_filter: Vec<EntityRef>,
     /// Index of the selected stream in `streams`. `None` if the list is empty.
     pub selected_stream: Option<usize>,
     /// Index of the selected context in `contexts`. `None` if empty.
@@ -936,6 +941,7 @@ impl Default for ViewState {
             selected: None,
             streams: Vec::new(),
             contexts: Vec::new(),
+            context_filter: Vec::new(),
             selected_stream: None,
             selected_context: None,
             browse: None,
@@ -994,6 +1000,36 @@ impl ViewState {
     /// selection to the first row (Inbox — `StreamList` returns it first).
     pub fn after_streams_loaded(&mut self) {
         self.selected_stream = clamp_selection(self.streams.len(), self.selected_stream);
+    }
+
+    /// Drop from `tasks` anything the context filter excludes.
+    ///
+    /// Applied to the loaded list rather than pushed into every query: only
+    /// `Query::Today` takes a context filter, and a filter that worked in one
+    /// view and silently did nothing in the others would be worse than none.
+    /// The Today path still passes it to the query as well, so the indexed
+    /// filter does the work where it exists.
+    pub fn apply_context_filter(&mut self) {
+        if self.context_filter.is_empty() {
+            return;
+        }
+        self.tasks
+            .retain(|t| t.contexts.iter().any(|c| self.context_filter.contains(c)));
+    }
+
+    /// The filter as `@a @b`, for the view header. Empty when unset.
+    #[must_use]
+    pub fn context_filter_label(&self) -> String {
+        self.context_filter
+            .iter()
+            .map(|id| {
+                self.contexts
+                    .iter()
+                    .find(|c| c.id == *id)
+                    .map_or_else(|| id.to_str(), |c| format!("@{}", c.name))
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Apply selection bookkeeping after `contexts` has changed.

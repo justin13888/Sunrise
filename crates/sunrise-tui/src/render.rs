@@ -353,7 +353,7 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         .constraints([Constraint::Length(2), Constraint::Min(1)])
         .split(area);
 
-    let header_text = Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             "Sunrise — Today",
             Style::default().add_modifier(Modifier::BOLD),
@@ -361,7 +361,21 @@ pub fn render_today(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         Span::raw("    ("),
         Span::raw(format!("{}", tasks.len())),
         Span::raw(" tasks)"),
-    ]);
+    ];
+    // A filter that is not on screen is a filter the user will forget, and an
+    // empty view will read as an empty vault.
+    if !state.context_filter.is_empty() {
+        header_spans.push(Span::raw("   "));
+        header_spans.push(Span::styled(
+            format!("filter {}", state.context_filter_label()),
+            Style::default().fg(Color::Cyan),
+        ));
+        header_spans.push(Span::styled(
+            "  (:filter clears)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let header_text = Line::from(header_spans);
     let header = Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(header, chunks[0]);
 

@@ -756,7 +756,10 @@ async fn refresh(core: &Core, state: &mut ViewState) {
             let now_ms = core.now_ms();
             let q = Query::Today {
                 now_ms,
-                contexts: vec![],
+                // Today is the one query that filters by context itself, so
+                // the index does the work here; every other view narrows the
+                // loaded list. See `ViewState::apply_context_filter`.
+                contexts: state.context_filter.clone(),
             };
             load_tasks(core, state, q).await;
             // The view is grouped (overdue / due today / scheduled / anytime),
@@ -927,6 +930,7 @@ async fn refresh_review(core: &Core, state: &mut ViewState) {
 async fn load_tasks(core: &Core, state: &mut ViewState, q: Query) {
     if let Ok(QueryResult::Tasks(tasks) | QueryResult::StreamTasks(tasks)) = core.query(q).await {
         state.tasks = tasks;
+        state.apply_context_filter();
         state.after_tasks_loaded();
     }
 }

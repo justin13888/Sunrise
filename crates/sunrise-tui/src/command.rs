@@ -30,6 +30,9 @@ pub enum Cmd {
     Open(EntityRef),
     /// List the paired devices (`:devices`).
     Devices,
+    /// Narrow every task list to these contexts (`:filter @home`); an empty
+    /// list clears the filter.
+    Filter(Vec<String>),
     /// Write a stats dataset to a file (`:export <dataset> [json|csv] [path]`).
     Export {
         /// Which dataset.
@@ -81,6 +84,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (":focus energy <l|m|h>", "declare the energy budget"),
     (":focus length <p|e|u>", "pomodoro / estimate / until done"),
     (":export <dataset>", "trends|activity|focus|streaks"),
+    (":filter @ctx…", "narrow lists to contexts (bare clears)"),
     (":devices", "list paired devices"),
     (":preview <path>", "show an image (Focus view)"),
     (":help", "this list"),
@@ -122,6 +126,9 @@ pub fn complete(line: &str) -> Vec<String> {
         ["focus", "length"] => vec!["pomodoro", "estimate", "until-done"],
         ["export"] => vec!["trends", "activity", "focus", "streaks"],
         ["export", _] => vec!["csv", "json"],
+        // `:filter` completes against nothing here: the context names live in
+        // the view state, not in this module, and offering a stale vocabulary
+        // would be worse than offering none.
         _ => vec![],
     };
     let mut out: Vec<String> = candidates
@@ -205,6 +212,13 @@ pub fn parse_command(input: &str) -> Cmd {
             },
         },
         "devices" | "device" => Cmd::Devices,
+        // Names are resolved by the caller, which holds the context rows.
+        "filter" | "f" => Cmd::Filter(
+            rest.split_whitespace()
+                .map(|w| w.trim_start_matches('@').to_string())
+                .filter(|w| !w.is_empty())
+                .collect(),
+        ),
         "export" => parse_export(rest),
         "focus" => parse_focus(rest),
         other => Cmd::Error(format!("unknown command: {other}")),
