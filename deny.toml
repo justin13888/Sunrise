@@ -20,7 +20,11 @@ ignore = [
     { id = "RUSTSEC-2026-0248", reason = "im: unmaintained; via loro. Expected to vanish with sunrise-crdt." },
     { id = "RUSTSEC-2026-0247", reason = "bitmaps: unmaintained; via im <- loro. Expected to vanish with sunrise-crdt." },
     { id = "RUSTSEC-2026-0251", reason = "sized-chunks: unmaintained; via im <- loro. Expected to vanish with sunrise-crdt." },
-    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill: unmaintained; via heapless <- postcard <- loro. Expected to vanish with sunrise-crdt." },
+    # `cargo tree -i atomic-polyfill -e normal --workspace` prints nothing: it is
+    # a target-conditional dep of heapless 0.7 for targets without native
+    # atomics, so it sits in Cargo.lock but is never compiled for anything we
+    # ship. No runtime exposure at all.
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill: unmaintained; in the lockfile via heapless <- postcard <- loro but never compiled on any target we build." },
 
     # ---- Survives the sunrise-crdt removal ----
     # `paste` is archived but is a compile-time-only proc macro reached through
@@ -68,7 +72,11 @@ confidence-threshold = 0.9
 # expression. The file is the MIT licence verbatim, so state that explicitly
 # rather than widening the allow-list or skipping the crate.
 [[licenses.clarify]]
-crate = "icy_sixel"
+crate = "icy_sixel@0.1.3"
+# Version-pinned via the `crate` spec: cargo-deny *rejects* a clarification whose hash does not match, and
+# reports it as an unlicensed crate rather than as a stale hash. Without the
+# version pin, a 0.1.4 that changes one byte of LICENSE (a copyright year is
+# enough) would red CI with a diagnostic pointing at the wrong thing.
 expression = "MIT"
 license-files = [{ path = "LICENSE", hash = 0x6ce9e0d1 }]
 

@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Pluggable wall-clock source. Tests inject a fake; production wraps
-/// `std::time::SystemTime::now()` (the only crate where `disallowed_methods`
-/// is locally relaxed for that — see `sunrise-log`).
+/// `std::time::SystemTime::now()` behind a narrowly-scoped `#[allow]` on
+/// [`SystemClock::now_ms`] — the single relaxation of the determinism gate in
+/// this crate's clock path.
 pub trait Clock: Send + Sync + std::fmt::Debug {
     /// Current unix time in milliseconds.
     fn now_ms(&self) -> u64;
@@ -27,12 +28,11 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now_ms(&self) -> u64 {
-        // The workspace clippy deny-list forbids SystemTime::now() except in
-        // sunrise-log (logs need real wall clocks). Here we delegate to the
-        // OS via a controlled boundary: the determinism rule is "no direct
-        // SystemTime in the core's HOT paths" — domain ops always go through
-        // `Clock::now_ms`. SystemClock is the production binding; tests
-        // inject FakeClock and never touch this path.
+        // The determinism gate forbids SystemTime::now(). This is the one
+        // controlled boundary where the wall clock enters the core: every
+        // domain op reads time through `Clock::now_ms`, and this impl is what
+        // that resolves to in production. Tests inject a FakeClock and never
+        // reach here, so no test outcome depends on the host clock.
         #[allow(clippy::disallowed_methods)]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

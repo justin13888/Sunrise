@@ -19,7 +19,7 @@ client*, which is the only measure that matters to a user.
 |---|---|
 | ✅ **live** | Implemented, reachable from a shipping binary, and covered by tests that assert behaviour |
 | 🟨 **partial** | Reachable, but a documented part of its spec is missing |
-| 🟧 **orphan** | Crate builds and self-tests pass, but **nothing depends on it** — no product path reaches this code |
+| 🟧 **orphan** | Crate builds and self-tests pass, but **nothing depends on it** — no product path reaches this code. Test and benchmark harnesses (`sunrise-e2e`, `sunrise-bench`) are exempt: having no dependents is their correct shape, since they exercise other crates rather than being consumed |
 | 🟥 **broken** | Does not build, or does not work when run |
 | ⬜ **deferred** | Deliberately out of scope for v1, with a recorded decision |
 
@@ -32,7 +32,7 @@ client*, which is the only measure that matters to a user.
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
-| `sunrise-crypto-test-vectors` | 🟧 orphan | No consumer. Its single "vector" is an all-zero sentinel and its only test calls one pure function twice |
+| `sunrise-crypto-test-vectors` | 🟧 orphan | No consumer, despite its own doc comment claiming it is "consumed only by the `sunrise-crypto` test suite". Its one vector pairs a real public key with a zero sentinel instead of a frozen expected value, so it cannot detect a BLAKE3 derivation change — which is the entire purpose of a test-vector crate |
 | `sunrise-domain` | 🟨 partial | Task / Stream / Routine are complete. `Block`, `Note`, `Context`, `Person`, `Attachment` are structs with no command path |
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v6) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
@@ -44,7 +44,7 @@ client*, which is the only measure that matters to a user.
 | `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 3 entities behind 9 op kinds |
 | `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, and metrics are real. Auth, accounts, devices, and blob 2PC are stubs — see below |
 | `sunrise-integrations` | 🟧 orphan | iCal is a subset; GCal is an OAuth-URL builder plus a trait. Neither is reachable |
-| `sunrise-tui` | 🟨 partial | Five views render real Core data and live sync works. **Read-mostly**: uses 2 of 15 Commands — no edit, delete, defer, schedule, move, stream CRUD, or routines |
+| `sunrise-tui` | 🟨 partial | Five views render real Core data and live sync works. **Read-mostly**: uses 3 of 15 Commands — no edit, delete, defer, schedule, move, stream CRUD, or routines |
 | `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines in `bench/baseline.json`. Nothing compares against them |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios |
@@ -91,7 +91,6 @@ Tracked so they are not rediscovered as surprises:
   chaos tests script the reconnect the driver should perform itself.
 - **No delete-convergence coverage.** The e2e canonical projection filters
   `deleted = 0`, so no test proves a delete converges.
-- `Query::Today` accepts a `contexts` filter and silently discards it.
 - Routines are materialised only at `Core::open` — a long-running TUI never
   generates new occurrences.
 
@@ -101,8 +100,9 @@ Tracked so they are not rediscovered as surprises:
   root; the e2e tests pass the *same* `[0x42; 32]` to both replicas. Encryption
   is real, but key distribution is bypassed entirely and `sunrise-pairing` is
   never invoked.
-- **`/sync` is unauthenticated.** `ServerState` carries a `TokenVerifier` with
-  zero `.verify(` call sites. Every session resolves to one synthetic account,
+- **`/sync` is unauthenticated.** `ServerState` carries a `TokenVerifier` whose
+  only `.verify(` call sites are in its own unit tests — no production path
+  calls it. Every session resolves to one synthetic account,
   so a Subscribe from any client is served frames belonging to every other. The
   relay is dev-only until this is fixed.
 - **Accounts and devices do not persist.** `GET /accounts/me` returns a

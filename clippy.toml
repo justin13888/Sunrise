@@ -7,18 +7,21 @@ disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "use CoreConfig::clock" },
     { path = "std::time::Instant::now", reason = "use CoreConfig::clock" },
     { path = "std::process::exit", reason = "return Err(CoreError::Fatal) instead" },
+    # These bind only inside the six crates that declare `rand` directly
+    # (crypto, core, e2e, bench, onboarding, crypto-test-vectors) — which are
+    # the ones that matter. Elsewhere clippy cannot resolve the path and emits
+    # a *config* warning that `-D warnings` does not catch, so this is
+    # deliberately not the only enforcement: the `determinism` CI job greps
+    # every crate. Keep both. Path-based matching here is immune to turbofish
+    # and aliasing; the grep covers the crates clippy cannot see.
+    { path = "rand::thread_rng", reason = "use CoreConfig::rng" },
+    { path = "rand::random", reason = "use CoreConfig::rng" },
 ]
 
 disallowed-types = [
     # No entries in v1 — types like `std::sync::Mutex` are still permitted.
 ]
 
-# NOTE: ambient RNG (`rand::thread_rng`, `rand::random`) is deliberately NOT
-# listed above. clippy resolves these paths only inside crates that depend on
-# `rand` directly; everywhere else the entry degrades to a clippy *config*
-# warning, which `-D warnings` cannot catch — so it silently enforced nothing
-# in most of the workspace. That rule is enforced by the `determinism` CI job
-# instead, which greps every crate regardless of its dependency graph.
 
 # Cognitive limits — keep submit/query handlers small.
 cognitive-complexity-threshold = 25

@@ -37,6 +37,23 @@ jobs:
       - name: cargo doc-test
         run: cargo test --workspace --doc
 
+  desktop-shell:
+    name: Desktop shell (cargo build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      # apps/desktop/src-tauri is excluded from the root workspace (to keep
+      # Tauri out of the main build), so no other job compiles it — which is
+      # how its manifest stayed unbuildable without CI noticing. Build it
+      # explicitly so that cannot recur.
+      - name: cargo build
+        working-directory: apps/desktop/src-tauri
+        run: cargo build --locked
+
   rust-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -106,23 +123,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Reject ambient RNG in core crates
         run: |
-          set -euo pipefail
           # docs/01-architecture/shared-core.md §determinism-rules — randomness
-          # comes from the injected `CoreConfig::rng`, never from an ambient
-          # thread-local source.
+          # comes from the injected `CoreConfig::rng`, never an ambient source.
           #
-          # This lives here rather than in clippy.toml's `disallowed-methods`
-          # because clippy resolves those paths only inside crates that depend
-          # on `rand` directly. Everywhere else the entry degraded to a clippy
-          # *config* warning, which `-D warnings` does not catch — so the rule
-          # was unenforced across most of the workspace. A grep binds in every
-          # crate regardless of its dependency graph.
-          if rg -nP '\brand::(thread_rng|random)\s*\(|\bthread_rng\s*\(\)' \
-              crates/*/src crates/*/tests crates/*/benches 2>/dev/null; then
-            echo "::error::Ambient RNG used; take randomness from CoreConfig::rng."
-            exit 1
-          fi
-          echo "OK: no ambient RNG in core crates."
+          # This backstops clippy.toml's `disallowed-methods`, which binds only
+          # inside crates that depend on `rand` directly (6 of 20). The grep
+          # binds everywhere, and catches spellings a path-based lint would
+          # also catch but a naive regex would miss: turbofish
+          # (`rand::random::<u64>()`), the rand 0.9 rename (`rand::rng()`),
+          # and a bare `thread_rng()` behind a `use`.
+          .github/scripts/grep-gate.sh \
+            "determinism" \
+            '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
+            crates/*/src crates/*/tests crates/*/benches
 
   log-redaction:
     name: Log redaction gate
@@ -131,16 +144,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Reject .expose() in logging/telemetry/observability surfaces
         run: |
-          set -euo pipefail
-          # spec/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
+          # docs/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
           # logging, telemetry, or observability code paths.
-          if rg -nP '\bplain[a-z_]*\.expose\(' \
-              crates/sunrise-log/src \
-              crates/*/src/telemetry \
-              crates/*/src/logging \
-              crates/*/src/observability \
-              packages/sunrise-log/src 2>/dev/null; then
-            echo "::error::Plain<T>::expose() called inside redaction-protected surface."
-            exit 1
-          fi
-          echo "OK: no .expose() calls in protected surfaces."
+          #
+          # Of the paths below only crates/sunrise-log/src exists today; the
+          # rest are listed so the gate widens automatically as those surfaces
+          # appear. The runner fails if *none* of them exist, so this cannot
+          # silently degrade to a no-op the way the previous `rg`-based
+          # version did.
+          .github/scripts/grep-gate.sh \
+            "log-redaction" \
+            '\bplain[a-z_]*\.expose[[:space:]]*\(' \
+            crates/sunrise-log/src \
+            crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
