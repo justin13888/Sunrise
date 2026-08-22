@@ -143,6 +143,10 @@ pub enum Action {
     TogglePause,
     /// Show the selected entity's activity feed (`L`).
     ShowActivity,
+    /// Undo the last reversible step (`u`).
+    Undo,
+    /// Redo the step `u` walked back (`^R`).
+    Redo,
     /// Toggle the `?` help overlay.
     ToggleHelp,
     /// Begin a search (switches to Insert in the search bar).
@@ -260,6 +264,8 @@ impl Action {
             Self::ToggleArchive => "toggle_archive",
             Self::TogglePause => "toggle_pause",
             Self::ShowActivity => "activity",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
             Self::ToggleHelp => "help",
             Self::BeginSearch => "search",
             Self::BeginCommand => "command",
@@ -781,6 +787,21 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::ShowActivity,
         Some(("L", "activity: what happened")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('u'),
+        Scope::Any,
+        Action::Undo,
+        Some(("u / ^R", "undo / redo")),
+    ),
+    bm(
+        Mode::Normal,
+        KeyCode::Char('r'),
+        CTRL,
+        Scope::Any,
+        Action::Redo,
+        None,
     ),
     b(
         Mode::Normal,

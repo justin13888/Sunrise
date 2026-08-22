@@ -65,6 +65,7 @@ pub mod livesync;
 pub mod recur;
 pub mod render;
 pub mod runtime;
+pub mod undo;
 pub mod view;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
@@ -81,6 +82,7 @@ pub use render::{
     render_stream, render_today, review_rows, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
+pub use undo::{invert, NotUndoable, UndoEntry};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
     sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, FocusState,

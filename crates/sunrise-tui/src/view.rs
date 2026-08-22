@@ -2,6 +2,7 @@
 
 use crate::input::InputLine;
 use crate::keymap::{Keymap, Mode};
+use crate::undo::UndoEntry;
 use jiff::Timestamp;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
@@ -898,6 +899,14 @@ pub struct ViewState {
     /// Review-view state: the weekly review, the glance, the trends, the
     /// saved snapshots. See [`ReviewState`].
     pub review: ReviewState,
+    /// Steps `u` can walk back, oldest first. See [`crate::undo`].
+    pub undo: Vec<UndoEntry>,
+    /// Steps `Ctrl-r` can walk forward. Cleared by any new mutation, as in
+    /// every editor: branching history is a feature nobody asked for.
+    pub redo: Vec<UndoEntry>,
+    /// Why the last change could not be recorded, so `u` can say "a delete
+    /// cannot be undone" instead of "nothing to undo".
+    pub last_irreversible: Option<crate::undo::NotUndoable>,
     /// Visible rows in the focused list, refreshed once per frame by the
     /// binary from the real terminal size. Drives the page-jump keys; a
     /// default is kept so the reducer is usable with no terminal at all.
@@ -949,6 +958,9 @@ impl Default for ViewState {
             keymap: Keymap::default(),
             focus: FocusState::default(),
             review: ReviewState::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_irreversible: None,
             viewport_rows: DEFAULT_VIEWPORT_ROWS,
             now_ms: 0,
         }
@@ -1535,6 +1547,15 @@ impl ViewState {
             self.exit_triage();
             self.status = "triage complete".into();
         }
+    }
+
+    /// Record a reversible step, dropping the oldest once the stack is full.
+    pub fn push_undo(&mut self, entry: UndoEntry) {
+        self.redo.clear();
+        if self.undo.len() >= crate::undo::MAX_DEPTH {
+            self.undo.remove(0);
+        }
+        self.undo.push(entry);
     }
 
     /// Show the activity-feed overlay for `title`.

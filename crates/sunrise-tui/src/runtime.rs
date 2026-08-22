@@ -216,7 +216,22 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         state.review.max_scroll = rows.saturating_sub(state.viewport_rows);
     }
 
-    match action {
+    // Undo and redo replay recorded steps; recording them again would make
+    // the stack chase its own tail.
+    if matches!(action, Action::Undo) {
+        return undo_step(state);
+    }
+    if matches!(action, Action::Redo) {
+        return redo_step(state);
+    }
+
+    // The undo entry is built from the state as it stands *now*, before the
+    // core has applied anything: the fields a command is about to overwrite
+    // still hold the values that put them back. `apply_action` only mutates
+    // view state (mode, cursor, status), never task data, so reading it after
+    // the arm has run is still reading the pre-command values.
+    let fallback_label = state.operand_label();
+    let outcome = match action {
         Action::Quit => Outcome::Quit,
         Action::SwitchView(View::Focus) => {
             state.open_focus();
@@ -692,7 +707,91 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             Outcome::None
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
+        // Handled above, before anything could be recorded.
+        Action::Undo | Action::Redo => Outcome::None,
+    };
+    // The arm's own status line is the best description of what just
+    // happened ("archived Work", "annotated 3 tasks"); the operand label is
+    // the fallback for the arms that set none.
+    let label = if state.status.is_empty() {
+        fallback_label
+    } else {
+        state.status.clone()
+    };
+    record_undo(state, &label, &outcome);
+    outcome
+}
+
+/// Record `outcome`'s commands as one reversible step, if they all invert.
+///
+/// Silent when they do not: a step that cannot be undone should not push a
+/// entry that fails when `u` reaches it. `u` says why at the point the user
+/// asks, which is where the explanation is useful.
+fn record_undo(state: &mut ViewState, label: &str, outcome: &Outcome) {
+    let cmds: &[Command] = match outcome {
+        Outcome::Submit(cmd) => std::slice::from_ref(&**cmd),
+        Outcome::SubmitMany(cmds) | Outcome::SubmitThenCascade { cmds, .. } => cmds,
+        _ => return,
+    };
+    // Focus-session bookkeeping is a log, not an edit: a `start`/`end` pair is
+    // append-only by construction (ADR-0013), so there is nothing to put back.
+    if cmds.iter().any(|c| {
+        matches!(
+            c,
+            Command::StartFocus(_)
+                | Command::EndFocus { .. }
+                | Command::LogInterruption { .. }
+                | Command::SaveReviewSnapshot(_)
+        )
+    }) {
+        return;
     }
+    match crate::undo::invert(state, cmds) {
+        Ok(backward) => {
+            state.last_irreversible = None;
+            state.push_undo(crate::undo::UndoEntry {
+                label: label.to_string(),
+                forward: cmds.to_vec(),
+                backward,
+            });
+        }
+        // Remembered rather than reported now: the user has not asked yet, and
+        // "that cannot be undone" is only useful at the moment they press `u`.
+        Err(why) => state.last_irreversible = Some(why),
+    }
+}
+
+/// Walk one step back.
+fn undo_step(state: &mut ViewState) -> Outcome {
+    let Some(entry) = state.undo.pop() else {
+        state.status = match state.last_irreversible {
+            Some(crate::NotUndoable::Deleted) => {
+                "a delete cannot be undone — the core has no restore op".into()
+            }
+            Some(crate::NotUndoable::Unsupported) => "the last change cannot be undone".to_string(),
+            None => "nothing to undo".to_string(),
+        };
+        return Outcome::None;
+    };
+    state.last_irreversible = None;
+    state.status = format!("undid \"{}\"", entry.label);
+    let cmds = entry.backward.clone();
+    state.redo.push(entry.flipped());
+    Outcome::submit_all(cmds)
+}
+
+/// Walk one step forward again.
+fn redo_step(state: &mut ViewState) -> Outcome {
+    let Some(entry) = state.redo.pop() else {
+        state.status = "nothing to redo".into();
+        return Outcome::None;
+    };
+    state.status = format!("redid \"{}\"", entry.label);
+    let cmds = entry.backward.clone();
+    // Pushed directly rather than through `push_undo`, which clears the redo
+    // stack: walking forward must not destroy the rest of the forward history.
+    state.undo.push(entry.flipped());
+    Outcome::submit_all(cmds)
 }
 
 /// What `L` reports on: the sidebar row if the Browse sidebar has the
@@ -2317,6 +2416,118 @@ manual"
             },
         }));
         s
+    }
+
+    #[test]
+    fn u_puts_a_completion_back() {
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char('x'));
+        assert_eq!(s.undo.len(), 1);
+        match press(&mut s, KeyCode::Char('u')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { id: got, patch } => {
+                    assert_eq!(got, id);
+                    assert_eq!(patch.state, Some(sunrise_domain::TaskState::Todo));
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert!(s.undo.is_empty());
+        assert_eq!(s.redo.len(), 1, "and it can be walked forward again");
+    }
+
+    #[test]
+    fn redo_replays_the_step_u_walked_back() {
+        use crossterm::event::KeyModifiers as M;
+        let mut s = inbox_state();
+        let id = selected_id(&s);
+        let _ = press(&mut s, KeyCode::Char('x'));
+        let _ = press(&mut s, KeyCode::Char('u'));
+        match press_mod(&mut s, KeyCode::Char('r'), M::CONTROL) {
+            Outcome::Submit(cmd) => {
+                assert!(matches!(*cmd, Command::CompleteTask(got) if got == id));
+            }
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        assert_eq!(s.undo.len(), 1, "and back onto the undo stack");
+    }
+
+    #[test]
+    fn undo_restores_every_facet_an_annotate_touched() {
+        let mut s = inbox_state();
+        let i = s.selected.expect("a selection");
+        s.tasks[i].priority = Some(4);
+        s.tasks[i].energy = None;
+        let _ = press(&mut s, KeyCode::Char('A'));
+        type_text(&mut s, "!1 %high");
+        let _ = press(&mut s, KeyCode::Enter);
+        match press(&mut s, KeyCode::Char('u')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateTask { patch, .. } => {
+                    assert_eq!(patch.priority, Some(Some(4)), "the old value, not a clear");
+                    assert_eq!(patch.energy, Some(None), "unset is a value too");
+                }
+                other => panic!("expected UpdateTask, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn undo_of_a_bulk_step_is_one_step_not_three() {
+        let mut s = inbox_state();
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('V'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('j'));
+        let _ = press(&mut s, KeyCode::Char('x'));
+        assert_eq!(s.undo.len(), 1, "one operator, one step");
+        match press(&mut s, KeyCode::Char('u')) {
+            Outcome::SubmitMany(cmds) => assert_eq!(cmds.len(), 3),
+            other => panic!("expected SubmitMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_delete_says_it_cannot_be_undone_rather_than_pretending() {
+        // The core writes a tombstone and has no restore op. Saying "nothing
+        // to undo" would read as "your delete did not happen".
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('D'));
+        let _ = press(&mut s, KeyCode::Char('y'));
+        assert!(s.undo.is_empty());
+        assert!(matches!(press(&mut s, KeyCode::Char('u')), Outcome::None));
+        assert!(s.status.contains("cannot be undone"), "{}", s.status);
+    }
+
+    #[test]
+    fn a_focus_session_is_a_log_not_an_edit_so_it_records_no_step() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('F'));
+        assert!(s.undo.is_empty(), "a session start has nothing to put back");
+    }
+
+    #[test]
+    fn a_new_change_forgets_the_forward_history() {
+        let mut s = inbox_state();
+        let _ = press(&mut s, KeyCode::Char('x'));
+        let _ = press(&mut s, KeyCode::Char('u'));
+        assert_eq!(s.redo.len(), 1);
+        s.selected = Some(0);
+        let _ = press(&mut s, KeyCode::Char('x'));
+        assert!(s.redo.is_empty(), "branching history helps nobody");
+    }
+
+    #[test]
+    fn the_undo_stack_is_bounded() {
+        let mut s = inbox_state();
+        for _ in 0..(crate::undo::MAX_DEPTH + 10) {
+            s.selected = Some(0);
+            let _ = press(&mut s, KeyCode::Char('x'));
+        }
+        assert_eq!(s.undo.len(), crate::undo::MAX_DEPTH);
     }
 
     #[test]
