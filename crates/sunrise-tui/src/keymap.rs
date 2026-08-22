@@ -127,6 +127,10 @@ pub enum Action {
     CreateStream,
     /// Create a context (`C`).
     CreateContext,
+    /// Create a routine (`R`).
+    CreateRoutine,
+    /// Skip the routine's next occurrence (`s` in the Routines view).
+    SkipOccurrence,
     /// Archive or unarchive the selected Browse sidebar row (`a`).
     ToggleArchive,
     /// Pause or resume the selected Stream or Routine (`p`).
@@ -238,6 +242,8 @@ impl Action {
             Self::MoveToStream => "move_to_stream",
             Self::CreateStream => "create_stream",
             Self::CreateContext => "create_context",
+            Self::CreateRoutine => "create_routine",
+            Self::SkipOccurrence => "skip_occurrence",
             Self::ToggleArchive => "toggle_archive",
             Self::TogglePause => "toggle_pause",
             Self::ToggleHelp => "help",
@@ -650,6 +656,16 @@ pub static BINDINGS: &[Binding] = &[
         Action::Defer,
         Some(("d", "defer (prompts)")),
     ),
+    // `s` schedules a task everywhere else; in the Routines view the row under
+    // the cursor is a template, and skipping its next occurrence is the
+    // scheduling decision that view can actually make.
+    b(
+        Mode::Normal,
+        KeyCode::Char('s'),
+        Scope::In(View::Routines),
+        Action::SkipOccurrence,
+        Some(("s", "skip next occurrence")),
+    ),
     b(
         Mode::Normal,
         KeyCode::Char('s'),
@@ -684,6 +700,13 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::CreateContext,
         Some(("C", "create a context")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('R'),
+        Scope::Any,
+        Action::CreateRoutine,
+        Some(("R", "create a routine")),
     ),
     b(
         Mode::Normal,

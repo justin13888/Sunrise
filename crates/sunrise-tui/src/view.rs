@@ -7,7 +7,7 @@ use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
     break_after, materialization_horizon_days, Energy, FocusKind, FocusStats, Routine, Segment,
-    SessionLength, Task, UnblockCascade,
+    SessionLength, Task, TaskTemplate, UnblockCascade,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -161,6 +161,12 @@ pub enum Prompt {
     CreateStream,
     /// Create a context by name (`C`).
     CreateContext,
+    /// Create a routine (`R`): a capture line, a `|`, and a recurrence.
+    CreateRoutine,
+    /// Change an existing routine's recurrence (`e` in the Routines view).
+    EditRecurrence(EntityRef),
+    /// Rename an existing routine's template title (`E` in the Routines view).
+    RenameRoutine(EntityRef),
     /// Free-text search query (`/`).
     Search,
     /// Annotate one or more tasks with the edit grammar (`A`) — see
@@ -500,6 +506,17 @@ pub struct RoutineRow {
     pub next: Option<Timestamp>,
     /// Whether the routine is paused (no occurrences are generated).
     pub paused: bool,
+    /// The routine's task template, kept so an edit patches the fields the
+    /// user changed and leaves the rest exactly as they were —
+    /// `RoutinePatch.template` replaces the whole template, so editing a title
+    /// without it would silently drop the stream, priority and contexts.
+    pub template: TaskTemplate,
+    /// The parsed recurrence, kept for the same reason: the summary string is
+    /// lossy and cannot be patched back.
+    pub rule: RRule,
+    /// Current streak counter, so the Routines view can answer "am I keeping
+    /// this up?" without a second query per row.
+    pub streak: i64,
 }
 
 /// Human-readable one-line summary of an [`RRule`], for the Routines view.
@@ -561,6 +578,9 @@ pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
                 rrule: rrule_summary(&r.rrule),
                 next,
                 paused: r.paused,
+                template: r.template.clone(),
+                rule: r.rrule.clone(),
+                streak: r.streak_counter,
             }
         })
         .collect()
@@ -1639,6 +1659,43 @@ pub(crate) mod fixtures {
     }
 
     /// A named user stream row; `idx` seeds the id.
+    /// A projected Routines-view row, with a plausible template behind it.
+    pub(crate) fn routine_row(
+        idx: u8,
+        title: &str,
+        rrule: &str,
+        paused: bool,
+    ) -> super::RoutineRow {
+        super::RoutineRow {
+            id: EntityRef::new(EntityKind::Routine, [idx; 16]),
+            title: title.into(),
+            rrule: rrule.into(),
+            next: None,
+            paused,
+            template: TaskTemplate {
+                title: title.into(),
+                stream_id: inbox_stream_ref(),
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rule: RRule {
+                freq: sunrise_domain::rrule::Frequency::Daily,
+                interval: 1,
+                by_day: Vec::new(),
+                by_month_day: Vec::new(),
+                by_month: Vec::new(),
+                by_set_pos: Vec::new(),
+                count: None,
+                until: None,
+                wkst: None,
+            },
+            streak: 0,
+        }
+    }
+
     pub(crate) fn stream_row(idx: u8, name: &str, open: u64) -> StreamRow {
         StreamRow {
             id: EntityRef::new(EntityKind::Stream, [idx; 16]),

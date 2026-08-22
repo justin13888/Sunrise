@@ -20,8 +20,8 @@ use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{Command, DomainEvent};
 use sunrise_domain::capture::parse_when;
 use sunrise_domain::{
-    ContextDraft, ContextPatch, FocusKind, InterruptionReason, RoutinePatch, StreamDraft,
-    StreamPatch, TaskPatch,
+    ContextDraft, ContextPatch, FocusKind, InterruptionReason, RoutineCatchupPolicy, RoutineDraft,
+    RoutinePatch, StreamDraft, StreamPatch, TaskPatch, TaskTemplate,
 };
 use sunrise_id::EntityRef;
 
@@ -290,6 +290,31 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             refresh_capture_preview(state, now_ms);
             Outcome::None
         }
+        // In the Routines view the row under the cursor is a template, so `e`
+        // edits the thing that makes it a routine — its recurrence — and `E`
+        // renames it, rather than both meaning nothing.
+        Action::EditTitle if state.view == View::Routines => match state.selected_routine_row() {
+            Some(row) => {
+                let (id, rrule) = (row.id, row.rrule.clone());
+                state.mode = Mode::Insert;
+                state.prompt = Some(Prompt::EditRecurrence(id));
+                state.input.set(rrule);
+                state.status = "recurrence: every day · weekdays · every 2 weeks on tue".into();
+                Outcome::None
+            }
+            None => no_routine(state),
+        },
+        Action::EditBody if state.view == View::Routines => match state.selected_routine_row() {
+            Some(row) => {
+                let (id, title) = (row.id, row.title.clone());
+                state.mode = Mode::Insert;
+                state.prompt = Some(Prompt::RenameRoutine(id));
+                state.input.set(title);
+                state.status = "rename routine: Enter to save, Esc to cancel".into();
+                Outcome::None
+            }
+            None => no_routine(state),
+        },
         Action::EditTitle if state.sidebar_row().is_some() => {
             let (row, name) = state.sidebar_row().expect("just checked");
             state.mode = Mode::Insert;
@@ -356,6 +381,21 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         Action::Delete => {
             // In the Browse sidebar `D` means the row under the cursor; in a
             // task list it means the operand set. Same key, same gate.
+            if state.view == View::Routines {
+                let Some(row) = state.selected_routine_row() else {
+                    return no_routine(state);
+                };
+                let (id, title) = (row.id, row.title.clone());
+                state.mode = Mode::Confirm;
+                state.input.clear();
+                state.status =
+                    format!("delete routine \"{title}\" — tasks it already made stay? [y/N]");
+                state.prompt = Some(Prompt::ConfirmDelete {
+                    target: DeleteTarget::Routine(id),
+                    title,
+                });
+                return Outcome::None;
+            }
             let (target, title, warning) = match state.sidebar_row() {
                 Some((SidebarRow::Stream(id), name)) => {
                     (DeleteTarget::Stream(id), name, " — its tasks go with it")
@@ -423,6 +463,14 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
             state.status = "new context: type a name (no @), Enter to create".into();
             Outcome::None
         }
+        Action::CreateRoutine => {
+            state.mode = Mode::Insert;
+            state.prompt = Some(Prompt::CreateRoutine);
+            state.input.clear();
+            state.status = "new routine: <title #stream !p ~dur @ctx ^first> | <every day>".into();
+            Outcome::None
+        }
+        Action::SkipOccurrence => skip_occurrence(state),
         Action::ToggleArchive => toggle_archive(state),
         Action::TogglePause => toggle_pause(state),
         Action::ToggleHelp => {
@@ -579,6 +627,112 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// Shared "no routine is selected" response.
+fn no_routine(state: &mut ViewState) -> Outcome {
+    state.status = "no routine selected".into();
+    Outcome::None
+}
+
+/// Skip the selected routine's next occurrence.
+///
+/// The occurrence key is the local `YYYY-MM-DDTHH:MM` the engine mints
+/// occurrences under, so it is derived from the projected `next` rather than
+/// invented here — a key that disagrees with the generator would silently skip
+/// nothing.
+fn skip_occurrence(state: &mut ViewState) -> Outcome {
+    let Some(row) = state.selected_routine_row() else {
+        return no_routine(state);
+    };
+    let (id, title) = (row.id, row.title.clone());
+    let Some(next) = row.next else {
+        state.status = format!("{title} has no upcoming occurrence to skip");
+        return Outcome::None;
+    };
+    let key = occurrence_key(next, &state.tz);
+    state.status = format!("skipped {title} on {key}");
+    Outcome::Submit(Box::new(Command::SkipRoutineOccurrence {
+        id,
+        occurrence_key: key,
+    }))
+}
+
+/// `YYYY-MM-DDTHH:MM` in the routine's zone — the engine's occurrence key.
+fn occurrence_key(at: jiff::Timestamp, tz: &jiff::tz::TimeZone) -> String {
+    let dt = at.to_zoned(tz.clone()).datetime();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}",
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute()
+    )
+}
+
+/// Turn a `<capture line> | <recurrence>` routine line into a `CreateRoutine`.
+///
+/// The two halves are split explicitly rather than sniffed apart: a title can
+/// contain the word "every", and guessing where the recurrence starts would
+/// mean a routine whose name is silently truncated. The left half is the
+/// **same** capture parser every other prompt uses, so `#stream`, `@ctx`,
+/// `!priority` and `~duration` mean what they always mean, and `^when` sets
+/// the series anchor rather than one task's schedule.
+fn create_routine_outcome(state: &mut ViewState, text: &str, now_ms: u64) -> Outcome {
+    let Some((head, tail)) = text.split_once('|') else {
+        state.prompt = Some(Prompt::CreateRoutine);
+        state.status =
+            "routine: put the recurrence after a | (e.g. water plants | every day)".into();
+        return Outcome::None;
+    };
+    let rule = match crate::recur::parse_recurrence(tail) {
+        Ok(r) => r,
+        Err(e) => {
+            state.prompt = Some(Prompt::CreateRoutine);
+            state.status = format!("routine: {e}");
+            return Outcome::None;
+        }
+    };
+    let parsed = parse_line(head, &state.streams, &state.contexts, now_ms, &state.tz);
+    if parsed.draft.title.trim().is_empty() {
+        state.prompt = Some(Prompt::CreateRoutine);
+        state.status = "routine: a title is required before the |".into();
+        return Outcome::None;
+    }
+    let title = parsed.draft.title.clone();
+    // `^when` anchors the series; with none given the series starts now, which
+    // is what "every day, starting today" means.
+    let starts_at = parsed.draft.scheduled_at.unwrap_or_else(|| now_ts(now_ms));
+    let draft = RoutineDraft {
+        template: TaskTemplate {
+            title: parsed.draft.title,
+            stream_id: parsed
+                .draft
+                .stream_id
+                .unwrap_or_else(sunrise_domain::inbox_stream_ref),
+            contexts: parsed.draft.contexts,
+            energy: parsed.draft.energy,
+            priority: parsed.draft.priority,
+            estimated_duration_s: parsed.draft.estimated_duration_s,
+            body: None,
+        },
+        rrule: rule,
+        timezone: state.tz.iana_name().unwrap_or("UTC").to_string(),
+        starts_at,
+        ends_at: None,
+        scheduling_constraints: Vec::new(),
+        catchup_policy: RoutineCatchupPolicy::Skip,
+    };
+    state.reset_to_normal();
+    state.status = match unresolved_note(&parsed.unresolved) {
+        Some(note) => note,
+        None => format!(
+            "routine \"{title}\" — {}",
+            crate::rrule_summary(&draft.rrule)
+        ),
+    };
+    Outcome::Submit(Box::new(Command::CreateRoutine(draft)))
 }
 
 /// Archive or unarchive the Browse sidebar row under the cursor.
@@ -1213,6 +1367,59 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                 },
             }))
         }
+        Some(Prompt::CreateRoutine) => {
+            if text.is_empty() {
+                state.reset_to_normal();
+                return Outcome::None;
+            }
+            create_routine_outcome(state, &text, now_ms)
+        }
+        Some(Prompt::EditRecurrence(id)) => match crate::recur::parse_recurrence(&text) {
+            Ok(rule) => {
+                state.reset_to_normal();
+                state.status = format!("recurrence: {}", crate::rrule_summary(&rule));
+                Outcome::Submit(Box::new(Command::UpdateRoutine {
+                    id,
+                    patch: RoutinePatch {
+                        rrule: Some(rule),
+                        ..Default::default()
+                    },
+                }))
+            }
+            Err(e) => {
+                state.prompt = Some(Prompt::EditRecurrence(id));
+                state.status = format!("recurrence: {e}");
+                Outcome::None
+            }
+        },
+        Some(Prompt::RenameRoutine(id)) => {
+            if text.is_empty() {
+                state.prompt = Some(Prompt::RenameRoutine(id));
+                state.status = "a routine needs a title".into();
+                return Outcome::None;
+            }
+            // `RoutinePatch.template` replaces the whole template, so the
+            // untouched fields have to be carried over explicitly — patching
+            // only the title would silently drop the stream and the contexts.
+            let Some(mut template) = state
+                .selected_routine_row()
+                .filter(|r| r.id == id)
+                .map(|r| r.template.clone())
+            else {
+                state.reset_to_normal();
+                return no_routine(state);
+            };
+            template.title.clone_from(&text);
+            state.reset_to_normal();
+            state.status = format!("renamed routine to {text}");
+            Outcome::Submit(Box::new(Command::UpdateRoutine {
+                id,
+                patch: RoutinePatch {
+                    template: Some(template),
+                    ..Default::default()
+                },
+            }))
+        }
         Some(Prompt::CreateContext) => {
             if text.is_empty() {
                 state.prompt = Some(Prompt::CreateContext);
@@ -1313,7 +1520,7 @@ pub fn parse_defer_ms(input: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::fixtures::{context_row, fake_task, inbox_row, stream_row};
+    use crate::view::fixtures::{context_row, fake_task, inbox_row, routine_row, stream_row};
     use crate::view::StreamPane;
     use crossterm::event::KeyCode;
 
@@ -1804,13 +2011,7 @@ manual"
     fn p_pauses_a_routine_when_the_routines_view_has_the_cursor() {
         let mut s = ViewState::default();
         s.view = View::Routines;
-        s.routines = vec![crate::view::RoutineRow {
-            id: fake_task(1).id,
-            title: "water the plants".into(),
-            rrule: "every day".into(),
-            next: None,
-            paused: false,
-        }];
+        s.routines = vec![routine_row(1, "water the plants", "every day", false)];
         s.after_routines_loaded();
         s.selected_routine = Some(0);
         match press(&mut s, KeyCode::Char('p')) {
@@ -1818,6 +2019,140 @@ manual"
                 Command::UpdateRoutine { patch, .. } => assert_eq!(patch.paused, Some(true)),
                 other => panic!("expected UpdateRoutine, got {other:?}"),
             },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    fn routines_state() -> ViewState {
+        let mut s = ViewState::default();
+        s.view = View::Routines;
+        s.routines = vec![routine_row(1, "water the plants", "every day", false)];
+        s.routines[0].next = Some("2026-03-02T09:00:00Z".parse().unwrap());
+        s.after_routines_loaded();
+        s.selected_routine = Some(0);
+        s
+    }
+
+    #[test]
+    fn a_routine_can_be_created_from_a_capture_line_and_a_cadence() {
+        let mut s = ViewState::default();
+        s.streams = vec![stream_row(9, "Home", 0)];
+        let _ = press(&mut s, KeyCode::Char('R'));
+        assert_eq!(s.mode, Mode::Insert);
+        type_text(&mut s, "water the plants #home ~10m | every 2 days");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::CreateRoutine(d) => {
+                    assert_eq!(d.template.title, "water the plants");
+                    assert_eq!(d.template.stream_id, s.streams[0].id);
+                    assert_eq!(d.template.estimated_duration_s, Some(600));
+                    assert_eq!(d.rrule.interval, 2);
+                }
+                other => panic!("expected CreateRoutine, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_routine_line_needs_both_halves_and_says_which_is_missing() {
+        let mut s = ViewState::default();
+        let _ = press(&mut s, KeyCode::Char('R'));
+        type_text(&mut s, "water the plants every day");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert!(s.status.contains('|'), "{}", s.status);
+        assert_eq!(s.mode, Mode::Insert, "the prompt stays open");
+
+        let mut s = ViewState::default();
+        let _ = press(&mut s, KeyCode::Char('R'));
+        type_text(&mut s, "water the plants | sometimes");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert!(s.status.contains("sometimes"), "{}", s.status);
+
+        let mut s = ViewState::default();
+        let _ = press(&mut s, KeyCode::Char('R'));
+        type_text(&mut s, " | every day");
+        assert!(matches!(press(&mut s, KeyCode::Enter), Outcome::None));
+        assert!(s.status.contains("title is required"), "{}", s.status);
+    }
+
+    #[test]
+    fn e_edits_the_recurrence_in_the_routines_view() {
+        let mut s = routines_state();
+        let _ = press(&mut s, KeyCode::Char('e'));
+        assert_eq!(s.input, "every day");
+        let _ = press_mod(
+            &mut s,
+            KeyCode::Char('u'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        type_text(&mut s, "weekdays");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateRoutine { patch, .. } => {
+                    assert_eq!(patch.rrule.expect("an rrule").by_day.len(), 5);
+                    assert!(patch.template.is_none(), "only the cadence changed");
+                }
+                other => panic!("expected UpdateRoutine, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renaming_a_routine_carries_the_rest_of_its_template() {
+        // `RoutinePatch.template` replaces the whole template, so a rename
+        // that only set the title would silently drop the stream, priority
+        // and contexts.
+        let mut s = routines_state();
+        s.routines[0].template.priority = Some(2);
+        let _ = press(&mut s, KeyCode::Char('E'));
+        assert_eq!(s.input, "water the plants");
+        type_text(&mut s, "!");
+        match press(&mut s, KeyCode::Enter) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::UpdateRoutine { patch, .. } => {
+                    let t = patch.template.expect("a template");
+                    assert_eq!(t.title, "water the plants!");
+                    assert_eq!(t.priority, Some(2));
+                }
+                other => panic!("expected UpdateRoutine, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn s_skips_the_next_occurrence_with_the_engines_own_key_format() {
+        let mut s = routines_state();
+        match press(&mut s, KeyCode::Char('s')) {
+            Outcome::Submit(cmd) => match *cmd {
+                Command::SkipRoutineOccurrence { occurrence_key, .. } => {
+                    assert_eq!(occurrence_key, "2026-03-02T09:00");
+                }
+                other => panic!("expected SkipRoutineOccurrence, got {other:?}"),
+            },
+            other => panic!("expected Submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skipping_a_routine_with_nothing_upcoming_says_so() {
+        let mut s = routines_state();
+        s.routines[0].next = None;
+        assert!(matches!(press(&mut s, KeyCode::Char('s')), Outcome::None));
+        assert!(s.status.contains("no upcoming occurrence"), "{}", s.status);
+    }
+
+    #[test]
+    fn deleting_a_routine_says_the_tasks_it_made_survive() {
+        let mut s = routines_state();
+        let _ = press(&mut s, KeyCode::Char('D'));
+        assert!(s.status.contains("already made stay"), "{}", s.status);
+        match press(&mut s, KeyCode::Char('y')) {
+            Outcome::Submit(cmd) => {
+                assert!(matches!(*cmd, Command::DeleteRoutine(_)));
+            }
             other => panic!("expected Submit, got {other:?}"),
         }
     }
@@ -2204,20 +2539,8 @@ manual"
         let mut s = ViewState::default();
         s.view = View::Routines;
         s.routines = vec![
-            crate::view::RoutineRow {
-                id: fake_task(1).id,
-                title: "a".into(),
-                rrule: "every day".into(),
-                next: None,
-                paused: false,
-            },
-            crate::view::RoutineRow {
-                id: fake_task(2).id,
-                title: "b".into(),
-                rrule: "every day".into(),
-                next: None,
-                paused: false,
-            },
+            routine_row(1, "a", "every day", false),
+            routine_row(2, "b", "every day", false),
         ];
         s.after_routines_loaded();
         let _ = press(&mut s, KeyCode::Char('G'));

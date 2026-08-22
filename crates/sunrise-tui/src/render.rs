@@ -1001,10 +1001,14 @@ pub fn render_routines(
 ) {
     if routines.is_empty() {
         f.render_widget(
-            Paragraph::new("no routines — create them from the desktop client (core v1 has no TUI routine CRUD)")
-                .style(Style::default().fg(Color::Gray))
-                .wrap(Wrap { trim: true })
-                .block(Block::default().borders(Borders::ALL).title("Routines")),
+            Paragraph::new(
+                "no routines yet\n\n\
+                 R creates one: <title #stream ~30m> | <every day>\n\
+                 recurrence: every day · weekdays · every 2 weeks on tue · monthly on the 15th",
+            )
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title("Routines")),
             area,
         );
         return;
@@ -1014,7 +1018,11 @@ pub fn render_routines(
         .map(|r| ListItem::new(routine_line(r)))
         .collect();
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Routines"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Routines — R new · e recurrence · E rename · p pause · s skip · D delete"),
+        )
         .highlight_style(
             Style::default()
                 .add_modifier(Modifier::BOLD)
@@ -1027,13 +1035,22 @@ pub fn render_routines(
     f.render_stateful_widget(list, area, &mut st);
 }
 
-/// One Routines-view row: `title — <rrule summary> · next <ts>`.
+/// One Routines-view row: `title — <rrule summary> · next <ts> · streak N`.
+///
+/// The streak is on the row rather than behind a second screen because it is
+/// the one number that says whether the routine is working
+/// (`docs/08-features/reviews-and-stats.md` §Routines tuning), and a list of
+/// cadences with no outcome attached cannot be tuned from.
 fn routine_line(r: &RoutineRow) -> String {
     let next = r
         .next
         .map_or_else(|| "none in horizon".to_string(), |t| t.to_string());
-    let paused = if r.paused { " [paused]" } else { "" };
-    format!("{}{paused} — {} · next {next}", r.title, r.rrule)
+    let paused = if r.paused { " ⏸" } else { "" };
+    let streak = match r.streak {
+        0 => String::new(),
+        n => format!(" · streak {n}"),
+    };
+    format!("{}{paused} — {} · next {next}{streak}", r.title, r.rrule)
 }
 
 /// Modal move-to-stream picker (`m`), drawn over the current view.
@@ -1690,13 +1707,9 @@ mod tests {
     fn routines_view_lists_rrule_summary_and_next_occurrence() {
         let mut state = ViewState::default();
         state.view = View::Routines;
-        state.routines = vec![RoutineRow {
-            id: fixtures::fake_task(1).id,
-            title: "Water plants".into(),
-            rrule: "every 2 weeks on Mo".into(),
-            next: Some("2026-03-02T09:00:00Z".parse().unwrap()),
-            paused: false,
-        }];
+        let mut row = fixtures::routine_row(1, "Water plants", "every 2 weeks on Mo", false);
+        row.next = Some("2026-03-02T09:00:00Z".parse().unwrap());
+        state.routines = vec![row];
         state.after_routines_loaded();
         let s = guarded_frame(100, 24, &state);
         assert!(s.contains("Water plants"), "got:\n{s}");

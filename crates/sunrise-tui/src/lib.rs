@@ -2,7 +2,10 @@
 //!
 //! Implements `docs/07-clients/tui.md` foundation. v1 ships:
 //!
-//! - Today / Inbox / Stream / Search / Focus / Routines view enum.
+//! - Today / Inbox / Browse / Search / Focus / Routines view enum, with the
+//!   Browse sidebar covering both domain axes (Streams and Contexts) and full
+//!   CRUD over each.
+//! - Routine CRUD, with plain-English recurrence ([`recur`]).
 //! - Vim-style modal navigation (default-on per the parity matrix), with the
 //!   keymap and the `?` help overlay derived from one binding table.
 //! - Focus sessions ([`view::FocusState`]): the ranked planner queue, a live
@@ -57,6 +60,7 @@ pub mod images;
 pub mod input;
 pub mod keymap;
 pub mod livesync;
+pub mod recur;
 pub mod render;
 pub mod runtime;
 pub mod view;
@@ -69,6 +73,7 @@ pub use input::InputLine;
 pub use keymap::{
     dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
 };
+pub use recur::parse_recurrence;
 pub use render::{
     fits, render, render_focus, render_inbox, render_routines, render_search, render_stream,
     render_today, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
