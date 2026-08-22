@@ -158,9 +158,15 @@ async fn two_core_context_convergence() {
         .expect("create task")
         .entity;
     wait_tasks_converge(&a, &b, 2, TIMEOUT).await;
+    // `task_contexts` sorts, so the expectation must too. These two ids are
+    // ULIDs minted microseconds apart, so they share a timestamp prefix and
+    // their relative order is decided by the random suffix — comparing against
+    // creation order made this assertion fail about half the time.
+    let mut want = vec![errands.to_str(), home.to_str()];
+    want.sort();
     assert_eq!(
         task_contexts(&a, tagged).await,
-        vec![errands.to_str(), home.to_str()],
+        want,
         "membership rode along with the task op to A"
     );
 
