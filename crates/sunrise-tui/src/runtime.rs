@@ -60,6 +60,13 @@ pub enum Outcome {
     OpenTask(EntityRef),
     /// Run `Query::DeviceList` and show the result overlay (`:devices`).
     ShowDevices,
+    /// Run `Query::ActivityTimeline` for this entity and show the feed (`L`).
+    ShowActivity {
+        /// Task or Stream whose feed to read.
+        entity: EntityRef,
+        /// Display name for the overlay title.
+        title: String,
+    },
     /// Load an image into the Focus preview pane (`:preview`).
     Preview(PathBuf),
     /// Parse this line with `Core::capture_aside` and commit the draft.
@@ -145,6 +152,29 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         state.show_help = false;
         state.help_scroll = 0;
+        if matches!(action, Action::Escape | Action::Quit) {
+            return Outcome::None;
+        }
+    }
+    // The activity feed is informational like the others, but long enough to
+    // need scrolling, so movement drives it instead of closing it.
+    if let Some(feed) = state.activity.as_mut() {
+        let page = state.viewport_rows.max(1);
+        let step = match action {
+            Action::Next => Some(1),
+            Action::Prev => Some(-1),
+            Action::PageDown | Action::HalfPageDown => Some(isize::try_from(page).unwrap_or(1)),
+            Action::PageUp | Action::HalfPageUp => Some(-isize::try_from(page).unwrap_or(1)),
+            Action::GotoTop => Some(isize::MIN / 2),
+            Action::GotoBottom => Some(isize::MAX / 2),
+            _ => None,
+        };
+        if let Some(delta) = step {
+            feed.scroll_by(delta, page);
+            return Outcome::None;
+        }
+        state.activity = None;
+        state.status.clear();
         if matches!(action, Action::Escape | Action::Quit) {
             return Outcome::None;
         }
@@ -493,6 +523,13 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         Action::SaveReview => save_review(state),
         Action::ToggleArchive => toggle_archive(state),
         Action::TogglePause => toggle_pause(state),
+        Action::ShowActivity => match activity_target(state) {
+            Some((id, title)) => Outcome::ShowActivity { entity: id, title },
+            None => {
+                state.status = "activity: select a task, stream or routine first".into();
+                Outcome::None
+            }
+        },
         Action::ToggleHelp => {
             state.show_help = !state.show_help;
             state.help_scroll = 0;
@@ -647,6 +684,25 @@ pub fn apply_action(action: Action, state: &mut ViewState, now_ms: u64) -> Outco
         }
         Action::InterruptReason(reason) => log_interruption(state, reason),
     }
+}
+
+/// What `L` reports on: the sidebar row if the Browse sidebar has the
+/// keyboard, otherwise the task under the cursor.
+///
+/// Contexts have no feed of their own — the op log records what happened to
+/// Tasks and Streams — so a context row falls through to saying so rather than
+/// opening an empty overlay.
+fn activity_target(state: &ViewState) -> Option<(EntityRef, String)> {
+    if let Some((row, name)) = state.sidebar_row() {
+        return match row {
+            SidebarRow::Stream(id) => Some((id, name)),
+            SidebarRow::Context(_) => None,
+        };
+    }
+    state
+        .selected_task()
+        .or(state.focused_task.as_ref())
+        .map(|t| (t.id, t.title.clone()))
 }
 
 /// Save a snapshot of the review currently on screen.

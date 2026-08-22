@@ -233,3 +233,53 @@ async fn the_trend_fold_reaches_the_screen_as_a_readable_bar() {
     assert!(s.contains("Whole vault"), "got:\n{s}");
     assert!(s.contains('█'), "the peak week draws a full bar:\n{s}");
 }
+
+#[tokio::test]
+async fn the_activity_feed_says_what_happened_to_one_task() {
+    // The op log is the only record of *why* a task looks the way it does.
+    // The core folds it per entity and, until now, nothing asked.
+    let (_dir, core) = open_core().await;
+    let id = task(&core, "renew the passport").await;
+    core.submit(Command::DeferTask {
+        id,
+        to_ms: core.now_ms() + 86_400_000,
+    })
+    .await
+    .expect("defer");
+    core.submit(Command::CompleteTask(id)).await.expect("done");
+
+    let events = match core
+        .query(Query::ActivityTimeline {
+            entity: id,
+            limit: 50,
+        })
+        .await
+        .expect("timeline")
+    {
+        QueryResult::Activity(rows) => rows,
+        other => panic!("expected Activity, got {other:?}"),
+    };
+    let verbs: Vec<&str> = events.iter().map(|e| e.kind.verb()).collect();
+    assert!(verbs.contains(&"task.created"), "{verbs:?}");
+    assert!(verbs.contains(&"task.deferred"), "{verbs:?}");
+    assert!(verbs.contains(&"task.completed"), "{verbs:?}");
+
+    let mut state = ViewState::default();
+    state.show_activity("renew the passport".into(), events);
+    let backend = ratatui::backend::TestBackend::new(100, 24);
+    let mut term = ratatui::Terminal::new(backend).expect("terminal");
+    term.draw(|f| sunrise_tui::render(f, f.area(), &state, None))
+        .expect("draw");
+    let buf = term.backend().buffer().clone();
+    let mut s = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            s.push_str(buf[(x, y)].symbol());
+        }
+        s.push('\n');
+    }
+    assert!(s.contains("Activity — renew the passport"), "got:\n{s}");
+    assert!(s.contains("completed"), "got:\n{s}");
+    assert!(s.contains("deferred (#1)"), "got:\n{s}");
+    assert!(s.contains("created"), "got:\n{s}");
+}

@@ -417,6 +417,19 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 }
                 _ => state.status = format!("no such task: {}", id.to_str()),
             },
+            Outcome::ShowActivity { entity, title } => {
+                // Enough history to answer "what happened?" without the
+                // overlay becoming an archive browser.
+                const ACTIVITY_LIMIT: u32 = 200;
+                let q = Query::ActivityTimeline {
+                    entity,
+                    limit: ACTIVITY_LIMIT,
+                };
+                match core.query(q).await {
+                    Ok(QueryResult::Activity(rows)) => state.show_activity(title, rows),
+                    _ => state.status = "could not load the activity feed".into(),
+                }
+            }
             Outcome::ShowDevices => match core.query(Query::DeviceList).await {
                 Ok(QueryResult::Devices(rows)) => state.show_devices(rows),
                 _ => state.status = "could not load devices".into(),

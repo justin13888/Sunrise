@@ -6,9 +6,9 @@ use jiff::Timestamp;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
 use sunrise_domain::{
-    break_after, materialization_horizon_days, DailyReview, Energy, FocusKind, FocusStats,
-    ReviewSnapshot, Routine, Segment, SessionLength, Task, TaskTemplate, Trends, UnblockCascade,
-    WeeklyReview,
+    break_after, materialization_horizon_days, ActivityEvent, DailyReview, Energy, FocusKind,
+    FocusStats, ReviewSnapshot, Routine, Segment, SessionLength, Task, TaskTemplate, Trends,
+    UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -177,6 +177,31 @@ pub enum Prompt {
     /// [`crate::edit`]. Carries a list so a marked or visual set is one
     /// prompt, not one per task.
     Annotate(Vec<EntityRef>),
+}
+
+/// One entity's activity feed, as shown by the `L` overlay.
+///
+/// `docs/08-features/reviews-and-stats.md` §Activity timeline: "Useful for
+/// 'what happened?' not for analytics." The core folds it and no client asked.
+#[derive(Debug, Clone)]
+pub struct ActivityFeed {
+    /// What the feed is about, for the overlay title.
+    pub title: String,
+    /// Events, newest first.
+    pub events: Vec<ActivityEvent>,
+    /// First visible row — the feed of a long-lived task outgrows an overlay.
+    pub scroll: usize,
+}
+
+impl ActivityFeed {
+    /// Scroll, clamped so the last page stays on screen.
+    pub fn scroll_by(&mut self, delta: isize, page: usize) {
+        let max = self.events.len().saturating_sub(page);
+        let want = isize::try_from(self.scroll)
+            .unwrap_or(0)
+            .saturating_add(delta);
+        self.scroll = usize::try_from(want.max(0)).unwrap_or(0).min(max);
+    }
 }
 
 /// Which panel of the Review view is showing.
@@ -760,6 +785,8 @@ pub struct ViewState {
     /// Paired devices listed by `:devices`, shown as an overlay. `None` hides
     /// it; dismissed by the next keypress like the help overlay.
     pub devices: Option<Vec<DeviceRow>>,
+    /// One entity's activity feed (`L`), newest first. `None` hides it.
+    pub activity: Option<ActivityFeed>,
     /// Latch for the `gg` chord: set by the first `g`, cleared by anything else.
     pub pending_g: bool,
     /// Visual-mode anchor: the row `V` was pressed on. The selection is the
@@ -829,6 +856,7 @@ impl Default for ViewState {
             show_help: false,
             help_scroll: 0,
             devices: None,
+            activity: None,
             pending_g: false,
             visual_anchor: None,
             marked: Vec::new(),
@@ -1424,6 +1452,20 @@ impl ViewState {
             self.exit_triage();
             self.status = "triage complete".into();
         }
+    }
+
+    /// Show the activity-feed overlay for `title`.
+    pub fn show_activity(&mut self, title: String, events: Vec<ActivityEvent>) {
+        self.status = match events.len() {
+            0 => format!("{title}: nothing has happened yet — any key to close"),
+            1 => format!("{title}: 1 event — j/k scroll, any other key closes"),
+            n => format!("{title}: {n} events — j/k scroll, any other key closes"),
+        };
+        self.activity = Some(ActivityFeed {
+            title,
+            events,
+            scroll: 0,
+        });
     }
 
     /// Show the `:devices` overlay.

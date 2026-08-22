@@ -127,6 +127,9 @@ fn render_chrome(
     if let Some(devices) = state.devices.as_ref() {
         render_devices(f, area, devices);
     }
+    if let Some(feed) = state.activity.as_ref() {
+        render_activity(f, area, feed, &state.tz);
+    }
     if let Some(stats) = state.focus.stats.as_ref() {
         render_focus_stats(f, area, state, stats);
     }
@@ -1478,6 +1481,111 @@ fn render_devices(f: &mut Frame<'_>, area: Rect, devices: &[sunrise_core::querie
         ),
         rect,
     );
+}
+
+/// The `L` overlay: one entity's activity feed, newest first.
+///
+/// `docs/08-features/reviews-and-stats.md` §Activity timeline — "user-visible
+/// ops only… Useful for 'what happened?' not for analytics." The core already
+/// filters routine generation, snapshots, presence and key rotations out of
+/// the fold, so everything reaching here is something a person did.
+fn render_activity(
+    f: &mut Frame<'_>,
+    area: Rect,
+    feed: &crate::view::ActivityFeed,
+    tz: &jiff::tz::TimeZone,
+) {
+    let rect = centered(area, 76, area.height.saturating_sub(4).max(5));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(truncate(
+            &format!("Activity — {}", feed.title),
+            usize::from(rect.width).saturating_sub(2),
+        ))
+        .border_style(Style::default().fg(Color::Blue));
+    let rows = usize::from(block.inner(rect).height);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if feed.events.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "nothing has happened to this yet",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    for e in feed.events.iter().skip(feed.scroll).take(rows) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}  ", stamp_minute(e.at_ms, tz)),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(activity_phrase(&e.kind), activity_style(&e.kind)),
+            Span::raw(if e.label.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", e.label)
+            }),
+        ]));
+    }
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// Human phrasing for one activity event.
+fn activity_phrase(kind: &sunrise_domain::ActivityKind) -> String {
+    use sunrise_domain::ActivityKind as K;
+    match kind {
+        K::TaskCreated => "created".into(),
+        K::TaskCompleted => "completed".into(),
+        K::TaskReopened => "reopened".into(),
+        K::TaskCancelled => "cancelled".into(),
+        K::TaskDeferred { count } => format!("deferred (#{count})"),
+        K::TaskMoved { .. } => "moved stream".into(),
+        // The spec asks for edits to be summarized rather than enumerated.
+        K::TaskUpdated { fields: 1 } => "updated 1 field".into(),
+        K::TaskUpdated { fields } => format!("updated {fields} fields"),
+        K::TaskDeleted => "deleted".into(),
+        K::StreamCreated => "stream created".into(),
+        K::StreamDeleted => "stream deleted".into(),
+        K::FocusStarted { planned_ms, .. } => match planned_ms {
+            Some(ms) => format!("focus started ({})", fmt_duration_ms(*ms)),
+            None => "focus started".into(),
+        },
+        K::FocusEnded {
+            focused_ms,
+            completed_task,
+            ..
+        } => {
+            let tail = if *completed_task { ", completed" } else { "" };
+            format!("focus ended ({}{tail})", fmt_duration_ms(*focused_ms))
+        }
+    }
+}
+
+/// Colour by outcome, so a feed can be skimmed for the good and the bad.
+fn activity_style(kind: &sunrise_domain::ActivityKind) -> Style {
+    use sunrise_domain::ActivityKind as K;
+    let color = match kind {
+        K::TaskCompleted | K::FocusEnded { .. } => Color::Green,
+        K::TaskDeferred { .. } | K::TaskReopened => Color::Yellow,
+        K::TaskCancelled | K::TaskDeleted | K::StreamDeleted => Color::Red,
+        _ => Color::White,
+    };
+    Style::default().fg(color)
+}
+
+/// `2026-03-02 09:14` in the user's zone.
+fn stamp_minute(ms: u64, tz: &jiff::tz::TimeZone) -> String {
+    let Ok(Ok(ts)) = i64::try_from(ms).map(jiff::Timestamp::from_millisecond) else {
+        return "?               ".into();
+    };
+    let dt = ts.to_zoned(tz.clone()).datetime();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute()
+    )
 }
 
 /// First 8 hex digits of a device id — enough to tell two devices apart in a

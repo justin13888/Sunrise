@@ -141,6 +141,8 @@ pub enum Action {
     ToggleArchive,
     /// Pause or resume the selected Stream or Routine (`p`).
     TogglePause,
+    /// Show the selected entity's activity feed (`L`).
+    ShowActivity,
     /// Toggle the `?` help overlay.
     ToggleHelp,
     /// Begin a search (switches to Insert in the search bar).
@@ -257,6 +259,7 @@ impl Action {
             Self::SkipOccurrence => "skip_occurrence",
             Self::ToggleArchive => "toggle_archive",
             Self::TogglePause => "toggle_pause",
+            Self::ShowActivity => "activity",
             Self::ToggleHelp => "help",
             Self::BeginSearch => "search",
             Self::BeginCommand => "command",
@@ -771,6 +774,13 @@ pub static BINDINGS: &[Binding] = &[
         Scope::Any,
         Action::TogglePause,
         Some(("p", "pause (stream/routine)")),
+    ),
+    b(
+        Mode::Normal,
+        KeyCode::Char('L'),
+        Scope::Any,
+        Action::ShowActivity,
+        Some(("L", "activity: what happened")),
     ),
     b(
         Mode::Normal,
