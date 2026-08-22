@@ -37,23 +37,6 @@ jobs:
       - name: cargo doc-test
         run: cargo test --workspace --doc
 
-  desktop-shell:
-    name: Desktop shell (cargo build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-      # apps/desktop/src-tauri is excluded from the root workspace (to keep
-      # Tauri out of the main build), so no other job compiles it — which is
-      # how its manifest stayed unbuildable without CI noticing. Build it
-      # explicitly so that cannot recur.
-      - name: cargo build
-        working-directory: apps/desktop/src-tauri
-        run: cargo build --locked
-
   rust-deny:
     name: cargo-deny
     runs-on: ubuntu-latest

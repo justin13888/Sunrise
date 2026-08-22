@@ -47,7 +47,6 @@ client*, which is the only measure that matters to a user.
 | `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines in `bench/baseline.json`. Nothing compares against them |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios |
-| `apps/desktop` | 🟥 broken | See below |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
 
@@ -107,11 +106,17 @@ Tracked so they are not rediscovered as surprises:
   404 unconditionally.
 - **No middleware.** `tower-http` is declared with `trace, cors, limit` and never
   imported — no CORS, no request body size limit, no trace layer.
-- **`apps/desktop` does not run.** It now compiles (the manifest inherited from a
-  workspace root that did not apply), but Tauri is not a dependency, there is no
-  `main.rs`, no `tauri.conf.json`, and no `#[tauri::command]` attribute. The
-  renderer calls `query_today`, which does not exist on the Rust side, and the
-  IPC bridge swallows the error — so it renders an empty list forever.
+
+## Removed
+
+- **Tauri desktop shell (`apps/desktop`).** Cut by decision. It never ran:
+  Tauri was not a dependency, there was no `main.rs`, no `tauri.conf.json`, and
+  no `#[tauri::command]` attribute, and the renderer called an IPC method that
+  did not exist on the Rust side — an error the bridge swallowed, so it rendered
+  an empty list forever. It also carried a second `Cargo.lock` that silently
+  went stale whenever a workspace crate gained a dependency. Keeping ~160 lines
+  of React that claimed to be a client was the same orphan problem ADR-0014
+  removed elsewhere. Git history preserves it. The TUI is the v1 client.
 
 ## Deferred by decision
 

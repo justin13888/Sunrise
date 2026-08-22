@@ -15,7 +15,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **CRDT-based sync**: Edit offline on any device and merge without conflicts.
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours.
-- **Cross-platform clients**: A full terminal client (TUI) today; desktop (Tauri) and web (PWA) shells in progress, with mobile bindings via UniFFI planned.
+- **Terminal-first**: a full-featured TUI is the shipping client for v1, with non-interactive subcommands for scripting and automation. A web PWA shell exists but runs on a stub core (see ADR-0012); mobile bindings are planned.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation.
 - **Calendar integrations**: Google Calendar and iCalendar.
 
@@ -23,8 +23,8 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace covering crypto, CRDT, sync, storage, the sync relay server, and the TUI.
-- **Clients** (`apps/`, `packages/`): a Bun workspace for the Tauri desktop app, the web PWA, and shared UI.
+- **Rust core** (`crates/`): a Cargo workspace covering crypto, sync, storage, the sync relay server, and the TUI.
+- **Clients**: the terminal client (`crates/sunrise-tui`) is the shipping client for v1. `apps/` holds a Bun workspace for the web PWA and shared UI tokens.
 
 ### Project structure
 
@@ -32,8 +32,7 @@ Sunrise is split into a shared, deterministic **Rust core** and thin **client ap
 crates/        Rust workspace — the shared core and server
   sunrise-core            Single-writer vault: command/query + sync state
   sunrise-crypto          Frozen v1 crypto suite (keys, envelopes, recovery, pairing)
-  sunrise-crdt            Loro-backed CRDT layer
-  sunrise-sync            Sync state machine, cursors, outbox, transport
+  sunrise-sync            Sync session states, backoff, transport trait + WebSocket client
   sunrise-wire-protocol   Sync wire protocol: frames, codecs, negotiation
   sunrise-storage         SQLite + SQLCipher (op log, blob store, FTS5)
   sunrise-server          Self-host sync relay (REST + WebSocket, OIDC)
@@ -43,7 +42,6 @@ crates/        Rust workspace — the shared core and server
   sunrise-core-bindings   UniFFI facade for iOS/Android
   …and supporting crates (cbor, id, error, log, onboarding, pairing, e2e)
 apps/
-  desktop/     Tauri 2 + React desktop app
   web/         Web PWA (React + Vite)
 packages/
   sunrise-ui/  Shared UI tokens and components
@@ -102,7 +100,7 @@ Inside the TUI: `1`–`6` switch views, `c` capture, `e` edit, `d` defer,
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today, and cross-device sync is proven end to end by the `sunrise-e2e` convergence test. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md) — and the **desktop** Tauri shell does not run yet — Tauri itself is not wired in, so treat it as scaffolding rather than a frontend awaiting deps. Caveats are called out per surface so QA results aren't misread.
+> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell was removed: it never ran, and keeping a client that does not work is worse than not claiming one.
 
 #### 1. Toolchain check
 
@@ -222,14 +220,6 @@ bun run --filter @sunrise/web preview # serve the production build
 ```
 
 > **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is deferred on an MSRV blocker. Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, CRDT, or crypto. Data lives in browser storage; clear it via DevTools to reset.
-
-#### 8. Desktop app — Tauri (manual E2E)
-
-```bash
-bun run --filter @sunrise/desktop dev   # frontend renderer only, http://localhost:5173
-```
-
-> **Deferred caveat:** the native Tauri shell is frontend-only — the renderer displays and IPC falls back to a stub. `bun run tauri dev` won't drive a real native window until the Tauri deps are wired (`cd apps/desktop && bun install && bun run tauri dev` once configured). Tauri 2 is deliberately excluded from the cargo workspace to keep the core `cargo build` fast.
 
 ### Common tasks
 
