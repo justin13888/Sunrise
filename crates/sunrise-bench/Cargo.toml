@@ -12,6 +12,17 @@ description = "Criterion benchmarks + deterministic synthetic-vault generator + 
 [lints]
 workspace = true
 
+# `cargo bench -- <criterion flags>` passes those flags to *every* bench target,
+# including the lib's own unittest harness, which rejects them ("Unrecognized
+# option: 'warm-up-time'") and fails the run. The lib has no benchmarks, so opt
+# it out. Same for the baseline bin, which is a CLI, not a benchmark.
+[lib]
+bench = false
+
+[[bin]]
+name = "baseline"
+bench = false
+
 [dependencies]
 sunrise-core = { workspace = true }
 sunrise-domain = { workspace = true }
