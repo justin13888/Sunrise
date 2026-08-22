@@ -2096,6 +2096,18 @@ fn lww_wins(env_ts: u64, env_dev: &[u8; 16], row_ts: i64, row_dev: Option<&[u8]>
     }
     match row_dev {
         None => true,
+        // Same device, same millisecond: this is NOT a conflict. The device-id
+        // memcmp exists to break *cross-device* ties deterministically, and
+        // applying it to a device's own successive ops made the later one lose
+        // to itself (`dev > dev` is false) — so on every remote replica the
+        // second op was silently discarded while the originating replica kept
+        // it. Permanent, undetected divergence, and easy to hit: creating a
+        // task and immediately patching it lands both ops in one millisecond.
+        //
+        // Ops from one device are causally ordered by their per-(stream,
+        // device) `seq`, so the arriving one is the newer state and must win.
+        // See `docs/05-sync/conflict-resolution.md`.
+        Some(rd) if rd == env_dev.as_slice() => true,
         Some(rd) => env_dev.as_slice() > rd,
     }
 }
@@ -5458,6 +5470,31 @@ mod tests {
     }
 
     #[test]
+    /// Regression: a device's own successive ops must not lose to each other.
+    ///
+    /// The device-id memcmp breaks *cross-device* ties. Applied to one device's
+    /// own ops it made the later op lose (`dev > dev` is false), so remote
+    /// replicas silently dropped it while the originating replica kept it —
+    /// permanent divergence with no error. Creating a task and patching it in
+    /// the same millisecond is enough to trigger it, which is exactly what the
+    /// blocker-convergence e2e was hitting about one run in six.
+    #[test]
+    fn same_device_ops_in_one_millisecond_do_not_lose_to_each_other() {
+        let dev = [7u8; 16];
+        assert!(
+            lww_wins(1000, &dev, 1000, Some(&dev[..])),
+            "a device's later op must win over its own earlier op at equal ts"
+        );
+        // Cross-device ties are unaffected: still decided by memcmp.
+        let lower = [1u8; 16];
+        let higher = [9u8; 16];
+        assert!(lww_wins(1000, &higher, 1000, Some(&lower[..])));
+        assert!(!lww_wins(1000, &lower, 1000, Some(&higher[..])));
+        // And a real ts difference still dominates the device comparison.
+        assert!(!lww_wins(999, &higher, 1000, Some(&lower[..])));
+        assert!(lww_wins(1001, &lower, 1000, Some(&higher[..])));
+    }
+
     fn lww_tie_break_higher_device_wins_both_directions() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
         let cb = Arc::new(FakeClock(PLMutex::new(T0)));

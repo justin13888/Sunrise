@@ -51,6 +51,14 @@ Resolution: deterministic — sort copies by `(create_op.ts_ms, create_op.device
 
 `device_id_lex` is the lex byte order of the raw 16-byte `device_id` (memcmp). No base-encoding is involved.
 
+The `device_id` tiebreak resolves **cross-device** ties only. Two ops from the
+*same* device are not concurrent — they are causally ordered by their
+per-`(stream, device)` `seq` — so when the incoming op and the target row's
+last writer are the same device, the incoming op wins regardless of the memcmp.
+Applying the memcmp there would make a device's later op lose to its own
+earlier one (`dev > dev` is false), silently discarding it on every remote
+replica while the originating replica kept it.
+
 (We considered a "moved" relation, but it explodes in scope. The duplicate-and-tombstone path is simple and correct.)
 
 ### Concurrent same-routine completion
