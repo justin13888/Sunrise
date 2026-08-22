@@ -45,6 +45,7 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 | Block | 5–500/week (mostly transient) | [`time-blocks.md`](./time-blocks.md) |
 | Note | 0..N per Task/Stream/Block | [`notes.md`](./notes.md) |
 | Attachment | rare; capped per vault | [`attachments.md`](./attachments.md) |
+| FocusSession | 1–20/day; append-only, never edited | [`../08-features/focus-mode.md`](../08-features/focus-mode.md), [ADR-0013](../11-adr/0013-focus-session-op-representation.md) |
 
 ## Hard rules
 
@@ -53,6 +54,7 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 - A **Block** can bind to **0..N Tasks**. Tasks can have **0..N Blocks** scheduled.
 - **Notes** are children of an entity; they cannot float free.
 - **Routines** generate Tasks; once a generated task exists, edits to the task do not retroactively affect future occurrences (unless the user explicitly chooses "edit series").
+- A **FocusSession** belongs to exactly one Task and is **append-only**: a `start` record and, later, a separate `end` record sharing one id. It is never edited and never deleted, and a `start` with no `end` means the session is still running.
 - **People** are first-class identities, including the local user. A Task assigned to a non-self Person is a "watching/waiting" annotation in v1, not a delegation primitive.
 - A **Task** or **Routine** may carry **scheduling constraints** — requirement windows (time-of-day / days-of-week / date-range, each `hard` or `soft`) restricting when it should be scheduled. These are a *value type*, not an entity: they mint no ID (see [`scheduling-constraints.md`](./scheduling-constraints.md)) and add no prefix to [`identifiers.md`](./identifiers.md).
 

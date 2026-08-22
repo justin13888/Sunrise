@@ -30,6 +30,8 @@ pub enum EntityKind {
     Device,
     /// `idn_` — Identity.
     Identity,
+    /// `fcs_` — Focus session (append-only; see ADR-0013).
+    FocusSession,
 }
 
 impl EntityKind {
@@ -47,6 +49,7 @@ impl EntityKind {
             Self::Person => "prs_",
             Self::Device => "dev_",
             Self::Identity => "idn_",
+            Self::FocusSession => "fcs_",
         }
     }
 
@@ -65,13 +68,14 @@ impl EntityKind {
             "prs_" => Some(Self::Person),
             "dev_" => Some(Self::Device),
             "idn_" => Some(Self::Identity),
+            "fcs_" => Some(Self::FocusSession),
             _ => None,
         }
     }
 
     /// All kinds, in declaration order.
     #[must_use]
-    pub const fn all() -> [Self; 10] {
+    pub const fn all() -> [Self; 11] {
         [
             Self::Task,
             Self::Stream,
@@ -83,6 +87,7 @@ impl EntityKind {
             Self::Person,
             Self::Device,
             Self::Identity,
+            Self::FocusSession,
         ]
     }
 }

@@ -14,6 +14,12 @@
 //! breaking format change and must go through the protocol-versioning process —
 //! never edit casually.
 //!
+//! Focus ops are the one family that is **append-only rather than
+//! last-writer-wins**: `FocusStart` / `FocusEnd` / `FocusInterrupt` each write
+//! a record exactly once, keyed by the session's own `fcs_` id, so they never
+//! contend with one another and re-delivery is a no-op. See ADR-0013 and
+//! [`crate::engine`]'s `materialize_focus_remote`.
+//!
 //! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
 //! not a field-level delta. This is the accepted v1 approximation of the CRDT
 //! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
@@ -21,7 +27,7 @@
 //! [`EntityRef`] (a tombstone marker).
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Context, Routine, Stream, Task};
+use sunrise_domain::{Context, FocusEnd, FocusStart, Interruption, Routine, Stream, Task};
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
 
@@ -55,6 +61,14 @@ pub(crate) enum InnerOp {
     RoutineUpdate(Box<Routine>),
     /// Tombstone a routine.
     RoutineDelete(EntityRef),
+    /// Open a focus session (ADR-0013's `start` op). Append-only: the record
+    /// is written once and never edited.
+    FocusStart(Box<FocusStart>),
+    /// Close a focus session (ADR-0013's `end` op). A *separate* record
+    /// addressed to the same session id — never an update of the start.
+    FocusEnd(Box<FocusEnd>),
+    /// Log one interruption against a session. Grow-only set semantics.
+    FocusInterrupt(Interruption),
 }
 
 /// The op's effect class, used to pick the materialization path and the emitted
@@ -93,6 +107,9 @@ impl InnerOp {
             Self::RoutineCreate(_) => "routine.create",
             Self::RoutineUpdate(_) => "routine.update",
             Self::RoutineDelete(_) => "routine.delete",
+            Self::FocusStart(_) => "focus.start",
+            Self::FocusEnd(_) => "focus.end",
+            Self::FocusInterrupt(_) => "focus.interrupt",
         }
     }
 
@@ -104,6 +121,7 @@ impl InnerOp {
             Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => "stream",
             Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
+            Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
         }
     }
 
@@ -118,6 +136,9 @@ impl InnerOp {
             | Self::StreamDelete(r)
             | Self::ContextDelete(r)
             | Self::RoutineDelete(r) => *r,
+            Self::FocusStart(f) => f.id,
+            Self::FocusEnd(f) => f.session_id,
+            Self::FocusInterrupt(i) => i.session_id,
         }
     }
 
@@ -127,11 +148,14 @@ impl InnerOp {
             Self::TaskCreate(_)
             | Self::StreamCreate(_)
             | Self::ContextCreate(_)
-            | Self::RoutineCreate(_) => OpEffect::Create,
+            | Self::RoutineCreate(_)
+            | Self::FocusStart(_) => OpEffect::Create,
             Self::TaskUpdate(_)
             | Self::StreamUpdate(_)
             | Self::ContextUpdate(_)
-            | Self::RoutineUpdate(_) => OpEffect::Update,
+            | Self::RoutineUpdate(_)
+            | Self::FocusEnd(_)
+            | Self::FocusInterrupt(_) => OpEffect::Update,
             Self::TaskDelete(_)
             | Self::StreamDelete(_)
             | Self::ContextDelete(_)
@@ -151,6 +175,9 @@ impl InnerOp {
             }
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => {
                 EntityKind::Routine
+            }
+            Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => {
+                EntityKind::FocusSession
             }
         }
     }

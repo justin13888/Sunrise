@@ -165,7 +165,11 @@ impl Core {
             Command::CreateTask(_)
             | Command::CreateStream(_)
             | Command::CreateContext(_)
-            | Command::CreateRoutine(_) => DomainEvent::Created(res.entity),
+            | Command::CreateRoutine(_)
+            // A focus session is created, never mutated: `StartFocus` mints a
+            // new `fcs_` entity, and `EndFocus` appends a separate record to
+            // the same id (so it reads as an update of the session view).
+            | Command::StartFocus(_) => DomainEvent::Created(res.entity),
             Command::DeleteTask(_)
             | Command::DeleteStream(_)
             | Command::DeleteContext(_)
@@ -411,6 +415,28 @@ impl Core {
             &stream_refs,
             &context_refs,
         ))
+    }
+
+    /// **Capture-aside**: parse a mid-session thought and force it to the
+    /// Inbox (`docs/08-features/focus-mode.md` §Capture-aside).
+    ///
+    /// Identical to [`Self::capture`] except that any `#stream` the parser
+    /// resolved is dropped, so the draft always lands in the Inbox — *always*,
+    /// regardless of the stream the focused task belongs to. That is the whole
+    /// point: focus mode is for **not** switching context, so an aside must not
+    /// pull the user into a filing decision. `@context` annotations, dates and
+    /// priorities are all kept; only the destination is overridden.
+    ///
+    /// Returns the parsed draft; committing it is a plain
+    /// [`Command::CreateTask`], so the caller decides when the write happens.
+    pub async fn capture_aside(
+        &self,
+        input: &str,
+        tz: &jiff::tz::TimeZone,
+    ) -> Result<sunrise_domain::capture::Capture, CoreError> {
+        let mut c = self.capture(input, tz).await?;
+        c.draft.stream_id = None;
+        Ok(c)
     }
 
     /// App identity string (`<semver>+<platform>`) for the sync `Hello`.

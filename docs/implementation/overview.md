@@ -28,25 +28,25 @@ client*, which is the only measure that matters to a user.
 | Crate / Component | Status | Notes |
 |---|---|---|
 | Workspace + CI | ✅ live | Cargo + Bun workspace; `legacy/` archived and excluded |
-| `sunrise-id` | ✅ live | ULID + `EntityRef`, all ten prefixes, client-side generation |
+| `sunrise-id` | ✅ live | ULID + `EntityRef`, all eleven prefixes (`fcs_` added for focus sessions), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
-| `sunrise-domain` | 🟨 partial | Task / Stream / Routine are complete. `Block`, `Note`, `Context`, `Person`, `Attachment` are structs with no command path |
-| `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v6) are solid. `BlobStore` has no consumers; 7 tables are never written |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession are complete. `Block`, `Note`, `Person`, `Attachment` are structs with no command path |
+| `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | 🟧 orphan | No crate calls `sunrise_log::init`, so ADR-0010 and `log-events.md` describe nothing that runs. Two of four documented sinks (`file`, `remote`) do not exist |
 | `sunrise-pairing` | 🟧 orphan | `snow` is a declared dependency that appears only in a doc comment. There is no Noise handshake anywhere in the workspace |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
-| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 3 entities behind 9 op kinds |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds |
 | `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, and metrics are real. Auth, accounts, devices, and blob 2PC are stubs — see below |
 | `sunrise-integrations` | 🟧 orphan | iCal is a subset; GCal is an OAuth-URL builder plus a trait. Neither is reachable |
 | `sunrise-tui` | 🟨 partial | Five views render real Core data and live sync works. **Read-mostly**: uses 3 of 15 Commands — no edit, delete, defer, schedule, move, stream CRUD, or routines |
 | `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines in `bench/baseline.json`. Nothing compares against them |
-| `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios |
+| `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
 
@@ -69,7 +69,7 @@ The sync path is the strongest thing in the repository, and none of it is faked:
   scenarios (drop, corrupt, delay, partition).
 
 Also solid: the RRULE DST golden vectors (including Lord Howe's 30-minute
-offset), the v1→v6 migration upgrade tests, and the FTS5 hostile-input proptest.
+offset), the v1→v10 migration upgrade tests, and the FTS5 hostile-input proptest.
 
 ## Known defects
 
@@ -124,6 +124,13 @@ Tracked so they are not rediscovered as surprises:
   blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
 - **iOS / Android / UniFFI** — platform-engineer owned.
 - **Apple Focus integration** — not wired.
+- **Focus Mode's platform effects** — the session record, planner, calibration,
+  chunking and unblock cascade are live in the core
+  ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)), but nothing
+  suppresses notifications, registers a Live Activity, dims other windows, or
+  plays a cue, and no client surfaces any of it yet. Per-Stream pomodoro
+  overrides and `timeboxed to my next Block` are unimplemented (the latter needs
+  `Block` to gain a command path).
 - **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level
   LWW, now the decided model per [ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
   which supersedes ADR-0003. `crates/sunrise-crdt` and the `loro` dependency are

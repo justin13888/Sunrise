@@ -64,6 +64,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "routine_streak",
         sql: include_str!("../migrations/0009_routine_streak.sql"),
     },
+    Migration {
+        id: 10,
+        name: "focus_sessions",
+        sql: include_str!("../migrations/0010_focus_sessions.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

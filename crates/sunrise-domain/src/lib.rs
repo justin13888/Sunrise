@@ -25,6 +25,7 @@ pub mod common;
 pub mod constraint;
 pub mod context;
 pub mod deps;
+pub mod focus;
 pub mod inbox;
 pub mod note;
 pub mod person;
@@ -50,6 +51,13 @@ pub use context::{
 };
 pub use deps::{
     blocker_is_open, effective_state, is_actionable, DependencyGraph, EffectiveTaskState,
+};
+pub use focus::{
+    break_after, chunk_count, energy_fit, fold_focus_stats, plan_session, rank_focus_plan,
+    unblock_cascade, Calibration, Chunk, EnergyFit, EnergyFocus, FocusEnd, FocusKind, FocusSession,
+    FocusStart, FocusStats, Interruption, InterruptionReason, InterruptionTally, PlanCandidate,
+    PlanRanked, Segment, SessionLength, SessionPlan, SessionRecord, StreamFocus, UnblockCascade,
+    CYCLES_BEFORE_LONG_BREAK, LONG_BREAK_MS, POMODORO_MS, SHORT_BREAK_MS,
 };
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;

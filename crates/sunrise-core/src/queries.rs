@@ -1,7 +1,10 @@
 //! Read queries.
 
 use serde::{Deserialize, Serialize};
-use sunrise_domain::{Context, EffectiveTaskState, Routine, Stream, StreamColor, Task};
+use sunrise_domain::{
+    Context, EffectiveTaskState, Energy, EnergyFit, FocusSession, FocusStats, Routine, SessionPlan,
+    Stream, StreamColor, Task, UnblockCascade,
+};
 use sunrise_id::EntityRef;
 
 /// Read query.
@@ -44,6 +47,64 @@ pub enum Query {
         /// Maximum number of rows.
         limit: u32,
     },
+    /// **Focus Planner**: the ranked queue of what to work on next
+    /// (`docs/08-features/focus-mode.md` §Focus Planner).
+    ///
+    /// Three stacked criteria, all derived and none stored:
+    /// 1. **actionable only** — anything with an open blocker never appears,
+    ///    so the planner is never a dead end;
+    /// 2. **energy-matched** against the session's declared budget, so deep
+    ///    work lands in deep-work windows; and
+    /// 3. **ranked by leverage** — how much open work finishing it releases —
+    ///    then `due_at`, `priority`, `scheduled_at`.
+    ///
+    /// Shares the dependency walk with [`Query::Actionable`]; the ranking
+    /// itself is the pure `sunrise_domain::focus::rank_focus_plan`.
+    FocusPlan {
+        /// Restrict to one Stream; `None` spans every stream.
+        stream: Option<EntityRef>,
+        /// The session's declared energy budget. `None` means "no signal" and
+        /// energy drops out of the ranking entirely.
+        energy: Option<Energy>,
+        /// How the proposed session would be sized, used to fill each row's
+        /// `suggested` plan (chunk N-of-M included).
+        length: sunrise_domain::SessionLength,
+        /// Maximum number of rows.
+        limit: u32,
+    },
+    /// Focus sessions for one Task, newest first — including any that are
+    /// **still running** (a `start` with no `end`).
+    TaskFocusSessions {
+        /// Target task.
+        task: EntityRef,
+        /// Maximum number of rows.
+        limit: u32,
+    },
+    /// Every focus session that has not ended yet, across all tasks.
+    ///
+    /// A client resuming after a crash reads this to find the session it left
+    /// running; a dangling start is a valid state, not a repair case.
+    RunningFocusSessions,
+    /// **Estimate calibration** and focus totals: a pure fold over the
+    /// immutable session log (`docs/08-features/focus-mode.md` §Estimate
+    /// calibration), bucketed per Stream and per energy.
+    FocusStats {
+        /// Restrict to one Stream; `None` spans every stream.
+        stream: Option<EntityRef>,
+        /// Only fold sessions started at or after this instant (ms since
+        /// epoch); `None` folds the whole log.
+        since_ms: Option<u64>,
+        /// "Now" (ms since epoch), from the injected clock — the only time
+        /// that enters the fold, and only to price sessions still running.
+        now_ms: u64,
+    },
+    /// **Unblock cascade**: what completing `task` released
+    /// (`docs/08-features/focus-mode.md` §Unblock cascade).
+    ///
+    /// Recomputes the graph frontier around the task against the blockers'
+    /// *current* states, so it is correct whether the completion happened here
+    /// or merged in from another device. Informational; it keeps no score.
+    UnblockCascade(EntityRef),
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -82,6 +143,44 @@ pub enum QueryResult {
     Contexts(Vec<ContextRow>),
     /// `Actionable` returns open tasks plus their derived dependency counts.
     Actionable(Vec<ActionableTask>),
+    /// `FocusPlan` returns the ranked planner queue, best pick first.
+    FocusPlan(Vec<FocusPlanRow>),
+    /// `TaskFocusSessions` / `RunningFocusSessions` return session views.
+    FocusSessions(Vec<FocusSessionRow>),
+    /// `FocusStats` returns the folded calibration + totals.
+    FocusStats(Box<FocusStats>),
+    /// `UnblockCascade` returns what a completion released.
+    UnblockCascade(Box<UnblockCascade>),
+}
+
+/// One row of [`Query::FocusPlan`]: a proposal, with the two facts that put it
+/// where it is and the session the core would open for it.
+#[derive(Debug, Clone, Serialize)]
+pub struct FocusPlanRow {
+    /// The proposed task. Its `blocked_by` set is populated from the index.
+    pub task: Task,
+    /// How many open tasks finishing this one releases — the leverage signal.
+    pub unblocks: u32,
+    /// How this task's energy facet scored against the session budget.
+    pub energy_fit: EnergyFit,
+    /// The session the core would open: planned length and `chunk N of M`.
+    pub suggested: SessionPlan,
+    /// Work sessions this task has already had, which is what makes the
+    /// suggested chunk read "3 of 4" rather than always "1 of 4".
+    pub prior_sessions: u32,
+}
+
+/// One row of a focus-session query: the assembled
+/// [`sunrise_domain::FocusSession`] view plus the two derived numbers a caller
+/// would otherwise have to recompute against the clock.
+#[derive(Debug, Clone, Serialize)]
+pub struct FocusSessionRow {
+    /// Start, optional end, and the union of interruptions.
+    pub session: FocusSession,
+    /// `true` while the session has no `end` op — a valid state.
+    pub running: bool,
+    /// Focused time: frozen once ended, derived from the clock while running.
+    pub focused_ms: u64,
 }
 
 /// One row of [`Query::Actionable`]: a Task with the two derived dependency

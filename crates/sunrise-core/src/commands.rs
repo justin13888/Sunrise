@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ContextDraft, ContextPatch, RoutineDraft, RoutinePatch, ScheduleConstraint, StreamDraft,
-    StreamPatch, TaskDraft, TaskPatch, TaskState,
+    ContextDraft, ContextPatch, Energy, InterruptionReason, RoutineDraft, RoutinePatch,
+    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -107,6 +107,62 @@ pub enum Command {
         /// Canonical-CBOR `DeviceCert` bytes for the peer device.
         cert_cbor: Vec<u8>,
     },
+    /// Open a focus session on a Task (ADR-0013's `start` op).
+    ///
+    /// Mints a fresh `fcs_` id and writes an **append-only** record; it does
+    /// not touch the Task. Two devices starting a session concurrently mint
+    /// different ids, so both survive and both count — that is the whole
+    /// multi-device story, and it needs no OR-Set.
+    ///
+    /// Nothing about the running timer is persisted: the planned length is
+    /// stored, the elapsed time is derived on read from the injected clock.
+    StartFocus(FocusStartDraft),
+    /// Close a focus session (ADR-0013's `end` op) — a *separate* record
+    /// addressed to the same session id, never an edit of the start.
+    ///
+    /// Rejected if the session is unknown or has already ended: a session is
+    /// immutable once closed.
+    EndFocus {
+        /// Session to close.
+        session: EntityRef,
+        /// Focused time to freeze. `None` freezes the derived elapsed time
+        /// (`now - started_at`), which is what a session with no pauses ran
+        /// for; a client that tracked pauses passes the smaller real figure.
+        actual_focused_ms: Option<u64>,
+        /// Whether the Task was completed in this session. Recording it is all
+        /// this does — completing the Task itself is a separate
+        /// [`Command::CompleteTask`], so the session log never becomes a
+        /// second, competing writer of task state.
+        completed_task: bool,
+    },
+    /// Log one interruption against a running session
+    /// (`docs/08-features/focus-mode.md` §Interruption capture).
+    ///
+    /// Grow-only: the `(session, at_ms, reason)` triple is the key, so
+    /// re-delivery is idempotent and two devices' interruptions both survive.
+    LogInterruption {
+        /// Session interrupted.
+        session: EntityRef,
+        /// One-tap reason.
+        reason: InterruptionReason,
+    },
+}
+
+/// Draft for [`Command::StartFocus`]. The core fills the session id, the
+/// owning Stream, the start time, the planned length and the chunk marker —
+/// all of which are derived, not caller-supplied, so two clients starting the
+/// same kind of session record the same shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FocusStartDraft {
+    /// Task to focus on.
+    pub task_id: EntityRef,
+    /// Work or break.
+    pub kind: sunrise_domain::FocusKind,
+    /// How long this session should run.
+    pub length: SessionLength,
+    /// The session's declared **energy budget** — what the user has in the
+    /// tank. Defaults to the Task's own `energy` facet when `None`.
+    pub energy: Option<Energy>,
 }
 
 /// Result of a command, returned synchronously to the caller after the

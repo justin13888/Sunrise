@@ -47,23 +47,29 @@
     clippy::unnecessary_cast
 )]
 
-use crate::commands::{Command, CommandResult};
+use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::{Clock, Rng};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
-use crate::queries::{ActionableTask, ContextRow, DeviceRow, Query, QueryResult, StreamRow};
+use crate::queries::{
+    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
+    StreamRow,
+};
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::{
-    effective_state, inbox_stream_ref, materialization_horizon_days, occurrence_key_at,
-    occurrence_task_id, violations_by_severity, Context, ContextDraft, ContextPatch,
-    DependencyGraph, NoteBody, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
-    ScheduleConstraint, StreakOutcome, Stream, StreamColor, StreamDraft, StreamPatch,
+    break_after, effective_state, fold_focus_stats, inbox_stream_ref, materialization_horizon_days,
+    occurrence_key_at, occurrence_task_id, plan_session, rank_focus_plan, unblock_cascade,
+    violations_by_severity, Chunk, Context, ContextDraft, ContextPatch, DependencyGraph, Energy,
+    FocusEnd, FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, NoteBody,
+    PlanCandidate, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch, ScheduleConstraint,
+    SessionLength, SessionRecord, StreakOutcome, Stream, StreamColor, StreamDraft, StreamPatch,
     StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, ValidationError,
+    POMODORO_MS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -78,6 +84,14 @@ use thiserror::Error;
 /// derived Stream key in v1. Accepted: meta and inbox coincide until a dedicated
 /// meta-stream id is introduced.
 const META_STREAM: [u8; 16] = [0u8; 16];
+
+/// How many actionable tasks the Focus Planner scans before ranking.
+///
+/// The planner's ranking is energy-first, so it cannot be truncated in SQL
+/// without risking dropping the best-matching pick — the scan has to be wide
+/// enough that ranking sees every plausible candidate, and bounded so a huge
+/// vault cannot turn one keypress into a full-table sort.
+const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
@@ -179,6 +193,15 @@ impl Engine {
             }
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
             Command::TrustDevice { cert_cbor } => self.trust_device(db, &cert_cbor),
+            Command::StartFocus(d) => self.start_focus(db, d),
+            Command::EndFocus {
+                session,
+                actual_focused_ms,
+                completed_task,
+            } => self.end_focus(db, session, actual_focused_ms, completed_task),
+            Command::LogInterruption { session, reason } => {
+                self.log_interruption(db, session, reason)
+            }
         }
     }
 
@@ -194,6 +217,22 @@ impl Engine {
             Query::Contexts => self.query_contexts(db),
             Query::Routines => self.query_routines(db),
             Query::Actionable { stream, limit } => self.query_actionable(db, stream, limit),
+            Query::FocusPlan {
+                stream,
+                energy,
+                length,
+                limit,
+            } => self.query_focus_plan(db, stream, energy, length, limit),
+            Query::TaskFocusSessions { task, limit } => {
+                self.query_task_focus_sessions(db, task, limit)
+            }
+            Query::RunningFocusSessions => self.query_running_focus_sessions(db),
+            Query::FocusStats {
+                stream,
+                since_ms,
+                now_ms,
+            } => self.query_focus_stats(db, stream, since_ms, now_ms),
+            Query::UnblockCascade(task) => self.query_unblock_cascade(db, task),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
@@ -1574,6 +1613,403 @@ impl Engine {
 
     // ---- query handlers ----
 
+    // ---- focus sessions (ADR-0013) ----
+
+    /// Open a focus session: ADR-0013's `start` op.
+    ///
+    /// Writes an append-only record keyed by a fresh `fcs_` id and touches the
+    /// Task not at all. Two devices doing this concurrently mint different ids,
+    /// so both rows survive a merge and both feed the stats — the property that
+    /// used to need an OR-Set and now falls out of the key.
+    ///
+    /// The planned length, the break cadence and the `chunk N of M` marker are
+    /// all **derived here** from the Task's estimate and its prior sessions,
+    /// not taken from the caller, so every client records the same shape.
+    fn start_focus(&self, db: &mut Db, d: FocusStartDraft) -> Result<CommandResult, EngineError> {
+        require_kind(d.task_id, EntityKind::Task)?;
+        let now_ms = self.clock.now_ms();
+        let task = read_task(db.conn(), d.task_id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("task {}", d.task_id)))?;
+        if task.deleted {
+            return Err(EngineError::Invalid(
+                "cannot start a focus session on a deleted task".into(),
+            ));
+        }
+        let prior = count_work_sessions(db.conn(), d.task_id.bytes())?;
+        // A break is sized by the pomodoro cycle rather than by the task's
+        // estimate: every fourth one is the long break.
+        let (planned_ms, chunk) = match d.kind {
+            FocusKind::Break => (Some(break_after(prior.max(1)).default_ms()), None),
+            FocusKind::Work => {
+                let p = plan_session(d.length, task.estimated_duration_s, prior, POMODORO_MS);
+                (p.planned_ms, p.chunk)
+            }
+        };
+        let session_id = self.fresh_id(EntityKind::FocusSession, now_ms);
+        let start = FocusStart {
+            id: session_id,
+            task_id: d.task_id,
+            stream_id: task.stream_id,
+            started_at_ms: now_ms,
+            planned_ms,
+            // The declared budget wins; the Task's own facet is the fallback.
+            energy: d.energy.or(task.energy),
+            kind: d.kind,
+            chunk,
+        };
+        let inner = encode_inner_op(&InnerOp::FocusStart(Box::new(start.clone())))?;
+        let op_id = self.fresh_op_id(now_ms);
+        let stream_bytes = *start.stream_id.bytes();
+        let seq = self.next_seq(db, &stream_bytes)?;
+        let device = self.keychain.device_id();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            ensure_stream_row(tx, &start.stream_id, now_ms, None, false, false, false)?;
+            insert_focus_start_row(tx, &start, now_ms, &device)?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &stream_bytes,
+                seq,
+                now_ms,
+                &inner,
+                "focus.start",
+                "focus_session",
+                Some(session_id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult::new(session_id, None, op_id, seq))
+    }
+
+    /// Close a focus session: ADR-0013's `end` op, a *separate* append-only
+    /// record addressed to the same session id.
+    ///
+    /// This is the one moment the elapsed time becomes a fact: everywhere else
+    /// it is derived on read, and nothing ticking is ever written.
+    fn end_focus(
+        &self,
+        db: &mut Db,
+        session: EntityRef,
+        actual_focused_ms: Option<u64>,
+        completed_task: bool,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(session, EntityKind::FocusSession)?;
+        let now_ms = self.clock.now_ms();
+        let view = read_focus_session(db.conn(), session.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("focus session {session}")))?;
+        if view.end.is_some() {
+            // A session is immutable once closed. Re-closing it would be the
+            // mutable-register behaviour ADR-0013 exists to avoid.
+            return Err(EngineError::Invalid(format!(
+                "focus session {session} has already ended"
+            )));
+        }
+        // Freeze the focused time. The caller may pass a smaller figure when it
+        // tracked pauses; the default is the derived elapsed span.
+        let actual = actual_focused_ms.unwrap_or_else(|| view.elapsed_ms(now_ms));
+        let end = FocusEnd {
+            session_id: session,
+            ended_at_ms: now_ms.max(view.start.started_at_ms),
+            actual_focused_ms: actual,
+            interruptions: view.interruptions.clone(),
+            completed_task,
+        };
+        let inner = encode_inner_op(&InnerOp::FocusEnd(Box::new(end.clone())))?;
+        let op_id = self.fresh_op_id(now_ms);
+        let stream_bytes = *view.start.stream_id.bytes();
+        let seq = self.next_seq(db, &stream_bytes)?;
+        let device = self.keychain.device_id();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            insert_focus_end_row(tx, &end, now_ms, &device)?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &stream_bytes,
+                seq,
+                now_ms,
+                &inner,
+                "focus.end",
+                "focus_session",
+                Some(session.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult::new(session, None, op_id, seq))
+    }
+
+    /// Log one interruption against a session — a grow-only set member, keyed
+    /// by `(session, at_ms, reason)` so re-delivery is a no-op and two devices'
+    /// interruptions both survive.
+    ///
+    /// Allowed against an already-ended session too: a client that closes the
+    /// timer before the user picks a reason must not lose the reason.
+    fn log_interruption(
+        &self,
+        db: &mut Db,
+        session: EntityRef,
+        reason: InterruptionReason,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(session, EntityKind::FocusSession)?;
+        let now_ms = self.clock.now_ms();
+        let start = read_focus_start(db.conn(), session.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("focus session {session}")))?;
+        let interruption = Interruption {
+            session_id: session,
+            at_ms: now_ms,
+            reason,
+        };
+        let inner = encode_inner_op(&InnerOp::FocusInterrupt(interruption))?;
+        let op_id = self.fresh_op_id(now_ms);
+        let stream_bytes = *start.stream_id.bytes();
+        let seq = self.next_seq(db, &stream_bytes)?;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            insert_interruption_row(tx, &interruption)?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &stream_bytes,
+                seq,
+                now_ms,
+                &inner,
+                "focus.interrupt",
+                "focus_session",
+                Some(session.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult::new(session, None, op_id, seq))
+    }
+
+    /// The Focus Planner (`docs/08-features/focus-mode.md` §Focus Planner).
+    ///
+    /// Reuses [`Self::query_actionable`]'s graph walk — same SQL, with the
+    /// blocked rows filtered out in the database rather than after — and hands
+    /// the result to the pure `rank_focus_plan`, which applies the energy match
+    /// and the leverage ordering. The scan is capped (see
+    /// [`FOCUS_PLAN_SCAN_CAP`]) because the ranking cannot be pushed into SQL.
+    fn query_focus_plan(
+        &self,
+        db: &Db,
+        stream: Option<EntityRef>,
+        energy: Option<Energy>,
+        length: SessionLength,
+        limit: u32,
+    ) -> Result<QueryResult, EngineError> {
+        if let Some(s) = stream {
+            require_kind(s, EntityKind::Stream)?;
+        }
+        let scan = actionable_scan(db.conn(), stream, FOCUS_PLAN_SCAN_CAP, true)?;
+        let priors = work_session_counts(db.conn())?;
+        let mut tasks: BTreeMap<EntityRef, Task> = BTreeMap::new();
+        let mut candidates = Vec::with_capacity(scan.len());
+        for (bytes, open_blockers, unblocks) in scan {
+            let Some(task) = read_task(db.conn(), &bytes)? else {
+                continue;
+            };
+            candidates.push(PlanCandidate {
+                task: task.id,
+                energy: task.energy,
+                unblocks,
+                open_blockers,
+                priority: task.priority,
+                due_at_ms: task
+                    .due_at
+                    .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
+                scheduled_at_ms: task
+                    .scheduled_at
+                    .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
+                estimated_duration_s: task.estimated_duration_s,
+            });
+            tasks.insert(task.id, task);
+        }
+        let ranked = rank_focus_plan(candidates, energy);
+        let mut out = Vec::with_capacity(ranked.len().min(limit as usize));
+        for r in ranked.into_iter().take(limit as usize) {
+            let Some(task) = tasks.remove(&r.candidate.task) else {
+                continue;
+            };
+            let prior = priors.get(&task.id).copied().unwrap_or(0);
+            out.push(FocusPlanRow {
+                unblocks: r.candidate.unblocks,
+                energy_fit: r.fit,
+                suggested: plan_session(length, task.estimated_duration_s, prior, POMODORO_MS),
+                prior_sessions: prior,
+                task,
+            });
+        }
+        Ok(QueryResult::FocusPlan(out))
+    }
+
+    /// Focus sessions recorded against one Task, newest first — running ones
+    /// included, because a `start` with no `end` is a valid session.
+    fn query_task_focus_sessions(
+        &self,
+        db: &Db,
+        task: EntityRef,
+        limit: u32,
+    ) -> Result<QueryResult, EngineError> {
+        require_kind(task, EntityKind::Task)?;
+        let sessions = read_focus_sessions(
+            db.conn(),
+            "WHERE s.task_id = ?1 ORDER BY s.started_at_ms DESC, s.id DESC LIMIT ?2",
+            rusqlite::params![task.bytes().to_vec(), limit],
+        )?;
+        Ok(QueryResult::FocusSessions(self.focus_rows(sessions)))
+    }
+
+    /// Every session with no `end` op yet. This is how a client resumes after a
+    /// crash: the dangling start is the state, and reading it is the repair.
+    fn query_running_focus_sessions(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        let sessions = read_focus_sessions(
+            db.conn(),
+            "WHERE e.session_id IS NULL ORDER BY s.started_at_ms ASC, s.id ASC",
+            rusqlite::params![],
+        )?;
+        Ok(QueryResult::FocusSessions(self.focus_rows(sessions)))
+    }
+
+    /// Decorate session views with the two clock-derived numbers, so callers
+    /// never have to reach for a clock of their own.
+    fn focus_rows(&self, sessions: Vec<FocusSession>) -> Vec<FocusSessionRow> {
+        let now_ms = self.clock.now_ms();
+        sessions
+            .into_iter()
+            .map(|session| FocusSessionRow {
+                running: session.is_running(),
+                focused_ms: session.focused_ms(now_ms),
+                session,
+            })
+            .collect()
+    }
+
+    /// Estimate calibration + focus totals: read the immutable session log,
+    /// join each session to its Task's estimate, and hand the whole thing to
+    /// the pure `fold_focus_stats`. All the arithmetic lives in the domain
+    /// crate so it unit-tests with no database at all.
+    fn query_focus_stats(
+        &self,
+        db: &Db,
+        stream: Option<EntityRef>,
+        since_ms: Option<u64>,
+        now_ms: u64,
+    ) -> Result<QueryResult, EngineError> {
+        if let Some(s) = stream {
+            require_kind(s, EntityKind::Stream)?;
+        }
+        let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
+        let since = since_ms.and_then(|v| i64::try_from(v).ok());
+        let interruptions = read_all_interruptions(db.conn())?;
+        let mut stmt = db.conn().prepare(
+            "SELECT s.id, s.task_id, s.stream_id, s.energy, s.kind, s.started_at_ms,
+                    e.ended_at_ms, e.actual_focused_ms, e.completed_task, t.estimated_min
+             FROM focus_sessions s
+               LEFT JOIN focus_session_ends e ON e.session_id = s.id
+               LEFT JOIN tasks t ON t.id = s.task_id
+             WHERE (?1 IS NULL OR s.stream_id = ?1)
+               AND (?2 IS NULL OR s.started_at_ms >= ?2)
+             ORDER BY s.started_at_ms ASC, s.id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![stream_blob, since], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                    r.get::<_, Option<i64>>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let records: Vec<SessionRecord> = rows
+            .into_iter()
+            .map(|v| {
+                let session = ref_of(EntityKind::FocusSession, &v.0);
+                SessionRecord {
+                    session,
+                    task: ref_of(EntityKind::Task, &v.1),
+                    stream: ref_of(EntityKind::Stream, &v.2),
+                    energy: v.3.as_deref().and_then(parse_energy),
+                    kind: FocusKind::from_str_opt(&v.4).unwrap_or(FocusKind::Work),
+                    started_at_ms: u64::try_from(v.5.max(0)).unwrap_or(0),
+                    ended_at_ms: v.6.and_then(|m| u64::try_from(m.max(0)).ok()),
+                    actual_focused_ms: v.7.and_then(|m| u64::try_from(m.max(0)).ok()),
+                    // `tasks.estimated_min` is the minute-granular projection
+                    // of `Task.estimated_duration_s`; widen it back the same
+                    // way `read_task` does so both reads agree.
+                    estimated_duration_s: v.9.and_then(|m| {
+                        let secs = m.checked_mul(60)?;
+                        u64::try_from(secs).ok()
+                    }),
+                    completed_task: v.8.unwrap_or(0) != 0,
+                    interruptions: interruptions.get(&session).cloned().unwrap_or_default(),
+                }
+            })
+            .collect();
+        Ok(QueryResult::FocusStats(Box::new(fold_focus_stats(
+            &records, now_ms,
+        ))))
+    }
+
+    /// What completing `task` released — the mid-session unblock cascade.
+    ///
+    /// Recomputes the frontier from the dependency index against the blockers'
+    /// *current* states, exactly like every other derived-`blocked` read, so it
+    /// is right whether the completion happened locally or merged in.
+    fn query_unblock_cascade(&self, db: &Db, task: EntityRef) -> Result<QueryResult, EngineError> {
+        require_kind(task, EntityKind::Task)?;
+        // Dependents that are still open, with their *remaining* open-blocker
+        // count. An unknown blocker counts as open, matching `query_actionable`.
+        let mut stmt = db.conn().prepare(
+            "SELECT d.id,
+                    (SELECT COUNT(*) FROM task_blockers tb2
+                       LEFT JOIN tasks b ON b.id = tb2.blocker_id
+                      WHERE tb2.task_id = d.id
+                        AND (b.id IS NULL
+                             OR (b.deleted = 0
+                                 AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers
+             FROM task_blockers tb
+               JOIN tasks d ON d.id = tb.task_id
+             WHERE tb.blocker_id = ?1
+               AND d.deleted = 0 AND d.archived = 0
+               AND d.state NOT IN ('done', 'cancelled')
+             ORDER BY d.id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![task.bytes().to_vec()], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut graph = DependencyGraph::new();
+        let mut open_after: BTreeMap<EntityRef, u32> = BTreeMap::new();
+        for (raw, open) in rows {
+            let dep = ref_of(EntityKind::Task, &raw);
+            graph.add_edge(dep, task);
+            open_after.insert(dep, u32::try_from(open.max(0)).unwrap_or(u32::MAX));
+        }
+        Ok(QueryResult::UnblockCascade(Box::new(unblock_cascade(
+            &graph,
+            task,
+            &open_after,
+        ))))
+    }
+
     fn query_routines(&self, db: &Db) -> Result<QueryResult, EngineError> {
         Ok(QueryResult::Routines(read_routines(db.conn())?))
     }
@@ -1658,54 +2094,16 @@ impl Engine {
         if let Some(s) = stream {
             require_kind(s, EntityKind::Stream)?;
         }
-        let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
-        // `open_blockers` counts an *unknown* blocker (LEFT JOIN miss) as open:
-        // the op that creates it may simply not have arrived yet, and treating
-        // it as satisfied would flash the task as actionable and then take it
-        // away again.
-        let mut stmt = db.conn().prepare(
-            "SELECT t.id,
-                    (SELECT COUNT(*) FROM task_blockers tb
-                       LEFT JOIN tasks b ON b.id = tb.blocker_id
-                      WHERE tb.task_id = t.id
-                        AND (b.id IS NULL
-                             OR (b.deleted = 0
-                                 AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers,
-                    (SELECT COUNT(*) FROM task_blockers tb2
-                       JOIN tasks d ON d.id = tb2.task_id
-                      WHERE tb2.blocker_id = t.id
-                        AND d.deleted = 0 AND d.archived = 0
-                        AND d.state NOT IN ('done', 'cancelled')) AS unblocks
-             FROM tasks t
-             WHERE t.deleted = 0 AND t.archived = 0
-               AND t.state IN ('todo', 'in_progress')
-               AND (?1 IS NULL OR t.stream_id = ?1)
-             ORDER BY open_blockers ASC, unblocks DESC, t.id ASC
-             LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![stream_blob, limit], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-
+        let rows = actionable_scan(db.conn(), stream, limit, false)?;
         let mut out = Vec::with_capacity(rows.len());
-        for (raw, open_blockers, unblocks) in rows {
-            let mut bytes = [0u8; 16];
-            let take = raw.len().min(16);
-            bytes[..take].copy_from_slice(&raw[..take]);
+        for (bytes, open, unblocks) in rows {
             let Some(task) = read_task(db.conn(), &bytes)? else {
                 continue;
             };
-            let open = u32::try_from(open_blockers.max(0)).unwrap_or(u32::MAX);
             out.push(ActionableTask {
                 effective_state: effective_state(task.state, open),
                 open_blockers: open,
-                unblocks: u32::try_from(unblocks.max(0)).unwrap_or(u32::MAX),
+                unblocks,
                 task,
             });
         }
@@ -2179,6 +2577,18 @@ fn materialize_remote(
     ts_ms: u64,
     device: &[u8; 16],
 ) -> rusqlite::Result<()> {
+    // Focus ops never enter the LWW contest. Each writes one immutable record
+    // keyed by the session's own id (start, end, and interruption in three
+    // distinct tables), so there is nothing for a later op to overwrite and
+    // nothing for an earlier one to lose — including when an `end` overtakes
+    // its own `start`. Running an LWW comparison here would be actively wrong:
+    // a `start` stamped later than its `end` would suppress the `end`.
+    if matches!(
+        inner,
+        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_)
+    ) {
+        return materialize_focus_remote(tx, inner, ts_ms, device);
+    }
     let (table, id_col) = match inner.entity_kind() {
         EntityKind::Stream => ("streams", "stream_id"),
         EntityKind::Context => ("contexts", "id"),
@@ -2263,8 +2673,336 @@ fn materialize_remote(
                 tombstone_routine(tx, target.bytes(), ts_ms, device)?;
             }
         }
+        // Handled by the append-only branch at the top of this function; the
+        // arm exists so a new focus op cannot be added without deciding here.
+        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_) => {}
     }
     Ok(())
+}
+
+/// Materialize one focus op. Every write is an insert that ignores a conflict
+/// on its own primary key, which is what makes the whole family idempotent
+/// under re-delivery and order-independent between `start` and `end`.
+fn materialize_focus_remote(
+    tx: &Transaction<'_>,
+    inner: &InnerOp,
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    match inner {
+        InnerOp::FocusStart(f) => {
+            // The owning stream row must exist (the session's stream is also
+            // its op-log routing stream).
+            ensure_stream_row(tx, &f.stream_id, ts_ms, None, false, false, false)?;
+            insert_focus_start_row(tx, f, ts_ms, device)
+        }
+        InnerOp::FocusEnd(f) => {
+            // Deliberately no `ensure` of the start row: an `end` that arrived
+            // first still lands, and the two join up when the start turns up.
+            insert_focus_end_row(tx, f, ts_ms, device)?;
+            for i in &f.interruptions {
+                insert_interruption_row(tx, i)?;
+            }
+            Ok(())
+        }
+        InnerOp::FocusInterrupt(i) => insert_interruption_row(tx, i),
+        _ => Ok(()),
+    }
+}
+
+/// Write the `start` record. Idempotent on the session id.
+fn insert_focus_start_row(
+    tx: &Transaction<'_>,
+    f: &FocusStart,
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO focus_sessions
+         (id, task_id, stream_id, started_at_ms, planned_ms, energy, kind,
+          chunk_index, chunk_total, lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            &f.id.bytes()[..],
+            &f.task_id.bytes()[..],
+            &f.stream_id.bytes()[..],
+            f.started_at_ms as i64,
+            f.planned_ms.map(|v| v as i64),
+            f.energy.map(energy_str),
+            f.kind.as_str(),
+            f.chunk.map(|c| i64::from(c.index)),
+            f.chunk.map(|c| i64::from(c.total)),
+            ts_ms as i64,
+            &device[..],
+        ],
+    )?;
+    Ok(())
+}
+
+/// Write the `end` record. Idempotent on the session id; a second `end` for the
+/// same session (two devices closing one session concurrently) keeps the first
+/// to arrive rather than letting a clock skew rewrite a frozen measurement.
+fn insert_focus_end_row(
+    tx: &Transaction<'_>,
+    f: &FocusEnd,
+    ts_ms: u64,
+    device: &[u8; 16],
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO focus_session_ends
+         (session_id, ended_at_ms, actual_focused_ms, completed_task, lww_ts_ms, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![
+            &f.session_id.bytes()[..],
+            f.ended_at_ms as i64,
+            f.actual_focused_ms as i64,
+            i64::from(f.completed_task),
+            ts_ms as i64,
+            &device[..],
+        ],
+    )?;
+    Ok(())
+}
+
+/// Add one interruption to the grow-only set.
+fn insert_interruption_row(tx: &Transaction<'_>, i: &Interruption) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO focus_interruptions (session_id, at_ms, reason)
+         VALUES (?, ?, ?)",
+        params![&i.session_id.bytes()[..], i.at_ms as i64, i.reason.as_str(),],
+    )?;
+    Ok(())
+}
+
+/// How many **work** sessions a Task has already had — the input that makes a
+/// chunk marker read "3 of 4" instead of always "1 of 4".
+fn count_work_sessions(conn: &rusqlite::Connection, task: &[u8; 16]) -> Result<u32, EngineError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM focus_sessions WHERE task_id = ? AND kind = 'work'",
+        params![&task[..]],
+        |r| r.get(0),
+    )?;
+    Ok(u32::try_from(n.max(0)).unwrap_or(u32::MAX))
+}
+
+/// The same count for every task at once, for the planner.
+fn work_session_counts(
+    conn: &rusqlite::Connection,
+) -> Result<BTreeMap<EntityRef, u32>, EngineError> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id, COUNT(*) FROM focus_sessions WHERE kind = 'work' GROUP BY task_id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(raw, n)| {
+            (
+                ref_of(EntityKind::Task, &raw),
+                u32::try_from(n.max(0)).unwrap_or(u32::MAX),
+            )
+        })
+        .collect())
+}
+
+/// Every interruption in the vault, grouped by session.
+fn read_all_interruptions(
+    conn: &rusqlite::Connection,
+) -> Result<BTreeMap<EntityRef, Vec<Interruption>>, EngineError> {
+    let mut stmt = conn.prepare(
+        "SELECT session_id, at_ms, reason FROM focus_interruptions
+         ORDER BY session_id ASC, at_ms ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out: BTreeMap<EntityRef, Vec<Interruption>> = BTreeMap::new();
+    for (raw, at, reason) in rows {
+        let session_id = ref_of(EntityKind::FocusSession, &raw);
+        out.entry(session_id).or_default().push(Interruption {
+            session_id,
+            at_ms: u64::try_from(at.max(0)).unwrap_or(0),
+            reason: InterruptionReason::from_str_lossy(&reason),
+        });
+    }
+    Ok(out)
+}
+
+/// The `start` record alone, without assembling the whole session view.
+fn read_focus_start(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> Result<Option<FocusStart>, EngineError> {
+    Ok(
+        read_focus_sessions(conn, "WHERE s.id = ?1", rusqlite::params![&id[..]])?
+            .pop()
+            .map(|v| v.start),
+    )
+}
+
+/// One assembled session view (start + optional end + interruptions).
+fn read_focus_session(
+    conn: &rusqlite::Connection,
+    id: &[u8; 16],
+) -> Result<Option<FocusSession>, EngineError> {
+    Ok(read_focus_sessions(conn, "WHERE s.id = ?1", rusqlite::params![&id[..]])?.pop())
+}
+
+/// Assemble session views from the two append-only tables.
+///
+/// The `LEFT JOIN` is the mechanism behind "a dangling start is a valid state":
+/// no `end` row simply means the session is still running, and no repair pass,
+/// tombstone, or synthesized value is involved.
+fn read_focus_sessions(
+    conn: &rusqlite::Connection,
+    tail_sql: &str,
+    p: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<FocusSession>, EngineError> {
+    let sql = format!(
+        "SELECT s.id, s.task_id, s.stream_id, s.started_at_ms, s.planned_ms, s.energy, s.kind,
+                s.chunk_index, s.chunk_total,
+                e.ended_at_ms, e.actual_focused_ms, e.completed_task
+         FROM focus_sessions s
+           LEFT JOIN focus_session_ends e ON e.session_id = s.id
+         {tail_sql}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(p, |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<i64>>(11)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let interruptions = read_all_interruptions(conn)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for v in rows {
+        let id = ref_of(EntityKind::FocusSession, &v.0);
+        let chunk = match (v.7, v.8) {
+            (Some(index), Some(total)) => Some(Chunk {
+                index: u32::try_from(index.max(0)).unwrap_or(0),
+                total: u32::try_from(total.max(0)).unwrap_or(0),
+            }),
+            _ => None,
+        };
+        let start = FocusStart {
+            id,
+            task_id: ref_of(EntityKind::Task, &v.1),
+            stream_id: ref_of(EntityKind::Stream, &v.2),
+            started_at_ms: u64::try_from(v.3.max(0)).unwrap_or(0),
+            planned_ms: v.4.and_then(|m| u64::try_from(m.max(0)).ok()),
+            energy: v.5.as_deref().and_then(parse_energy),
+            kind: FocusKind::from_str_opt(&v.6).unwrap_or(FocusKind::Work),
+            chunk,
+        };
+        let mine = interruptions.get(&id).cloned().unwrap_or_default();
+        let end = v.9.map(|ended| FocusEnd {
+            session_id: id,
+            ended_at_ms: u64::try_from(ended.max(0)).unwrap_or(0),
+            actual_focused_ms: v.10.and_then(|m| u64::try_from(m.max(0)).ok()).unwrap_or(0),
+            interruptions: mine.clone(),
+            completed_task: v.11.unwrap_or(0) != 0,
+        });
+        out.push(FocusSession {
+            start,
+            end,
+            interruptions: mine,
+        });
+    }
+    Ok(out)
+}
+
+/// The dependency-graph walk shared by [`Query::Actionable`] and
+/// [`Query::FocusPlan`]. Returns `(task id, open blockers, unblocks)`.
+///
+/// `open_blockers` counts an *unknown* blocker (LEFT JOIN miss) as open: the op
+/// that creates it may simply not have arrived yet, and treating it as
+/// satisfied would flash the task as actionable and then take it away again.
+///
+/// `actionable_only` pushes the planner's first criterion into SQL, so a vault
+/// full of blocked work cannot crowd the scan cap with rows the planner would
+/// throw away anyway.
+fn actionable_scan(
+    conn: &rusqlite::Connection,
+    stream: Option<EntityRef>,
+    limit: u32,
+    actionable_only: bool,
+) -> Result<Vec<([u8; 16], u32, u32)>, EngineError> {
+    let stream_blob: Option<Vec<u8>> = stream.map(|s| s.bytes().to_vec());
+    let mut stmt = conn.prepare(
+        "SELECT id, open_blockers, unblocks FROM (
+             SELECT t.id AS id,
+                    (SELECT COUNT(*) FROM task_blockers tb
+                       LEFT JOIN tasks b ON b.id = tb.blocker_id
+                      WHERE tb.task_id = t.id
+                        AND (b.id IS NULL
+                             OR (b.deleted = 0
+                                 AND b.state NOT IN ('done', 'cancelled')))) AS open_blockers,
+                    (SELECT COUNT(*) FROM task_blockers tb2
+                       JOIN tasks d ON d.id = tb2.task_id
+                      WHERE tb2.blocker_id = t.id
+                        AND d.deleted = 0 AND d.archived = 0
+                        AND d.state NOT IN ('done', 'cancelled')) AS unblocks
+             FROM tasks t
+             WHERE t.deleted = 0 AND t.archived = 0
+               AND t.state IN ('todo', 'in_progress')
+               AND (?1 IS NULL OR t.stream_id = ?1)
+         )
+         WHERE (?3 = 0 OR open_blockers = 0)
+         ORDER BY open_blockers ASC, unblocks DESC, id ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![stream_blob, limit, i64::from(actionable_only)],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(raw, open, unblocks)| {
+            let mut bytes = [0u8; 16];
+            let take = raw.len().min(16);
+            bytes[..take].copy_from_slice(&raw[..take]);
+            (
+                bytes,
+                u32::try_from(open.max(0)).unwrap_or(u32::MAX),
+                u32::try_from(unblocks.max(0)).unwrap_or(u32::MAX),
+            )
+        })
+        .collect())
+}
+
+/// Widen a stored 16-byte id back into a typed [`EntityRef`].
+fn ref_of(kind: EntityKind, raw: &[u8]) -> EntityRef {
+    let mut bytes = [0u8; 16];
+    let take = raw.len().min(16);
+    bytes[..take].copy_from_slice(&raw[..take]);
+    EntityRef::new(kind, bytes)
 }
 
 fn ensure_stream_row(
@@ -6600,5 +7338,800 @@ mod tests {
         }
         assert_eq!(blocker_edges(&dba), blocker_edges(&dbb));
         assert_eq!(tasks_projection(&dba), tasks_projection(&dbb));
+    }
+
+    // ---- focus sessions (ADR-0013) ----
+
+    fn focus_engine(now_ms: u64) -> (Engine, Arc<FakeClock>) {
+        let clock = Arc::new(FakeClock(PLMutex::new(now_ms)));
+        let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+        (Engine::new(clock.clone(), Arc::new(SystemRng), kc), clock)
+    }
+
+    fn task_with(e: &Engine, db: &mut Db, title: &str, d: TaskDraft) -> EntityRef {
+        e.apply(
+            db,
+            Command::CreateTask(TaskDraft {
+                title: title.into(),
+                ..d
+            }),
+        )
+        .unwrap()
+        .entity
+    }
+
+    fn start_work(e: &Engine, db: &mut Db, task: EntityRef, len: SessionLength) -> EntityRef {
+        e.apply(
+            db,
+            Command::StartFocus(FocusStartDraft {
+                task_id: task,
+                kind: FocusKind::Work,
+                length: len,
+                energy: None,
+            }),
+        )
+        .unwrap()
+        .entity
+    }
+
+    fn running(e: &Engine, db: &Db) -> Vec<FocusSessionRow> {
+        match e.query(db, Query::RunningFocusSessions).unwrap() {
+            QueryResult::FocusSessions(v) => v,
+            other => panic!("expected FocusSessions, got {other:?}"),
+        }
+    }
+
+    fn sessions_for(e: &Engine, db: &Db, task: EntityRef) -> Vec<FocusSessionRow> {
+        match e
+            .query(db, Query::TaskFocusSessions { task, limit: 50 })
+            .unwrap()
+        {
+            QueryResult::FocusSessions(v) => v,
+            other => panic!("expected FocusSessions, got {other:?}"),
+        }
+    }
+
+    fn stats(e: &Engine, db: &Db, now_ms: u64) -> sunrise_domain::FocusStats {
+        match e
+            .query(
+                db,
+                Query::FocusStats {
+                    stream: None,
+                    since_ms: None,
+                    now_ms,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::FocusStats(s) => *s,
+            other => panic!("expected FocusStats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_focus_mints_an_fcs_entity_and_never_touches_the_task() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(1_000);
+        let task = task_with(&e, &mut db, "write the ADR", TaskDraft::default());
+        let before = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+
+        let session = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        assert_eq!(
+            session.kind(),
+            EntityKind::FocusSession,
+            "a session is its own entity, not a field on the Task"
+        );
+        assert!(session.to_str().starts_with("fcs_"));
+
+        // The Task is byte-identical: focusing is not an edit.
+        let after = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+        assert_eq!(before, after);
+
+        // The op is a `focus.start` routed under the task's stream.
+        let kind: String = db
+            .conn()
+            .query_row(
+                "SELECT inner_kind FROM ops WHERE target_id = ?",
+                params![&session.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "focus.start");
+    }
+
+    #[test]
+    fn a_dangling_start_reads_as_running_and_elapsed_comes_from_the_clock() {
+        let mut db = db();
+        let (e, clock) = focus_engine(10_000);
+        let task = task_with(&e, &mut db, "long haul", TaskDraft::default());
+        let session = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+
+        // No `end` op has been written — and that is a *valid* state, the one
+        // the app dying mid-session leaves behind.
+        let rows = running(&e, &db);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session.start.id, session);
+        assert!(rows[0].running);
+        assert_eq!(rows[0].focused_ms, 0);
+
+        // Elapsed is derived: nothing was written, only the clock moved.
+        set_clock(&clock, 10_000 + 90_000);
+        let rows = running(&e, &db);
+        assert_eq!(rows[0].focused_ms, 90_000);
+        set_clock(&clock, 10_000 + 300_000);
+        assert_eq!(running(&e, &db)[0].focused_ms, 300_000);
+
+        // And the row itself stores no ticking value to disagree with.
+        let stored: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT actual_focused_ms FROM focus_session_ends WHERE session_id = ?",
+                params![&session.bytes()[..]],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(stored, None, "nothing is frozen until the end op");
+    }
+
+    #[test]
+    fn end_focus_freezes_the_measurement_and_the_session_is_then_immutable() {
+        let mut db = db();
+        let (e, clock) = focus_engine(1_000);
+        let task = task_with(&e, &mut db, "ship it", TaskDraft::default());
+        let session = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+
+        set_clock(&clock, 1_000 + POMODORO_MS);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session,
+                actual_focused_ms: None,
+                completed_task: true,
+            },
+        )
+        .unwrap();
+
+        assert!(running(&e, &db).is_empty(), "the session is closed");
+        let rows = sessions_for(&e, &db, task);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].running);
+        assert_eq!(rows[0].focused_ms, POMODORO_MS);
+
+        // The clock moving on no longer changes the answer.
+        set_clock(&clock, u64::MAX);
+        assert_eq!(sessions_for(&e, &db, task)[0].focused_ms, POMODORO_MS);
+
+        // Closing twice is rejected: an ended session is immutable, which is
+        // the whole reason start and end are separate append-only records.
+        let err = e
+            .apply(
+                &mut db,
+                Command::EndFocus {
+                    session,
+                    actual_focused_ms: None,
+                    completed_task: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn end_focus_accepts_a_caller_supplied_actual_smaller_than_elapsed() {
+        let mut db = db();
+        let (e, clock) = focus_engine(0);
+        let task = task_with(&e, &mut db, "paused a lot", TaskDraft::default());
+        let session = start_work(&e, &mut db, task, SessionLength::UntilDone);
+        set_clock(&clock, 60 * 60 * 1000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session,
+                actual_focused_ms: Some(20 * 60 * 1000),
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        let rows = sessions_for(&e, &db, task);
+        // Elapsed wall time is an hour; focused time is what the client
+        // measured.
+        assert_eq!(rows[0].session.elapsed_ms(0), 60 * 60 * 1000);
+        assert_eq!(rows[0].focused_ms, 20 * 60 * 1000);
+    }
+
+    #[test]
+    fn ending_an_unknown_session_is_not_found() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(0);
+        let ghost = EntityRef::new(EntityKind::FocusSession, [0x5A; 16]);
+        let err = e
+            .apply(
+                &mut db,
+                Command::EndFocus {
+                    session: ghost,
+                    actual_focused_ms: None,
+                    completed_task: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
+        // And a non-session id is rejected on the kind, not on lookup.
+        let err = e
+            .apply(
+                &mut db,
+                Command::EndFocus {
+                    session: EntityRef::new(EntityKind::Task, [1; 16]),
+                    actual_focused_ms: None,
+                    completed_task: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+    }
+
+    #[test]
+    fn interruptions_accumulate_and_ride_the_end_op() {
+        let mut db = db();
+        let (e, clock) = focus_engine(1_000);
+        let task = task_with(&e, &mut db, "deep work", TaskDraft::default());
+        let session = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+
+        set_clock(&clock, 2_000);
+        e.apply(
+            &mut db,
+            Command::LogInterruption {
+                session,
+                reason: InterruptionReason::Meeting,
+            },
+        )
+        .unwrap();
+        set_clock(&clock, 3_000);
+        e.apply(
+            &mut db,
+            Command::LogInterruption {
+                session,
+                reason: InterruptionReason::SelfInterrupt,
+            },
+        )
+        .unwrap();
+
+        // Visible on the running session, before any end op exists.
+        let rows = running(&e, &db);
+        assert_eq!(rows[0].session.interruptions.len(), 2);
+
+        set_clock(&clock, 4_000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session,
+                actual_focused_ms: None,
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        let rows = sessions_for(&e, &db, task);
+        assert_eq!(
+            rows[0].session.end.as_ref().unwrap().interruptions.len(),
+            2,
+            "the end op carries the interruptions the ending device knew about"
+        );
+
+        let s = stats(&e, &db, 4_000);
+        assert_eq!(s.interruptions, 2);
+        assert_eq!(s.top_interruptions.len(), 2);
+    }
+
+    #[test]
+    fn a_break_session_is_sized_by_the_cycle_not_the_estimate() {
+        let mut db = db();
+        let (e, clock) = focus_engine(0);
+        let task = task_with(
+            &e,
+            &mut db,
+            "cycle",
+            TaskDraft {
+                estimated_duration_s: Some(10 * 60 * 60),
+                ..Default::default()
+            },
+        );
+        // Four completed work sessions, then a break: the long one.
+        for i in 0..4u64 {
+            set_clock(&clock, i * 1_000_000);
+            let s = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+            set_clock(&clock, i * 1_000_000 + POMODORO_MS);
+            e.apply(
+                &mut db,
+                Command::EndFocus {
+                    session: s,
+                    actual_focused_ms: None,
+                    completed_task: false,
+                },
+            )
+            .unwrap();
+        }
+        set_clock(&clock, 9_000_000);
+        let brk = e
+            .apply(
+                &mut db,
+                Command::StartFocus(FocusStartDraft {
+                    task_id: task,
+                    kind: FocusKind::Break,
+                    length: SessionLength::SizedToEstimate,
+                    energy: None,
+                }),
+            )
+            .unwrap()
+            .entity;
+        let row = running(&e, &db)
+            .into_iter()
+            .find(|r| r.session.start.id == brk)
+            .unwrap();
+        assert_eq!(row.session.start.kind, FocusKind::Break);
+        assert_eq!(
+            row.session.start.planned_ms,
+            Some(sunrise_domain::LONG_BREAK_MS),
+            "the fourth cycle earns the long break"
+        );
+        assert_eq!(row.session.start.chunk, None);
+    }
+
+    #[test]
+    fn a_long_estimate_chunks_and_the_index_advances_with_prior_sessions() {
+        let mut db = db();
+        let (e, clock) = focus_engine(0);
+        let task = task_with(
+            &e,
+            &mut db,
+            "90 minutes of work",
+            TaskDraft {
+                estimated_duration_s: Some(90 * 60),
+                ..Default::default()
+            },
+        );
+        let first = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+        let row = sessions_for(&e, &db, task)
+            .into_iter()
+            .find(|r| r.session.start.id == first)
+            .unwrap();
+        assert_eq!(row.session.start.chunk, Some(Chunk { index: 1, total: 4 }));
+        assert_eq!(row.session.start.planned_ms, Some(POMODORO_MS));
+
+        set_clock(&clock, POMODORO_MS);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: first,
+                actual_focused_ms: None,
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        set_clock(&clock, POMODORO_MS + 1);
+        let second = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+        let row = sessions_for(&e, &db, task)
+            .into_iter()
+            .find(|r| r.session.start.id == second)
+            .unwrap();
+        assert_eq!(
+            row.session.start.chunk,
+            Some(Chunk { index: 2, total: 4 }),
+            "the second sitting reads chunk 2 of 4"
+        );
+    }
+
+    // ---- the planner ----
+
+    fn plan(e: &Engine, db: &Db, energy: Option<Energy>) -> Vec<crate::queries::FocusPlanRow> {
+        match e
+            .query(
+                db,
+                Query::FocusPlan {
+                    stream: None,
+                    energy,
+                    length: SessionLength::OnePomodoro,
+                    limit: 10,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::FocusPlan(v) => v,
+            other => panic!("expected FocusPlan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn planner_prefers_the_high_leverage_actionable_task_at_matching_energy() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(0);
+        // Two actionable High-energy tasks. `hub` releases two dependents;
+        // `chore` releases nothing.
+        let hub = task_with(
+            &e,
+            &mut db,
+            "build the thing",
+            TaskDraft {
+                energy: Some(Energy::High),
+                ..Default::default()
+            },
+        );
+        let chore = task_with(
+            &e,
+            &mut db,
+            "tidy the desk",
+            TaskDraft {
+                energy: Some(Energy::High),
+                ..Default::default()
+            },
+        );
+        for title in ["deploy", "qa"] {
+            let dep = task_with(&e, &mut db, title, TaskDraft::default());
+            e.apply(
+                &mut db,
+                Command::UpdateTask {
+                    id: dep,
+                    patch: TaskPatch {
+                        blocked_by: Some(vec![hub]),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        }
+
+        let rows = plan(&e, &db, Some(Energy::High));
+        assert_eq!(rows[0].task.id, hub, "leverage picks the hub: {rows:#?}");
+        assert_eq!(rows[0].unblocks, 2);
+        assert_eq!(rows[0].energy_fit, sunrise_domain::EnergyFit::Exact);
+        assert!(rows.iter().any(|r| r.task.id == chore));
+
+        // The two blocked dependents never appear: the planner is not a dead
+        // end.
+        assert_eq!(
+            rows.len(),
+            2,
+            "only the two actionable tasks are proposed: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn planner_matches_energy_before_leverage() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(0);
+        let deep = task_with(
+            &e,
+            &mut db,
+            "rewrite the parser",
+            TaskDraft {
+                energy: Some(Energy::High),
+                ..Default::default()
+            },
+        );
+        let shallow = task_with(
+            &e,
+            &mut db,
+            "file receipts",
+            TaskDraft {
+                energy: Some(Energy::Low),
+                ..Default::default()
+            },
+        );
+        // Give the deep task real leverage so only the energy budget can
+        // demote it.
+        let dep = task_with(&e, &mut db, "downstream", TaskDraft::default());
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: dep,
+                patch: TaskPatch {
+                    blocked_by: Some(vec![deep]),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // Depleted: the low-energy task wins despite zero leverage.
+        let rows = plan(&e, &db, Some(Energy::Low));
+        assert_eq!(rows[0].task.id, shallow, "{rows:#?}");
+        // Fresh: leverage takes over again.
+        let rows = plan(&e, &db, Some(Energy::High));
+        assert_eq!(rows[0].task.id, deep, "{rows:#?}");
+        // No declared budget: energy carries no signal, leverage decides.
+        let rows = plan(&e, &db, None);
+        assert_eq!(rows[0].task.id, deep, "{rows:#?}");
+    }
+
+    #[test]
+    fn planner_rows_carry_the_session_it_would_open() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(0);
+        let task = task_with(
+            &e,
+            &mut db,
+            "big one",
+            TaskDraft {
+                estimated_duration_s: Some(75 * 60),
+                ..Default::default()
+            },
+        );
+        let rows = plan(&e, &db, None);
+        let row = rows.iter().find(|r| r.task.id == task).unwrap();
+        assert_eq!(row.prior_sessions, 0);
+        assert_eq!(row.suggested.planned_ms, Some(POMODORO_MS));
+        assert_eq!(row.suggested.chunk, Some(Chunk { index: 1, total: 3 }));
+
+        // After one sitting the proposal advances the chunk index.
+        let s = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: s,
+                actual_focused_ms: Some(POMODORO_MS),
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        let rows = plan(&e, &db, None);
+        let row = rows.iter().find(|r| r.task.id == task).unwrap();
+        assert_eq!(row.prior_sessions, 1);
+        assert_eq!(row.suggested.chunk, Some(Chunk { index: 2, total: 3 }));
+    }
+
+    // ---- calibration + cascade ----
+
+    #[test]
+    fn focus_stats_calibrate_from_recorded_actuals() {
+        let mut db = db();
+        let (e, clock) = focus_engine(0);
+        // A 30-minute estimate that actually took 51 minutes => 1.7x.
+        let task = task_with(
+            &e,
+            &mut db,
+            "estimate me",
+            TaskDraft {
+                estimated_duration_s: Some(30 * 60),
+                energy: Some(Energy::High),
+                ..Default::default()
+            },
+        );
+        let s = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+        set_clock(&clock, 51 * 60 * 1000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: s,
+                actual_focused_ms: None,
+                completed_task: true,
+            },
+        )
+        .unwrap();
+
+        let st = stats(&e, &db, 51 * 60 * 1000);
+        assert_eq!(st.sessions, 1);
+        assert_eq!(st.running, 0);
+        assert_eq!(st.total_focused_ms, 51 * 60 * 1000);
+        let c = st.overall.expect("calibrates");
+        assert!((c.factor - 1.7).abs() < 1e-9, "factor was {}", c.factor);
+        // Bucketed per Stream and per energy too.
+        assert_eq!(st.per_stream.len(), 1);
+        assert!((st.per_stream[0].calibration.unwrap().factor - 1.7).abs() < 1e-9);
+        assert_eq!(st.per_energy[0].energy, Some(Energy::High));
+    }
+
+    #[test]
+    fn focus_stats_filter_by_stream_and_since() {
+        let mut db = db();
+        let (e, clock) = focus_engine(1_000);
+        let task = task_with(&e, &mut db, "inbox work", TaskDraft::default());
+        let early = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        set_clock(&clock, 2_000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: early,
+                actual_focused_ms: None,
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        set_clock(&clock, 50_000);
+        let late = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        set_clock(&clock, 60_000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: late,
+                actual_focused_ms: None,
+                completed_task: false,
+            },
+        )
+        .unwrap();
+
+        let all = stats(&e, &db, 60_000);
+        assert_eq!(all.sessions, 2);
+        let recent = match e
+            .query(
+                &db,
+                Query::FocusStats {
+                    stream: None,
+                    since_ms: Some(10_000),
+                    now_ms: 60_000,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::FocusStats(s) => *s,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(recent.sessions, 1);
+        assert_eq!(recent.total_focused_ms, 10_000);
+    }
+
+    #[test]
+    fn unblock_cascade_reports_what_a_completion_released() {
+        let mut db = db();
+        let (e, _clock) = focus_engine(0);
+        let build = task_with(&e, &mut db, "build", TaskDraft::default());
+        let docs = task_with(&e, &mut db, "docs", TaskDraft::default());
+        let deploy = task_with(&e, &mut db, "deploy", TaskDraft::default());
+        let qa = task_with(&e, &mut db, "qa", TaskDraft::default());
+        for (dep, blockers) in [(deploy, vec![build]), (qa, vec![build, docs])] {
+            e.apply(
+                &mut db,
+                Command::UpdateTask {
+                    id: dep,
+                    patch: TaskPatch {
+                        blocked_by: Some(blockers),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        }
+
+        // Mid-session completion of `build`.
+        e.apply(&mut db, Command::CompleteTask(build)).unwrap();
+        let cascade = match e.query(&db, Query::UnblockCascade(build)).unwrap() {
+            QueryResult::UnblockCascade(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(cascade.completed, build);
+        assert_eq!(cascade.released, vec![deploy], "deploy is free now");
+        assert_eq!(cascade.still_blocked, vec![qa], "qa still waits on docs");
+
+        // Finishing `docs` releases `qa` too, with no repair pass in between.
+        e.apply(&mut db, Command::CompleteTask(docs)).unwrap();
+        let cascade = match e.query(&db, Query::UnblockCascade(docs)).unwrap() {
+            QueryResult::UnblockCascade(c) => *c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(cascade.released, vec![qa]);
+        assert!(cascade.still_blocked.is_empty());
+    }
+
+    #[test]
+    fn two_concurrent_sessions_on_one_task_both_survive_and_aggregate() {
+        // The single-replica shape of the ADR's convergence property: two
+        // sessions minted independently are two rows, not one contended
+        // register, and their focused time sums.
+        let mut db = db();
+        let (e, clock) = focus_engine(0);
+        let task = task_with(
+            &e,
+            &mut db,
+            "shared work",
+            TaskDraft {
+                estimated_duration_s: Some(20 * 60),
+                ..Default::default()
+            },
+        );
+        let a = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        let b = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
+        assert_ne!(a, b, "concurrent starts mint distinct ids");
+        assert_eq!(running(&e, &db).len(), 2);
+
+        set_clock(&clock, 600_000);
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: a,
+                actual_focused_ms: Some(600_000),
+                completed_task: false,
+            },
+        )
+        .unwrap();
+        e.apply(
+            &mut db,
+            Command::EndFocus {
+                session: b,
+                actual_focused_ms: Some(600_000),
+                completed_task: true,
+            },
+        )
+        .unwrap();
+
+        let st = stats(&e, &db, 600_000);
+        assert_eq!(st.sessions, 2, "both survive");
+        assert_eq!(st.total_focused_ms, 1_200_000, "and both count");
+        // 20 minutes of focus against a 20-minute estimate: bang on.
+        let c = st.overall.expect("calibrates");
+        assert!((c.factor - 1.0).abs() < 1e-9, "factor was {}", c.factor);
+        assert_eq!(c.samples, 1, "one task, two sessions");
+    }
+
+    #[test]
+    fn focus_ops_are_append_only_on_the_remote_path() {
+        // Two replicas of one vault. The `end` op is delivered BEFORE the
+        // `start` it belongs to — the arrival order that a single mutable row
+        // would silently drop.
+        let clock_a = Arc::new(FakeClock(PLMutex::new(1_000)));
+        let clock_b = Arc::new(FakeClock(PLMutex::new(1_000)));
+        let ea = engine_seeded([0x77; 32], [1; 32], clock_a.clone());
+        let eb = engine_seeded([0x77; 32], [2; 32], clock_b.clone());
+        let mut da = db_root([0x77; 32]);
+        let mut dbb = db_root([0x77; 32]);
+        // Mutual trust so envelopes verify.
+        ea.apply(
+            &mut da,
+            Command::TrustDevice {
+                cert_cbor: eb.keychain().cert_blob().to_vec(),
+            },
+        )
+        .unwrap();
+        eb.apply(
+            &mut dbb,
+            Command::TrustDevice {
+                cert_cbor: ea.keychain().cert_blob().to_vec(),
+            },
+        )
+        .unwrap();
+
+        let task = task_with(&ea, &mut da, "cross-device", TaskDraft::default());
+        let task_env = create_env_for(&da, task.bytes());
+        eb.apply_remote(&mut dbb, &task_env).unwrap();
+
+        let session = start_work(&ea, &mut da, task, SessionLength::OnePomodoro);
+        set_clock(&clock_a, 1_000 + 60_000);
+        ea.apply(
+            &mut da,
+            Command::EndFocus {
+                session,
+                actual_focused_ms: None,
+                completed_task: true,
+            },
+        )
+        .unwrap();
+
+        let env_of = |kind: &str| -> Vec<u8> {
+            let op_id: Vec<u8> = da
+                .conn()
+                .query_row(
+                    "SELECT op_id FROM ops WHERE target_id = ? AND inner_kind = ?",
+                    params![&session.bytes()[..], kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&op_id);
+            env_bytes(&da, &id)
+        };
+        let start_env = env_of("focus.start");
+        let end_env = env_of("focus.end");
+
+        // Out of order on purpose, and each delivered twice.
+        for env in [&end_env, &end_env, &start_env, &start_env] {
+            eb.apply_remote(&mut dbb, env).unwrap();
+        }
+
+        set_clock(&clock_b, 9_999_999);
+        let rows = sessions_for(&eb, &dbb, task);
+        assert_eq!(rows.len(), 1, "re-delivery did not duplicate the session");
+        assert!(!rows[0].running, "the end that arrived first still applied");
+        assert_eq!(
+            rows[0].focused_ms, 60_000,
+            "the frozen value crossed intact"
+        );
+        assert!(rows[0].session.end.as_ref().unwrap().completed_task);
     }
 }

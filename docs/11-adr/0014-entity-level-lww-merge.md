@@ -4,6 +4,11 @@
 
 **Supersedes:** [ADR-0003 — CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md)
 
+**Amends:** [ADR-0013 — Focus session op representation](./0013-focus-session-op-representation.md),
+whose chosen representation named an OR-Set on a Loro Stream doc. Removing the
+CRDT layer removed that mechanism; ADR-0013 now records the same requirement as
+an append-only row keyed by its own `EntityRef`, which needs no merge type.
+
 ## Context
 
 [ADR-0003](./0003-crdt-loro-vs-automerge.md) chose **Loro** as Sunrise's CRDT

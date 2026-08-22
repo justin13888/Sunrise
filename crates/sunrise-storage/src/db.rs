@@ -789,6 +789,131 @@ mod tests {
         .unwrap();
     }
 
+    /// Build a DB with migrations 0001..0009 applied, stamped `storage_v = 9`,
+    /// simulating a real v9 vault opened by a newer binary.
+    fn seed_v9_db(conn: &Connection) {
+        let tx = conn.unchecked_transaction().unwrap();
+        for m in &MIGRATIONS[0..9] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![9_u32, 0],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn upgrades_v9_db_adds_focus_session_tables() {
+        assert!(u32::from(STORAGE_V) >= 10);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        seed_v9_db(&conn);
+
+        // A v9 vault carries tasks that must survive untouched.
+        conn.execute(
+            "INSERT INTO streams
+             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, 1, ?, 0, 0, 0)",
+            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, stream_id, title, state)
+             VALUES (?, ?, 'survivor', 'todo')",
+            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+
+        // Normal open path applies migration 0010.
+        Db::ensure_schema(&mut conn).unwrap();
+
+        let v: u32 = conn
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, u32::from(STORAGE_V));
+
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM tasks WHERE id = ?",
+                rusqlite::params![vec![1u8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "survivor");
+
+        // A `start` row lands for a task this replica has never seen — the
+        // out-of-order arrival case an FK would break.
+        conn.execute(
+            "INSERT INTO focus_sessions
+             (id, task_id, stream_id, started_at_ms, planned_ms, energy, kind)
+             VALUES (?, ?, ?, 1000, 1500000, 'high', 'work')",
+            rusqlite::params![vec![7u8; 16], vec![0xEEu8; 16], vec![0u8; 16]],
+        )
+        .unwrap();
+
+        // ... and so does an `end` whose `start` has not arrived: the two ops
+        // are separate rows precisely so neither arrival order loses one.
+        conn.execute(
+            "INSERT INTO focus_session_ends
+             (session_id, ended_at_ms, actual_focused_ms, completed_task)
+             VALUES (?, 2000, 900, 1)",
+            rusqlite::params![vec![0xABu8; 16]],
+        )
+        .unwrap();
+
+        // A session with no end row reads as running; the LEFT JOIN is the
+        // whole "dangling start is valid" mechanism.
+        let running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM focus_sessions s
+                   LEFT JOIN focus_session_ends e ON e.session_id = s.id
+                  WHERE e.session_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(running, 1, "the start with no end reads as still running");
+
+        // Interruptions are a grow-only set: the same triple twice is one row.
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT OR IGNORE INTO focus_interruptions (session_id, at_ms, reason)
+                 VALUES (?, 1500, 'meeting')",
+                rusqlite::params![vec![7u8; 16]],
+            )
+            .unwrap();
+        }
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM focus_interruptions WHERE session_id = ?",
+                rusqlite::params![vec![7u8; 16]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-delivery of one interruption is idempotent");
+
+        // Nothing in the schema stores a ticking elapsed value.
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('focus_sessions')")
+                .unwrap();
+            let v = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            v
+        };
+        assert!(
+            !cols.iter().any(|c| c.contains("elapsed")),
+            "elapsed is derived from the clock, never a column: {cols:?}"
+        );
+    }
+
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();

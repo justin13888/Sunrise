@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Energy level facet on Task / Routine. Multi-stream operators sort work by
 /// energy in addition to priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Energy {
     /// Low cognitive demand.

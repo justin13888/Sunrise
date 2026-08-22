@@ -53,13 +53,16 @@ pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
 
-pub use commands::{Command, CommandResult};
+pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, Rng, SystemClock, SystemRng};
 pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
 pub use keychain::{Keychain, KeychainError};
-pub use queries::{ActionableTask, ContextRow, DeviceRow, Query, QueryResult, StreamRow};
+pub use queries::{
+    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
+    StreamRow,
+};
 pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TransportFactory};
 pub use unlock::Unlock;
 pub use vault_lock::{VaultLock, VaultLockError};

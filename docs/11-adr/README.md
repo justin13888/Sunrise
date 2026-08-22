@@ -30,7 +30,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
 | 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted |
-| 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | proposed |
+| 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | accepted (amended by 0014: OR-Set → append-only row) |
 | 0014 | [Entity-level LWW in SQLite is the v1 merge model](./0014-entity-level-lww-merge.md) | accepted |
 
 ## When to write a new ADR

@@ -6,6 +6,20 @@ status: accepted
 
 A dedicated mode that takes one task and removes everything else.
 
+> **v1 scope.** The core half of this spec is implemented: the session record
+> ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)), the planner,
+> adaptive session length and chunking, the unblock cascade, interruption
+> capture, and estimate calibration all live in `sunrise-core` /
+> `sunrise-domain` as commands and queries. What is **not** implemented is
+> everything that needs a platform surface — notification suppression, the iOS
+> Live Activity, the macOS dim, the Android foreground service, and the audible
+> cue — plus `timeboxed to my next Block`, which has no target because `Block`
+> has no command path in v1, and the **per-Stream** pomodoro override, which
+> would need a new field on `Stream`. The 25/5/15-after-4 defaults are
+> `sunrise_domain::focus` constants and are configurable per *session* through
+> `SessionLength`. `docs/implementation/overview.md` is the authority on what is
+> live.
+
 ## Entering focus
 
 - From any task list: `f` or "Focus" button on a hovered/selected task.
@@ -57,7 +71,7 @@ Focus mode suppresses **reminder** notifications only. Background sync wakeups c
 
 ## Capture-aside
 
-While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in **Inbox** — always, regardless of any current-stream context. Rationale: focus mode is for *not switching context*. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
+While focused, ideas appear. Press `a` to open a tiny capture overlay; it lands in **Inbox** — always, regardless of any current-stream context. The core half is `Core::capture_aside`, which runs the normal capture parser and then drops any resolved `#stream`, so the destination cannot depend on what the user was focused on; the overlay itself is the client's. Rationale: focus mode is for *not switching context*. Returns to focus immediately. Critical for users who can't context-switch without losing their thread.
 
 ## Pomodoro and timer policy
 
@@ -73,6 +87,9 @@ The 25/5 default holds, but the length is a choice made per session start:
 `timeboxed to my next Block` · `until done`. When a task's estimate exceeds one
 session, the timer shows **chunk N of M** with checkpoints, so a long task shows
 visible progress *within* a sitting instead of ending "barely dented."
+
+The first, second and fourth are `sunrise_domain::focus::SessionLength`;
+`timeboxed to my next Block` waits on `Block` gaining a command path.
 
 ## Unblock cascade
 
