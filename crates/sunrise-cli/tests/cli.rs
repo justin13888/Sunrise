@@ -344,3 +344,233 @@ fn a_subcommand_trusts_a_peer_cert_when_asked() {
         "the peer cert was not trusted, stderr was {banner:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// iCalendar interchange (`docs/09-integrations/icalendar.md`)
+// ---------------------------------------------------------------------------
+
+/// An `.ics` document with one timed event inside the current civil week, so
+/// `ical export week` covers it whenever the suite happens to run.
+///
+/// The binary reads the real clock — every subcommand does — so the fixture is
+/// built against the same clock rather than against a frozen date that would
+/// leave this test passing only in one particular week of 2026.
+fn ics_this_week(uid: &str, summary: &str) -> String {
+    let start = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .start_of_day()
+        .expect("start of day")
+        .timestamp();
+    let end = start + jiff::SignedDuration::from_hours(1);
+    format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
+BEGIN:VEVENT\r\nUID:{uid}\r\nSUMMARY:{summary}\r\n\
+DTSTART:{}\r\nDTEND:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        start.strftime("%Y%m%dT%H%M%SZ"),
+        end.strftime("%Y%m%dT%H%M%SZ"),
+    )
+}
+
+fn write_ics(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, body).expect("write fixture");
+    path
+}
+
+/// The property the whole import path exists to hold: importing the same file
+/// twice gives one calendar, not two.
+#[test]
+fn ical_import_is_idempotent_across_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ics = write_ics(
+        dir.path(),
+        "cal.ics",
+        &ics_this_week("ev1@example.com", "Quarterly planning"),
+    );
+    let path = ics.to_str().unwrap();
+
+    let first = run(dir.path(), &["ical", "import", path]);
+    assert!(first.status.success(), "import failed: {first:?}");
+    let first_out = stdout(&first);
+    assert!(
+        first_out.starts_with("new  blk_"),
+        "a first import must report a new block: {first_out:?}"
+    );
+    assert!(first_out.contains("Quarterly planning"));
+
+    // A separate process, so the dedup cannot be coming from in-memory state.
+    let second = run(dir.path(), &["ical", "import", path]);
+    assert!(second.status.success(), "re-import failed: {second:?}");
+    let second_out = stdout(&second);
+    assert!(
+        second_out.starts_with("upd  blk_"),
+        "a re-import must update, not create: {second_out:?}"
+    );
+    assert_eq!(
+        second_out.split_whitespace().nth(1),
+        first_out.split_whitespace().nth(1),
+        "the same UID must land on the same block id"
+    );
+
+    // And the calendar really does hold one event, not two.
+    let exported = stdout(&run(dir.path(), &["ical", "export", "week"]));
+    assert_eq!(
+        exported.matches("BEGIN:VEVENT").count(),
+        1,
+        "one event, not two: {exported}"
+    );
+}
+
+/// `-` reads stdin, so `curl … | sunrise ical import -` needs no temp file.
+#[test]
+fn ical_import_reads_stdin() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let body = ics_this_week("stdin@example.com", "From a pipe");
+
+    let mut child = Command::new(bin())
+        .args(["ical", "import", "-"])
+        .env("SUNRISE_VAULT", dir.path())
+        .env_remove("SUNRISE_SYNC_URL")
+        .env_remove("SUNRISE_EXPORT_CERT_FILE")
+        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sunrise");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(body.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+
+    assert!(out.status.success(), "stdin import failed: {out:?}");
+    assert!(
+        stdout(&out).contains("From a pipe"),
+        "got {:?}",
+        stdout(&out)
+    );
+}
+
+/// stdout is the contract. The document goes there; the notices do not.
+#[test]
+fn ical_export_writes_the_document_to_stdout_and_notices_to_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let ics = write_ics(
+        dir.path(),
+        "cal.ics",
+        // DESCRIPTION and LOCATION are real content a Block cannot hold; the
+        // import must say so on stderr and still commit the event.
+        &ics_this_week("ev1@example.com", "Design review").replace(
+            "END:VEVENT",
+            "DESCRIPTION:Bring the roadmap\r\nLOCATION:Room 4B\r\nEND:VEVENT",
+        ),
+    );
+    let imported = run(dir.path(), &["ical", "import", ics.to_str().unwrap()]);
+    assert!(imported.status.success());
+    let notes = String::from_utf8_lossy(&imported.stderr);
+    assert!(notes.contains("DESCRIPTION"), "got {notes:?}");
+    assert!(notes.contains("LOCATION"), "got {notes:?}");
+    assert!(
+        !stdout(&imported).contains("DESCRIPTION"),
+        "notices must not pollute stdout"
+    );
+
+    let out = run(dir.path(), &["ical", "export", "week"]);
+    assert!(out.status.success(), "export failed: {out:?}");
+    let doc = stdout(&out);
+    assert!(doc.starts_with("BEGIN:VCALENDAR\r\n"), "got {doc:?}");
+    assert!(doc.trim_end().ends_with("END:VCALENDAR"));
+    assert!(doc.contains("SUMMARY:Design review"));
+}
+
+/// With a path the document is written there and only the path is printed,
+/// exactly as `sunrise export <dataset> … <path>` behaves.
+#[test]
+fn ical_export_writes_to_a_path_when_given_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let ics = write_ics(dir.path(), "cal.ics", &ics_this_week("ev1", "Standup"));
+    run(dir.path(), &["ical", "import", ics.to_str().unwrap()]);
+
+    let target = dir.path().join("out.ics");
+    let out = run(
+        dir.path(),
+        &["ical", "export", "week", target.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "export failed: {out:?}");
+    assert_eq!(stdout(&out).trim(), target.to_str().unwrap());
+    let written = std::fs::read_to_string(&target).expect("the file must exist");
+    assert!(written.contains("SUMMARY:Standup"), "got {written:?}");
+}
+
+/// Exporting and re-importing must be the identity, or a user who round-trips
+/// their own calendar doubles it.
+#[test]
+fn ical_export_then_import_does_not_duplicate() {
+    let dir = tempfile::tempdir().unwrap();
+    let ics = write_ics(dir.path(), "cal.ics", &ics_this_week("ev1", "Standup"));
+    run(dir.path(), &["ical", "import", ics.to_str().unwrap()]);
+
+    let target = dir.path().join("out.ics");
+    run(
+        dir.path(),
+        &["ical", "export", "week", target.to_str().unwrap()],
+    );
+    let back = run(dir.path(), &["ical", "import", target.to_str().unwrap()]);
+    assert!(back.status.success(), "re-import failed: {back:?}");
+    assert!(
+        stdout(&back).starts_with("upd  "),
+        "an exported calendar must re-import onto itself: {:?}",
+        stdout(&back)
+    );
+
+    let doc = stdout(&run(dir.path(), &["ical", "export", "week"]));
+    assert_eq!(doc.matches("BEGIN:VEVENT").count(), 1, "got {doc}");
+}
+
+/// `--source` is the escape hatch for two calendars that share a UID.
+#[test]
+fn ical_import_keys_on_the_source_as_well_as_the_uid() {
+    let dir = tempfile::tempdir().unwrap();
+    let ics = write_ics(dir.path(), "cal.ics", &ics_this_week("shared", "Standup"));
+    let path = ics.to_str().unwrap();
+    run(dir.path(), &["ical", "import", path]);
+    let other = run(dir.path(), &["ical", "import", path, "--source", "team"]);
+    assert!(other.status.success(), "{other:?}");
+    assert!(
+        stdout(&other).starts_with("new  "),
+        "a second source is a second block: {:?}",
+        stdout(&other)
+    );
+
+    let doc = stdout(&run(dir.path(), &["ical", "export", "week"]));
+    assert_eq!(doc.matches("BEGIN:VEVENT").count(), 2, "got {doc}");
+}
+
+/// A malformed file must fail loudly rather than reporting an import of zero
+/// events, and a bad argument must not be guessed at.
+#[test]
+fn ical_refuses_input_that_is_not_a_calendar() {
+    let dir = tempfile::tempdir().unwrap();
+    let junk = write_ics(dir.path(), "junk.ics", "this is not a calendar\n");
+    let out = run(dir.path(), &["ical", "import", junk.to_str().unwrap()]);
+    assert!(!out.status.success(), "expected failure: {out:?}");
+
+    assert!(!run(dir.path(), &["ical"]).status.success());
+    assert!(!run(dir.path(), &["ical", "wat"]).status.success());
+    assert!(!run(dir.path(), &["ical", "import", "/no/such/file.ics"])
+        .status
+        .success());
+}
+
+/// The subcommand has to be discoverable, or it does not exist for a user.
+#[test]
+fn ical_is_documented_in_the_usage_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let help = stdout(&run(dir.path(), &["help"]));
+    assert!(help.contains("sunrise ical import"), "got {help}");
+    assert!(help.contains("sunrise ical export"), "got {help}");
+}

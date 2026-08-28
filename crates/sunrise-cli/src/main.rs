@@ -74,6 +74,12 @@ USAGE:
     sunrise export <dataset> [json|csv] [path]
                                  trends | activity | focus | streaks
 
+  calendar interchange (RFC 5545)
+    sunrise ical import <path|-> [--stream <id>] [--source <name>]
+                                 read an .ics file (or stdin) as time blocks
+    sunrise ical export [today|week] [path]
+                                 write .ics to stdout, or to a path
+
   account
     sunrise login                sign in via OIDC and store the token
     sunrise logout               forget the stored token
@@ -338,6 +344,7 @@ async fn dispatch(
         },
         "review" => review(core).await,
         "export" => export(core, rest).await,
+        "ical" => ical(core, rest).await,
         "sync" => sync_once(core, rest).await,
         other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
     }
@@ -496,6 +503,113 @@ async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::
     match path {
         Some(p) => {
             std::fs::write(&p, body.as_bytes())?;
+            println!("{p}");
+        }
+        None => print!("{body}"),
+    }
+    Ok(())
+}
+
+/// `ical import …` / `ical export …` — RFC 5545 interchange.
+///
+/// One subcommand with two modes rather than a top-level `import` and a second
+/// meaning for `export`: `sunrise export` already names the *stats* datasets,
+/// and overloading it with a format that produces a calendar rather than a
+/// table would make `sunrise export ics json` a question with no answer.
+async fn ical(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    match rest.first().map(String::as_str) {
+        Some("import") => ical_import(core, &rest[1..]).await,
+        Some("export") => ical_export(core, &rest[1..]).await,
+        Some(other) => Err(format!("unknown ical mode {other:?}; try import or export").into()),
+        None => Err("usage: ical import <path|-> | ical export [today|week] [path]".into()),
+    }
+}
+
+/// `ical import <path|-> [--stream <id>] [--source <name>]`.
+///
+/// Idempotent by construction: the Block an event lands on is derived from
+/// `(source, UID)`, so running this twice on the same file updates the same
+/// Blocks instead of making a second copy of the calendar. `--source` is what
+/// a user reaches for when two calendars really do share a UID and they want
+/// both.
+///
+/// The Block ids go to **stdout**, one per line with the title, so a script
+/// can pipe them onward. Everything the import could not carry goes to stderr,
+/// where it is visible without corrupting that contract.
+async fn ical_import(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout, clippy::print_stderr)]
+    use sunrise_integrations::ical_vault::{import, ICS_SOURCE};
+
+    let mut path: Option<&str> = None;
+    let mut stream = sunrise_domain::inbox_stream_ref();
+    let mut source = ICS_SOURCE.to_string();
+    let mut args = rest.iter();
+    while let Some(w) = args.next() {
+        match w.as_str() {
+            "--stream" => {
+                let v = args.next().ok_or("--stream needs a stream id")?;
+                stream = EntityRef::parse(v, EntityKind::Stream)
+                    .map_err(|e| format!("not a stream id: {v} ({e})"))?;
+            }
+            "--source" => {
+                let v = args.next().ok_or("--source needs a name")?;
+                if v.trim().is_empty() {
+                    return Err("--source needs a non-empty name".into());
+                }
+                source = v.trim().to_string();
+            }
+            other if path.is_none() => path = Some(other),
+            other => return Err(format!("unexpected argument: {other}").into()),
+        }
+    }
+    let path = path.ok_or("usage: ical import <path|-> [--stream <id>] [--source <name>]")?;
+
+    // `-` is the conventional spelling of stdin, and it is what makes
+    // `curl … | sunrise ical import -` work without a temporary file.
+    let text = if path == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?
+    };
+
+    let report = import(core, &text, stream, &source).await?;
+    for n in &report.notices {
+        let uid = n.uid.as_deref().unwrap_or("-");
+        eprintln!("note: [{}] {uid}: {}", n.code.as_str(), n.detail);
+    }
+    for b in &report.blocks {
+        let verb = if b.created { "new" } else { "upd" };
+        println!("{verb}  {}  {}", b.block.to_str(), b.title);
+    }
+    eprintln!("{}", report.summary_line());
+    Ok(())
+}
+
+/// `ical export [today|week] [path]`.
+///
+/// With no path the document goes to stdout, exactly as `sunrise export`
+/// does — `sunrise ical export week | pbcopy` has to work.
+async fn ical_export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    use sunrise_integrations::ical_vault::{export, ExportWindow};
+
+    let mut window = ExportWindow::Day;
+    let mut path: Option<&str> = None;
+    for w in rest {
+        match w.as_str() {
+            "today" | "day" => window = ExportWindow::Day,
+            "week" => window = ExportWindow::Week,
+            other if path.is_none() => path = Some(other),
+            other => return Err(format!("unexpected argument: {other}").into()),
+        }
+    }
+    let body = export(core, window, core.now_ms()).await?;
+    match path {
+        Some(p) => {
+            std::fs::write(p, body.as_bytes())?;
             println!("{p}");
         }
         None => print!("{body}"),
