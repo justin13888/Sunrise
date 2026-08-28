@@ -2223,6 +2223,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-integrations",
  "sunrise-log",
  "sunrise-server",
  "sunrise-sync",
@@ -2282,6 +2283,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-integrations",
  "sunrise-pairing",
  "sunrise-sync",
  "tempfile",
@@ -2390,9 +2392,13 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "sunrise-core",
+ "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "tempfile",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

@@ -2,7 +2,11 @@
 //!
 //! Implements `docs/09-integrations/`. v1 ships:
 //!
-//! - [`ical`]: RFC 5545 import/export (subset).
+//! - [`ical`]: RFC 5545 reading and writing (a subset; see the module docs
+//!   for exactly which one), with [`ical_map`] lowering a `VEVENT` onto a
+//!   `Block` and [`ical_vault`] driving that into a live vault. `sunrise ical
+//!   import` / `sunrise ical export` and the macOS app's menu items are the
+//!   two callers.
 //! - [`gcal`]: Google Calendar OAuth flow + event sync (interface only;
 //!   the HTTP client is bound by callers in the desktop / mobile apps
 //!   so OAuth tokens stay on-device).
@@ -25,6 +29,8 @@
 
 pub mod gcal;
 pub mod ical;
+pub mod ical_map;
+pub mod ical_vault;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -53,6 +59,9 @@ pub enum IntegrationError {
     /// IO failure on local files.
     #[error("io: {0}")]
     Io(String),
+    /// The vault refused a read or a write.
+    #[error("core: {0}")]
+    Core(String),
 }
 
 /// Pluggable integration runner. Each returns a summary of what it did

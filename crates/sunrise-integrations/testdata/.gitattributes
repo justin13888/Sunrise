@@ -1,0 +1,6 @@
+# `.ics` content lines are CRLF-terminated by RFC 5545 §3.1, and these
+# fixtures exist to reproduce what a real calendar client emits. Without
+# `-text` the repo's `core.autocrlf=input` normalises them to LF on commit,
+# and the CRLF path stops being exercised by anything but a synthetic string
+# in a unit test.
+*.ics -text
