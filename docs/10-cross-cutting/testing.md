@@ -10,18 +10,18 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 
 ### 1. Unit (broad, fast)
 
-- Pure-function tests in `sunrise-core` for parsers, RRULE expansion, CRDT mutations, crypto envelopes.
+- Pure-function tests in `sunrise-core` for parsers, RRULE expansion, LWW merge, crypto envelopes.
 - Run on `cargo test`; <30 seconds in CI.
-- Coverage target: 80% lines on the core; 90% on crypto and CRDT modules.
+- Coverage target: 80% lines on the core; 90% on crypto and on the merge path (`sunrise-core::engine::lww_wins` and the materialization it guards). The 90% figure previously named "CRDT modules", which do not exist — `crates/sunrise-crdt` was deleted by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), so that half of the gate applied to nothing. No Rust coverage tool is wired (CI runs `bun run test:coverage` for the TS side only), so neither target is measured or enforced today.
 
 ### 2. Property tests (thinner, deep)
 
-- CRDT convergence: random op streams across simulated devices.
+- Merge convergence: random op streams across simulated devices.
 - Capture parser fuzz.
 - RRULE expansion across DST boundaries.
 - Op envelope round-trip (encode/decode/encrypt/decrypt/sign/verify).
 
-#### CRDT property-test determinism
+#### Convergence property-test determinism
 
 - **Library**: `proptest` (Rust). Fuzz targets that need wire-bytes coverage are `cargo-fuzz` binaries in `fuzz/`: `op_envelope`, `wire_frame`, `rrule`, `ical`, `oauth_state`, `recovery_blob`.
 - **Seed**: read from `SUNRISE_FUZZ_SEED` (hex) when set; otherwise default to the first 8 bytes of the workspace `HEAD` commit hash. Every CI run logs the resolved seed in the suite header so a failing run is reproducible by re-export.

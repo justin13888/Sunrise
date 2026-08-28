@@ -24,7 +24,7 @@ Shared vocabulary used throughout these specs. When a term in this glossary is u
 | **Device** | A specific install (phone, laptop, browser profile). Has its own keypair derived from the identity. |
 | **Pairing** | The process of authorizing a new device to join an identity. |
 | **Recovery code** | A user-held secret allowing identity reconstruction with no other device available. |
-| **Op** | A CRDT operation — the atomic unit of sync. See [`05-sync/crdt-design.md`](../05-sync/crdt-design.md). |
+| **Op** | The atomic unit of sync: one encrypted, signed mutation of one entity. Merged by entity-level last-writer-wins ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) — *not* a CRDT operation, though earlier drafts and [`05-sync/crdt-design.md`](../05-sync/crdt-design.md) describe the CRDT design that was deferred. |
 | **Op log** | The append-only sequence of ops on a given device. |
 | **Relay** | The server's role in passing encrypted ops between devices. The relay cannot read ops. |
 | **Vault** | The local encrypted store on a device. |

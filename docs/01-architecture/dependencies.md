@@ -32,7 +32,7 @@ superseding decision named in the **Governing decision** column.
 | TLS | `rustls` | 0.23.40 | [ADR-0005](../11-adr/0005-sync-transport.md) | `ring` backend, no OpenSSL. |
 | Frame compression | `zstd` | 0.13.3 | [wire-protocol.md](../05-sync/wire-protocol.md) | Wire-frame payload compression. |
 | Server config parsing | `toml` | 1.1.4 | [self-hosting.md](../06-server/self-hosting.md) | `sunrise-server` only, `default-features = false` + `parse`/`serde`. Added **zero** crates to the lock: it was already resolved as a `uniffi_macros` dependency of `sunrise-core-bindings`. See Reconciliations §g. |
-| Structured logging | `tracing` | 0.1.44 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) | The logging API for the whole workspace. Was already in the lock transitively via `tower-http`/`axum`; now a direct dependency of `sunrise-log`, `-server`, `-tui`, `-storage`, `-core`. |
+| Structured logging | `tracing` | 0.1.44 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) | The logging API for the whole workspace. Was already in the lock transitively via `tower-http`/`axum`; now a direct dependency of `sunrise-log`, `-server`, `-storage`, `-core`, `-cli`. (`-tui` was listed here until [ADR-0019](../11-adr/0019-swiftui-macos-client.md) deleted that crate.) |
 | Log subscriber | `tracing-subscriber` | 0.3.23 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended) | `default-features = false` + `std`/`fmt`/`env-filter`/`json`/`registry`. `ansi` deliberately off — no colour codes in NDJSON, and it drops `nu-ansi-term`. Adds `sharded-slab`, `thread_local`, `matchers`, `tracing-serde` to the lock, all MIT/Apache-2.0. |
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
@@ -62,7 +62,7 @@ Majors only; exact ranges live in the per-package `package.json` files.
 
 | Purpose | Package | Major | Notes |
 |---|---|---|---|
-| UI framework | `react` / `react-dom` | 18 | `apps/web`, `apps/desktop`. |
+| UI framework | `react` / `react-dom` | 18 | `apps/web` only. `apps/desktop` was listed here until the Tauri shell was cut; the directory no longer exists. |
 | Web bundler / dev server | `vite` | 5 | `apps/web`. |
 | Language | `typescript` | 5.8 | Workspace-wide (`~5.8.3`). |
 | Lint / format | `@biomejs/biome` | 2 | Root dev dependency. |

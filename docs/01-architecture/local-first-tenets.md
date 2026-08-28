@@ -47,9 +47,9 @@ Sunrise commits to the seven principles described in Kleppmann et al.'s "Local-f
 
 ## 7. Multi-device collaboration without coordination
 
-**Definition.** Two devices can each make changes offline for an arbitrary period, and merge cleanly when they reconnect. "Cleanly" means: no lost changes, no manual conflict UIs for any field a CRDT can merge.
+**Definition.** Two devices can each make changes offline for an arbitrary period, and merge cleanly when they reconnect. "Cleanly" means: no manual conflict UIs.
 
-**Implication.** State is CRDT-shaped. The few fields where merge is genuinely ambiguous (e.g. "due date" set on two devices) get a documented merge rule, not a conflict popup. See [`05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
+**Implication.** State is **op-shaped**, and every entity carries a merge rule. In v1 that rule is entity-level last-writer-wins ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), not a CRDT: the workspace ships no CRDT library. This tenet is therefore met with a caveat worth stating plainly — LWW *does* lose a concurrent edit to the same entity, keeping one side rather than merging both. What it guarantees is that every device converges on the same survivor with no conflict popup, which is the property the tenet is really about. Per-field merge, which would narrow the loss to genuinely-colliding fields, is the deferred design in [`05-sync/crdt-design.md`](../05-sync/crdt-design.md). See [`05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 
 ---
 
