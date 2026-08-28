@@ -22,6 +22,7 @@ Block = {
     starts_at:    stime,                      ; see tasks.md §stime
     ends_at:      stime,                      ; resolves after starts_at
     timezone:     text,                       ; IANA tz
+    title_track_task: bool .default false,    ; recompute title from the one bound Task
     tasks:        [* tstr],                   ; bound task IDs
     stream_id?:   tstr,                       ; for tinting / filtering
     color?:       BlockColor,                 ; defaults to stream color
@@ -46,6 +47,33 @@ A Block's `title` is a **shadow copy** of the bound task's title at creation/bin
 
 - Optional `title_track_task: bool = false`. When true, the Block recomputes its title on read from the bound task's current title. CRDT field; default false to preserve user-edited Block titles.
 - Multi-task Blocks (N ≥ 2) ignore `title_track_task` and require an explicit `title`.
+
+## Symmetry with `Task.blocks`
+
+Binding is **one** op, not two. The `block_tasks` index is the only writer of
+the relation, and `Task.blocks` is derived from it on read — the same shape
+`Task.blocked_by` already has against `task_blockers`.
+
+Two ops would mean the Block's `tasks` set and the Task's `blocks` set are
+separate LWW registers on separate entities. A concurrent edit of the Task on
+another device would then win the Task's register and silently drop the
+binding, leaving the Block still claiming a Task that no longer claims it back.
+Deriving makes "Bound Task's `blocks` field updates symmetrically" true by
+construction instead of by repair.
+
+A binding may name a Task this replica has not materialized yet — ops arrive
+out of order — so `block_tasks` carries no foreign key on `task_id`. The
+binding is a fact; the Task turns up later.
+
+## v1 scope
+
+`Block` in v1 carries `id`, `created_at`, `updated_at`, `stream_id`,
+`starts_at`, `ends_at`, `title`, `title_track_task`, `tasks` and `deleted`.
+`timezone` is subsumed by `SunriseTime` (a zoned bound carries its own zone).
+`color`, `location`, `notes`, the travel-time buffers, `source`, `external_id`
+and `rrule` are specified above and not yet modelled: they land with the
+calendar-integration slice, and the forward-compat `unknown` map means a build
+that adds them can round-trip through this one without loss.
 
 ## Why Blocks aren't Tasks
 

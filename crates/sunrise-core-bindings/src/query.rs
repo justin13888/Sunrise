@@ -8,9 +8,9 @@ use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    ActionableTaskRow, ActivityRow, Cascade, ContextItem, ContextListRow, DailyReviewReport,
-    DeviceListRow, FocusTotals, PlanRow, RoutineItem, SessionRow, Snapshot, StreamItem,
-    StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    ActionableTaskRow, ActivityRow, BlockGridRow, Cascade, ContextItem, ContextListRow,
+    DailyReviewReport, DeviceListRow, FocusTotals, PlanRow, RoutineItem, SessionRow, Snapshot,
+    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
 };
 
 /// A read query.
@@ -135,6 +135,17 @@ pub enum CoreQuery {
         /// "Now" (epoch ms).
         now_ms: u64,
     },
+    /// The calendar grid for one civil day, in the device's zone. Overlap,
+    /// not containment: a block running past midnight is on both days.
+    DayBlocks {
+        /// Any instant inside the day (epoch ms).
+        day_ms: u64,
+    },
+    /// The calendar grid for one week, Monday-first, in the device's zone.
+    WeekBlocks {
+        /// Any instant inside the week (epoch ms).
+        week_ms: u64,
+    },
     /// Full-text search over tasks.
     Search {
         /// Raw query text.
@@ -205,6 +216,8 @@ impl CoreQuery {
                 weeks,
                 now_ms,
             },
+            Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
+            Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
         }
     }
@@ -313,6 +326,12 @@ pub enum CoreQueryResult {
         /// The rows, newest window first.
         snapshots: Vec<Snapshot>,
     },
+    /// The calendar grid's rows. `EntityById` on a `blk_` id returns one row
+    /// here rather than in a variant of its own.
+    Blocks {
+        /// The rows, earliest start first.
+        blocks: Vec<BlockGridRow>,
+    },
     /// A rendered export document.
     Export {
         /// The document.
@@ -389,6 +408,9 @@ impl CoreQueryResult {
             },
             QueryResult::ReviewSnapshots(s) => Self::ReviewSnapshots {
                 snapshots: s.iter().map(Snapshot::from).collect(),
+            },
+            QueryResult::Blocks(b) => Self::Blocks {
+                blocks: b.iter().map(BlockGridRow::from).collect(),
             },
             QueryResult::Export(body) => Self::Export { body },
         }

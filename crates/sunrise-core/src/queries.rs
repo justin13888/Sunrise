@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ActivityEvent, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit, ExportDataset,
-    ExportFormat, FocusSession, FocusStats, ReviewSnapshot, Routine, SessionPlan, Stream,
-    StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
+    ActivityEvent, Block, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit,
+    ExportDataset, ExportFormat, FocusSession, FocusStats, ReviewSnapshot, Routine, SessionPlan,
+    Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -176,6 +176,25 @@ pub enum Query {
         /// "Now" (ms since epoch).
         now_ms: u64,
     },
+    /// **Calendar grid, one day**: every live Block overlapping the civil day
+    /// that contains `day_ms`, in the device's zone.
+    ///
+    /// Overlap, not containment — a block that started yesterday evening and
+    /// runs past midnight belongs on today's grid.
+    DayBlocks {
+        /// Any instant inside the day to show (ms since epoch).
+        day_ms: u64,
+    },
+    /// **Calendar grid, one week**: every live Block overlapping the seven
+    /// civil days beginning at the Monday of the week containing `week_ms`.
+    ///
+    /// Monday-first, matching `WeekGrid` and every other weekly fold. The
+    /// window is built from civil dates rather than by adding 7 x 86_400_000,
+    /// so a week containing a DST transition is still exactly seven days.
+    WeekBlocks {
+        /// Any instant inside the week to show (ms since epoch).
+        week_ms: u64,
+    },
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -232,8 +251,30 @@ pub enum QueryResult {
     Activity(Vec<ActivityEvent>),
     /// `ReviewHistory` returns saved snapshots, newest window first.
     ReviewSnapshots(Vec<ReviewSnapshot>),
+    /// `DayBlocks` / `WeekBlocks` return the calendar grid's rows. So does
+    /// `EntityById` on a `blk_` id, as a single-element list — a Block is only
+    /// ever useful with its resolved title and bound task titles attached, and
+    /// a second one-Block variant would be the same row under another name.
+    Blocks(Vec<BlockRow>),
     /// `ExportStats` returns the rendered document.
     Export(String),
+}
+
+/// One row of [`Query::DayBlocks`] / [`Query::WeekBlocks`].
+///
+/// Carries the bound Tasks' titles alongside the Block so a grid can label a
+/// block without a query per bound task — and because resolving the Block's
+/// own title needs them anyway (`docs/02-domain/time-blocks.md` §Block title).
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockRow {
+    /// The Block.
+    pub block: Block,
+    /// The title to show, after the shadow-copy / `title_track_task` rules.
+    pub title: Option<String>,
+    /// Titles of the bound live Tasks this replica has materialized, in
+    /// `block.tasks` order. Shorter than `block.tasks` when a binding names a
+    /// Task whose op has not arrived yet — a valid state, not a repair case.
+    pub task_titles: Vec<String>,
 }
 
 /// One row of [`Query::FocusPlan`]: a proposal, with the two facts that put it

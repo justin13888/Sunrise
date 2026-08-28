@@ -28,7 +28,7 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine, Stream, Task,
+    Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine, Stream, Task,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
@@ -63,6 +63,12 @@ pub(crate) enum InnerOp {
     RoutineUpdate(Box<Routine>),
     /// Tombstone a routine.
     RoutineDelete(EntityRef),
+    /// Create a time block (full state). Boxed to keep the enum small.
+    BlockCreate(Box<Block>),
+    /// Replace a time block's full state, bindings included.
+    BlockUpdate(Box<Block>),
+    /// Tombstone a time block.
+    BlockDelete(EntityRef),
     /// Open a focus session (ADR-0013's `start` op). Append-only: the record
     /// is written once and never edited.
     FocusStart(Box<FocusStart>),
@@ -115,6 +121,9 @@ impl InnerOp {
             Self::RoutineCreate(_) => "routine.create",
             Self::RoutineUpdate(_) => "routine.update",
             Self::RoutineDelete(_) => "routine.delete",
+            Self::BlockCreate(_) => "block.create",
+            Self::BlockUpdate(_) => "block.update",
+            Self::BlockDelete(_) => "block.delete",
             Self::FocusStart(_) => "focus.start",
             Self::FocusEnd(_) => "focus.end",
             Self::FocusInterrupt(_) => "focus.interrupt",
@@ -130,6 +139,7 @@ impl InnerOp {
             Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => "stream",
             Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
+            Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => "block",
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
             Self::ReviewSnapshotCreate(_) => "review_snapshot",
         }
@@ -142,10 +152,12 @@ impl InnerOp {
             Self::StreamCreate(s) | Self::StreamUpdate(s) => s.id,
             Self::ContextCreate(c) | Self::ContextUpdate(c) => c.id,
             Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) => rt.id,
+            Self::BlockCreate(b) | Self::BlockUpdate(b) => b.id,
             Self::TaskDelete(r)
             | Self::StreamDelete(r)
             | Self::ContextDelete(r)
-            | Self::RoutineDelete(r) => *r,
+            | Self::RoutineDelete(r)
+            | Self::BlockDelete(r) => *r,
             Self::FocusStart(f) => f.id,
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,
@@ -160,18 +172,21 @@ impl InnerOp {
             | Self::StreamCreate(_)
             | Self::ContextCreate(_)
             | Self::RoutineCreate(_)
+            | Self::BlockCreate(_)
             | Self::FocusStart(_)
             | Self::ReviewSnapshotCreate(_) => OpEffect::Create,
             Self::TaskUpdate(_)
             | Self::StreamUpdate(_)
             | Self::ContextUpdate(_)
             | Self::RoutineUpdate(_)
+            | Self::BlockUpdate(_)
             | Self::FocusEnd(_)
             | Self::FocusInterrupt(_) => OpEffect::Update,
             Self::TaskDelete(_)
             | Self::StreamDelete(_)
             | Self::ContextDelete(_)
-            | Self::RoutineDelete(_) => OpEffect::Delete,
+            | Self::RoutineDelete(_)
+            | Self::BlockDelete(_) => OpEffect::Delete,
         }
     }
 
@@ -188,6 +203,7 @@ impl InnerOp {
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => {
                 EntityKind::Routine
             }
+            Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => EntityKind::Block,
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => {
                 EntityKind::FocusSession
             }

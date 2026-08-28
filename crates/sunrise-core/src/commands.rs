@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ContextDraft, ContextPatch, Energy, InterruptionReason, ReviewSnapshotDraft, RoutineDraft,
-    RoutinePatch, ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft,
-    TaskPatch, TaskState,
+    BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy, InterruptionReason,
+    ReviewSnapshotDraft, RoutineDraft, RoutinePatch, ScheduleConstraint, SessionLength,
+    StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -90,6 +90,43 @@ pub enum Command {
         id: EntityRef,
         /// Occurrence key to skip.
         occurrence_key: String,
+    },
+    /// Create a time Block (`docs/02-domain/time-blocks.md`).
+    ///
+    /// A Block given no title of its own and exactly one Task takes that
+    /// Task's title as a **shadow copy** — the value as it is now, not a live
+    /// binding. `BlockDraft::title_track_task` opts into live tracking instead.
+    CreateBlock(BlockDraft),
+    /// Mutate a Block: move it, retitle it, or change title tracking.
+    UpdateBlock {
+        /// Target block.
+        id: EntityRef,
+        /// Patch.
+        patch: BlockPatch,
+    },
+    /// Soft-delete a Block. Bound Tasks are untouched — a Block is a plan for
+    /// when to do the work, never the work itself.
+    DeleteBlock(EntityRef),
+    /// Bind a Task to a Block.
+    ///
+    /// Maintains the spec's symmetry ("Bound Task's `blocks` field updates
+    /// symmetrically") with **one** op rather than two: the binding lives in
+    /// the `block_tasks` index and `Task.blocks` is derived from it on read,
+    /// so a concurrent edit of the Task on another device cannot lose the
+    /// binding to entity-level LWW.
+    BindTask {
+        /// Target block.
+        block: EntityRef,
+        /// Task to bind.
+        task: EntityRef,
+    },
+    /// Unbind a Task from a Block. The Block survives with no Tasks bound:
+    /// an empty Block is a legitimate calendar entry.
+    UnbindTask {
+        /// Target block.
+        block: EntityRef,
+        /// Task to unbind.
+        task: EntityRef,
     },
     /// Run materialization for every live Routine using `now_ms` as the clock.
     /// Emitted by `Core::open` and the periodic core timer.

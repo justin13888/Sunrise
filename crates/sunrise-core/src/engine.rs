@@ -53,8 +53,8 @@ use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
 use crate::queries::{
-    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
-    StreamRow,
+    ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
+    QueryResult, StreamRow,
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,15 +69,15 @@ use sunrise_domain::{
     effective_state, focus_table, fold_activity, fold_focus_stats, fold_trends, inbox_stream_ref,
     materialization_horizon_days, occurrence_key_at, occurrence_task_id, plan_session,
     rank_focus_plan, routine_drift, streaks_table, trends_table, unblock_cascade,
-    violations_by_severity, ActivityEvent, Chunk, Context, ContextDraft, ContextPatch,
-    DependencyGraph, Energy, ExportDataset, ExportFormat, FocusEnd, FocusKind, FocusSession,
-    FocusStart, Interruption, InterruptionReason, NoteBody, OpPayload, OpRecord, PlanCandidate,
-    ReviewSnapshot, ReviewSnapshotDraft, ReviewStream, ReviewWindow, Routine, RoutineCatchupPolicy,
-    RoutineDraft, RoutineDrift, RoutinePatch, ScheduleConstraint, SessionLength, SessionRecord,
-    StreakOutcome, StreakRow, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence,
-    Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, Trends, ValidationError, WeekGrid,
-    Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS,
-    POMODORO_MS, TREND_WEEKS,
+    violations_by_severity, ActivityEvent, Block, BlockDraft, BlockPatch, Chunk, Context,
+    ContextDraft, ContextPatch, DependencyGraph, Energy, ExportDataset, ExportFormat, FocusEnd,
+    FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, NoteBody, OpPayload,
+    OpRecord, PlanCandidate, ReviewSnapshot, ReviewSnapshotDraft, ReviewStream, ReviewWindow,
+    Routine, RoutineCatchupPolicy, RoutineDraft, RoutineDrift, RoutinePatch, ScheduleConstraint,
+    SessionLength, SessionRecord, StreakOutcome, StreakRow, Stream, StreamColor, StreamDraft,
+    StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, Trends,
+    ValidationError, WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
+    DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -236,6 +236,11 @@ impl Engine {
             Command::SkipRoutineOccurrence { id, occurrence_key } => {
                 self.skip_routine_occurrence(db, id, occurrence_key)
             }
+            Command::CreateBlock(d) => self.create_block(db, d),
+            Command::UpdateBlock { id, patch } => self.update_block(db, id, patch),
+            Command::DeleteBlock(id) => self.delete_block(db, id),
+            Command::BindTask { block, task } => self.bind_task(db, block, task),
+            Command::UnbindTask { block, task } => self.unbind_task(db, block, task),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
             Command::TrustDevice { cert_cbor } => self.trust_device(db, &cert_cbor),
             Command::StartFocus(d) => self.start_focus(db, d),
@@ -298,6 +303,8 @@ impl Engine {
                 weeks,
                 now_ms,
             } => self.query_export(db, dataset, format, weeks, now_ms),
+            Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
+            Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
@@ -2299,6 +2306,11 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("routine {r}")))?;
                 Ok(QueryResult::Routine(Box::new(rt)))
             }
+            EntityKind::Block => {
+                let b = read_block(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("block {r}")))?;
+                Ok(QueryResult::Blocks(vec![block_row(db.conn(), b)?]))
+            }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?} in v1",
                 r.kind()
@@ -2806,6 +2818,7 @@ fn materialize_remote(
         EntityKind::Stream => ("streams", "stream_id"),
         EntityKind::Context => ("contexts", "id"),
         EntityKind::Routine => ("routines", "id"),
+        EntityKind::Block => ("blocks", "id"),
         // Task (and any future kind) key on `id`.
         _ => ("tasks", "id"),
     };
@@ -2881,6 +2894,20 @@ fn materialize_remote(
         InnerOp::RoutineDelete(_) => {
             if present {
                 tombstone_routine(tx, target.bytes(), lww)?;
+            }
+        }
+        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) => {
+            ensure_stream_row(tx, &b.stream_id, ts_ms, None, false, false, false)?;
+            upsert_block_row(tx, b, lww)?;
+            // Bindings ride along with the full-state Block op, and are written
+            // even for Tasks this replica has not materialized yet: a binding
+            // to an unknown Task is a fact, and `Task.blocks` picks it up the
+            // moment that Task's own op lands.
+            replace_block_tasks(tx, b)?;
+        }
+        InnerOp::BlockDelete(_) => {
+            if present {
+                tombstone_block(tx, target.bytes(), lww)?;
             }
         }
         // Handled by the append-only branch at the top of this function; the
@@ -3967,7 +3994,11 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         scheduling_constraints: decode_constraints(t.13)?,
         completed_at: time_from_parts(t.8, t.22.as_deref(), t.23.as_deref()),
         deferred_count: t.9,
-        blocks: BTreeSet::new(),
+        // Derived from `block_tasks`, never stored on the task row: the Block
+        // op is the only writer of the binding, so the symmetry
+        // `docs/02-domain/time-blocks.md` asks for holds by construction and
+        // cannot be lost to an entity-level LWW contest over the Task.
+        blocks: read_task_blocks(conn, id)?,
         // Restored from the dependency index (migration 0008). Before it
         // existed, `blocked_by` survived only inside the op-log inner op and
         // the materialized projection always read back empty, so nothing could
@@ -5074,6 +5105,12 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::RoutineCreate(_)
         | InnerOp::RoutineUpdate(_)
         | InnerOp::RoutineDelete(_)
+        // Calendar bookkeeping. A Block records WHEN work is planned, never
+        // that any happened, so it does not belong in a Task's or a Stream's
+        // activity feed.
+        | InnerOp::BlockCreate(_)
+        | InnerOp::BlockUpdate(_)
+        | InnerOp::BlockDelete(_)
         | InnerOp::FocusInterrupt(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
@@ -5176,6 +5213,504 @@ fn insert_review_snapshot_row(
         ],
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Time blocks (docs/02-domain/time-blocks.md)
+// ---------------------------------------------------------------------------
+
+/// The Block command path.
+///
+/// Block ops route under the Block's **own Stream**, like task ops and unlike
+/// routine ops: a calendar is per-Stream in the UI, so routing there keeps a
+/// Block's `seq` independent of the meta stream's.
+///
+/// `Task.blocks` is never written. It is derived from `block_tasks` on read
+/// (see [`read_task_blocks`]), which is what makes the spec's "Bound Task's
+/// `blocks` field updates symmetrically" hold by construction: one writer, one
+/// op, and nothing for a concurrent edit of the Task to overwrite.
+impl Engine {
+    fn create_block(&self, db: &mut Db, d: BlockDraft) -> Result<CommandResult, EngineError> {
+        d.validate()?;
+        require_kind(d.stream_id, EntityKind::Stream)?;
+        for t in &d.tasks {
+            require_kind(*t, EntityKind::Task)?;
+        }
+        let now_ms = self.clock.now_ms();
+        let block_id = self.fresh_id(EntityKind::Block, now_ms);
+        let op_id = self.fresh_op_id(now_ms);
+        let tasks: BTreeSet<EntityRef> = d.tasks.iter().copied().collect();
+        // Shadow copy: a Block created around exactly one Task and given no
+        // title of its own takes that Task's title AS IT IS NOW. Later renames
+        // of the Task do not reach the Block unless `title_track_task` is set.
+        let title = match d.title {
+            Some(t) => Some(t.trim().to_string()),
+            None => self.shadow_title(db, &tasks)?,
+        };
+        let block = Block {
+            id: block_id,
+            created_at: ms_to_ts(now_ms as i64),
+            updated_at: ms_to_ts(now_ms as i64),
+            stream_id: d.stream_id,
+            starts_at: d.starts_at,
+            ends_at: d.ends_at,
+            title,
+            title_track_task: d.title_track_task,
+            tasks,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        block.validate_invariants()?;
+        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.create")?;
+        Ok(CommandResult::new(block_id, None, op_id, seq))
+    }
+
+    fn update_block(
+        &self,
+        db: &mut Db,
+        id: EntityRef,
+        patch: BlockPatch,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Block)?;
+        patch.validate()?;
+        let now_ms = self.clock.now_ms();
+        let mut block = read_block(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+        if let Some(s) = patch.starts_at {
+            block.starts_at = s;
+        }
+        if let Some(e) = patch.ends_at {
+            block.ends_at = e;
+        }
+        if let Some(t) = patch.title {
+            block.title = t.map(|s| s.trim().to_string());
+        }
+        if let Some(track) = patch.title_track_task {
+            block.title_track_task = track;
+        }
+        if let Some(s) = patch.stream_id {
+            require_kind(s, EntityKind::Stream)?;
+            block.stream_id = s;
+        }
+        block.updated_at = ms_to_ts(now_ms as i64);
+        block.validate_invariants()?;
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
+        Ok(CommandResult::new(id, None, op_id, seq))
+    }
+
+    fn delete_block(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
+        require_kind(id, EntityKind::Block)?;
+        let now_ms = self.clock.now_ms();
+        let block = read_block(db.conn(), id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+        let op_id = self.fresh_op_id(now_ms);
+        let inner_op = encode_inner_op(&InnerOp::BlockDelete(id))?;
+        let seq = self.next_seq(db, block.stream_id.bytes())?;
+        let lww = self.lww_stamp(seq);
+        let stream_bytes = *block.stream_id.bytes();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            tombstone_block(tx, id.bytes(), &lww)?;
+            self.ops_insert(
+                tx,
+                &op_id,
+                &stream_bytes,
+                seq,
+                lww.hlc,
+                &inner_op,
+                "block.delete",
+                "block",
+                Some(id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(CommandResult::new(id, None, op_id, seq))
+    }
+
+    /// Bind a Task to a Block. Idempotent on the membership set: re-binding an
+    /// already-bound Task writes the same set, so every replica converges to
+    /// the same membership whichever order the ops land in.
+    fn bind_task(
+        &self,
+        db: &mut Db,
+        block_id: EntityRef,
+        task: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(block_id, EntityKind::Block)?;
+        require_kind(task, EntityKind::Task)?;
+        let now_ms = self.clock.now_ms();
+        let mut block = read_block(db.conn(), block_id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
+        block.tasks.insert(task);
+        // The first Task bound to an untitled Block lends it the shadow copy,
+        // which is what makes drag-a-task-onto-the-grid produce a labelled
+        // block instead of a blank one.
+        if block.title.is_none() {
+            block.title = self.shadow_title(db, &block.tasks)?;
+        }
+        block.updated_at = ms_to_ts(now_ms as i64);
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
+        Ok(CommandResult::new(block_id, None, op_id, seq))
+    }
+
+    /// Unbind a Task from a Block. The Block survives with no tasks bound: an
+    /// empty Block is a legitimate calendar entry ("gym", "lunch").
+    fn unbind_task(
+        &self,
+        db: &mut Db,
+        block_id: EntityRef,
+        task: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        require_kind(block_id, EntityKind::Block)?;
+        require_kind(task, EntityKind::Task)?;
+        let now_ms = self.clock.now_ms();
+        let mut block = read_block(db.conn(), block_id.bytes())?
+            .ok_or_else(|| EngineError::NotFound(format!("block {block_id}")))?;
+        block.tasks.remove(&task);
+        block.updated_at = ms_to_ts(now_ms as i64);
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
+        Ok(CommandResult::new(block_id, None, op_id, seq))
+    }
+
+    /// Seal a full-state Block op, materialize the row and its bindings, and
+    /// append the op — all in one transaction. Returns the op's `seq`.
+    fn emit_block(
+        &self,
+        db: &mut Db,
+        block: &Block,
+        now_ms: u64,
+        op_id: &[u8; 16],
+        inner_kind: &str,
+    ) -> Result<u64, EngineError> {
+        let inner = if inner_kind == "block.create" {
+            InnerOp::BlockCreate(Box::new(block.clone()))
+        } else {
+            InnerOp::BlockUpdate(Box::new(block.clone()))
+        };
+        let inner_op = encode_inner_op(&inner)?;
+        let seq = self.next_seq(db, block.stream_id.bytes())?;
+        let lww = self.lww_stamp(seq);
+        let stream_bytes = *block.stream_id.bytes();
+        let block = block.clone();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            ensure_stream_row(tx, &block.stream_id, now_ms, None, false, false, false)?;
+            upsert_block_row(tx, &block, &lww)?;
+            replace_block_tasks(tx, &block)?;
+            self.ops_insert(
+                tx,
+                op_id,
+                &stream_bytes,
+                seq,
+                lww.hlc,
+                &inner_op,
+                inner_kind,
+                "block",
+                Some(block.id.bytes()),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            )?;
+            Ok(())
+        })?;
+        Ok(seq)
+    }
+
+    /// The title a single bound Task lends a Block. `None` when the Block binds
+    /// zero or two-plus Tasks (nothing unambiguous to shadow) or when the one
+    /// Task has not been materialized on this replica yet.
+    fn shadow_title(
+        &self,
+        db: &Db,
+        tasks: &BTreeSet<EntityRef>,
+    ) -> Result<Option<String>, EngineError> {
+        let mut it = tasks.iter();
+        let (Some(only), None) = (it.next(), it.next()) else {
+            return Ok(None);
+        };
+        Ok(read_task(db.conn(), only.bytes())?.map(|t| t.title))
+    }
+
+    /// Blocks overlapping the civil day containing `day_ms`, in the device
+    /// zone.
+    fn query_day_blocks(&self, db: &Db, day_ms: u64) -> Result<QueryResult, EngineError> {
+        let (from, to) = self.civil_span(day_ms as i64, 1)?;
+        self.query_blocks_between(db, from, to)
+    }
+
+    /// Blocks overlapping the seven civil days beginning at the Monday of the
+    /// week containing `week_ms`, in the device zone.
+    fn query_week_blocks(&self, db: &Db, week_ms: u64) -> Result<QueryResult, EngineError> {
+        let tz = self.device_zone();
+        let anchor = ms_to_ts(week_ms as i64).to_zoned(tz).date();
+        // Monday-first, matching `WeekGrid` and every other weekly fold here.
+        let back = i64::from(anchor.weekday().to_monday_zero_offset());
+        let monday = anchor
+            .checked_sub(jiff::Span::new().days(back))
+            .unwrap_or(anchor);
+        let monday_ms = self.civil_day_start_ms(monday)?;
+        let (from, to) = self.civil_span(monday_ms, 7)?;
+        self.query_blocks_between(db, from, to)
+    }
+
+    /// `[start_of_day(at_ms), start_of_day(at_ms) + days)` in the device zone,
+    /// as epoch-millisecond bounds.
+    ///
+    /// Computed over civil dates rather than by adding `86_400_000` so a day
+    /// that is 23 or 25 hours long across a DST transition is still exactly one
+    /// day on the grid.
+    fn civil_span(&self, at_ms: i64, days: i64) -> Result<(i64, i64), EngineError> {
+        let tz = self.device_zone();
+        let date = ms_to_ts(at_ms).to_zoned(tz).date();
+        let end_date = date
+            .checked_add(jiff::Span::new().days(days))
+            .map_err(|e| EngineError::Invalid(format!("calendar span: {e}")))?;
+        Ok((
+            self.civil_day_start_ms(date)?,
+            self.civil_day_start_ms(end_date)?,
+        ))
+    }
+
+    fn civil_day_start_ms(&self, date: jiff::civil::Date) -> Result<i64, EngineError> {
+        let tz = self.device_zone();
+        let zoned = tz
+            .to_zoned(date.to_datetime(jiff::civil::Time::midnight()))
+            .map_err(|e| EngineError::Invalid(format!("calendar day start: {e}")))?;
+        Ok(zoned.timestamp().as_millisecond())
+    }
+
+    /// The device-local zone, from the injected clock. An unknown IANA name
+    /// degrades to UTC rather than failing a read.
+    fn device_zone(&self) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC)
+    }
+
+    /// Every live Block whose `[starts_at, ends_at)` overlaps `[from, to)`.
+    ///
+    /// Overlap, not containment: a two-hour block that started before the
+    /// window still belongs on the grid, which is why the `blocks_by_end`
+    /// index exists.
+    fn query_blocks_between(
+        &self,
+        db: &Db,
+        from: i64,
+        to: i64,
+    ) -> Result<QueryResult, EngineError> {
+        let mut stmt = db.conn().prepare(
+            "SELECT id FROM blocks
+             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?
+             ORDER BY starts_at_ms ASC, id ASC",
+        )?;
+        let ids = stmt
+            .query_map(params![to, from], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut rows = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let Some(block) = read_block(db.conn(), &blob16(&raw))? else {
+                continue;
+            };
+            rows.push(block_row(db.conn(), block)?);
+        }
+        Ok(QueryResult::Blocks(rows))
+    }
+}
+
+/// Assemble one [`BlockRow`]: the Block, the titles of the bound Tasks this
+/// replica knows about, and the title the spec's shadow-copy rules resolve to.
+fn block_row(conn: &rusqlite::Connection, block: Block) -> Result<BlockRow, EngineError> {
+    let mut task_titles = Vec::with_capacity(block.tasks.len());
+    for t in &block.tasks {
+        if let Some(task) = read_task(conn, t.bytes())? {
+            if !task.deleted {
+                task_titles.push(task.title);
+            }
+        }
+    }
+    let title = block.resolve_title(&task_titles).map(ToOwned::to_owned);
+    Ok(BlockRow {
+        block,
+        title,
+        task_titles,
+    })
+}
+
+/// INSERT-or-REPLACE a Block row, stamping the LWW columns.
+fn upsert_block_row(tx: &Transaction<'_>, b: &Block, lww: &LwwStamp) -> rusqlite::Result<()> {
+    let (start_ms, start_kind, start_tz) = b.starts_at.to_parts();
+    let (end_ms, end_kind, end_tz) = b.ends_at.to_parts();
+    tx.execute(
+        "INSERT INTO blocks
+         (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
+          ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
+          deleted, extra, created_at_ms, updated_at_ms,
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+            stream_id = excluded.stream_id,
+            starts_at_ms = excluded.starts_at_ms,
+            starts_at_kind = excluded.starts_at_kind,
+            starts_at_tz = excluded.starts_at_tz,
+            ends_at_ms = excluded.ends_at_ms,
+            ends_at_kind = excluded.ends_at_kind,
+            ends_at_tz = excluded.ends_at_tz,
+            title = excluded.title,
+            title_track_task = excluded.title_track_task,
+            deleted = excluded.deleted,
+            extra = excluded.extra,
+            updated_at_ms = excluded.updated_at_ms,
+            lww_hlc_ms = excluded.lww_hlc_ms,
+            lww_hlc_logical = excluded.lww_hlc_logical,
+            lww_seq = excluded.lww_seq,
+            lww_device = excluded.lww_device",
+        params![
+            &b.id.bytes()[..],
+            &b.stream_id.bytes()[..],
+            start_ms,
+            start_kind,
+            start_tz,
+            end_ms,
+            end_kind,
+            end_tz,
+            b.title.as_deref(),
+            b.title_track_task as i64,
+            b.deleted as i64,
+            encode_unknowns(&b.unknown)?,
+            b.created_at.as_millisecond(),
+            b.updated_at.as_millisecond(),
+            lww.hlc.physical_ms as i64,
+            lww.hlc.logical,
+            lww.seq as i64,
+            &lww.device[..],
+        ],
+    )?;
+    Ok(())
+}
+
+/// Replace a Block's bindings with the op's set. Full-state, like every other
+/// v1 op: the set on the winning op is the set.
+fn replace_block_tasks(tx: &Transaction<'_>, b: &Block) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM block_tasks WHERE block_id = ?",
+        params![&b.id.bytes()[..]],
+    )?;
+    for t in &b.tasks {
+        tx.execute(
+            "INSERT OR IGNORE INTO block_tasks (block_id, task_id) VALUES (?, ?)",
+            params![&b.id.bytes()[..], &t.bytes()[..]],
+        )?;
+    }
+    Ok(())
+}
+
+/// Tombstone a Block under LWW. The bindings stay: a tombstoned Block still
+/// has to be able to report what it held if a later op resurrects it, and
+/// `Task.blocks` filters deleted Blocks on read.
+fn tombstone_block(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE blocks SET deleted = 1, updated_at_ms = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+         WHERE id = ?",
+        params![
+            lww.hlc.physical_ms as i64,
+            lww.hlc.physical_ms as i64,
+            lww.hlc.logical,
+            lww.seq as i64,
+            &lww.device[..],
+            &id[..]
+        ],
+    )?;
+    Ok(())
+}
+
+/// Read one Block, with its bindings.
+fn read_block(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Block>, EngineError> {
+    let row = conn
+        .query_row(
+            "SELECT stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
+                    ends_at_ms, ends_at_kind, ends_at_tz, title, title_track_task,
+                    deleted, extra, created_at_ms, updated_at_ms
+             FROM blocks WHERE id = ?",
+            params![&id[..]],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, Option<Vec<u8>>>(10)?,
+                    r.get::<_, i64>(11)?,
+                    r.get::<_, i64>(12)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(b) = row else {
+        return Ok(None);
+    };
+    Ok(Some(Block {
+        id: EntityRef::new(EntityKind::Block, *id),
+        created_at: ms_to_ts(b.11.max(0)),
+        updated_at: ms_to_ts(b.12.max(0)),
+        stream_id: EntityRef::new(EntityKind::Stream, blob16(&b.0)),
+        starts_at: SunriseTime::from_parts(b.1, &b.2, b.3.as_deref()),
+        ends_at: SunriseTime::from_parts(b.4, &b.5, b.6.as_deref()),
+        title: b.7,
+        title_track_task: b.8 != 0,
+        tasks: read_block_tasks(conn, id)?,
+        deleted: b.9 != 0,
+        unknown: decode_unknowns(b.10),
+    }))
+}
+
+/// The Tasks bound to one Block.
+fn read_block_tasks(
+    conn: &rusqlite::Connection,
+    block: &[u8; 16],
+) -> Result<BTreeSet<EntityRef>, EngineError> {
+    let mut stmt = conn.prepare("SELECT task_id FROM block_tasks WHERE block_id = ?")?;
+    let out = stmt
+        .query_map(params![&block[..]], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|raw| EntityRef::new(EntityKind::Task, blob16(&raw)))
+        .collect();
+    Ok(out)
+}
+
+/// The live Blocks scheduling one Task — the derived other half of the
+/// binding, and the only source `Task.blocks` is ever read from.
+///
+/// Deleted Blocks are filtered here rather than at bind time: a Block
+/// tombstoned on another device stops appearing on its Tasks the moment the
+/// tombstone merges, with no repair pass over `block_tasks`.
+fn read_task_blocks(
+    conn: &rusqlite::Connection,
+    task: &[u8; 16],
+) -> Result<BTreeSet<EntityRef>, EngineError> {
+    let mut stmt = conn.prepare(
+        "SELECT bt.block_id FROM block_tasks bt
+         JOIN blocks b ON b.id = bt.block_id
+         WHERE bt.task_id = ? AND b.deleted = 0",
+    )?;
+    let out = stmt
+        .query_map(params![&task[..]], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|raw| EntityRef::new(EntityKind::Block, blob16(&raw)))
+        .collect();
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -6942,6 +7477,435 @@ mod tests {
         assert!(!deleted(keep_anchor), "anchor-weekday occurrence stays");
         assert!(deleted(drop_id), "off-cadence future task regenerated away");
         assert!(!deleted(started_id), "started task is preserved");
+    }
+
+    // ---- time blocks (docs/02-domain/time-blocks.md) ----
+
+    /// A block on 2026-03-04, `hour..hour + len` floating (no zone), which is
+    /// what a calendar grid draws when the user has not pinned a zone.
+    fn block_at(hour: i8, len: i8) -> (SunriseTime, SunriseTime) {
+        (
+            SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour, 0, 0, 0)),
+            SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour + len, 0, 0, 0)),
+        )
+    }
+
+    fn block_draft(hour: i8, len: i8, title: Option<&str>) -> BlockDraft {
+        let (starts_at, ends_at) = block_at(hour, len);
+        BlockDraft {
+            stream_id: inbox_stream_ref(),
+            starts_at,
+            ends_at,
+            title: title.map(ToOwned::to_owned),
+            title_track_task: false,
+            tasks: Vec::new(),
+        }
+    }
+
+    fn day_rows(e: &Engine, db: &Db, at_ms: u64) -> Vec<BlockRow> {
+        match e.query(db, Query::DayBlocks { day_ms: at_ms }).unwrap() {
+            QueryResult::Blocks(rows) => rows,
+            other => panic!("expected blocks, got {other:?}"),
+        }
+    }
+
+    /// The instant a floating civil time on the test date resolves to under the
+    /// engine's device zone (UTC in tests).
+    fn day_ms() -> u64 {
+        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0)).index_ms() as u64
+    }
+
+    #[test]
+    fn create_block_round_trips_and_lands_on_the_day_grid() {
+        let mut db = db();
+        let e = engine();
+        let res = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap();
+        assert_eq!(res.entity.kind(), EntityKind::Block);
+
+        let rows = day_rows(&e, &db, day_ms());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].block.id, res.entity);
+        assert_eq!(rows[0].title.as_deref(), Some("Gym"));
+        assert!(rows[0].block.tasks.is_empty());
+
+        // The op is a real sealed `BlockCreate`.
+        assert_eq!(inner_op_variant(&e, &db, &res.op_id), "BlockCreate");
+    }
+
+    #[test]
+    fn an_inverted_block_is_rejected() {
+        let mut db = db();
+        let e = engine();
+        let (starts_at, ends_at) = block_at(10, 1);
+        let bad = BlockDraft {
+            starts_at: ends_at,
+            ends_at: starts_at,
+            ..block_draft(9, 1, Some("backwards"))
+        };
+        assert!(matches!(
+            e.apply(&mut db, Command::CreateBlock(bad)),
+            Err(EngineError::Validation(ValidationError::Field {
+                field: "block.ends_at",
+                ..
+            }))
+        ));
+    }
+
+    /// The grid asks "what overlaps this day", so a block that started
+    /// yesterday and runs into today is on today's grid — and one that ends
+    /// exactly at midnight is not.
+    #[test]
+    fn the_day_grid_returns_overlaps_not_containments() {
+        let mut db = db();
+        let e = engine();
+        let midnight = jiff::civil::date(2026, 3, 4).at(0, 0, 0, 0);
+        let spans_into_today = BlockDraft {
+            starts_at: SunriseTime::floating(jiff::civil::date(2026, 3, 3).at(23, 0, 0, 0)),
+            ends_at: SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(1, 0, 0, 0)),
+            ..block_draft(9, 1, Some("overnight"))
+        };
+        let ends_at_midnight = BlockDraft {
+            starts_at: SunriseTime::floating(jiff::civil::date(2026, 3, 3).at(22, 0, 0, 0)),
+            ends_at: SunriseTime::floating(midnight),
+            ..block_draft(9, 1, Some("yesterday only"))
+        };
+        e.apply(&mut db, Command::CreateBlock(spans_into_today))
+            .unwrap();
+        e.apply(&mut db, Command::CreateBlock(ends_at_midnight))
+            .unwrap();
+
+        let titles: Vec<_> = day_rows(&e, &db, day_ms())
+            .into_iter()
+            .filter_map(|r| r.title)
+            .collect();
+        assert_eq!(titles, vec!["overnight".to_string()]);
+    }
+
+    /// A week window is built from civil dates, so it is exactly seven days and
+    /// Monday-first. 2026-03-04 is a Wednesday.
+    #[test]
+    fn the_week_grid_runs_monday_to_sunday() {
+        let mut db = db();
+        let e = engine();
+        for (date, title) in [
+            ((2026, 3, 2), "monday"),        // in
+            ((2026, 3, 8), "sunday"),        // in
+            ((2026, 3, 1), "sunday_before"), // out
+            ((2026, 3, 9), "next_monday"),   // out
+        ] {
+            let d = jiff::civil::date(date.0, date.1, date.2);
+            e.apply(
+                &mut db,
+                Command::CreateBlock(BlockDraft {
+                    starts_at: SunriseTime::floating(d.at(9, 0, 0, 0)),
+                    ends_at: SunriseTime::floating(d.at(10, 0, 0, 0)),
+                    ..block_draft(9, 1, Some(title))
+                }),
+            )
+            .unwrap();
+        }
+        let rows = match e
+            .query(
+                &db,
+                Query::WeekBlocks {
+                    week_ms: day_ms(), // Wednesday of that week
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Blocks(rows) => rows,
+            other => panic!("expected blocks, got {other:?}"),
+        };
+        let titles: Vec<_> = rows.into_iter().filter_map(|r| r.title).collect();
+        assert_eq!(titles, vec!["monday".to_string(), "sunday".to_string()]);
+    }
+
+    #[test]
+    fn binding_a_task_updates_task_blocks_symmetrically() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 2, Some("Deep work"))),
+            )
+            .unwrap()
+            .entity;
+
+        e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+
+        // Forward: the block carries the task.
+        let rows = day_rows(&e, &db, day_ms());
+        assert_eq!(
+            rows[0].block.tasks.iter().copied().collect::<Vec<_>>(),
+            vec![task]
+        );
+        assert_eq!(rows[0].task_titles, vec!["Write the report".to_string()]);
+        // Reverse: the task carries the block, with no second op.
+        let t = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+        assert_eq!(t.blocks.iter().copied().collect::<Vec<_>>(), vec![block]);
+
+        // Unbinding takes both halves back down.
+        e.apply(&mut db, Command::UnbindTask { block, task })
+            .unwrap();
+        let t = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+        assert!(t.blocks.is_empty());
+        assert!(day_rows(&e, &db, day_ms())[0].block.tasks.is_empty());
+    }
+
+    /// The spec's shadow copy: the title is taken at bind time and does NOT
+    /// follow a later rename of the task.
+    #[test]
+    fn an_untitled_block_shadow_copies_the_bound_task_title() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Original title");
+        let block = e
+            .apply(&mut db, Command::CreateBlock(block_draft(9, 1, None)))
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+        assert_eq!(
+            day_rows(&e, &db, day_ms())[0].title.as_deref(),
+            Some("Original title")
+        );
+
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("Renamed later".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            day_rows(&e, &db, day_ms())[0].title.as_deref(),
+            Some("Original title"),
+            "a shadow copy does not follow the task"
+        );
+    }
+
+    #[test]
+    fn title_track_task_follows_the_rename() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Original title");
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(BlockDraft {
+                    title_track_task: true,
+                    tasks: vec![task],
+                    ..block_draft(9, 1, None)
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(
+            day_rows(&e, &db, day_ms())[0].title.as_deref(),
+            Some("Original title")
+        );
+
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("Renamed later".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            day_rows(&e, &db, day_ms())[0].title.as_deref(),
+            Some("Renamed later")
+        );
+
+        // A second bound task takes the flag out of play: there is no single
+        // task title left to shadow, so the STORED title stands — which is the
+        // shadow copy taken when the block was created, not the rename.
+        let other = new_task(&e, &mut db, "Something else");
+        e.apply(&mut db, Command::BindTask { block, task: other })
+            .unwrap();
+        assert_eq!(
+            day_rows(&e, &db, day_ms())[0].title.as_deref(),
+            Some("Original title"),
+            "the stored title stands once two tasks are bound"
+        );
+    }
+
+    #[test]
+    fn updating_a_block_moves_it_on_the_grid() {
+        let mut db = db();
+        let e = engine();
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        let (starts_at, ends_at) = block_at(18, 1);
+        e.apply(
+            &mut db,
+            Command::UpdateBlock {
+                id: block,
+                patch: BlockPatch {
+                    starts_at: Some(starts_at.clone()),
+                    ends_at: Some(ends_at),
+                    title: Some(Some("Evening gym".into())),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let rows = day_rows(&e, &db, day_ms());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title.as_deref(), Some("Evening gym"));
+        assert_eq!(rows[0].block.starts_at, starts_at);
+    }
+
+    #[test]
+    fn a_patch_that_inverts_the_range_is_rejected() {
+        let mut db = db();
+        let e = engine();
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        let (before_start, _) = block_at(8, 1);
+        assert!(e
+            .apply(
+                &mut db,
+                Command::UpdateBlock {
+                    id: block,
+                    patch: BlockPatch {
+                        ends_at: Some(before_start),
+                        ..Default::default()
+                    },
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn deleting_a_block_clears_it_from_the_grid_and_from_its_tasks() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(BlockDraft {
+                    tasks: vec![task],
+                    ..block_draft(9, 1, Some("Deep work"))
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(day_rows(&e, &db, day_ms()).len(), 1);
+
+        let res = e.apply(&mut db, Command::DeleteBlock(block)).unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &res.op_id), "BlockDelete");
+        assert!(day_rows(&e, &db, day_ms()).is_empty());
+        // The Task survives; only the binding stops being visible.
+        let t = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+        assert!(!t.deleted);
+        assert!(t.blocks.is_empty());
+    }
+
+    #[test]
+    fn block_commands_reject_a_non_block_id() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "not a block");
+        assert!(e.apply(&mut db, Command::DeleteBlock(task)).is_err());
+        assert!(e
+            .apply(
+                &mut db,
+                Command::UpdateBlock {
+                    id: task,
+                    patch: BlockPatch::default()
+                }
+            )
+            .is_err());
+        assert!(e
+            .apply(&mut db, Command::BindTask { block: task, task })
+            .is_err());
+    }
+
+    #[test]
+    fn entity_by_id_reads_one_block_as_a_grid_row() {
+        let mut db = db();
+        let e = engine();
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        match e.query(&db, Query::EntityById(block)).unwrap() {
+            QueryResult::Blocks(rows) => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].block.id, block);
+            }
+            other => panic!("expected blocks, got {other:?}"),
+        }
+    }
+
+    /// A block created on one replica materializes identically on another from
+    /// the sealed op alone — bindings included.
+    #[test]
+    fn a_remote_block_op_materializes_with_its_bindings() {
+        let clock_a = Arc::new(FakeClock(PLMutex::new(T0)));
+        let clock_b = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], clock_a);
+        let eb = engine_seeded(ROOT, [2u8; 32], clock_b);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let task = new_task(&ea, &mut dba, "Write the report");
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateBlock(BlockDraft {
+                    tasks: vec![task],
+                    ..block_draft(9, 1, Some("Deep work"))
+                }),
+            )
+            .unwrap();
+
+        let event = eb
+            .apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .unwrap();
+        assert!(matches!(event, Some(DomainEvent::Created(id)) if id == created.entity));
+
+        let rows = day_rows(&eb, &dbb, day_ms());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].block.tasks.iter().copied().collect::<Vec<_>>(),
+            vec![task],
+            "the binding rides along with the full-state op"
+        );
+        // The bound task's own op has not arrived on this replica, so there is
+        // no title to report for it — a valid state, not a repair case.
+        assert!(rows[0].task_titles.is_empty());
+        assert_eq!(rows[0].title.as_deref(), Some("Deep work"));
     }
 
     // ---- apply_remote (receive half of sync) tests ----

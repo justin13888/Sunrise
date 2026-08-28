@@ -11,8 +11,8 @@ use sunrise_domain::{Energy, InterruptionReason, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    ContextDraftIn, ContextEdit, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn,
-    StreamEdit, TaskDraftIn, TaskEdit,
+    BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, RoutineDraftIn, RoutineEdit,
+    SnapshotDraftIn, StreamDraftIn, StreamEdit, TaskDraftIn, TaskEdit,
 };
 
 /// A mutating command.
@@ -118,6 +118,39 @@ pub enum CoreCommand {
         /// Occurrence key.
         occurrence_key: String,
     },
+    /// Create a time block. Given no title and exactly one task, the core
+    /// shadow-copies that task's title as it is now.
+    CreateBlock {
+        /// The draft.
+        draft: BlockDraftIn,
+    },
+    /// Edit a block: move it, retitle it, or change title tracking.
+    UpdateBlock {
+        /// Target.
+        id: EntityRef,
+        /// The edit.
+        edit: BlockEdit,
+    },
+    /// Tombstone a block. Bound tasks are untouched.
+    DeleteBlock {
+        /// Target.
+        id: EntityRef,
+    },
+    /// Bind a task to a block. `TaskItem::blocks` is derived from the binding,
+    /// so the symmetry needs no second command.
+    BindTask {
+        /// Target block.
+        block: EntityRef,
+        /// Task to bind.
+        task: EntityRef,
+    },
+    /// Unbind a task from a block. The block survives with no tasks bound.
+    UnbindTask {
+        /// Target block.
+        block: EntityRef,
+        /// Task to unbind.
+        task: EntityRef,
+    },
     /// Run materialization for every live routine.
     MaterializeRoutines {
         /// Wall clock (epoch ms) to materialize against.
@@ -203,6 +236,14 @@ impl CoreCommand {
             Self::SkipRoutineOccurrence { id, occurrence_key } => {
                 Command::SkipRoutineOccurrence { id, occurrence_key }
             }
+            Self::CreateBlock { draft } => Command::CreateBlock(draft.into()),
+            Self::UpdateBlock { id, edit } => Command::UpdateBlock {
+                id,
+                patch: edit.into(),
+            },
+            Self::DeleteBlock { id } => Command::DeleteBlock(id),
+            Self::BindTask { block, task } => Command::BindTask { block, task },
+            Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },
             Self::TrustDevice { cert_cbor } => Command::TrustDevice { cert_cbor },
             Self::StartFocus {

@@ -171,6 +171,7 @@ impl Core {
             | Command::CreateStream(_)
             | Command::CreateContext(_)
             | Command::CreateRoutine(_)
+            | Command::CreateBlock(_)
             // A focus session is created, never mutated: `StartFocus` mints a
             // new `fcs_` entity, and `EndFocus` appends a separate record to
             // the same id (so it reads as an update of the session view).
@@ -178,7 +179,8 @@ impl Core {
             Command::DeleteTask(_)
             | Command::DeleteStream(_)
             | Command::DeleteContext(_)
-            | Command::DeleteRoutine(_) => DomainEvent::Deleted(res.entity),
+            | Command::DeleteRoutine(_)
+            | Command::DeleteBlock(_) => DomainEvent::Deleted(res.entity),
             _ => DomainEvent::Updated(res.entity),
         };
         let _ = self.changes_tx.send(event);

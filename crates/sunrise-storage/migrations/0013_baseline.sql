@@ -277,15 +277,40 @@ CREATE TABLE blocks (
     ends_at_kind     TEXT NOT NULL DEFAULT 'instant',
     ends_at_tz       TEXT,
     title            TEXT,
-    deleted          INTEGER NOT NULL DEFAULT 0
+    -- Recompute `title` from the single bound Task on read instead of keeping
+    -- the shadow copy taken at bind time (time-blocks.md §Block title).
+    title_track_task INTEGER NOT NULL DEFAULT 0,
+    deleted          INTEGER NOT NULL DEFAULT 0,
+    extra            BLOB,
+    created_at_ms    INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms    INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_ms       INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical  INTEGER NOT NULL DEFAULT 0,
+    lww_seq          INTEGER NOT NULL DEFAULT 0,
+    lww_device       BLOB
 );
 CREATE INDEX blocks_by_time ON blocks (starts_at_ms);
+-- The calendar grid asks "what overlaps this window", which needs the END of
+-- a block as well as its start: a two-hour block starting before the window
+-- still lands in it.
+CREATE INDEX blocks_by_end ON blocks (ends_at_ms);
 
+-- Block <-> Task binding, and the ONLY writer of that relation. `Task.blocks`
+-- is DERIVED from this table on read, exactly as `blocked_by` is derived from
+-- `task_blockers` — which is what makes the symmetry the spec asks for
+-- ("Bound Task's `blocks` field updates symmetrically") hold by construction
+-- instead of by a second op that could lose an entity-level LWW contest
+-- against a concurrent edit of the same Task.
+--
+-- NO foreign key on `task_id`, for the reason `task_blockers` gives: ops
+-- arrive out of order, and a binding to a Task this replica has not
+-- materialized yet is a fact, not a constraint violation.
 CREATE TABLE block_tasks (
     block_id        BLOB NOT NULL REFERENCES blocks (id) ON DELETE CASCADE,
     task_id         BLOB NOT NULL,
     PRIMARY KEY (block_id, task_id)
 );
+CREATE INDEX block_tasks_by_task ON block_tasks (task_id);
 
 -- --- focus sessions (ADR-0013) ---
 -- The start and the end are SEPARATE tables, not one row updated in place:
