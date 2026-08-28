@@ -38,11 +38,47 @@ struct RootView: View {
 struct VaultView: View {
     let bridge: CoreBridge
 
+    @State private var settings = AppSettings()
+    @State private var account = AccountModel()
+    @State private var deviceID = ""
+    @State private var showingSettings = false
+
     var body: some View {
         ContentUnavailableView(
             "Vault open",
             systemImage: "checkmark.seal",
             description: Text("Today and Inbox arrive next.")
+        )
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Settings", systemImage: "gearshape") { showingSettings = true }
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            VStack(alignment: .trailing, spacing: 0) {
+                AccountView(
+                    settings: settings,
+                    account: account,
+                    deviceID: deviceID,
+                    signIn: signIn
+                )
+                Button("Done") { showingSettings = false }
+                    .keyboardShortcut(.defaultAction)
+                    .padding()
+            }
+        }
+        .task {
+            deviceID = await bridge.deviceId()
+            account.restore()
+        }
+    }
+
+    private func signIn() async {
+        await account.signIn(
+            issuer: settings.oidcIssuer,
+            clientID: settings.oidcClientID,
+            deviceID: deviceID,
+            nowMs: await bridge.nowMs()
         )
     }
 }
