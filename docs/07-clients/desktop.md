@@ -2,99 +2,115 @@
 status: accepted
 ---
 
-# Desktop Client
+# macOS Client
 
-Tauri 2 application. Shell is Rust; UI is React (TS). The Sunrise core is statically linked into the Tauri backend.
+A native **SwiftUI** application in `apps/macos/`. The Sunrise core is a Rust
+static library, reached through a UniFFI seam
+([ADR-0019](../11-adr/0019-swiftui-macos-client.md)).
 
-Targets: macOS 13+, Windows 10+ (1809+), recent mainstream Linux distros (glibc 2.31+).
+Target: **macOS 26**, Apple Silicon. Swift 6 with
+`-strict-concurrency=complete`. Universal (Intel) is one `rustup target add`
+and one entry in the justfile's `ffi_slices`; it is not built today.
 
-## Why Tauri (not Electron)
-
-- Native webview (smaller footprint, faster cold start).
-- Rust backend integrates the Sunrise core directly with no FFI overhead.
-- Memory profile is dramatically smaller than Electron — important when the app may run for weeks.
+> An earlier revision of this file specified a Tauri 2 + React app across
+> macOS, Windows and Linux. That app never existed — there was no `main.rs`, no
+> `tauri.conf.json`, and Tauri was not a dependency anywhere. ADR-0019 records
+> the replacement and why.
 
 ## Architecture
 
 ```
-┌─────────────────────┐
-│   Tauri WebView     │ React + TS UI
-└──────────┬──────────┘
-           │ Tauri IPC (typed commands)
-┌──────────▼──────────┐
-│ Tauri backend (Rust)│
-│  ↳ sunrise-core     │ in-process
-│  ↳ OS integration   │ tray, hotkeys, notifications
-└─────────────────────┘
+┌──────────────────────────────┐
+│ SwiftUI views                │  @Observable view models
+└──────────────┬───────────────┘
+               │ Swift actor over the handle
+┌──────────────▼───────────────┐
+│ SunriseCore  (UniFFI object) │  async open / submit / query / subscribe
+└──────────────┬───────────────┘
+               │ generated Swift + SunriseCore.xcframework
+┌──────────────▼───────────────┐
+│ sunrise-core-bindings (Rust) │
+│  ↳ sunrise-core              │  in-process; no daemon, no IPC
+└──────────────────────────────┘
 ```
 
-## Platform-specific concerns
+There is **no separate core process**. The app holds the vault lock for as long
+as it runs, which is also why the CLI is one-shot: two long-lived writers
+against one vault would need a daemon, and a daemon is a whole subsystem to buy
+something neither client needs.
 
-### macOS
+### Build
 
-- **Menu bar item.** Always-on small icon with quick capture, today snapshot, sync status.
-- **Touch Bar** (older Intel): MAY surface focus mode timer and quick capture.
-- **Spotlight integration.** Use `NSUserActivity` to register tasks for Spotlight search (only their *titles*; decrypted on-device, indexed locally — macOS Spotlight does not see plaintext via cloud). Optional, opt-in.
-  - First-run prompt after sign-in: "Add Sunrise to Spotlight? [Add] [Skip]".
-  - Settings → Integrations exposes a toggle to add/remove later.
-- **Continuity Camera.** When attaching from a Mac, support iPhone scanning.
-- **Sandboxing.** Mac App Store build is sandboxed; direct DMG build is not (preferred for global hotkey reliability).
-- **Accessibility permission** required for global hotkey.
+```
+just macos-xcframework    # cargo build → uniffi-bindgen → lipo → xcframework
+just macos-app            # + xcodegen generate && xcodebuild
+```
+
+`project.yml` (XcodeGen) is committed; the generated `.xcodeproj` is not.
+`out/` and `build/` are gitignored — the Swift bindings are generated from the
+Rust source on every build, so committing them would let the two drift.
+
+### Concurrency
+
+* `SunriseCore.open` is an **async constructor**; `submit` and `query` are
+  `async throws`. UniFFI supplies the tokio runtime.
+* The change stream is a `ChangeListener` callback wrapped Swift-side in an
+  `AsyncStream`. Callbacks arrive on a **tokio worker thread**, never the main
+  actor; hop deliberately.
+* **`onLagged` is not optional.** The broadcast channel behind the stream holds
+  256 events and is lossy past that — a sync catch-up burst will overrun a slow
+  consumer. Treat `onLagged` as "re-run every query this screen is showing".
+  A bridge that implements only `onChange` shows stale data after every burst,
+  silently.
+* Coalesce repaints on a 50 ms window. The TUI proved that number out; below it
+  a burst repaints per op for no visible benefit.
+* Do **not** enable `SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY`: UniFFI 0.32 does
+  not emit `any`, and it produces 20 warnings in generated code. Strict
+  concurrency itself is clean.
+
+## Platform integration
+
+- **Menu bar item** (`MenuBarExtra`). Quick capture, the daily snapshot, sync
+  status. Refresh on launch, every 60 s while visible, and immediately on a
+  relevant change event (debounced 500 ms).
+- **Quick capture** — a borderless window on a global hotkey. Needs the
+  **Accessibility** permission.
 - **Notification Center** for reminders, with action buttons.
-- **Stage Manager / Mission Control:** the app is a standard window; no special behavior.
-- **Apple Silicon and Intel:** universal binary.
+  `docs/08-features/notifications.md` owns quiet hours and primary-device
+  dedup; the app schedules from the intents the core emits.
+- **Keychain** holds the unlock material. Nothing else does.
+- **Spotlight** (`NSUserActivity`) for task *titles only*, decrypted on-device
+  and indexed locally — Spotlight never sees plaintext via iCloud. Opt-in:
+  a first-run prompt, and a Settings → Integrations toggle to change later.
+- **Continuity Camera** for attaching a scan from an iPhone.
+- **Drag and drop** — tasks between streams, files onto a task.
+- **`sunrise://` URL scheme**, registered for notification deep links
+  ([`interaction-patterns.md`](./interaction-patterns.md)).
+- **Stage Manager / Mission Control**: a standard window, no special behaviour.
 
-### Windows
+### Sandboxing
 
-- **System tray** with quick capture and today snapshot.
-- **Jump Lists** for recent Streams.
-- **Toast notifications** with action buttons via Windows Notification Service.
-- **Global hotkeys** via `RegisterHotKey`.
-- **AppX / MSIX packaging** for Microsoft Store.
-- **Hibernation / sleep** handling: WS reconnect on resume; flush outbox.
-
-### Linux
-
-- **AppIndicator / status icon** where supported (varies by DE).
-- **D-Bus notifications** via `org.freedesktop.Notifications`.
-- **Global hotkey** via the desktop-environment portal (`xdg-desktop-portal`); falls back to per-DE methods (Hyprland, Sway, GNOME, KDE) where the portal is unavailable.
-- **AppImage / Flatpak / .deb / .rpm** distributions.
-- **Wayland and X11** both supported; Wayland-only features (e.g. window restore) gracefully degrade.
-
-## Key responsibilities of the desktop UI shell
-
-- Present quick capture window on hotkey.
-- Maintain a long-running WS sync connection while running.
-- Schedule reminders via OS APIs based on intents emitted by the core.
-- Read/write OS keystore for unlock material:
-  - macOS: Keychain.
-  - Windows: DPAPI (per-user).
-  - Linux: Secret Service API (libsecret); fallback to passphrase if absent.
-- Manage clipboard, drag-and-drop, file attachments.
-
-## Update channel
-
-- Auto-update via Tauri's updater, signed releases.
-- Channels: `stable`, `beta`, `nightly`.
-- Update applies on next launch; a running session is never interrupted by an update.
+The direct `.dmg` build is **not** sandboxed. A sandboxed build cannot register
+a reliable system-wide hotkey, and quick capture is the feature the persona
+uses most. A Mac App Store build would have to trade that away; it is under
+evaluation, not committed.
 
 ## Multi-window
 
 - One main window.
-- Detached "focus mode" window (always-on-top, compact).
-- Optional second window for "stream view side-by-side."
-- Capture is its own borderless window.
+- A detached, compact, always-on-top **focus** window.
+- Quick capture is its own borderless window.
+- Two-column stream comparison is **deferred**, not cut: it was specified for
+  the Tauri app, nothing was built, and it is not a v1 MUST.
 
-### Side-by-side Stream view
+## Update channel
 
-- Trigger: drag a Stream from the sidebar onto the main pane while holding `Alt` (macOS) / `Ctrl` (Win/Linux). Or `View → Compare Streams` menu item.
-- Layout: two columns, equal width by default; user-draggable splitter. Max two columns in v1.
-- Each column is independent: independent scroll, selection, edit cursor.
-
-## Menu-bar / tray snapshot refresh
-
-The macOS menu-bar item and Windows/Linux tray surface a daily-snapshot view. Refresh on: app launch, every 60 s while the menu-bar/tray surface is visible, and immediately on relevant CRDT change (debounced 500 ms).
+Sparkle-style signed updates over the direct channel, applied on next launch —
+a running session is never interrupted by an update. Channels: `stable`,
+`beta`.
 
 ## Telemetry
 
-Off by default. If user opts in: minimal anonymous metrics (launches, crash reports). Crash reports never include vault content — see [`../10-cross-cutting/telemetry-and-privacy.md`](../10-cross-cutting/telemetry-and-privacy.md).
+Off by default. If the user opts in: minimal anonymous metrics (launches, crash
+reports). Crash reports never include vault content — see
+[`../10-cross-cutting/telemetry-and-privacy.md`](../10-cross-cutting/telemetry-and-privacy.md).

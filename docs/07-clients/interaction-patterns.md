@@ -10,11 +10,11 @@ Cross-platform user-facing behaviors. Implemented natively per platform; consist
 
 | Trigger | Platform |
 |---|---|
-| Global hotkey (default `Ctrl/Cmd + Shift + N`) | Desktop |
+| Global hotkey (default `Cmd + Shift + N`), menu bar item | macOS |
+| `sunrise capture "…"` | CLI |
 | Lock-screen widget tap | iOS |
 | Quick Settings tile | Android |
 | Browser keyboard shortcut (when extension installed) | Web |
-| `s capture` subcommand or `:` in app | TUI |
 
 Capture syntax (parsed by core):
 
@@ -30,7 +30,7 @@ Parser is a single deterministic function in core (string in, structured task dr
 
 ## Mark done
 
-- Click checkbox / tap checkbox / press `x` in TUI / press `Space` in keyboard mode.
+- Click the checkbox, or press `Space` in keyboard mode. `sunrise done <id>` from a script.
 - Confetti? No. We don't gamify.
 
 ## Defer
@@ -64,11 +64,11 @@ Parser is a single deterministic function in core (string in, structured task dr
 
 - Cmd/Shift-click on desktop and web.
 - Long-press + tap-to-extend on mobile.
-- Visual marker in TUI; `V` to enter visual mode (vim-like).
+- `V` enters visual (range) selection when vim mode is on.
 
 ## Undo
 
-- `Cmd/Ctrl+Z` / `u` in TUI.
+- `Cmd+Z`, or `u` when vim mode is on. Implemented by `sunrise-client-core::undo`, which builds the **inverse command** from the rows the client is holding — undo is a new write that converges, not a rollback.
 - **Undoable**: any user-initiated CRUD on entities; explicit user actions in views.
 - **Not undoable**: sync receipts (other-device ops), background routine generation, server-initiated ops.
 - Time-bound: undo within 5 min is one-tap. > 5 min: confirmation modal `"Undo this change from <Nm ago>?"`.
@@ -76,13 +76,16 @@ Parser is a single deterministic function in core (string in, structured task dr
 
 ## Drag-and-drop matrix
 
-| From → To | Desktop | iOS | Android | Web | TUI |
-|---|---|---|---|---|---|
-| Task → Stream | Yes | Yes | Yes | Yes | Use `m` |
-| Task → Calendar block | Yes | Yes | Yes | Yes | Use `s` |
-| Calendar block → Task | Yes | Yes | Yes | Yes | N/A |
-| File → Task (attach) | Yes | Yes (Files app) | Yes | Yes | Use `attach <path>` |
-| Task → Task (reorder) | Yes | Yes | Yes | Yes | `Alt+↑/↓` |
+Deferred clients (iOS, Android, Web) are omitted; see
+[`parity-matrix.md`](./parity-matrix.md).
+
+| From → To | macOS | CLI |
+|---|---|---|
+| Task → Stream | Yes | N/A |
+| Task → Calendar block | Yes | N/A |
+| Calendar block → Task | Yes | N/A |
+| File → Task (attach) | Yes | N/A |
+| Task → Task (reorder) | Yes | N/A |
 
 ### Drag-and-drop UX tokens
 

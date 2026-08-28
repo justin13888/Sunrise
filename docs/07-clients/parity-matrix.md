@@ -4,57 +4,85 @@ status: accepted
 
 # Client Feature Parity Matrix
 
-Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x; **MAY** = future; **N/A** = doesn't apply on the platform.
+Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x;
+**MAY** = future; **N/A** = doesn't apply on the platform.
 
-| Capability | Desktop | iOS | Android | Web | TUI |
-|---|---|---|---|---|---|
-| Read/write tasks | MUST | MUST | MUST | MUST | MUST |
-| Streams, contexts, routines | MUST | MUST | MUST | MUST | MUST |
-| Today / Inbox / Stream views | MUST | MUST | MUST | MUST | MUST |
-| Focus mode | MUST | MUST | MUST | MUST | MUST |
-| Time-blocking on calendar grid | MUST | MUST | MUST | MUST | SHOULD (compact) |
-| Notes (rich text) | MUST | MUST | MUST | MUST | MUST (limited; opens `$EDITOR` for long edits) |
-| Attachments — view image/PDF | MUST | MUST | MUST | MUST | MAY |
-| Attachments — upload | MUST | MUST | MUST | MUST | MUST |
-| Search (FTS) | MUST | MUST | MUST | MUST | MUST |
-| Saved searches / views | MUST | MUST | MUST | MUST | MUST |
-| Keyboard navigation | MUST (full) | SHOULD (BT keyboard) | SHOULD (BT keyboard) | MUST | MUST (only) |
-| Drag-and-drop | MUST | MUST | MUST | MUST | N/A |
-| Quick capture (global hotkey / system surface) | MUST (global hotkey) | MUST (lock-screen widget, Shortcut, Siri) | MUST (Quick Settings tile, Tasker) | SHOULD (browser action) | MUST (subcommand) |
-| Reminders / scheduled local notifications | MUST | MUST | MUST | SHOULD (Web Push) | MAY (TUI is unlikely to be foreground at the right time) |
-| Multi-account | MUST | MUST | MUST | MUST | MUST |
-| Pairing — scan QR | MUST (camera or paste) | MUST | MUST | MAY (camera if available) | MAY (manual code entry) |
-| Pairing — show QR | MUST | MUST | MUST | MUST | MAY (ASCII QR) |
-| Sharing — accept invite | MUST | MUST | MUST | MUST | MUST |
-| Sharing — view shared stream as editor | MUST | MUST | MUST | MUST | MUST |
-| Calendar integration (Google) | MUST | MUST | MUST | MUST | MAY |
-| iCal import / export | MUST | MUST | MUST | MUST | MUST |
-| Background sync | MUST (running) | MUST (BGTask) | MUST (WorkManager) | SHOULD (Service Worker) | N/A (foreground tool) |
-| Tray / menu bar | MUST | N/A | N/A | N/A | N/A |
-| Lock screen widget | N/A | MUST | SHOULD (Glance) | N/A | N/A |
-| Home screen widget | N/A | MUST | MUST | N/A | N/A |
-| Quick Settings tile (Android) | N/A | N/A | SHOULD | N/A | N/A |
-| Watch app (Apple Watch / Wear OS) | N/A | MAY | MAY | N/A | N/A |
-| OS automation surface (App Intents / Tasker) | MUST (CLI) | MUST | MUST | N/A | MUST (CLI) |
-| Vim-style modal navigation | SHOULD (opt-in) | N/A | N/A | SHOULD (opt-in) | MUST (opt-out) |
-| Mouse | MUST | N/A | N/A | MUST | MAY |
-| Touch | MAY | MUST | MUST | MUST | N/A |
-| Print / PDF export | SHOULD | SHOULD | SHOULD | SHOULD | MAY |
-| First-run pairing | MUST | MUST | MUST | MAY | MUST |
+Two clients ship in v1: the **macOS** app and the **CLI**. iOS, Android and Web
+are **deferred** — specified, not scheduled, and carrying no MUSTs, because a
+deferred client cannot regress one. The **TUI** was removed by
+[ADR-0019](../11-adr/0019-swiftui-macos-client.md); its column is kept for one
+release so the table records what was withdrawn rather than quietly losing it.
+
+| Capability | macOS | CLI | iOS | Android | Web | TUI |
+|---|---|---|---|---|---|---|
+| | | | *deferred* | *deferred* | *deferred* | *removed* |
+| Read/write tasks | MUST | MUST | — | — | — | — |
+| Streams, contexts, routines | MUST | MUST (read + capture) | — | — | — | — |
+| Today / Inbox / Stream views | MUST | MUST (list form) | — | — | — | — |
+| Focus mode | MUST | MUST (`next`, `focus <id>`) | — | — | — | — |
+| Time-blocking on calendar grid | MUST | N/A | — | — | — | — |
+| Notes (rich text) | MUST | MAY | — | — | — | — |
+| Attachments — view image/PDF | MUST | N/A | — | — | — | — |
+| Attachments — upload | MUST | MAY | — | — | — | — |
+| Search (FTS) | MUST | MUST | — | — | — | — |
+| Saved searches / views | MUST | MAY | — | — | — | — |
+| Keyboard navigation | MUST (full) | N/A (non-interactive) | — | — | — | — |
+| Drag-and-drop | MUST | N/A | — | — | — | — |
+| Quick capture (global hotkey / system surface) | MUST (global hotkey, menu bar) | MUST (`sunrise capture`) | — | — | — | — |
+| Reminders / scheduled local notifications | MUST | N/A (one-shot process) | — | — | — | — |
+| Multi-account | MUST | MUST (`SUNRISE_VAULT`) | — | — | — | — |
+| Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | — | — | — | — |
+| Pairing — show QR | MUST | MAY (ASCII QR) | — | — | — | — |
+| Sharing — accept invite | MUST | MAY | — | — | — | — |
+| Sharing — view shared stream as editor | MUST | MUST | — | — | — | — |
+| Calendar integration (Google) | MUST | MAY | — | — | — | — |
+| iCal import / export | MUST | MUST | — | — | — | — |
+| Background sync | MUST (while running) | N/A (`sync --once` for cron) | — | — | — | — |
+| Menu bar | MUST | N/A | — | — | — | — |
+| Lock screen / home screen widget | N/A | N/A | — | — | — | — |
+| Watch app | N/A | N/A | — | — | — | — |
+| OS automation surface (App Intents / Shortcuts) | MUST | MUST (the CLI *is* one) | — | — | — | — |
+| Vim-style modal navigation | SHOULD (opt-in) | N/A | — | — | — | — |
+| Mouse | MUST | N/A | — | — | — | — |
+| Touch | MAY | N/A | — | — | — | — |
+| Print / PDF export | SHOULD | MAY (`export`) | — | — | — | — |
+| First-run pairing | MUST | SHOULD | — | — | — | — |
 
 ## Hard rules
 
-- A capability MUST not regress mid-version. A v1.0 → v1.1 release cannot remove a MUST.
-- A capability marked N/A is a deliberate choice; if revisited, document the change in [`../11-adr/`](../11-adr/).
-- A user can run **without** any specific OS feature (Live Activities, Glance, etc.); fallbacks via plain notifications must exist.
+- A capability MUST not regress mid-version. A v1.0 → v1.1 release cannot
+  remove a MUST.
+- A capability marked N/A is a deliberate choice; if revisited, document the
+  change in [`../11-adr/`](../11-adr/).
+- A user can run **without** any specific OS feature (Live Activities,
+  Spotlight, etc.); fallbacks via plain notifications must exist.
+- **A deferred client has no MUSTs.** When one is scheduled, its column is
+  filled in and the fill-in is the commitment — not this table's history.
+
+## What the CLI is and is not
+
+The CLI is a **capture, triage, review and automation** surface, not a second
+interactive client. It is where the SSH and scripting story lives now that the
+TUI is gone, and the honest boundary is: everything one-shot works over SSH;
+living in the app does not.
+
+It is also the reason the core stays provable without a UI. `cargo test -p
+sunrise-cli` drives the real binary against a real vault and an in-process
+relay. That is a standing requirement — the day it stops covering the stack is
+the day the core's tests stop describing a usable system.
 
 ## Capture-surface portability
 
-Each platform MUST implement its native capture surface (Desktop hotkey, iOS share extension + widget, Android quick tile + share intent, Web PWA share, TUI subcommand). Platforms MAY implement additional surfaces. There is no requirement for cross-platform parity *of capture surfaces*; the requirement is parity of *capture semantics* — the resulting Task is identical regardless of capture origin.
+Each platform MUST implement its native capture surface (macOS global hotkey +
+menu bar, CLI subcommand). Platforms MAY implement additional surfaces. There
+is no requirement for cross-platform parity *of capture surfaces*; the
+requirement is parity of *capture semantics* — the resulting Task is identical
+regardless of capture origin, because every surface calls the same parser
+(`sunrise_domain::capture`).
 
 ## Vim-mode opt-in
 
-- Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced).
-- Available on Desktop and Web; TUI is vim-style by default (opt-out).
-- Conflict mitigation: when vim mode is on, browser-default `Ctrl+Shift+P` is intercepted only inside the Sunrise web-app surface; outside (DevTools open, etc.) the browser keeps the binding.
-- Full motion list lives in [`../08-features/keyboard.md`](../08-features/keyboard.md).
+- Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device
+  local pref (not synced).
+- Available on macOS. Full motion list lives in
+  [`../08-features/keyboard.md`](../08-features/keyboard.md).

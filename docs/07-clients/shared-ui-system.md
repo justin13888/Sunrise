@@ -108,9 +108,8 @@ line_tight  = 1.25
 line_normal = 1.5
 ```
 
-- Mobile and desktop use the OS system font (SF on Apple, Roboto on Android).
+- macOS uses the OS system font (SF).
 - Web uses `system-ui` / `Inter` fallback.
-- TUI uses the terminal's font (we control sizing only via cell counts).
 
 ## Four-state view contract
 
@@ -152,30 +151,30 @@ Patterns are described once and implemented natively per platform:
 
 ## Component implementations
 
-| Pattern | Desktop | iOS | Android | Web | TUI |
-|---|---|---|---|---|---|
-| Task row | React `<TaskRow>` | SwiftUI `TaskRow` | Compose `TaskRow()` | React `<TaskRow>` | Custom Ratatui widget |
-| Quick capture | Native window | Sheet | BottomSheet | Modal | Inline prompt |
-| Detail pane | Sliding panel | NavigationStack push | NavigationCompose push | Sliding panel | Side pane |
+Deferred clients (iOS, Android, Web) keep their rows so the shape is recorded
+for when they are scheduled; only macOS ships today.
+
+| Pattern | macOS | iOS *(deferred)* | Android *(deferred)* | Web *(deferred)* |
+|---|---|---|---|---|
+| Task row | SwiftUI `TaskRow` | SwiftUI `TaskRow` | Compose `TaskRow()` | React `<TaskRow>` |
+| Quick capture | Borderless window | Sheet | BottomSheet | Modal |
+| Detail pane | Sliding panel | NavigationStack push | NavigationCompose push | Sliding panel |
 
 ## Density
 
 Three densities: `comfortable`, `default`, `compact`. User-selectable. Defaults:
 
-- Desktop: `default`.
+- macOS: `default`.
 - iOS / Android: `comfortable`.
 - Web: `default`.
-- TUI: `compact` always (terminal lines).
 
 ## Iconography
 
 A small custom icon set (~40 icons) shipped as SVG → rendered platform-native:
 
-- iOS: SF Symbols where available, custom otherwise.
+- macOS / iOS: SF Symbols where available, custom otherwise.
 - Android: Material symbols where available.
-- Desktop: identical SVG renderer.
 - Web: same SVG.
-- TUI: Unicode glyphs (graceful fallback if terminal lacks support).
 
 ## Accessibility
 
