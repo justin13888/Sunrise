@@ -15,6 +15,9 @@ pub const MAX_STREAM_NAME_LEN: usize = 128;
 /// Maximum length of a Context name (lower bound; UI may further constrain).
 pub const MAX_CONTEXT_NAME_LEN: usize = 64;
 
+/// Maximum length of a Block title per docs/02-domain/time-blocks.md.
+pub const MAX_BLOCK_TITLE_LEN: usize = 256;
+
 /// Per docs/02-domain/tasks.md §validation: encoded Task envelope ≤ 1.25 MiB.
 pub const MAX_TASK_ENVELOPE_BYTES: usize = 1_310_720;
 
