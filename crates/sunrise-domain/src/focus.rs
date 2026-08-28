@@ -28,7 +28,9 @@
 
 use crate::common::Energy;
 use crate::deps::DependencyGraph;
+use crate::epoch_ms;
 use crate::unknown::Unknowns;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_id::EntityRef;
@@ -138,6 +140,14 @@ pub enum InterruptionReason {
     Other,
 }
 
+impl Interruption {
+    /// Interruption instant as epoch milliseconds.
+    #[must_use]
+    pub fn at_ms(&self) -> u64 {
+        epoch_ms::to_u64(self.at)
+    }
+}
+
 impl InterruptionReason {
     /// Wire/storage tag.
     #[must_use]
@@ -188,8 +198,13 @@ pub struct FocusStart {
     pub task_id: EntityRef,
     /// Owning Stream (the op's routing stream, and the stats bucket).
     pub stream_id: EntityRef,
-    /// Wall clock at start, ms since epoch, from the injected clock.
-    pub started_at_ms: u64,
+    /// Wall clock at start, from the injected clock.
+    ///
+    /// A `Timestamp` rather than a bare `u64`, so it cannot be confused with
+    /// the DURATIONS beside it. The wire form is unchanged — still an integer
+    /// count of milliseconds under the same `started_at_ms` key.
+    #[serde(rename = "started_at_ms", with = "crate::epoch_ms")]
+    pub started_at: Timestamp,
     /// Planned length, `None` for an open-ended `until done` session.
     #[serde(default)]
     pub planned_ms: Option<u64>,
@@ -209,16 +224,29 @@ pub struct FocusStart {
     pub unknown: Unknowns,
 }
 
+impl FocusStart {
+    /// Start instant as epoch milliseconds — the form storage columns and the
+    /// stats grid still speak.
+    #[must_use]
+    pub fn started_at_ms(&self) -> u64 {
+        epoch_ms::to_u64(self.started_at)
+    }
+}
+
 /// The `end` op: the frozen tail of a session. Immutable, and addressed to the
 /// same session id as its [`FocusStart`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusEnd {
     /// The session being closed.
     pub session_id: EntityRef,
-    /// Wall clock at end, ms since epoch.
-    pub ended_at_ms: u64,
+    /// Wall clock at end. Wire form unchanged (integer ms, `ended_at_ms`).
+    #[serde(rename = "ended_at_ms", with = "crate::epoch_ms")]
+    pub ended_at: Timestamp,
     /// Focused time this session actually contained — **computed and frozen
     /// here**, never stored while the session runs.
+    ///
+    /// Stays `u64` milliseconds: it is a DURATION, not an instant, and the
+    /// distinction is exactly what having one type for both used to hide.
     pub actual_focused_ms: u64,
     /// Interruptions the ending device knows about. Set-union'd with any
     /// [`Interruption`] ops on merge; never a replacement.
@@ -231,6 +259,14 @@ pub struct FocusEnd {
     /// `docs/10-cross-cutting/protocol-versioning.md` §7.
     #[serde(flatten)]
     pub unknown: Unknowns,
+}
+
+impl FocusEnd {
+    /// End instant as epoch milliseconds.
+    #[must_use]
+    pub fn ended_at_ms(&self) -> u64 {
+        epoch_ms::to_u64(self.ended_at)
+    }
 }
 
 /// One logged interruption. Its own append-only record: the `(session, at,
@@ -246,8 +282,9 @@ pub struct FocusEnd {
 pub struct Interruption {
     /// Session interrupted.
     pub session_id: EntityRef,
-    /// When, ms since epoch.
-    pub at_ms: u64,
+    /// When it happened. Wire form unchanged (integer ms, `at_ms`).
+    #[serde(rename = "at_ms", with = "crate::epoch_ms")]
+    pub at: Timestamp,
     /// One-tap reason.
     pub reason: InterruptionReason,
 }
@@ -291,8 +328,8 @@ impl FocusSession {
     #[must_use]
     pub fn elapsed_ms(&self, now_ms: u64) -> u64 {
         match &self.end {
-            Some(e) => e.ended_at_ms.saturating_sub(self.start.started_at_ms),
-            None => now_ms.saturating_sub(self.start.started_at_ms),
+            Some(e) => e.ended_at_ms().saturating_sub(self.start.started_at_ms()),
+            None => now_ms.saturating_sub(self.start.started_at_ms()),
         }
     }
 
@@ -927,7 +964,7 @@ mod tests {
             id: fcs(id),
             task_id: tsk(task),
             stream_id: strm(1),
-            started_at_ms: at,
+            started_at: epoch_ms::from_u64(at),
             planned_ms: Some(POMODORO_MS),
             energy: Some(Energy::High),
             kind: FocusKind::Work,
@@ -976,7 +1013,7 @@ mod tests {
         let closed = FocusSession {
             end: Some(FocusEnd {
                 session_id: fcs(1),
-                ended_at_ms: 10_000 + 120_000,
+                ended_at: epoch_ms::from_u64(10_000 + 120_000),
                 actual_focused_ms: 100_000,
                 interruptions: Vec::new(),
                 completed_task: true,
@@ -1012,7 +1049,7 @@ mod tests {
             start: start(1, 1, 1_000),
             end: Some(FocusEnd {
                 session_id: fcs(1),
-                ended_at_ms: 1_000 + 300_000,
+                ended_at: epoch_ms::from_u64(1_000 + 300_000),
                 actual_focused_ms: 240_000,
                 interruptions: Vec::new(),
                 completed_task: false,
@@ -1339,7 +1376,7 @@ mod tests {
     fn interruptions_dedupe_and_rank() {
         let dup = Interruption {
             session_id: fcs(1),
-            at_ms: 5_000,
+            at: crate::epoch_ms::from_u64(5_000),
             reason: InterruptionReason::Meeting,
         };
         let mut r1 = record(1, 1, None, Some(600_000), true);
@@ -1350,14 +1387,14 @@ mod tests {
             dup,
             Interruption {
                 session_id: fcs(1),
-                at_ms: 9_000,
+                at: crate::epoch_ms::from_u64(9_000),
                 reason: InterruptionReason::SelfInterrupt,
             },
         ];
         let mut r2 = record(2, 2, None, Some(600_000), true);
         r2.interruptions = vec![Interruption {
             session_id: fcs(2),
-            at_ms: 1_000,
+            at: crate::epoch_ms::from_u64(1_000),
             reason: InterruptionReason::Meeting,
         }];
         let s = fold_focus_stats(&[r1, r2], 0);

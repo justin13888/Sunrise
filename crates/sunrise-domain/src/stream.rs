@@ -124,14 +124,17 @@ pub struct Stream {
     pub description: Option<NoteBody>,
     /// Color from a fixed palette.
     pub color: StreamColor,
-    /// Optional icon id from a fixed set.
+    /// Optional icon id.
     ///
-    /// `skip_deserializing`: the `&'static str` element cannot borrow from a
-    /// deserializer, so this field is never read back (it always round-trips to
-    /// `None` in v1) — this keeps `Stream: Deserialize<'de>` free of a
-    /// `'de: 'static` bound so it can nest inside `InnerOp`.
-    #[serde(default, skip_deserializing)]
-    pub icon: Option<&'static str>,
+    /// Owned, because `Option<&'static str>` could not be deserialized: a
+    /// borrowed `'static` string cannot come out of a deserializer, so the
+    /// field carried `#[serde(skip_deserializing)]` and ALWAYS read back as
+    /// `None`. Setting an icon therefore survived exactly as long as the
+    /// process that set it — it went out on the wire and came back gone, on
+    /// every device including the one that set it. That is a data-loss bug
+    /// wearing a lifetime annotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Optional parent Stream — one-level nesting only.
     #[serde(default)]
     pub parent_id: Option<EntityRef>,

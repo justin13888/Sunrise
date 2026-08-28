@@ -656,7 +656,7 @@ mod tests {
             id: session,
             task_id: t.id,
             stream_id: t.stream_id,
-            started_at_ms: T0 + 10,
+            started_at: crate::epoch_ms::from_u64(T0 + 10),
             planned_ms: Some(1_500_000),
             energy: Some(Energy::High),
             kind: FocusKind::Work,
@@ -665,7 +665,7 @@ mod tests {
         };
         let end = FocusEnd {
             session_id: session,
-            ended_at_ms: T0 + 20,
+            ended_at: crate::epoch_ms::from_u64(T0 + 20),
             actual_focused_ms: 900_000,
             interruptions: Vec::new(),
             completed_task: true,
@@ -705,7 +705,7 @@ mod tests {
         let session = eref(EntityKind::FocusSession, 0x40);
         let end = FocusEnd {
             session_id: session,
-            ended_at_ms: T0,
+            ended_at: crate::epoch_ms::from_u64(T0),
             actual_focused_ms: 1,
             interruptions: Vec::new(),
             completed_task: false,

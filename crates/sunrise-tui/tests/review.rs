@@ -135,7 +135,7 @@ async fn a_saved_snapshot_carries_the_counts_the_screen_showed() {
         rows[0].totals, shown,
         "a snapshot must not recompute what the review already decided"
     );
-    assert_eq!(rows[0].window_start_ms, w.window.start_ms);
+    assert_eq!(rows[0].window_start_ms(), w.window.start_ms);
 
     // …and History renders it.
     let mut state = ViewState {

@@ -70,8 +70,8 @@ struct CanonicalSnapshot {
 fn project(s: &ReviewSnapshot) -> CanonicalSnapshot {
     CanonicalSnapshot {
         id: s.id.to_str(),
-        window_start_ms: s.window_start_ms,
-        window_end_ms: s.window_end_ms,
+        window_start_ms: s.window_start_ms(),
+        window_end_ms: s.window_end_ms(),
         completed: s.totals.completed,
         note: s.note.clone(),
         streams: s

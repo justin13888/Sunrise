@@ -155,9 +155,22 @@ pub struct Routine {
     /// Scheduling constraints (value list; whole list is one LWW register).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
-    /// Dates explicitly skipped. Retained for chrono-era wire compatibility
-    /// and iCal `EXDATE` import; matched against occurrences by identical civil
-    /// minute in the routine's timezone.
+    /// Dates explicitly skipped, as instants.
+    ///
+    /// **Deprecated; remove at `DOC_SCHEMA_V = 3`.** A live dual of
+    /// [`Self::skipped_keys`], which supersedes it: a key
+    /// (`YYYY-MM-DDTHH:MM`) is tzdb-drift-immune, while an instant has to be
+    /// re-resolved against the routine's timezone on every read and silently
+    /// stops matching its occurrence when that zone's rules change. Two
+    /// representations of "skipped" is one more than can be kept in agreement.
+    ///
+    /// It survives now only to read chrono-era payloads and iCal `EXDATE`
+    /// imports. Removal is a doc-schema change, so it follows the two-stage
+    /// rule in `docs/04-storage/migrations.md` §CRDT doc-schema migrations:
+    /// stage A (stop reading) is done — nothing writes a new entry here, every
+    /// new skip goes to `skipped_keys` — and stage B (stop writing, drop the
+    /// field) lands when `DOC_SCHEMA_FLOOR` reaches 3, which cannot happen
+    /// before every device has been on a build that writes keys.
     #[serde(default)]
     pub skip_dates: Vec<Timestamp>,
     /// Occurrence keys (`YYYY-MM-DDTHH:MM`) explicitly skipped via

@@ -2022,7 +2022,7 @@ pub(crate) mod fixtures {
                     id: EntityRef::new(EntityKind::FocusSession, [42u8; 16]),
                     task_id: task,
                     stream_id: inbox_stream_ref(),
-                    started_at_ms,
+                    started_at: sunrise_domain::epoch_ms::from_u64(started_at_ms),
                     planned_ms,
                     energy: Some(Energy::High),
                     kind: FocusKind::Work,
@@ -2043,7 +2043,7 @@ pub(crate) mod fixtures {
         row.session.start.id = EntityRef::new(EntityKind::FocusSession, [idx; 16]);
         row.session.end = Some(sunrise_domain::FocusEnd {
             session_id: row.session.start.id,
-            ended_at_ms: 1_000 + POMODORO_MS,
+            ended_at: sunrise_domain::epoch_ms::from_u64(1_000 + POMODORO_MS),
             actual_focused_ms: POMODORO_MS,
             interruptions: Vec::new(),
             completed_task: false,

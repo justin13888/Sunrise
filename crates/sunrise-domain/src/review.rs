@@ -433,9 +433,15 @@ pub struct ReviewSnapshot {
     /// When the review was completed.
     pub created_at: Timestamp,
     /// Window the review covered.
-    pub window_start_ms: u64,
+    ///
+    /// A `Timestamp`, like `created_at` two fields up. This struct used to
+    /// hold both representations at once, which is how the mixture became
+    /// visible enough to fix. Wire form unchanged (integer ms).
+    #[serde(rename = "window_start_ms", with = "crate::epoch_ms")]
+    pub window_start: Timestamp,
     /// Exclusive end of that window.
-    pub window_end_ms: u64,
+    #[serde(rename = "window_end_ms", with = "crate::epoch_ms")]
+    pub window_end: Timestamp,
     /// The step-5 counts.
     pub totals: ReviewTotals,
     /// Per-Stream counts, ordered by stream id.
@@ -452,6 +458,20 @@ pub struct ReviewSnapshot {
     /// `docs/10-cross-cutting/protocol-versioning.md` §7.
     #[serde(flatten)]
     pub unknown: Unknowns,
+}
+
+impl ReviewSnapshot {
+    /// Window start as epoch milliseconds.
+    #[must_use]
+    pub fn window_start_ms(&self) -> u64 {
+        crate::epoch_ms::to_u64(self.window_start)
+    }
+
+    /// Window end as epoch milliseconds (exclusive).
+    #[must_use]
+    pub fn window_end_ms(&self) -> u64 {
+        crate::epoch_ms::to_u64(self.window_end)
+    }
 }
 
 /// Draft submitted to save a snapshot; the core fills the id and timestamp.

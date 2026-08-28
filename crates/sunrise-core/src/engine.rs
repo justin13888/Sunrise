@@ -1755,7 +1755,7 @@ impl Engine {
             id: session_id,
             task_id: d.task_id,
             stream_id: task.stream_id,
-            started_at_ms: now_ms,
+            started_at: sunrise_domain::epoch_ms::from_u64(now_ms),
             planned_ms,
             // The declared budget wins; the Task's own facet is the fallback.
             energy: d.energy.or(task.energy),
@@ -1819,7 +1819,7 @@ impl Engine {
         let actual = actual_focused_ms.unwrap_or_else(|| view.elapsed_ms(now_ms));
         let end = FocusEnd {
             session_id: session,
-            ended_at_ms: now_ms.max(view.start.started_at_ms),
+            ended_at: sunrise_domain::epoch_ms::from_u64(now_ms.max(view.start.started_at_ms())),
             actual_focused_ms: actual,
             interruptions: view.interruptions.clone(),
             completed_task,
@@ -1870,7 +1870,7 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("focus session {session}")))?;
         let interruption = Interruption {
             session_id: session,
-            at_ms: now_ms,
+            at: sunrise_domain::epoch_ms::from_u64(now_ms),
             reason,
         };
         let inner = encode_inner_op(&InnerOp::FocusInterrupt(interruption))?;
@@ -2939,7 +2939,7 @@ fn insert_focus_start_row(
             &f.id.bytes()[..],
             &f.task_id.bytes()[..],
             &f.stream_id.bytes()[..],
-            f.started_at_ms as i64,
+            f.started_at_ms() as i64,
             f.planned_ms.map(|v| v as i64),
             f.energy.map(energy_str),
             f.kind.as_str(),
@@ -2968,7 +2968,7 @@ fn insert_focus_end_row(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.session_id.bytes()[..],
-            f.ended_at_ms as i64,
+            f.ended_at_ms() as i64,
             f.actual_focused_ms as i64,
             i64::from(f.completed_task),
             lww.hlc.physical_ms as i64,
@@ -2985,7 +2985,11 @@ fn insert_interruption_row(tx: &Transaction<'_>, i: &Interruption) -> rusqlite::
     tx.execute(
         "INSERT OR IGNORE INTO focus_interruptions (session_id, at_ms, reason)
          VALUES (?, ?, ?)",
-        params![&i.session_id.bytes()[..], i.at_ms as i64, i.reason.as_str(),],
+        params![
+            &i.session_id.bytes()[..],
+            i.at_ms() as i64,
+            i.reason.as_str(),
+        ],
     )?;
     Ok(())
 }
@@ -3044,7 +3048,7 @@ fn read_all_interruptions(
         let session_id = ref_of(EntityKind::FocusSession, &raw);
         out.entry(session_id).or_default().push(Interruption {
             session_id,
-            at_ms: u64::try_from(at.max(0)).unwrap_or(0),
+            at: sunrise_domain::epoch_ms::from_u64(u64::try_from(at.max(0)).unwrap_or(0)),
             reason: InterruptionReason::from_str_lossy(&reason),
         });
     }
@@ -3123,7 +3127,7 @@ fn read_focus_sessions(
             id,
             task_id: ref_of(EntityKind::Task, &v.1),
             stream_id: ref_of(EntityKind::Stream, &v.2),
-            started_at_ms: u64::try_from(v.3.max(0)).unwrap_or(0),
+            started_at: sunrise_domain::epoch_ms::from_u64(u64::try_from(v.3.max(0)).unwrap_or(0)),
             planned_ms: v.4.and_then(|m| u64::try_from(m.max(0)).ok()),
             energy: v.5.as_deref().and_then(parse_energy),
             kind: FocusKind::from_str_opt(&v.6).unwrap_or(FocusKind::Work),
@@ -3133,7 +3137,7 @@ fn read_focus_sessions(
         let mine = interruptions.get(&id).cloned().unwrap_or_default();
         let end = v.9.map(|ended| FocusEnd {
             session_id: id,
-            ended_at_ms: u64::try_from(ended.max(0)).unwrap_or(0),
+            ended_at: sunrise_domain::epoch_ms::from_u64(u64::try_from(ended.max(0)).unwrap_or(0)),
             actual_focused_ms: v.10.and_then(|m| u64::try_from(m.max(0)).ok()).unwrap_or(0),
             interruptions: mine.clone(),
             completed_task: v.11.unwrap_or(0) != 0,
@@ -3269,9 +3273,9 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
-          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
+          parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
           paused, paused_until_ms, review_cadence, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3282,6 +3286,7 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.updated_at.as_millisecond(),
             s.name,
             s.color.as_str(),
+            s.icon,
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
@@ -3300,7 +3305,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
     tx.execute(
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
-             name = ?, color = ?, paused = ?, paused_until_ms = ?,
+             name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
              review_cadence = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
@@ -3310,6 +3315,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.updated_at.as_millisecond(),
             s.name,
             s.color.as_str(),
+            s.icon,
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
@@ -3328,7 +3334,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     let row = conn
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
-                    paused, paused_until_ms, review_cadence
+                    paused, paused_until_ms, review_cadence, icon
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -3343,6 +3349,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, i64>(7)?,
                     r.get::<_, Option<i64>>(8)?,
                     r.get::<_, String>(9)?,
+                    r.get::<_, Option<String>>(10)?,
                 ))
             },
         )
@@ -3358,6 +3365,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         paused,
         paused_until_ms,
         cadence_str,
+        icon,
     )) = row
     else {
         return Ok(None);
@@ -3376,7 +3384,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         description: None,
         // Unknown/forward-compatible color strings fall back to Slate.
         color: StreamColor::from_str_lossy(&color_str),
-        icon: None,
+        icon,
         parent_id: parent,
         sort_order: String::from("a0"),
         archived: archived != 0,
@@ -4574,8 +4582,8 @@ impl Engine {
         let snapshot = ReviewSnapshot {
             id,
             created_at: ms_to_ts(now_ms as i64),
-            window_start_ms: d.window_start_ms,
-            window_end_ms: d.window_end_ms.max(d.window_start_ms),
+            window_start: sunrise_domain::epoch_ms::from_u64(d.window_start_ms),
+            window_end: sunrise_domain::epoch_ms::from_u64(d.window_end_ms.max(d.window_start_ms)),
             totals: d.totals,
             streams: d.streams,
             streaks: d.streaks,
@@ -5153,8 +5161,8 @@ fn insert_review_snapshot_row(
         params![
             &s.id.bytes()[..],
             s.created_at.as_millisecond(),
-            s.window_start_ms as i64,
-            s.window_end_ms as i64,
+            s.window_start_ms() as i64,
+            s.window_end_ms() as i64,
             i64::from(s.totals.completed),
             i64::from(s.totals.deferred),
             i64::from(s.totals.dropped),
@@ -7398,6 +7406,49 @@ mod tests {
             seq: 0,
         };
         assert!(lww_wins(&stamp(0, 0, [0u8; 16], 0), &row));
+    }
+
+    /// `Stream.icon` was `Option<&'static str>` with
+    /// `#[serde(skip_deserializing)]`, so it ALWAYS read back as `None`:
+    /// setting an icon survived exactly as long as the process that set it,
+    /// on every device including the one that set it. The projection had no
+    /// column for it either, so this asserts both halves.
+    #[test]
+    fn a_streams_icon_survives_being_written() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    description: None,
+                    color: None,
+                    parent_id: None,
+                    review_cadence: None,
+                }),
+            )
+            .unwrap();
+
+        let mut stream = read_stream(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("stream exists");
+        stream.icon = Some("briefcase".into());
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| update_stream_row(tx, &stream, &lww))
+            .unwrap();
+
+        let back = read_stream(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("stream exists");
+        assert_eq!(back.icon.as_deref(), Some("briefcase"));
+
+        // ...and it survives the wire, which the borrowed type made impossible.
+        let bytes = sunrise_cbor::encode_canonical(&back).unwrap();
+        let decoded: sunrise_domain::Stream = sunrise_cbor::decode_canonical(&bytes).unwrap();
+        assert_eq!(decoded.icon.as_deref(), Some("briefcase"));
     }
 
     /// Build the `unknown` map a newer schema would have written.
@@ -10301,8 +10352,8 @@ mod tests {
         };
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, saved.entity);
-        assert_eq!(history[0].window_start_ms, REVIEW_MON);
-        assert_eq!(history[0].window_end_ms, REVIEW_MON + REVIEW_WEEK);
+        assert_eq!(history[0].window_start_ms(), REVIEW_MON);
+        assert_eq!(history[0].window_end_ms(), REVIEW_MON + REVIEW_WEEK);
         assert_eq!(history[0].totals.completed, 1);
         assert_eq!(history[0].note.as_deref(), Some("a quiet week"));
 

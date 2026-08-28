@@ -64,8 +64,12 @@ fn project(r: &FocusSessionRow) -> CanonicalSession {
         id: r.session.start.id.to_str(),
         task: r.session.start.task_id.to_str(),
         running: r.running,
-        started_at_ms: r.session.start.started_at_ms,
-        ended_at_ms: r.session.end.as_ref().map(|e| e.ended_at_ms),
+        started_at_ms: r.session.start.started_at_ms(),
+        ended_at_ms: r
+            .session
+            .end
+            .as_ref()
+            .map(sunrise_domain::FocusEnd::ended_at_ms),
         actual_focused_ms: r.session.end.as_ref().map(|e| e.actual_focused_ms),
         completed_task: r.session.end.as_ref().is_some_and(|e| e.completed_task),
     }

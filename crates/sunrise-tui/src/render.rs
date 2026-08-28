@@ -1411,8 +1411,8 @@ fn history_lines(state: &ViewState) -> Vec<Line<'static>> {
         out.push(Line::from(Span::styled(
             format!(
                 "{} to {}",
-                day_stamp(snap.window_start_ms, &state.tz),
-                day_stamp(snap.window_end_ms.saturating_sub(1), &state.tz)
+                day_stamp(snap.window_start_ms(), &state.tz),
+                day_stamp(snap.window_end_ms().saturating_sub(1), &state.tz)
             ),
             Style::default()
                 .fg(Color::Cyan)
@@ -3158,8 +3158,8 @@ mod focus_render_tests {
         // derived on read, never accumulated into view state.
         let after = state.focus.running.as_ref().expect("a session");
         assert_eq!(
-            before.session.start.started_at_ms,
-            after.session.start.started_at_ms
+            before.session.start.started_at_ms(),
+            after.session.start.started_at_ms()
         );
         assert_eq!(before.session.end, after.session.end);
         assert!(after.session.is_running());
@@ -3234,17 +3234,17 @@ mod focus_render_tests {
             .interruptions = vec![
             Interruption {
                 session_id: session,
-                at_ms: START_MS + 1_000,
+                at: sunrise_domain::epoch_ms::from_u64(START_MS + 1_000),
                 reason: InterruptionReason::Meeting,
             },
             Interruption {
                 session_id: session,
-                at_ms: START_MS + 2_000,
+                at: sunrise_domain::epoch_ms::from_u64(START_MS + 2_000),
                 reason: InterruptionReason::Meeting,
             },
             Interruption {
                 session_id: session,
-                at_ms: START_MS + 3_000,
+                at: sunrise_domain::epoch_ms::from_u64(START_MS + 3_000),
                 reason: InterruptionReason::SelfInterrupt,
             },
         ];
@@ -3353,7 +3353,7 @@ mod focus_render_tests {
             completed_task: true,
             interruptions: vec![Interruption {
                 session_id: EntityRef::new(EntityKind::FocusSession, [1u8; 16]),
-                at_ms: START_MS + 1_000,
+                at: sunrise_domain::epoch_ms::from_u64(START_MS + 1_000),
                 reason: InterruptionReason::Meeting,
             }],
         };

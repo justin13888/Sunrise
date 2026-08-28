@@ -760,7 +760,7 @@ async fn refresh_focus(core: &Core, state: &mut ViewState) {
     if let Ok(QueryResult::FocusSessions(rows)) = core.query(Query::RunningFocusSessions).await {
         state.focus.running = rows
             .into_iter()
-            .max_by_key(|r| r.session.start.started_at_ms);
+            .max_by_key(|r| r.session.start.started_at_ms());
     }
     // Whatever the session is on wins over the list cursor: the pane must show
     // the task whose clock is running.

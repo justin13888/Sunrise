@@ -188,7 +188,7 @@ async fn a_running_session_derives_its_elapsed_time_and_stores_none_of_it() {
 
     // The same immutable record, read against three clocks, gives three
     // answers — which is the whole reason the TUI keeps no timer of its own.
-    let t0 = view.start.started_at_ms;
+    let t0 = view.start.started_at_ms();
     assert_eq!(view.elapsed_ms(t0), 0);
     assert_eq!(view.elapsed_ms(t0 + 300_000), 300_000);
     assert_eq!(view.remaining_ms(t0 + 300_000), Some(POMODORO_MS - 300_000));

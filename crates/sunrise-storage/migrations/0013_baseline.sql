@@ -108,6 +108,7 @@ CREATE TABLE streams (
     parent_id       BLOB REFERENCES streams (stream_id),
     name            TEXT NOT NULL DEFAULT '',
     color           TEXT NOT NULL DEFAULT 'slate',
+    icon            TEXT,
     archived        INTEGER NOT NULL DEFAULT 0,
     deleted         INTEGER NOT NULL DEFAULT 0,
     paused          INTEGER NOT NULL DEFAULT 0,
