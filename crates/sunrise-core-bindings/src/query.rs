@@ -9,9 +9,9 @@ use sunrise_id::EntityRef;
 
 use crate::dto::{
     ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
-    ContextListRow, DailyReviewReport, DeviceListRow, FocusTotals, PlanRow, RoutineItem,
-    SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
-    WeeklyReviewReport,
+    ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
+    NotificationSettings, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot, StreamItem,
+    StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
 };
 
 /// A read query.
@@ -136,6 +136,30 @@ pub enum CoreQuery {
         /// "Now" (epoch ms).
         now_ms: u64,
     },
+    /// The morning notification's view: what got done since the previous
+    /// calendar date, and what still needs a decision today.
+    MorningSummary {
+        /// "Now" (epoch ms).
+        now_ms: u64,
+    },
+    /// The evening notification's view: today's still-open tasks, the week
+    /// ahead, and the unscheduled backlog to plan from.
+    EndOfDayPlan {
+        /// "Now" (epoch ms).
+        now_ms: u64,
+    },
+    /// The local notifications to schedule with the OS in this window.
+    ///
+    /// `settings` is the per-device half — global lead time, quiet hours,
+    /// primary-device flag — which is never synced and so is supplied here.
+    ReminderIntents {
+        /// "Now" (epoch ms).
+        now_ms: u64,
+        /// End of the scheduling window (epoch ms).
+        horizon_ms: u64,
+        /// This device's settings.
+        settings: NotificationSettings,
+    },
     /// Live attachments on one task, oldest first. Metadata only: the bytes
     /// come from the blob store and open with each row's `blob_key`.
     TaskAttachments {
@@ -222,6 +246,17 @@ impl CoreQuery {
                 format,
                 weeks,
                 now_ms,
+            },
+            Self::MorningSummary { now_ms } => Query::MorningSummary { now_ms },
+            Self::EndOfDayPlan { now_ms } => Query::EndOfDayPlan { now_ms },
+            Self::ReminderIntents {
+                now_ms,
+                horizon_ms,
+                settings,
+            } => Query::ReminderIntents {
+                now_ms,
+                horizon_ms,
+                settings: settings.into(),
             },
             Self::TaskAttachments { task } => Query::TaskAttachments(task),
             Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
@@ -340,6 +375,21 @@ pub enum CoreQueryResult {
         /// The rows, earliest start first.
         blocks: Vec<BlockGridRow>,
     },
+    /// The morning notification's view.
+    MorningSummary {
+        /// The report.
+        report: MorningReport,
+    },
+    /// The evening notification's view.
+    EndOfDayPlan {
+        /// The report.
+        plan: EveningReport,
+    },
+    /// What to schedule with the OS, earliest first.
+    Reminders {
+        /// The intents.
+        reminders: Vec<Reminder>,
+    },
     /// One task's attachment metadata.
     Attachments {
         /// The rows, oldest first.
@@ -424,6 +474,15 @@ impl CoreQueryResult {
             },
             QueryResult::Blocks(b) => Self::Blocks {
                 blocks: b.iter().map(BlockGridRow::from).collect(),
+            },
+            QueryResult::MorningSummary(m) => Self::MorningSummary {
+                report: MorningReport::from(m.as_ref()),
+            },
+            QueryResult::EndOfDayPlan(p) => Self::EndOfDayPlan {
+                plan: EveningReport::from(p.as_ref()),
+            },
+            QueryResult::Reminders(r) => Self::Reminders {
+                reminders: r.iter().map(Reminder::from).collect(),
             },
             QueryResult::Attachments(a) => Self::Attachments {
                 attachments: a.iter().map(AttachmentItem::from).collect(),

@@ -17,8 +17,8 @@
 
 use sunrise_domain::{
     ConstraintSeverity, EffectiveTaskState, Energy, EnergyFit, ExportDataset, ExportFormat,
-    FocusKind, Frequency, InterruptionReason, NoteBody, RoutineCatchupPolicy, SessionLength,
-    StreamColor, StreamReviewCadence, TaskState, Weekday,
+    FocusKind, Frequency, InterruptionReason, NoteBody, QuietHoursPolicy, ReminderKind,
+    RoutineCatchupPolicy, SessionLength, StreamColor, StreamReviewCadence, TaskState, Weekday,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -237,4 +237,20 @@ pub enum SyncState {
     Disconnected,
     CatchingUp,
     Live,
+}
+
+/// See [`sunrise_domain::ReminderKind`] — which of the spec's notification
+/// sources an intent came from.
+#[uniffi::remote(Enum)]
+pub enum ReminderKind {
+    Task,
+    Block,
+    Routine,
+}
+
+/// See [`sunrise_domain::QuietHoursPolicy`].
+#[uniffi::remote(Enum)]
+pub enum QuietHoursPolicy {
+    Queue,
+    Drop,
 }

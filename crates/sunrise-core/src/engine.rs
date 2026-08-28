@@ -65,18 +65,19 @@ use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
-    activity_for_entities, activity_table, break_after, build_daily_review, build_weekly_review,
-    effective_state, focus_table, fold_activity, fold_focus_stats, fold_trends, inbox_stream_ref,
-    materialization_horizon_days, occurrence_key_at, occurrence_task_id, plan_session,
-    rank_focus_plan, routine_drift, streaks_table, trends_table, unblock_cascade,
-    violations_by_severity, ActivityEvent, Attachment, AttachmentDraft, Block, BlockDraft,
-    BlockPatch, Chunk, Context, ContextDraft, ContextPatch, DependencyGraph, Energy, ExportDataset,
-    ExportFormat, FocusEnd, FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason,
-    NoteBody, OpPayload, OpRecord, PlanCandidate, ReviewSnapshot, ReviewSnapshotDraft,
-    ReviewStream, ReviewWindow, Routine, RoutineCatchupPolicy, RoutineDraft, RoutineDrift,
-    RoutinePatch, ScheduleConstraint, SessionLength, SessionRecord, StreakOutcome, StreakRow,
-    Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch,
-    TaskState, TaskTemplate, Trends, ValidationError, WeekGrid, Weekday, WeeklyReview,
+    activity_for_entities, activity_table, break_after, build_daily_review, build_end_of_day_plan,
+    build_morning_summary, build_weekly_review, effective_state, focus_table, fold_activity,
+    fold_focus_stats, fold_trends, inbox_stream_ref, materialization_horizon_days,
+    occurrence_key_at, occurrence_task_id, plan_reminders, plan_session, rank_focus_plan,
+    routine_drift, streaks_table, trends_table, unblock_cascade, violations_by_severity,
+    ActivityEvent, Attachment, AttachmentDraft, Block, BlockDraft, BlockPatch, Chunk, Context,
+    ContextDraft, ContextPatch, DependencyGraph, Energy, ExportDataset, ExportFormat, FocusEnd,
+    FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, NoteBody, OpPayload,
+    OpRecord, PlanCandidate, ReminderCandidate, ReminderKind, ReminderSettings, ReviewSnapshot,
+    ReviewSnapshotDraft, ReviewStream, ReviewWindow, Routine, RoutineCatchupPolicy, RoutineDraft,
+    RoutineDrift, RoutinePatch, ScheduleConstraint, SessionLength, SessionRecord, StreakOutcome,
+    StreakRow, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, Task, TaskDraft,
+    TaskPatch, TaskState, TaskTemplate, Trends, ValidationError, WeekGrid, Weekday, WeeklyReview,
     WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
@@ -315,6 +316,13 @@ impl Engine {
                 now_ms,
             } => self.query_export(db, dataset, format, weeks, now_ms),
             Query::TaskAttachments(task) => self.query_task_attachments(db, task),
+            Query::MorningSummary { now_ms } => self.query_morning_summary(db, now_ms),
+            Query::EndOfDayPlan { now_ms } => self.query_end_of_day_plan(db, now_ms),
+            Query::ReminderIntents {
+                now_ms,
+                horizon_ms,
+                settings,
+            } => self.query_reminder_intents(db, now_ms, horizon_ms, &settings),
             Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
             Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
@@ -6174,6 +6182,132 @@ fn blob32(raw: &[u8]) -> [u8; 32] {
     a
 }
 
+// ---------------------------------------------------------------------------
+// Notification reads (docs/08-features/notifications.md, issue #9)
+// ---------------------------------------------------------------------------
+
+/// The read half of scheduled notifications.
+///
+/// Everything a notification says is computed here, on-device, after
+/// decryption. The relay only ever sends a content-less wake-up, so a count or
+/// a title reaching the server would be the whole privacy model failing at
+/// once. The rules themselves are the pure `sunrise_domain::notify` functions;
+/// the engine's job is to read the rows and resolve the civil bounds.
+impl Engine {
+    fn query_morning_summary(&self, db: &Db, now_ms: u64) -> Result<QueryResult, EngineError> {
+        let (today_start, today_end) = self.civil_span(now_ms as i64, 1)?;
+        // "Since the previous calendar date" — the start of yesterday, in the
+        // device's zone, computed over civil dates so a DST day is still a day.
+        let (prev_start, _) = self.civil_span(today_start - 1, 1)?;
+        let tasks = read_live_tasks(db.conn())?;
+        Ok(QueryResult::MorningSummary(Box::new(
+            build_morning_summary(
+                &tasks,
+                ms_to_ts(prev_start),
+                ms_to_ts(today_start),
+                ms_to_ts(today_end),
+                inbox_stream_ref(),
+            ),
+        )))
+    }
+
+    fn query_end_of_day_plan(&self, db: &Db, now_ms: u64) -> Result<QueryResult, EngineError> {
+        let (day_start, day_end) = self.civil_span(now_ms as i64, 1)?;
+        // "The week ahead": the seven civil days that follow today.
+        let (_, week_end) = self.civil_span(now_ms as i64, 8)?;
+        let tasks = read_live_tasks(db.conn())?;
+        Ok(QueryResult::EndOfDayPlan(Box::new(build_end_of_day_plan(
+            &tasks,
+            ms_to_ts(day_start),
+            ms_to_ts(day_end),
+            ms_to_ts(week_end),
+        ))))
+    }
+
+    /// Everything worth scheduling with the OS between `now` and the horizon.
+    ///
+    /// Two sources in v1: a Task's `scheduled_at` and a Block's start. A
+    /// routine occurrence is already a Task by the time it is due — that is
+    /// what materialization produces — so it needs no separate source, and
+    /// having one would double every routine reminder.
+    fn query_reminder_intents(
+        &self,
+        db: &Db,
+        now_ms: u64,
+        horizon_ms: u64,
+        settings: &ReminderSettings,
+    ) -> Result<QueryResult, EngineError> {
+        // A non-primary device is silent, so do not even read the rows.
+        if !settings.is_primary_device {
+            return Ok(QueryResult::Reminders(Vec::new()));
+        }
+        let mut stream_leads: BTreeMap<[u8; 16], Option<u32>> = BTreeMap::new();
+        let mut candidates = Vec::new();
+
+        for t in read_live_tasks(db.conn())? {
+            if !matches!(t.state, TaskState::Todo | TaskState::InProgress) {
+                continue;
+            }
+            let Some(at) = t.scheduled_at.clone() else {
+                continue;
+            };
+            let stream_lead = match stream_leads.entry(*t.stream_id.bytes()) {
+                std::collections::btree_map::Entry::Occupied(e) => *e.get(),
+                std::collections::btree_map::Entry::Vacant(e) => *e.insert(
+                    read_stream(db.conn(), t.stream_id.bytes())?.and_then(|s| s.reminder_lead_s),
+                ),
+            };
+            candidates.push(ReminderCandidate {
+                entity: t.id,
+                kind: ReminderKind::Task,
+                at,
+                title: t.title.clone(),
+                own_lead_s: t.reminder_lead_s,
+                stream_lead_s: stream_lead,
+            });
+        }
+
+        // Blocks in the window, plus a day either side: the lead time can pull
+        // a block's reminder back before the window's start, and the horizon
+        // filter in `plan_reminders` is what actually decides.
+        let pad = 86_400_000i64;
+        let from = (now_ms as i64).saturating_sub(pad);
+        let to = (horizon_ms as i64).saturating_add(pad);
+        let QueryResult::Blocks(rows) = self.query_blocks_between(db, from, to)? else {
+            return Err(EngineError::Invalid(
+                "block read returned non-blocks".into(),
+            ));
+        };
+        for row in rows {
+            let stream_lead = match stream_leads.entry(*row.block.stream_id.bytes()) {
+                std::collections::btree_map::Entry::Occupied(e) => *e.get(),
+                std::collections::btree_map::Entry::Vacant(e) => *e.insert(
+                    read_stream(db.conn(), row.block.stream_id.bytes())?
+                        .and_then(|s| s.reminder_lead_s),
+                ),
+            };
+            candidates.push(ReminderCandidate {
+                entity: row.block.id,
+                kind: ReminderKind::Block,
+                at: row.block.starts_at.clone(),
+                // The resolved title, so a notification says what the calendar
+                // says rather than re-deriving the shadow-copy rules.
+                title: row.title.unwrap_or_default(),
+                own_lead_s: None,
+                stream_lead_s: stream_lead,
+            });
+        }
+
+        Ok(QueryResult::Reminders(plan_reminders(
+            &candidates,
+            ms_to_ts(now_ms as i64),
+            ms_to_ts(horizon_ms as i64),
+            &self.device_zone(),
+            settings,
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8796,6 +8930,345 @@ mod tests {
         end_session(&e, &mut db, session, true);
         let env = env_for_kind(&db, task.bytes(), "task.update");
         assert!(!env.is_empty(), "a task.update op was emitted");
+    }
+
+    // ---- notification reads (issue #9) ----
+
+    use sunrise_domain::{EndOfDayPlan, MorningSummary};
+
+    /// 2026-03-04 12:00 UTC, and the civil midnights around it.
+    const NOTIFY_NOON: i64 = 1_772_625_600_000;
+
+    fn engine_at(now_ms: i64) -> (Engine, Db) {
+        let e = engine_seeded(
+            ROOT,
+            [1u8; 32],
+            Arc::new(FakeClock(PLMutex::new(now_ms as u64))),
+        );
+        (e, db_root(ROOT))
+    }
+
+    fn morning(e: &Engine, db: &Db, now_ms: i64) -> MorningSummary {
+        match e
+            .query(
+                db,
+                Query::MorningSummary {
+                    now_ms: now_ms as u64,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::MorningSummary(s) => *s,
+            other => panic!("expected a morning summary, got {other:?}"),
+        }
+    }
+
+    fn evening(e: &Engine, db: &Db, now_ms: i64) -> EndOfDayPlan {
+        match e
+            .query(
+                db,
+                Query::EndOfDayPlan {
+                    now_ms: now_ms as u64,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::EndOfDayPlan(p) => *p,
+            other => panic!("expected an end-of-day plan, got {other:?}"),
+        }
+    }
+
+    fn reminders(
+        e: &Engine,
+        db: &Db,
+        now_ms: i64,
+        horizon_ms: i64,
+        settings: ReminderSettings,
+    ) -> Vec<sunrise_domain::ReminderIntent> {
+        match e
+            .query(
+                db,
+                Query::ReminderIntents {
+                    now_ms: now_ms as u64,
+                    horizon_ms: horizon_ms as u64,
+                    settings,
+                },
+            )
+            .unwrap()
+        {
+            QueryResult::Reminders(r) => r,
+            other => panic!("expected reminders, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_morning_summary_reads_the_previous_calendar_date() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        // Completed yesterday afternoon.
+        let done = new_task(&e, &mut db, "Ship the thing");
+        e.apply(&mut db, Command::CompleteTask(done)).unwrap();
+        // Sitting in the Inbox, awaiting a decision.
+        let inbox = new_task(&e, &mut db, "Read this later");
+        // Filed and scheduled for next month, so on neither list.
+        let later = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Renew passport".into(),
+                    stream_id: Some(stream_ref(3)),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(
+                        NOTIFY_NOON + 30 * 86_400_000,
+                    ))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let s = morning(&e, &db, NOTIFY_NOON);
+        assert_eq!(
+            s.completed.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![done]
+        );
+        assert_eq!(
+            s.to_triage.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![inbox],
+            "an Inbox task is the triage queue; a filed one is not"
+        );
+        assert!(s.due_today.iter().all(|t| t.id != later));
+        // Yesterday's midnight, and today's, in the device zone (UTC here).
+        assert_eq!(s.today_start.as_millisecond(), 1_772_582_400_000);
+        assert_eq!(s.since.as_millisecond(), 1_772_496_000_000);
+    }
+
+    #[test]
+    fn the_end_of_day_plan_covers_today_then_the_week() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        let day = 86_400_000i64;
+        let today = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "This evening".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 6 * 3_600_000))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let midweek = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Thursday".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3 * day))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let far = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Next month".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 30 * day))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let floating = new_task(&e, &mut db, "Someday");
+
+        let p = evening(&e, &db, NOTIFY_NOON);
+        assert_eq!(
+            p.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![today]
+        );
+        assert_eq!(
+            p.week_ahead.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![midweek],
+            "the week ahead is the seven civil days after today"
+        );
+        assert!(p.week_ahead.iter().all(|t| t.id != far));
+        assert_eq!(
+            p.unscheduled.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![floating]
+        );
+    }
+
+    #[test]
+    fn a_scheduled_task_and_a_block_both_produce_reminders() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        let at = NOTIFY_NOON + 2 * 3_600_000;
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Call the bank".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let block = e
+            .apply(
+                &mut db,
+                Command::CreateBlock(BlockDraft {
+                    stream_id: inbox_stream_ref(),
+                    starts_at: SunriseTime::instant(ms_to_ts(at)),
+                    ends_at: SunriseTime::instant(ms_to_ts(at + 3_600_000)),
+                    title: Some("Deep work".into()),
+                    title_track_task: false,
+                    tasks: Vec::new(),
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let out = reminders(
+            &e,
+            &db,
+            NOTIFY_NOON,
+            NOTIFY_NOON + 86_400_000,
+            ReminderSettings::default(),
+        );
+        assert_eq!(out.len(), 2);
+        // The block leads by 15 minutes, so it sorts first.
+        assert_eq!(out[0].entity, block);
+        assert_eq!(out[0].fire_at.as_millisecond(), at - 900_000);
+        assert_eq!(out[0].title, "Deep work");
+        assert_eq!(out[1].entity, task);
+        assert_eq!(out[1].fire_at.as_millisecond(), at);
+    }
+
+    /// The lead-time hierarchy end to end: the Task's own value beats the
+    /// Stream's, which beats the device default.
+    #[test]
+    fn the_lead_time_hierarchy_resolves_against_real_rows() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        let at = NOTIFY_NOON + 6 * 3_600_000;
+        let stream = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    reminder_lead_s: Some(1_800),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let inherits = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Inherits the stream's".into(),
+                    stream_id: Some(stream),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let overrides = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Sets its own".into(),
+                    stream_id: Some(stream),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                    reminder_lead_s: Some(60),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let global = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Falls all the way through".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let settings = ReminderSettings {
+            default_lead_s: 300,
+            ..ReminderSettings::default()
+        };
+        let out = reminders(&e, &db, NOTIFY_NOON, NOTIFY_NOON + 86_400_000, settings);
+        let fired = |id: EntityRef| {
+            out.iter()
+                .find(|r| r.entity == id)
+                .unwrap_or_else(|| panic!("no reminder for {id}"))
+                .fire_at
+                .as_millisecond()
+        };
+        assert_eq!(fired(overrides), at - 60_000, "per-task wins");
+        assert_eq!(fired(inherits), at - 1_800_000, "per-stream next");
+        assert_eq!(fired(global), at - 300_000, "device default last");
+    }
+
+    #[test]
+    fn a_completed_task_stops_producing_reminders() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        let at = NOTIFY_NOON + 3_600_000;
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Call the bank".into(),
+                    scheduled_at: Some(SunriseTime::instant(ms_to_ts(at))),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(
+            reminders(
+                &e,
+                &db,
+                NOTIFY_NOON,
+                NOTIFY_NOON + 86_400_000,
+                ReminderSettings::default()
+            )
+            .len(),
+            1
+        );
+        e.apply(&mut db, Command::CompleteTask(task)).unwrap();
+        assert!(reminders(
+            &e,
+            &db,
+            NOTIFY_NOON,
+            NOTIFY_NOON + 86_400_000,
+            ReminderSettings::default()
+        )
+        .is_empty());
+    }
+
+    /// The spec's dedup rule, enforced before a single row is read.
+    #[test]
+    fn a_non_primary_device_is_handed_nothing_to_schedule() {
+        let (e, mut db) = engine_at(NOTIFY_NOON);
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let settings = ReminderSettings {
+            is_primary_device: false,
+            ..ReminderSettings::default()
+        };
+        assert!(reminders(&e, &db, NOTIFY_NOON, NOTIFY_NOON + 86_400_000, settings).is_empty());
     }
 
     // ---- apply_remote (receive half of sync) tests ----

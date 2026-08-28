@@ -2,9 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit,
-    ExportDataset, ExportFormat, FocusSession, FocusStats, ReviewSnapshot, Routine, SessionPlan,
-    Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
+    ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
+    Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
+    ReminderIntent, ReminderSettings, ReviewSnapshot, Routine, SessionPlan, Stream, StreamColor,
+    Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -195,6 +196,38 @@ pub enum Query {
         /// Any instant inside the week to show (ms since epoch).
         week_ms: u64,
     },
+    /// **Morning summary** (issue #9): what got done since the previous
+    /// calendar date, and what still needs a decision today.
+    ///
+    /// The read behind the morning notification's dedicated view. Everything
+    /// it reports is computed on-device after decryption — the relay only ever
+    /// sends a content-less wake-up.
+    MorningSummary {
+        /// "Now" (ms since epoch), from the injected clock. Fixes the civil
+        /// day in the device's zone.
+        now_ms: u64,
+    },
+    /// **End-of-day planning** (issue #9): today's still-open tasks, the week
+    /// ahead, and the unscheduled backlog to plan from.
+    EndOfDayPlan {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+    },
+    /// The local notifications a client should schedule with the OS, between
+    /// `now_ms` and `horizon_ms`.
+    ///
+    /// `settings` carries the per-**device** half of the configuration —
+    /// global lead time, quiet hours, and whether this device is the primary
+    /// one. Those are per-device by specification and never synced, so they
+    /// travel in with the query rather than living on a replicated entity.
+    ReminderIntents {
+        /// "Now" (ms since epoch).
+        now_ms: u64,
+        /// End of the scheduling window (ms since epoch).
+        horizon_ms: u64,
+        /// This device's notification settings.
+        settings: ReminderSettings,
+    },
     /// Live Attachments on one Task, oldest first.
     ///
     /// Metadata only — the bytes are fetched separately from the blob store
@@ -263,6 +296,12 @@ pub enum QueryResult {
     Blocks(Vec<BlockRow>),
     /// `TaskAttachments` returns one Task's attachment metadata.
     Attachments(Vec<Attachment>),
+    /// `MorningSummary` returns the morning view.
+    MorningSummary(Box<MorningSummary>),
+    /// `EndOfDayPlan` returns the end-of-day view.
+    EndOfDayPlan(Box<EndOfDayPlan>),
+    /// `ReminderIntents` returns what to schedule, earliest first.
+    Reminders(Vec<ReminderIntent>),
     /// `ExportStats` returns the rendered document.
     Export(String),
 }

@@ -32,6 +32,7 @@ pub mod export;
 pub mod focus;
 pub mod inbox;
 pub mod note;
+pub mod notify;
 pub mod person;
 pub mod phrase;
 pub mod recur;
@@ -82,6 +83,11 @@ pub use focus::{
 };
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
+pub use notify::{
+    apply_quiet_hours, build_end_of_day_plan, build_morning_summary, lead_time_s, plan_reminders,
+    EndOfDayPlan, MorningSummary, QuietHours, QuietHoursPolicy, ReminderCandidate, ReminderIntent,
+    ReminderKind, ReminderSettings, BLOCK_DEFAULT_LEAD_S, QUIET_HOURS_QUEUE_CAP_S,
+};
 pub use person::Person;
 pub use phrase::{
     activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
