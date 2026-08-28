@@ -1447,11 +1447,12 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
         .expect("create");
 
     // The new device publishes a QR; the existing one reads it.
-    let new_device =
+    let new_device = Arc::new(
         DevicePairing::offer("wss://relay.example/pair".into(), "Ada@Example.COM ".into())
-            .expect("offer");
+            .expect("offer"),
+    );
     let qr = new_device.qr_payload().expect("the new device has a QR");
-    let old_device = DevicePairing::accept(qr).expect("accept");
+    let old_device = Arc::new(DevicePairing::accept(qr).expect("accept"));
     assert!(
         old_device.qr_payload().is_none(),
         "only the new device publishes one"
@@ -1479,26 +1480,23 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
     old_device.confirm(true).expect("confirm");
     assert_eq!(new_device.step(), PairingStep::Confirmed);
 
-    // The existing device seals its root; the new one opens it and uses it.
-    let root = vec![42u8; 32];
-    let sealed = old_device.seal_vault_root(root.clone()).expect("seal");
-    assert_ne!(
-        sealed.as_bytes(),
-        root.as_slice(),
-        "the clipboard sees ciphertext"
-    );
-    assert_eq!(new_device.open_vault_root(sealed).expect("open"), root);
+    // The existing device seals *its own* root — the key never crosses the
+    // seam — and the new one opens it.
+    let sealed = existing
+        .send_vault_root(old_device.clone())
+        .expect("seal the root");
+    let root = new_device.open_vault_root(sealed).expect("open");
+    assert_eq!(root.len(), 32);
     assert_eq!(new_device.step(), PairingStep::Finished);
 
-    // The proof that the root is the right one: the same vault opens under it.
+    // The proof that the root is the right one: the same vault opens under it,
+    // with the task only the first device ever saw.
+    let path = dir.path().to_string_lossy().into_owned();
+    existing.shutdown().await;
     drop(existing);
-    let reopened = SunriseCore::open(
-        dir.path().to_string_lossy().into_owned(),
-        root,
-        "test".into(),
-    )
-    .await
-    .expect("the transferred root opens the vault");
+    let reopened = SunriseCore::open(path, root, "test".into())
+        .await
+        .expect("the transferred root opens the vault");
     assert_eq!(inbox_len(&reopened).await, 1);
 }
 

@@ -440,6 +440,32 @@ impl SunriseCore {
         Ok(self.inner.attachment_is_local(&attachment.to_domain()?)?)
     }
 
+    /// Seal this vault's root into a confirmed pairing, on the existing
+    /// device.
+    ///
+    /// The root never crosses the seam. A `vault_root()` getter would be the
+    /// obvious shape and the wrong one: it would put the key that decrypts
+    /// everything into a Swift `Data`, where it outlives the call, lands in
+    /// whatever the app logs, and is one autocomplete away from a file. The
+    /// only thing the app needs is the *ciphertext*, so that is the only thing
+    /// it gets.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed on this
+    /// device, or when this device is the one being added.
+    pub fn send_vault_root(
+        &self,
+        pairing: Arc<pairing::DevicePairing>,
+    ) -> Result<String, BindingError> {
+        pairing.seal_vault_root(
+            self.inner
+                .export_vault_root_for_pairing()
+                .as_bytes()
+                .to_vec(),
+        )
+    }
+
     /// Stop the sync driver and release the vault lock. Idempotent.
     pub async fn shutdown(&self) {
         self.inner.shutdown().await;
