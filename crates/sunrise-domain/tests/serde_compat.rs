@@ -6,14 +6,20 @@
 //! `Serialize` impls before the jiff migration (see the ADR
 //! `docs/11-adr/0011-datetime-jiff.md`). chrono and jiff both serialize a UTC
 //! instant as the same RFC 3339 string (`2025-11-08T09:30:00.123Z`), so the
-//! canonical CBOR bytes are byte-identical and `decode_canonical` (which
-//! asserts re-encode == input) succeeds. Byte identity is a bonus; the
-//! contract this test enforces is *value* identity.
+//! values survive exactly.
+//!
+//! They no longer re-encode to their own bytes, for two deliberate reasons:
+//! `encode_canonical` now sorts map keys per RFC 8949 §4.2.1 (the fixtures were
+//! written in declaration order, which was never canonical), and
+//! `DOC_SCHEMA_V = 2` re-typed the Task time fields to `SunriseTime`. Byte
+//! identity was always a bonus; the contract these tests enforce is *value*
+//! identity — an older payload still decodes into the current types with the
+//! same meaning.
 
 use jiff::Timestamp;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use sunrise_cbor::{decode_canonical, encode_canonical};
+use sunrise_cbor::{decode_canonical, decode_lenient, encode_canonical};
 use sunrise_domain::common::{Energy, NoteBody};
 use sunrise_domain::routine::{Routine, RoutineCatchupPolicy, TaskTemplate};
 use sunrise_domain::rrule::{Frequency, RRule, Weekday};
@@ -154,7 +160,7 @@ fn fixture(name: &str) -> Vec<u8> {
 #[test]
 fn chrono_task_fixture_decodes_under_jiff() {
     let bytes = fixture("task_chrono_v1.cbor");
-    let task: Task = ciborium::de::from_reader(&bytes[..]).expect("v1 task payload decodes");
+    let task: Task = decode_lenient(&bytes).expect("v1 task payload decodes");
 
     let expected = expected_task();
     assert_eq!(task, expected, "full-value identity for Task");
@@ -205,11 +211,18 @@ fn chrono_task_fixture_decodes_under_jiff() {
     );
 }
 
+/// The Routine fixture decodes with value identity, but no longer re-encodes
+/// to its own bytes.
+///
+/// `encode_canonical` now sorts map keys by their encoded bytes, per RFC 8949
+/// §4.2.1 and per what this repository's own docs have always said. The
+/// chrono-era fixtures were written in struct DECLARATION order, which was
+/// never canonical — the encoder just never enforced it. Value identity, which
+/// is the contract the jiff migration actually needs, is unaffected.
 #[test]
 fn chrono_routine_fixture_decodes_under_jiff() {
     let bytes = fixture("routine_chrono_v1.cbor");
-    let routine: Routine =
-        decode_canonical(&bytes).expect("routine fixture is canonical under jiff");
+    let routine: Routine = decode_lenient(&bytes).expect("v1 routine payload decodes");
 
     let expected = expected_routine();
     assert_eq!(routine, expected, "full-value identity for Routine");
@@ -242,11 +255,9 @@ fn chrono_routine_fixture_decodes_under_jiff() {
         Some(Timestamp::from_millisecond(R_PAUSED_UNTIL).unwrap())
     );
 
+    // Re-encoding produces the canonical (key-sorted) form, which then
+    // round-trips exactly.
     let re = encode_canonical(&routine).unwrap();
     let back: Routine = decode_canonical(&re).unwrap();
     assert_eq!(back, expected);
-    assert_eq!(
-        re, bytes,
-        "jiff re-encode is byte-identical to chrono fixture"
-    );
 }
