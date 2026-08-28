@@ -52,4 +52,4 @@ Subscribed URLs are fetched from the user's device, not the server. The .ics URL
 
 ## Test surface
 
-Round-trip fixtures live at `packages/sunrise-integrations/icalendar/testdata/{google,apple,fastmail,outlook}/*.ics`. CI imports each fixture, exports it, diffs the result, and asserts that any differences fall within the documented "lossy" set. Raw VEVENT samples are included for parser tolerance.
+Round-trip fixtures live at `crates/sunrise-integrations/testdata/{google,apple,fastmail,outlook}/*.ics`. CI imports each fixture, exports it, diffs the result, and asserts that any differences fall within the documented "lossy" set. Raw VEVENT samples are included for parser tolerance.

@@ -76,14 +76,7 @@ EXEMPT: dict[str, str] = {
 # these as warnings so a pre-existing defect does not block unrelated work, but
 # the list must shrink to empty — and the staleness check above means an entry
 # cannot be left behind once it is fixed.
-QUARANTINE: dict[str, str] = {
-    # gcal.rs + ical.rs implement docs/09-integrations/ against the
-    # IntegrationProvider trait, with tests. No crate depends on the package:
-    # it is declared in [workspace.dependencies] and named by nobody. This is
-    # the defect class this gate exists for, caught by its first run.
-    # Wiring it into sunrise-server (or deleting it) is issue #4.
-    "sunrise-integrations": "unwired external-calendar seam; tracked by issue #4",
-}
+QUARANTINE: dict[str, str] = {}
 
 # Target kinds that mean "a user can run or link this directly".
 SHIPPING_KINDS = frozenset({"bin", "cdylib", "staticlib"})
