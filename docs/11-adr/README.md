@@ -26,12 +26,16 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | accepted |
 | 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted |
 | 0008 | [Local FTS over server-side search](./0008-search-strategy.md) | accepted |
-| 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted |
+| 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted (amended by 0015: the envelope container is versioned separately from the doc schema) |
 | 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
 | 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted |
 | 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | accepted (amended by 0014: OR-Set → append-only row) |
-| 0014 | [Entity-level LWW in SQLite is the v1 merge model](./0014-entity-level-lww-merge.md) | accepted |
+| 0014 | [Entity-level LWW in SQLite is the v1 merge model](./0014-entity-level-lww-merge.md) | accepted (amended by 0016: comparison key is now `(hlc, device_id, seq)`) |
+| 0015 | [Envelope container format is versioned separately from the doc schema](./0015-envelope-doc-schema-split.md) | accepted |
+| 0016 | [Hybrid logical clocks order writes](./0016-hlc-timestamps.md) | accepted |
+| 0017 | [Scheduled times are a tagged `SunriseTime`](./0017-sunrise-time-representation.md) | accepted |
+| 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
 
 ## When to write a new ADR
 

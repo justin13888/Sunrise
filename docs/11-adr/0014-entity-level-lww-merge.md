@@ -4,6 +4,13 @@
 
 **Supersedes:** [ADR-0003 — CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md)
 
+**Amended by:** [ADR-0016 — Hybrid logical clocks](./0016-hlc-timestamps.md),
+which replaces the comparison key `(ts_ms, device_id)` used throughout this
+document with `(hlc, device_id, seq)` and fixes the skewed-clock defect recorded
+under *Consequences*. The merge model itself — entity-level, one survivor — is
+unchanged, and per-field LWW remains deferred; see *Per-field LWW, revisited*
+at the end.
+
 **Amends:** [ADR-0013 — Focus session op representation](./0013-focus-session-op-representation.md),
 whose chosen representation named an OR-Set on a Loro Stream doc. Removing the
 CRDT layer removed that mechanism; ADR-0013 now records the same requirement as
@@ -29,7 +36,9 @@ SQLite**, and it has been for the whole of the v1 build:
 - `crates/sunrise-storage/migrations/0006_lww_metadata.sql` — adds `lww_ts_ms`
   and `lww_device` to `tasks`, `streams`, and `routines` so local and remote
   writes compete on the same footing. Both columns are projections, rebuildable
-  from the op log.
+  from the op log. *(Since collapsed into `0013_baseline.sql` by
+  [ADR-0018](./0018-storage-baseline-reset.md), and the columns renamed to
+  `lww_hlc_ms` / `lww_hlc_logical` / `lww_seq` / `lww_device` by ADR-0016.)*
 - Deletes are tombstones stamped with the same pair, so a concurrent
   delete/update resolves by the identical rule.
 
@@ -121,10 +130,12 @@ that today would be paying for the roadmap, not the product.
   They stay as the design source of truth for the shapes above; they are not a
   description of what runs today. `docs/implementation/overview.md` is the
   authority on what is live.
-- **A skewed device clock wins every conflict**, permanently, because `lww_wins`
-  trusts the envelope's raw `ts_ms`. This is a pre-existing defect of the live
-  engine, already tracked in `docs/implementation/overview.md`; adopting LWW as
-  the decided model makes it this ADR's problem rather than an accident.
+- ~~**A skewed device clock wins every conflict**, permanently, because
+  `lww_wins` trusts the envelope's raw `ts_ms`.~~ **Fixed** by
+  [ADR-0016](./0016-hlc-timestamps.md): the comparison key is now
+  `(hlc, device_id, seq)`, ops beyond a five-minute drift window are refused,
+  and a peer that has observed a fast device's op sits above it, so the fast
+  clock wins a concurrent race but no longer holds a veto.
 - **Four RUSTSEC suppressions are gone from `deny.toml`** — RUSTSEC-2026-0248
   (`im`), -2026-0247 (`bitmaps`), -2026-0251 (`sized-chunks`), and
   RUSTSEC-2023-0089 (`atomic-polyfill`). Removing `loro` removes the advisories
@@ -160,3 +171,40 @@ ADR rather than an edit to this one:
 
 Until one of those lands, the merge model is entity-level LWW and the workspace
 contains no CRDT library.
+
+## Per-field LWW, revisited
+
+Reason 2 above — "per-field merge becomes user-visible" — was re-examined during
+the v1 schema epic, alongside the HLC work in
+[ADR-0016](./0016-hlc-timestamps.md), because that work touched every LWW column
+and would have been the cheap moment to widen the stamp. **It stays deferred.**
+The reasoning has not changed, and it is worth writing down explicitly rather
+than leaving as a table row:
+
+**The precondition still does not hold.** Per-field LWW only pays for itself
+when clients emit *partial* entity updates. Sunrise's ops are full-state:
+`TaskUpdate` carries the whole `Task`, because that is what makes a losing op
+recoverable from the log and what lets a replica materialize an entity it has
+never seen. With full-state ops, a per-field stamp cannot tell "B did not change
+the title" from "B set the title to the value it already had" — both arrive as
+the same bytes. Per-field LWW over full-state ops would therefore either resolve
+identically to entity LWW, or resolve *wrongly* by treating an unchanged field
+as a fresh write. Getting the benefit requires changing the op shape first, and
+that is a much larger decision than a wider stamp.
+
+**The cost is not the schema, it is the merge rule.** Four more columns per
+entity is cheap. What is not cheap is that every field then has an independent
+history, so "which op won" stops having an answer, `updated_at` stops being
+meaningful, the op log stops reconstructing the projection by replay, and the
+convergence proptest has to compare per-field lineage rather than a canonical
+row. That is a merge engine, not a column.
+
+**And the HLC does not change the trade.** ADR-0016 changes *which* write wins;
+per-field LWW changes *how much of the entity* the winner replaces. They are
+independent, and doing the first does not make the second more or less urgent.
+
+The trigger is unchanged and is restated here so it is unmissable: **the first
+partial-update command path.** A due-date-only op, a title-only op, or an
+inline-edit surface that submits one field. On the day one of those is proposed,
+per-field LWW is a prerequisite for it and not a follow-up, and it needs its own
+ADR covering op shape, `updated_at` semantics, and what replay means.

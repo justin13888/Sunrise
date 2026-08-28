@@ -28,36 +28,29 @@ All multi-row writes are wrapped in a single `BEGIN IMMEDIATE … COMMIT`. Reads
 
 ## Tables
 
-### Op log
+> **The schema itself lives in
+> [`crates/sunrise-storage/migrations/0013_baseline.sql`](../../crates/sunrise-storage/migrations/0013_baseline.sql),
+> and that file is the source of truth.** It is one file, not a sequence
+> ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and it carries the
+> design rationale for each table on the table. This section describes the
+> *shape and the reasons*; it deliberately does not restate every column, because
+> a second copy of a schema is a second thing to be wrong. An earlier version of
+> this document did restate them, and drifted: it named six tables in the
+> singular (`stream`, `context`, `routine`, `block`, `attachment`, `person`)
+> that never existed, columns that were never created (`policy_blob`,
+> `rrule_blob`, `config_blob`, `meta_blob`, `task_contexts.added_at`), and Loro
+> `doc_blob` columns that ADR-0014 deleted.
 
-```sql
-CREATE TABLE ops (
-    op_id          BLOB PRIMARY KEY,
-    stream_id      BLOB NOT NULL,
-    device_id      BLOB NOT NULL,
-    seq            INTEGER NOT NULL,
-    ts_ms          INTEGER NOT NULL,
-    envelope       BLOB NOT NULL,        -- the full encrypted envelope
-    inner_kind     TEXT NOT NULL,
-    target_kind    TEXT NOT NULL,
-    target_id      BLOB,
-    applied_at     INTEGER,              -- nullable until applied to state
-    UNIQUE (stream_id, device_id, seq)
-);
-```
+### Op log — `ops`, `op_dep`
 
-`deps` is **not** a column on `ops`; it is materialized into a separate join table for indexed lookup:
+`ops` is keyed by `op_id` with `UNIQUE (stream_id, device_id, seq)`, which is
+the idempotence gate on the receive path: a re-delivered op is an
+`INSERT OR IGNORE` that changes zero rows and stops there. `envelope` holds the
+full sealed `OpEnvelope`; the server never sees anything else, and neither does
+this table.
 
-```sql
-CREATE TABLE op_dep (
-    op_id   BLOB NOT NULL,
-    dep_id  BLOB NOT NULL,
-    PRIMARY KEY (op_id, dep_id)
-);
-CREATE INDEX op_dep_dep_idx ON op_dep (dep_id);
-```
-
-Inserting an op also inserts its dep rows in the same transaction. The "find ops whose deps just became satisfied" query is:
+`deps` is **not** a column on `ops`. It is a separate join table so both
+directions are indexed:
 
 ```sql
 SELECT op_id FROM op_dep
@@ -70,181 +63,86 @@ SELECT op_id FROM op_dep
    );
 ```
 
-### Stream (materialized)
+Inserting an op inserts its dep rows in the same transaction.
 
-```sql
-CREATE TABLE stream (
-    stream_id      BLOB PRIMARY KEY,           -- 16 bytes
-    doc_blob       BLOB NOT NULL,              -- Loro snapshot bytes
-    doc_blob_v     INTEGER NOT NULL,           -- Loro encoding version
-    head_root      BLOB NOT NULL,              -- 32 bytes (BLAKE3)
-    last_op_seq    INTEGER NOT NULL,
-    parent_id      BLOB REFERENCES stream(stream_id),
-    deleted        INTEGER NOT NULL DEFAULT 0,
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-CREATE INDEX stream_parent_idx  ON stream(parent_id);
-CREATE INDEX stream_deleted_idx ON stream(deleted, updated_at_ms);
-```
+### Materialized entities — `streams`, `tasks`, `contexts`, `routines`, `blocks`
 
-`head_root` is the **per-Stream Merkle root** as defined in [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md). It is recomputed on every op apply and stored on the `stream` row. On startup, the value is verified against a fresh recomputation over the last 1 000 ops; mismatch raises `STORAGE_TAMPER_DETECTED` and the user is prompted to wipe + resync.
+All plural, all projections: **every one is rebuildable from the op log**, which
+is what makes "wipe and re-materialize" a real recovery path rather than a
+slogan.
 
-### Context
+Four things are worth knowing beyond the column list:
 
-```sql
-CREATE TABLE context (
-    context_id     BLOB PRIMARY KEY,           -- 16 bytes
-    name           TEXT NOT NULL,              -- plaintext only in this local row; encrypted in op-log
-    active         INTEGER NOT NULL DEFAULT 1,
-    policy_blob    BLOB NOT NULL,              -- CBOR; see 02-domain/contexts-and-tags
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-```
+* **The LWW stamp.** `lww_hlc_ms`, `lww_hlc_logical`, `lww_seq`, `lww_device`
+  carry the `(hlc, device_id, seq)` key that decides which of two concurrent
+  writes survives. See
+  [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) and
+  [ADR-0016](../11-adr/0016-hlc-timestamps.md). `lww_device` is NULL only for a
+  placeholder row no real op has stamped yet.
+* **`SunriseTime` projects onto three columns.** `*_at_ms` is the epoch-ms
+  index key that every range query and `ORDER BY` reads; `*_at_kind` and
+  `*_at_tz` carry the kind that the key alone cannot express. See
+  [ADR-0017](../11-adr/0017-sunrise-time-representation.md).
+* **`tasks.extra` is written.** It holds fields from a newer `DOC_SCHEMA_V`
+  that this build does not model, preserved verbatim so a round trip through an
+  older client does not destroy them
+  ([§7](../10-cross-cutting/protocol-versioning.md#7-document-schema-forward-compat)).
+* **`streams.head_root`** is the per-Stream Merkle root defined in
+  [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md),
+  recomputed on every apply. On startup it is verified against a fresh
+  recomputation over the last 1 000 ops; a mismatch raises
+  `STORAGE_TAMPER_DETECTED` and the user is prompted to wipe and resync.
 
-### Routine
+### Edge tables — `task_contexts`, `task_blockers`, `block_tasks`
 
-```sql
-CREATE TABLE routine (
-    routine_id     BLOB PRIMARY KEY,           -- 16 bytes
-    stream_id      BLOB NOT NULL REFERENCES stream(stream_id),
-    rrule_blob     BLOB NOT NULL,              -- CBOR-encoded RRULE subset
-    config_blob    BLOB NOT NULL,              -- CBOR; horizon, catchup, streak rules
-    scheduling_constraints BLOB,               -- canonical CBOR, NULL = empty; projection (arrives in migration 0003)
-    next_gen_at_ms INTEGER NOT NULL,
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-CREATE INDEX routine_next_gen_idx ON routine(next_gen_at_ms) WHERE next_gen_at_ms IS NOT NULL;
-```
+`task_blockers` covers **both** directions from one table: forward
+(`blocked_by`) from its primary key, reverse (`blocks_others`) from the
+`by_blocker` index. `blocks_others` is derived-only per
+[`../02-domain/tasks.md`](../02-domain/tasks.md) — never a column, never on the
+wire.
 
-### Block
+None of these carry **foreign keys**, deliberately. Ops arrive out of order: a
+`task.update` naming a blocker can be materialized before that blocker's
+`task.create` reaches this replica. An FK would abort the apply transaction and
+wedge the receive path. An edge to an unknown task is a *fact*, and a task whose
+blocker has not arrived counts as blocked until it does — which is the
+convergent answer.
 
-```sql
-CREATE TABLE block (
-    block_id       BLOB PRIMARY KEY,           -- 16 bytes
-    stream_id      BLOB NOT NULL REFERENCES stream(stream_id),
-    start_ms       INTEGER NOT NULL,
-    end_ms         INTEGER NOT NULL,
-    task_ids_blob  BLOB NOT NULL,              -- CBOR array of task ids
-    rrule_blob     BLOB,                       -- nullable
-    title          TEXT NOT NULL,              -- shadow copy
-    title_track    INTEGER NOT NULL DEFAULT 0,
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-CREATE INDEX block_time_idx   ON block(start_ms, end_ms);
-CREATE INDEX block_stream_idx ON block(stream_id);
-```
+### Append-only records — `focus_sessions`, `focus_session_ends`, `focus_interruptions`, `review_snapshots`
 
-### Attachment
+None of these enter the LWW contest; each is keyed by its own `EntityRef` and
+written once ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)). A
+focus session's start and end are **separate tables** so that a start with no
+end is a valid state, and so an `end` that overtakes its `start` still lands
+rather than updating zero rows. Nothing ticking is stored: elapsed time is
+derived on read, and only the frozen `actual_focused_ms` is persisted.
 
-```sql
-CREATE TABLE attachment (
-    attachment_id  BLOB PRIMARY KEY,           -- 16 bytes
-    blob_id        BLOB NOT NULL,              -- 16 bytes; opaque server-side id
-    meta_blob      BLOB NOT NULL,              -- CBOR: mime, size, chunks, hashes (see blob-store.md)
-    cache_state    TEXT NOT NULL DEFAULT 'absent',  -- 'absent'|'partial'|'cached'
-    cache_path     TEXT,                       -- relative path under blob-cache dir
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-CREATE INDEX attachment_cache_idx ON attachment(cache_state, updated_at_ms);
-```
+### Sync state — `local_identity`, `outbox`, `sync_cursors`
 
-### Person
+`local_identity` is pinned to one row (`CHECK (id = 1)`) and holds the device's
+signing seed sealed under the vault root. `outbox` tracks ops still to push
+(`acked_at_ms IS NULL` = pending). `sync_cursors` records the highest applied
+`seq` per `(stream_id, device_id)` for gap detection and pull resumption.
 
-```sql
-CREATE TABLE person (
-    person_id      BLOB PRIMARY KEY,           -- 16 bytes; LOCAL identifier
-    identity_id    BLOB,                       -- idn_… raw bytes; nullable
-    display_name   TEXT NOT NULL,              -- local-only; never synced as plaintext
-    email_lc       TEXT,                       -- nullable
-    meta_blob      BLOB NOT NULL,              -- CBOR
-    created_at_ms  INTEGER NOT NULL,
-    updated_at_ms  INTEGER NOT NULL
-);
-CREATE INDEX person_identity_idx ON person(identity_id) WHERE identity_id IS NOT NULL;
-CREATE UNIQUE INDEX person_email_idx ON person(email_lc) WHERE email_lc IS NOT NULL;
-```
+### Wrapped stream keys — `stream_keys`
 
-The `*_blob` columns hold the canonical CRDT or CBOR representation; the scalar columns are denormalized projections for query performance and are rebuilt from the blob on migration.
+Keyed by `(stream_id, epoch)`, so a rotation adds a row rather than replacing
+one and old epochs stay openable.
 
-### Tasks (materialized projection)
-
-```sql
-CREATE TABLE tasks (
-    id               BLOB PRIMARY KEY,
-    stream_id        BLOB NOT NULL,
-    title            TEXT NOT NULL,
-    state            TEXT NOT NULL,
-    priority         INTEGER,
-    energy           TEXT,
-    estimated_min    INTEGER,
-    scheduled_at     INTEGER,
-    due_at           INTEGER,
-    completed_at     INTEGER,
-    deferred_count   INTEGER NOT NULL DEFAULT 0,
-    routine_id       BLOB,
-    routine_occurrence INTEGER,
-    archived         INTEGER NOT NULL DEFAULT 0,
-    deleted          INTEGER NOT NULL DEFAULT 0,
-    scheduling_constraints BLOB,           -- canonical CBOR, NULL = empty; projection (arrives in migration 0003)
-    body             BLOB,                 -- CRDT doc snapshot
-    extra            BLOB,                 -- forward-compat unknown fields
-    head_root        BLOB                  -- per-task tamper-detection snapshot
-);
-
--- Many-to-many task ↔ context
-CREATE TABLE task_contexts (
-    task_id    BLOB NOT NULL,
-    context_id BLOB NOT NULL,
-    added_at   INTEGER NOT NULL,
-    PRIMARY KEY (task_id, context_id)
-);
-```
-
-### Sync state
-
-```sql
-CREATE TABLE sync_cursors (
-    stream_id  BLOB NOT NULL,
-    device_id  BLOB NOT NULL,
-    last_seq   INTEGER NOT NULL,
-    PRIMARY KEY (stream_id, device_id)
-);
-
-CREATE TABLE outbox (
-    op_id        BLOB PRIMARY KEY,
-    queued_at    INTEGER NOT NULL,
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    next_retry_at INTEGER
-);
-```
-
-### Wrapped stream keys
-
-```sql
-CREATE TABLE stream_keys (
-    stream_id    BLOB PRIMARY KEY,
-    epoch        INTEGER NOT NULL,
-    wrapped      BLOB NOT NULL,        -- AEAD(vault_root, stream_key)
-    created_at   INTEGER NOT NULL
-);
-```
-
-### FTS
+### FTS — `search_idx`
 
 ```sql
 CREATE VIRTUAL TABLE search_idx USING fts5(
     kind, id UNINDEXED, stream_id UNINDEXED,
     title, body, contexts,
-    tokenize = 'unicode61 remove_diacritics 2 porter'
+    tokenize = 'porter unicode61 remove_diacritics 2'
 );
 ```
 
-The `unicode61 remove_diacritics 2 porter` tokenizer applies to both index AND queries. Examples:
+FTS5 expects chained tokenizers **outer-first**, so `porter` wraps `unicode61`
+and the arguments after `unicode61` configure that base tokenizer. (This
+document previously wrote the pair in the other order, which FTS5 does not
+accept.) The tokenizer applies to both the index and queries:
 
 | Search input | Index entry | Match? |
 |---|---|---|
@@ -257,16 +155,17 @@ CJK quality is acknowledged as basic; v1.1 introduces a per-locale CJK tokenizer
 
 ## Indexes
 
-```sql
-CREATE INDEX idx_tasks_stream ON tasks(stream_id) WHERE deleted = 0 AND archived = 0;
-CREATE INDEX idx_tasks_today ON tasks(scheduled_at) WHERE deleted = 0 AND state IN ('todo','in_progress','blocked');
-CREATE INDEX idx_tasks_due   ON tasks(due_at)       WHERE deleted = 0 AND state IN ('todo','in_progress','blocked');
-CREATE INDEX idx_tasks_routine ON tasks(routine_id, routine_occurrence) WHERE routine_id IS NOT NULL;
+Defined alongside their tables in the baseline. The ones that carry a read path
+rather than merely a foreign key:
 
-CREATE INDEX idx_blocks_time ON blocks(starts_at, ends_at) WHERE deleted = 0;
-CREATE INDEX idx_ops_stream_device ON ops(stream_id, device_id, seq);
-CREATE INDEX idx_outbox_retry ON outbox(next_retry_at) WHERE next_retry_at IS NOT NULL;
-```
+| Index | What it serves |
+|---|---|
+| `ops_by_stream (stream_id, seq)` | Replay and backfill in causal order. |
+| `ops_unapplied (applied_at) WHERE applied_at IS NULL` | The reconciliation pass. |
+| `tasks_by_due (due_at_ms) WHERE due_at_ms IS NOT NULL` | Today and the deadline views. |
+| `task_blockers_by_blocker` | The reverse dependency direction. |
+| `contexts_by_name (name COLLATE NOCASE) WHERE deleted = 0` | `@name` resolution during capture. Deliberately **not** UNIQUE — see the baseline's comment. |
+| `review_snapshots_by_window (window_start_ms DESC, created_at_ms DESC)` | History, newest first. |
 
 ## Materialization
 
