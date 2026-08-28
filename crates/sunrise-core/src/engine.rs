@@ -201,6 +201,15 @@ impl Engine {
     /// Called ONCE per emitted op: [`HlcClock::send`] is strictly increasing,
     /// so calling it twice for one op would stamp two of its rows differently
     /// and make the op non-atomic under merge.
+    ///
+    /// The converse matters just as much where **one command emits two ops**
+    /// (a completion plus its streak advance; a routine skip plus its task
+    /// tombstone). Each row must be stamped with the stamp of the op that
+    /// carries it, because that is the stamp every remote replica will write
+    /// when the op merges — `materialize_remote` reads it off the envelope.
+    /// Stamping a row with its sibling's stamp leaves the origin holding
+    /// different `lww_*` columns from everyone else, and the next concurrent
+    /// edit then resolves differently there than elsewhere.
     fn lww_stamp(&self, seq: u64) -> LwwStamp {
         LwwStamp {
             hlc: self.hlc.send(),
@@ -743,7 +752,9 @@ impl Engine {
                 let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
                 let routine_lww = self.lww_stamp(routine_seq);
                 let routine_op_id = self.fresh_op_id(now_ms);
-                update_routine_row(tx, routine, &lww)?;
+                // Stamped with the ROUTINE op's own stamp, which is what every
+                // remote replica will stamp this row with when the op merges.
+                update_routine_row(tx, routine, &routine_lww)?;
                 self.ops_insert(
                     tx,
                     &routine_op_id,
@@ -1500,7 +1511,9 @@ impl Engine {
                 let task_lww = self.lww_stamp(task_seq);
                 let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                update_task_row(tx, &t, &lww)?;
+                // Stamped with the TASK op's own stamp, not the routine op's:
+                // see the note on `Engine::lww_stamp`.
+                update_task_row(tx, &t, &task_lww)?;
                 ftsr_delete_task(tx, &t.id)?;
                 let del_op_id = self.fresh_op_id(now_ms);
                 self.ops_insert(
@@ -10400,6 +10413,112 @@ mod tests {
         assert_eq!(rb.streak_counter, 1, "streak converged");
         assert_eq!(ra.streak_keys, rb.streak_keys);
         assert_eq!(ra.streak_started_at, rb.streak_started_at);
+    }
+
+    /// The stored LWW stamp on a row, as the four columns hold it.
+    fn row_stamp(db: &Db, table: &str, id_col: &str, id: &EntityRef) -> (i64, i64, i64, Vec<u8>) {
+        db.conn()
+            .query_row(
+                &format!(
+                    "SELECT lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device
+                     FROM {table} WHERE {id_col} = ?"
+                ),
+                params![&id.bytes()[..]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+    }
+
+    /// A command that emits TWO ops must stamp each row with the stamp of the
+    /// op that carries it. Stamping the routine row with the *task* op's stamp
+    /// left the origin holding different `lww_*` columns from every replica —
+    /// which merges identically today and resolves the NEXT concurrent edit
+    /// differently on each side.
+    #[test]
+    fn a_two_op_command_stamps_each_row_with_its_own_ops_stamp() {
+        let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let (rid, occ) = seed_routine(&ea, &mut dba);
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.create"))
+            .unwrap();
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
+            .unwrap();
+
+        set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
+        set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
+        // One command, two ops: a task.update and the routine.update carrying
+        // the streak advance.
+        ea.apply(&mut dba, Command::CompleteTask(occ[0].0)).unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, occ[0].0.bytes(), "task.update"),
+        )
+        .unwrap();
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.update"))
+            .unwrap();
+
+        assert_eq!(
+            row_stamp(&dba, "routines", "id", &rid),
+            row_stamp(&dbb, "routines", "id", &rid),
+            "the routine row's stamp must match on both replicas"
+        );
+        assert_eq!(
+            row_stamp(&dba, "tasks", "id", &occ[0].0),
+            row_stamp(&dbb, "tasks", "id", &occ[0].0),
+            "the task row's stamp must match on both replicas"
+        );
+    }
+
+    /// The same rule on the other two-op command: `SkipRoutineOccurrence`
+    /// emits a routine.update and a task.delete.
+    #[test]
+    fn skipping_an_occurrence_stamps_the_task_row_with_the_task_ops_stamp() {
+        let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let (rid, occ) = seed_routine(&ea, &mut dba);
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.create"))
+            .unwrap();
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
+            .unwrap();
+
+        let key = occurrence_key_at("UTC", ms_to_ts(occ[0].1)).unwrap();
+        ea.apply(
+            &mut dba,
+            Command::SkipRoutineOccurrence {
+                id: rid,
+                occurrence_key: key,
+            },
+        )
+        .unwrap();
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.update"))
+            .unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, occ[0].0.bytes(), "task.delete"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            row_stamp(&dba, "tasks", "id", &occ[0].0),
+            row_stamp(&dbb, "tasks", "id", &occ[0].0),
+            "the tombstoned task's stamp must match on both replicas"
+        );
+        assert_eq!(
+            row_stamp(&dba, "routines", "id", &rid),
+            row_stamp(&dbb, "routines", "id", &rid),
+        );
     }
 
     // ---- out-of-order dependency ops still converge ----
