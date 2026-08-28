@@ -66,10 +66,34 @@ Avoid. If unavoidable:
 
 ## What this means for the v1 launch
 
-- The CDDL specs in `02-domain/` are the authoritative shape at `DOC_SCHEMA_V = 2`.
-  Version 1 differed only in the five `SunriseTime` fields
+- **The CDDL specs in `02-domain/` are NOT currently authoritative.** They were
+  written against `DOC_SCHEMA_V = 2`; the constant is now `4`, and 8 of the 9
+  spec files have drifted from the Rust types they claim to describe. Treat
+  `crates/sunrise-domain/src/` as the source of truth until this is repaired.
+  Verified drift, per file:
+
+  | Spec | Status | Principal drift |
+  |---|---|---|
+  | `scheduling-constraints.md` | **matches** | Pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
+  | `tasks.md` | drifted | Missing `reminder_lead_s`; CDDL `estimated_duration` (ISO string) is really `estimated_duration_s` (seconds); declares a `blocked` state and a `blocks_others` field, neither of which is serialized. |
+  | `streams.md` | drifted | Missing `reminder_lead_s`; declares an `integrations` map, and `StreamIcon`/`IntegrationConfig` types, that do not exist. |
+  | `contexts-and-tags.md` | drifted | Declares a `color` field that does not exist. |
+  | `routines-and-recurrence.md` | drifted | `rrule` is a structured map, not an RFC 5545 string; missing the six streak/forgiveness fields. |
+  | `time-blocks.md` | drifted | Nine fields specified but not modelled; `stream_id` is required, not optional. Prose has a "v1 scope" caveat, the CDDL block does not. |
+  | `attachments.md` | drifted | Four thumbnail-slice fields not yet modelled. Prose carries a "v1 scope" caveat. |
+  | `notes.md` | drifted | `NoteBody` is an opaque `bstr`, not the structured block grammar the CDDL defines. The `Note` entity has no CDDL block at all. |
+  | `people-and-sharing.md` | drifted | Wire key is `identity_id`, CDDL says `linked_identity`; `handle`/`avatar`/`notes`/`contact_methods` do not exist. |
+
+  One drift is global: no CDDL block declares the `unknown` (`#[serde(flatten)]`)
+  map that every persisted entity carries, even though the mechanism is
+  described in prose below.
+
+  Version 1 differed from 2 only in the five `SunriseTime` fields
   ([ADR-0017](../11-adr/0017-sunrise-time-representation.md)), which were bare
-  instants and still decode as `instant`.
+  instants and still decode as `instant`. Versions 3 and 4 added op families and
+  changed the delete ops to full-state
+  ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); neither is reflected
+  in the CDDL.
 - We expect rapid iteration in the first 6 months. Therefore, and these are
   implemented rather than planned:
   - Every entity carries an `unknown` map (`#[serde(flatten)]`) that preserves
