@@ -57,22 +57,27 @@ pub(crate) enum InnerOp {
     StreamCreate(Stream),
     /// Replace a stream's full state.
     StreamUpdate(Stream),
-    /// Tombstone a stream.
-    StreamDelete(EntityRef),
+    /// Tombstone a stream, carrying its **full state** with `deleted` set.
+    /// See [`Self::TaskDelete`] for why an id alone does not converge.
+    StreamDelete(Stream),
     /// Create a context (full state).
     ContextCreate(Context),
     /// Replace a context's full state.
     ContextUpdate(Context),
-    /// Tombstone a context. Every replica that applies this op also drops the
-    /// context from every Task carrying it, per
-    /// `docs/02-domain/contexts-and-tags.md`.
-    ContextDelete(EntityRef),
+    /// Tombstone a context, carrying its **full state** with `deleted` set.
+    /// See [`Self::TaskDelete`] for why an id alone does not converge.
+    ///
+    /// Every replica that applies this op also drops the context from every
+    /// Task carrying it, per `docs/02-domain/contexts-and-tags.md`.
+    ContextDelete(Context),
     /// Create a routine (full state). Boxed to keep the enum small.
     RoutineCreate(Box<Routine>),
     /// Replace a routine's full state.
     RoutineUpdate(Box<Routine>),
-    /// Tombstone a routine.
-    RoutineDelete(EntityRef),
+    /// Tombstone a routine, carrying its **full state** with `deleted` set.
+    /// Boxed to keep the enum small, as create and update are. See
+    /// [`Self::TaskDelete`] for why an id alone does not converge.
+    RoutineDelete(Box<Routine>),
     /// Create a time block (full state). Boxed to keep the enum small.
     BlockCreate(Box<Block>),
     /// Replace a time block's full state, bindings included.
@@ -168,16 +173,12 @@ impl InnerOp {
     pub(crate) fn target_ref(&self) -> EntityRef {
         match self {
             Self::TaskCreate(t) | Self::TaskUpdate(t) | Self::TaskDelete(t) => t.id,
-            Self::StreamCreate(s) | Self::StreamUpdate(s) => s.id,
-            Self::ContextCreate(c) | Self::ContextUpdate(c) => c.id,
-            Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) => rt.id,
+            Self::StreamCreate(s) | Self::StreamUpdate(s) | Self::StreamDelete(s) => s.id,
+            Self::ContextCreate(c) | Self::ContextUpdate(c) | Self::ContextDelete(c) => c.id,
+            Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) | Self::RoutineDelete(rt) => rt.id,
             Self::BlockCreate(b) | Self::BlockUpdate(b) => b.id,
             Self::AttachmentCreate(a) => a.id,
-            Self::StreamDelete(r)
-            | Self::ContextDelete(r)
-            | Self::RoutineDelete(r)
-            | Self::BlockDelete(r)
-            | Self::AttachmentDelete(r) => *r,
+            Self::BlockDelete(r) | Self::AttachmentDelete(r) => *r,
             Self::FocusStart(f) => f.id,
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,

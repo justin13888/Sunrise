@@ -1091,7 +1091,7 @@ impl Engine {
         stream.deleted = true;
         stream.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.id))?;
+        let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.clone()))?;
         let seq = self.next_seq(db, &META_STREAM)?;
         let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
@@ -1247,7 +1247,7 @@ impl Engine {
         ctx.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.id))?;
+        let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.clone()))?;
         let seq = self.next_seq(db, &META_STREAM)?;
         let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
@@ -1442,7 +1442,7 @@ impl Engine {
         routine.deleted = true;
         routine.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::RoutineDelete(id))?;
+        let inner_op = encode_inner_op(&InnerOp::RoutineDelete(Box::new(routine.clone())))?;
         let seq = self.next_seq(db, &META_STREAM)?;
         let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
@@ -2917,42 +2917,6 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
     incoming.seq >= row.seq
 }
 
-/// Tombstone a materialized stream under LWW (delete op won).
-fn tombstone_stream(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE streams SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE stream_id = ?",
-        params![
-            lww.hlc.physical_ms,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            &id[..]
-        ],
-    )?;
-    Ok(())
-}
-
-/// Tombstone a materialized routine under LWW (delete op won).
-fn tombstone_routine(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE routines SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            lww.hlc.physical_ms,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            &id[..]
-        ],
-    )?;
-    Ok(())
-}
-
 /// Apply one decoded remote inner op to the materialized tables under LWW.
 ///
 /// Compares the envelope's `(hlc, device, seq)` stamp against the target row's
@@ -3053,9 +3017,13 @@ fn materialize_remote(
                 insert_stream_row(tx, s, lww)?;
             }
         }
-        InnerOp::StreamDelete(_) => {
+        InnerOp::StreamDelete(s) => {
+            // Applied as the full-state op it now is, so the whole row is
+            // replaced rather than only its tombstone flag.
             if present {
-                tombstone_stream(tx, target.bytes(), lww)?;
+                update_stream_row(tx, s, lww)?;
+            } else {
+                insert_stream_row(tx, s, lww)?;
             }
         }
         InnerOp::ContextCreate(c) | InnerOp::ContextUpdate(c) => {
@@ -3065,7 +3033,7 @@ fn materialize_remote(
                 insert_context_row(tx, c, lww)?;
             }
         }
-        InnerOp::ContextDelete(_) => {
+        InnerOp::ContextDelete(c) => {
             // The membership purge is keyed on the context id alone and is
             // idempotent, so it runs even when this replica has not yet
             // materialized the Context row itself (a delete that overtook its
@@ -3073,7 +3041,7 @@ fn materialize_remote(
             // Tasks" true on every replica that sees the delete.
             purge_context_from_tasks(tx, target.bytes())?;
             if present {
-                tombstone_context(tx, target.bytes(), lww)?;
+                update_context_row(tx, c, lww)?;
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
@@ -3084,9 +3052,11 @@ fn materialize_remote(
                 insert_routine_row(tx, r, ts_ms, lww)?;
             }
         }
-        InnerOp::RoutineDelete(_) => {
+        InnerOp::RoutineDelete(rt) => {
             if present {
-                tombstone_routine(tx, target.bytes(), lww)?;
+                update_routine_row(tx, rt, lww)?;
+            } else {
+                insert_routine_row(tx, rt, ts_ms, lww)?;
             }
         }
         InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) => {
@@ -3679,24 +3649,6 @@ fn update_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusq
             lww.seq,
             &lww.device[..],
             c.id.bytes().to_vec(),
-        ],
-    )?;
-    Ok(())
-}
-
-/// Tombstone a materialized context under LWW (delete op won).
-fn tombstone_context(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE contexts SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            lww.hlc.physical_ms,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            &id[..]
         ],
     )?;
     Ok(())

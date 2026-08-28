@@ -1,20 +1,16 @@
-//! Probe: does the id-only-delete divergence that `TaskDelete` had also affect
-//! `StreamDelete`, `ContextDelete`, and `RoutineDelete`?
+//! Regression coverage for delete convergence on `Stream`, `Context`, and
+//! `Routine` — the three ops that had the same id-only-delete defect as
+//! `TaskDelete`, and were converted alongside it under `DOC_SCHEMA_V = 4`.
 //!
-//! `TaskDelete` was converted to carry full entity state under
-//! `DOC_SCHEMA_V = 4` (see `two_core_delete_convergence.rs` and ADR-0014). The
-//! other delete ops still carry a bare `EntityRef` and apply through
-//! `tombstone_*`, which sets `deleted = 1` plus the LWW stamp and touches no
-//! other column — structurally identical to what `TaskDelete` used to do.
+//! Each races a delete on one replica against an update on the other and
+//! asserts full convergence, tombstone included — the same assertion
+//! `two_core_delete_convergence.rs` makes for `Task`.
 //!
-//! These tests exist to establish empirically whether that shape actually
-//! diverges, rather than inferring it from the code. Each races a delete on one
-//! replica against an update on the other and asserts full convergence,
-//! tombstone included — the same assertion the Task test makes.
+//! # What these caught, and why the rate was misleading
 //!
-//! # Finding: all three diverge
-//!
-//! Measured over 12 runs each:
+//! These began as probes, written to establish empirically whether the shape
+//! `TaskDelete` had actually diverged rather than inferring it from the code.
+//! It did, in all three cases. Measured over 12 runs each, before the fix:
 //!
 //! | Op | Runs diverged |
 //! |---|---|
@@ -22,38 +18,41 @@
 //! | `ContextDelete` | 2 / 12 |
 //! | `RoutineDelete` | 2 / 12 |
 //!
-//! The failure is identical in shape to the one `TaskDelete` had — both
-//! replicas agree on `deleted` and disagree on the contested scalar forever:
+//! The failure was identical in shape to `TaskDelete`'s — both replicas agree
+//! on `deleted` and disagree on the contested scalar forever:
 //!
 //! ```text
 //! a = ("contested", true)
 //! b = ("renamed",   true)
 //! ```
 //!
-//! **Do not read a low rate as a mild bug.** Divergence occurs only when the
-//! *delete* wins the LWW race. When the update wins, the delete is rejected
-//! wholesale and both replicas keep the updated row, which converges — so the
-//! rate here measures how often the delete happened to be later, not how often
-//! the defect applies. Every run where the delete wins diverges, and the
-//! divergence is permanent: both sides then carry the same winning stamp, so
-//! neither will ever accept a correction.
+//! **A low rate here was never evidence of a mild bug**, and this is the part
+//! worth keeping. Divergence occurs only when the *delete* wins the LWW race.
+//! When the update wins, the delete is rejected wholesale and both replicas
+//! keep the updated row, which converges. So the rate measured how often the
+//! delete happened to land last — not how often the defect applied. Every
+//! delete-wins run diverged, and permanently: both sides then carried the same
+//! winning stamp, so neither would ever accept a correction.
 //!
-//! (Sampling at 12 runs also means these counts are noisy — the underlying
-//! probability is roughly "how often does the delete land last", not the
-//! 8–17% the table happens to show.)
+//! That distinction mattered. The very first probe run had `Stream` failing
+//! while `Context` and `Routine` passed, which looked like "only Stream is
+//! affected". It was luck, not signal. Repeating the runs showed all three.
 //!
-//! # Why these are `#[ignore]`d
+//! The same reasoning governs how these are read *now*: a green run does not
+//! prove much on its own, because a run where the update wins would pass even
+//! against the old broken code. Confidence comes from repetition. The fix was
+//! validated at 0 failures in 40 runs, and reverting the three apply paths to
+//! tombstone-only reproduced divergence in all three.
 //!
-//! Converting the other delete ops is a separate decision that has not been
-//! taken. These are evidence for that decision, not a red gate. Run them with
-//! `cargo test -p sunrise-e2e --test delete_defect_probe -- --ignored`.
+//! # The fix these lock in
 //!
-//! If the decision is to convert, the fix is mechanical and mirrors
-//! `TaskDelete`: change the `InnerOp` variant to carry the entity, pass the
-//! already-mutated value at each construction site, apply through the same path
-//! as the corresponding update, delete the now-dead `tombstone_*` helper, and
-//! bump `DOC_SCHEMA_V`. Un-`#[ignore]` these and they become the regression
-//! tests.
+//! `StreamDelete`, `ContextDelete`, and `RoutineDelete` carry the entity's full
+//! state with `deleted` set, and apply through the same path as the
+//! corresponding update, so the whole row is replaced. See ADR-0014.
+//!
+//! `BlockDelete` and `AttachmentDelete` still carry a bare `EntityRef` and
+//! still use the `tombstone_*` shape; they have not been converted and have no
+//! equivalent coverage here.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -131,7 +130,6 @@ async fn assert_converges_after_race(
     );
 }
 
-#[ignore = "probe, not a gate: StreamDelete diverges when the delete wins the LWW race — see module docs"]
 #[tokio::test(flavor = "multi_thread")]
 async fn stream_delete_vs_update_converges() {
     let (addr, _relay) = spawn_relay().await;
@@ -169,7 +167,6 @@ async fn stream_delete_vs_update_converges() {
     b.shutdown().await;
 }
 
-#[ignore = "probe, not a gate: ContextDelete diverges when the delete wins the LWW race — see module docs"]
 #[tokio::test(flavor = "multi_thread")]
 async fn context_delete_vs_update_converges() {
     let (addr, _relay) = spawn_relay().await;
@@ -207,7 +204,6 @@ async fn context_delete_vs_update_converges() {
     b.shutdown().await;
 }
 
-#[ignore = "probe, not a gate: RoutineDelete diverges when the delete wins the LWW race — see module docs"]
 #[tokio::test(flavor = "multi_thread")]
 async fn routine_delete_vs_update_converges() {
     let (addr, _relay) = spawn_relay().await;

@@ -89,26 +89,47 @@ carries a full state to replace it with. A delete is not exempt, and it is the
 one place where the temptation to cut a corner is strongest: the id alone looks
 like enough, because the tombstone is all anyone reads afterwards.
 
-It is not enough. `InnerOp::TaskDelete` originally carried only an `EntityRef`,
-so when a delete won LWW the tombstone was set and the row stamped with the
+It is not enough. The delete ops originally carried only an `EntityRef`, so
+when a delete won LWW the tombstone was set and the row stamped with the
 winning stamp while every other column kept whatever *that replica* happened to
 hold. Two replicas that had applied different updates before the delete then
 disagreed permanently — and because both carried the same winning stamp,
 neither would ever accept a correction. The divergence was stable, not
 transient, and invisible to the UI because tombstoned rows are filtered from
-every read. It surfaced only in a byte-identical convergence check
-(`crates/sunrise-e2e/tests/two_core_delete_convergence.rs`), reproducing about
-one run in four.
+every read. It surfaced only in byte-identical convergence checks.
 
 So: **delete ops carry the entity's full state with `deleted` set**, and apply
-through the same path as an update. `DOC_SCHEMA_V = 4` is that change for
-`TaskDelete`.
+through the same path as the corresponding update, so the whole row is
+replaced. `DOC_SCHEMA_V = 4` is that change for `TaskDelete`, `StreamDelete`,
+`ContextDelete`, and `RoutineDelete`.
 
-The rule generalises — any op that mutates an entity must carry the whole
-entity — but as of `DOC_SCHEMA_V = 4` only `TaskDelete` has been converted.
-`StreamDelete`, `ContextDelete`, `RoutineDelete`, `BlockDelete`, and
-`AttachmentDelete` still carry an `EntityRef` and have the same latent defect;
-whether to convert them is a separate decision, deliberately not taken here.
+`BlockDelete` and `AttachmentDelete` still carry an `EntityRef` and retain the
+same latent defect. They are not covered by the convergence suites and have not
+been converted; doing so is the same mechanical change.
+
+### A note on measuring this class of bug
+
+The divergence rate is a trap, and it is worth recording how it misleads,
+because the next such bug will present the same way.
+
+Divergence happens **only when the delete wins the LWW race**. When the update
+wins, the delete is rejected wholesale and both replicas keep the updated row,
+which converges. So an observed failure rate measures how often the delete
+happened to land last, not how often the defect applies — every delete-wins
+interleaving diverges, and does so permanently.
+
+Concretely: the first probe run showed `StreamDelete` diverging while
+`ContextDelete` and `RoutineDelete` passed, which read as "only Stream is
+affected". Repetition showed all three at 1–2 failures in 12. Reading the low
+rate at face value would have shipped two permanent data-loss paths as a rare
+edge case.
+
+The corollary for the tests
+(`crates/sunrise-e2e/tests/delete_defect_probe.rs`,
+`two_core_delete_convergence.rs`): a single green run proves little, since a
+run where the update wins passes against broken code too. Confidence comes from
+repetition, and from checking that the test still fails when the fix is
+reverted.
 
 ## Why it is nonetheless the right v1 decision
 
