@@ -21,7 +21,7 @@ use sunrise_domain::{
     TodaySection,
 };
 
-use crate::dto::{Constraint, Recurrence, SessionRow, TimeValue};
+use crate::dto::{Constraint, Recurrence, RoutineItem, SessionRow, TimeValue};
 use crate::BindingError;
 
 /// See [`sunrise_domain::TodaySection`].
@@ -188,6 +188,27 @@ pub fn energy_fit_label(fit: EnergyFit) -> String {
 #[must_use]
 pub fn interruption_label(reason: InterruptionReason) -> String {
     reason.as_str().to_string()
+}
+
+/// When `routine` next fires at or after `now_ms`, or `None` if nothing falls
+/// inside its materialization horizon.
+///
+/// See [`sunrise_domain::routine_rows`], which is where the horizon lives: it
+/// is per-frequency (`docs/02-domain/routines-and-recurrence.md`), so a yearly
+/// routine still resolves while a daily one stays cheap. A client picking its
+/// own lookahead would show "no next occurrence" for a yearly routine and be
+/// wrong about it.
+///
+/// Skips, pauses and the series end are all honoured, because the whole
+/// routine is handed over rather than just its rule.
+#[uniffi::export]
+#[must_use]
+pub fn next_occurrence_ms(routine: RoutineItem, now_ms: u64) -> Option<i64> {
+    let now = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).ok()?).ok()?;
+    let rows = sunrise_domain::routine_rows(&[sunrise_domain::Routine::from(routine)], now);
+    rows.first()
+        .and_then(|r| r.next)
+        .map(jiff::Timestamp::as_millisecond)
 }
 
 /// A running session's numbers, as the domain derives them.

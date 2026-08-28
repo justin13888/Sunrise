@@ -1019,6 +1019,49 @@ impl From<&Routine> for RoutineItem {
     }
 }
 
+/// Back to the domain's own [`Routine`], so the projections that take one can
+/// be asked about a routine a client is holding.
+///
+/// Written out field by field rather than kept as an opaque handle, because
+/// the round trip is what makes `next_occurrence_ms` honest: it answers about
+/// exactly the routine on screen, including the skips.
+impl From<RoutineItem> for Routine {
+    fn from(r: RoutineItem) -> Self {
+        Self {
+            id: r.id,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            template: TaskTemplate::from(r.template),
+            rrule: RRule::from(r.rrule),
+            timezone: r.timezone,
+            starts_at: r.starts_at,
+            ends_at: r.ends_at,
+            scheduling_constraints: r
+                .scheduling_constraints
+                .into_iter()
+                .map(ScheduleConstraint::from)
+                .collect(),
+            // Dated for removal at `DOC_SCHEMA_FLOOR = 3`; nothing writes a
+            // new entry, and `skipped_keys` is the live representation.
+            skip_dates: Vec::new(),
+            skipped_keys: r.skipped_keys,
+            catchup_policy: r.catchup_policy,
+            streak_counter: r.streak_counter,
+            last_completed_at: r.last_completed_at,
+            grace_window_s: r.grace_window_s,
+            forgiveness_enabled: r.forgiveness_enabled,
+            streak_started_at: r.streak_started_at,
+            forgivenesses_in_window: r.forgivenesses_in_window,
+            streak_keys: r.streak_keys,
+            paused: r.paused,
+            paused_until: r.paused_until,
+            archived: r.archived,
+            deleted: r.deleted,
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
+}
+
 /// See [`sunrise_domain::RoutineDraft`].
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RoutineDraftIn {
