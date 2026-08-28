@@ -77,6 +77,8 @@ use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE
 use sunrise_error::ErrorCode;
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
+
+pub use sunrise_sync::TokenSource;
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
     MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
@@ -111,7 +113,15 @@ pub const DEFAULT_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
 pub const MIN_RESYNC_GAP: Duration = Duration::from_millis(250);
 
 /// Client-side sync configuration carried in [`crate::CoreConfig`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is hand-written because [`SyncConfig::credential`] holds a live
+/// bearer and this type is reachable from `CoreConfig`, which is logged.
+///
+/// Deliberately not `PartialEq`. Once it carries a credential handle there is
+/// no equality worth defining: comparing by *value* compares secrets, and
+/// comparing by shared cell would make two configs built the same way unequal.
+/// Callers that need to compare configuration compare the fields they mean.
+#[derive(Clone)]
 pub struct SyncConfig {
     /// Relay `/sync` endpoint URL (e.g. `wss://relay.example/sync`). Used by
     /// the production WebSocket factory the app assembles; the driver itself
@@ -120,6 +130,28 @@ pub struct SyncConfig {
     /// How often a live session re-subscribes with its current cursors as an
     /// anti-entropy backstop. Tests shorten it; see [`DEFAULT_RESYNC_INTERVAL`].
     pub resync_interval: Duration,
+    /// The bearer to present on the `/sync` upgrade.
+    ///
+    /// A [`TokenSource`] rather than a `String` because a session outlives its
+    /// tokens: the transport factory is built once and called on every
+    /// reconnect for the life of the process, so a captured string would be
+    /// frozen at whatever the token was when sync started. Writing a renewed
+    /// token here is what makes the *next* reconnect present a live
+    /// credential.
+    ///
+    /// Empty means unauthenticated, which only a self-host relay running
+    /// `NullVerifier` accepts.
+    pub credential: TokenSource,
+}
+
+impl std::fmt::Debug for SyncConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncConfig")
+            .field("url", &self.url)
+            .field("resync_interval", &self.resync_interval)
+            .field("credential", &self.credential)
+            .finish()
+    }
 }
 
 impl SyncConfig {
@@ -129,13 +161,22 @@ impl SyncConfig {
         Self {
             url: url.into(),
             resync_interval: DEFAULT_RESYNC_INTERVAL,
+            credential: TokenSource::empty(),
         }
     }
 
     /// Override the anti-entropy interval.
     #[must_use]
-    pub const fn with_resync_interval(mut self, interval: Duration) -> Self {
+    pub fn with_resync_interval(mut self, interval: Duration) -> Self {
         self.resync_interval = interval;
+        self
+    }
+
+    /// Present `credential` on the upgrade. The source is shared, so a later
+    /// write reaches the next reconnect.
+    #[must_use]
+    pub fn with_credential(mut self, credential: TokenSource) -> Self {
+        self.credential = credential;
         self
     }
 }

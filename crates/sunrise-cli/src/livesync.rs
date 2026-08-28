@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sunrise_core::{
-    BoxTransport, Command, ConnectFuture, Core, CoreConfig, CoreError, SyncConfig,
+    BoxTransport, Command, ConnectFuture, Core, CoreConfig, CoreError, SyncConfig, TokenSource,
     TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
@@ -35,6 +35,11 @@ pub const ENV_SYNC_URL: &str = "SUNRISE_SYNC_URL";
 pub const ENV_EXPORT_CERT: &str = "SUNRISE_EXPORT_CERT_FILE";
 /// Env var: path to a peer's cert (canonical CBOR) to trust on startup.
 pub const ENV_TRUST_CERT: &str = "SUNRISE_TRUST_CERT_FILE";
+/// Env var: bearer token presented on the `/sync` upgrade.
+///
+/// Unset is only viable against a self-host relay running `NullVerifier`;
+/// every other deployment answers an unauthenticated upgrade with `401`.
+pub const ENV_SYNC_TOKEN: &str = "SUNRISE_SYNC_TOKEN";
 
 /// Raw environment inputs. Kept separate from parsing so [`plan_from_env`]
 /// stays a pure function over explicit values.
@@ -46,6 +51,8 @@ pub struct SyncEnv {
     pub export_cert: Option<String>,
     /// Raw `SUNRISE_TRUST_CERT_FILE`.
     pub trust_cert: Option<String>,
+    /// Raw `SUNRISE_SYNC_TOKEN`.
+    pub token: Option<String>,
 }
 
 impl SyncEnv {
@@ -56,12 +63,16 @@ impl SyncEnv {
             url: std::env::var(ENV_SYNC_URL).ok(),
             export_cert: std::env::var(ENV_EXPORT_CERT).ok(),
             trust_cert: std::env::var(ENV_TRUST_CERT).ok(),
+            token: std::env::var(ENV_SYNC_TOKEN).ok(),
         }
     }
 }
 
 /// Parsed, validated live-sync plan the runtime executes on startup.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+///
+/// Not `PartialEq`: [`SyncConfig`] carries a bearer handle and has no
+/// meaningful equality (see its docs).
+#[derive(Debug, Default, Clone)]
 pub struct SyncPlan {
     /// `Some` ⇒ start the driver against this relay; `None` ⇒ offline.
     pub sync: Option<SyncConfig>,
@@ -86,25 +97,33 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     fn clean(s: Option<&str>) -> Option<String> {
         s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
+    let credential = TokenSource::new(clean(env.token.as_deref()));
     SyncPlan {
-        sync: clean(env.url.as_deref()).map(SyncConfig::new),
+        sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
         export_cert: clean(env.export_cert.as_deref()).map(PathBuf::from),
         trust_cert: clean(env.trust_cert.as_deref()).map(PathBuf::from),
     }
 }
 
 /// Build a [`TransportFactory`] that dials `url` with the real [`WsTransport`]
-/// on every connect attempt (initial connect + every reconnect).
+/// on every connect attempt (initial connect + every reconnect), presenting
+/// whatever bearer `credential` holds **at that moment**.
+///
+/// Reading the token per attempt rather than capturing it is the whole point:
+/// a reconnect after a renewal has to present the new token, and a factory
+/// that closed over a `String` would present the one sync started with
+/// forever.
 ///
 /// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
 /// transport-agnostic and calls it once per connection attempt.
 #[must_use]
-pub fn ws_factory(url: &str) -> TransportFactory {
+pub fn ws_factory(url: &str, credential: TokenSource) -> TransportFactory {
     let url = url.to_string();
     Arc::new(move || {
         let url = url.clone();
+        let bearer = credential.get();
         Box::pin(async move {
-            let t = WsTransport::connect(&url).await?;
+            let t = WsTransport::connect_with_bearer(&url, bearer.as_deref()).await?;
             Ok(Box::new(t) as BoxTransport)
         }) as ConnectFuture
     })
@@ -197,7 +216,7 @@ pub async fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     }
 
     match &plan.sync {
-        Some(sc) => match core.start_sync(ws_factory(&sc.url)) {
+        Some(sc) => match core.start_sync(ws_factory(&sc.url, sc.credential.clone())) {
             Ok(()) => {
                 // The relay *host* is the sanctioned connection-diagnostic
                 // identifier (logging.md §6.2); the full URL could carry a
@@ -284,7 +303,48 @@ mod tests {
     fn plan_is_off_with_no_env() {
         let plan = plan_from_env(&SyncEnv::default());
         assert!(plan.is_off());
-        assert_eq!(plan, SyncPlan::default());
+        assert!(plan.export_cert.is_none());
+        assert!(plan.trust_cert.is_none());
+    }
+
+    #[test]
+    fn a_token_reaches_the_sync_config() {
+        let plan = plan_from_env(&SyncEnv {
+            url: Some("ws://127.0.0.1:8443/sync".into()),
+            token: Some("  eyJhbGciOiJSUzI1NiJ9  ".into()),
+            ..SyncEnv::default()
+        });
+        assert_eq!(
+            plan.sync.as_ref().unwrap().credential.get().as_deref(),
+            Some("eyJhbGciOiJSUzI1NiJ9"),
+            "the bearer is trimmed and carried, so the upgrade can present it"
+        );
+    }
+
+    /// Sync against a self-host relay is still configurable with no token at
+    /// all — `NullVerifier` accepts an absent bearer, and requiring one here
+    /// would make the single-binary walkthrough impossible.
+    #[test]
+    fn no_token_is_a_valid_plan() {
+        let plan = plan_from_env(&SyncEnv {
+            url: Some("ws://127.0.0.1:8443/sync".into()),
+            ..SyncEnv::default()
+        });
+        assert!(!plan.sync.as_ref().unwrap().credential.is_set());
+        assert!(!plan.is_off());
+    }
+
+    /// A blank export must not become a `Some("")` bearer: an empty
+    /// `Authorization: Bearer ` header is worse than none, since it reaches the
+    /// verifier as a token to reject rather than as an absent one.
+    #[test]
+    fn a_blank_token_is_treated_as_unset() {
+        let plan = plan_from_env(&SyncEnv {
+            url: Some("ws://127.0.0.1:8443/sync".into()),
+            token: Some("   ".into()),
+            ..SyncEnv::default()
+        });
+        assert!(!plan.sync.as_ref().unwrap().credential.is_set());
     }
 
     #[test]
@@ -293,9 +353,13 @@ mod tests {
             url: Some("  ws://127.0.0.1:8443/sync ".into()),
             export_cert: Some("/tmp/self.cbor".into()),
             trust_cert: Some("   ".into()), // whitespace-only -> None
+            token: None,
         };
         let plan = plan_from_env(&env);
-        assert_eq!(plan.sync, Some(SyncConfig::new("ws://127.0.0.1:8443/sync")));
+        assert_eq!(
+            plan.sync.as_ref().map(|s| s.url.as_str()),
+            Some("ws://127.0.0.1:8443/sync")
+        );
         assert_eq!(plan.export_cert, Some(PathBuf::from("/tmp/self.cbor")));
         assert_eq!(plan.trust_cert, None);
         assert!(!plan.is_off());

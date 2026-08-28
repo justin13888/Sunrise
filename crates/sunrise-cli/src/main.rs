@@ -87,6 +87,8 @@ CAPTURE SYNTAX:
 ENVIRONMENT:
     SUNRISE_VAULT             vault directory (default ~/.sunrise/vault)
     SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
+    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; unset only works
+                              against a self-host relay
     SUNRISE_EXPORT_CERT_FILE  write this device's cert here on startup
     SUNRISE_TRUST_CERT_FILE   trust the peer cert at this path on startup
     SUNRISE_LOG_FILE          override the NDJSON log destination

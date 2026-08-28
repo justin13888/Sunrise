@@ -80,6 +80,9 @@ pub async fn spawn_relay_with(
 /// reconnect).
 #[must_use]
 pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
+    // The harness relay runs the self-host `NullVerifier`, which accepts an
+    // absent bearer. Authenticated dialling is covered in
+    // `sunrise-server/tests/ws_auth.rs` and `ws_token_expiry.rs`.
     let url = format!("ws://{addr}/sync");
     Arc::new(move || {
         let url = url.clone();

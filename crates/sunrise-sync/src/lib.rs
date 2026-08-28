@@ -8,6 +8,7 @@
 //! v1 surface:
 //! - [`SyncState`] — the session state a driver reports to the UI.
 //! - [`Backoff`] — exponential backoff with jitter.
+//! - [`TokenSource`] — the shared, swappable bearer a session presents.
 //! - [`Transport`] — async trait the driver drives.
 //! - [`WsTransport`] — the production WebSocket client transport (`ws`
 //!   feature).
@@ -21,12 +22,14 @@
 )]
 
 pub mod backoff;
+pub mod credential;
 pub mod state;
 pub mod transport;
 #[cfg(feature = "ws")]
 pub mod ws;
 
 pub use backoff::Backoff;
+pub use credential::TokenSource;
 pub use state::SyncState;
 pub use transport::{Transport, TransportError};
 #[cfg(feature = "ws")]

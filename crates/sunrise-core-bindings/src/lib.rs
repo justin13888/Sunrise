@@ -137,6 +137,13 @@ pub struct SunriseCore {
     /// installed. A bare `tokio::spawn` there panics at runtime. Spawning
     /// through a captured handle works from any thread.
     rt: Handle,
+    /// The bearer the transport factory presents on every connect.
+    ///
+    /// Held here rather than captured in the factory closure because a sync
+    /// session outlives its tokens: the app renews against the issuer and
+    /// writes the result through [`SunriseCore::set_sync_credential`], and the
+    /// next reconnect picks it up without the driver being restarted.
+    credential: sunrise_core::TokenSource,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -165,6 +172,7 @@ impl SunriseCore {
             // Inside an async exported method, so a runtime is definitely
             // installed. This is the only place that is guaranteed.
             rt: Handle::current(),
+            credential: sunrise_core::TokenSource::empty(),
         }))
     }
 
@@ -212,14 +220,31 @@ impl SunriseCore {
         self.inner.device_cert()
     }
 
-    /// Start the live-sync driver against `url` (a relay `/sync` WebSocket).
+    /// Start the live-sync driver against `url` (a relay `/sync` WebSocket),
+    /// presenting `bearer` on the upgrade.
+    ///
+    /// `bearer` is empty only for a self-host relay: every other deployment
+    /// refuses an unauthenticated upgrade with `401`. Renewing is
+    /// [`SunriseCore::set_sync_credential`] — the driver picks the new token up
+    /// on its next connect, and the caller does not restart sync.
     ///
     /// Deliberately sync: it only spawns. See the note on [`SunriseCore::rt`]
     /// for why the spawn cannot use `tokio::spawn`.
-    pub fn start_sync(&self, url: String) -> Result<(), BindingError> {
+    pub fn start_sync(&self, url: String, bearer: Option<String>) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
-        self.inner.start_sync(ws_factory(&url))?;
+        self.credential.set(bearer);
+        self.inner
+            .start_sync(ws_factory(&url, self.credential.clone()))?;
         Ok(())
+    }
+
+    /// Replace the bearer the sync driver presents on its next connect.
+    ///
+    /// Separate from [`SunriseCore::start_sync`] because a session outlives its
+    /// tokens: the app renews against the issuer on its own schedule and hands
+    /// the result over here, without tearing the driver down.
+    pub fn set_sync_credential(&self, bearer: Option<String>) {
+        self.credential.set(bearer);
     }
 
     /// Start the periodic routine-materialization timer.
@@ -254,12 +279,16 @@ impl SunriseCore {
 
 /// Build the transport factory the sync driver dials with, once per connection
 /// attempt (initial connect and every reconnect).
-fn ws_factory(url: &str) -> sunrise_core::TransportFactory {
+///
+/// The bearer is read from `credential` on every attempt rather than captured,
+/// so a reconnect after a renewal presents the *current* token.
+fn ws_factory(url: &str, credential: sunrise_core::TokenSource) -> sunrise_core::TransportFactory {
     let url = url.to_string();
     Arc::new(move || {
         let url = url.clone();
+        let bearer = credential.get();
         Box::pin(async move {
-            let t = sunrise_sync::WsTransport::connect(&url).await?;
+            let t = sunrise_sync::WsTransport::connect_with_bearer(&url, bearer.as_deref()).await?;
             Ok(Box::new(t) as sunrise_core::BoxTransport)
         }) as sunrise_core::ConnectFuture
     })
