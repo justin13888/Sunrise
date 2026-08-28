@@ -210,7 +210,7 @@ If a device's cursor is older than the most recent snapshot for a Stream, the se
 
 ## Ordering guarantees on the wire
 
-The server preserves the order in which it received ops from a given originating device. Receivers see ops from device D in D's emission order; cross-device order is not guaranteed (and CRDT doesn't need it).
+The server preserves the order in which it received ops from a given originating device. Receivers see ops from device D in D's emission order; cross-device order is not guaranteed (and the merge rule does not need it — the LWW key is carried on the op, not implied by arrival order).
 
 ## Versioning
 

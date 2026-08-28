@@ -48,7 +48,7 @@ A user creates a saved view by:
 1. Filtering current view to taste.
 2. "Save this view as…"
 
-The saved-view **spec** is a CRDT entity (synced). The **result** is recomputed on each device. Per-device sort and scroll position are local-only.
+The saved-view **spec** is an ordinary synced entity (entity-level LWW). The **result** is recomputed on each device. Per-device sort and scroll position are local-only.
 
 Examples:
 

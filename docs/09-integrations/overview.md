@@ -27,11 +27,11 @@ Multiple devices running the same integration would call the API multiple times.
 
 ## Token storage
 
-Tokens stored as fields in the integration config inside the Stream entity (CRDT-synced, encrypted), reachable only after vault unlock. They are never in plaintext in logs or in transit beyond the third-party's TLS endpoint.
+Tokens stored as fields in the integration config inside the Stream entity (synced and encrypted like any other entity field), reachable only after vault unlock. They are never in plaintext in logs or in transit beyond the third-party's TLS endpoint.
 
 ### External revocation detection
 
-On any third-party API call returning `401` *after* a recent successful refresh, the integration sets the CRDT field `needs_reauth = true`, surfaces an in-app banner, zeroizes the old tokens, and stops scheduling sync runs. The user clicks "Reauthenticate" and walks through the standard OAuth re-consent flow.
+On any third-party API call returning `401` *after* a recent successful refresh, the integration sets the field `needs_reauth = true`, surfaces an in-app banner, zeroizes the old tokens, and stops scheduling sync runs. The user clicks "Reauthenticate" and walks through the standard OAuth re-consent flow.
 
 ## Disabling
 

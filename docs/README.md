@@ -17,7 +17,7 @@ Read top-down, 00 → 11, then `implementation/`. Each numbered section builds o
 | 02 | [`02-domain/`](./02-domain) | Entities and relationships we model. |
 | 03 | [`03-crypto/`](./03-crypto) | E2E encryption: keys, recovery, sharing, wire formats. |
 | 04 | [`04-storage/`](./04-storage) | How data is persisted on each client. |
-| 05 | [`05-sync/`](./05-sync) | How clients converge: CRDT, transport, protocol, conflicts. |
+| 05 | [`05-sync/`](./05-sync) | How clients converge: merge rules, transport, protocol, conflicts. |
 | 06 | [`06-server/`](./06-server) | What the server does (and does not). |
 | 07 | [`07-clients/`](./07-clients) | Per-platform: desktop, iOS, Android, web, TUI. |
 | 08 | [`08-features/`](./08-features) | User-facing feature specs (capture, planning, focus…). |

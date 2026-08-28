@@ -60,7 +60,7 @@ for each non-paused, non-archived Routine R:
             scheduled_at = O
 ```
 
-`stable_id` and `derive_task_id` are deterministic. This guarantees idempotence: any device running the engine for a given (R, O) will emit the *same* op_id, and the CRDT layer dedups.
+`stable_id` and `derive_task_id` are deterministic. This guarantees idempotence: any device running the engine for a given (R, O) will emit the *same* op_id, and the merge layer dedups on it.
 
 ## Horizon
 

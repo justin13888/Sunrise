@@ -37,7 +37,7 @@ Each device builds and maintains its own FTS5 index from its own decrypted op lo
 
 - **Free-text** — default tokenized FTS over indexed fields.
 - **Facets** — `stream:`, `context:`, `priority:`, `state:`, `due:before:`, `created:after:`, etc., parsed at the UI layer into structured filters that compose with the FTS match.
-- **Saved searches** — the saved query string is itself synced as a CRDT field (in vault-meta); results are re-computed locally.
+- **Saved searches** — the saved query string is itself synced (in vault-meta); results are re-computed locally.
 
 ## Cold-start budgets
 

@@ -15,7 +15,7 @@ This document is the authoritative table of version numbers and the rules for ch
 | Surface | Constant | Defined in | What it covers |
 |---|---|---|---|
 | **Wire protocol** | `WIRE_PROTO_V` | `sunrise-sync/src/proto.rs` | Frame layout, message kinds, error codes, compression rules — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). |
-| **Document schema** | `DOC_SCHEMA_V` | `sunrise-domain/src/schema.rs` | Per-entity field shapes and CRDT types — see [02-domain/schema-versioning.md](../02-domain/schema-versioning.md). |
+| **Document schema** | `DOC_SCHEMA_V` | `sunrise-domain/src/schema.rs` | Per-entity field shapes — see [02-domain/schema-versioning.md](../02-domain/schema-versioning.md). |
 | **Crypto suite** | `CRYPTO_SUITE_V` | `sunrise-crypto/src/suite.rs` | AEAD, signature, KDF, HPKE choices and parameters — see [03-crypto/primitives.md](../03-crypto/primitives.md). |
 | **Storage schema** | `STORAGE_V` | `sunrise-storage/src/migrations.rs` | SQLite/SQLCipher schema — see [04-storage/migrations.md](../04-storage/migrations.md). |
 

@@ -140,7 +140,7 @@ There is no separate "target deadline" field: `scheduled_at` **is** the target d
 
 `blocked` is a derived view, never a persisted state. Each device computes it on read from `(blocked_by, observed_remove_set)` and the current applied state of the referenced blockers. Reconciliation rules:
 
-- `blocked_by` is an OR-Set (Loro). Concurrent add and remove of the same blocker is **add-wins** (with timestamp-based tiebreak; full algorithm in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
+- `blocked_by` is an observed-remove set **in the target design only**; in v1 it merges with the rest of the Task by entity-level LWW, so a concurrent add and remove do not merge add-wins — the whole later Task wins. See §Merge mapping below and [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 - A blocker completing on device B emits `task.update(state=done)`. Device A, on receiving that op, recomputes `blocked` for any task whose `blocked_by` references B. There is no separate "unblock" op.
 - If a device is offline while a blocker completes, its local view stays `blocked` until sync; on sync, the recomputation runs as part of `db.merge.applied` and the UI updates without user action.
 

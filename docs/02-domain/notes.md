@@ -129,7 +129,7 @@ The redacted form is:
 
 The original target id is **not** preserved in the redacted form sent to a recipient who shouldn't see it.
 
-A reference whose target is soft-deleted renders as `{kind: "redacted", reason: "deleted_entity", placeholder_text: "(removed)"}` for the local user as well. The original reference id is preserved in the local CRDT state so a user-initiated undelete restores the link automatically.
+A reference whose target is soft-deleted renders as `{kind: "redacted", reason: "deleted_entity", placeholder_text: "(removed)"}` for the local user as well. The original reference id is preserved in the local state so a user-initiated undelete restores the link automatically.
 
 ## Length
 

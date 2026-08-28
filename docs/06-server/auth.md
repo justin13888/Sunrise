@@ -6,7 +6,7 @@ status: accepted
 
 Sunrise piggybacks **OpenID Connect (OIDC)** for everything user-facing — account login, session management, account recovery, sign-up, MFA, password resets, email verification. We do not implement password storage, OTP delivery, magic links, JWT signing, refresh-token rotation, or hCaptcha integration ourselves. An OIDC issuer does all of that.
 
-Cryptographic E2EE identity (identity + device keypairs) is **separate** from server auth. Device keys sign CRDT ops and pairing handshakes for end-to-end integrity; they are not used as a per-request server credential.
+Cryptographic E2EE identity (identity + device keypairs) is **separate** from server auth. Device keys sign ops and pairing handshakes for end-to-end integrity; they are not used as a per-request server credential.
 
 ## Components
 

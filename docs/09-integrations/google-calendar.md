@@ -22,7 +22,7 @@ Bidirectional integration. Per-Stream toggle.
 
 For each user-selected Google calendar:
 
-1. Periodic poll using `events.list` with `pageSize=100`, looping on `pageToken`. The poll interval is a per-Stream CRDT field, range 5–60 minutes (default 5 minutes). `int.run.start` and `int.run.ok` log entries include the configured interval.
+1. Periodic poll using `events.list` with `pageSize=100`, looping on `pageToken`. The poll interval is a per-Stream field, range 5–60 minutes (default 5 minutes). `int.run.start` and `int.run.ok` log entries include the configured interval.
 2. The final `nextSyncToken` is persisted per `(stream, calendar)`. On `410 Gone` for a sync token (Google's "expired" signal), the integration resets to an empty token and runs a full sync.
 3. New / updated events become / update Blocks tagged `source = import:gcal`, `external_id = <google_event_id>`. The Block also carries a `source_calendar_id` (internal) so multi-calendar imports are unambiguous.
 4. Imported Blocks are read-only **by default**. If the user edits an imported Block, `source_calendar_id` is cleared and the Block becomes pushable.

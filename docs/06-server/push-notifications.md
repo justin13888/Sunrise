@@ -121,7 +121,7 @@ FCM data-only messages CAN wake the app on most devices, rate-limited by Android
 
 ## Quiet hours
 
-- Quiet hours are stored in the user's vault as encrypted preferences (CRDT op).
+- Quiet hours are stored in the user's vault as encrypted preferences (an ordinary op).
 - The server **cannot** read quiet hours.
 - Enforcement is **client-side**: the client decides whether to surface a notification; the server always sends the push.
 - "Server-side coalescing" above is time-zone-agnostic — based purely on `(device, stream, kind)` tuples.

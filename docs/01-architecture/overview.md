@@ -40,7 +40,7 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 | Concern | Layer | Why |
 |---|---|---|
 | Domain entities, validation | Core | Single source of truth; testable without UI |
-| CRDT ops, merge | Core | Determinism is critical |
+| Ops, merge | Core | Determinism is critical |
 | Crypto, key handling | Core | Audit surface stays small |
 | Local DB schema | Core | UI doesn't touch SQLite directly |
 | Sync state machine | Core | Reconnect logic is too subtle to duplicate per-platform |
@@ -53,7 +53,7 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 
 See [`../11-adr/0002-shared-core-rust.md`](../11-adr/0002-shared-core-rust.md). Summary:
 
-- We need *one* implementation of CRDT, crypto, and sync — not four.
+- We need *one* implementation of merge, crypto, and sync — not four.
 - It must run inside a macOS app (Swift via UniFFI), a CLI (Rust native), and — when they are scheduled — iOS (Swift via UniFFI), Android (Kotlin via UniFFI) and the browser (WASM).
 - Rust gives us memory safety, deterministic builds, and one ecosystem (RustCrypto, rusqlite, sqlcipher).
 

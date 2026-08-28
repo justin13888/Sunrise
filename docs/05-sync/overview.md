@@ -18,7 +18,7 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 | Component | Spec |
 |---|---|
-| CRDT engine | [`crdt-design.md`](./crdt-design.md) |
+| Merge engine (entity LWW; `crdt-design.md` is the deferred per-field design) | [`crdt-design.md`](./crdt-design.md) |
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
 | Transport (WebSocket-only in v1) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |
@@ -65,5 +65,5 @@ Sync moves encrypted ops between devices that participate in the same identity (
 | TLS / cert validation failure | Hard error; sync paused; user notified. |
 | Auth token expired | Silent re-auth on next request; transparent to user. |
 | Quota exceeded | New ops still commit locally; sync gated until user resolves; UI explains. |
-| Two devices propose conflicting LWW writes simultaneously | CRDT merges deterministically; no UI prompt. |
+| Two devices propose conflicting LWW writes simultaneously | Merges deterministically on `(hlc, device_id, seq)`; no UI prompt. |
 | A receiver finds a tampered envelope | Drop, log, surface red integrity badge. |

@@ -31,7 +31,7 @@ Capture works fully offline; sync is best-effort after commit.
 2. User drags or keyboard-promotes inbox items into Today, optionally onto time blocks.
 3. The system surfaces overdue items grouped by stream so they can be deferred or dropped, not blindly bumped.
 
-**Promote / demote semantics.** A Task in Inbox can be promoted to a Stream (move + retag) and demoted back to Inbox (move to Inbox + clear stream-specific state). Both are ordinary CRDT moves and use the cross-stream-move rules in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md); there is no special "promotion" CRDT type. Bouncing between Inbox and a Stream is allowed unconditionally; the task carries a `move_history` Loro list (append-only, capped at the last 16 entries; older entries pruned by Loro's tombstone GC). Undo is the inverse op and shares the same merge rules. Promotion order is deterministic across devices: ties broken by `(ts_ms, device_id_lex)`.
+**Promote / demote semantics.** A Task in Inbox can be promoted to a Stream (move + retag) and demoted back to Inbox (move to Inbox + clear stream-specific state). Both are ordinary `task.update` ops and use the cross-stream-move rules in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md); there is no special "promotion" op kind. Bouncing between Inbox and a Stream is allowed unconditionally; the task carries a `move_history` list (append-only, capped at the last 16 entries, oldest pruned on write — an earlier revision delegated this to Loro's tombstone GC, which does not exist here). Undo is the inverse op and shares the same merge rules. Promotion order is deterministic across devices: ties broken by `(ts_ms, device_id_lex)`.
 
 ## 3. Do work in focus
 
@@ -59,7 +59,7 @@ Capture works fully offline; sync is best-effort after commit.
 2. Sunrise filters: streams not relevant become collapsed, items tagged for the trip become primary, recurring routines pause or shift.
 3. On return, Sunrise restores prior state and surfaces what accrued during the shift.
 
-**Routine behavior during a context shift.** Each active Routine evaluates against the active context's policy (a per-routine field, synced as a CRDT register, default `pause`):
+**Routine behavior during a context shift.** Each active Routine evaluates against the active context's policy (a per-routine field, synced like any other, default `pause`):
 
 | Policy | Routine behavior during the shift |
 |---|---|

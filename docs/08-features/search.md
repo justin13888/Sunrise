@@ -43,7 +43,7 @@ Mix-and-match. Free text without operators searches title + body + notes.
 
 ## Saved searches
 
-`Cmd-S` after running a search saves it (prompts for a name). Saved searches store the **query spec**, not results. Each open of a saved search re-runs the FTS query. Sync: query spec is a CRDT entity (LWW Register on the spec object).
+`Cmd-S` after running a search saves it (prompts for a name). Saved searches store the **query spec**, not results. Each open of a saved search re-runs the FTS query. Sync: the query spec syncs as an ordinary entity, merged by entity-level LWW.
 
 ## Performance
 

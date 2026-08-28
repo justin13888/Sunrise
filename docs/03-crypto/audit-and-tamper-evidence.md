@@ -8,7 +8,7 @@ The relay is untrusted but is in the message path. We need to detect: dropped op
 
 ## Identity and replay invariants
 
-The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. The inner-Op `op_id` (a ULID) is the canonical CRDT-merge identity used for idempotent application — duplicate `op_id` arrivals are dropped silently.
+The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. The inner-Op `op_id` (a ULID) is the canonical merge identity used for idempotent application — duplicate `op_id` arrivals are dropped silently.
 
 Receivers enforce:
 

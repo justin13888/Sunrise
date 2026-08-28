@@ -9,7 +9,7 @@ status: accepted
 > The OR-Set, PN-counter, list, and RichText policies are not implemented; see
 > [ADR-0014](../11-adr/0014-entity-level-lww-merge.md).
 
-The CRDT framework deterministically merges most concurrent edits. This spec documents the *deliberate* policy choices for cases where the framework offers options.
+The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices; in v1 the single policy in force is the entity-level LWW described in the banner above.
 
 ## Default policies
 
@@ -114,7 +114,7 @@ Two devices complete occurrence O of a routine R at nearly the same time:
 
 ### Concurrent list reorders
 
-Loro List handles this. Concurrent moves of the same item produce one final position, deterministic across replicas.
+*Target state:* a fractional-index list handles this, and concurrent moves of the same item produce one final position, deterministic across replicas. In v1 the containing entity merges as a unit, so the later writer's ordering wins wholesale.
 
 ### Concurrent share-then-revoke
 
@@ -136,7 +136,7 @@ CREATE TABLE merge_journal (
 );
 ```
 
-UI surfaces "X edits merged automatically this week" in the weekly review. Power users can drill in. We do **not** show every merge in real time — that's a worse UX than letting the CRDT do its job.
+UI surfaces "X edits merged automatically this week" in the weekly review. Power users can drill in. We do **not** show every merge in real time — that's a worse UX than letting the merge layer do its job.
 
 Cardinality: one row per `(entity_id, field, op_id_at_merge)` triple. Same field merged again creates a new row. The journal is capped at **5 000 rows** per device (FIFO eviction); it is diagnostic-only.
 

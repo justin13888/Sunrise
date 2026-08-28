@@ -50,7 +50,7 @@ The op log for a Stream may contain ops from multiple epochs interleaved (a slow
 - A device MAY emit ops under any epoch for which it holds the key.
 - The relay accepts ops from any epoch known to it; epoch is part of the envelope and is not validated against the "current" epoch.
 - Receivers maintain a per-`stream_id` decryption-key cache keyed by epoch; ops are decrypted on receipt with the matching epoch's key.
-- Out-of-order arrival across epochs: ops are applied in arrival order regardless of epoch; CRDT merges resolve any reordering. There is **no per-epoch barrier**.
+- Out-of-order arrival across epochs: ops are applied in arrival order regardless of epoch; the LWW comparison key `(hlc, device_id, seq)` resolves any reordering, so arrival order does not change the converged state. There is **no per-epoch barrier**.
 - The owner garbage-collects an old epoch's key only when **all** active devices' cursors have advanced past the last op signed under it (same rule as blob GC).
 
 ## Identity rotation (expensive)
@@ -109,4 +109,4 @@ A revoked device that never reconnects retains whatever plaintext it had at the 
 
 - It does not retroactively un-leak content. A revoked device keeps whatever plaintext it had on disk.
 - It does not erase the *fact* of past activity from server-side metadata (timestamps, op counts).
-- It does not affect historical ops the rotating side already emitted under prior keys; CRDT history is by design replayable to converge state.
+- It does not affect historical ops the rotating side already emitted under prior keys; the op log is by design replayable to converge state.

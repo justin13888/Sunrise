@@ -109,7 +109,7 @@ These run via local OS APIs (deep links into the app for desktop; native action 
 | Snooze 1h | `snooze_1h` | same | `actions[1]` |
 | Open | tap body | tap body | default action |
 
-The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to a CRDT op without opening UI when possible.
+The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to an op without opening UI when possible.
 
 ## URL scheme
 

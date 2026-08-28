@@ -4,7 +4,7 @@ status: accepted
 
 # Shared Documents (Cross-User)
 
-When user A shares a Stream with user B, that Stream's CRDT doc becomes a *shared document*. Both users' devices (and any future devices they pair) participate in its sync.
+When user A shares a Stream with user B, that Stream becomes a *shared document*. Both users' devices (and any future devices they pair) participate in its sync.
 
 ## Identity → identity routing
 
@@ -15,7 +15,7 @@ Each Stream has an "owner identity" plus zero or more "share grants" to other id
 
 ## Op authorship
 
-Each op carries the *originating device's* identity and device ID. Receivers can attribute "Alice did this" vs "Bob did this." The CRDT doesn't care; the UI does (for activity views, weekly review).
+Each op carries the *originating device's* identity and device ID. Receivers can attribute "Alice did this" vs "Bob did this." The merge layer doesn't care; the UI does (for activity views, weekly review).
 
 ## Per-grantee authorization
 
@@ -46,7 +46,7 @@ This is enforced **client-side** (their core checks role before emitting). The s
 - `declined`: recipient explicitly declines (offers a UI). Owner sees the decline.
 - `revoked`: owner revoked OR expired. Terminal.
 
-State is on the grant record (`grant.state` field, CRDT LWW Register). Concurrent transitions resolve by the standard LWW rule.
+State is on the grant record (`grant.state`). Concurrent transitions resolve by the standard LWW rule.
 
 ## StreamKey rotation on revoke
 
@@ -98,11 +98,11 @@ The scrubber recognizes `sr://` URIs and rewrites the URI portion to `redacted:`
 
 ## Multi-grantee
 
-A Stream can be shared with many grantees. The grant ops list is a CRDT set; concurrent grants/revokes converge.
+A Stream can be shared with many grantees. The grant ops list is a set built by replaying the grant ops; concurrent grants/revokes converge.
 
 ## Concurrent edits across users
 
-CRDT handles it identically to multi-device. A merge across users works because each device signs its own ops; signatures verify; ops merge.
+The merge layer handles it identically to multi-device. A merge across users works because each device signs its own ops; signatures verify; ops merge.
 
 ## Visibility / privacy edge cases
 

@@ -121,6 +121,11 @@ When sharing, only Persons with linked cryptographic identities can be granted a
 
 ## Relationship to CRDT shape
 
+> **Target state, not v1.** Everything in this section describes the deferred
+> per-field merge design. v1 merges each entity as one unit by last-writer-wins
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); each entity spec's
+> §Merge mapping is the shipped behaviour.
+
 Each domain entity maps to a CRDT subtree. See [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md). Briefly:
 
 - Entities are *maps* keyed by ID.

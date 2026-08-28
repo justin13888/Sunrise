@@ -7,7 +7,7 @@ status: accepted
 The shared core is a Rust crate (`sunrise-core`) that is the only place where the following exist:
 
 - Domain types and validation
-- CRDT engine and op log
+- Merge engine (entity-level LWW, [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) and op log
 - Crypto (key derivation, envelope encryption)
 - Local persistence (SQLite + SQLCipher)
 - Sync state machine and wire codec
@@ -114,7 +114,7 @@ Exactly **one** `Core` instance per vault path per process. Multiple processes a
 - There is no core daemon and no second process. The macOS app holds the vault lock for as long as it runs; `sunrise` is one-shot and releases it on exit. Two long-lived writers against one vault would need a daemon, which is a whole subsystem to buy something neither client needs.
 - On crash, the OS releases the lock; recovery is a normal unclean-shutdown reopen.
 
-`submit` calls within a single `Core` are **per-entity serialized**: the core acquires an in-memory lock keyed by `(stream_id, entity_id)` before applying. Cross-entity calls run concurrently. There is no global submit serialization — concurrent calls on different entities apply in parallel and commit in arrival order. CRDT merge guarantees convergence regardless of arrival order.
+`submit` calls within a single `Core` are **per-entity serialized**: the core acquires an in-memory lock keyed by `(stream_id, entity_id)` before applying. Cross-entity calls run concurrently. There is no global submit serialization — concurrent calls on different entities apply in parallel and commit in arrival order. The LWW comparison key is carried on each op, so convergence does not depend on arrival order.
 
 ## Errors
 

@@ -18,7 +18,7 @@ status: accepted
 Two kinds of migrations:
 
 1. **Local DB migrations.** Schema changes in SQLite. Run on app launch.
-2. **CRDT doc-schema migrations.** Changes to the entity/field shapes. Coordinated across devices.
+2. **Doc-schema migrations.** Changes to the entity/field shapes (`DOC_SCHEMA_V`). Coordinated across devices.
 
 ## Local DB migrations
 
@@ -52,7 +52,7 @@ Migrations run in a single transaction per migration; failure rolls back; the ap
   3. **Reset and resync** — delete local vault, re-pair the device; remote ops are intact.
 - Downgrades require an explicit reverse migration with its own ADR; v1 ships no reverse migrations.
 
-## CRDT doc-schema migrations
+## Doc-schema migrations
 
 These are coordinated:
 

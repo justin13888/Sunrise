@@ -11,7 +11,7 @@ A user shares a **Stream** (and all its descendant entities) with one or more ot
 | Role | Read | Propose ops | Notes |
 |---|---|---|---|
 | `viewer` | yes | no (ops emitted are dropped client-side; sync layer rejects them) | Read-only |
-| `editor` | yes | yes | Ops carry the editor's device_id and identity ID; CRDT merges directly |
+| `editor` | yes | yes | Ops carry the editor's device_id and identity ID; merged by entity LWW like any other op |
 
 There is no `admin` and no `commenter` in v1. Granting and revoking is a privilege of the Stream's **owner identity** only.
 
@@ -78,7 +78,7 @@ A Note in a shared Stream may contain `{kind: "ref", target: EntityRef}` pointin
 
 On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
-1. Walk the Note CRDT's outbound payload before encryption.
+1. Walk the Note's outbound payload before encryption.
 2. For every `{kind: "ref", target}` whose `target` is in a Stream this cohort does not share, replace with `{kind: "redacted", placeholder: "—"}`. The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
 3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
 
@@ -101,7 +101,7 @@ When an editor modifies a shared Stream:
 2. Ops are published to the granter's relay (or, in the cross-relay case above, the relay both parties agree to use).
 3. Ops carry the editor's `device_id` (whose `DeviceCert` is in the editor's vault-meta log, which is fetched on first share). Authorship is preserved on every op.
 
-There is no "merge request" model. The CRDT merges directly. A future "review mode" toggle is tracked as v2.
+There is no "merge request" model: an editor's op applies on arrival and merges by entity-level LWW ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), which means two editors changing the same Note concurrently keep one version, not a union of both. A future "review mode" toggle is tracked as v2.
 
 ## Privacy implications
 
