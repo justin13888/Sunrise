@@ -161,7 +161,7 @@ pub struct Routine {
     pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Dates explicitly skipped, as instants.
     ///
-    /// **Deprecated; remove at `DOC_SCHEMA_V = 3`.** A live dual of
+    /// **Deprecated; remove at `DOC_SCHEMA_FLOOR = 3`.** A live dual of
     /// [`Self::skipped_keys`], which supersedes it: a key
     /// (`YYYY-MM-DDTHH:MM`) is tzdb-drift-immune, while an instant has to be
     /// re-resolved against the routine's timezone on every read and silently

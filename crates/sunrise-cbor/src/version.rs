@@ -34,7 +34,20 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// `Block.starts_at` / `ends_at` from a bare instant to a tagged
 /// `SunriseTime` (issue #6, ADR-0017). A v1 payload still decodes: the bare
 /// instant reads as `SunriseTime::Instant`, which is why the floor stays at 1.
-pub const DOC_SCHEMA_V: u16 = 2;
+///
+/// `3` added `Block.title_track_task`, `Task.reminder_lead_s` and
+/// `Stream.reminder_lead_s`, and the `blk_` / `att_` op families (issues #22,
+/// #9). Every one of those is an *addition*: a v2 payload decodes here with
+/// the new fields at their defaults, and a v2 reader keeps a v3 payload's
+/// unknown fields verbatim through the `unknown` map. The floor therefore
+/// stays at 1.
+///
+/// A v2 build handed a `blk_` or `att_` op cannot decode it — a new op variant
+/// is not a new field — and reports it as an invalid remote op rather than
+/// applying it wrongly. That is acceptable pre-1.0, where no build older than
+/// this one exists (ADR-0018), and it is why the op vocabulary is documented
+/// as a wire contract in `sunrise_core::inner_op`.
+pub const DOC_SCHEMA_V: u16 = 3;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///

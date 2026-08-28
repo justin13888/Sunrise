@@ -6,6 +6,13 @@
 //! XChaCha20-Poly1305 output moved — which per ADR-0004 and
 //! `docs/03-crypto/key-rotation.md` requires a suite-id bump and a rotation
 //! plan, not a re-freeze of the expected bytes.
+//!
+//! The **one** exception, and it is narrow: the two whole-envelope vectors
+//! include field 12, the document schema. A deliberate `DOC_SCHEMA_V` bump
+//! moves their bytes with no crypto change at all, and re-freezing those two is
+//! then correct. Nothing else here carries a version field, so nothing else has
+//! this excuse — if a KDF, identity-id, stream-root or AEAD vector fails, the
+//! paragraph above applies in full.
 
 use sunrise_crypto::{
     blake3_kdf::derive_key_32,

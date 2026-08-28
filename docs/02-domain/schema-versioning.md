@@ -47,7 +47,7 @@ exists.
 
 ## Removing a field
 
-1. Mark deprecated in CDDL **and on the Rust field** with a comment and a deadline (≥2 minor versions). `Routine.skip_dates` is the worked example: deprecated in favour of `skipped_keys`, stage A complete, removal dated at `DOC_SCHEMA_V = 3`.
+1. Mark deprecated in CDDL **and on the Rust field** with a comment and a deadline (≥2 minor versions). `Routine.skip_dates` is the worked example: deprecated in favour of `skipped_keys`, stage A complete, removal dated at `DOC_SCHEMA_FLOOR = 3` — the **floor**, not the current version. Stage B is "stop writing", and a field may only stop being written once no reader below the floor can still need it; `DOC_SCHEMA_V` moving past 3 says nothing about that.
 2. Stop reading. Continue writing for the deprecation window so older clients that need it still get it.
 3. After the window, stop writing. Older clients fall back to the field's default.
 4. Bump `doc_schema_version`.

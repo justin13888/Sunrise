@@ -28,7 +28,7 @@ This document is the authoritative table of version numbers and the rules for ch
 ```
 WIRE_PROTO_V      = 1
 ENVELOPE_FORMAT_V = 3
-DOC_SCHEMA_V      = 2
+DOC_SCHEMA_V      = 3
 DOC_SCHEMA_FLOOR  = 1
 CRYPTO_SUITE_V    = 1
 STORAGE_V         = 13
@@ -45,7 +45,9 @@ Wire frames, op envelopes, recovery blobs, and storage rows all carry their resp
 
 `ENVELOPE_FORMAT_V` versions the op-envelope container (field layout, canonical ordering, AAD, signature input) and rides in the magic prefix. `DOC_SCHEMA_V` versions the entity shapes and rides in envelope field 12. Collapsing them into one number — which v1 did — meant that adding a field to a Task changed the magic prefix and made every already-signed envelope undecodable, the exact opposite of the rule in §6.
 
-`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret, and it moves only when a shape stops being readable — never merely because a newer one exists. It is `1` while `DOC_SCHEMA_V` is `2` because a v1 payload really does still decode: its bare-instant time fields read as `SunriseTime::Instant`.
+`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret, and it moves only when a shape stops being readable — never merely because a newer one exists. It is `1` while `DOC_SCHEMA_V` is `3` because a v1 payload really does still decode: its bare-instant time fields read as `SunriseTime::Instant`, and every change since has been an added field that defaults.
+
+One caveat the "any field is additive" rule does not cover: a new **op variant** is not a new field. `DOC_SCHEMA_V = 3` introduced the `blk_` and `att_` op families, and a build that predates them cannot decode one — it reports an invalid remote op rather than applying it wrongly. That is acceptable only pre-1.0, where no such build exists ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)); after 1.0 a new op family needs a negotiated capability bit, not a schema bump.
 
 `STORAGE_V` is per-device and never appears on the wire; `13` is the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below it is refused rather than upgraded.
 
@@ -271,6 +273,15 @@ The crypto spec describes byte-exact test vectors. This spec adds:
 
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
 
-These fixtures are checked into the repo. Any change to them is a version-bump ADR — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
+These fixtures are checked into the repo. Any change to them must be a deliberate version bump — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
+
+Three of them are built from the live constants and therefore move with a
+version bump *by construction*: `hello/*.cbor` and the `version-mismatch`
+fixtures embed `doc_schema_max`, and `forward-compat/v1-reads-v2.cbor` is
+defined as `DOC_SCHEMA_V + 1`. Regenerating them alongside a bump is expected
+and is not the drift this guard exists to catch; regenerating them without one
+is. The same distinction applies to the two whole-envelope crypto vectors,
+which carry the document schema in field 12 — a doc-schema bump moves their
+bytes with no crypto change, and no other frozen vector has that excuse.
 
 The forward-compat fixture also pins the reason preservation is not optional: the envelope signature covers every field the sender wrote, so a decoder that DROPS an unknown field cannot re-emit an envelope that still verifies. `dropping_an_unknown_field_breaks_the_senders_signature` asserts exactly that.

@@ -141,9 +141,14 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 2`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `2`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 3`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `3`, and the
 /// magic prefix reads `5352 02 0003`.
+///
+/// Field 12 carries the **document** schema, so the two envelope vectors are
+/// re-frozen whenever `DOC_SCHEMA_V` moves. That is a doc-schema change, not a
+/// crypto change: the KDF, identity-id, stream-root and AEAD vectors carry no
+/// version field and never move for that reason.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
@@ -162,10 +167,10 @@ pub mod signed_only_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840e5",
-        "0fd3d53059e6631339fc6f397e3c7e608053c5808bb971c3783c6783d5c4",
-        "f4016a9154bc5930abe7ba3366fd8189f0ba9d8f1ef4c05e89eb0b9476d8",
-        "db8b090c02",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840b8",
+        "1ea32e8c80fecbefbc5bca6b00fa1bc10f150e0fa2a0da1cf2a7c8ab430e",
+        "3a26e070c87197bd02d80327a0404c865546b02a04a9efe8b88165405ab8",
+        "4ff0060c03",
     ));
 }
 
@@ -191,9 +196,9 @@ pub mod sealed_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb80ba4ed",
-        "e8234dfdfc3fe700fad4136d9b0b58407615c35ab58c604399b575c8ab7c",
-        "bbd38ad9be9317ed4e505f2e8a269437be10c6ffbb4554c06f6663897838",
-        "55f4059d0225ccd159d3c2bdfec5a4b8b6881d060c02",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8709fbd",
+        "d2114f8e09562e49db809a1f920b58406e2af729a03e3a814c4b4548da97",
+        "84bf0972b06e66d9d3d93f0a0f8f28c09a213610b44dd43107ccd3235fb2",
+        "725101f41cf710233961a662dc185e1c5052fb0e0c03",
     ));
 }
