@@ -1,15 +1,15 @@
 //! Plain-English recurrence, parsed into an [`RRule`].
 //!
-//! Routines were read-only in the TUI. The empty state said to create them
-//! "from the desktop client" — a client that no longer exists, so the entire
-//! recurrence engine (RRULE expansion, DST-correct materialisation, streaks,
-//! catch-up policy) had no way in from anything a user could run.
+//! The domain's own parser only accepts the RFC 5545 body
+//! (`RRULE:FREQ=WEEKLY;BYDAY=MO,WE`), which is a wire format, not something to
+//! type at a prompt. Without a front end for it the entire recurrence engine
+//! (RRULE expansion, DST-correct materialisation, streaks, catch-up policy)
+//! has no way in from anything a user could run.
 //!
-//! The obstacle is the input. `RRULE:FREQ=WEEKLY;BYDAY=MO,WE` is a wire
-//! format, not something to type at a prompt, and the domain's parser only
-//! accepts that form. This module is the front end: it reads the phrases
-//! people actually use, and falls through to the RFC 5545 body for anyone who
-//! wants to write one exactly.
+//! This module is that front end: it reads the phrases people actually use,
+//! and falls through to the RFC 5545 body for anyone who wants to write one
+//! exactly. It lives beside [`crate::capture`] for the same reason — every
+//! client must read the same input identically, so there is one parser.
 //!
 //! Recognised forms:
 //!
@@ -33,7 +33,7 @@
 //! what it saw, because a routine that silently fires on the wrong cadence is
 //! discovered weeks later, by which point it has generated the wrong tasks.
 
-use sunrise_domain::rrule::{Frequency, RRule, Weekday};
+use crate::rrule::{Frequency, RRule, Weekday};
 
 /// Parse a recurrence phrase (or a raw RFC 5545 body) into an [`RRule`].
 ///

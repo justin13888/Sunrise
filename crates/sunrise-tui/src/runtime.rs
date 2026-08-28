@@ -1071,7 +1071,7 @@ fn create_routine_outcome(state: &mut ViewState, text: &str, now_ms: u64) -> Out
             "routine: put the recurrence after a | (e.g. water plants | every day)".into();
         return Outcome::None;
     };
-    let rule = match crate::recur::parse_recurrence(tail) {
+    let rule = match sunrise_domain::parse_recurrence(tail) {
         Ok(r) => r,
         Err(e) => {
             state.prompt = Some(Prompt::CreateRoutine);
@@ -1121,7 +1121,7 @@ fn create_routine_outcome(state: &mut ViewState, text: &str, now_ms: u64) -> Out
         Some(note) => note,
         None => format!(
             "routine \"{title}\" — {}",
-            crate::rrule_summary(&draft.rrule)
+            sunrise_domain::rrule_summary(&draft.rrule)
         ),
     };
     Outcome::Submit(Box::new(Command::CreateRoutine(draft)))
@@ -1462,7 +1462,7 @@ fn refresh_annotate_preview(state: &mut ViewState, now_ms: u64) {
         return;
     }
     let edit = parse_edit(text, &state.streams, &state.contexts, now_ms, &state.tz);
-    let mut line = edit.preview(&state.streams, &state.contexts, &state.tz);
+    let mut line = crate::edit::preview(&edit, &state.streams, &state.contexts, &state.tz);
     if let Some(note) = edit.error_note() {
         line.push_str("  ");
         line.push_str(&note);
@@ -1800,10 +1800,10 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
             }
             create_routine_outcome(state, &text, now_ms)
         }
-        Some(Prompt::EditRecurrence(id)) => match crate::recur::parse_recurrence(&text) {
+        Some(Prompt::EditRecurrence(id)) => match sunrise_domain::parse_recurrence(&text) {
             Ok(rule) => {
                 state.reset_to_normal();
-                state.status = format!("recurrence: {}", crate::rrule_summary(&rule));
+                state.status = format!("recurrence: {}", sunrise_domain::rrule_summary(&rule));
                 Outcome::Submit(Box::new(Command::UpdateRoutine {
                     id,
                     patch: RoutinePatch {

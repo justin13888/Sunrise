@@ -277,6 +277,44 @@ fn weekday_token(w: Weekday) -> &'static str {
     }
 }
 
+/// Human-readable one-line summary of an [`RRule`] — the inverse of
+/// [`crate::recur::parse_recurrence`].
+///
+/// Lossy on purpose: it is prose for a list row, not a serialization. The
+/// round-trippable form is [`RRule::to_rfc5545`].
+#[must_use]
+pub fn rrule_summary(r: &RRule) -> String {
+    use std::fmt::Write as _;
+    let unit = match r.freq {
+        Frequency::Daily => "day",
+        Frequency::Weekly => "week",
+        Frequency::Monthly => "month",
+        Frequency::Yearly => "year",
+    };
+    let mut s = if r.interval <= 1 {
+        format!("every {unit}")
+    } else {
+        format!("every {} {unit}s", r.interval)
+    };
+    if !r.by_day.is_empty() {
+        let days: Vec<String> = r.by_day.iter().map(|d| format!("{d:?}")).collect();
+        s.push_str(" on ");
+        s.push_str(&days.join(", "));
+    }
+    if !r.by_month_day.is_empty() {
+        let days: Vec<String> = r.by_month_day.iter().map(ToString::to_string).collect();
+        s.push_str(" day ");
+        s.push_str(&days.join(", "));
+    }
+    if let Some(c) = r.count {
+        let _ = write!(s, " \u{00d7}{c}");
+    }
+    if let Some(u) = r.until {
+        let _ = write!(s, " until {u}");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,17 +2,19 @@
 //! the data it needs, and writes widgets. No I/O.
 
 use crate::keymap::{Keymap, Mode};
-use crate::view::{
-    energy_budget_label, fmt_duration_ms, length_label, segment_label, RoutineRow, StreamPane,
-    StreamPicker, SyncIndicator, View, ViewState,
-};
+use crate::view::{segment_label, StreamPane, StreamPicker, SyncIndicator, View, ViewState};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
-use sunrise_core::queries::{FocusPlanRow, FocusSessionRow};
-use sunrise_domain::{Calibration, EnergyFit, FocusKind, FocusStats, Task};
+use sunrise_core::queries::FocusSessionRow;
+use sunrise_domain::phrase::{
+    activity_phrase, constraint_summary, energy_budget_label, fmt_duration_ms, length_label,
+    plan_reason, relative_day, short_duration,
+};
+use sunrise_domain::RoutineRow;
+use sunrise_domain::{Calibration, FocusKind, FocusStats, Task};
 use sunrise_sync::SyncState;
 
 /// Minimum terminal width required to render the UI (`docs/07-clients/tui.md`).
@@ -813,7 +815,10 @@ fn render_focus_plan(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
             ListItem::new(vec![
                 Line::from(truncate(&r.task.title, width)),
                 Line::from(Span::styled(
-                    format!("  {}", truncate(&plan_reason(r), width)),
+                    format!(
+                        "  {}",
+                        truncate(&plan_reason(r.unblocks, r.energy_fit, &r.suggested), width)
+                    ),
                     Style::default().fg(Color::Gray),
                 )),
             ])
@@ -851,35 +856,6 @@ fn render_focus_plan(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         ))),
         rows[1],
     );
-}
-
-/// Why a planner row sits where it does: its leverage and its energy fit —
-/// the two keys `rank_focus_plan` sorts on — plus the session that would open.
-fn plan_reason(row: &FocusPlanRow) -> String {
-    let mut parts = vec![match row.unblocks {
-        0 => "unblocks nothing".to_string(),
-        1 => "unblocks 1 task".to_string(),
-        n => format!("unblocks {n} tasks"),
-    }];
-    parts.push(format!("fit {}", energy_fit_label(row.energy_fit)));
-    parts.push(match row.suggested.planned_ms {
-        Some(ms) => fmt_duration_ms(ms),
-        None => "until done".into(),
-    });
-    if let Some(c) = row.suggested.chunk {
-        parts.push(format!("chunk {} of {}", c.index, c.total));
-    }
-    parts.join(" · ")
-}
-
-/// Label for an energy fit, in the ranking's own order (best first).
-const fn energy_fit_label(fit: EnergyFit) -> &'static str {
-    match fit {
-        EnergyFit::Exact => "exact",
-        EnergyFit::Unknown => "unknown",
-        EnergyFit::Under => "under",
-        EnergyFit::Over => "over",
-    }
 }
 
 /// The `:focus stats` overlay: focus totals plus the estimate-calibration
@@ -1002,20 +978,6 @@ fn energy_label(e: sunrise_domain::Energy) -> String {
         sunrise_domain::Energy::Med => "med".into(),
         sunrise_domain::Energy::High => "high".into(),
     }
-}
-
-/// One-line scheduling-constraints summary, e.g. `2 constraints (1 hard)`.
-fn constraint_summary(list: &[sunrise_domain::ScheduleConstraint]) -> String {
-    let hard = list
-        .iter()
-        .filter(|c| c.severity == sunrise_domain::ConstraintSeverity::Hard)
-        .count();
-    let noun = if list.len() == 1 {
-        "constraint"
-    } else {
-        "constraints"
-    };
-    format!("{} {noun} ({hard} hard)", list.len())
 }
 
 /// Render the Routines view: one row per live routine, showing its RRULE
@@ -1589,37 +1551,6 @@ fn render_activity(
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-/// Human phrasing for one activity event.
-fn activity_phrase(kind: &sunrise_domain::ActivityKind) -> String {
-    use sunrise_domain::ActivityKind as K;
-    match kind {
-        K::TaskCreated => "created".into(),
-        K::TaskCompleted => "completed".into(),
-        K::TaskReopened => "reopened".into(),
-        K::TaskCancelled => "cancelled".into(),
-        K::TaskDeferred { count } => format!("deferred (#{count})"),
-        K::TaskMoved { .. } => "moved stream".into(),
-        // The spec asks for edits to be summarized rather than enumerated.
-        K::TaskUpdated { fields: 1 } => "updated 1 field".into(),
-        K::TaskUpdated { fields } => format!("updated {fields} fields"),
-        K::TaskDeleted => "deleted".into(),
-        K::StreamCreated => "stream created".into(),
-        K::StreamDeleted => "stream deleted".into(),
-        K::FocusStarted { planned_ms, .. } => match planned_ms {
-            Some(ms) => format!("focus started ({})", fmt_duration_ms(*ms)),
-            None => "focus started".into(),
-        },
-        K::FocusEnded {
-            focused_ms,
-            completed_task,
-            ..
-        } => {
-            let tail = if *completed_task { ", completed" } else { "" };
-            format!("focus ended ({}{tail})", fmt_duration_ms(*focused_ms))
-        }
-    }
-}
-
 /// Colour by outcome, so a feed can be skimmed for the good and the bad.
 fn activity_style(kind: &sunrise_domain::ActivityKind) -> Style {
     use sunrise_domain::ActivityKind as K;
@@ -2182,37 +2113,6 @@ fn task_facets(
         ));
     }
     out
-}
-
-/// `-2d` / `today` / `+3d`, plus whether it is in the past.
-///
-/// Whole civil days in the user's zone, not elapsed hours: "due tomorrow" must
-/// not read as "today" because it is 23:30 now.
-fn relative_day(at: jiff::Timestamp, now_ms: u64, tz: &jiff::tz::TimeZone) -> (String, bool) {
-    let Ok(Ok(now)) = i64::try_from(now_ms).map(jiff::Timestamp::from_millisecond) else {
-        return (String::new(), false);
-    };
-    let today = now.to_zoned(tz.clone()).date();
-    let then = at.to_zoned(tz.clone()).date();
-    let days = then.since(today).map(|d| d.get_days()).unwrap_or(0);
-    let text = match days {
-        0 => "today".to_string(),
-        1 => "tomorrow".to_string(),
-        -1 => "yesterday".to_string(),
-        d if d < 0 => format!("{d}d"),
-        d => format!("+{d}d"),
-    };
-    (text, days < 0)
-}
-
-/// `1800` → `30m`, `5400` → `1h30`.
-fn short_duration(secs: u64) -> String {
-    let (h, m) = (secs / 3600, (secs % 3600) / 60);
-    match (h, m) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m:02}"),
-    }
 }
 
 const fn task_state_short(s: sunrise_domain::TaskState) -> &'static str {

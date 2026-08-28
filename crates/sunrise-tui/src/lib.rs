@@ -5,7 +5,7 @@
 //! - Today / Inbox / Browse / Search / Focus / Routines view enum, with the
 //!   Browse sidebar covering both domain axes (Streams and Contexts) and full
 //!   CRUD over each.
-//! - Routine CRUD, with plain-English recurrence ([`recur`]).
+//! - Routine CRUD, with plain-English recurrence (`sunrise_domain::recur`).
 //! - The Review view: the five-step weekly review, the daily glance, the
 //!   twelve-week trends, and the saved-snapshot history.
 //! - Vim-style modal navigation (default-on per the parity matrix), with the
@@ -63,7 +63,6 @@ pub mod images;
 pub mod input;
 pub mod keymap;
 pub mod livesync;
-pub mod recur;
 pub mod render;
 pub mod runtime;
 pub mod undo;
@@ -79,18 +78,20 @@ pub use input::InputLine;
 pub use keymap::{
     dispatch, help_sections, load_keymap, Action, Binding, Keymap, Mode, Scope, BINDINGS,
 };
-pub use recur::parse_recurrence;
 pub use render::{
     fits, render, render_focus, render_inbox, render_review, render_routines, render_search,
     render_stream, render_today, review_rows, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
+pub use sunrise_domain::parse_recurrence;
 pub use undo::{invert, NotUndoable, UndoEntry};
 pub use view::{
-    energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, segment_label,
-    sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport, DeleteTarget, Dep,
-    FocusState, Prompt, ReviewPane, ReviewState, RoutineRow, SidebarRow, StreamPane, StreamPicker,
-    SyncIndicator, View, ViewState,
+    energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, RoutineRow,
+};
+pub use view::{
+    segment_label, sort_today, today_groups, ActivityFeed, BrowseTarget, CascadeReport,
+    DeleteTarget, Dep, FocusState, Prompt, ReviewPane, ReviewState, SidebarRow, StreamPane,
+    StreamPicker, SyncIndicator, View, ViewState,
 };
 pub use views::SavedView;
 

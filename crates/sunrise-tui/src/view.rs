@@ -6,12 +6,10 @@ use crate::undo::UndoEntry;
 use jiff::Timestamp;
 use std::collections::BTreeMap;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
-use sunrise_domain::rrule::RRule;
 use sunrise_domain::SunriseTime;
 use sunrise_domain::{
-    break_after, materialization_horizon_days, ActivityEvent, DailyReview, Energy, FocusKind,
-    FocusStats, ReviewSnapshot, Routine, Segment, SessionLength, Task, TaskTemplate, Trends,
-    UnblockCascade, WeeklyReview,
+    break_after, ActivityEvent, DailyReview, Energy, FocusKind, FocusStats, ReviewSnapshot,
+    Segment, SessionLength, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -700,135 +698,9 @@ pub const fn segment_label(s: Segment) -> &'static str {
     }
 }
 
-/// Human label for an energy budget; `None` reads as "any", the value that
-/// drops energy out of the planner ranking.
-#[must_use]
-pub const fn energy_budget_label(e: Option<Energy>) -> &'static str {
-    match e {
-        None => "any",
-        Some(Energy::Low) => "low",
-        Some(Energy::Med) => "med",
-        Some(Energy::High) => "high",
-    }
-}
-
-/// Human label for a session-length choice.
-#[must_use]
-pub const fn length_label(l: SessionLength) -> &'static str {
-    match l {
-        SessionLength::OnePomodoro => "one pomodoro",
-        SessionLength::SizedToEstimate => "sized to estimate",
-        SessionLength::UntilDone => "until done",
-    }
-}
-
-/// `MM:SS`, widening to `H:MM:SS` past an hour. Used for every duration the
-/// Focus view shows, so a timer and a total read the same way.
-#[must_use]
-pub fn fmt_duration_ms(ms: u64) -> String {
-    let total_s = ms / 1000;
-    let (h, m, s) = (total_s / 3600, (total_s % 3600) / 60, total_s % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m:02}:{s:02}")
-    }
-}
-
-/// One row of the Routines view: the routine's template title, a
-/// human-readable RRULE summary, and its next occurrence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoutineRow {
-    /// Routine id.
-    pub id: EntityRef,
-    /// Template title.
-    pub title: String,
-    /// Human-readable recurrence summary (e.g. `every 2 weeks on Mo, We`).
-    pub rrule: String,
-    /// Next occurrence at or after "now", if one exists inside the routine's
-    /// materialization horizon.
-    pub next: Option<Timestamp>,
-    /// Whether the routine is paused (no occurrences are generated).
-    pub paused: bool,
-    /// The routine's task template, kept so an edit patches the fields the
-    /// user changed and leaves the rest exactly as they were —
-    /// `RoutinePatch.template` replaces the whole template, so editing a title
-    /// without it would silently drop the stream, priority and contexts.
-    pub template: TaskTemplate,
-    /// The parsed recurrence, kept for the same reason: the summary string is
-    /// lossy and cannot be patched back.
-    pub rule: RRule,
-    /// Current streak counter, so the Routines view can answer "am I keeping
-    /// this up?" without a second query per row.
-    pub streak: i64,
-}
-
-/// Human-readable one-line summary of an [`RRule`], for the Routines view.
-#[must_use]
-pub fn rrule_summary(r: &RRule) -> String {
-    use std::fmt::Write as _;
-    use sunrise_domain::rrule::Frequency;
-    let unit = match r.freq {
-        Frequency::Daily => "day",
-        Frequency::Weekly => "week",
-        Frequency::Monthly => "month",
-        Frequency::Yearly => "year",
-    };
-    let mut s = if r.interval <= 1 {
-        format!("every {unit}")
-    } else {
-        format!("every {} {unit}s", r.interval)
-    };
-    if !r.by_day.is_empty() {
-        let days: Vec<String> = r.by_day.iter().map(|d| format!("{d:?}")).collect();
-        s.push_str(" on ");
-        s.push_str(&days.join(", "));
-    }
-    if !r.by_month_day.is_empty() {
-        let days: Vec<String> = r.by_month_day.iter().map(ToString::to_string).collect();
-        s.push_str(" day ");
-        s.push_str(&days.join(", "));
-    }
-    if let Some(c) = r.count {
-        let _ = write!(s, " ×{c}");
-    }
-    if let Some(u) = r.until {
-        let _ = write!(s, " until {u}");
-    }
-    s
-}
-
-/// Project `Query::Routines` output into [`RoutineRow`]s, resolving each
-/// routine's next occurrence at or after `now`.
-///
-/// The lookahead window is the routine's own per-FREQ materialization horizon
-/// (`docs/02-domain/routines-and-recurrence.md`), so a yearly routine still
-/// resolves while a daily one stays cheap. Pure over `now` — no wall clock is
-/// read here, which keeps the projection unit-testable.
-#[must_use]
-pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
-    routines
-        .iter()
-        .map(|r| {
-            let horizon_h = i64::from(materialization_horizon_days(r.rrule.freq)) * 24;
-            let next = now
-                .checked_add(jiff::SignedDuration::from_hours(horizon_h))
-                .ok()
-                .and_then(|end| r.occurrences_in((now, end)).ok())
-                .and_then(|occ| occ.first().map(|o| o.at));
-            RoutineRow {
-                id: r.id,
-                title: r.template.title.clone(),
-                rrule: rrule_summary(&r.rrule),
-                next,
-                paused: r.paused,
-                template: r.template.clone(),
-                rule: r.rrule.clone(),
-                streak: r.streak_counter,
-            }
-        })
-        .collect()
-}
+pub use sunrise_domain::{
+    energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, RoutineRow,
+};
 
 /// Owning struct for the active view.
 ///

@@ -475,3 +475,205 @@ impl Routine {
         })
     }
 }
+
+/// One projected row of the Routines list: the routine's template title, a
+/// human-readable RRULE summary, and its next occurrence.
+///
+/// The parsed rule and the whole template are carried alongside the prose
+/// because both are lossy in the other direction: `RoutinePatch.template`
+/// replaces the *whole* template, so an edit that only changes a title must
+/// still send back the stream, priority and contexts it did not touch, and
+/// [`crate::rrule::rrule_summary`] cannot be parsed back into the rule it
+/// described.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutineRow {
+    /// Routine id.
+    pub id: EntityRef,
+    /// Template title.
+    pub title: String,
+    /// Human-readable recurrence summary (e.g. `every 2 weeks on Mo, We`).
+    pub rrule: String,
+    /// Next occurrence at or after "now", if one exists inside the routine's
+    /// materialization horizon.
+    pub next: Option<Timestamp>,
+    /// Whether the routine is paused (no occurrences are generated).
+    pub paused: bool,
+    /// The routine's task template, kept so an edit patches the fields the
+    /// user changed and leaves the rest exactly as they were.
+    pub template: crate::routine::TaskTemplate,
+    /// The parsed recurrence, kept because the summary string is lossy and
+    /// cannot be patched back.
+    pub rule: RRule,
+    /// Current streak counter, so a Routines list can answer "am I keeping
+    /// this up?" without a second query per row.
+    pub streak: i64,
+}
+
+/// Project a routine list into [`RoutineRow`]s, resolving each routine's next
+/// occurrence at or after `now`.
+///
+/// The lookahead window is the routine's own per-FREQ materialization horizon
+/// (`docs/02-domain/routines-and-recurrence.md`), so a yearly routine still
+/// resolves while a daily one stays cheap. Pure over `now` — no wall clock is
+/// read here, which keeps the projection deterministic and unit-testable, and
+/// is why every client can share it.
+#[must_use]
+pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
+    routines
+        .iter()
+        .map(|r| {
+            let horizon_h =
+                i64::from(crate::routine::materialization_horizon_days(r.rrule.freq)) * 24;
+            let next = now
+                .checked_add(jiff::SignedDuration::from_hours(horizon_h))
+                .ok()
+                .and_then(|end| r.occurrences_in((now, end)).ok())
+                .and_then(|occ| occ.first().map(|o| o.at));
+            RoutineRow {
+                id: r.id,
+                title: r.template.title.clone(),
+                rrule: crate::rrule::rrule_summary(&r.rrule),
+                next,
+                paused: r.paused,
+                template: r.template.clone(),
+                rule: r.rrule.clone(),
+                streak: r.streak_counter,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+    use crate::inbox::inbox_stream_ref;
+    use crate::routine::{RoutineCatchupPolicy, TaskTemplate};
+    use crate::unknown::Unknowns;
+
+    /// 2026-01-01T00:00:00Z — the fixed "now" for routine projection tests.
+    fn now() -> Timestamp {
+        "2026-01-01T00:00:00Z".parse().expect("valid timestamp")
+    }
+
+    fn fake_routine(idx: u8, title: &str, rrule: &str, starts_at: &str) -> Routine {
+        Routine {
+            id: EntityRef::new(EntityKind::Routine, [idx; 16]),
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
+            template: TaskTemplate {
+                title: title.into(),
+                stream_id: inbox_stream_ref(),
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rrule: RRule::parse(rrule).expect("valid rrule"),
+            timezone: "UTC".into(),
+            starts_at: starts_at.parse().expect("valid timestamp"),
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: RoutineCatchupPolicy::Skip,
+            streak_counter: 0,
+            last_completed_at: None,
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            streak_keys: Vec::new(),
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        }
+    }
+
+    #[test]
+    fn rrule_summary_reads_as_english() {
+        let daily = fake_routine(1, "t", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        assert_eq!(crate::rrule::rrule_summary(&daily.rrule), "every day");
+
+        let biweekly = fake_routine(
+            2,
+            "t",
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE",
+            "2026-01-05T09:00:00Z",
+        );
+        assert_eq!(
+            crate::rrule::rrule_summary(&biweekly.rrule),
+            "every 2 weeks on Mo, We"
+        );
+
+        let monthly = fake_routine(
+            3,
+            "t",
+            "FREQ=MONTHLY;BYMONTHDAY=1;COUNT=6",
+            "2026-01-01T09:00:00Z",
+        );
+        assert_eq!(
+            crate::rrule::rrule_summary(&monthly.rrule),
+            "every month day 1 ×6"
+        );
+    }
+
+    #[test]
+    fn every_phrase_the_parser_accepts_summarizes_back() {
+        // The two halves are inverses in prose, not in bytes: this pins that
+        // the summary of a parsed phrase is at least *readable*, and that the
+        // round-trippable form still survives the domain parser.
+        for text in ["every day", "every 3 days", "weekdays", "monthly on day 1"] {
+            let rule = crate::recur::parse_recurrence(text).expect("parses");
+            let summary = crate::rrule::rrule_summary(&rule);
+            assert!(summary.starts_with("every"), "{text} -> {summary}");
+        }
+    }
+
+    #[test]
+    fn routine_rows_resolve_the_next_occurrence() {
+        let daily = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        let rows = routine_rows(&[daily], now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Water plants");
+        assert_eq!(rows[0].rrule, "every day");
+        assert_eq!(
+            rows[0].next,
+            Some("2026-01-01T09:00:00Z".parse().expect("valid timestamp"))
+        );
+    }
+
+    #[test]
+    fn routine_rows_project_a_paused_routine_with_no_next() {
+        let mut r = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        r.paused = true;
+        let rows = routine_rows(&[r], now());
+        assert!(rows[0].paused);
+        assert_eq!(rows[0].next, None);
+    }
+
+    #[test]
+    fn routine_rows_report_no_next_past_the_series_end() {
+        // A daily series that stopped in 2025 has nothing left to schedule.
+        let r = fake_routine(
+            1,
+            "Old habit",
+            "FREQ=DAILY;UNTIL=20250601T000000Z",
+            "2025-01-01T09:00:00Z",
+        );
+        let rows = routine_rows(&[r], now());
+        assert_eq!(rows[0].next, None);
+    }
+
+    #[test]
+    fn a_row_carries_the_template_and_the_parsed_rule_back() {
+        // Both are load-bearing for editing: patching a title must not drop
+        // the rest of the template, and the prose summary cannot be reparsed.
+        let r = fake_routine(1, "Water plants", "FREQ=DAILY", "2026-01-01T09:00:00Z");
+        let rows = routine_rows(std::slice::from_ref(&r), now());
+        assert_eq!(rows[0].template.title, r.template.title);
+        assert_eq!(rows[0].rule, r.rrule);
+    }
+}

@@ -19,6 +19,7 @@
 )]
 
 pub mod activity;
+pub mod annotate;
 pub mod attachment;
 pub mod block;
 pub mod capture;
@@ -32,6 +33,8 @@ pub mod focus;
 pub mod inbox;
 pub mod note;
 pub mod person;
+pub mod phrase;
+pub mod recur;
 pub mod review;
 pub mod routine;
 pub mod routine_gen;
@@ -50,8 +53,10 @@ pub use activity::{
     for_entity as activity_for_entity, ActivityEvent, ActivityKind, OpPayload, OpRecord,
     TRACKED_TASK_FIELDS,
 };
+pub use annotate::{parse as parse_annotate, EditError, TaskEdit};
 pub use attachment::Attachment;
 pub use block::{Block, BlockDraft};
+pub use capture::now_ts;
 pub use common::{Energy, NoteBody};
 pub use constraint::{
     validate_list as validate_constraint_list, violations_by_severity, ConstraintError,
@@ -78,6 +83,11 @@ pub use focus::{
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use person::Person;
+pub use phrase::{
+    activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
+    length_label, plan_reason, relative_day, short_duration,
+};
+pub use recur::parse_recurrence;
 pub use review::{
     build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,
     ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreakRow, StreamReview,
@@ -87,8 +97,11 @@ pub use routine::{
     materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
     RoutineReviewCadence, TaskTemplate,
 };
-pub use routine_gen::{expand, occurrence_key_at, occurrence_task_id, ExpandError, Occurrence};
-pub use rrule::{Frequency, RRule, RRuleParseError, Weekday};
+pub use routine_gen::{
+    expand, occurrence_key_at, occurrence_task_id, routine_rows, ExpandError, Occurrence,
+    RoutineRow,
+};
+pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
 pub use stats::{
     days_between, fold_trends, routine_drift, RoutineDrift, StatsError, StreamTrend, Trends,
