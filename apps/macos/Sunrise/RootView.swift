@@ -47,6 +47,7 @@ struct VaultView: View {
     @State private var search: SearchModel
     @State private var focus: FocusModel
     @State private var routines: RoutineModel
+    @State private var review: ReviewModel
     @State private var selection: Destination? = .list(.today)
     @State private var deviceID = ""
     @State private var showingSettings = false
@@ -59,6 +60,7 @@ struct VaultView: View {
         _search = State(initialValue: SearchModel(bridge: bridge))
         _focus = State(initialValue: FocusModel(bridge: bridge))
         _routines = State(initialValue: RoutineModel(bridge: bridge))
+        _review = State(initialValue: ReviewModel(bridge: bridge))
     }
 
     var body: some View {
@@ -124,11 +126,13 @@ struct VaultView: View {
             FocusView(model: focus)
         case .routines:
             RoutinesView(model: routines)
-        case .review, .none:
+        case .review:
+            ReviewView(model: review)
+        case .none:
             ContentUnavailableView(
-                selection?.title ?? "Sunrise",
-                systemImage: selection?.symbol ?? "sun.max",
-                description: Text("Not built yet.")
+                "Sunrise",
+                systemImage: "sun.max",
+                description: Text("Pick something on the left.")
             )
         }
     }

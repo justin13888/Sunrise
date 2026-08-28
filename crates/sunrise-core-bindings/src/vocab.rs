@@ -17,8 +17,8 @@
 //! even unlocked on a first run.
 
 use sunrise_domain::{
-    EnergyFit, InterruptionReason, RRule, ScheduleConstraint, SessionLength, SunriseTime,
-    TodaySection,
+    EnergyFit, ExportDataset, ExportFormat, InterruptionReason, RRule, ScheduleConstraint,
+    SessionLength, SunriseTime, TodaySection,
 };
 
 use crate::dto::{Constraint, Recurrence, RoutineItem, SessionRow, TimeValue};
@@ -188,6 +188,26 @@ pub fn energy_fit_label(fit: EnergyFit) -> String {
 #[must_use]
 pub fn interruption_label(reason: InterruptionReason) -> String {
     reason.as_str().to_string()
+}
+
+/// A dataset's lowercase wire name: `trends`, `activity`, `focus`, `streaks`.
+///
+/// See [`sunrise_domain::ExportDataset::as_str`]. This is the name
+/// `sunrise-cli export` takes on the command line, so a file saved from a GUI
+/// and one saved from the CLI can be named the same thing — which is the only
+/// reason it is worth exporting four words.
+#[uniffi::export]
+#[must_use]
+pub fn export_dataset_name(dataset: ExportDataset) -> String {
+    dataset.as_str().to_string()
+}
+
+/// A format's lowercase wire name, which is also its file extension.
+/// See [`sunrise_domain::ExportFormat::as_str`].
+#[uniffi::export]
+#[must_use]
+pub fn export_format_name(format: ExportFormat) -> String {
+    format.as_str().to_string()
 }
 
 /// When `routine` next fires at or after `now_ms`, or `None` if nothing falls
