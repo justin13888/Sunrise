@@ -27,12 +27,12 @@ struct UndoModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// A *create* has no inverse either: undoing one would mean deleting it,
-    /// and the core cannot reverse a delete. The menu simply offers nothing,
-    /// and no banner is shown — a warning on every "New stream" would train
-    /// people to ignore the one that matters.
+    /// A create *is* undoable, and undoing one deletes what it minted — see
+    /// commit `056c34d`, which added the inverse the seam previously refused
+    /// to build. No banner either way: a warning on every "New stream" would
+    /// train people to ignore the one that matters.
     @Test
-    func creatingSomethingOffersNoUndoAndNoWarning() async throws {
+    func undoingACreateDeletesWhatItMinted() async throws {
         let vault = try await TestVault()
         let browse = BrowseModel(bridge: vault.bridge)
         let undo = UndoModel(bridge: vault.bridge)
@@ -40,8 +40,13 @@ struct UndoModelTests {
         await browse.createStream(name: "Travel", color: .emerald)
         await undo.refresh()
 
-        #expect(!undo.canUndo)
+        #expect(undo.canUndo)
+        #expect(undo.undoTitle == "Undo new stream “Travel”")
         #expect(browse.undoNote == nil)
+
+        await undo.undo()
+        await browse.refresh()
+        #expect(!browse.visibleStreams.contains { $0.name == "Travel" })
         await vault.bridge.shutdown()
     }
 
@@ -101,8 +106,9 @@ struct UndoModelTests {
         await browse.deleteContext(row)
         await undo.refresh()
 
-        #expect(!undo.canUndo)
-        #expect(undo.undoTitle == "Undo")
+        // The create before it is still the top of the stack, which is how
+        // this reads that the delete pushed nothing of its own.
+        #expect(undo.undoTitle == "Undo new context @errands")
         #expect(browse.undoNote?.lowercased().contains("tombstone") == true)
         await vault.bridge.shutdown()
     }
