@@ -73,8 +73,18 @@ Rust source on every build, so committing them would let the two drift.
 - **Menu bar item** (`MenuBarExtra`). Quick capture, the daily snapshot, sync
   status. Refresh on launch, every 60 s while visible, and immediately on a
   relevant change event (debounced 500 ms).
-- **Quick capture** — a borderless window on a global hotkey. Needs the
-  **Accessibility** permission.
+- **Quick capture** — a borderless window on a global hotkey (⌘⇧N).
+  It does **not** need the Accessibility permission. The hotkey is registered
+  with Carbon's `RegisterEventHotKey`, which *reserves* one combination with
+  the window server; the permission is only required by
+  `NSEvent.addGlobalMonitorForEvents`, which observes every keystroke in every
+  app. Reserving one chord is narrower and asks less of the user, so that is
+  what `HotkeyCenter` does. An earlier revision of this file specified the
+  permission, and the app's settings screen still displays its status with the
+  caption "Not required for the shortcut above" precisely because this document
+  said otherwise. Registration fails when another app already holds the chord;
+  that is an ordinary state (`HotkeyStatus`), not an error — the menu bar item
+  still opens capture.
 - **Notification Center** for reminders, with action buttons.
   `docs/08-features/notifications.md` owns quiet hours and primary-device
   dedup; the app schedules from the intents the core emits.
