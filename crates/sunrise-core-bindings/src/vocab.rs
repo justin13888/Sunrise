@@ -16,9 +16,10 @@
 //! that does not exist — and a capture preview must render before a vault is
 //! even unlocked on a first run.
 
-use sunrise_domain::{ScheduleConstraint, SunriseTime, TodaySection};
+use sunrise_domain::{RRule, ScheduleConstraint, SunriseTime, TodaySection};
 
-use crate::dto::{Constraint, TimeValue};
+use crate::dto::{Constraint, Recurrence, TimeValue};
+use crate::BindingError;
 
 /// See [`sunrise_domain::TodaySection`].
 ///
@@ -116,6 +117,42 @@ pub fn energy_label(energy: Option<sunrise_domain::Energy>) -> String {
 pub fn constraint_summary(constraints: Vec<Constraint>) -> String {
     let list: Vec<ScheduleConstraint> = constraints.into_iter().map(Into::into).collect();
     sunrise_domain::constraint_summary(&list)
+}
+
+/// Read `every 2 weeks on tue` — or a raw `FREQ=WEEKLY;BYDAY=TU` body — into
+/// a [`Recurrence`].
+///
+/// See [`sunrise_domain::parse_recurrence`]. This is the **only** way a client
+/// should turn typed text into a rule. Writing a second parser in Swift would
+/// mean `weekends` meaning one thing in the app and another in `sunrise-cli`,
+/// and the disagreement would surface as tasks generated on the wrong days —
+/// weeks later, silently.
+///
+/// # Errors
+///
+/// [`BindingError::BadRecurrence`], carrying the phrase and the domain's own
+/// message. Nothing is guessed at: an unreadable cadence is refused rather
+/// than rounded to the nearest thing that parses.
+#[uniffi::export]
+pub fn parse_recurrence(text: String) -> Result<Recurrence, BindingError> {
+    sunrise_domain::parse_recurrence(&text)
+        .map(|r| Recurrence::from(&r))
+        .map_err(|cause| BindingError::BadRecurrence { text, cause })
+}
+
+/// Describe a rule in one line: `every 2 weeks on Mo, We`.
+///
+/// See [`sunrise_domain::rrule_summary`] — the inverse of
+/// [`parse_recurrence`], and what [`crate::dto::RoutineListRow::cadence`]
+/// already carries for a list row. Exported separately because a *routine
+/// editor* has to describe a rule it has parsed but not yet saved, and there
+/// is no row to read it off yet.
+///
+/// Lossy on purpose: it is prose, not a serialization.
+#[uniffi::export]
+#[must_use]
+pub fn recurrence_summary(rule: Recurrence) -> String {
+    sunrise_domain::rrule_summary(&RRule::from(rule))
 }
 
 /// An IANA zone, or UTC when the name is not one.

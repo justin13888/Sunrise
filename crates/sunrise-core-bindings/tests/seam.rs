@@ -687,3 +687,148 @@ fn ms_at(y: i16, m: i8, d: i8, hour: i8, tz: &str) -> u64 {
     )
     .expect("after the epoch")
 }
+
+// ---------------------------------------------------------------------------
+// Recurrence
+// ---------------------------------------------------------------------------
+
+/// The phrase people type is read by the domain, not by a client.
+///
+/// `weekdays` is the case that matters: it is five days, it is not derivable
+/// from the word, and a client that expanded it itself would be the place the
+/// app and `sunrise-cli` first disagreed about which days a routine fires on.
+#[test]
+fn a_recurrence_phrase_is_read_by_the_domain() {
+    use sunrise_core_bindings::vocab::parse_recurrence;
+    use sunrise_domain::{Frequency, Weekday};
+
+    let r = parse_recurrence("every 2 weeks on tue".into()).expect("phrase parses");
+    assert_eq!(r.freq, Frequency::Weekly);
+    assert_eq!(r.interval, 2);
+    assert_eq!(r.by_day, vec![Weekday::Tu]);
+
+    let weekdays = parse_recurrence("weekdays".into()).expect("weekdays parses");
+    assert_eq!(
+        weekdays.by_day,
+        vec![
+            Weekday::Mo,
+            Weekday::Tu,
+            Weekday::We,
+            Weekday::Th,
+            Weekday::Fr
+        ],
+        "five days, and not derivable from the word"
+    );
+
+    // The RFC 5545 body still goes through, for anyone who wants to be exact.
+    let raw = parse_recurrence("FREQ=MONTHLY;BYMONTHDAY=-1".into()).expect("rfc body parses");
+    assert_eq!(raw.freq, Frequency::Monthly);
+    assert_eq!(raw.by_month_day, vec![-1]);
+}
+
+/// An unreadable cadence is refused with what was typed, not rounded to the
+/// nearest thing that parses.
+#[test]
+fn an_unreadable_recurrence_is_a_typed_error_carrying_the_phrase() {
+    use sunrise_core_bindings::vocab::parse_recurrence;
+
+    let err = parse_recurrence("every blue moon".into()).expect_err("must not guess");
+    match err {
+        BindingError::BadRecurrence { text, cause } => {
+            assert_eq!(
+                text, "every blue moon",
+                "the phrase comes back for the field"
+            );
+            assert!(
+                cause.contains("blue"),
+                "the domain names the token: {cause}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Parsing and describing are inverses, and both live in the domain — which is
+/// what lets a routine editor show the rule it is about to save.
+#[test]
+fn a_parsed_rule_describes_itself_in_the_words_it_came_from() {
+    use sunrise_core_bindings::vocab::{parse_recurrence, recurrence_summary};
+
+    let rule = parse_recurrence("every 2 weeks on mon, wed".into()).expect("parses");
+    assert_eq!(recurrence_summary(rule), "every 2 weeks on Mo, We");
+    assert_eq!(
+        recurrence_summary(parse_recurrence("daily x12".into()).expect("parses")),
+        "every day \u{00d7}12"
+    );
+}
+
+/// The rule a routine carries round-trips through the seam's record, so an
+/// editor that reads a routine, shows its cadence and saves it back cannot
+/// quietly rewrite the schedule.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_routine_round_trips_its_recurrence_through_the_seam() {
+    use sunrise_core_bindings::dto::{RoutineDraftIn, RoutineEdit, Template};
+    use sunrise_core_bindings::vocab::{parse_recurrence, recurrence_summary};
+
+    let (_dir, core) = open_core().await;
+    let stream = sunrise_domain::inbox_stream_ref();
+    let created = core
+        .submit(CoreCommand::CreateRoutine {
+            draft: RoutineDraftIn {
+                template: Template {
+                    title: "Water the plants".into(),
+                    stream_id: stream,
+                    contexts: Vec::new(),
+                    energy: None,
+                    priority: None,
+                    estimated_duration_s: None,
+                    body: None,
+                },
+                rrule: parse_recurrence("every monday".into()).expect("parses"),
+                timezone: "UTC".into(),
+                starts_at: jiff::Timestamp::from_millisecond(1_700_000_000_000).expect("ts"),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+            },
+        })
+        .await
+        .expect("create routine");
+
+    let CoreQueryResult::Routines { routines } =
+        core.query(CoreQuery::Routines).await.expect("routines")
+    else {
+        panic!("Routines must return routines");
+    };
+    let row = routines
+        .iter()
+        .find(|r| r.id == created.entity)
+        .expect("the routine we just made");
+    assert_eq!(recurrence_summary(row.rrule.clone()), "every week on Mo");
+
+    // Re-save it under a phrase the user retyped.
+    core.submit(CoreCommand::UpdateRoutine {
+        id: created.entity,
+        edit: RoutineEdit {
+            rrule: Some(parse_recurrence("weekdays".into()).expect("parses")),
+            ..RoutineEdit::default()
+        },
+    })
+    .await
+    .expect("update routine");
+
+    let CoreQueryResult::Routines { routines } =
+        core.query(CoreQuery::Routines).await.expect("routines")
+    else {
+        panic!("Routines must return routines");
+    };
+    let row = routines
+        .iter()
+        .find(|r| r.id == created.entity)
+        .expect("still there");
+    assert_eq!(
+        recurrence_summary(row.rrule.clone()),
+        "every week on Mo, Tu, We, Th, Fr"
+    );
+    core.shutdown().await;
+}

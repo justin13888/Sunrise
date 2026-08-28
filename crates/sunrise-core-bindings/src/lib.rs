@@ -106,6 +106,19 @@ pub enum BindingError {
     /// The OIDC login flow failed.
     #[error("login: {0}")]
     Login(String),
+    /// A recurrence phrase could not be read.
+    ///
+    /// Carries the phrase back so a routine editor can leave what was typed in
+    /// the field. Never guessed at: a routine that silently fires on the wrong
+    /// cadence is discovered weeks later, by which point it has generated the
+    /// wrong tasks.
+    #[error("not a recurrence: {text} ({cause})")]
+    BadRecurrence {
+        /// What was typed.
+        text: String,
+        /// Why it was rejected, in the domain's own words.
+        cause: String,
+    },
     /// A fixed-width field arrived at the wrong length, or was not hex.
     ///
     /// UniFFI cannot express `[u8; 32]`, so a key crosses as a `Vec<u8>` and a
