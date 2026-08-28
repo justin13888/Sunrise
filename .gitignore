@@ -51,3 +51,9 @@ fuzz/artifacts/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+
+# macOS client build outputs (`just macos-xcframework`). Generated from the
+# Rust source on every build; committing them would let the Swift bindings
+# drift from the crate that defines them.
+/build/
+/out/

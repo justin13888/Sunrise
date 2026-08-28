@@ -82,6 +82,57 @@ bench-baseline:
     cargo bench -p sunrise-bench
     cargo run -p sunrise-bench --bin baseline
 
+# --- macOS client (Swift / UniFFI) ---
+
+# The UniFFI-exported crate, its underscored cargo lib name, the framework, and
+# the slices to build. Add `x86_64-apple-darwin` here (and `rustup target add`
+# it) for a universal binary; `lipo` below already handles more than one.
+ffi_crate  := "sunrise-core-bindings"
+ffi_lib    := "sunrise_core_bindings"
+ffi_fw     := "SunriseCore"
+ffi_slices := "aarch64-apple-darwin"
+
+# Build the Swift bindings + SunriseCore.xcframework the macOS app links
+[group('macos')]
+macos-xcframework:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf build out/{{ffi_fw}}.xcframework
+    mkdir -p build/headers build/macos out/swift
+
+    # 1. One static + dynamic lib per slice. `--library` binding generation
+    #    reads the .dylib, so both crate-types are load-bearing.
+    for t in {{ffi_slices}}; do cargo build -p {{ffi_crate}} --release --target "$t"; done
+
+    # 2. Bindings, generated from the built library — no .udl, no build.rs.
+    #    `--locked` is not optional: the generator lives outside the workspace
+    #    precisely so its cargo-platform pin survives, and `cargo build` without
+    #    it would re-resolve to a version that needs rustc 1.91.
+    first=$(echo {{ffi_slices}} | awk '{print $1}')
+    cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
+    tools/uniffi-bindgen/target/release/uniffi-bindgen generate \
+      --library "target/$first/release/lib{{ffi_lib}}.dylib" \
+      --language swift --out-dir out/swift
+
+    # 3. The module map. UniFFI's own is unusable inside an xcframework: it is
+    #    named <lib>FFI.modulemap, which Xcode does not look for, and it emits
+    #    `use Darwin` / `use _Builtin_stdbool` / `use _Builtin_stdint` lines
+    #    that fail to resolve there. Rewriting it is the fix; the module name
+    #    must stay <lib>FFI to match the generated `import`.
+    cp "out/swift/{{ffi_lib}}FFI.h" build/headers/
+    printf 'module %sFFI {\n    header "%sFFI.h"\n    export *\n}\n' \
+      {{ffi_lib}} {{ffi_lib}} > build/headers/module.modulemap
+
+    # 4. One fat static lib, then package it.
+    libs=""
+    for t in {{ffi_slices}}; do libs="$libs target/$t/release/lib{{ffi_lib}}.a"; done
+    lipo -create $libs -output "build/macos/lib{{ffi_lib}}.a"
+    xcodebuild -create-xcframework \
+      -library "build/macos/lib{{ffi_lib}}.a" \
+      -headers build/headers \
+      -output "out/{{ffi_fw}}.xcframework"
+    echo "out/{{ffi_fw}}.xcframework + out/swift/{{ffi_lib}}.swift"
+
 # --- Aggregates (mirror the git hooks; handy to run by hand) ---
 
 # Everything the pre-commit hook runs
