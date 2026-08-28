@@ -142,8 +142,10 @@ that today would be paying for the roadmap, not the product.
   outright rather than suppressing them; `cargo deny check` now reports no
   unmatched ignores. The `BSL-1.0` licence allowance **stays**: it was annotated
   as reaching us via `xxhash-rust` ← `loro`, but `cargo deny list` shows it is
-  actually `ryu` (via `serde_json`), which is permanent. The only remaining
-  advisory ignore is RUSTSEC-2024-0436 (`paste`, via `ratatui`).
+  actually `ryu` (via `serde_json`), which is permanent. One advisory ignore
+  remained afterwards — RUSTSEC-2024-0436 (`paste`, via `ratatui`) — and it
+  left with `ratatui` under [ADR-0019](./0019-swiftui-macos-client.md). There
+  are now **no advisory suppressions in the workspace at all**.
 - **No wire or storage format changes.** Envelopes, the op log, and the sync
   protocol are untouched; a vault written before this ADR reads identically
   after it.

@@ -9,14 +9,14 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Presentation                                                    │
-│  Per-platform UI: Desktop (Tauri), iOS (Swift), Android (Kotlin),│
-│  Web (React PWA), TUI (Rust). Owns: layout, input, native APIs.  │
+│  Per-platform UI: macOS (SwiftUI) and the `sunrise` CLI (Rust);  │
+│  iOS / Android / Web deferred. Owns: layout, input, native APIs. │
 └──────────────────────────────────────────────────────────────────┘
                                 │  uses
                                 ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Shared Core (Rust, statically linked or WASM)                   │
-│  Domain logic, CRDT engine, crypto, query engine, sync state     │
+│  Domain logic, op log + merge, crypto, query engine, sync state  │
 │  machine, local storage. Pure, deterministic, headless.          │
 └──────────────────────────────────────────────────────────────────┘
                                 │  speaks
@@ -54,8 +54,8 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 See [`../11-adr/0002-shared-core-rust.md`](../11-adr/0002-shared-core-rust.md). Summary:
 
 - We need *one* implementation of CRDT, crypto, and sync — not four.
-- It must run inside a Tauri app (Rust native), iOS (Swift via UniFFI), Android (Kotlin via UniFFI), browser (WASM), and as a TUI binary (Rust native).
-- Rust gives us memory safety, deterministic builds, and one ecosystem (Loro/Automerge, RustCrypto, sqlx, sqlcipher).
+- It must run inside a macOS app (Swift via UniFFI), a CLI (Rust native), and — when they are scheduled — iOS (Swift via UniFFI), Android (Kotlin via UniFFI) and the browser (WASM).
+- Rust gives us memory safety, deterministic builds, and one ecosystem (RustCrypto, rusqlite, sqlcipher).
 
 ## What the core exposes
 

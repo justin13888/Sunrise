@@ -6,16 +6,16 @@
 # Use the host target by default; CI overrides via --target.
 
 [target.aarch64-apple-darwin]
-# Apple Silicon desktop target (Tauri desktop builds).
+# Apple Silicon: the macOS app's xcframework slice (`just macos-xcframework`).
 
 [target.aarch64-apple-ios]
-# iOS device target (UniFFI bindings).
+# iOS device target (UniFFI bindings). Deferred; the slice is unproven.
 
 [target.aarch64-linux-android]
-# Android arm64 target (UniFFI bindings).
+# Android arm64 target (UniFFI bindings). Deferred.
 
 [target.wasm32-unknown-unknown]
-# Web PWA WASM target (wasm-bindgen).
+# Web PWA WASM target (wasm-bindgen). Deferred (ADR-0012).
 
 [target.x86_64-unknown-linux-gnu]
 [target.x86_64-pc-windows-msvc]
