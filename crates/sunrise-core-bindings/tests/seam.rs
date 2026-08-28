@@ -475,3 +475,31 @@ async fn a_planner_row_carries_the_shared_explanation() {
     assert!(rows[0].reason.contains("unblocks nothing"), "{:?}", rows[0]);
     core.shutdown().await;
 }
+
+/// The login record must never print its tokens. It crosses the FFI seam and
+/// is exactly the kind of value someone debug-prints while wiring up Swift.
+#[test]
+fn login_credentials_redact_under_debug() {
+    let c = sunrise_core_bindings::LoginCredentials {
+        access_token: "super-secret-access".into(),
+        refresh_token: Some("super-secret-refresh".into()),
+        expires_at_ms: 10,
+        renew_at_ms: 5,
+    };
+    let s = format!("{c:?}");
+    assert!(!s.contains("super-secret-access"), "{s}");
+    assert!(!s.contains("super-secret-refresh"), "{s}");
+    assert!(s.contains("expires_at_ms: 10"), "{s}");
+}
+
+/// And a login object does not print the client id or a PKCE verifier.
+#[test]
+fn a_login_reports_only_whether_one_is_in_flight() {
+    let l = sunrise_core_bindings::SunriseLogin::new(
+        "https://issuer.example".into(),
+        "the-client-id".into(),
+    );
+    let s = format!("{l:?}");
+    assert!(!s.contains("the-client-id"), "{s}");
+    assert!(s.contains("login_in_progress: false"), "{s}");
+}

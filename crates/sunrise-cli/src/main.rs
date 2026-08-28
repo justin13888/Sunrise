@@ -39,7 +39,7 @@
 )]
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
-use sunrise_cli::livesync;
+use sunrise_cli::{livesync, login};
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::routine_rows;
@@ -74,6 +74,11 @@ USAGE:
     sunrise export <dataset> [json|csv] [path]
                                  trends | activity | focus | streaks
 
+  account
+    sunrise login                sign in via OIDC and store the token
+    sunrise logout               forget the stored token
+    sunrise whoami               report the stored token's state
+
   plumbing
     sunrise focus <id>           open a focus session on a task
     sunrise sync --once          drain the outbox and exit (cron / CI)
@@ -87,8 +92,11 @@ CAPTURE SYNTAX:
 ENVIRONMENT:
     SUNRISE_VAULT             vault directory (default ~/.sunrise/vault)
     SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
-    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; unset only works
+    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
+                              login. Unset, with no stored login, only works
                               against a self-host relay
+    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
+    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
     SUNRISE_EXPORT_CERT_FILE  write this device's cert here on startup
     SUNRISE_TRUST_CERT_FILE   trust the peer cert at this path on startup
     SUNRISE_LOG_FILE          override the NDJSON log destination
@@ -153,6 +161,7 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
 
     let dir = vault_dir();
     std::fs::create_dir_all(&dir).ok();
+    let dir_for_store = dir.clone();
     // Subcommands are one-shot and offline: opening a sync driver for a
     // command that exits milliseconds later would just churn the relay.
     let (core, _log) = livesync::open_with_plan(
@@ -163,17 +172,51 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     )
     .await?;
 
-    let result = dispatch(&core, sub, rest).await;
+    let result = dispatch(&core, &dir_for_store, sub, rest).await;
     core.shutdown().await;
     result
 }
 
 async fn dispatch(
     core: &Core,
+    vault_dir: &std::path::Path,
     sub: &str,
     rest: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     #![allow(clippy::print_stdout)]
+    match sub {
+        "login" => {
+            let cfg = login::LoginConfig::from_env().map_err(|e| {
+                format!(
+                    "{e}; set {} and {} first",
+                    login::ENV_ISSUER,
+                    login::ENV_CLIENT_ID
+                )
+            })?;
+            let store = login::store_for(vault_dir);
+            let device_id = login::device_id_hex(core);
+            let mut announce = |line: &str| println!("{line}");
+            println!("Opening your browser to sign in. If it does not open, visit:");
+            let creds =
+                login::login(&cfg, &device_id, &store, core.now_ms(), &mut announce).await?;
+            let secs = creds.expires_at_ms.saturating_sub(core.now_ms()) / 1000;
+            println!("Signed in. Access token valid for {secs}s.");
+            return Ok(());
+        }
+        "logout" => {
+            login::logout(&login::store_for(vault_dir))?;
+            println!("Signed out.");
+            return Ok(());
+        }
+        "whoami" => {
+            println!(
+                "{}",
+                login::status_line(&login::store_for(vault_dir), core.now_ms())
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
     match sub {
         "capture" => {
             let text = rest.join(" ");

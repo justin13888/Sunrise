@@ -2168,6 +2168,7 @@ dependencies = [
  "oauth2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "url",
@@ -2216,6 +2217,7 @@ dependencies = [
  "axum",
  "jiff",
  "serde_json",
+ "sunrise-auth",
  "sunrise-cbor",
  "sunrise-core",
  "sunrise-crypto",
@@ -2273,6 +2275,7 @@ name = "sunrise-core-bindings"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "sunrise-auth",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",

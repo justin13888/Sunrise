@@ -501,6 +501,16 @@ impl Core {
         self.engine.keychain().cert_blob().to_vec()
     }
 
+    /// This device's stable id.
+    ///
+    /// The OIDC login binds a token to it (`device_id` claim), and the relay
+    /// refuses a token whose claim names a different device — so a token
+    /// lifted off this machine is useless on another one.
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 16] {
+        self.engine.keychain().device_id()
+    }
+
     /// Count of unacked outbox rows (DB truth).
     pub(crate) fn sync_pending(&self) -> Result<u64, CoreError> {
         let db = self.db.lock();

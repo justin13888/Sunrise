@@ -19,7 +19,9 @@
 //! dead simple and is **not** how production pairing works.
 
 use std::path::PathBuf;
+
 use std::sync::Arc;
+use sunrise_auth::CredentialStore;
 
 use sunrise_core::{
     BoxTransport, Command, ConnectFuture, Core, CoreConfig, CoreError, SyncConfig, TokenSource,
@@ -53,6 +55,9 @@ pub struct SyncEnv {
     pub trust_cert: Option<String>,
     /// Raw `SUNRISE_SYNC_TOKEN`.
     pub token: Option<String>,
+    /// Access token from a previous `sunrise login`, if any. Lower precedence
+    /// than [`SyncEnv::token`].
+    pub stored_token: Option<String>,
 }
 
 impl SyncEnv {
@@ -64,7 +69,23 @@ impl SyncEnv {
             export_cert: std::env::var(ENV_EXPORT_CERT).ok(),
             trust_cert: std::env::var(ENV_TRUST_CERT).ok(),
             token: std::env::var(ENV_SYNC_TOKEN).ok(),
+            stored_token: None,
         }
+    }
+
+    /// Attach the access token from a stored login, if one is present and not
+    /// already expired. An expired one is deliberately not offered: presenting
+    /// it would earn a `401` and a reconnect loop, where offering nothing at
+    /// least reaches a self-host relay.
+    #[must_use]
+    pub fn with_stored(mut self, store: &dyn CredentialStore, now_ms: u64) -> Self {
+        self.stored_token = store
+            .load()
+            .ok()
+            .flatten()
+            .filter(|c| !c.is_expired_at(now_ms))
+            .map(|c| c.access_token);
+        self
     }
 }
 
@@ -97,7 +118,11 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     fn clean(s: Option<&str>) -> Option<String> {
         s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
-    let credential = TokenSource::new(clean(env.token.as_deref()));
+    // A stored login beats the env var. `SUNRISE_SYNC_TOKEN` stays as the
+    // override for CI and for a relay whose token comes from somewhere else,
+    // but a user who ran `sunrise login` should not have to also export it.
+    let token = clean(env.token.as_deref()).or_else(|| clean(env.stored_token.as_deref()));
+    let credential = TokenSource::new(token);
     SyncPlan {
         sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
         export_cert: clean(env.export_cert.as_deref()).map(PathBuf::from),
@@ -312,6 +337,7 @@ mod tests {
         let plan = plan_from_env(&SyncEnv {
             url: Some("ws://127.0.0.1:8443/sync".into()),
             token: Some("  eyJhbGciOiJSUzI1NiJ9  ".into()),
+            stored_token: None,
             ..SyncEnv::default()
         });
         assert_eq!(
@@ -342,6 +368,7 @@ mod tests {
         let plan = plan_from_env(&SyncEnv {
             url: Some("ws://127.0.0.1:8443/sync".into()),
             token: Some("   ".into()),
+            stored_token: None,
             ..SyncEnv::default()
         });
         assert!(!plan.sync.as_ref().unwrap().credential.is_set());
@@ -354,6 +381,7 @@ mod tests {
             export_cert: Some("/tmp/self.cbor".into()),
             trust_cert: Some("   ".into()), // whitespace-only -> None
             token: None,
+            stored_token: None,
         };
         let plan = plan_from_env(&env);
         assert_eq!(
@@ -400,5 +428,94 @@ mod tests {
             ..SyncEnv::default()
         };
         assert!(plan_from_env(&env).is_off());
+    }
+
+    /// A stored login is enough to sync — the whole point of `sunrise login`.
+    #[test]
+    fn a_stored_login_supplies_the_bearer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sunrise_auth::FileStore::in_dir(dir.path());
+        store
+            .save(&sunrise_auth::Credentials::new(
+                "stored-access".into(),
+                None,
+                Some(3600),
+                0,
+            ))
+            .unwrap();
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            export_cert: None,
+            trust_cert: None,
+            token: None,
+            stored_token: None,
+        }
+        .with_stored(&store, 0);
+        let plan = plan_from_env(&env);
+        assert_eq!(
+            plan.sync.unwrap().credential.get().as_deref(),
+            Some("stored-access")
+        );
+    }
+
+    /// The env var still wins, for CI and for a token minted elsewhere.
+    #[test]
+    fn the_env_token_overrides_a_stored_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sunrise_auth::FileStore::in_dir(dir.path());
+        store
+            .save(&sunrise_auth::Credentials::new(
+                "stored-access".into(),
+                None,
+                Some(3600),
+                0,
+            ))
+            .unwrap();
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            export_cert: None,
+            trust_cert: None,
+            token: Some("from-env".into()),
+            stored_token: None,
+        }
+        .with_stored(&store, 0);
+        assert_eq!(
+            plan_from_env(&env)
+                .sync
+                .unwrap()
+                .credential
+                .get()
+                .as_deref(),
+            Some("from-env")
+        );
+    }
+
+    /// An expired stored token is not offered. Presenting it earns a `401` and
+    /// a reconnect loop; offering nothing at least reaches a self-host relay.
+    #[test]
+    fn an_expired_stored_login_is_not_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = sunrise_auth::FileStore::in_dir(dir.path());
+        store
+            .save(&sunrise_auth::Credentials::new(
+                "stale".into(),
+                None,
+                Some(1),
+                0,
+            ))
+            .unwrap();
+        let env = SyncEnv {
+            url: Some("wss://relay.example/sync".into()),
+            export_cert: None,
+            trust_cert: None,
+            token: None,
+            stored_token: None,
+        }
+        .with_stored(&store, 10_000);
+        assert_eq!(
+            plan_from_env(&env).sync.unwrap().credential.get(),
+            None,
+            "an expired token must not be presented"
+        );
     }
 }

@@ -38,10 +38,11 @@
 //!   allows to stand without re-validating the signature. Pulling in an
 //!   RSA/JWT stack client-side to re-check a token nobody downstream reads
 //!   would be cost without a defence.
-//! - **Credential storage.** Where a token is persisted is a platform question
-//!   — Keychain on macOS, a file mode 0600 for the CLI — and belongs to the
-//!   client, not here. [`Credentials`] is `Serialize` so a client can persist
-//!   it, and redacts under `Debug` so it does not leak on the way past.
+//! - **The OS keychain.** [`store`] is the persistence seam, and [`FileStore`]
+//!   is the mode-0600 implementation the CLI uses. A macOS client should
+//!   implement [`CredentialStore`] over the real Keychain in Swift; there is
+//!   no `keyring` crate in this workspace, and `sunrise-core::keychain` is the
+//!   device identity store, not a credential vault.
 //! - **Device registration.** [`login::DEVICE_ID_PARAM`] asks the issuer to
 //!   mint the device claim; `POST /api/v1/devices` and the
 //!   `X-Sunrise-Device-Sig` header are the relay's REST surface and live with
@@ -60,6 +61,7 @@ pub mod discovery;
 pub mod error;
 pub mod http;
 pub mod login;
+pub mod store;
 
 pub use credentials::{Credentials, RENEW_AT_FRACTION};
 pub use discovery::{discover, discovery_url, ProviderMetadata};
@@ -69,3 +71,4 @@ pub use login::{
     open_in_browser, LoginSession, OidcClient, RedirectCapture, DEFAULT_REDIRECT_TIMEOUT,
     DEVICE_ID_CLAIM, DEVICE_ID_PARAM,
 };
+pub use store::{CredentialStore, FileStore, CREDENTIALS_FILE};
