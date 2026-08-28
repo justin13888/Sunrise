@@ -148,10 +148,11 @@ pub fn parse_recurrence(text: String) -> Result<Recurrence, BindingError> {
 /// Describe a rule in one line: `every 2 weeks on Mo, We`.
 ///
 /// See [`sunrise_domain::rrule_summary`] — the inverse of
-/// [`parse_recurrence`], and what [`crate::dto::RoutineListRow::cadence`]
-/// already carries for a list row. Exported separately because a *routine
-/// editor* has to describe a rule it has parsed but not yet saved, and there
-/// is no row to read it off yet.
+/// [`parse_recurrence`]. `Query::Routines` hands back whole
+/// [`crate::dto::RoutineItem`]s rather than a list projection, so this is
+/// where a routines list gets its cadence line, and it is also what a *routine
+/// editor* describes a rule with before there is anything saved to read one
+/// off.
 ///
 /// Lossy on purpose: it is prose, not a serialization.
 #[uniffi::export]

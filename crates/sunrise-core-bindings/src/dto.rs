@@ -38,7 +38,7 @@ use sunrise_domain::{
     Interruption, InterruptionReason, InterruptionTally, MorningSummary, NoteBody,
     QuietHoursPolicy, RRule, ReminderIntent, ReminderKind, ReminderSettings, ReviewSnapshot,
     ReviewSnapshotStream, ReviewTotals, ReviewWindow, Routine, RoutineCatchupPolicy, RoutineDrift,
-    RoutineRow, ScheduleConstraint, SessionPlan, Stream, StreamColor, StreamFocus, StreamReview,
+    ScheduleConstraint, SessionPlan, Stream, StreamColor, StreamFocus, StreamReview,
     StreamReviewCadence, StreamTrend, SunriseTime, Task, TaskState, TaskTemplate, TimeOfDayRange,
     Trends, UnblockCascade, WeekBucket, Weekday, WeeklyReview,
 };
@@ -1166,53 +1166,6 @@ impl From<RoutineEdit> for sunrise_domain::RoutinePatch {
             paused: e.paused,
             paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
             archived: e.archived,
-        }
-    }
-}
-
-/// See [`sunrise_domain::RoutineRow`] — a routine projected for a list, with
-/// its next occurrence resolved and its cadence in prose.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct RoutineListRow {
-    /// Routine id.
-    pub id: EntityRef,
-    /// Template title.
-    pub title: String,
-    /// Human-readable cadence, e.g. `every 2 weeks on Mo, We`.
-    pub cadence: String,
-    /// Next occurrence inside the routine's materialization horizon.
-    pub next: Option<jiff::Timestamp>,
-    /// Paused.
-    pub paused: bool,
-    /// The full template, so an edit does not drop what it did not touch.
-    pub template: Template,
-    /// The parsed recurrence, for the same reason.
-    pub rrule: Recurrence,
-    /// Current streak.
-    pub streak: i64,
-}
-
-impl From<&RoutineRow> for RoutineListRow {
-    fn from(r: &RoutineRow) -> Self {
-        let RoutineRow {
-            id,
-            title,
-            rrule,
-            next,
-            paused,
-            template,
-            rule,
-            streak,
-        } = r;
-        Self {
-            id: *id,
-            title: title.clone(),
-            cadence: rrule.clone(),
-            next: *next,
-            paused: *paused,
-            template: Template::from(template),
-            rrule: Recurrence::from(rule),
-            streak: *streak,
         }
     }
 }
