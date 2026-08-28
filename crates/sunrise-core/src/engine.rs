@@ -1848,11 +1848,21 @@ impl Engine {
             completed_task,
             unknown: Unknowns::new(),
         };
+        // Issue #10. The user pressed "complete" in the focus UI; the task
+        // register is what has to change, and until now nothing changed it.
+        // Derived HERE, on the originating device only, and emitted as an
+        // ordinary `task.update` — see `autocomplete_focused_task`.
+        let completion = if completed_task {
+            self.autocomplete_focused_task(db, view.start.task_id, now_ms)?
+        } else {
+            None
+        };
         let inner = encode_inner_op(&InnerOp::FocusEnd(Box::new(end.clone())))?;
         let op_id = self.fresh_op_id(now_ms);
         let stream_bytes = *view.start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
         let lww = self.lww_stamp(seq);
+        let state = completion.as_ref().map(|c| c.task.state);
         db.with_tx(|tx| -> rusqlite::Result<()> {
             insert_focus_end_row(tx, &end, &lww)?;
             self.ops_insert(
@@ -1870,9 +1880,123 @@ impl Engine {
                 now_ms,
                 &[],
             )?;
+            if let Some(c) = &completion {
+                let task_seq = self.next_seq_tx(tx, c.task.stream_id.bytes())?;
+                let task_lww = self.lww_stamp(task_seq);
+                let task_op_id = self.fresh_op_id(now_ms);
+                update_task_row(tx, &c.task, &task_lww)?;
+                ftsr_upsert_task(tx, &c.task)?;
+                self.ops_insert(
+                    tx,
+                    &task_op_id,
+                    c.task.stream_id.bytes(),
+                    task_seq,
+                    task_lww.hlc,
+                    &c.inner,
+                    "task.update",
+                    "task",
+                    Some(c.task.id.bytes()),
+                    Some(now_ms),
+                    None,
+                    now_ms,
+                    &[],
+                )?;
+                // Same rule as a hand-completed occurrence: the streak advance
+                // rides in the same transaction as the completion that caused
+                // it (`docs/08-features/focus-mode.md`: "a focus session that
+                // completes a routine occurrence increments the routine
+                // streak").
+                if let Some((routine, routine_inner)) = &c.streak {
+                    let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
+                    let routine_lww = self.lww_stamp(routine_seq);
+                    let routine_op_id = self.fresh_op_id(now_ms);
+                    update_routine_row(tx, routine, &routine_lww)?;
+                    self.ops_insert(
+                        tx,
+                        &routine_op_id,
+                        &META_STREAM,
+                        routine_seq,
+                        routine_lww.hlc,
+                        routine_inner,
+                        "routine.update",
+                        "routine",
+                        Some(routine.id.bytes()),
+                        Some(now_ms),
+                        None,
+                        now_ms,
+                        &[],
+                    )?;
+                }
+            }
             Ok(())
         })?;
-        Ok(CommandResult::new(session, None, op_id, seq))
+        Ok(CommandResult::new(session, state, op_id, seq))
+    }
+
+    /// **Auto-completion (issue #10).** Close the task a focus session says was
+    /// finished, if it is still open.
+    ///
+    /// # The signal
+    ///
+    /// Exactly one: `EndFocus { completed_task: true }`. That is not an
+    /// inference about the user, it is a **statement by the user** — the focus
+    /// screen offers three actions and "complete" is one of them
+    /// (`docs/08-features/focus-mode.md` §Focus mode). The fact was already
+    /// recorded on the session; the task register simply never moved, which is
+    /// what issue #10 calls out as "`completed_at` is never set automatically".
+    ///
+    /// Signals deliberately NOT taken, because each is an inference rather than
+    /// a statement, and inferring is where a task manager turns into the
+    /// "no if-this-then-that" non-goal:
+    ///
+    /// * *A routine occurrence whose window elapsed.* Missed is not done.
+    ///   Marking it complete would inflate every completion count in the
+    ///   review; the catch-up policy is where a missed occurrence belongs.
+    /// * *All of a task's blockers completing.* Blockers describe order, not
+    ///   content. A task with no remaining blockers is ready, which is exactly
+    ///   what `EffectiveTaskState` already derives.
+    /// * *A Block ending with the task still bound.* A Block is a plan for
+    ///   when to do work; the spec says outright that there is no "ran the
+    ///   block" state and that we trust the user.
+    ///
+    /// # Determinism and convergence
+    ///
+    /// The derivation happens **once, on the originating device**, and its
+    /// result is an ordinary full-state `task.update` op. A replica applying
+    /// the `focus.end` op derives nothing — `materialize_focus_remote` writes
+    /// the session record and stops — so the completion cannot be re-derived,
+    /// re-timed, or derived differently anywhere. It merges through the same
+    /// entity-level LWW path as any hand-edit, so a concurrent edit of the same
+    /// task on another device is resolved by the same `(hlc, device, seq)` rule
+    /// as every other conflict, with no second writer of task state.
+    ///
+    /// Returns `None` — a plain no-op, never an error — when there is nothing
+    /// to complete: the task is gone, already `done`, or `cancelled`. Cancelled
+    /// is not a mistake to correct: `TaskState::can_transition_to` forbids
+    /// `cancelled -> done`, and a session closing over a task the user
+    /// cancelled must not silently overrule them.
+    fn autocomplete_focused_task(
+        &self,
+        db: &Db,
+        task_id: EntityRef,
+        now_ms: u64,
+    ) -> Result<Option<FocusCompletion>, EngineError> {
+        let Some(mut task) = read_task(db.conn(), task_id.bytes())? else {
+            return Ok(None);
+        };
+        if task.deleted || !matches!(task.state, TaskState::Todo | TaskState::InProgress) {
+            return Ok(None);
+        }
+        task.state = TaskState::Done;
+        task.completed_at = Some(ms_to_ts(now_ms as i64).into());
+        task.updated_at = ms_to_ts(now_ms as i64);
+        let streak = self.streak_advance(db, &task, now_ms)?;
+        let inner = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
+        Ok(Some(FocusCompletion {
+            task,
+            inner,
+            streak,
+        }))
     }
 
     /// Log one interruption against a session — a grow-only set member, keyed
@@ -2666,6 +2790,15 @@ pub(crate) struct LwwStamp {
     pub device: [u8; 16],
     /// The writing device's per-`(stream, device)` sequence number.
     pub seq: u64,
+}
+
+/// What `EndFocus` derives when the session says the task was finished: the
+/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
+/// completion triggers when the task is a routine occurrence.
+struct FocusCompletion {
+    task: Task,
+    inner: Vec<u8>,
+    streak: Option<(Routine, Vec<u8>)>,
 }
 
 /// The stamp stored on a materialized row. `device` is `None` only for a
@@ -8391,7 +8524,238 @@ mod tests {
             .is_err());
     }
 
+    // ---- auto-completion (issue #10) ----
+
+    fn open_session(e: &Engine, db: &mut Db, task: EntityRef) -> EntityRef {
+        e.apply(
+            db,
+            Command::StartFocus(FocusStartDraft {
+                task_id: task,
+                kind: FocusKind::Work,
+                length: SessionLength::OnePomodoro,
+                energy: None,
+            }),
+        )
+        .unwrap()
+        .entity
+    }
+
+    fn end_session(e: &Engine, db: &mut Db, session: EntityRef, done: bool) -> CommandResult {
+        e.apply(
+            db,
+            Command::EndFocus {
+                session,
+                actual_focused_ms: None,
+                completed_task: done,
+            },
+        )
+        .unwrap()
+    }
+
+    fn task_of(e: &Engine, db: &Db, id: EntityRef) -> Task {
+        match e.query(db, Query::EntityById(id)).unwrap() {
+            QueryResult::Task(t) => *t,
+            other => panic!("expected task, got {other:?}"),
+        }
+    }
+
+    /// The signal: a session closed with `completed_task: true` completes the
+    /// task it was opened on, and stamps `completed_at`.
+    #[test]
+    fn a_session_that_says_it_finished_the_task_completes_it() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        let res = end_session(&e, &mut db, session, true);
+
+        let t = task_of(&e, &db, task);
+        assert_eq!(t.state, TaskState::Done);
+        assert!(t.completed_at.is_some(), "completed_at is stamped");
+        assert_eq!(
+            res.state,
+            Some(TaskState::Done),
+            "the caller learns the task moved"
+        );
+    }
+
+    /// A session closed WITHOUT the flag changes nothing about the task. The
+    /// signal is the user's statement, not the session's existence.
+    #[test]
+    fn ending_a_session_without_the_flag_leaves_the_task_open() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        let res = end_session(&e, &mut db, session, false);
+
+        let t = task_of(&e, &db, task);
+        assert_eq!(t.state, TaskState::Todo);
+        assert!(t.completed_at.is_none());
+        assert_eq!(res.state, None);
+    }
+
+    /// A task the user cancelled is left alone: `cancelled -> done` is not a
+    /// legal transition, and a session must not overrule the user.
+    #[test]
+    fn a_cancelled_task_is_not_auto_completed() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    state: Some(TaskState::Cancelled),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        end_session(&e, &mut db, session, true);
+        assert_eq!(task_of(&e, &db, task).state, TaskState::Cancelled);
+    }
+
+    /// An already-done task is a no-op: no second `task.update` op, so a client
+    /// that both completes the task and closes the session with the flag does
+    /// not write the completion twice.
+    #[test]
+    fn an_already_done_task_produces_no_second_op() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        e.apply(&mut db, Command::CompleteTask(task)).unwrap();
+        let before = op_count(&db);
+        end_session(&e, &mut db, session, true);
+        assert_eq!(
+            op_count(&db) - before,
+            1,
+            "only the focus.end op; the task was already done"
+        );
+    }
+
+    /// A deleted task is a no-op rather than an error: a session closing over
+    /// a task that was tombstoned elsewhere must still close.
+    #[test]
+    fn a_deleted_task_is_not_resurrected() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        e.apply(&mut db, Command::DeleteTask(task)).unwrap();
+        end_session(&e, &mut db, session, true);
+        let t = read_task(db.conn(), task.bytes()).unwrap().unwrap();
+        assert!(t.deleted);
+        assert_eq!(t.state, TaskState::Todo);
+    }
+
+    /// The op the completion emits is an ordinary full-state `task.update`,
+    /// which is what makes it converge like any hand-edit.
+    #[test]
+    fn the_completion_is_an_ordinary_task_update_op() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "Write the report");
+        let session = open_session(&e, &mut db, task);
+        end_session(&e, &mut db, session, true);
+        let env = env_for_kind(&db, task.bytes(), "task.update");
+        assert!(!env.is_empty(), "a task.update op was emitted");
+    }
+
     // ---- apply_remote (receive half of sync) tests ----
+    /// Convergence: the completion is derived ONCE, on the originating device.
+    /// A replica that applies only the `focus.end` op derives nothing — so the
+    /// task moves exactly when the `task.update` arrives, and never twice.
+    #[test]
+    fn a_replica_does_not_re_derive_the_completion_from_the_focus_op() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let task = new_task(&ea, &mut dba, "Write the report");
+        let session = open_session(&ea, &mut dba, task);
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, task.bytes()))
+            .unwrap();
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, session.bytes(), "focus.start"),
+        )
+        .unwrap();
+
+        end_session(&ea, &mut dba, session, true);
+
+        // Only the focus.end crosses. B sees the session close and the task
+        // stay open: the derivation is not re-run here.
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, session.bytes(), "focus.end"))
+            .unwrap();
+        assert_eq!(
+            read_task(dbb.conn(), task.bytes()).unwrap().unwrap().state,
+            TaskState::Todo,
+            "a focus.end op is not itself a completion"
+        );
+
+        // The derived task op is what moves it, through the ordinary LWW path.
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, task.bytes(), "task.update"))
+            .unwrap();
+        let a = read_task(dba.conn(), task.bytes()).unwrap().unwrap();
+        let b = read_task(dbb.conn(), task.bytes()).unwrap().unwrap();
+        assert_eq!(b.state, TaskState::Done);
+        assert_eq!(a.completed_at, b.completed_at, "one instant, not two");
+        assert_eq!(
+            row_stamp(&dba, "tasks", "id", &task),
+            row_stamp(&dbb, "tasks", "id", &task),
+        );
+    }
+
+    /// `docs/08-features/focus-mode.md`: "a focus session that completes a
+    /// routine occurrence increments the routine streak" — and the advance
+    /// converges, because it rides in the same transaction as its completion.
+    #[test]
+    fn completing_a_routine_occurrence_through_focus_advances_the_streak() {
+        let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let (rid, occ) = seed_routine(&ea, &mut dba);
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.create"))
+            .unwrap();
+        eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
+            .unwrap();
+
+        // Both replicas move together: an hour of real skew between peers is
+        // outside the HLC drift window on purpose, and this test is about the
+        // streak, not about clock abuse.
+        set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
+        set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
+        let session = open_session(&ea, &mut dba, occ[0].0);
+        end_session(&ea, &mut dba, session, true);
+        assert_eq!(routine_of(&ea, &dba, rid).streak_counter, 1);
+
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, occ[0].0.bytes(), "task.update"),
+        )
+        .unwrap();
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, rid.bytes(), "routine.update"))
+            .unwrap();
+        assert_eq!(routine_of(&eb, &dbb, rid).streak_counter, 1);
+        assert_eq!(
+            row_stamp(&dba, "routines", "id", &rid),
+            row_stamp(&dbb, "routines", "id", &rid),
+        );
+    }
+
     /// Attachment metadata that arrives before its parent task still lands:
     /// nothing about the row depends on the parent existing, and the two join
     /// up when the task's own op turns up.

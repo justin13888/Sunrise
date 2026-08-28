@@ -182,10 +182,19 @@ pub enum Command {
         /// (`now - started_at`), which is what a session with no pauses ran
         /// for; a client that tracked pauses passes the smaller real figure.
         actual_focused_ms: Option<u64>,
-        /// Whether the Task was completed in this session. Recording it is all
-        /// this does — completing the Task itself is a separate
-        /// [`Command::CompleteTask`], so the session log never becomes a
-        /// second, competing writer of task state.
+        /// Whether the Task was completed in this session.
+        ///
+        /// `true` **auto-completes the Task** if it is still open (issue #10).
+        /// This is not an inference: the focus screen's three actions are
+        /// complete, defer and capture-aside, so the flag is the user saying
+        /// they finished it, and the register simply never moved before.
+        ///
+        /// The session log still does not become a second writer of task
+        /// state. The completion is derived once, on this device, and emitted
+        /// as an ordinary `task.update` op that merges through the same
+        /// entity-level LWW path as a hand-edit; a replica applying the
+        /// `focus.end` op derives nothing. An already-`done` or `cancelled`
+        /// Task is left alone.
         completed_task: bool,
     },
     /// Log one interruption against a running session

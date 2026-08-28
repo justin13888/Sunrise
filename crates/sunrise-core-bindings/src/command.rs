@@ -192,9 +192,11 @@ pub enum CoreCommand {
         session: EntityRef,
         /// Focused time to freeze; the derived elapsed time when absent.
         actual_focused_ms: Option<u64>,
-        /// Whether the task was completed in this session. Recording it is all
-        /// this does — completing the task is a separate `CompleteTask`, so the
-        /// session log never becomes a second writer of task state.
+        /// Whether the task was completed in this session. `true` also
+        /// auto-completes the task when it is still open: the focus screen's
+        /// "complete" action is the user saying they finished it. Derived once
+        /// on this device and emitted as an ordinary task update, so the
+        /// session log is still not a second writer of task state.
         completed_task: bool,
     },
     /// Log one interruption against a running session.

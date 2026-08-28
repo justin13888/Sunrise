@@ -125,9 +125,45 @@ respect quiet hours ([`notifications.md`](./notifications.md)).
 - Routines: a focus session that completes a routine occurrence increments the routine streak.
 - Reviews: weekly review surfaces "time spent in focus" per Stream, plus the estimate-vs-actual calibration factor (see [`reviews-and-stats.md`](./reviews-and-stats.md), which already lists `focus-session` as a user-visible op).
 
+### Auto-completion
+
+Closing a session with "complete" **completes the task**, if it is still open.
+
+This is the only automatic completion in Sunrise, and it is not an inference:
+the focus screen offers three actions and complete is one of them, so the flag
+is the user saying they finished the work. Before this the fact was recorded on
+the session and the task register never moved, which is what made
+`completed_at` a user-action-only field.
+
+It stays narrow on purpose — see [`../00-product/non-goals.md`](../00-product/non-goals.md)
+"Not an automation platform". Three nearby signals are deliberately **not**
+triggers, because each is an inference rather than a statement:
+
+| Signal | Why not |
+|---|---|
+| A routine occurrence whose window elapsed | Missed is not done. Auto-completing it would inflate every count in the review; the catch-up policy is where a missed occurrence belongs. |
+| All of a task's blockers completing | Blockers describe order, not content. "No blockers left" means *ready*, which `EffectiveTaskState` already derives. |
+| A Block ending with the task still bound | [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md) says outright there is no "ran the block" state and that we trust the user. |
+
+Mechanics, because "automatic" and "convergent" have to hold together:
+
+- The completion is derived **once, on the device that closed the session**,
+  and emitted as an ordinary full-state `task.update` op. A replica applying
+  the `focus.end` op derives nothing, so the completion cannot be re-derived,
+  re-timed, or derived differently anywhere.
+- It merges through the same entity-level LWW path as a hand-edit, so a
+  concurrent edit of the same task on another device is resolved by the same
+  `(hlc, device_id, seq)` rule as every other conflict. The session log is
+  still not a writer of task state.
+- An already-`done` task is a no-op — no second op. A `cancelled` one is left
+  alone: `cancelled -> done` is not a legal transition and a session must not
+  overrule the user. A deleted one is not resurrected.
+
 ## What we don't do
 
 - We don't gamify focus (no streaks of focus per se, no daily quota that yells at you).
+- We don't complete tasks on any signal other than the one above. No rules, no
+  triggers, no conditions.
 - We don't auto-block notifications system-wide. iOS Focus filters and OS-level DND remain the user's choice.
 - We don't track keystrokes or productivity scores.
 
