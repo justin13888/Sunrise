@@ -1,24 +1,48 @@
 import SwiftUI
 
-/// What the window shows.
+/// What the window shows, decided by the session phase.
 ///
-/// A placeholder until the vault state machine lands: this build proves the
-/// shell compiles, links `SunriseCore.xcframework`, and can call across the
-/// UniFFI seam.
+/// The four cases are kept apart on screen because they are apart in reality:
+/// a first run has nothing to lose, a locked vault has everything to lose, and
+/// a failure is neither.
 struct RootView: View {
+    @State private var session = SessionModel.standard()
+
     var body: some View {
-        VStack(spacing: 8) {
-            Text("Sunrise")
-                .font(.largeTitle)
-            Text("Core linked · \(shortDuration(secs: 5400))")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+        Group {
+            switch session.phase {
+            case .starting:
+                ProgressView("Opening your vault…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .firstRun:
+                OnboardingView(create: session.createVault)
+            case let .locked(reason):
+                LockedView(reason: reason, retry: session.start)
+            case .unlocked:
+                if let bridge = session.bridge {
+                    VaultView(bridge: bridge)
+                }
+            case let .failed(message):
+                ContentUnavailableView(
+                    "Sunrise could not start",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(message)
+                )
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await session.start() }
     }
 }
 
-#Preview {
-    RootView()
+/// The unlocked app. A placeholder until Today and Inbox land.
+struct VaultView: View {
+    let bridge: CoreBridge
+
+    var body: some View {
+        ContentUnavailableView(
+            "Vault open",
+            systemImage: "checkmark.seal",
+            description: Text("Today and Inbox arrive next.")
+        )
+    }
 }
