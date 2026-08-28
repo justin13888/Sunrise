@@ -71,6 +71,11 @@ rust-check:
 rust-test:
     cargo test --workspace --all-targets
 
+# Reject crates that no shipping binary can reach (the CI gate, run locally)
+[group('rust')]
+orphan-crates:
+    .github/scripts/orphan-crate-gate.py
+
 # Run the Criterion benchmark suite (submit / query_today / fts / ws_handshake)
 [group('rust')]
 bench:

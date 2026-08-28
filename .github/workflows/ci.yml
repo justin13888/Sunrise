@@ -201,3 +201,21 @@ jobs:
             crates/sunrise-core-bindings/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
 
+  orphan-crates:
+    name: Orphan crate gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `cargo metadata --no-deps` reads the workspace manifests and nothing
+      # else — no resolution, no registry, no compilation — so this job needs a
+      # cargo on PATH and takes seconds. Nothing to cache.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reject crates unreachable from every shipping binary
+        # The recurring v1 defect was a library seam that is correct, tested
+        # and linked by nobody: `cargo test --workspace` green, and the feature
+        # nonexistent for a user. That shape is plainly visible in the
+        # dependency graph, so the graph is where it gets caught. The script
+        # carries its own exemption and quarantine lists, each entry with a
+        # reason, and fails when one of them goes stale.
+        run: .github/scripts/orphan-crate-gate.py
+
