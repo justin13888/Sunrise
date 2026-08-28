@@ -707,30 +707,43 @@ impl From<StreamDraftIn> for sunrise_domain::StreamDraft {
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct StreamEdit {
     /// New name.
+    #[uniffi(default = None)]
     pub name: Option<String>,
     /// New description.
+    #[uniffi(default = None)]
     pub set_description: Option<NoteBody>,
     /// Clear the description.
+    #[uniffi(default = false)]
     pub clear_description: bool,
     /// New colour.
+    #[uniffi(default = None)]
     pub color: Option<StreamColor>,
     /// New parent.
+    #[uniffi(default = None)]
     pub set_parent_id: Option<EntityRef>,
     /// Detach from any parent.
+    #[uniffi(default = false)]
     pub clear_parent_id: bool,
     /// New review cadence.
+    #[uniffi(default = None)]
     pub review_cadence: Option<StreamReviewCadence>,
     /// Archive or unarchive.
+    #[uniffi(default = None)]
     pub archived: Option<bool>,
     /// Pause or resume.
+    #[uniffi(default = None)]
     pub paused: Option<bool>,
     /// Pause until this instant.
+    #[uniffi(default = None)]
     pub set_paused_until: Option<jiff::Timestamp>,
     /// Clear the pause deadline.
+    #[uniffi(default = false)]
     pub clear_paused_until: bool,
     /// New default reminder lead time, in seconds.
+    #[uniffi(default = None)]
     pub set_reminder_lead_s: Option<u32>,
     /// Clear it, falling back to the device default.
+    #[uniffi(default = false)]
     pub clear_reminder_lead_s: bool,
 }
 
@@ -815,12 +828,16 @@ impl From<ContextDraftIn> for sunrise_domain::ContextDraft {
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct ContextEdit {
     /// New name.
+    #[uniffi(default = None)]
     pub name: Option<String>,
     /// New description.
+    #[uniffi(default = None)]
     pub set_description: Option<String>,
     /// Clear the description.
+    #[uniffi(default = false)]
     pub clear_description: bool,
     /// Archive or unarchive.
+    #[uniffi(default = None)]
     pub archived: Option<bool>,
 }
 
@@ -1043,34 +1060,49 @@ impl From<RoutineDraftIn> for sunrise_domain::RoutineDraft {
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct RoutineEdit {
     /// Replace the whole template.
+    #[uniffi(default = None)]
     pub template: Option<Template>,
     /// Replace the recurrence.
+    #[uniffi(default = None)]
     pub rrule: Option<Recurrence>,
     /// New IANA zone.
+    #[uniffi(default = None)]
     pub timezone: Option<String>,
     /// New anchor.
+    #[uniffi(default = None)]
     pub starts_at: Option<jiff::Timestamp>,
     /// New series end.
+    #[uniffi(default = None)]
     pub set_ends_at: Option<jiff::Timestamp>,
     /// Remove the series end.
+    #[uniffi(default = false)]
     pub clear_ends_at: bool,
     /// Replace the constraint list.
+    #[uniffi(default = None)]
     pub scheduling_constraints: Option<Vec<Constraint>>,
     /// New catch-up policy.
+    #[uniffi(default = None)]
     pub catchup_policy: Option<RoutineCatchupPolicy>,
     /// New grace window, in seconds.
+    #[uniffi(default = None)]
     pub set_grace_window_s: Option<u64>,
     /// Clear the grace window.
+    #[uniffi(default = false)]
     pub clear_grace_window: bool,
     /// Enable or disable forgiveness.
+    #[uniffi(default = None)]
     pub forgiveness_enabled: Option<bool>,
     /// Pause or resume.
+    #[uniffi(default = None)]
     pub paused: Option<bool>,
     /// Pause until this instant.
+    #[uniffi(default = None)]
     pub set_paused_until: Option<jiff::Timestamp>,
     /// Clear the pause deadline.
+    #[uniffi(default = false)]
     pub clear_paused_until: bool,
     /// Archive or unarchive.
+    #[uniffi(default = None)]
     pub archived: Option<bool>,
 }
 
@@ -2511,16 +2543,22 @@ impl From<BlockDraftIn> for sunrise_domain::BlockDraft {
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct BlockEdit {
     /// New start.
+    #[uniffi(default = None)]
     pub starts_at: Option<TimeValue>,
     /// New end.
+    #[uniffi(default = None)]
     pub ends_at: Option<TimeValue>,
     /// New title.
+    #[uniffi(default = None)]
     pub set_title: Option<String>,
     /// Clear the title.
+    #[uniffi(default = false)]
     pub clear_title: bool,
     /// Turn live title tracking on or off.
+    #[uniffi(default = None)]
     pub title_track_task: Option<bool>,
     /// Move the block to another stream.
+    #[uniffi(default = None)]
     pub stream_id: Option<EntityRef>,
 }
 

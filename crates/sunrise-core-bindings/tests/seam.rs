@@ -1111,3 +1111,59 @@ async fn task_of(core: &SunriseCore, id: sunrise_id::EntityRef) -> sunrise_core_
 async fn state_of(core: &SunriseCore, id: sunrise_id::EntityRef) -> TaskState {
     task_of(core, id).await.state
 }
+
+/// A split-optional edit that names one field must leave every other field
+/// alone — including the clearable ones.
+///
+/// The Rust side gets that from `Default`; the *foreign* side gets it from the
+/// `#[uniffi(default)]` on every field, without which a Swift caller has to
+/// spell out all thirteen and the twelve it does not care about are exactly
+/// where a `true` lands on a `clear_` flag by accident. This pins the
+/// behaviour those defaults are there to produce.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_field_stream_edit_leaves_the_rest_alone() {
+    use sunrise_core_bindings::dto::{StreamDraftIn, StreamEdit};
+    use sunrise_domain::StreamColor;
+
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateStream {
+            draft: StreamDraftIn {
+                name: "Travel".into(),
+                description: None,
+                color: Some(StreamColor::Emerald),
+                parent_id: None,
+                review_cadence: Some(sunrise_domain::StreamReviewCadence::Weekly),
+                reminder_lead_s: Some(900),
+            },
+        })
+        .await
+        .expect("create stream");
+
+    core.submit(CoreCommand::UpdateStream {
+        id: created.entity,
+        edit: StreamEdit {
+            archived: Some(true),
+            ..StreamEdit::default()
+        },
+    })
+    .await
+    .expect("archive");
+
+    let CoreQueryResult::Stream { stream } = core
+        .query(CoreQuery::EntityById { id: created.entity })
+        .await
+        .expect("read back")
+    else {
+        panic!("a stream id must return a stream");
+    };
+    assert!(stream.archived);
+    assert_eq!(stream.name, "Travel");
+    assert_eq!(stream.color, StreamColor::Emerald);
+    assert_eq!(
+        stream.reminder_lead_s,
+        Some(900),
+        "a clearable field nobody named stays set"
+    );
+    core.shutdown().await;
+}
