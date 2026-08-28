@@ -252,6 +252,14 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
+[[code]]
+id = 512
+name = "SYNC_CURSOR_GAP"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "The relay evicted retained frames past the subscriber's cursor, so the gap cannot be served from the ring. Recovery is a resync from a peer, not a retry of the same subscribe."
+
 # --- Relay ----------------------------------------------------------------
 
 [[code]]

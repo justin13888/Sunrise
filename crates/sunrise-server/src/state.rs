@@ -97,6 +97,17 @@ impl ServerState {
         self.token_verifier.is_single_tenant()
     }
 
+    /// Replace the relay's retained-ring bounds.
+    ///
+    /// Production uses the defaults. A test that has to reach *past* the ring —
+    /// the eviction watermark and the cursor-gap report only exist beyond it —
+    /// cannot do so by publishing 4096 frames, so the bounds are injectable.
+    #[must_use]
+    pub fn with_ring_caps(mut self, caps: crate::relay::RingCaps) -> Self {
+        self.relay = RelayHub::with_caps(caps);
+        self
+    }
+
     /// Replace the token verifier (production wiring, and tests).
     #[must_use]
     pub fn with_verifier(mut self, verifier: Arc<dyn TokenVerifier>) -> Self {

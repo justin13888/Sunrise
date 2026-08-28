@@ -110,6 +110,7 @@ SYNC_BATCH_TOO_LARGE
 SYNC_OP_INVALID
 SYNC_OP_DEP_MISSING_TIMEOUT
 SYNC_STREAM_NOT_FOUND
+SYNC_CURSOR_GAP
 SYNC_NOT_SUBSCRIBED
 RELAY_GRANT_REVOKED
 SERVER_INTERNAL
@@ -152,9 +153,23 @@ Client → Close (or socket close)
 
 ## Cursors
 
-A device maintains, per (Stream, device_id) pair, the highest `seq` it has applied. On reconnect, it sends these cursors; server replies with everything after.
+A device maintains, per (Stream, device_id) pair, the highest `seq` it has applied. On reconnect, it sends these cursors in `Subscribe`; the server replies with everything after.
 
-The server itself maintains a per-(account, device, stream) cursor representing what it has already delivered, so it can resume mid-batch on reconnect.
+The relay reads each retained frame's per-device `(device_id, max_seq)` from the op envelope's **cleartext routing header** — fields 2/3/4, which are signed and AEAD-associated but not secret. Reading them is in scope; reading op *contents* is not, and remains an explicit non-responsibility ([`../06-server/overview.md`](../06-server/overview.md)).
+
+Filtering is one-sided: a frame is skipped only when *every* device head in it is at or below the subscriber's cursor. A frame whose header the relay cannot read is always replayed. Over-delivery costs the client one idempotent no-op; under-delivery is data loss.
+
+### Cursor gaps
+
+The v1 relay's retained ring is bounded (4096 frames / 16 MiB per channel) and in-memory. When a frame is evicted, the channel raises an `evicted_through` watermark for each device it carried. A subscriber whose cursor for such a device is **below** that watermark is missing ops the relay can no longer produce, and receives:
+
+```
+Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…" }
+```
+
+before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client resyncs from a peer.
+
+Being caught up past everything evicted is **not** a gap — otherwise every healthy long-lived session would be told to resync each time the ring turned over. A server restart clears the ring and its watermarks together, so a fresh relay reports no gaps: it cannot distinguish "never held it" from "evicted it".
 
 ## Backfill from snapshot
 

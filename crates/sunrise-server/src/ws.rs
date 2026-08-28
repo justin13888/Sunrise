@@ -29,10 +29,12 @@ use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
-    MsgKind, OpBatchPayload, SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
+    REQUIRED_SERVER_BITS,
 };
 
-use crate::relay::{ConnId, RelayFrame};
+use crate::relay::{ConnId, CursorGap, FrameHead, RelayFrame};
+use std::collections::HashMap;
 
 /// Mount the `/sync` WebSocket route.
 #[must_use]
@@ -189,8 +191,12 @@ async fn sync_loop(
 ) {
     use tokio::sync::broadcast::error::RecvError;
 
-    // Subscriptions: channels this connection is currently subscribed to.
-    let mut subs: Vec<tokio::sync::broadcast::Receiver<RelayFrame>> = Vec::new();
+    // Subscriptions: channels this connection is currently subscribed to,
+    // keyed by stream so a re-Subscribe REPLACES rather than duplicates. A
+    // client re-subscribes mid-session to close a cursor gap; pushing a second
+    // receiver for the same stream would deliver every subsequent live frame
+    // twice for the rest of the session.
+    let mut subs: Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)> = Vec::new();
     // `account` is the channel namespace for this session. It was derived in
     // `handler` from the *verified* bearer subject and is not influenced by
     // anything the client sends, so a Subscribe frame can only ever reach
@@ -249,7 +255,7 @@ async fn sync_loop(
 /// `None` (after a long pending) so the select can fall through to the WS
 /// stream.
 async fn recv_first(
-    subs: &mut [tokio::sync::broadcast::Receiver<RelayFrame>],
+    subs: &mut [([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)],
 ) -> Option<(
     usize,
     Result<RelayFrame, tokio::sync::broadcast::error::RecvError>,
@@ -259,7 +265,7 @@ async fn recv_first(
         return None;
     }
     // Poll all in parallel — pick the first one ready.
-    let futs = subs.iter_mut().enumerate().map(|(i, r)| {
+    let futs = subs.iter_mut().enumerate().map(|(i, (_, r))| {
         Box::pin(async move {
             let v = r.recv().await;
             (i, v)
@@ -274,7 +280,7 @@ async fn handle_inbound(
     conn_id: ConnId,
     buf: &[u8],
     sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    subs: &mut Vec<tokio::sync::broadcast::Receiver<RelayFrame>>,
+    subs: &mut Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
     account: [u8; 16],
     state: &ServerState,
 ) -> bool {
@@ -298,19 +304,9 @@ async fn handle_inbound(
                 "subscribe frame"
             );
             for entry in sub.streams {
-                let sid = entry.stream_id;
-                // Atomic snapshot + subscribe: retained frames first, then a
-                // CaughtUp marker for this stream, then live frames flow.
-                let subscription = state.relay.subscribe((account, sid));
-                for retained in subscription.retained {
-                    if sink.send(Message::Binary(retained.bytes)).await.is_err() {
-                        return false;
-                    }
-                }
-                if !send_caught_up(sink, sid).await {
+                if !join_stream(&entry, sink, subs, account, state).await {
                     return false;
                 }
-                subs.push(subscription.rx);
             }
             true
         }
@@ -341,12 +337,16 @@ async fn handle_inbound(
                 n_bytes = buf.len() as u64,
                 "op batch republished"
             );
-            // Republish the original raw frame bytes verbatim for fan-out.
+            // Republish the original raw frame bytes verbatim for fan-out,
+            // tagged with the per-device high-water marks read out of the
+            // envelopes' cleartext routing headers. That tag is what lets a
+            // later subscriber's cursor skip this frame.
             state.relay.publish(
                 (account, stream_id),
                 RelayFrame {
                     from: conn_id,
                     bytes: buf.to_vec(),
+                    heads: frame_heads(&batch),
                 },
             );
             // Ack the batch with its stream-id + batch-id and the injected
@@ -373,6 +373,67 @@ async fn handle_inbound(
         MsgKind::Close => false,
         _ => true, // ignore anything else in v1 self-host
     }
+}
+
+/// Join one stream: filtered replay, gap report, CaughtUp, live receiver.
+///
+/// Returns false on a send failure (the caller ends the session).
+async fn join_stream(
+    entry: &SubscribeEntry,
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    subs: &mut Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
+    account: [u8; 16],
+    state: &ServerState,
+) -> bool {
+    let sid = entry.stream_id;
+    // The cursors the client has always sent and the relay used to throw away
+    // (issue #19). Last one wins on a duplicate device.
+    let cursors: HashMap<[u8; 16], u64> = entry
+        .cursors
+        .iter()
+        .map(|c| (c.device_id, c.last_applied_seq))
+        .collect();
+    // Atomic snapshot + subscribe: retained frames first, then a CaughtUp
+    // marker for this stream, then live frames flow.
+    let subscription = state.relay.subscribe((account, sid), &cursors);
+    // A gap goes out BEFORE the partial replay and before CaughtUp, so a client
+    // cannot read "caught up" as "complete". Delivery continues either way: an
+    // incomplete replay plus an explicit error beats one in silence.
+    if !subscription.gaps.is_empty() {
+        state.metrics.incr("sunrise_relay_cursor_gap_total");
+        tracing::warn!(
+            ev = "srv.relay.cursor_gap",
+            err_code = %ErrorCode::SyncCursorGap,
+            err_kind = "permanent",
+            retryable = false,
+            stream_h = %crate::logging::id_h(&sid),
+            n_devices = subscription.gaps.len() as u64,
+            "subscriber cursor predates the retained ring"
+        );
+        if send_error_frame(
+            sink,
+            ErrorCode::SyncCursorGap,
+            &gap_reason(&sid, &subscription.gaps),
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+    }
+    for retained in subscription.retained {
+        if sink.send(Message::Binary(retained.bytes)).await.is_err() {
+            return false;
+        }
+    }
+    if !send_caught_up(sink, sid).await {
+        return false;
+    }
+    match subs.iter_mut().find(|(s, _)| *s == sid) {
+        Some(slot) => slot.1 = subscription.rx,
+        None => subs.push((sid, subscription.rx)),
+    }
+    true
 }
 
 /// Encode a one-off coded [`ErrorPayload`] frame and ship it.
@@ -404,6 +465,58 @@ async fn send_caught_up(
         return true;
     };
     sink.send(Message::Binary(frame)).await.is_ok()
+}
+
+/// Per-device high-water marks for one batch, from the envelopes' cleartext
+/// routing header.
+///
+/// Reading `device_id` / `seq` is in scope for a relay (they are cleartext by
+/// design, and the whole cursor mechanism presumes it); reading the payload is
+/// not, and `sunrise_cbor::decode_envelope_header` cannot — it links no crypto
+/// and returns no payload.
+///
+/// An op whose header will not parse contributes nothing. That is deliberate:
+/// a frame with no heads is never filtered out of a replay and never raises an
+/// eviction watermark, so the worst an unreadable op can do is cost a client a
+/// redundant, idempotent re-apply.
+fn frame_heads(batch: &OpBatchPayload) -> Vec<FrameHead> {
+    let mut by_device: HashMap<[u8; 16], u64> = HashMap::new();
+    for op in &batch.ops {
+        if let Ok(h) = sunrise_cbor::decode_envelope_header(op) {
+            let slot = by_device.entry(h.device_id).or_insert(0);
+            *slot = (*slot).max(h.seq);
+        }
+    }
+    let mut heads: Vec<FrameHead> = by_device
+        .into_iter()
+        .map(|(device_id, max_seq)| FrameHead { device_id, max_seq })
+        .collect();
+    heads.sort_unstable_by(|a, b| a.device_id.cmp(&b.device_id));
+    heads
+}
+
+/// Human-readable diagnostic for a cursor gap.
+///
+/// Device ids are hashed exactly as every other id in a server log is: the
+/// reason string reaches a client, but it also reaches the relay's own logs,
+/// and a raw device id there would be a durable identifier the operator is not
+/// supposed to hold (`docs/10-cross-cutting/logging.md`).
+fn gap_reason(stream_id: &[u8; 16], gaps: &[CursorGap]) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "retained ring no longer covers stream {}; resync from a peer:",
+        crate::logging::id_h(stream_id)
+    );
+    for g in gaps {
+        let _ = write!(
+            out,
+            " device {} cursor {} < evicted_through {};",
+            crate::logging::id_h(&g.device_id),
+            g.cursor,
+            g.evicted_through
+        );
+    }
+    out
 }
 
 /// Decode the typed [`OpBatchPayload`] from a frame payload to route it by

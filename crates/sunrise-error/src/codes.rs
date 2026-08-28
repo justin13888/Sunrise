@@ -77,6 +77,8 @@ pub enum ErrorCode {
     SyncOpInvalid,
     /// Stream id not found on this server.
     SyncStreamNotFound,
+    /// The relay evicted retained frames past a subscriber's cursor.
+    SyncCursorGap,
     /// First 5 bytes of an envelope/frame did not match the expected magic.
     ProtocolBadMagic,
     /// Frame larger than 4 MiB cap.
@@ -137,6 +139,7 @@ impl ErrorCode {
             Self::SyncBatchTooLarge => "SYNC_BATCH_TOO_LARGE",
             Self::SyncOpInvalid => "SYNC_OP_INVALID",
             Self::SyncStreamNotFound => "SYNC_STREAM_NOT_FOUND",
+            Self::SyncCursorGap => "SYNC_CURSOR_GAP",
             Self::ProtocolBadMagic => "PROTOCOL_BAD_MAGIC",
             Self::ProtocolFrameTooLarge => "PROTOCOL_FRAME_TOO_LARGE",
             Self::ProtocolDecompressBomb => "PROTOCOL_DECOMPRESS_BOMB",
@@ -181,6 +184,7 @@ impl ErrorCode {
             | Self::SyncProtocolVersionMismatch
             | Self::SyncTamperDetected
             | Self::SyncOpInvalid
+            | Self::SyncCursorGap
             | Self::ProtocolBadMagic
             | Self::ProtocolFrameTooLarge
             | Self::ProtocolDecompressBomb
@@ -213,7 +217,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 36] {
+    pub const fn all() -> [Self; 37] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -241,6 +245,7 @@ impl ErrorCode {
             Self::SyncBatchTooLarge,
             Self::SyncOpInvalid,
             Self::SyncStreamNotFound,
+            Self::SyncCursorGap,
             Self::ProtocolBadMagic,
             Self::ProtocolFrameTooLarge,
             Self::ProtocolDecompressBomb,
