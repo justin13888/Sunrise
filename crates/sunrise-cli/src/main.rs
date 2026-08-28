@@ -162,15 +162,35 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     let dir = vault_dir();
     std::fs::create_dir_all(&dir).ok();
     let dir_for_store = dir.clone();
-    // Subcommands are one-shot and offline: opening a sync driver for a
-    // command that exits milliseconds later would just churn the relay.
-    let (core, _log) = livesync::open_with_plan(
+    // Opened offline first, so the vault is available to price a stored
+    // token against the core's clock rather than the host's — which the
+    // workspace lint bans reading directly.
+    let (core, _) = livesync::open_with_plan(
         dir,
         env!("CARGO_PKG_VERSION"),
         DEV_ROOT,
         &livesync::SyncPlan::default(),
     )
     .await?;
+
+    // Then the real plan. Every subcommand honours the cert-file vars —
+    // `SUNRISE_EXPORT_CERT_FILE` is documented as acting "on startup" — but
+    // only `sync` starts a driver: opening one for a command that exits
+    // milliseconds later would just churn the relay.
+    let mut env = livesync::SyncEnv::from_process_env();
+    if sub != "sync" {
+        env.url = None;
+    }
+    let plan =
+        livesync::plan_from_env(&env.with_stored(&login::store_for(&dir_for_store), core.now_ms()));
+    // The startup banner names the cert files it touched, which is what the
+    // two-replica walkthrough needs to see. stderr, because stdout is the
+    // contract a script reads — and not a log record, because those strings
+    // carry filesystem paths (`livesync::apply_plan`, "Two outputs").
+    #[allow(clippy::print_stderr)]
+    for line in livesync::apply_plan(&core, &plan).await {
+        eprintln!("{line}");
+    }
 
     let result = dispatch(&core, &dir_for_store, sub, rest).await;
     core.shutdown().await;

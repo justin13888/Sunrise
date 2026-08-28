@@ -279,3 +279,68 @@ fn id_of(o: &Output) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// `SUNRISE_EXPORT_CERT_FILE` is documented as writing this device's cert "on
+/// startup", for every subcommand.
+///
+/// Regression: `run` used to open the vault with `SyncPlan::default()` and
+/// never build one from the environment, so the binary ignored all three
+/// cert/relay variables. The unit tests for `plan_from_env` passed the whole
+/// time — nothing called it.
+#[test]
+fn a_subcommand_exports_this_devices_cert_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let cert = dir.path().join("device.cert");
+
+    let out = Command::new(bin())
+        .args(["inbox"])
+        .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_EXPORT_CERT_FILE", &cert)
+        .env_remove("SUNRISE_SYNC_URL")
+        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .output()
+        .expect("run sunrise");
+
+    assert!(out.status.success(), "inbox failed: {out:?}");
+    let bytes = std::fs::read(&cert).expect("the cert must have been written");
+    assert!(!bytes.is_empty(), "an empty cert is not a cert");
+    // stdout stays the contract: the demo banner goes to stderr.
+    assert!(
+        !stdout(&out).contains("exported device cert"),
+        "the startup banner must not pollute stdout"
+    );
+}
+
+/// A peer cert named in the environment is trusted at startup, so the
+/// two-replica walkthrough works from the binary and not only from the
+/// library.
+#[test]
+fn a_subcommand_trusts_a_peer_cert_when_asked() {
+    let peer = tempfile::tempdir().unwrap();
+    let peer_cert = peer.path().join("peer.cert");
+    let out = Command::new(bin())
+        .args(["inbox"])
+        .env("SUNRISE_VAULT", peer.path())
+        .env("SUNRISE_EXPORT_CERT_FILE", &peer_cert)
+        .env_remove("SUNRISE_SYNC_URL")
+        .output()
+        .expect("run sunrise");
+    assert!(out.status.success(), "peer setup failed: {out:?}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(bin())
+        .args(["inbox"])
+        .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_TRUST_CERT_FILE", &peer_cert)
+        .env_remove("SUNRISE_SYNC_URL")
+        .env_remove("SUNRISE_EXPORT_CERT_FILE")
+        .output()
+        .expect("run sunrise");
+
+    assert!(out.status.success(), "trust failed: {out:?}");
+    let banner = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        banner.contains("trusted peer cert"),
+        "the peer cert was not trusted, stderr was {banner:?}"
+    );
+}

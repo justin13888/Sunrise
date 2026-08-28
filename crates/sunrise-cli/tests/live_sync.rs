@@ -152,3 +152,57 @@ async fn tui_wiring_reaches_live_and_converges() {
     core_b.shutdown().await;
     relay.abort();
 }
+
+/// The **binary's** own sync path, not the library's.
+///
+/// Regression: `sunrise sync --once` polled for `Live` with an empty outbox,
+/// but `run` opened the vault with `SyncPlan::default()` and never started a
+/// driver, so the poll could only ever time out after 30 s. Every test above
+/// this one passed throughout, because they all build the plan themselves.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_binary_sync_once_actually_reaches_the_relay() {
+    let (addr, relay) = spawn_relay().await;
+    let url = format!("ws://{addr}/sync");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let vault = dir.path().to_path_buf();
+
+    // A local write, so there is something in the outbox to drain.
+    let capture = tokio::task::spawn_blocking({
+        let vault = vault.clone();
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_sunrise"))
+                .args(["capture", "Sent over the wire"])
+                .env("SUNRISE_VAULT", &vault)
+                .env_remove("SUNRISE_SYNC_URL")
+                .output()
+                .expect("run sunrise")
+        }
+    })
+    .await
+    .expect("join");
+    assert!(capture.status.success(), "capture failed: {capture:?}");
+
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_sunrise"))
+            .args(["sync", "--once"])
+            .env("SUNRISE_VAULT", &vault)
+            .env("SUNRISE_SYNC_URL", &url)
+            .output()
+            .expect("run sunrise")
+    })
+    .await
+    .expect("join");
+
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "sync --once failed: {stdout} / {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("sync: live, outbox empty"),
+        "the driver never reached the relay, stdout was {stdout:?}"
+    );
+
+    relay.abort();
+}
