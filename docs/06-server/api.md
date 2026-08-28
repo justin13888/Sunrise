@@ -90,22 +90,56 @@ DeviceMeta = {
 
 ### Blobs
 
+Two-phase commit. The blob id is not minted at `init` — it cannot be, because
+it is the **content address** of bytes the server has not seen yet.
+
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/blobs/init` | `{ size, chunk_count }` | `{ upload_urls: [presigned], blob_id }` |
-| POST | `/api/v1/blobs/<blob_id>/finalize` | `{ chunk_hashes }` | 204 |
-| GET | `/api/v1/blobs/<blob_id>?chunk=<i>` | — | bytes (redirect to presigned URL) |
-| DELETE | `/api/v1/blobs/<blob_id>` | — | 204 (only owner; tombstones) |
+| POST | `/api/v1/blobs/init` | `{ stream_id, chunk_count, size_bytes }` | `{ upload_id, chunk_urls: […] }` |
+| PUT | `/api/v1/blobs/<upload_id>/<i>` | raw ciphertext chunk | 204 |
+| POST | `/api/v1/blobs/finalize` | `{ upload_id, content_hash, chunk_hashes }` | `{ blob_id, size_bytes, chunk_count }` |
+| GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
 
-`chunk_hashes` is an array of `BLAKE3(ciphertext_chunk, 32)` lowercase hex (32 chars per entry — short hash, 16 bytes). There is exactly one hash per chunk; server-side validation uses the storage backend's native ETag equivalent (S3) or computes BLAKE3-of-ciphertext on receipt for the local backend. No `plaintext_hash` exists server-side; that's a client-only construct. Blob payloads are stored as opaque bytes — the magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 is enforced by clients, not the server. Presigned upload URLs expire 1 hour after issuance; download URLs expire 24 hours after issuance.
+Every route is authenticated and device-bound like the rest of the REST API.
+
+`chunk_hashes` is an array of `BLAKE3(ciphertext_chunk)` as 64 lowercase hex
+characters, one per chunk, in order; its length — not `init`'s advisory
+`chunk_count` — is what `finalize` treats as the chunk count. `content_hash`
+is `BLAKE3` of the concatenation, same encoding. Finalize re-hashes what is
+actually on disk and compares: the client's hashes are a claim, and this is the
+check. No `plaintext_hash` exists server-side; that's a client-only construct.
+
+`blob_id` is `blb_` followed by the first 16 bytes of `content_hash` in
+lowercase hex. Identical ciphertext therefore converges on one stored copy.
+
+Blob payloads are stored as opaque bytes — the magic prefix from
+[`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3
+is enforced by clients, not the server.
+
+Storage is rooted **per account**. Content addressing across accounts would be
+a cross-tenant read primitive — one account naming another's blob by its hash
+— so a `GET` for a blob this account has not committed is a 404 whether or not
+some other account holds those bytes.
+
+Self-host writes chunks to the local filesystem and returns relative
+`chunk_urls`; a managed deployment substitutes presigned URLs (upload URLs
+expiring 1 hour after issuance, download URLs 24 hours).
+
+**Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
+an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
+§Deletion makes it a tombstone plus a device-cursor quorum and a 30-day grace
+period — so it lands with the GC slice rather than as a bare unlink.
 
 #### Blob errors
 
 | HTTP | Code | When | Retry |
 |---|---|---|---|
-| 400 | `BLOB_HASH_MISMATCH` | A chunk's ciphertext BLAKE3 disagrees with the supplied `chunk_hashes`. Body: `{ "code":"BLOB_HASH_MISMATCH", "chunk_index": <int> }`. | No (re-upload). |
-| 409 | `BLOB_FINALIZE_CONFLICT` | Two finalize requests for the same `blob_id` carry non-matching hash arrays. (Identical hashes → idempotent `200 OK`.) | No. |
-| 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Init's `size` exceeds `max_blob_size`. | No. |
+| 400 | `VALIDATION_INVALID` | Malformed body, out-of-range `chunk_count`, a chunk outside 1..=1 MiB, or a path segment that is not a well-formed `up_`/`blb_` id. | No (fix request). |
+| 400 | `BLOB_HASH_MISMATCH` | A chunk's ciphertext BLAKE3, or the concatenation's, disagrees with the supplied hash. | No (re-upload). |
+| 401 | `AUTH_TOKEN_INVALID` | Missing or unverifiable bearer. | After OIDC refresh. |
+| 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
+| 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
+| 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
 | 429 | `AUTH_QUOTA_EXCEEDED` | Account is hard-capped (>110% of plan, see [`billing.md`](./billing.md)). Header `Retry-After` carries seconds until period end. | After upgrade or period reset. |
 
 ### Sharing

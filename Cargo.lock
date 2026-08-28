@@ -2366,6 +2366,7 @@ dependencies = [
  "sunrise-id",
  "sunrise-log",
  "sunrise-onboarding",
+ "sunrise-storage",
  "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",

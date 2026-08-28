@@ -50,6 +50,7 @@ sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-log = { workspace = true }
 sunrise-onboarding = { workspace = true }
+sunrise-storage = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 
 [dev-dependencies]

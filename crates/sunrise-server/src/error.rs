@@ -31,6 +31,12 @@ pub mod codes {
     pub const DEVICE_NOT_FOUND: &str = "DEVICE_NOT_FOUND";
     /// Malformed body or field.
     pub const VALIDATION_INVALID: &str = "VALIDATION_INVALID";
+    /// A chunk's ciphertext BLAKE3 disagrees with the hash the client supplied.
+    pub const BLOB_HASH_MISMATCH: &str = "BLOB_HASH_MISMATCH";
+    /// `finalize` names a chunk that was never uploaded.
+    pub const BLOB_CHUNK_MISSING: &str = "BLOB_CHUNK_MISSING";
+    /// No committed blob under that id for this account.
+    pub const BLOB_NOT_FOUND: &str = "BLOB_NOT_FOUND";
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
 }
