@@ -484,8 +484,8 @@ pub struct TaskEdit {
     /// Clear the body.
     #[uniffi(default = false)]
     pub clear_body: bool,
-    /// Move to another Stream. (A Stream move is `PromoteToStream`; this field
-    /// exists because `TaskPatch` carries it.)
+    /// Move to another Stream. The same move `PromoteToStream` makes: that
+    /// command lowers to a stream-only `TaskPatch`, which is this field.
     #[uniffi(default = None)]
     pub stream_id: Option<EntityRef>,
     /// Replace the whole context set.

@@ -47,8 +47,12 @@ pub enum CoreCommand {
         /// Target.
         id: EntityRef,
     },
-    /// Move a task to another stream. Not a `TaskEdit` field: the move re-keys
-    /// the task's storage.
+    /// Move a task to another stream.
+    ///
+    /// Equivalent to `UpdateTask` with `TaskEdit::stream_id` set — the core
+    /// routes `PromoteToStream` straight into `update_task` with a
+    /// stream-only patch — and kept because the core has the command and this
+    /// enum mirrors the core's list rather than editing it down.
     PromoteToStream {
         /// Target.
         id: EntityRef,
