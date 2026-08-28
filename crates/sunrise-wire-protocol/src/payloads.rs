@@ -11,6 +11,7 @@
 //! - [`SubscribePayload`]— `MsgKind::Subscribe`(`0x06`)
 //! - [`CaughtUpPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
 //! - [`ErrorPayload`]    — `MsgKind::Error`    (`0x0E`)
+//! - [`RefreshTokenPayload`] — `MsgKind::RefreshToken` (`0x12`)
 //!
 //! # CaughtUp msg_kind
 //!
@@ -207,6 +208,41 @@ impl ClosePayload {
     }
 }
 
+/// `MsgKind::RefreshToken` payload: `{ token: tstr }` per
+/// `docs/05-sync/wire-protocol.md` and `docs/06-server/auth.md`.
+///
+/// Sent client → server, out of band, at any point in a live session. It
+/// carries a **freshly issued bearer token from the OIDC issuer** — the server
+/// mints nothing and rotates nothing (`docs/00-product/non-goals.md`); it only
+/// re-verifies what the device's OIDC client obtained and, on success, moves
+/// the session's expiry deadline out to the new token's `exp`.
+///
+/// The point of the frame is that renewal does **not** cost a reconnect. A
+/// client that renews at 75% of TTL never sees a
+/// [`ClosePayload::auth_token_expired`] at all; the close is what happens when
+/// it fails to.
+///
+/// One field, so canonical ordering is trivial. It stays a struct rather than a
+/// bare string so a later addition (a device assertion, say) is an added map
+/// key rather than a shape change.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshTokenPayload {
+    /// The new bearer token, exactly as the issuer returned it.
+    pub token: String,
+}
+
+// Hand-written so a token never reaches a log through `{:?}`. The rest of the
+// codebase is careful to keep bearers out of tracing (see `auth::request`);
+// a derived `Debug` here would quietly undo that the first time someone
+// debug-printed a decoded frame.
+impl std::fmt::Debug for RefreshTokenPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshTokenPayload")
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 macro_rules! canonical_codec {
     ($ty:ty) => {
         impl $ty {
@@ -237,6 +273,7 @@ canonical_codec!(SubscribePayload);
 canonical_codec!(CaughtUpPayload);
 canonical_codec!(ErrorPayload);
 canonical_codec!(ClosePayload);
+canonical_codec!(RefreshTokenPayload);
 
 #[cfg(test)]
 mod tests {
@@ -345,6 +382,27 @@ mod tests {
         };
         let bytes = v.encode().unwrap();
         assert_eq!(ErrorPayload::decode(&bytes).unwrap(), v);
+    }
+
+    #[test]
+    fn refresh_token_round_trip() {
+        let v = RefreshTokenPayload {
+            token: "eyJhbGciOiJSUzI1NiJ9.e30.sig".to_string(),
+        };
+        let bytes = v.encode().unwrap();
+        assert_eq!(RefreshTokenPayload::decode(&bytes).unwrap(), v);
+    }
+
+    /// The token is a live credential. `{:?}` on a decoded frame must not put
+    /// it in a log line, so `Debug` is hand-written to redact it.
+    #[test]
+    fn a_refresh_token_never_debug_prints_itself() {
+        let v = RefreshTokenPayload {
+            token: "super-secret-bearer".to_string(),
+        };
+        let rendered = format!("{v:?}");
+        assert!(!rendered.contains("super-secret-bearer"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
     }
 
     #[test]

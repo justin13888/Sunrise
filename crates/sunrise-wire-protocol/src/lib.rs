@@ -37,5 +37,5 @@ pub use messages::MsgKind;
 pub use negotiation::{Hello, HelloAck, NegotiationError};
 pub use payloads::{
     AckPayload, CaughtUpPayload, ClosePayload, CursorEntry, ErrorPayload, NackPayload,
-    OpBatchPayload, SubscribeEntry, SubscribePayload,
+    OpBatchPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
 };
