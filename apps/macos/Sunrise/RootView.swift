@@ -34,24 +34,36 @@ struct RootView: View {
     }
 }
 
-/// The unlocked app. A placeholder until Today and Inbox land.
+/// The unlocked app.
 struct VaultView: View {
     let bridge: CoreBridge
 
     @State private var settings = AppSettings()
     @State private var account = AccountModel()
     @State private var sync = SyncStatusModel()
+    @State private var list: TaskListModel
+    @State private var capture: CaptureModel
+    @State private var selection: TaskListKind = .today
     @State private var deviceID = ""
     @State private var showingSettings = false
 
+    init(bridge: CoreBridge) {
+        self.bridge = bridge
+        _list = State(initialValue: TaskListModel(bridge: bridge))
+        _capture = State(initialValue: CaptureModel(bridge: bridge))
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            SyncWarningBanner(presentation: sync.presentation)
-            ContentUnavailableView(
-                "Vault open",
-                systemImage: "checkmark.seal",
-                description: Text("Today and Inbox arrive next.")
-            )
+        NavigationSplitView {
+            List(TaskListKind.allCases, selection: $selection) { kind in
+                Label(kind.title, systemImage: kind.symbol).tag(kind)
+            }
+            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 240)
+        } detail: {
+            VStack(spacing: 0) {
+                SyncWarningBanner(presentation: sync.presentation)
+                TaskListView(model: list, capture: capture)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .status) {
@@ -74,6 +86,7 @@ struct VaultView: View {
                     .padding()
             }
         }
+        .onChange(of: selection) { _, kind in Task { await list.show(kind) } }
         .task {
             deviceID = await bridge.deviceId()
             account.restore()
