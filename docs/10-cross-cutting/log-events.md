@@ -32,8 +32,10 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 |---|---|---|
 | `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
 | `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
-| `srv.start.refused` | error | Config validation failed; the process is exiting rather than serving. |
+| `srv.start.refused` | error | Config could not be resolved, read, parsed, or validated; the process is exiting 78 (`EX_CONFIG`) rather than serving. |
+| `srv.start.failed` | error | The listener could not bind; `bind`, `cause`. Distinct from `srv.start.refused`: the config was fine and the address was not available. |
 | `srv.stop` | info | `axum::serve` returned; listener closed. |
+| `srv.stop.failed` | error | `axum::serve` returned an error; `cause`. |
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
 | `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
@@ -42,6 +44,10 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.ws.rejected` | warn | `/sync` handshake failed negotiation; `err_code`. The client sees a closed socket and cannot diagnose this itself. |
 | `srv.ws.disconnect` | info | `/sync` session ended. |
 | `srv.ws.subscribe` | debug | Subscribe frame processed; `n_streams`. |
+| `srv.ws.token_expired` | warn | The session's bearer passed its `exp`; the session is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
+| `srv.ws.refreshed` | debug | A `0x12 RefreshToken` verified; the session's deadline moved out without a reconnect. `account_h`. |
+| `srv.ws.refresh_rejected` | warn | A refresh token failed verification; `err_code`, `account_h`. The session keeps its current credential — this is recoverable. Never the token. |
+| `srv.ws.refresh_identity_mismatch` | warn | A refresh token verified but names a different principal than the session; the session is ended. `account_h`. A session handed another user's token is not a mistake to keep serving. |
 | `srv.relay.fanout` | debug | `OpBatch` republished to a channel; `stream_h`, `n_bytes`. The relay never decrypts, so shape is all it can report. |
 | `srv.relay.append_failed` | error | The durable op log rejected a write, so the batch is not acked; `stream_h`, `err_code`, `cause`. The client keeps the op and retries — the one failure that must never be answered with an `Ack`. |
 | `srv.relay.replay_failed` | error | The durable op log could not be read, so the session ends without a `CaughtUp`; `stream_h`, `err_code`, `cause`. Never followed by a completeness claim the server cannot back. |
@@ -65,6 +71,9 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.session.closed` | info | Session ended; `result` distinguishes a clean shutdown from a drop. |
 | `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |
 | `sync.session.off` | info | No relay configured; running offline. |
+| `sync.credential.renewed` | debug | A renewed bearer is being sent to the relay in a `0x12 RefreshToken` frame, on the live session. |
+| `sync.credential.renewed.deferred` | debug | A renewal landed but the relay did not negotiate `SrvTokenRefresh`; the new bearer waits for the next reconnect. |
+| `sync.credential.accepted` | debug | The relay acknowledged the refreshed bearer (`0x13`); `expires_at_ms` is the deadline the relay adopted, which is authoritative over the client's own reading of `exp`. |
 | `sync.backoff` | debug | Waiting before reconnect; `attempt`, `delay_ms`. A reconnect storm is visible as a run of these. |
 | `sync.op.retransmit` | debug | An op batch went unacked and was sent again; `batch_id`, `attempt`, `n_ops`. A run of these on one `batch_id` is a link that stays up but is not carrying our ops. |
 | `sync.gap` | warn | The relay reported ops it can no longer supply; the session latches `Degraded` and stops claiming to be up to date. `cause` carries the relay's diagnostic. Unlike every other sync warning this one is not retryable — re-subscribing cannot produce the ops. |

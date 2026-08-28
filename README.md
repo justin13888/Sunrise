@@ -176,6 +176,14 @@ Cert trust is a two-sided file exchange: the **first** run of each vault only ex
 cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
 ```
 
+Against a relay with an OIDC issuer configured, `sunrise login` obtains a bearer and stores it mode-0600 in the vault directory; `sunrise whoami` reports its state and `sunrise logout` forgets it. A stored login feeds sync automatically, and `SUNRISE_SYNC_TOKEN` overrides it for CI:
+
+```bash
+export SUNRISE_OIDC_ISSUER=https://auth.example.com
+export SUNRISE_OIDC_CLIENT_ID=sunrise
+cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback redirect
+```
+
 > The server reads `sunrise.toml` (`-c <path>` → `$SUNRISE_CONFIG` → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`); with no config it runs on defaults, which bind loopback in single-tenant mode with an in-memory store. Setting `[auth] oidc_issuer` + `oidc_client_id` installs the JWKS verifier. See `docs/06-server/self-hosting.md`.
 
 #### 5. macOS client

@@ -182,7 +182,13 @@ strip = "symbols"
 
 [profile.dev]
 opt-level = 0
-debug = true
+# Line tables, not full DWARF. `target/` reached 20 GB on this profile and
+# filled the disk twice, killing builds mid-run. Line tables are what a panic
+# backtrace and a test failure actually read — file, line, and symbol survive
+# intact; what goes is local-variable and type detail, which only an
+# interactive debugger steps through. Measured on this workspace: 16 GB -> the
+# figure in the commit message, for no change in backtrace quality.
+debug = "line-tables-only"
 
 # Keep test deps (proptest, etc.) optimized — property runs go from minutes to seconds.
 [profile.dev.package."*"]
