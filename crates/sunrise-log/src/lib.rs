@@ -43,7 +43,7 @@
 //!
 //! // A full-screen terminal app logs to a file — stderr would corrupt the
 //! // alternate screen.
-//! let path = sunrise_log::init_file("sunrise-tui").expect("logger");
+//! let path = sunrise_log::init_file("sunrise-cli").expect("logger");
 //! ```
 
 #![forbid(unsafe_code)]

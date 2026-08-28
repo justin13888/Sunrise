@@ -303,21 +303,21 @@ mod tests {
     #[test]
     fn log_path_honours_xdg_state_home() {
         assert_eq!(
-            log_path_in("sunrise-tui", Some("/var/state"), Some("/home/u")),
-            PathBuf::from("/var/state/sunrise/log/sunrise-tui.ndjson")
+            log_path_in("sunrise-cli", Some("/var/state"), Some("/home/u")),
+            PathBuf::from("/var/state/sunrise/log/sunrise-cli.ndjson")
         );
     }
 
     #[test]
     fn log_path_falls_back_to_local_state_under_home() {
         assert_eq!(
-            log_path_in("sunrise-tui", None, Some("/home/u")),
-            PathBuf::from("/home/u/.local/state/sunrise/log/sunrise-tui.ndjson")
+            log_path_in("sunrise-cli", None, Some("/home/u")),
+            PathBuf::from("/home/u/.local/state/sunrise/log/sunrise-cli.ndjson")
         );
         // A blank XDG_STATE_HOME behaves as unset.
         assert_eq!(
-            log_path_in("sunrise-tui", Some("  "), Some("/home/u")),
-            PathBuf::from("/home/u/.local/state/sunrise/log/sunrise-tui.ndjson")
+            log_path_in("sunrise-cli", Some("  "), Some("/home/u")),
+            PathBuf::from("/home/u/.local/state/sunrise/log/sunrise-cli.ndjson")
         );
     }
 

@@ -7,15 +7,26 @@ disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "use CoreConfig::clock" },
     { path = "std::time::Instant::now", reason = "use CoreConfig::clock" },
     { path = "std::process::exit", reason = "return Err(CoreError::Fatal) instead" },
-    # These bind only inside the six crates that declare `rand` directly
-    # (crypto, core, e2e, bench, onboarding, crypto-test-vectors) — which are
-    # the ones that matter. Elsewhere clippy cannot resolve the path and emits
-    # a *config* warning that `-D warnings` does not catch, so this is
-    # deliberately not the only enforcement: the `determinism` CI job greps
-    # every crate. Keep both. Path-based matching here is immune to turbofish
-    # and aliasing; the grep covers the crates clippy cannot see.
-    { path = "rand::thread_rng", reason = "use CoreConfig::rng" },
-    { path = "rand::random", reason = "use CoreConfig::rng" },
+    # These bind only inside the crates that declare `rand` directly (crypto,
+    # core, e2e, bench, onboarding, crypto-test-vectors) — which are the ones
+    # that matter. Elsewhere clippy has no `rand` in scope to resolve the path
+    # against, and without `allow-invalid` it emits
+    #
+    #     warning: `rand::random` does not refer to an existing function
+    #
+    # once per compilation unit, in *every* crate that does not depend on
+    # `rand`. That warning is a config diagnostic, not a lint, so `-D warnings`
+    # never catches it and it simply accumulates as noise — noise that reads
+    # like the rule is dead. It is not: `allow-invalid` silences the
+    # unresolvable case and leaves the rule binding where `rand` is reachable,
+    # which is verifiable by calling `rand::random()` in `sunrise-crypto` and
+    # watching clippy reject it.
+    #
+    # Path-based matching here is immune to turbofish and aliasing; the
+    # `determinism` CI job greps every crate, including the ones clippy cannot
+    # see. Keep both.
+    { path = "rand::thread_rng", reason = "use CoreConfig::rng", allow-invalid = true },
+    { path = "rand::random", reason = "use CoreConfig::rng", allow-invalid = true },
 ]
 
 disallowed-types = [

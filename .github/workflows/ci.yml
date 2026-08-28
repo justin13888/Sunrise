@@ -184,7 +184,7 @@ jobs:
             '\bplain[a-z_]*\.expose[[:space:]]*\(' \
             crates/sunrise-log/src \
             crates/sunrise-server/src \
-            crates/sunrise-tui/src \
+            crates/sunrise-cli/src \
             crates/sunrise-storage/src \
             crates/sunrise-core/src \
             crates/sunrise-sync/src \

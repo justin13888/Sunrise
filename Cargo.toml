@@ -104,14 +104,6 @@ tracing = { version = "0.1", default-features = false, features = ["std", "attri
 tracing-core = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json", "registry"] }
 
-# --- TUI ---
-ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
-crossterm = { version = "0.28", default-features = false, features = ["events"] }
-# ratatui-image 2.0 is the release line pinned to ratatui ^0.28.1 (3.x+ needs
-# ratatui 0.29). `crossterm` feature enables terminal protocol detection.
-ratatui-image = { version = "2.0", default-features = false, features = ["crossterm", "rustix"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-
 # --- utility ---
 thiserror = { version = "1.0", default-features = false }
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
@@ -170,7 +162,6 @@ sunrise-core = { path = "crates/sunrise-core", version = "0.1.0" }
 sunrise-client-core = { path = "crates/sunrise-client-core", version = "0.1.0" }
 sunrise-cli = { path = "crates/sunrise-cli", version = "0.1.0" }
 sunrise-server = { path = "crates/sunrise-server", version = "0.1.0" }
-sunrise-tui = { path = "crates/sunrise-tui", version = "0.1.0" }
 sunrise-integrations = { path = "crates/sunrise-integrations", version = "0.1.0" }
 sunrise-core-bindings = { path = "crates/sunrise-core-bindings", version = "0.1.0" }
 sunrise-bench = { path = "crates/sunrise-bench", version = "0.1.0" }

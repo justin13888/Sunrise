@@ -14,10 +14,9 @@ ignore = [
     # stopped reporting all four, and the entries were removed rather than left
     # behind as stale suppressions.
     #
-    # `paste` is archived but is a compile-time-only proc macro reached through
-    # `ratatui`, which we depend on directly (ADR-0006). No runtime exposure and
-    # no replacement available upstream; revisit when ratatui drops it.
-    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro; via ratatui. Compile-time only." },
+    # RUSTSEC-2024-0436 (`paste`) was the same shape and left with `ratatui`
+    # when ADR-0019 replaced the terminal client. There are no advisory
+    # suppressions in this workspace.
 ]
 
 [bans]
@@ -39,41 +38,30 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
-    "Zlib",
     "CC0-1.0",
-    # MPL-2.0 stopped being matched when `loro` went (it reached us through
-    # `im`, which is MPL-2.0). Kept anyway, like the two below: these are
-    # policy statements about licences we accept, not suppressions of a
-    # problem, and `OpenSSL` / `Unicode-DFS-2016` have been unmatched since
-    # before ADR-0014. cargo-deny reports all three as
-    # `license-not-encountered` warnings and still exits 0.
-    "MPL-2.0",
-    "OpenSSL",
     # Mozilla's CA bundle, reached through tokio-tungstenite (ADR-0005).
     # A data licence, permissive, and AGPL-compatible. Permanent.
     "CDLA-Permissive-2.0",
-    # Boost Software Licence — OSI-approved, permissive, AGPL-compatible.
-    # Annotated here as reaching us via `xxhash-rust` <- loro and therefore
-    # droppable with sunrise-crdt. That was wrong: after the ADR-0014 deletion
-    # `cargo deny list` still reports BSL-1.0 for `ryu` (float formatting, via
-    # `serde_json`), which is not going anywhere. Permanent.
+    # --- currently unmatched, kept deliberately ---
+    #
+    # These five are *policy statements* about licences we accept, not
+    # suppressions of a problem: nothing in the tree carries them today, so
+    # cargo-deny reports each as a `license-not-encountered` warning and still
+    # exits 0. Removing them would only mean the next dependency that carries
+    # one reds the build instead of being accepted, which is the wrong default
+    # for five permissive, AGPL-compatible licences.
+    #
+    # `MPL-2.0` left with `loro` (ADR-0014, via `im`). `Zlib` and `BSL-1.0`
+    # left with `ratatui`/`image` (ADR-0019). `OpenSSL` and `Unicode-DFS-2016`
+    # have been unmatched since before either.
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-DFS-2016",
+    "Zlib",
     "BSL-1.0",
 ]
 confidence-threshold = 0.9
-
-# `icy_sixel` (via ratatui-image) ships a `license-file` instead of an SPDX
-# expression. The file is the MIT licence verbatim, so state that explicitly
-# rather than widening the allow-list or skipping the crate.
-[[licenses.clarify]]
-crate = "icy_sixel@0.1.3"
-# Version-pinned via the `crate` spec: cargo-deny *rejects* a clarification whose hash does not match, and
-# reports it as an unlicensed crate rather than as a stale hash. Without the
-# version pin, a 0.1.4 that changes one byte of LICENSE (a copyright year is
-# enough) would red CI with a diagnostic pointing at the wrong thing.
-expression = "MIT"
-license-files = [{ path = "LICENSE", hash = 0x6ce9e0d1 }]
 
 [sources]
 unknown-registry = "deny"
