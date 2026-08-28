@@ -1,0 +1,112 @@
+//! The shared vocabulary, exported as functions rather than restated.
+//!
+//! Everything here is a thin lowering of [`sunrise_domain::phrase`] or
+//! [`sunrise_domain::planning`]. None of it computes anything; the point is
+//! that a client **cannot** be tempted to compute it.
+//!
+//! The temptation is real and specific. "Overdue", "tomorrow", "1h30" and
+//! "weekdays 09:00–17:00" are each two lines to write in Swift, and each of
+//! those two-line versions would disagree with the CLI the first time a
+//! deadline landed on a DST boundary or a task was due at 09:00 and read at
+//! 17:00. `docs/07-clients/overview.md` says this out loud; these exports are
+//! what make following it the path of least resistance.
+//!
+//! Free functions, not methods: none of them touches the vault, so making them
+//! hang off [`crate::SunriseCore`] would imply a dependency on an open vault
+//! that does not exist — and a capture preview must render before a vault is
+//! even unlocked on a first run.
+
+use sunrise_domain::{ScheduleConstraint, SunriseTime, TodaySection};
+
+use crate::dto::{Constraint, TimeValue};
+
+/// See [`sunrise_domain::TodaySection`].
+///
+/// Declared remotely rather than mirrored so that adding a section upstream
+/// fails this crate's build instead of silently producing a value the app
+/// cannot name.
+#[uniffi::remote(Enum)]
+pub enum TodaySection {
+    Scheduled,
+    Due,
+    Overdue,
+}
+
+/// `relative_day`'s two answers, as a record.
+///
+/// `is_past` is not derivable from `text` — "-3d" and "+3d" differ by one
+/// character, and a client branching on a string prefix to colour a row is
+/// exactly the restatement this module exists to prevent.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RelativeDay {
+    /// `yesterday` / `today` / `tomorrow` / `+3d` / `-3d`.
+    pub text: String,
+    /// Whether the day is behind the caller's `now_ms`.
+    pub is_past: bool,
+}
+
+/// Which section of Today a row belongs in.
+///
+/// See [`sunrise_domain::today_section`]: the overdue boundary is
+/// `due_at < start_of_today_local`, which is **not** `due_at < now_ms`.
+///
+/// `tz` is an IANA zone name; an unknown one falls back to UTC, for the same
+/// reason [`crate::SunriseCore::capture`] does — showing a row in the wrong
+/// section is a smaller failure than showing no rows at all.
+#[uniffi::export]
+#[must_use]
+pub fn today_section(
+    scheduled_at: Option<TimeValue>,
+    due_at: Option<TimeValue>,
+    now_ms: u64,
+    tz: String,
+) -> TodaySection {
+    let zone = zone_or_utc(&tz);
+    let scheduled = scheduled_at.map(SunriseTime::from);
+    let due = due_at.map(SunriseTime::from);
+    sunrise_domain::today_section(scheduled.as_ref(), due.as_ref(), now_ms, &zone)
+}
+
+/// `yesterday` / `today` / `tomorrow` / `+3d`, in whole civil days.
+///
+/// See [`sunrise_domain::relative_day`]. Whole days, not elapsed hours: "due
+/// tomorrow" must not read as "today" because it happens to be 23:30 now.
+#[uniffi::export]
+#[must_use]
+pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
+    let zone = zone_or_utc(&tz);
+    let at = SunriseTime::from(at).to_instant(&zone);
+    let (text, is_past) = sunrise_domain::relative_day(at, now_ms, &zone);
+    RelativeDay { text, is_past }
+}
+
+/// `1800` → `30m`, `5400` → `1h30`. The compact form, for a list column.
+#[uniffi::export]
+#[must_use]
+pub fn short_duration(secs: u64) -> String {
+    sunrise_domain::short_duration(secs)
+}
+
+/// `MM:SS`, widening to `H:MM:SS` past an hour. The form for a live timer.
+#[uniffi::export]
+#[must_use]
+pub fn duration_clock(ms: u64) -> String {
+    sunrise_domain::fmt_duration_ms(ms)
+}
+
+/// One line describing a task's scheduling constraints, empty when it has
+/// none.
+///
+/// The `soft_violations` a [`crate::dto::CommandOutcome`] carries are the same
+/// type, so the same call renders "you scheduled this outside its window".
+#[uniffi::export]
+#[must_use]
+pub fn constraint_summary(constraints: Vec<Constraint>) -> String {
+    let list: Vec<ScheduleConstraint> = constraints.into_iter().map(Into::into).collect();
+    sunrise_domain::constraint_summary(&list)
+}
+
+/// An IANA zone, or UTC when the name is not one.
+fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
+    jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+}

@@ -16,11 +16,15 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use sunrise_core_bindings::dto::{TaskDraftIn, TaskEdit};
+use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
+use sunrise_core_bindings::vocab::{
+    constraint_summary, duration_clock, relative_day, short_duration, today_section,
+};
 use sunrise_core_bindings::{
     BindingError, ChangeEvent, ChangeListener, CoreCommand, CoreQuery, CoreQueryResult, SunriseCore,
 };
-use sunrise_domain::{Energy, TaskState};
+use sunrise_domain::TodaySection::{Due, Overdue};
+use sunrise_domain::{ConstraintSeverity, Energy, TaskState};
 
 const ROOT: [u8; 32] = [42u8; 32];
 
@@ -502,4 +506,175 @@ fn a_login_reports_only_whether_one_is_in_flight() {
     let s = format!("{l:?}");
     assert!(!s.contains("the-client-id"), "{s}");
     assert!(s.contains("login_in_progress: false"), "{s}");
+}
+
+// ---------------------------------------------------------------------------
+// Capture preview and the shared vocabulary
+// ---------------------------------------------------------------------------
+
+/// A preview is a read. The whole reason it exists is that a capture field
+/// re-parses on every keystroke, and a version of it that wrote would create
+/// one task per character.
+#[tokio::test(flavor = "multi_thread")]
+async fn previewing_a_capture_writes_nothing() {
+    let (_dir, core) = open_core().await;
+    let before = inbox_len(&core).await;
+
+    for prefix in ["R", "Re", "Ren", "Renew passport"] {
+        let p = core
+            .preview_capture(prefix.into(), "UTC".into())
+            .await
+            .expect("preview");
+        assert_eq!(p.draft.title, prefix);
+    }
+
+    assert_eq!(inbox_len(&core).await, before, "a preview created a task");
+}
+
+/// The preview's draft is the value the commit uses, so the two cannot
+/// disagree about what was parsed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_previewed_draft_is_what_gets_committed() {
+    let (_dir, core) = open_core().await;
+    let p = core
+        .preview_capture("Renew passport !1 ~1h".into(), "UTC".into())
+        .await
+        .expect("preview");
+    assert_eq!(p.draft.title, "Renew passport");
+    assert_eq!(p.draft.priority, Some(1));
+    assert_eq!(p.draft.estimated_duration_s, Some(3600));
+    assert!(p.issues.is_empty(), "{:?}", p.issues);
+
+    let out = core
+        .submit(CoreCommand::CreateTask { draft: p.draft })
+        .await
+        .expect("create");
+    let CoreQueryResult::Task { task } = core
+        .query(CoreQuery::EntityById { id: out.entity })
+        .await
+        .expect("read back")
+    else {
+        panic!("expected a task");
+    };
+    assert_eq!(task.title, "Renew passport");
+    assert_eq!(task.priority, Some(1));
+    assert_eq!(task.estimated_duration_s, Some(3600));
+}
+
+/// An annotation that cannot be applied is reported, and its text stays in the
+/// title. Losing what someone typed is the worse failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_preview_explains_what_it_could_not_resolve() {
+    let (_dir, core) = open_core().await;
+    let p = core
+        .preview_capture("Call the vet #nosuchstream".into(), "UTC".into())
+        .await
+        .expect("preview");
+    match p.issues.as_slice() {
+        [CaptureIssue::UnknownStream { name }] => assert_eq!(name, "nosuchstream"),
+        other => panic!("expected one unknown stream, got {other:?}"),
+    }
+    assert!(p.draft.title.contains("nosuchstream"), "{}", p.draft.title);
+}
+
+async fn inbox_len(core: &SunriseCore) -> usize {
+    match core.query(CoreQuery::Inbox).await.expect("inbox") {
+        CoreQueryResult::Tasks { tasks } => tasks.len(),
+        other => panic!("expected tasks, got {other:?}"),
+    }
+}
+
+/// The overdue boundary is `due_at < start_of_today_local`. A client that
+/// wrote `due_at < now` would fail exactly this case, which is why the
+/// function is exported instead of documented.
+#[test]
+fn a_deadline_earlier_today_crosses_as_due_not_overdue() {
+    let tz = "America/New_York";
+    let due = TimeValue::Zoned {
+        civil: jiff::civil::date(2026, 3, 10).at(9, 0, 0, 0),
+        tz: tz.into(),
+    };
+    let now_ms = ms_at(2026, 3, 10, 17, tz);
+    assert_eq!(today_section(None, Some(due), now_ms, tz.into()), Due);
+
+    let yesterday = TimeValue::AllDay {
+        date: jiff::civil::date(2026, 3, 9),
+    };
+    assert_eq!(
+        today_section(None, Some(yesterday), now_ms, tz.into()),
+        Overdue
+    );
+}
+
+/// An unknown zone must not take the screen down; the seam falls back to UTC
+/// the same way `capture` does.
+#[test]
+fn an_unknown_zone_falls_back_rather_than_failing_the_row() {
+    let now_ms = ms_at(2026, 3, 10, 17, "UTC");
+    let due = TimeValue::AllDay {
+        date: jiff::civil::date(2026, 3, 10),
+    };
+    assert_eq!(
+        today_section(None, Some(due), now_ms, "Mars/Olympus_Mons".into()),
+        Due
+    );
+}
+
+#[test]
+fn the_day_and_duration_words_come_from_the_domain() {
+    let tz = "America/New_York";
+    let now_ms = ms_at(2026, 3, 10, 17, tz);
+    let tomorrow = relative_day(
+        TimeValue::AllDay {
+            date: jiff::civil::date(2026, 3, 11),
+        },
+        now_ms,
+        tz.into(),
+    );
+    assert_eq!(tomorrow.text, "tomorrow");
+    assert!(!tomorrow.is_past);
+
+    let last_week = relative_day(
+        TimeValue::AllDay {
+            date: jiff::civil::date(2026, 3, 3),
+        },
+        now_ms,
+        tz.into(),
+    );
+    assert_eq!(last_week.text, "-7d");
+    assert!(last_week.is_past);
+
+    assert_eq!(short_duration(5400), "1h30");
+    assert_eq!(duration_clock(3_661_000), "1:01:01");
+}
+
+#[test]
+fn a_constraint_summary_counts_the_hard_ones() {
+    let hard = Constraint {
+        time_of_day: None,
+        days_of_week: Vec::new(),
+        date_range: None,
+        severity: ConstraintSeverity::Hard,
+    };
+    let soft = Constraint {
+        severity: ConstraintSeverity::Soft,
+        ..hard.clone()
+    };
+    assert_eq!(
+        constraint_summary(vec![hard, soft]),
+        "2 constraints (1 hard)"
+    );
+    assert_eq!(constraint_summary(Vec::new()), "0 constraints (0 hard)");
+}
+
+/// Epoch ms for `H:00` on a civil date in `tz`.
+fn ms_at(y: i16, m: i8, d: i8, hour: i8, tz: &str) -> u64 {
+    let zone = jiff::tz::TimeZone::get(tz).expect("tz");
+    u64::try_from(
+        zone.to_zoned(jiff::civil::date(y, m, d).at(hour, 0, 0, 0))
+            .expect("civil time exists")
+            .timestamp()
+            .as_millisecond(),
+    )
+    .expect("after the epoch")
 }

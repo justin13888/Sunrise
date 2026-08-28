@@ -58,10 +58,12 @@ pub mod command;
 pub mod dto;
 pub mod query;
 pub mod types;
+pub mod vocab;
 
 pub use command::CoreCommand;
-pub use dto::{CommandOutcome, TaskItem};
+pub use dto::{CapturePreview, CommandOutcome, TaskItem};
 pub use query::{CoreQuery, CoreQueryResult};
+pub use vocab::RelativeDay;
 
 uniffi::setup_scaffolding!();
 
@@ -203,6 +205,33 @@ impl SunriseCore {
             .submit(sunrise_core::Command::CreateTask(parsed.draft))
             .await?;
         Ok(CommandOutcome::from(&res))
+    }
+
+    /// Parse one capture line **without writing anything**, so a capture
+    /// field can show what it would create as the user types.
+    ///
+    /// Resolving `#stream` and `@context` needs the vault, which is why this
+    /// is a method and not a [`crate::vocab`] function. The returned
+    /// `draft` is the same value [`SunriseCore::capture`] would submit: hand
+    /// it straight back as [`command::CoreCommand::CreateTask`] and the
+    /// preview cannot disagree with the commit.
+    ///
+    /// Never fails on bad input — an unparseable `^when` is reported in
+    /// `issues` with its text left in the title. Validation stays the
+    /// committing command's job, so a half-typed line still previews.
+    ///
+    /// Not free: resolving names costs two vault reads per call, so a caller
+    /// wiring this to a text field should debounce rather than fire on every
+    /// keystroke.
+    pub async fn preview_capture(
+        &self,
+        text: String,
+        tz: String,
+    ) -> Result<CapturePreview, BindingError> {
+        let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        Ok(CapturePreview::from(
+            &self.inner.capture(&text, &zone).await?,
+        ))
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.
