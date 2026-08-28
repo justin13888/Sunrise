@@ -25,6 +25,17 @@
 //!   nothing, so the inbound check never runs; without the timer a client
 //!   could connect, go quiet, and hold an authenticated socket open forever on
 //!   a dead credential. This is the case the obvious implementation misses.
+//!
+//! # The refresh frame
+//!
+//! `0x12 RefreshToken` is the escape from that close: the device's own OIDC
+//! client gets a new access token from the issuer and hands it over in-band,
+//! the server re-verifies it, and the deadline moves out with no reconnect.
+//! The interesting tests are the refusals, and they are not all the same
+//! refusal — see `handle_refresh`'s docs. A token that fails to verify leaves
+//! the session running on the credential it still has; a token that verifies
+//! but names a *different principal* ends it, because the channel namespace
+//! was fixed at the upgrade and is never re-derived.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -35,7 +46,8 @@ use sunrise_error::ErrorCode;
 use sunrise_server::{build_router, Clock, ServerConfig, ServerState, StaticVerifier, Subject};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, ClosePayload, ErrorPayload, FrameFlags, Hello, MsgKind,
-    SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    RefreshTokenPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
+    REQUIRED_SERVER_BITS,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -235,6 +247,174 @@ async fn a_session_with_no_deadline_is_never_closed() {
             .await
             .is_none(),
         "a session with no deadline must stay open"
+    );
+    h.abort();
+}
+
+async fn send_refresh(ws: &mut Ws, token: &str) {
+    let payload = RefreshTokenPayload {
+        token: token.to_string(),
+    }
+    .encode()
+    .unwrap();
+    let frame = encode_frame(MsgKind::RefreshToken, FrameFlags::EMPTY, &payload).unwrap();
+    ws.send(Message::Binary(frame)).await.unwrap();
+}
+
+/// The happy path, and the reason the frame exists: a renewal costs no
+/// reconnect. The session opens on a token about to expire, refreshes onto one
+/// that is not, and outlives the first deadline it would otherwise have died
+/// at.
+#[tokio::test]
+async fn a_refresh_extends_the_session_without_a_reconnect() {
+    let verifier = StaticVerifier::default()
+        .with_expiring("short", Subject::new(ISSUER, "alice"), T0_MS + 500)
+        .with_expiring("long", Subject::new(ISSUER, "alice"), T0_MS + 3_600_000);
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "short").await;
+    handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "long").await;
+
+    // Well past the original 500 ms deadline. Without the refresh this window
+    // is where `an_idle_session_is_closed_when_its_token_expires` fires.
+    assert!(
+        next_frame(&mut ws, Duration::from_millis(1_200))
+            .await
+            .is_none(),
+        "the renewed session must still be open past its original deadline"
+    );
+
+    // And it is still a working session, not merely an unclosed socket.
+    send_subscribe(&mut ws, [7u8; 16]).await;
+    let (kind, _) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the subscribe must be honoured");
+    assert_eq!(kind, MsgKind::StreamUpdate);
+    h.abort();
+}
+
+/// A refresh the verifier rejects is refused — and the session survives on the
+/// credential it already holds, which is still valid. Tearing down here would
+/// turn a recoverable client bug into a dropped session.
+#[tokio::test]
+async fn a_refresh_with_an_unverifiable_token_is_refused_but_keeps_the_session() {
+    let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "not-a-token-this-server-knows").await;
+    let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the refusal must be reported");
+    assert_eq!(kind, MsgKind::Error);
+    assert_eq!(
+        ErrorPayload::decode(&payload).unwrap().code,
+        ErrorCode::AuthTokenInvalid
+    );
+
+    // Still live.
+    send_subscribe(&mut ws, [7u8; 16]).await;
+    let (kind, _) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the session must survive a rejected refresh");
+    assert_eq!(kind, MsgKind::StreamUpdate);
+    h.abort();
+}
+
+/// The account-takeover guard. A perfectly valid token for a *different*
+/// principal must not renew this session: the relay channel namespace was
+/// derived from the upgrade's token and is never re-derived, so continuing
+/// would relay alice's traffic under bob's authority.
+#[tokio::test]
+async fn a_refresh_naming_another_principal_ends_the_session() {
+    let verifier = StaticVerifier::default()
+        .with("alice-token", Subject::new(ISSUER, "alice"))
+        .with("bob-token", Subject::new(ISSUER, "bob"));
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "bob-token").await;
+    let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the mismatch must be reported");
+    assert_eq!(kind, MsgKind::Error);
+    assert_eq!(
+        ErrorPayload::decode(&payload).unwrap().code,
+        ErrorCode::AuthTokenInvalid
+    );
+    assert!(
+        next_frame(&mut ws, Duration::from_secs(2)).await.is_none(),
+        "and the session must end, not merely decline the renewal"
+    );
+    h.abort();
+}
+
+/// Same guard, one step subtler: the principal matches but the token's
+/// `device_id` claim does not. `auth::request::bind_device` refuses that on the
+/// REST path; a session must not be able to change device mid-flight either.
+#[tokio::test]
+async fn a_refresh_naming_another_device_ends_the_session() {
+    let mut other_device = Subject::new(ISSUER, "alice");
+    other_device.device_id = Some("SOMEONE-ELSE".into());
+    let verifier = StaticVerifier::default()
+        .with("alice-token", Subject::new(ISSUER, "alice"))
+        .with("alice-other-device", other_device);
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "alice-other-device").await;
+    let (kind, _) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the mismatch must be reported");
+    assert_eq!(kind, MsgKind::Error);
+    assert!(
+        next_frame(&mut ws, Duration::from_secs(2)).await.is_none(),
+        "the session must end"
+    );
+    h.abort();
+}
+
+/// A dead session cannot be resurrected. The per-frame expiry check runs before
+/// dispatch, so a refresh arriving after the deadline is not a refresh at all —
+/// it is the inbound frame that closes the session. The client's recourse is to
+/// reconnect, which re-runs the whole upgrade pipeline: `allow_signup`, the
+/// `(iss, sub)` account lookup, and the channel-namespace derivation.
+#[tokio::test]
+async fn a_refresh_after_the_deadline_does_not_revive_the_session() {
+    let verifier = StaticVerifier::default()
+        .with_expiring("short", Subject::new(ISSUER, "alice"), T0_MS)
+        .with_expiring("long", Subject::new(ISSUER, "alice"), T0_MS + 3_600_000);
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "short").await;
+    handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "long").await;
+    assert_expired_close(&mut ws).await;
+    h.abort();
+}
+
+/// A malformed payload under a well-formed frame is a client bug, not an auth
+/// failure: report it and keep going.
+#[tokio::test]
+async fn a_refresh_with_an_undecodable_payload_is_refused() {
+    let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    handshake(&mut ws).await;
+
+    let frame = encode_frame(MsgKind::RefreshToken, FrameFlags::EMPTY, b"\xff not cbor").unwrap();
+    ws.send(Message::Binary(frame)).await.unwrap();
+    let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the refusal must be reported");
+    assert_eq!(kind, MsgKind::Error);
+    assert_eq!(
+        ErrorPayload::decode(&payload).unwrap().code,
+        ErrorCode::SyncOpInvalid
     );
     h.abort();
 }

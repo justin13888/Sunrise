@@ -41,6 +41,16 @@ The Sunrise server validates the token by:
 
 There are **no Sunrise-issued tokens and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer. Token TTL is **1 hour**; clients renew at 75% of TTL pre-emptively without disconnecting (using the out-of-band token-refresh frame `0x12 RefreshToken { token: tstr }`, accepted at any time on the sync WebSocket).
 
+The server's whole part in a refresh is to re-verify the token the device obtained and move the session's deadline out. It refuses in three distinguishable ways, and they are deliberately not alike:
+
+| Case | Result | Why |
+|---|---|---|
+| Token does not verify | `Error AUTH_TOKEN_INVALID`, **session continues** | The credential it already holds is still valid and its own deadline still governs. Tearing down would turn a recoverable client bug into a dropped session. |
+| Token verifies but names a different `(iss, sub)`, or a different `device_id` | `Error AUTH_TOKEN_INVALID`, **session ends** | The relay channel namespace was derived from the upgrade's token and is never re-derived. Continuing would relay one account's traffic under another's authority. |
+| Session's current token has already expired | `Error` + `Close AUTH_TOKEN_EXPIRED` | The per-frame expiry check runs before dispatch, so this never reaches the refresh handler at all. A dead session is not resurrectable by presenting a live token; the client reconnects, which re-runs the whole upgrade pipeline including `allow_signup` and the account lookup. |
+
+There is no acknowledgement frame. A refresh that is accepted is silent, and the client's evidence that it worked is that the session is still open past the old deadline.
+
 A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. See [`api.md`](./api.md) for the exact mechanics.
 
 For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:

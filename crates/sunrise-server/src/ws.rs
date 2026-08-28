@@ -29,8 +29,8 @@ use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, ErrorPayload,
-    FrameFlags, Hello, MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload,
-    REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    FrameFlags, Hello, MsgKind, OpBatchPayload, RefreshTokenPayload, SubscribeEntry,
+    SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
 use crate::auth::Verified;
@@ -54,6 +54,20 @@ pub fn router() -> Router<ServerState> {
 struct SessionAuth {
     /// Hashed account id — the relay channel namespace for this session.
     account: [u8; 16],
+    /// `(iss, sub)`, flattened — see [`Verified::subject`]. Fixed for the life
+    /// of the session.
+    ///
+    /// A refresh must name this same principal. On the wire, renewing a
+    /// credential and changing who you are look identical, and the second is
+    /// an account takeover: the relay channel namespace was derived from the
+    /// upgrade's token and is never re-derived, so a session that accepted a
+    /// token for a different principal would keep relaying the *first*
+    /// account's traffic under the second one's authority.
+    principal: String,
+    /// The `device_id` claim the session opened with, if any. A refresh may
+    /// not change it either, for the same reason and by the same argument the
+    /// REST path makes in `auth::request::bind_device`.
+    device_id: Option<String>,
     /// Wall-clock ms at which the current token expires; `None` for a verifier
     /// that issues no deadline (self-host).
     expires_at_ms: Option<u64>,
@@ -69,11 +83,28 @@ impl SessionAuth {
     fn new(account: [u8; 16], verified: &Verified, now_ms: u64) -> Self {
         Self {
             account,
+            principal: verified.subject.principal_key(),
+            device_id: verified.subject.device_id.clone(),
             expires_at_ms: verified.expires_at_ms,
             deadline: verified
                 .expires_at_ms
                 .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms)),
         }
+    }
+
+    /// Whether `verified` names the same principal and device this session
+    /// opened as.
+    fn is_same_identity(&self, verified: &Verified) -> bool {
+        verified.subject.principal_key() == self.principal
+            && verified.subject.device_id == self.device_id
+    }
+
+    /// Move the deadline out to a freshly verified token's `exp`.
+    fn renew(&mut self, verified: &Verified, now_ms: u64) {
+        self.expires_at_ms = verified.expires_at_ms;
+        self.deadline = verified
+            .expires_at_ms
+            .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms));
     }
 
     /// Whether the token has expired as of `now_ms`.
@@ -244,11 +275,9 @@ async fn sync_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: ServerState,
-    auth: SessionAuth,
+    mut auth: SessionAuth,
 ) {
     use tokio::sync::broadcast::error::RecvError;
-
-    let account = auth.account;
 
     // Subscriptions: channels this connection is currently subscribed to,
     // keyed by stream so a re-Subscribe REPLACES rather than duplicates. A
@@ -256,10 +285,11 @@ async fn sync_loop(
     // receiver for the same stream would deliver every subsequent live frame
     // twice for the rest of the session.
     let mut subs: Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)> = Vec::new();
-    // `account` is the channel namespace for this session. It was derived in
-    // `handler` from the *verified* bearer subject and is not influenced by
+    // `auth.account` is the channel namespace for this session. It was derived
+    // in `handler` from the *verified* bearer subject and is not influenced by
     // anything the client sends, so a Subscribe frame can only ever reach
-    // channels this account owns.
+    // channels this account owns. Nothing — the refresh path included — ever
+    // re-derives it.
 
     loop {
         // Build a select between (a) next inbound WS message and (b)
@@ -283,7 +313,7 @@ async fn sync_loop(
                             end_expired(&mut sink, &state, &auth).await;
                             break;
                         }
-                        if !handle_inbound(conn_id, &buf, &mut sink, &mut subs, account, &state).await {
+                        if !handle_inbound(conn_id, &buf, &mut sink, &mut subs, &mut auth, &state).await {
                             break;
                         }
                     }
@@ -407,9 +437,10 @@ async fn handle_inbound(
     buf: &[u8],
     sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     subs: &mut Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
-    account: [u8; 16],
+    auth: &mut SessionAuth,
     state: &ServerState,
 ) -> bool {
+    let account = auth.account;
     let Ok((header, payload)) = decode_frame(buf) else {
         let _ = send_error_frame(sink, ErrorCode::ProtocolBadMagic, "frame decode").await;
         return false;
@@ -444,9 +475,92 @@ async fn handle_inbound(
             }
             true
         }
+        MsgKind::RefreshToken => handle_refresh(&payload, sink, auth, state).await,
         MsgKind::Close => false,
         _ => true, // ignore anything else in v1 self-host
     }
+}
+
+/// Handle an out-of-band `0x12 RefreshToken` frame.
+///
+/// The server mints nothing. The device's own OIDC client obtains a new access
+/// token from the issuer; this re-verifies it through the same
+/// [`crate::auth::TokenVerifier`] the upgrade used and, on success, moves the
+/// session's deadline out. That is the whole point of the frame: renewal costs
+/// no reconnect, so a client renewing at 75% of TTL never sees an
+/// `AUTH_TOKEN_EXPIRED` close at all.
+///
+/// Three ways it can fail, and they are deliberately not treated alike:
+///
+/// - **The token does not verify.** Refuse the renewal, say so, and leave the
+///   session running on the credential it already has. That credential is
+///   still valid — its own deadline still governs and will close the session
+///   on time — so tearing down here would turn a recoverable client bug into
+///   a dropped session.
+/// - **The token verifies but names someone else.** End the session. The
+///   channel namespace was fixed at the upgrade and is never re-derived, so
+///   continuing would relay one account's traffic under another's authority.
+///   This is not a mistake to tolerate.
+/// - **The session's current token has already expired.** Never reaches here:
+///   the per-frame expiry check in [`sync_loop`] runs first and ends the
+///   session. A dead session is not resurrectable by presenting a live token;
+///   the client reconnects, which re-runs the full upgrade pipeline including
+///   `allow_signup` and the account lookup.
+async fn handle_refresh(
+    payload: &[u8],
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    auth: &mut SessionAuth,
+    state: &ServerState,
+) -> bool {
+    let Ok(frame) = RefreshTokenPayload::decode(payload) else {
+        let _ = send_error_frame(sink, ErrorCode::SyncOpInvalid, "refresh decode").await;
+        return true;
+    };
+    let verified = match state.token_verifier.verify(&frame.token).await {
+        Ok(v) => v,
+        Err(e) => {
+            // Same discipline as the upgrade path: a stable code and nothing
+            // else. `frame.token` is a credential and never reaches a log.
+            let api: crate::error::ApiError = e.into();
+            state
+                .metrics
+                .incr("sunrise_sync_token_refresh_rejected_total");
+            tracing::warn!(
+                ev = "srv.ws.refresh_rejected",
+                err_code = api.code,
+                account_h = %crate::logging::id_h(&auth.account),
+                "refresh token rejected; session keeps its current credential"
+            );
+            let _ =
+                send_error_frame(sink, ErrorCode::AuthTokenInvalid, "refresh token rejected").await;
+            return true;
+        }
+    };
+    if !auth.is_same_identity(&verified) {
+        state
+            .metrics
+            .incr("sunrise_sync_token_refresh_rejected_total");
+        tracing::warn!(
+            ev = "srv.ws.refresh_identity_mismatch",
+            account_h = %crate::logging::id_h(&auth.account),
+            "refresh token names a different principal; ending session"
+        );
+        let _ = send_error_frame(
+            sink,
+            ErrorCode::AuthTokenInvalid,
+            "refresh token does not match this session's principal",
+        )
+        .await;
+        return false;
+    }
+    auth.renew(&verified, state.clock.now_ms());
+    state.metrics.incr("sunrise_sync_token_refreshed_total");
+    tracing::debug!(
+        ev = "srv.ws.refreshed",
+        account_h = %crate::logging::id_h(&auth.account),
+        "session credential renewed without a reconnect"
+    );
+    true
 }
 
 /// Join one stream: filtered replay, gap report, CaughtUp, live receiver.
