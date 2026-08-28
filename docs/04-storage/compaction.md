@@ -4,6 +4,16 @@ status: accepted
 
 # Compaction
 
+> **This document describes target state, not v1.**
+> Nothing here is implemented: there is no snapshot op (`InnerOp` has no
+> such variant), no compactor election, and no retention sweep — the op log
+> currently grows without bound. It also predates
+> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), which replaced CRDT
+> merge with entity-level LWW and removed the `loro` dependency, so the
+> snapshot shape below needs redesigning before it can be built. See
+> [`../implementation/overview.md`](../implementation/overview.md) for what is
+> actually live.
+
 Without compaction, the op log grows forever. Compaction trims ops that are no longer needed for sync or audit.
 
 ## Eligibility
@@ -23,25 +33,34 @@ A "known device" is a device with an entry in `vault_meta.devices` that is **not
 Compaction folds a range of ops into a **snapshot op** for a Stream. The snapshot's CBOR shape:
 
 ```cddl
+; PROPOSED - not implemented, and not a wire format. See the banner above.
 Snapshot = {
     v:                uint,                ; snapshot format version (1)
     stream_id:        bstr .size 16,
     upto_op_seq:      uint,
     generated_at_ms:  uint,
-    doc_state:        bstr,                ; loro::Doc::export_snapshot() bytes
+    doc_state:        bstr,                ; serialized Stream state, format TBD
     head_root:        bstr .size 32,
     participants:     [+ {device_id: bstr .size 16, last_op_seq: uint}],
     hash:             bstr .size 32,       ; BLAKE3(canonical CBOR of the above fields, 32)
 }
 ```
 
-`doc_state` is the Loro library's own snapshot binary (Loro version pinned per [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)). The encrypted-CBOR envelope wraps the whole structure; it is signed under the Stream key.
+`doc_state` **is undecided.** An earlier revision specified
+`loro::Doc::export_snapshot()` bytes, which cannot be produced: the workspace
+ships no CRDT library, and under ADR-0014 a Stream's state is rows in SQLite
+rather than a mergeable document. Whatever replaces it has to be a canonical
+serialization of the materialized entity rows plus their LWW stamps, since
+those stamps are what makes a later op's merge deterministic — but that is a
+design decision, not a settled one, and is the main reason this document is
+not buildable as written. The encrypted-CBOR envelope would wrap the whole
+structure, signed under the Stream key.
 
 Validation on application:
 
 1. Verify magic + version.
 2. Recompute `hash` over the canonical CBOR of all other fields; reject on mismatch.
-3. Verify `head_root` matches a re-derivation from the imported Loro doc.
+3. Verify `head_root` matches a re-derivation from the imported state.
 4. Replace local Stream state with snapshot.
 
 Devices that haven't yet processed the underlying ops can apply the snapshot directly and skip the predecessors. After all known devices acknowledge the snapshot, the predecessor ops can be deleted from local storage and the server's log.
