@@ -18,7 +18,8 @@
 use sunrise_domain::{
     ConstraintSeverity, EffectiveTaskState, Energy, EnergyFit, ExportDataset, ExportFormat,
     FocusKind, Frequency, InterruptionReason, NoteBody, QuietHoursPolicy, ReminderKind,
-    RoutineCatchupPolicy, SessionLength, StreamColor, StreamReviewCadence, TaskState, Weekday,
+    RoutineCatchupPolicy, SessionLength, SnoozeSpan, StreamColor, StreamReviewCadence, TaskState,
+    Weekday,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -254,4 +255,13 @@ pub enum ReminderKind {
 pub enum QuietHoursPolicy {
     Queue,
     Drop,
+}
+
+/// See [`sunrise_domain::SnoozeSpan`] — how far a "not now" pushes something
+/// out. Two of the three are civil, not durations.
+#[uniffi::remote(Enum)]
+pub enum SnoozeSpan {
+    OneHour,
+    Tomorrow,
+    NextWeek,
 }

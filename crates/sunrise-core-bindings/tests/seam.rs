@@ -1608,3 +1608,27 @@ async fn the_account_tag_is_normalized_and_not_the_address() {
     assert_eq!(tag, pairing_account_tag("  Ada@Example.COM ".into()));
     assert_ne!(tag, pairing_account_tag("grace@example.com".into()));
 }
+
+/// The action buttons on every reminder, and the reason two of them are not
+/// arithmetic: New York springs forward on 2026-03-08, so 09:00 to 09:00 is 23
+/// hours. A client adding a day of milliseconds would fire an hour late.
+#[test]
+fn a_snooze_until_tomorrow_keeps_its_wall_clock_across_a_dst_boundary() {
+    use sunrise_core_bindings::vocab::snooze_target_ms;
+    use sunrise_domain::SnoozeSpan;
+
+    let ny = "America/New_York";
+    let saturday_nine = ms_at(2026, 3, 7, 9, ny);
+    assert_eq!(
+        snooze_target_ms(saturday_nine, SnoozeSpan::Tomorrow, ny.into()),
+        i64::try_from(ms_at(2026, 3, 8, 9, ny)).expect("ms"),
+    );
+    assert_eq!(
+        snooze_target_ms(saturday_nine, SnoozeSpan::OneHour, ny.into()),
+        i64::try_from(saturday_nine + 60 * 60 * 1000).expect("ms"),
+    );
+    assert_eq!(
+        snooze_target_ms(saturday_nine, SnoozeSpan::NextWeek, ny.into()),
+        i64::try_from(ms_at(2026, 3, 14, 9, ny)).expect("ms"),
+    );
+}

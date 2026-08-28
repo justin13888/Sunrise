@@ -18,7 +18,7 @@
 
 use sunrise_domain::{
     EnergyFit, ExportDataset, ExportFormat, InterruptionReason, RRule, ScheduleConstraint,
-    SessionLength, SunriseTime, TodaySection,
+    SessionLength, SnoozeSpan, SunriseTime, TodaySection,
 };
 
 use crate::dto::{
@@ -395,4 +395,22 @@ pub fn merged_block_draft(
         title_track_task: draft.title_track_task,
         tasks: draft.tasks,
     })
+}
+
+/// When a "defer an hour" / "until tomorrow" / "next week" lands, epoch ms.
+///
+/// See [`sunrise_domain::snooze_target`]. The three answers behind the action
+/// buttons `docs/08-features/notifications.md` puts on every reminder, and the
+/// reason they are not client arithmetic: "tomorrow" is a **date**, so adding
+/// 86,400,000 ms is wrong twice a year — an hour early or an hour late across
+/// a DST boundary, on exactly the reminders someone was relying on.
+///
+/// `tz` is the zone the civil arithmetic happens in; an unknown one falls back
+/// to UTC, as everywhere else here.
+#[uniffi::export]
+#[must_use]
+pub fn snooze_target_ms(from_ms: u64, span: SnoozeSpan, tz: String) -> i64 {
+    let from = jiff::Timestamp::from_millisecond(i64::try_from(from_ms).unwrap_or(i64::MAX))
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    sunrise_domain::snooze_target(from, span, &zone_or_utc(&tz)).as_millisecond()
 }
