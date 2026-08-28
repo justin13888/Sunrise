@@ -97,6 +97,46 @@ pub enum Command {
     /// Task's title as a **shadow copy** — the value as it is now, not a live
     /// binding. `BlockDraft::title_track_task` opts into live tracking instead.
     CreateBlock(BlockDraft),
+    /// Create **or update** the Block that one external calendar item maps
+    /// onto, keyed by `(source, uid)` instead of by a freshly minted id.
+    ///
+    /// This is the write half of `docs/09-integrations/icalendar.md` §Import:
+    /// "the same UID from the same source on a subsequent import is treated as
+    /// an update". The id is derived — not random — by
+    /// [`sunrise_domain::imported_block_id`], so a second import of the same
+    /// file lands on the Block the first one made, and two devices importing
+    /// the same file converge instead of ending up with two copies of every
+    /// event. See that function's module docs for why the pair lives in the id
+    /// rather than in an `external_id` column.
+    ///
+    /// Not the same command as [`Command::CreateBlock`], and deliberately so:
+    /// a create mints an identity and this one *adopts* one. Giving
+    /// `CreateBlock` an optional id would let any caller overwrite an
+    /// arbitrary Block through a command whose name says it makes a new one.
+    ///
+    /// What an update preserves, because the importer does not own it:
+    ///
+    /// * `created_at` — the Block was created when it was first imported.
+    /// * Task bindings — a user who bound a task to an imported Block keeps
+    ///   the binding; the draft's tasks are unioned in, never substituted.
+    ///
+    /// What it overwrites: the times and the title, which are the imported
+    /// calendar's to state (`docs/09-integrations/icalendar.md`: "Imported
+    /// entities are read-only").
+    ///
+    /// Reaches [`crate::DomainEvent`] as `Updated` in both cases. A change
+    /// notification is a prompt to re-read (see [`crate::DomainEvent`]), and
+    /// which of the two it was is not something a listener can act on
+    /// differently.
+    ImportBlock {
+        /// Import source id. `("ics")` for a one-shot file import; a
+        /// subscription would name itself.
+        source: String,
+        /// The external item's `UID`.
+        uid: String,
+        /// The Block to write.
+        draft: BlockDraft,
+    },
     /// Mutate a Block: move it, retitle it, or change title tracking.
     UpdateBlock {
         /// Target block.

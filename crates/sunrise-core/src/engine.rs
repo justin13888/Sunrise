@@ -67,18 +67,19 @@ use sunrise_domain::Unknowns;
 use sunrise_domain::{
     activity_for_entities, activity_table, break_after, build_daily_review, build_end_of_day_plan,
     build_morning_summary, build_weekly_review, effective_state, focus_table, fold_activity,
-    fold_focus_stats, fold_trends, inbox_stream_ref, materialization_horizon_days,
-    occurrence_key_at, occurrence_task_id, plan_reminders, plan_session, rank_focus_plan,
-    routine_drift, streaks_table, trends_table, unblock_cascade, violations_by_severity,
-    ActivityEvent, Attachment, AttachmentDraft, Block, BlockDraft, BlockPatch, Chunk, Context,
-    ContextDraft, ContextPatch, DependencyGraph, Energy, ExportDataset, ExportFormat, FocusEnd,
-    FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason, NoteBody, OpPayload,
-    OpRecord, PlanCandidate, ReminderCandidate, ReminderKind, ReminderSettings, ReviewSnapshot,
-    ReviewSnapshotDraft, ReviewStream, ReviewWindow, Routine, RoutineCatchupPolicy, RoutineDraft,
-    RoutineDrift, RoutinePatch, ScheduleConstraint, SessionLength, SessionRecord, StreakOutcome,
-    StreakRow, Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence, Task, TaskDraft,
-    TaskPatch, TaskState, TaskTemplate, Trends, ValidationError, WeekGrid, Weekday, WeeklyReview,
-    WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
+    fold_focus_stats, fold_trends, imported_block_id, inbox_stream_ref,
+    materialization_horizon_days, occurrence_key_at, occurrence_task_id, plan_reminders,
+    plan_session, rank_focus_plan, routine_drift, streaks_table, trends_table, unblock_cascade,
+    violations_by_severity, ActivityEvent, Attachment, AttachmentDraft, Block, BlockDraft,
+    BlockPatch, Chunk, Context, ContextDraft, ContextPatch, DependencyGraph, Energy, ExportDataset,
+    ExportFormat, FocusEnd, FocusKind, FocusSession, FocusStart, Interruption, InterruptionReason,
+    NoteBody, OpPayload, OpRecord, PlanCandidate, ReminderCandidate, ReminderKind,
+    ReminderSettings, ReviewSnapshot, ReviewSnapshotDraft, ReviewStream, ReviewWindow, Routine,
+    RoutineCatchupPolicy, RoutineDraft, RoutineDrift, RoutinePatch, ScheduleConstraint,
+    SessionLength, SessionRecord, StreakOutcome, StreakRow, Stream, StreamColor, StreamDraft,
+    StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, Trends,
+    ValidationError, WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
+    DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -247,6 +248,9 @@ impl Engine {
                 self.skip_routine_occurrence(db, id, occurrence_key)
             }
             Command::CreateBlock(d) => self.create_block(db, d),
+            Command::ImportBlock { source, uid, draft } => {
+                self.import_block(db, &source, &uid, draft)
+            }
             Command::UpdateBlock { id, patch } => self.update_block(db, id, patch),
             Command::DeleteBlock(id) => self.delete_block(db, id),
             Command::BindTask { block, task } => self.bind_task(db, block, task),
@@ -5455,6 +5459,87 @@ impl Engine {
         Ok(CommandResult::new(block_id, None, op_id, seq))
     }
 
+    /// Write the Block one external calendar item maps onto, at the id
+    /// [`imported_block_id`] derives from `(source, uid)`.
+    ///
+    /// Create and update are the same code path because the row write already
+    /// is one (`upsert_block_row`): re-importing an unchanged file rewrites
+    /// identical column values, which is what makes the whole operation
+    /// idempotent without a "have I seen this UID" table to keep in step.
+    ///
+    /// Two fields are read back off the existing Block rather than taken from
+    /// the draft, because they are not the importing calendar's to state — see
+    /// [`Command::ImportBlock`].
+    fn import_block(
+        &self,
+        db: &mut Db,
+        source: &str,
+        uid: &str,
+        d: BlockDraft,
+    ) -> Result<CommandResult, EngineError> {
+        if uid.trim().is_empty() {
+            return Err(EngineError::Invalid(
+                "import: an external item needs a UID".into(),
+            ));
+        }
+        d.validate()?;
+        require_kind(d.stream_id, EntityKind::Stream)?;
+        for t in &d.tasks {
+            require_kind(*t, EntityKind::Task)?;
+        }
+        let now_ms = self.clock.now_ms();
+        let block_id = imported_block_id(source, uid);
+        let existing = read_block(db.conn(), block_id.bytes())?;
+        let op_id = self.fresh_op_id(now_ms);
+
+        // Union, not replace: a task the user bound to an imported Block is
+        // theirs, and a re-import must not quietly unbind it.
+        let mut tasks: BTreeSet<EntityRef> = d.tasks.iter().copied().collect();
+        if let Some(e) = &existing {
+            tasks.extend(e.tasks.iter().copied());
+        }
+        let title = match d.title {
+            Some(t) => Some(t.trim().to_string()),
+            None => self.shadow_title(db, &tasks)?,
+        };
+        let block = Block {
+            id: block_id,
+            // The Block was created when it was first imported; a re-import is
+            // not a second creation of it.
+            created_at: existing
+                .as_ref()
+                .map_or_else(|| ms_to_ts(now_ms as i64), |e| e.created_at),
+            updated_at: ms_to_ts(now_ms as i64),
+            stream_id: d.stream_id,
+            starts_at: d.starts_at,
+            ends_at: d.ends_at,
+            title,
+            title_track_task: d.title_track_task,
+            tasks,
+            // Re-importing an event the user deleted locally brings it back.
+            // The alternative — honouring the tombstone — would make the
+            // import silently incomplete, and the file is the statement of
+            // what the external calendar holds.
+            deleted: false,
+            // Forward-compat fields a newer build wrote are the Block's, not
+            // the importer's, so they survive the rewrite.
+            unknown: existing
+                .as_ref()
+                .map_or_else(Unknowns::new, |e| e.unknown.clone()),
+        };
+        block.validate_invariants()?;
+        // The op kind is what the activity feed reads, so a first import is a
+        // create and a re-import is an update. Both apply identically on a
+        // remote replica — every Block op is full-state.
+        let inner_kind = if existing.is_some() {
+            "block.update"
+        } else {
+            "block.create"
+        };
+        let seq = self.emit_block(db, &block, now_ms, &op_id, inner_kind)?;
+        Ok(CommandResult::new(block_id, None, op_id, seq))
+    }
+
     fn update_block(
         &self,
         db: &mut Db,
@@ -8677,6 +8762,192 @@ mod tests {
         // no title to report for it — a valid state, not a repair case.
         assert!(rows[0].task_titles.is_empty());
         assert_eq!(rows[0].title.as_deref(), Some("Deep work"));
+    }
+
+    // ---- imported blocks (docs/09-integrations/icalendar.md §Import) ----
+
+    fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
+        Command::ImportBlock {
+            source: source.into(),
+            uid: uid.into(),
+            draft,
+        }
+    }
+
+    /// The rule the whole importer rests on: the same `(source, uid)` is the
+    /// same Block, not a second one.
+    #[test]
+    fn importing_the_same_uid_twice_writes_one_block() {
+        let mut db = db();
+        let e = engine();
+        let first = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap();
+        let second = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(10, 1, Some("Gym, moved"))),
+            )
+            .unwrap();
+        assert_eq!(first.entity, second.entity);
+        assert_eq!(first.entity, imported_block_id("ics", "ev1"));
+
+        let rows = day_rows(&e, &db, day_ms());
+        assert_eq!(rows.len(), 1, "one block, not two: {rows:?}");
+        assert_eq!(rows[0].title.as_deref(), Some("Gym, moved"));
+        assert_eq!(rows[0].block.starts_at, block_at(10, 1).0);
+    }
+
+    #[test]
+    fn the_same_uid_from_two_sources_is_two_blocks() {
+        let mut db = db();
+        let e = engine();
+        let a = e
+            .apply(&mut db, import("ics", "ev1", block_draft(9, 1, Some("A"))))
+            .unwrap();
+        let b = e
+            .apply(
+                &mut db,
+                import("other", "ev1", block_draft(11, 1, Some("B"))),
+            )
+            .unwrap();
+        assert_ne!(a.entity, b.entity);
+        assert_eq!(day_rows(&e, &db, day_ms()).len(), 2);
+    }
+
+    /// A re-import is not a second creation, so the Block keeps the moment it
+    /// first appeared.
+    #[test]
+    fn a_re_import_preserves_created_at_and_moves_updated_at() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock.clone());
+        let mut db = db_root(ROOT);
+        let id = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        set_clock(&clock, T0 + 60_000);
+        e.apply(
+            &mut db,
+            import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+        )
+        .unwrap();
+
+        let b = read_block(db.conn(), id.bytes()).unwrap().unwrap();
+        assert_eq!(b.created_at.as_millisecond(), T0 as i64);
+        assert_eq!(b.updated_at.as_millisecond(), (T0 + 60_000) as i64);
+    }
+
+    /// A task the user bound to an imported Block is theirs. A re-import
+    /// carries no bindings and must not take it away.
+    #[test]
+    fn a_re_import_keeps_a_task_the_user_bound() {
+        let mut db = db();
+        let e = engine();
+        let block = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Pack kit".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::BindTask { block, task }).unwrap();
+
+        e.apply(
+            &mut db,
+            import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+        )
+        .unwrap();
+        let rows = day_rows(&e, &db, day_ms());
+        assert_eq!(
+            rows[0].block.tasks.iter().copied().collect::<Vec<_>>(),
+            vec![task],
+            "the user's binding survives a re-import"
+        );
+    }
+
+    /// The op kind is what the activity feed reads: a first import is a
+    /// creation and a re-import is not.
+    #[test]
+    fn the_first_import_emits_a_create_and_the_second_an_update() {
+        let mut db = db();
+        let e = engine();
+        let first = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &first.op_id), "BlockCreate");
+        let second = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap();
+        assert_eq!(inner_op_variant(&e, &db, &second.op_id), "BlockUpdate");
+    }
+
+    /// Re-importing an event the user deleted locally brings it back: the file
+    /// is the statement of what the external calendar holds, and honouring the
+    /// tombstone would make the import silently incomplete.
+    #[test]
+    fn a_re_import_resurrects_a_locally_deleted_block() {
+        let mut db = db();
+        let e = engine();
+        let id = e
+            .apply(
+                &mut db,
+                import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+            )
+            .unwrap()
+            .entity;
+        e.apply(&mut db, Command::DeleteBlock(id)).unwrap();
+        assert!(day_rows(&e, &db, day_ms()).is_empty());
+
+        e.apply(
+            &mut db,
+            import("ics", "ev1", block_draft(9, 1, Some("Gym"))),
+        )
+        .unwrap();
+        assert_eq!(day_rows(&e, &db, day_ms()).len(), 1);
+    }
+
+    #[test]
+    fn an_import_with_no_uid_is_refused() {
+        let mut db = db();
+        let e = engine();
+        assert!(e
+            .apply(&mut db, import("ics", "  ", block_draft(9, 1, Some("Gym"))))
+            .is_err());
+    }
+
+    #[test]
+    fn an_import_validates_its_draft_like_any_other_write() {
+        let mut db = db();
+        let e = engine();
+        let inverted = BlockDraft {
+            starts_at: block_at(10, 1).0,
+            ends_at: block_at(9, 1).0,
+            ..block_draft(9, 1, Some("Gym"))
+        };
+        assert!(e.apply(&mut db, import("ics", "ev1", inverted)).is_err());
     }
 
     // ---- attachments (docs/02-domain/attachments.md) ----
