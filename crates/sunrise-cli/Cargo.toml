@@ -1,5 +1,5 @@
 [package]
-name = "sunrise-tui"
+name = "sunrise-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,35 +7,23 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Sunrise terminal UI (Ratatui)"
+description = "Sunrise command-line client — headless capture, triage, focus, review, export, and sync"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "sunrise-tui"
+name = "sunrise"
 path = "src/main.rs"
 
 [lints]
 workspace = true
 
-[features]
-# Inline image previews (Kitty/iTerm2/Sixel with halfblocks fallback).
-# Default-on for the shipped binary; the crate must also build without it.
-default = ["images"]
-images = ["dep:ratatui-image", "dep:image"]
-
 [dependencies]
 jiff = { workspace = true }
-ratatui = { workspace = true }
-crossterm = { workspace = true }
-ratatui-image = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
-sunrise-cli = { workspace = true }
-sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
@@ -44,5 +32,8 @@ sunrise-log = { workspace = true }
 sunrise-sync = { workspace = true, features = ["ws"] }
 
 [dev-dependencies]
-insta = { workspace = true }
+serde_json = { workspace = true }
+# Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
+sunrise-server = { workspace = true }
+axum = { workspace = true }
 tempfile = "3"

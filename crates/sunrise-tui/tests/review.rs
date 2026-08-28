@@ -13,10 +13,10 @@
 
 use std::sync::Arc;
 
+use sunrise_cli::livesync::{open_with_plan, SyncPlan};
 use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::{TaskDraft, WeeklyReview};
 use sunrise_id::EntityRef;
-use sunrise_tui::livesync::{open_with_plan, SyncPlan};
 use sunrise_tui::{render_review, ReviewPane, View, ViewState};
 
 /// Vault root for these tests; any fixed value works because nothing syncs.

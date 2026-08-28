@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use sunrise_cli::livesync::{open_with_plan, SyncPlan};
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::queries::{FocusPlanRow, FocusSessionRow};
 use sunrise_core::{Command, Core, Query, QueryResult};
@@ -24,7 +25,6 @@ use sunrise_domain::{
     TaskPatch, LONG_BREAK_MS, POMODORO_MS, SHORT_BREAK_MS,
 };
 use sunrise_id::EntityRef;
-use sunrise_tui::livesync::{open_with_plan, SyncPlan};
 
 /// Vault root for these tests; any fixed value works because nothing here
 /// syncs.

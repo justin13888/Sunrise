@@ -1,19 +1,19 @@
-//! The TUI's log destination.
+//! The CLI's log destination.
 //!
-//! `sunrise-tui` owns the alternate screen, so a record written to stdout or
-//! stderr lands in the middle of the user's board and Ratatui's diffing
-//! renderer never paints over it. The destination is therefore a file, and
-//! this asserts that the file destination genuinely works end to end — an
-//! `init` that silently no-ops would look identical from inside the app.
+//! A command-line client's stdout is its contract and its stderr is where it
+//! talks to the human running it; an NDJSON record in either would corrupt
+//! output a script is parsing. The destination is therefore a file, and this
+//! asserts that the file destination genuinely works end to end — an `init`
+//! that silently no-ops would look identical from inside the process.
 
 use std::path::PathBuf;
 
 use sunrise_log::{build_subscriber, LogConfig, LogFormat, LogTarget};
 
 fn temp_log(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sunrise-tui-log-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("sunrise-cli-log-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    dir.join("sunrise-tui.ndjson")
+    dir.join("sunrise-cli.ndjson")
 }
 
 fn file_subscriber(path: &std::path::Path) -> tracing::Dispatch {
@@ -30,14 +30,14 @@ fn records_reach_the_file_and_parse_as_ndjson() {
     let path = temp_log("roundtrip");
     tracing::dispatcher::with_default(&file_subscriber(&path), || {
         tracing::info!(
-            target: "sunrise_tui",
+            target: "sunrise_cli",
             ev = "ui.start",
             app_v = "0.1.0",
             wire_v = 1u64,
-            "sunrise-tui starting"
+            "sunrise-cli starting"
         );
         tracing::warn!(
-            target: "sunrise_tui",
+            target: "sunrise_cli",
             ev = "ui.keymap.invalid",
             n_ops = 2u64,
             result = "skipped",
@@ -74,7 +74,7 @@ fn the_log_directory_is_created_on_first_run() {
     let path = temp_log("mkdir");
     assert!(!path.parent().unwrap().exists());
     tracing::dispatcher::with_default(&file_subscriber(&path), || {
-        tracing::info!(target: "sunrise_tui", ev = "ui.start", "starting");
+        tracing::info!(target: "sunrise_cli", ev = "ui.start", "starting");
     });
     assert!(path.exists(), "{} was not created", path.display());
 }
@@ -84,11 +84,11 @@ fn relay_urls_are_reduced_to_a_host_before_logging() {
     // `livesync` logs `relay`, never the configured URL: a relay URL can carry
     // a query string, and logging.md §6.2 names the host as the sanctioned
     // connection-diagnostic identifier.
-    use sunrise_tui::livesync::relay_host;
+    use sunrise_cli::livesync::relay_host;
     let path = temp_log("relay");
     tracing::dispatcher::with_default(&file_subscriber(&path), || {
         tracing::info!(
-            target: "sunrise_tui",
+            target: "sunrise_cli",
             ev = "sync.session.opening",
             relay = %relay_host("wss://user:pw@relay.example:9443/sync?access_token=SENTINEL"),
             result = "ok",

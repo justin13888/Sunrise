@@ -1,14 +1,13 @@
-//! Dev/demo live-sync wiring for the TUI binary.
+//! Dev/demo live-sync wiring: environment variables into a running sync
+//! session.
 //!
-//! This module turns a handful of environment variables into a running sync
-//! session so a human can drive the two-terminal sync demo. It is **factored
-//! out of `main`** for two reasons:
+//! Factored out of `main` for two reasons:
 //!
 //! 1. The env→plan assembly ([`plan_from_env`]) is a pure function, unit-tested
 //!    without touching the process environment.
 //! 2. The open-core-and-start-sync sequence ([`open_with_plan`]) can be driven
-//!    by an integration test against a spawned relay — the headless stand-in
-//!    for the interactive TTY demo (see `tests/live_sync.rs`).
+//!    by an integration test against a spawned relay, with no process boundary
+//!    and no second device (see `tests/live_sync.rs`).
 //!
 //! # Device trust is a dev affordance
 //!

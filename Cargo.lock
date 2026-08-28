@@ -2487,6 +2487,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-cli"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "jiff",
+ "serde_json",
+ "sunrise-cbor",
+ "sunrise-core",
+ "sunrise-crypto",
+ "sunrise-domain",
+ "sunrise-id",
+ "sunrise-log",
+ "sunrise-server",
+ "sunrise-sync",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sunrise-client-core"
 version = "0.1.0"
 dependencies = [
@@ -2755,22 +2775,20 @@ dependencies = [
 name = "sunrise-tui"
 version = "0.1.0"
 dependencies = [
- "axum",
  "crossterm",
  "image",
  "insta",
  "jiff",
  "ratatui",
  "ratatui-image",
- "serde_json",
  "sunrise-cbor",
+ "sunrise-cli",
  "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
  "sunrise-log",
- "sunrise-server",
  "sunrise-sync",
  "tempfile",
  "tokio",

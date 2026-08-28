@@ -168,6 +168,7 @@ sunrise-pairing = { path = "crates/sunrise-pairing", version = "0.1.0" }
 sunrise-onboarding = { path = "crates/sunrise-onboarding", version = "0.1.0" }
 sunrise-core = { path = "crates/sunrise-core", version = "0.1.0" }
 sunrise-client-core = { path = "crates/sunrise-client-core", version = "0.1.0" }
+sunrise-cli = { path = "crates/sunrise-cli", version = "0.1.0" }
 sunrise-server = { path = "crates/sunrise-server", version = "0.1.0" }
 sunrise-tui = { path = "crates/sunrise-tui", version = "0.1.0" }
 sunrise-integrations = { path = "crates/sunrise-integrations", version = "0.1.0" }

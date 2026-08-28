@@ -1,19 +1,20 @@
-//! End-to-end tests for the non-interactive subcommands.
+//! End-to-end tests for the command-line client.
 //!
 //! These run the **real binary** against a real vault via
-//! `CARGO_BIN_EXE_sunrise-tui` (a path cargo sets for integration tests), so
-//! they cover the whole stack — arg parsing, `Core::open`, the vault lock,
-//! `SQLCipher` persistence, the capture parser, and the query path — without a
-//! terminal and without a new dependency.
+//! `CARGO_BIN_EXE_sunrise` (a path cargo sets for integration tests), so they
+//! cover the whole stack — arg parsing, `Core::open`, the vault lock,
+//! `SQLCipher` persistence, the capture parser, and the query path — in a
+//! separate process, with no terminal and no GUI.
 //!
-//! Everything the interactive TUI does goes through the same `Core` API, so a
-//! green run here is real evidence the app works, not just that it compiles.
+//! Every client goes through the same `Core` API, so a green run here is real
+//! evidence the vault works end to end, not just that it compiles. This is
+//! what keeps the core reachable and provable without a client.
 
 use std::path::Path;
 use std::process::{Command, Output};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_sunrise-tui")
+    env!("CARGO_BIN_EXE_sunrise")
 }
 
 fn run(vault: &Path, args: &[&str]) -> Output {
@@ -25,7 +26,7 @@ fn run(vault: &Path, args: &[&str]) -> Output {
         .env_remove("SUNRISE_EXPORT_CERT_FILE")
         .env_remove("SUNRISE_TRUST_CERT_FILE")
         .output()
-        .expect("run sunrise-tui")
+        .expect("run sunrise")
 }
 
 fn stdout(o: &Output) -> String {
@@ -147,7 +148,7 @@ fn help_and_version_succeed() {
     }
     let v = run(dir.path(), &["--version"]);
     assert!(v.status.success());
-    assert!(stdout(&v).contains("sunrise-tui"));
+    assert!(stdout(&v).starts_with("sunrise "));
 }
 
 /// Regression for the vault-lock brick bug, at the level a user would hit it:

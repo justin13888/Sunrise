@@ -3,7 +3,7 @@
 //! two-terminal demo.
 //!
 //! It drives exactly the code path the binary runs at startup
-//! ([`sunrise_tui::livesync::open_with_plan`]): open a core keyed by the shared
+//! ([`sunrise_cli::livesync::open_with_plan`]): open a core keyed by the shared
 //! dev root, export/trust device certs via files, and start the real
 //! `WsTransport` sync driver. Then it asserts both drivers reach `Live` and a
 //! task authored on one replica converges to the other.
@@ -11,11 +11,11 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use sunrise_cli::livesync::{open_with_plan, SyncPlan};
 use sunrise_core::{Command, Core, DomainEvent, Query, QueryResult, SyncConfig};
 use sunrise_domain::TaskDraft;
 use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_sync::SyncState;
-use sunrise_tui::livesync::{open_with_plan, SyncPlan};
 use tokio::task::JoinHandle;
 
 /// Same fixed dev root the binary uses (`main::DEV_ROOT`); both replicas share
