@@ -2487,6 +2487,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-client-core"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "sunrise-core",
+ "sunrise-domain",
+ "sunrise-id",
+]
+
+[[package]]
 name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
@@ -2754,6 +2764,7 @@ dependencies = [
  "ratatui-image",
  "serde_json",
  "sunrise-cbor",
+ "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",

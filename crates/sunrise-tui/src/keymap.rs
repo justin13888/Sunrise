@@ -1869,62 +1869,17 @@ pub fn parse_key(s: &str) -> Option<KeyCode> {
     }
 }
 
-/// Parse the subset of TOML `keys.toml` needs: comments, optional `[table]`
-/// headers, and `action = "key"` pairs.
+/// Parse the subset of TOML `keys.toml` needs.
 ///
-/// Hand-rolled on purpose: the workspace has no TOML dependency, and pulling
-/// one in to read a flat list of string pairs would be the largest dependency
-/// in this crate for the smallest grammar in it. Anything outside the subset
-/// is an [`Err`] naming the line, which the caller turns into a startup
-/// warning — a malformed file must never be silently ignored.
+/// The grammar itself is [`sunrise_client_core::config::parse_pairs`] — the
+/// saved-view file uses the same one, and one hand-rolled parser is enough.
+///
+/// # Errors
+///
+/// Returns a message naming the offending line, which the caller turns into a
+/// startup warning: a malformed file must never be silently ignored.
 pub fn parse_keys_toml(src: &str) -> Result<Vec<(String, String)>, String> {
-    let mut out = Vec::new();
-    for (n, raw) in src.lines().enumerate() {
-        let line = strip_comment(raw).trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') {
-            if line.ends_with(']') {
-                // Table headers are accepted and ignored: `[keys]` and a flat
-                // file mean the same thing here.
-                continue;
-            }
-            return Err(format!("line {}: unterminated table header", n + 1));
-        }
-        let Some((name, value)) = line.split_once('=') else {
-            return Err(format!("line {}: expected `action = \"key\"`", n + 1));
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(format!("line {}: missing action name", n + 1));
-        }
-        let value = value.trim();
-        let quoted = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
-        let Some(key) = quoted else {
-            return Err(format!("line {}: value must be a quoted string", n + 1));
-        };
-        out.push((name.to_string(), key.to_string()));
-    }
-    Ok(out)
-}
-
-/// Drop a trailing `#` comment, ignoring `#` inside a quoted value (so
-/// `capture = "#"` survives).
-fn strip_comment(line: &str) -> &str {
-    let mut quote: Option<char> = None;
-    for (i, c) in line.char_indices() {
-        match (quote, c) {
-            (Some(q), _) if c == q => quote = None,
-            (None, '"' | '\'') => quote = Some(c),
-            (None, '#') => return &line[..i],
-            _ => {}
-        }
-    }
-    line
+    sunrise_client_core::config::parse_pairs(src)
 }
 
 /// Where the user's key overrides live (`docs/07-clients/tui.md`), honouring

@@ -65,9 +65,7 @@ pub mod keymap;
 pub mod livesync;
 pub mod render;
 pub mod runtime;
-pub mod undo;
 pub mod view;
-pub mod views;
 
 pub use capture::{parse_line, preview_line, unresolved_note};
 pub use command::{parse_command, Cmd, FocusCmd, COMMANDS};
@@ -83,8 +81,9 @@ pub use render::{
     render_stream, render_today, review_rows, viewport_rows, MIN_HEIGHT, MIN_WIDTH,
 };
 pub use runtime::{apply_action, parse_defer_ms, Outcome};
+pub use sunrise_client_core::undo::{invert, NotUndoable, UndoEntry};
+pub use sunrise_client_core::views::SavedView;
 pub use sunrise_domain::parse_recurrence;
-pub use undo::{invert, NotUndoable, UndoEntry};
 pub use view::{
     energy_budget_label, fmt_duration_ms, length_label, routine_rows, rrule_summary, RoutineRow,
 };
@@ -93,7 +92,6 @@ pub use view::{
     DeleteTarget, Dep, FocusState, Prompt, ReviewPane, ReviewState, SidebarRow, StreamPane,
     StreamPicker, SyncIndicator, View, ViewState,
 };
-pub use views::SavedView;
 
 /// One-line reminder of where the command reference lives. The reference
 /// itself is a table ([`command::COMMANDS`]) rendered into the `?` overlay: it

@@ -34,6 +34,7 @@ image = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
+sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }

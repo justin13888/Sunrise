@@ -776,10 +776,10 @@ fn record_undo(state: &mut ViewState, label: &str, outcome: &Outcome) {
     }) {
         return;
     }
-    match crate::undo::invert(state, cmds) {
+    match sunrise_client_core::undo::invert(state, cmds) {
         Ok(backward) => {
             state.last_irreversible = None;
-            state.push_undo(crate::undo::UndoEntry {
+            state.push_undo(sunrise_client_core::undo::UndoEntry {
                 label: label.to_string(),
                 forward: cmds.to_vec(),
                 backward,
@@ -3077,11 +3077,11 @@ manual"
     #[test]
     fn the_undo_stack_is_bounded() {
         let mut s = inbox_state();
-        for _ in 0..(crate::undo::MAX_DEPTH + 10) {
+        for _ in 0..(sunrise_client_core::undo::MAX_DEPTH + 10) {
             s.selected = Some(0);
             let _ = press(&mut s, KeyCode::Char('x'));
         }
-        assert_eq!(s.undo.len(), crate::undo::MAX_DEPTH);
+        assert_eq!(s.undo.len(), sunrise_client_core::undo::MAX_DEPTH);
     }
 
     #[test]

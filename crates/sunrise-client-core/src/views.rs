@@ -1,12 +1,9 @@
 //! Saved views: a named view, query and context filter, recalled by name.
 //!
 //! `docs/07-clients/parity-matrix.md` marks "Saved searches / views" **MUST**
-//! on every client including the TUI, and no client had them. The vault has no
-//! entity for one either — a saved view is a *pointer at* data, not data — so
-//! this is a per-device local preference, stored beside `keys.toml` in the
-//! same hand-rolled TOML subset, for the same reason: the workspace has no
-//! TOML dependency and a flat list of string pairs does not justify the
-//! largest dependency in the crate.
+//! on every client. The vault has no entity for one — a saved view is a
+//! *pointer at* data, not data — so this is a per-device local preference,
+//! written in the [`crate::config`] TOML subset.
 //!
 //! ```toml
 //! # ~/.config/sunrise/views.toml
@@ -24,8 +21,31 @@
 //! survive the trip; a name that no longer exists is reported on recall
 //! instead of quietly filtering everything away.
 
-use crate::view::View;
 use std::path::PathBuf;
+
+/// The primary views every client presents, per
+/// `docs/07-clients/parity-matrix.md`.
+///
+/// Lives here rather than in a client because a saved view names one, and a
+/// saved view is written on one device and read on another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Today: scheduled blocks + due-today tasks + manually-pulled tasks.
+    Today,
+    /// Inbox: unassigned tasks awaiting triage.
+    Inbox,
+    /// Browse one Stream or Context.
+    Stream,
+    /// Free-text search.
+    Search,
+    /// Focus mode: one task, one session.
+    Focus,
+    /// Routines: recurring templates, with full CRUD.
+    Routines,
+    /// Review: the weekly review flow, the daily glance, the trends and the
+    /// saved-snapshot history.
+    Review,
+}
 
 /// A named view: where to be, what to search for, what to narrow to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +161,7 @@ pub fn load(path: Option<&std::path::Path>) -> (Vec<SavedView>, Vec<String>) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), Vec::new()),
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };
-    let pairs = match crate::keymap::parse_keys_toml(&src) {
+    let pairs = match crate::config::parse_pairs(&src) {
         Ok(p) => p,
         Err(e) => return (Vec::new(), vec![format!("{}: {e}", path.display())]),
     };

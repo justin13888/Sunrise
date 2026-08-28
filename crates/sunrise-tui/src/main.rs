@@ -253,7 +253,7 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
     // rewritten whenever `:save` or `:unsave` changes the set. A malformed
     // line costs that view and nothing else, exactly as for `keys.toml`.
     let (saved, view_warnings) =
-        sunrise_tui::views::load(sunrise_tui::views::config_path().as_deref());
+        sunrise_client_core::views::load(sunrise_client_core::views::config_path().as_deref());
     if !view_warnings.is_empty() {
         tracing::warn!(
             ev = "ui.keymap.invalid",
@@ -532,8 +532,8 @@ async fn run(term: &mut Tty, core: &Core, sync_on: bool) -> Result<(), Box<dyn s
                 state.status = export_stats(core, dataset, format, path).await;
             }
             Outcome::PersistViews => {
-                if let Some(path) = sunrise_tui::views::config_path() {
-                    let body = sunrise_tui::views::to_file(&state.saved_views);
+                if let Some(path) = sunrise_client_core::views::config_path() {
+                    let body = sunrise_client_core::views::to_file(&state.saved_views);
                     // A failure to persist must not lose the *in-memory* set:
                     // the views still work for this session, and the status
                     // line says why they will not survive it.

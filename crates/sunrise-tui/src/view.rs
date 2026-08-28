@@ -2,9 +2,9 @@
 
 use crate::input::InputLine;
 use crate::keymap::{Keymap, Mode};
-use crate::undo::UndoEntry;
 use jiff::Timestamp;
 use std::collections::BTreeMap;
+use sunrise_client_core::undo::UndoEntry;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::SunriseTime;
 use sunrise_domain::{
@@ -179,25 +179,9 @@ pub struct Dep {
 /// terminal — the body height of the 80x24 minimum, less the chrome.
 pub const DEFAULT_VIEWPORT_ROWS: usize = 20;
 
-/// Primary views per the parity matrix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    /// Today: scheduled blocks + due-today tasks + manually-pulled tasks.
-    Today,
-    /// Inbox: unassigned tasks awaiting triage.
-    Inbox,
-    /// Per-Stream view (target stream id is part of [`ViewState`]).
-    Stream,
-    /// Free-text search.
-    Search,
-    /// Focus mode: one-task fullscreen.
-    Focus,
-    /// Routines: recurring templates, with full CRUD.
-    Routines,
-    /// Review: the weekly review flow, the daily glance, the trends and the
-    /// saved-snapshot history.
-    Review,
-}
+/// Primary views per the parity matrix — the shared enum, so a view saved on
+/// one device names the same thing on another.
+pub use sunrise_client_core::views::View;
 
 /// Which pane of the Browse view has keyboard focus.
 ///
@@ -797,7 +781,7 @@ pub struct ViewState {
     pub activity: Option<ActivityFeed>,
     /// Saved views, loaded once at startup from `~/.config/sunrise/views.toml`
     /// and rewritten whenever the set changes.
-    pub saved_views: Vec<crate::views::SavedView>,
+    pub saved_views: Vec<sunrise_client_core::views::SavedView>,
     /// Whether the `:views` overlay is showing.
     pub show_views: bool,
     /// Latch for the `gg` chord: set by the first `g`, cleared by anything else.
@@ -828,14 +812,14 @@ pub struct ViewState {
     /// Review-view state: the weekly review, the glance, the trends, the
     /// saved snapshots. See [`ReviewState`].
     pub review: ReviewState,
-    /// Steps `u` can walk back, oldest first. See [`crate::undo`].
+    /// Steps `u` can walk back, oldest first. See [`sunrise_client_core::undo`].
     pub undo: Vec<UndoEntry>,
     /// Steps `Ctrl-r` can walk forward. Cleared by any new mutation, as in
     /// every editor: branching history is a feature nobody asked for.
     pub redo: Vec<UndoEntry>,
     /// Why the last change could not be recorded, so `u` can say "a delete
     /// cannot be undone" instead of "nothing to undo".
-    pub last_irreversible: Option<crate::undo::NotUndoable>,
+    pub last_irreversible: Option<sunrise_client_core::undo::NotUndoable>,
     /// `:` lines already run, oldest first. Walked with ↑/↓ in Command mode.
     pub cmd_history: Vec<String>,
     /// Position in [`Self::cmd_history`] while walking it; `None` means the
@@ -1589,7 +1573,7 @@ impl ViewState {
     /// Record a reversible step, dropping the oldest once the stack is full.
     pub fn push_undo(&mut self, entry: UndoEntry) {
         self.redo.clear();
-        if self.undo.len() >= crate::undo::MAX_DEPTH {
+        if self.undo.len() >= sunrise_client_core::undo::MAX_DEPTH {
             self.undo.remove(0);
         }
         self.undo.push(entry);
@@ -1598,12 +1582,12 @@ impl ViewState {
     /// The current view, query and filter, as a saved view called `name`.
     ///
     /// Contexts are captured by **name** rather than by id — see
-    /// [`crate::views`]: an `EntityRef` is vault-local, so an id saved on one
+    /// [`sunrise_client_core::views`]: an `EntityRef` is vault-local, so an id saved on one
     /// machine points at nothing on a paired one, and the filter would
     /// silently resolve to an empty set.
     #[must_use]
-    pub fn as_saved_view(&self, name: &str) -> crate::views::SavedView {
-        crate::views::SavedView {
+    pub fn as_saved_view(&self, name: &str) -> sunrise_client_core::views::SavedView {
+        sunrise_client_core::views::SavedView {
             name: name.to_string(),
             view: self.view,
             query: if self.view == View::Search {
@@ -1625,7 +1609,10 @@ impl ViewState {
     /// Returns the context names that no longer exist. They are *not* applied
     /// — a filter resolved to nothing renders a view identical to an empty
     /// vault — and the caller reports them.
-    pub fn adopt_saved_view(&mut self, saved: &crate::views::SavedView) -> Vec<String> {
+    pub fn adopt_saved_view(
+        &mut self,
+        saved: &sunrise_client_core::views::SavedView,
+    ) -> Vec<String> {
         self.switch_view(saved.view);
         self.mode = Mode::Normal;
         self.prompt = None;
@@ -1863,6 +1850,29 @@ fn wrap_prev(len: usize, selected: Option<usize>) -> Option<usize> {
 }
 
 /// Deterministic fixtures shared by the view/render test modules.
+/// What [`sunrise_client_core::undo`] reads to build an inverse command: the
+/// rows this view is already holding.
+impl sunrise_client_core::undo::EntityLookup for ViewState {
+    fn task(&self, id: EntityRef) -> Option<&Task> {
+        self.tasks
+            .iter()
+            .find(|t| t.id == id)
+            .or_else(|| self.focused_task.as_ref().filter(|t| t.id == id))
+    }
+
+    fn stream(&self, id: EntityRef) -> Option<&StreamRow> {
+        self.streams.iter().find(|s| s.id == id)
+    }
+
+    fn context(&self, id: EntityRef) -> Option<&ContextRow> {
+        self.contexts.iter().find(|c| c.id == id)
+    }
+
+    fn routine(&self, id: EntityRef) -> Option<&sunrise_domain::RoutineRow> {
+        self.routines.iter().find(|r| r.id == id)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures {
     use jiff::Timestamp;
