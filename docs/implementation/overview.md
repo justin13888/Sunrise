@@ -28,28 +28,45 @@ client*, which is the only measure that matters to a user.
 | Crate / Component | Status | Notes |
 |---|---|---|
 | Workspace + CI | ✅ live | Cargo + Bun workspace; `legacy/` archived and excluded |
-| `sunrise-id` | ✅ live | ULID + `EntityRef`, all eleven prefixes (`fcs_` added for focus sessions), client-side generation |
+| `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
-| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. Every one of those now has a client path. `Block`, `Note`, `Person`, `Attachment` are still structs with no command path |
-| `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. `Block` (5 commands, 3 op kinds, 2 queries) and `Attachment` (2 commands, 2 op kinds, `Query::TaskAttachments`) also have full command paths, reachable from macOS but not from the CLI. `Note` and `Person` are the two that genuinely have none: a struct and a dead table, with nothing in between |
+| `sunrise-storage` | 🟨 partial | Schema, op log and FTS5 are solid. `BlobStore` has two external consumers (`sunrise-core::attach`, `sunrise-server::routes::blobs`), so it is reachable from the macOS client. **2** tables are never written — `notes` and `persons`, matching the two entities with no command path. The migration story is one baseline (`0013_baseline.sql`) per [ADR-0018](../11-adr/0018-storage-baseline-reset.md), not an upgrade chain: `db.rs` refuses any vault stamped below the baseline with a typed `STORAGE_V_PRE_BASELINE`, and `refuses_every_pre_baseline_version` asserts that for every version below it |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-cli` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
 | `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
-| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` covers the one-shot subset |
-| `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is still a stub and remains unauthenticated ([#22](https://github.com/justin13888/Sunrise/issues/22)) |
-| `sunrise-integrations` | 🟨 partial | GCal read-only import is implemented: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID). iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
+| `sunrise-auth` | ✅ live | Client-side OIDC relying party: discovery, PKCE, a loopback redirect listener, token exchange and refresh, and credential storage. Consumed by `sunrise-cli` (`login` / `logout` / `whoami`) and by `sunrise-core-bindings`, so it reaches the macOS app. 35 tests |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements **8** entities behind **21** op kinds (`InnerOp`), exposed as **29** commands and **29** queries. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` covers the one-shot subset |
+| `sunrise-server` | ✅ live | Relay fanout, cursor-scoped replay backed by a durable SQLite relay log, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is **implemented**, not a stub: `init` / `PUT :upload_id/:chunk_idx` / `finalize` / `GET :blob_id` are all mounted, content-addressed and hash-verified on finalize, with a round-trip test. Its auth is stricter than `/sync`'s — bearer plus account plus device binding ([#22](https://github.com/justin13888/Sunrise/issues/22) is closed by this) |
+| `sunrise-integrations` | ⬜ deferred | Implemented and tested, with **no v1 consumer by decision**. GCal read-only import is real: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID), `IntegrationProvider` has no implementor, and `EventSyncer` is `#[cfg(test)]`-only. No crate depends on it because its only consumer would be read-only external calendar sync ([#4](https://github.com/justin13888/Sunrise/issues/4)), which is deliberately out of v1. The crate is waiting on that issue, not orphaned by accident. iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
 | `sunrise-cli` | ✅ live | The `sunrise` binary: thirteen one-shot subcommands (`capture`, `today`, `inbox`, `next`, `focus`, `done`, `streams`, `contexts`, `routines`, `search`, `review`, `export`, `sync --once`) plus the env-driven live-sync wiring. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process |
 | `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
-| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 22 commands, all 22 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync. `just macos-xcframework` generates the Swift and packages the framework |
+| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 29 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync. `just macos-xcframework` generates the Swift and packages the framework |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
+| `apps/macos` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~8.1k lines of app source, 162 Swift Testing cases and 4 XCTest UI tests (skipped by default). Built by XcodeGen from `project.yml`, linking the generated xcframework. **Not built in CI**, so nothing catches a Swift-side break. Several parity-matrix MUSTs are unmet — notifications, QR pairing, Spotlight and calendar; see the note below the table |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
+
+### Entities without a command path
+
+`Note` and `Person` are declared in `sunrise-domain`, have `not_` / `prs_` id
+prefixes and `notes` / `persons` tables in the baseline schema, and have no
+command, no op kind and no query. Nothing can write them; the two tables are
+the only ones in the schema with no writer.
+
+This collides with `docs/07-clients/parity-matrix.md`, which marks
+**Notes (rich text)** as a MUST for macOS and marks the sharing rows MUST as
+well — sharing being what `Person` exists to model. Either the matrix is
+aspirational on those rows or the implementation is missing; that is a
+scope decision, not a documentation one, so the matrix is **left unchanged
+here** pending the MUST-by-MUST audit now in progress. Recorded so the
+discrepancy is not mistaken for an oversight.
 
 ## What genuinely works end to end
 
@@ -70,7 +87,9 @@ The sync path is the strongest thing in the repository, and none of it is faked:
   scenarios (drop, corrupt, delay, partition).
 
 Also solid: the RRULE DST golden vectors (including Lord Howe's 30-minute
-offset), the v1→v10 migration upgrade tests, and the FTS5 hostile-input proptest.
+offset), the pre-baseline migration *refusal* tests (there is one migration,
+`0013_baseline.sql`; there is no upgrade chain to test), and the FTS5
+hostile-input proptest.
 
 ## Known defects
 
@@ -86,25 +105,39 @@ clamping against local time would have broken convergence — the fix stores the
 SENDER's stamp, never the receiver's post-merge reading, for exactly that
 reason.
 
+Two more entries were removed from this list because re-checking them against
+the code showed they no longer describe it. Both had outlived their fix:
+
 - **Ring eviction is silent data loss**
-  ([#19](https://github.com/justin13888/Sunrise/issues/19)). The client builds
-  real sync cursors and the server discards them, replaying the whole retained
-  ring. Past the ring bounds, or across a relay restart, a returning device
-  loses ops with no error. Offline catch-up works by accident of ring size.
+  ([#19](https://github.com/justin13888/Sunrise/issues/19)) — fixed. Subscriber
+  cursors now filter the replay instead of being discarded, a cursor past the
+  ring is served from a durable SQLite relay log, and a cursor past *that*
+  retention gets a typed `SYNC_CURSOR_GAP` rather than silence.
+  `tests/ws_cursors.rs` pins all four cases, including survival across a relay
+  restart and the "eviction of already-applied ops is not a gap" boundary.
+- **Blob storage is a stub and unauthenticated**
+  ([#22](https://github.com/justin13888/Sunrise/issues/22)) — fixed, and the
+  entry was wrong on every count by the end. The chunk route is mounted, the
+  2PC is content-addressed and hash-verified at `finalize`, and the routes
+  require bearer *plus* account *plus* device binding, which is stricter than
+  `/sync`. `Command::AttachFile` and `Query::TaskAttachments` both exist.
+
+Similarly, **"auth is checked once, at the WebSocket upgrade"** was stale and
+has been rewritten: the server also re-checks `exp` on every inbound frame,
+enforces an idle deadline, and handles a mid-session `0x12 RefreshToken`
+(`tests/ws_token_expiry.rs`). What remains true is narrower, and is the entry
+below.
+
 - **No in-session op retry**
   ([#20](https://github.com/justin13888/Sunrise/issues/20)). An unacked op waits
   for the session to end; the chaos tests script the reconnect the driver should
   perform itself, so they prove the *relay* can recover, not that the client does.
-- **Blob storage is a stub and unauthenticated**
-  ([#22](https://github.com/justin13888/Sunrise/issues/22)). The chunk-upload
-  route the `init` response points at is not mounted, so every upload 404s. It
-  also blocks attachments: `Command::AttachFile` and `Query::TaskAttachments` do
-  not exist, so no client can offer attachments at all.
-- **Auth is checked once, at the WebSocket upgrade.** A token expiring
-  mid-session does not terminate the connection. `auth.md` specifies an
-  `AUTH_TOKEN_EXPIRED` close and an out-of-band `0x12 RefreshToken` frame;
-  `MsgKind` has no such variant, so it needs a wire-protocol change
-  ([#7](https://github.com/justin13888/Sunrise/issues/7)).
+- **`/sync` does not bind the session to a device.** The upgrade verifies the
+  bearer token and scopes fanout to the verified subject, but — unlike the blob
+  routes — it does not additionally require `X-Sunrise-Device-Sig`, so any
+  device holding a valid account token can subscribe as that account
+  ([#7](https://github.com/justin13888/Sunrise/issues/7) covers the remaining
+  auth work).
 - **No delete-convergence coverage.** The e2e canonical projection filters
   `deleted = 0`, so no test proves a delete converges.
 
@@ -219,7 +252,12 @@ Recorded because each presented as something other than what it was:
 ## Test suite
 
 `cargo test --workspace --all-targets` passes **1182** tests, 0 failures, 3
-ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests spawn).
+ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests
+spawn). That figure is from the last full run, not from this revision — the
+crate-status corrections above were made by reading the source, and the suite
+was not re-run to produce them. A static count of `#[test]` / `#[tokio::test]`
+attributes currently gives 1104, which is consistent with it once the six
+`proptest!` blocks and the parameterised cases are accounted for.
 
 The number is worth more than it used to be. Earlier revisions of this file
 quoted a count that included ~50 tests over orphan crates no product path
