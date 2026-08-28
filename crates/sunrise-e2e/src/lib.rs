@@ -55,11 +55,20 @@ const HARNESS_RESYNC_INTERVAL: Duration = Duration::from_millis(200);
 /// in-process. Returns the bound address plus the serving task's handle (abort
 /// it to shut the relay down). Follows `server_health_e2e.rs`'s boot pattern.
 pub async fn spawn_relay() -> (SocketAddr, JoinHandle<()>) {
+    spawn_relay_with(ServerConfig::default(), |s| s).await
+}
+
+/// Boot the relay with the config and state tweaks a scenario needs — a tiny
+/// retained ring, a file-backed `SQLite` path to survive a restart, and so on.
+pub async fn spawn_relay_with(
+    config: ServerConfig,
+    tweak: impl FnOnce(ServerState) -> ServerState,
+) -> (SocketAddr, JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = build_router(ServerState::new(ServerConfig::default()));
+    let app = build_router(tweak(ServerState::new(config)));
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
