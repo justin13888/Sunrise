@@ -94,6 +94,18 @@ pub fn duration_clock(ms: u64) -> String {
     sunrise_domain::fmt_duration_ms(ms)
 }
 
+/// The word for an energy facet. `None` reads as "any" — the value that drops
+/// energy out of the planner's ranking rather than meaning "no energy".
+///
+/// Three words, and exported anyway. A client writing its own `switch` here
+/// would be the first place "med" quietly became "medium" in one client and
+/// not the other.
+#[uniffi::export]
+#[must_use]
+pub fn energy_label(energy: Option<sunrise_domain::Energy>) -> String {
+    sunrise_domain::energy_budget_label(energy).to_string()
+}
+
 /// One line describing a task's scheduling constraints, empty when it has
 /// none.
 ///

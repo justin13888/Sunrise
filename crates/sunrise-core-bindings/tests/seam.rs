@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
 use sunrise_core_bindings::vocab::{
-    constraint_summary, duration_clock, relative_day, short_duration, today_section,
+    constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
 };
 use sunrise_core_bindings::{
     BindingError, ChangeEvent, ChangeListener, CoreCommand, CoreQuery, CoreQueryResult, SunriseCore,
@@ -646,6 +646,15 @@ fn the_day_and_duration_words_come_from_the_domain() {
 
     assert_eq!(short_duration(5400), "1h30");
     assert_eq!(duration_clock(3_661_000), "1:01:01");
+}
+
+/// `None` is "any" — the value that drops energy from the planner's ranking —
+/// and not "none", which would read as an energy level of its own.
+#[test]
+fn an_absent_energy_facet_reads_as_any() {
+    assert_eq!(energy_label(None), "any");
+    assert_eq!(energy_label(Some(Energy::Med)), "med");
+    assert_eq!(energy_label(Some(Energy::High)), "high");
 }
 
 #[test]
