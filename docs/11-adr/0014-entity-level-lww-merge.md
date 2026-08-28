@@ -100,12 +100,30 @@ every read. It surfaced only in byte-identical convergence checks.
 
 So: **delete ops carry the entity's full state with `deleted` set**, and apply
 through the same path as the corresponding update, so the whole row is
-replaced. `DOC_SCHEMA_V = 4` is that change for `TaskDelete`, `StreamDelete`,
-`ContextDelete`, and `RoutineDelete`.
+replaced. `DOC_SCHEMA_V = 4` is that change, and it covers all six delete ops:
+`TaskDelete`, `StreamDelete`, `ContextDelete`, `RoutineDelete`, `BlockDelete`,
+and `AttachmentDelete`. No delete op carries a bare `EntityRef`, and there is
+no `tombstone_*` helper left in the engine — a delete is materialized by the
+same `update_*` / `upsert_*` call its sibling update uses.
 
-`BlockDelete` and `AttachmentDelete` still carry an `EntityRef` and retain the
-same latent defect. They are not covered by the convergence suites and have not
-been converted; doing so is the same mechanical change.
+Converting the last two changed what the fix buys, because their shapes differ:
+
+- **`BlockDelete`** has a `BlockUpdate` to lose to, so it had the full defect —
+  a delete winning against a concurrent retitle left the two replicas holding
+  different titles under the same winning stamp, permanently.
+- **`AttachmentDelete`** does not: attachment metadata is write-once, there is
+  no `AttachmentUpdate` op, and every replica therefore holds byte-identical
+  columns for a given attachment. Its exposure is the *ordering* half of the
+  same defect, which all six shared and which is easy to overlook: an id-only
+  delete could not tombstone a row that had not been created on this replica
+  yet, so a delete that overtook its own create was **silently dropped**. The
+  create then landed live, and that replica stayed out of step forever. A
+  full-state delete materializes the row itself, and the older create loses LWW
+  behind it.
+
+The ordering case also gives the blob GC something it did not have: a tombstoned
+attachment row now records the `blob_id`, `chunk_count`, and `content_hash` it
+names, even on a replica that never saw the create.
 
 ### A note on measuring this class of bug
 
@@ -130,6 +148,16 @@ The corollary for the tests
 run where the update wins passes against broken code too. Confidence comes from
 repetition, and from checking that the test still fails when the fix is
 reverted.
+
+**The better instrument is not to race at all.** `BlockDelete` and
+`AttachmentDelete` are covered by unit tests in `crates/sunrise-core/src/engine.rs`
+that drive two `Engine`s on `FakeClock`s and *choose* the stamps so the delete
+always wins, plus a delete deliberately delivered ahead of its own create. Both
+of those are properties of the merge rule, not of the scheduler, so a single
+green run is conclusive and a reverted apply path fails 100% of the time rather
+than one run in four. A racing probe is the right tool for *discovering* this
+class of bug and the wrong one for *locking it down*; where a deterministic
+interleaving can be constructed, construct it.
 
 ## Why it is nonetheless the right v1 decision
 

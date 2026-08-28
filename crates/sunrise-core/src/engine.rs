@@ -2925,9 +2925,10 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// stamps the LWW columns from the envelope. A losing op is a no-op here (it is
 /// still recorded in the op log by the caller).
 ///
-/// `*Delete` ops carry only an id (v1 full-state limitation): they can tombstone
-/// an existing row under LWW, but cannot materialize a tombstone for a row that
-/// has not yet been created on this replica (see [`crate::inner_op`] docs).
+/// `*Delete` ops are full-state like every other op: each carries its entity
+/// with `deleted` set, so a winning delete replaces the whole row and a delete
+/// that overtakes its own create still materializes the tombstone (see
+/// [`crate::inner_op`] docs and ADR-0014).
 fn materialize_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
@@ -3059,7 +3060,11 @@ fn materialize_remote(
                 insert_routine_row(tx, rt, ts_ms, lww)?;
             }
         }
-        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) => {
+        // The delete rides the same arm as create and update: it is a
+        // full-state op now, so the whole row is replaced rather than only its
+        // tombstone flag. That also makes a delete that overtakes its create
+        // land as a tombstoned row instead of vanishing.
+        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
             ensure_stream_row(tx, &b.stream_id, ts_ms, None, false, false, false)?;
             upsert_block_row(tx, b, lww)?;
             // Bindings ride along with the full-state Block op, and are written
@@ -3068,22 +3073,13 @@ fn materialize_remote(
             // moment that Task's own op lands.
             replace_block_tasks(tx, b)?;
         }
-        InnerOp::BlockDelete(_) => {
-            if present {
-                tombstone_block(tx, target.bytes(), lww)?;
-            }
-        }
-        InnerOp::AttachmentCreate(a) => {
-            // Deliberately no `ensure` of the parent task: an attachment op
-            // that overtook its task's create still lands, and the two join up
-            // when the task turns up. Nothing about the row depends on the
-            // parent existing.
+        // Create and delete share an arm for the same reason Block's do: the
+        // delete carries the attachment's full state, so it replaces the row.
+        // Deliberately no `ensure` of the parent task: an attachment op that
+        // overtook its task's create still lands, and the two join up when the
+        // task turns up. Nothing about the row depends on the parent existing.
+        InnerOp::AttachmentCreate(a) | InnerOp::AttachmentDelete(a) => {
             upsert_attachment_row(tx, a, lww)?;
-        }
-        InnerOp::AttachmentDelete(_) => {
-            if present {
-                tombstone_attachment(tx, target.bytes(), lww)?;
-            }
         }
         // Handled by the append-only branch at the top of this function; the
         // arm exists so a new append-only op cannot be added without deciding
@@ -5474,35 +5470,19 @@ impl Engine {
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
+    /// Tombstone a Block. The op carries the Block's **whole state** with
+    /// `deleted` set and goes down [`Self::emit_block`] — the same path an
+    /// update takes — so a delete that wins LWW replaces the row rather than
+    /// flipping one column on top of whatever the receiving replica held.
     fn delete_block(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Block)?;
         let now_ms = self.clock.now_ms();
-        let block = read_block(db.conn(), id.bytes())?
+        let mut block = read_block(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("block {id}")))?;
+        block.deleted = true;
+        block.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::BlockDelete(id))?;
-        let seq = self.next_seq(db, block.stream_id.bytes())?;
-        let lww = self.lww_stamp(seq);
-        let stream_bytes = *block.stream_id.bytes();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
-            tombstone_block(tx, id.bytes(), &lww)?;
-            self.ops_insert(
-                tx,
-                &op_id,
-                &stream_bytes,
-                seq,
-                lww.hlc,
-                &inner_op,
-                "block.delete",
-                "block",
-                Some(id.bytes()),
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            )?;
-            Ok(())
-        })?;
+        let seq = self.emit_block(db, &block, now_ms, &op_id, "block.delete")?;
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
@@ -5563,10 +5543,10 @@ impl Engine {
         op_id: &[u8; 16],
         inner_kind: &str,
     ) -> Result<u64, EngineError> {
-        let inner = if inner_kind == "block.create" {
-            InnerOp::BlockCreate(Box::new(block.clone()))
-        } else {
-            InnerOp::BlockUpdate(Box::new(block.clone()))
+        let inner = match inner_kind {
+            "block.create" => InnerOp::BlockCreate(Box::new(block.clone())),
+            "block.delete" => InnerOp::BlockDelete(Box::new(block.clone())),
+            _ => InnerOp::BlockUpdate(Box::new(block.clone())),
         };
         let inner_op = encode_inner_op(&inner)?;
         let seq = self.next_seq(db, block.stream_id.bytes())?;
@@ -5783,26 +5763,6 @@ fn replace_block_tasks(tx: &Transaction<'_>, b: &Block) -> rusqlite::Result<()> 
     Ok(())
 }
 
-/// Tombstone a Block under LWW. The bindings stay: a tombstoned Block still
-/// has to be able to report what it held if a later op resurrects it, and
-/// `Task.blocks` filters deleted Blocks on read.
-fn tombstone_block(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE blocks SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            lww.hlc.physical_ms as i64,
-            lww.hlc.physical_ms as i64,
-            lww.hlc.logical,
-            lww.seq as i64,
-            &lww.device[..],
-            &id[..]
-        ],
-    )?;
-    Ok(())
-}
-
 /// Read one Block, with its bindings.
 fn read_block(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Block>, EngineError> {
     let row = conn
@@ -5961,17 +5921,22 @@ impl Engine {
     fn detach_file(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Attachment)?;
         let now_ms = self.clock.now_ms();
-        let att = read_attachment(db.conn(), id.bytes())?
+        let mut att = read_attachment(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("attachment {id}")))?;
         let stream = read_task(db.conn(), att.parent.bytes())?
             .map_or_else(inbox_stream_ref, |t| t.stream_id);
+        // The op carries the attachment's whole state with `deleted` set, so a
+        // delete that wins LWW replaces the row on every replica rather than
+        // flipping one column on top of whatever that replica held.
+        att.deleted = true;
+        att.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::AttachmentDelete(id))?;
+        let inner_op = encode_inner_op(&InnerOp::AttachmentDelete(Box::new(att.clone())))?;
         let seq = self.next_seq(db, stream.bytes())?;
         let lww = self.lww_stamp(seq);
         let stream_bytes = *stream.bytes();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            tombstone_attachment(tx, id.bytes(), &lww)?;
+            upsert_attachment_row(tx, &att, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
@@ -6075,27 +6040,6 @@ fn attachment_parent_kind(parent: EntityRef) -> &'static str {
         EntityKind::Note => "note",
         _ => "task",
     }
-}
-
-fn tombstone_attachment(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    lww: &LwwStamp,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE attachments SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            lww.hlc.physical_ms as i64,
-            lww.hlc.physical_ms as i64,
-            lww.hlc.logical,
-            lww.seq as i64,
-            &lww.device[..],
-            &id[..]
-        ],
-    )?;
-    Ok(())
 }
 
 fn read_attachment(
@@ -8513,6 +8457,128 @@ mod tests {
         assert!(t.blocks.is_empty());
     }
 
+    /// The delete-wins case, forced rather than raced.
+    ///
+    /// A `BlockDelete` that beats a concurrent `BlockUpdate` has to replace the
+    /// **whole** row on the receiving replica, not just flip its tombstone. The
+    /// old id-only shape left B holding its own title under A's winning stamp,
+    /// and because both sides then carried that same stamp neither would ever
+    /// accept a correction (ADR-0014).
+    ///
+    /// The e2e probes reproduce this only when the delete happens to land last.
+    /// Here the two stamps are chosen so it always does, which is what makes a
+    /// single run conclusive — and makes reverting the fix fail every time
+    /// rather than one run in four.
+    #[test]
+    fn a_block_delete_that_wins_lww_replaces_the_whole_row() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let block = ea
+            .apply(
+                &mut dba,
+                Command::CreateBlock(block_draft(9, 1, Some("contested"))),
+            )
+            .unwrap()
+            .entity;
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.create"))
+            .unwrap();
+
+        // B renames it...
+        set_clock(&cb, T0 + 1_000);
+        eb.apply(
+            &mut dbb,
+            Command::UpdateBlock {
+                id: block,
+                patch: BlockPatch {
+                    title: Some(Some("renamed".into())),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // ...and A deletes it strictly later, so the delete wins on both sides.
+        set_clock(&ca, T0 + 2_000);
+        ea.apply(&mut dba, Command::DeleteBlock(block)).unwrap();
+
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.delete"))
+            .unwrap();
+        ea.apply_remote(&mut dba, &env_for_kind(&dbb, block.bytes(), "block.update"))
+            .unwrap();
+
+        let ra = read_block(dba.conn(), block.bytes()).unwrap().unwrap();
+        let rb = read_block(dbb.conn(), block.bytes()).unwrap().unwrap();
+        assert!(ra.deleted && rb.deleted, "both replicas tombstoned it");
+        assert_eq!(
+            ra.title, rb.title,
+            "and agree on the rest of the row, not just the tombstone"
+        );
+        assert_eq!(
+            ra.title.as_deref(),
+            Some("contested"),
+            "the deleting replica's state is what replaced it"
+        );
+        assert_eq!(
+            row_stamp(&dba, "blocks", "id", &block),
+            row_stamp(&dbb, "blocks", "id", &block),
+        );
+    }
+
+    /// A `BlockDelete` that overtakes its own `BlockCreate` materializes the
+    /// tombstone anyway. Under the old shape there was no row to tombstone, so
+    /// the delete was dropped, the create then landed live, and the replica sat
+    /// permanently out of step with the one that had deleted.
+    #[test]
+    fn a_block_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let block = ea
+            .apply(
+                &mut dba,
+                Command::CreateBlock(block_draft(9, 1, Some("Deep work"))),
+            )
+            .unwrap()
+            .entity;
+        set_clock(&ca, T0 + 1_000);
+        ea.apply(&mut dba, Command::DeleteBlock(block)).unwrap();
+
+        // Delete first, create second.
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.delete"))
+            .unwrap();
+        let rb = read_block(dbb.conn(), block.bytes())
+            .unwrap()
+            .expect("the delete materialized a row of its own");
+        assert!(rb.deleted);
+        assert_eq!(rb.title.as_deref(), Some("Deep work"));
+
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, block.bytes(), "block.create"))
+            .unwrap();
+        assert!(
+            read_block(dbb.conn(), block.bytes())
+                .unwrap()
+                .unwrap()
+                .deleted,
+            "the older create loses LWW and does not resurrect it"
+        );
+        assert_eq!(
+            row_stamp(&dba, "blocks", "id", &block),
+            row_stamp(&dbb, "blocks", "id", &block),
+        );
+    }
+
     #[test]
     fn block_commands_reject_a_non_block_id() {
         let mut db = db();
@@ -8717,6 +8783,65 @@ mod tests {
         let res = e.apply(&mut db, Command::DetachFile(att)).unwrap();
         assert_eq!(inner_op_variant(&e, &db, &res.op_id), "AttachmentDelete");
         assert!(attachments_of(&e, &db, task).is_empty());
+    }
+
+    /// Attachment metadata is write-once, so there is no `AttachmentUpdate` to
+    /// race a delete against — but the *ordering* half of the same defect is
+    /// live. A delete that overtakes its create had no row to tombstone and was
+    /// dropped; the create then landed live and the replica stayed permanently
+    /// out of step with the one that had deleted.
+    ///
+    /// Carrying the attachment's full state makes the delete self-sufficient.
+    #[test]
+    fn an_attachment_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let task = new_task(&ea, &mut dba, "File the expenses");
+        let att = ea
+            .apply(&mut dba, Command::AttachFile(attachment_draft(task)))
+            .unwrap()
+            .entity;
+        set_clock(&ca, T0 + 1_000);
+        ea.apply(&mut dba, Command::DetachFile(att)).unwrap();
+
+        // Delete first, create second.
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, att.bytes(), "attachment.delete"),
+        )
+        .unwrap();
+        let rb = read_attachment(dbb.conn(), att.bytes())
+            .unwrap()
+            .expect("the delete materialized a row of its own");
+        assert!(rb.deleted);
+        // The delete carries the metadata, so the tombstone is a real record
+        // rather than a bare id: the blob GC can still identify what it names.
+        assert_eq!(rb.filename, "receipt.pdf");
+        assert_eq!(rb.content_hash, [11u8; 32]);
+        assert_eq!(rb.parent, task);
+
+        eb.apply_remote(
+            &mut dbb,
+            &env_for_kind(&dba, att.bytes(), "attachment.create"),
+        )
+        .unwrap();
+        assert!(
+            read_attachment(dbb.conn(), att.bytes())
+                .unwrap()
+                .unwrap()
+                .deleted,
+            "the older create loses LWW and does not resurrect it"
+        );
+        assert_eq!(
+            row_stamp(&dba, "attachments", "id", &att),
+            row_stamp(&dbb, "attachments", "id", &att),
+        );
     }
 
     #[test]

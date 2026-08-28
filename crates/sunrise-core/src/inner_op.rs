@@ -23,8 +23,9 @@
 //! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
 //! not a field-level delta. This is the accepted v1 approximation of the CRDT
 //! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
-//! rather than per-field merge. `*Delete` ops carry only the target
-//! [`EntityRef`] (a tombstone marker).
+//! rather than per-field merge. `*Delete` ops are full-state too: each carries
+//! its entity with `deleted` set, never a bare id — see [`InnerOp::TaskDelete`]
+//! and ADR-0014 for why a tombstone marker does not converge.
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
@@ -82,14 +83,20 @@ pub(crate) enum InnerOp {
     BlockCreate(Box<Block>),
     /// Replace a time block's full state, bindings included.
     BlockUpdate(Box<Block>),
-    /// Tombstone a time block.
-    BlockDelete(EntityRef),
+    /// Tombstone a time block, carrying its **full state** with `deleted` set,
+    /// bindings included. Boxed to keep the enum small, as create and update
+    /// are. See [`Self::TaskDelete`] for why an id alone does not converge.
+    BlockDelete(Box<Block>),
     /// Record attachment metadata. Write-once: every field but the tombstone
     /// describes one specific run of ciphertext, so there is no update op.
     AttachmentCreate(Box<Attachment>),
-    /// Tombstone attachment metadata. The blob itself is reclaimed by the
-    /// relay's GC after the device-cursor quorum, not here.
-    AttachmentDelete(EntityRef),
+    /// Tombstone attachment metadata, carrying its **full state** with
+    /// `deleted` set. Boxed to keep the enum small, as create is. See
+    /// [`Self::TaskDelete`] for why an id alone does not converge.
+    ///
+    /// The blob itself is reclaimed by the relay's GC after the device-cursor
+    /// quorum, not here.
+    AttachmentDelete(Box<Attachment>),
     /// Open a focus session (ADR-0013's `start` op). Append-only: the record
     /// is written once and never edited.
     FocusStart(Box<FocusStart>),
@@ -176,9 +183,8 @@ impl InnerOp {
             Self::StreamCreate(s) | Self::StreamUpdate(s) | Self::StreamDelete(s) => s.id,
             Self::ContextCreate(c) | Self::ContextUpdate(c) | Self::ContextDelete(c) => c.id,
             Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) | Self::RoutineDelete(rt) => rt.id,
-            Self::BlockCreate(b) | Self::BlockUpdate(b) => b.id,
-            Self::AttachmentCreate(a) => a.id,
-            Self::BlockDelete(r) | Self::AttachmentDelete(r) => *r,
+            Self::BlockCreate(b) | Self::BlockUpdate(b) | Self::BlockDelete(b) => b.id,
+            Self::AttachmentCreate(a) | Self::AttachmentDelete(a) => a.id,
             Self::FocusStart(f) => f.id,
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,

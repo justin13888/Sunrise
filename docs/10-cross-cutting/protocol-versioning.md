@@ -50,9 +50,10 @@ Wire frames, op envelopes, recovery blobs, and storage rows all carry their resp
 One caveat the "any field is additive" rule does not cover: a new **op variant** is not a new field. `DOC_SCHEMA_V = 3` introduced the `blk_` and `att_` op families, and a build that predates them cannot decode one — it reports an invalid remote op rather than applying it wrongly. That is acceptable only pre-1.0, where no such build exists ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)); after 1.0 a new op family needs a negotiated capability bit, not a schema bump.
 
 `DOC_SCHEMA_V = 4` is a stronger case still: it changed the **shape of
-existing variants**, not just added new ones. `TaskDelete`, `StreamDelete`,
-`ContextDelete`, and `RoutineDelete` each went from carrying a bare
-`EntityRef` to carrying the full entity, so a v3 build reading a v4 delete does
+existing variants**, not just added new ones. All six delete ops —
+`TaskDelete`, `StreamDelete`, `ContextDelete`, `RoutineDelete`, `BlockDelete`,
+and `AttachmentDelete` — went from carrying a bare `EntityRef` to carrying the
+full entity, so a v3 build reading a v4 delete does
 not merely miss a field — it cannot decode the variant at all, and a v4 build
 reading a v3 delete would be missing the state it now relies on. Neither
 direction is salvageable by the additive rule, and the only reason it is
