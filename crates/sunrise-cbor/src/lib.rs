@@ -18,6 +18,7 @@
 
 pub mod canonical;
 pub mod cbor_value;
+pub mod envelope_header;
 pub mod hlc;
 pub mod magic;
 pub mod version;
@@ -26,6 +27,7 @@ pub use canonical::{
     decode_canonical, decode_lenient, encode_canonical, CanonicalEncoding, CanonicalError,
 };
 pub use cbor_value::CborValue;
+pub use envelope_header::{decode_envelope_header, EnvelopeHeader, EnvelopeHeaderError};
 pub use hlc::{Hlc, HlcError, MAX_DRIFT_MS};
 pub use magic::{decode_prefix, write_prefix, MagicError, MagicKind, MagicPrefix, MAGIC_LEN};
 pub use version::{

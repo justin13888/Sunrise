@@ -678,6 +678,35 @@ mod tests {
         assert_eq!(&plaintext, inner);
     }
 
+    /// The relay routes by `(stream_id, device_id, seq)` using a header-only
+    /// reader that links no crypto at all. If the two decoders ever disagreed
+    /// about where those ids live, the relay would filter the wrong frames —
+    /// so a real sealed envelope is checked against both here, in the crate
+    /// that owns the format.
+    #[test]
+    fn header_only_reader_agrees_with_the_full_decoder() {
+        let signing = fixed_signing();
+        let stream_key = fixed_stream_key();
+        let bytes = encode_envelope(
+            b"opaque to a relay",
+            [0x5au8; 16],
+            [0xc3u8; 16],
+            77,
+            Hlc::at(1_700_000_000_000),
+            AeadAlgId::XChaCha20Poly1305,
+            4,
+            [0xaau8; AEAD_NONCE_LEN],
+            Some(&stream_key),
+            &signing,
+        )
+        .unwrap();
+        let full = decode_envelope(&bytes).unwrap();
+        let head = sunrise_cbor::decode_envelope_header(&bytes).unwrap();
+        assert_eq!(head.stream_id, full.stream_id);
+        assert_eq!(head.device_id, full.device_id);
+        assert_eq!(head.seq, full.seq);
+    }
+
     #[test]
     fn sig_failure_rejects_before_decrypt() {
         let signing = fixed_signing();
