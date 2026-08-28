@@ -16,9 +16,12 @@
 //! that does not exist — and a capture preview must render before a vault is
 //! even unlocked on a first run.
 
-use sunrise_domain::{RRule, ScheduleConstraint, SunriseTime, TodaySection};
+use sunrise_domain::{
+    EnergyFit, InterruptionReason, RRule, ScheduleConstraint, SessionLength, SunriseTime,
+    TodaySection,
+};
 
-use crate::dto::{Constraint, Recurrence, TimeValue};
+use crate::dto::{Constraint, Recurrence, SessionRow, TimeValue};
 use crate::BindingError;
 
 /// See [`sunrise_domain::TodaySection`].
@@ -153,6 +156,82 @@ pub fn parse_recurrence(text: String) -> Result<Recurrence, BindingError> {
 #[must_use]
 pub fn recurrence_summary(rule: Recurrence) -> String {
     sunrise_domain::rrule_summary(&RRule::from(rule))
+}
+
+/// How a session is sized, in words: `one pomodoro`, `sized to estimate`,
+/// `until done`.
+///
+/// See [`sunrise_domain::length_label`] — and note that `plan_reason` already
+/// uses the same words, so a picker that worded them itself would disagree
+/// with the explanation printed on the row beside it.
+#[uniffi::export]
+#[must_use]
+pub fn session_length_label(length: SessionLength) -> String {
+    sunrise_domain::length_label(length).to_string()
+}
+
+/// How a task's energy facet scored against the session budget: `exact`,
+/// `unknown`, `under`, `over`. See [`sunrise_domain::energy_fit_label`].
+#[uniffi::export]
+#[must_use]
+pub fn energy_fit_label(fit: EnergyFit) -> String {
+    sunrise_domain::energy_fit_label(fit).to_string()
+}
+
+/// The word for an interruption reason.
+///
+/// See [`sunrise_domain::InterruptionReason::as_str`] — which is also the
+/// storage tag and the CSV column value, so a client wording these itself
+/// would put one word on a button and a different one in the export of the
+/// same tap.
+#[uniffi::export]
+#[must_use]
+pub fn interruption_label(reason: InterruptionReason) -> String {
+    reason.as_str().to_string()
+}
+
+/// A running session's numbers, as the domain derives them.
+///
+/// The core stores **no running timer**: a session is a `start` op, and every
+/// number below is derived from it and the clock each time it is asked for.
+/// That is why this is a function of `now_ms` rather than a field on
+/// [`SessionRow`] — a row read a second ago is already wrong.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SessionProgress {
+    /// Focused time: frozen once ended, derived while running.
+    pub focused_ms: u64,
+    /// `MM:SS`, widening past an hour — the live-timer form.
+    pub clock: String,
+    /// Time left against the plan; absent for an `until done` session.
+    pub remaining_ms: Option<u64>,
+    /// `remaining_ms` as a clock, when there is one.
+    pub remaining_clock: Option<String>,
+    /// Whether a planned session has run past its plan.
+    pub overran: bool,
+    /// Still running (a `start` with no `end` — a valid state).
+    pub running: bool,
+}
+
+/// What a live focus timer should show for `session` at `now_ms`.
+///
+/// See [`sunrise_domain::FocusSession`]. Every number here is one of its
+/// methods: `focused_ms`, `remaining_ms`, `overran`. A client ticking a timer
+/// on its own would have to decide what "over" means against a plan and what
+/// an open-ended session's remaining time is — two decisions the domain has
+/// already made, and the second of which is "there isn't one", not zero.
+#[uniffi::export]
+#[must_use]
+pub fn session_progress(session: SessionRow, now_ms: u64) -> SessionProgress {
+    let live = sunrise_domain::FocusSession::from(&session);
+    let remaining_ms = live.remaining_ms(now_ms);
+    SessionProgress {
+        focused_ms: live.focused_ms(now_ms),
+        clock: sunrise_domain::fmt_duration_ms(live.focused_ms(now_ms)),
+        remaining_ms,
+        remaining_clock: remaining_ms.map(sunrise_domain::fmt_duration_ms),
+        overran: live.overran(now_ms),
+        running: live.is_running(),
+    }
 }
 
 /// The synthetic Inbox stream's id.

@@ -1289,6 +1289,25 @@ impl From<&FocusStart> for SessionStart {
     }
 }
 
+impl From<&SessionStart> for FocusStart {
+    fn from(s: &SessionStart) -> Self {
+        Self {
+            id: s.id,
+            task_id: s.task_id,
+            stream_id: s.stream_id,
+            started_at: s.started_at,
+            planned_ms: s.planned_ms,
+            energy: s.energy,
+            kind: s.kind,
+            chunk: s.chunk.map(|c| Chunk {
+                index: c.index,
+                total: c.total,
+            }),
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
+}
+
 /// See [`sunrise_domain::FocusEnd`].
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SessionEnd {
@@ -1320,6 +1339,39 @@ impl From<&FocusEnd> for SessionEnd {
             actual_focused_ms: *actual_focused_ms,
             interruptions: interruptions.iter().map(InterruptionRow::from).collect(),
             completed_task: *completed_task,
+        }
+    }
+}
+
+impl From<&SessionEnd> for FocusEnd {
+    fn from(e: &SessionEnd) -> Self {
+        Self {
+            session_id: e.session_id,
+            ended_at: e.ended_at,
+            actual_focused_ms: e.actual_focused_ms,
+            interruptions: e.interruptions.iter().map(Interruption::from).collect(),
+            completed_task: e.completed_task,
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
+}
+
+impl From<&InterruptionRow> for Interruption {
+    fn from(i: &InterruptionRow) -> Self {
+        Self {
+            session_id: i.session_id,
+            at: i.at,
+            reason: i.reason,
+        }
+    }
+}
+
+impl From<&SessionRow> for FocusSession {
+    fn from(r: &SessionRow) -> Self {
+        Self {
+            start: FocusStart::from(&r.start),
+            end: r.end.as_ref().map(FocusEnd::from),
+            interruptions: r.interruptions.iter().map(Interruption::from).collect(),
         }
     }
 }
