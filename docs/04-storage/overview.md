@@ -45,7 +45,7 @@ The op envelope is encrypted (per [`../03-crypto/data-encryption-format.md`](../
 | iOS | App container `Library/Sunrise/` (excluded from iCloud, included in iOS device backup if user opts in) |
 | Android | `Context.filesDir/sunrise/<account>/` (private) |
 | Web | OPFS root + per-origin IndexedDB; same logical structure |
-| TUI | `${XDG_DATA_HOME:-~/.local/share}/sunrise/<account>/` (shared with Linux desktop client when present) |
+| CLI | `$SUNRISE_VAULT`, default `~/.sunrise/vault` |
 
 ## Multi-account
 

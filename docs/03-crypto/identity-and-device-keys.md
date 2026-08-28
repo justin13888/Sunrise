@@ -55,7 +55,7 @@ DeviceCertBody = {
     5: bstr .size 16,            ; identity_id_bytes
     6: uint,                     ; created_at (ms since epoch)
     7: tstr .size (1..64),       ; nickname (utf-8)
-    8: tstr,                     ; platform ("ios" / "android" / "macos" / "windows" / "linux" / "web" / "tui")
+    8: tstr,                     ; platform — a free-form string, not an enum ("macos15", "ios18", "linux-x86_64", …)
 }
 
 DeviceCert = {

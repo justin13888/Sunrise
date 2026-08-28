@@ -39,7 +39,7 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 ## Capture UX patterns
 
 - **Single field.** No labels, no required form fields beyond the title.
-- **Stream default.** Capture always lands in Inbox **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, TUI subcommand) **always** lands in Inbox. There is no per-device "respect current stream" preference.
+- **Stream default.** Capture always lands in Inbox **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, CLI subcommand) **always** lands in Inbox. There is no per-device "respect current stream" preference.
 - **Voice capture** on supporting platforms (iOS Siri, Android voice, watchOS). Voice goes through the same parser.
 - **Batch capture.**
   - Web/Desktop: paste of multi-line text auto-detects line-separated batch; a modal preview shows parsed items with checkboxes; user confirms.
@@ -69,7 +69,7 @@ Inbox view characteristics:
 | Android share intent | Task with attached link/file/text |
 | Android Tasker | Task with arbitrary fields |
 | Web bookmarklet / extension | Capture sheet pre-filled |
-| TUI subcommand | One-shot commit |
+| CLI subcommand | One-shot commit |
 | Email-to-Sunrise | (deferred to v2) |
 
 ## Performance constraints

@@ -45,11 +45,12 @@ Use a Block with `rrule`. UX prompts: "every weekday 9-10 → Work A standup."
 
 Calendars are a 10-year product; we use them, we don't compete with them.
 
-## TUI experience
+## CLI experience
 
-- No grid; instead, a vertical day column with hour ticks.
-- `T` (time-block mode) opens a focused day view.
-- Schedule via `s` on a task with natural-language input ("9-11 tomorrow").
+There is none. Time blocks have a command path in the core but no CLI
+subcommand, so they are reachable only from the macOS client. This section
+described the terminal client's day column, removed by
+[ADR-0019](../11-adr/0019-swiftui-macos-client.md).
 
 ## Interactions with reminders
 

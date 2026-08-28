@@ -44,7 +44,7 @@ Notes use a constrained rich text format (see [`02-domain/notes.md`](../02-domai
 
 ## Not an automation platform
 
-No if-this-then-that rules, no scripting, no cron-driven actions, no outbound webhooks. Reason: every automation system grows unbounded — triggers, conditions, actions, debugging, dry-run, loop prevention, rate limits — and most of the value is captured by recurring routines (which we *do* ship). Users who need automation can drive Sunrise from outside via the OS automation surfaces already exposed (App Intents on Apple, Tasker / App Actions on Android, the TUI / CLI on desktop).
+No if-this-then-that rules, no scripting, no cron-driven actions, no outbound webhooks. Reason: every automation system grows unbounded — triggers, conditions, actions, debugging, dry-run, loop prevention, rate limits — and most of the value is captured by recurring routines (which we *do* ship). Users who need automation can drive Sunrise from outside via the OS automation surfaces already exposed (App Intents on Apple, Tasker / App Actions on Android, the CLI on desktop).
 
 ## Not an inbound email gateway
 

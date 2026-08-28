@@ -63,7 +63,8 @@ Full-screen UI showing:
 - Android: foreground service with a persistent notification; suppresses other Sunrise notifications.
 - Desktop: on macOS, dims other windows (where supported) and hides the tray badge. On Linux/Windows, the dim is a no-op (focus mode still works; just no dim).
 - Web: requests page visibility lock where possible; exits gracefully on tab close.
-- TUI: takes over the whole pane; restores on exit.
+- CLI: `sunrise focus` starts and ends a session one-shot; there is no
+  full-screen takeover, since there is no interactive terminal client.
 
 ### Notification suppression scope
 

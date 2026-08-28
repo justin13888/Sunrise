@@ -8,7 +8,7 @@ Lightweight indicators of which of the user's other devices are online and which
 
 ## Scope (small on purpose)
 
-- Show the user "Phone is online; Laptop is online; TUI was last seen 12 minutes ago."
+- Show the user "Phone is online; Laptop is online; Desktop was last seen 12 minutes ago."
 - For shared streams with editor peers, show "Alice is viewing this stream now."
 - *Not* show typing indicators, cursor positions, or fine-grained co-presence in v1.
 

@@ -9,14 +9,14 @@ v1 ships **WebSocket only**. The wire protocol terminates TLS at the server.
 ## WebSocket
 
 - Bidirectional, low-latency, runs everywhere TLS does.
-- Used by every client surface: desktop, mobile, web, TUI.
+- Used by every client surface: macOS, CLI, and the mobile/web clients when built.
 - Ping every 30 s; close after 90 s without traffic and reconnect.
 
 **Per-platform notes:**
 
 | Platform | Library / API |
 |---|---|
-| Rust core (desktop, TUI) | `tokio-tungstenite` |
+| Rust core (macOS, CLI) | `tokio-tungstenite` |
 | iOS UI layer | `URLSessionWebSocketTask` if needed for background; otherwise core handles |
 | Android UI layer | `OkHttp` WebSocket if needed; otherwise core handles |
 | Web | Browser WebSocket |

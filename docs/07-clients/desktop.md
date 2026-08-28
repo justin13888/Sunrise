@@ -62,8 +62,8 @@ Rust source on every build, so committing them would let the two drift.
   consumer. Treat `onLagged` as "re-run every query this screen is showing".
   A bridge that implements only `onChange` shows stale data after every burst,
   silently.
-* Coalesce repaints on a 50 ms window. The TUI proved that number out; below it
-  a burst repaints per op for no visible benefit.
+* Coalesce repaints on a 50 ms window. The number was proven out on the removed
+  terminal client; below it a burst repaints per op for no visible benefit.
 * Do **not** enable `SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY`: UniFFI 0.32 does
   not emit `any`, and it produces 20 warnings in generated code. Strict
   concurrency itself is clean.

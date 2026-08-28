@@ -56,10 +56,11 @@ Mix-and-match. Free text without operators searches title + body + notes.
 - Search runs locally only; no query strings ever leave the device.
 - Logs: search history is **not** persisted by default. Recent searches are kept in-memory for the session unless the user opts in to persistent history.
 
-## TUI search
+## CLI search
 
-- `/` enters search mode.
-- Results live-update as you type (incremental query).
+- `sunrise search <query>` runs the same FTS query one-shot and prints the
+  matches. There is no interactive search mode: the terminal client that had
+  one was removed by [ADR-0019](../11-adr/0019-swiftui-macos-client.md).
 - Same operators.
 
 ## Mobile search

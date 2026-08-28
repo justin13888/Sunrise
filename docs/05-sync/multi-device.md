@@ -16,7 +16,7 @@ A user runs Sunrise on N devices. All N see the same data and converge.
        ┌───────────────┼───────────────┐
        ▼               ▼               ▼
    ┌───────┐       ┌───────┐       ┌───────┐
-   │Phone A│       │Laptop │       │  TUI  │
+   │Phone A│       │Laptop │       │  CLI  │
    └───────┘       └───────┘       └───────┘
 ```
 
@@ -47,7 +47,7 @@ On `device_revoke`:
 Some user preferences are per-device, not per-identity. Examples:
 
 - Notification preferences (each device has different OS).
-- Default keyboard shortcuts (TUI vs desktop differ).
+- Default keyboard shortcuts (per-GUI-platform conventions differ).
 - Cache size limits.
 - Local-only diagnostic logging level.
 
@@ -61,7 +61,7 @@ These live in a per-device map within the vault, in their own subdoc, not synced
 | Modern phone | >10k ops/sec | <30s for 100k ops |
 | 2018-era phone | >2k ops/sec | <2 min for 100k ops |
 | Web (V8, WASM) | >5k ops/sec | <60s for 100k ops |
-| TUI | similar to desktop | similar to desktop |
+| CLI | similar to desktop | similar to desktop |
 
 We treat any op-apply path slower than these benchmarks as a perf bug.
 
@@ -69,7 +69,7 @@ We treat any op-apply path slower than these benchmarks as a perf bug.
 
 By default, every device gets every Stream. Exceptions:
 
-- **TUI** can be configured to subscribe only to a subset of Streams (e.g. only "work").
+- **CLI** can be configured to subscribe only to a subset of Streams (e.g. only "work").
 - **Web** can be configured similarly for users who don't want their full vault in browser storage.
 - **Mobile** has a "Lite mode" that excludes Streams marked as desktop-only (e.g. an archived Stream the user keeps for reference).
 

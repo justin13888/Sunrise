@@ -11,7 +11,7 @@ Six workflows define Sunrise. Every UI surface is justified by serving at least 
 **Trigger.** Idea strikes anywhere — in bed, on a call, mid-walk, mid-SSH session.
 
 **Path.**
-1. Global hotkey (desktop), pull-down (iOS), notification action, lock-screen widget, TUI keybind, or browser keyboard shortcut.
+1. Global hotkey (macOS), pull-down (iOS), notification action, lock-screen widget, `sunrise capture` from a shell, or browser keyboard shortcut.
 2. Single-line input. Optional: `#stream`, `@context`, `!high`, `^tomorrow 9am` inline annotations.
 3. Enter commits to local DB. UI dismisses. Sync happens after.
 

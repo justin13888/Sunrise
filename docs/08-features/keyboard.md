@@ -10,31 +10,38 @@ Sunrise must be operable end-to-end with the keyboard alone on every platform th
 
 Defaults follow platform conventions; user remappable in Settings.
 
-| Action | Desktop (mac) | Desktop (Win/Linux) | Web | TUI |
-|---|---|---|---|---|
-| Quick capture (global) | `Cmd+Shift+N` | `Ctrl+Shift+N` | extension shortcut | `c` |
-| Quick capture (in-app) | `Cmd+N` | `Ctrl+N` | `n` | `c` |
-| Today | `Cmd+1` | `Ctrl+1` | `g t` | `g t` |
-| Inbox | `Cmd+2` | `Ctrl+2` | `g i` | `g i` |
-| Search | `Cmd+F` (in view), `Cmd+K` (global) | `Ctrl+F` / `Ctrl+K` | `/` | `/` |
-| Open command palette | `Cmd+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+P` | `:` |
-| New stream | `Cmd+Shift+S` | `Ctrl+Shift+S` | — | `:stream new` |
-| Mark done | `X` (when row selected) | same | same | `x` |
-| Defer | `D` | same | same | `d` |
-| Schedule | `S` | same | same | `s` |
-| Move to Stream | `M` | same | same | `m` |
-| Focus mode | `F` | same | same | `f` |
-| Up/Down in list | `↑/↓` or `j/k` | same | same | `j/k` |
-| Open detail | `Enter` or `→` | same | same | `Enter` or `l` |
-| Close detail | `Esc` or `←` | same | same | `Esc` or `h` |
-| Multi-select toggle | `Space` | same | same | `Space` |
-| Multi-select range | `Shift+↑/↓` | same | same | `V` then move |
-| Undo | `Cmd+Z` | `Ctrl+Z` | `Ctrl+Z` | `u` |
-| Redo | `Cmd+Shift+Z` | `Ctrl+Y` | `Ctrl+Y` | `Ctrl+r` |
+> **There is no TUI column.** This table carried one until
+> [ADR-0019](../11-adr/0019-swiftui-macos-client.md) removed the terminal
+> client. The `sunrise` CLI that replaced it is **not** a keyboard-driven
+> client — it is a set of one-shot subcommands (`capture`, `today`, `inbox`,
+> `next`, `focus`, `done`, …), so it has no keymap to specify. The Win/Linux
+> and Web columns are unbuilt targets: macOS is the only shipping GUI client.
+
+| Action | macOS | Desktop (Win/Linux) | Web |
+|---|---|---|---|
+| Quick capture (global) | `Cmd+Shift+N` | `Ctrl+Shift+N` | extension shortcut |
+| Quick capture (in-app) | `Cmd+N` | `Ctrl+N` | `n` |
+| Today | `Cmd+1` | `Ctrl+1` | `g t` |
+| Inbox | `Cmd+2` | `Ctrl+2` | `g i` |
+| Search | `Cmd+F` (in view), `Cmd+K` (global) | `Ctrl+F` / `Ctrl+K` | `/` |
+| Open command palette | `Cmd+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+P` |
+| New stream | `Cmd+Shift+S` | `Ctrl+Shift+S` | — |
+| Mark done | `X` (when row selected) | same | same |
+| Defer | `D` | same | same |
+| Schedule | `S` | same | same |
+| Move to Stream | `M` | same | same |
+| Focus mode | `F` | same | same |
+| Up/Down in list | `↑/↓` or `j/k` | same | same |
+| Open detail | `Enter` or `→` | same | same |
+| Close detail | `Esc` or `←` | same | same |
+| Multi-select toggle | `Space` | same | same |
+| Multi-select range | `Shift+↑/↓` | same | same |
+| Undo | `Cmd+Z` | `Ctrl+Z` | `Ctrl+Z` |
+| Redo | `Cmd+Shift+Z` | `Ctrl+Y` | `Ctrl+Y` |
 
 ## Vim mode (opt-in)
 
-Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced). Available on Desktop and Web. The TUI is vim-style by default (opt-out).
+Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced). Available on Desktop and Web.
 
 ### v1 vim-mode keymap (exhaustive)
 

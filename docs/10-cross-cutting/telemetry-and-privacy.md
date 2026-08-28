@@ -29,7 +29,7 @@ TelemetryEvent = {
   event:       tstr,             ; e.g. "app.launch", "focus.session", "sync.session"
   bucket_ms:   uint,             ; truncated to nearest day for app.launch, hour for sync.session
   count:       uint,             ; aggregated count over the bucket
-  device_class: "phone" / "tablet" / "desktop" / "tui",
+  device_class: "phone" / "tablet" / "desktop" / "cli",
   app_v:       tstr,
   os:          tstr,             ; "ios18", "linux-x86_64", ...
   schema_v:    1,

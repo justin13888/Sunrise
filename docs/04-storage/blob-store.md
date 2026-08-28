@@ -20,8 +20,12 @@ Naming by *plaintext* hash is **local-only** — it never reaches the network. T
 
 ## Chunking
 
-- Chunk size: 1 MiB (1 048 576 bytes).
-- An attachment of N bytes produces ⌈N / 1 MiB⌉ chunks.
+- Chunk size: **256 KiB (262 144 bytes)**, per `crates/sunrise-domain/src/attachment.rs` and
+  [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md).
+  This file said 1 MiB until the two were reconciled; note that **no shared
+  constant exists** — the size is written out in each place that needs it,
+  which is why they drifted apart in the first place and will again.
+- An attachment of N bytes produces ⌈N / 256 KiB⌉ chunks.
 - Chunks are streamed to/from the server independently.
 
 ## Local plaintext-hash dedup
@@ -88,7 +92,8 @@ Each chunk carries **one** hash: `BLAKE3(plaintext_chunk, 32)`, used for local d
 
 After download and decrypt, the client verifies each chunk's `BLAKE3(plaintext_chunk, 32)` against the metadata; on full assembly it verifies `blob_hash`. A mismatch triggers re-fetch from a different replica or surfaces an error.
 
-## TUI / web limitations
+## CLI / web limitations
 
-- TUI: stores blobs in the same dir; offers "save attachment to /tmp" command.
+- CLI: no attachment commands. `sunrise` is one-shot and does not fetch or
+  write blobs; attachments are reachable only from the macOS client.
 - Web: uses OPFS for chunk storage when available; falls back to per-session in-memory cache otherwise. Disclosed in onboarding.

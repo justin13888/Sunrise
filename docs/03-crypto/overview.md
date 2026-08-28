@@ -37,7 +37,7 @@ This document is the index. Each linked spec is normative for its area; **all cr
               ▼              ▼              ▼
       ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
       │ Device key  │ │ Device key  │ │ Device key  │  ← per device; bound by DeviceCert
-      │  (Phone A)  │ │ (Laptop B)  │ │   (TUI C)   │
+      │  (Phone A)  │ │ (Laptop B)  │ │  (Desk C)   │
       └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
              │               │               │
              ▼               ▼               ▼
