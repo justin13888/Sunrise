@@ -92,6 +92,10 @@ ffi_lib    := "sunrise_core_bindings"
 ffi_fw     := "SunriseCore"
 ffi_slices := "aarch64-apple-darwin"
 
+# Deployment target. Must equal `options.deploymentTarget.macOS` in
+# apps/macos/project.yml; see the note in `macos-xcframework`.
+macos_target := "26.0"
+
 # Build the Swift bindings + SunriseCore.xcframework the macOS app links
 [group('macos')]
 macos-xcframework:
@@ -102,6 +106,12 @@ macos-xcframework:
 
     # 1. One static + dynamic lib per slice. `--library` binding generation
     #    reads the .dylib, so both crate-types are load-bearing.
+    #
+    #    `MACOSX_DEPLOYMENT_TARGET` must match the app's, or every object file
+    #    in the archive draws an `ld` warning about being built for a newer
+    #    macOS than it is linked against — hundreds of them, from the C
+    #    dependencies (sqlite, zstd, aws-lc), drowning every real diagnostic.
+    export MACOSX_DEPLOYMENT_TARGET="{{macos_target}}"
     for t in {{ffi_slices}}; do cargo build -p {{ffi_crate}} --release --target "$t"; done
 
     # 2. Bindings, generated from the built library — no .udl, no build.rs.
@@ -132,6 +142,31 @@ macos-xcframework:
       -headers build/headers \
       -output "out/{{ffi_fw}}.xcframework"
     echo "out/{{ffi_fw}}.xcframework + out/swift/{{ffi_lib}}.swift"
+
+# Generate the Xcode project, build the macOS app, and run its tests.
+#
+# `xcodegen` needs the generated Swift bindings to exist before it can add them
+# to the target, so the xcframework is built first even though the project's
+# own `SunriseFFI` target would rebuild it. `.xcodeproj` is gitignored: this
+# recipe is the only supported way to get one.
+[group('macos')]
+macos-app: macos-xcframework
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd apps/macos
+    xcodegen generate --quiet
+    swiftlint lint --strict --quiet --config .swiftlint.yml
+    xcodebuild test \
+      -project Sunrise.xcodeproj \
+      -scheme Sunrise \
+      -destination 'platform=macOS,arch=arm64' \
+      -quiet \
+      CODE_SIGNING_ALLOWED=NO
+
+# Generate the Xcode project and open it. Everyday development entry point.
+[group('macos')]
+macos-open: macos-xcframework
+    cd apps/macos && xcodegen generate --quiet && open Sunrise.xcodeproj
 
 # --- Aggregates (mirror the git hooks; handy to run by hand) ---
 
