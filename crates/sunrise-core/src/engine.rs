@@ -2467,6 +2467,16 @@ impl Engine {
                     .ok_or_else(|| EngineError::NotFound(format!("block {r}")))?;
                 Ok(QueryResult::Blocks(vec![block_row(db.conn(), b)?]))
             }
+            // A single-row `Attachments`, not a variant of its own: the
+            // attachment byte path reads one row by id before it can find the
+            // blob, and inventing a second result shape for the same record
+            // would make the two reads disagree the first time one gained a
+            // field.
+            EntityKind::Attachment => {
+                let a = read_attachment(db.conn(), r.bytes())?
+                    .ok_or_else(|| EngineError::NotFound(format!("attachment {r}")))?;
+                Ok(QueryResult::Attachments(vec![a]))
+            }
             _ => Err(EngineError::Invalid(format!(
                 "EntityById not supported for kind {:?} in v1",
                 r.kind()

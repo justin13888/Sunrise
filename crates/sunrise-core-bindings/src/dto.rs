@@ -2741,6 +2741,41 @@ impl From<&Attachment> for AttachmentItem {
     }
 }
 
+impl AttachmentItem {
+    /// Back to the domain record this row was projected from.
+    ///
+    /// UniFFI has no fixed-size array, so the key crosses as `Vec<u8>` and the
+    /// two digests as hex; widening them again is *checked* rather than
+    /// assumed. The row is usually one the seam handed out moments ago, but
+    /// nothing stops a caller assembling one, and a silently truncated blob key
+    /// would surface much later as "this attachment will not open".
+    ///
+    /// `unknown` is empty: forward-compat fields are preserved in storage and
+    /// deliberately never exported (see the module docs), so a round trip
+    /// through the seam is not how a record gets written back.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::BindingError::BadFixedBytes`], naming the field.
+    pub(crate) fn to_domain(&self) -> Result<Attachment, crate::BindingError> {
+        Ok(Attachment {
+            id: self.id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            parent: self.parent,
+            filename: self.filename.clone(),
+            mime_type: self.mime_type.clone(),
+            size_bytes: self.size_bytes,
+            blob_key: fixed_bytes(&self.blob_key, "blob_key")?,
+            blob_id: from_hex(&self.blob_id, "blob_id")?,
+            chunk_count: self.chunk_count,
+            content_hash: from_hex(&self.content_hash, "content_hash")?,
+            deleted: self.deleted,
+            unknown: sunrise_domain::Unknowns::new(),
+        })
+    }
+}
+
 /// See [`sunrise_domain::AttachmentDraft`]. Every field is a fact about bytes
 /// the client already sealed and uploaded, so the client supplies it; the core
 /// fills only the id and the timestamps.

@@ -1191,3 +1191,132 @@ fn a_time_value_resolves_through_the_domain() {
     // is precisely the arithmetic a client must not attempt on its own.
     assert_eq!(ny - utc, 4 * 3_600_000);
 }
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/// The whole attachment path, from the app's side of the boundary.
+///
+/// This is the reachability claim: `Command::AttachFile` and
+/// `Query::TaskAttachments` have existed since A.3 with nothing able to
+/// produce a sealed chunk, so metadata could be written for bytes no build
+/// could store or read back. A green test on either half alone would not have
+/// caught that.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_attaches_and_reads_back_across_the_seam() {
+    let (_dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("File the tax return"),
+        })
+        .await
+        .expect("create")
+        .entity;
+
+    let bytes = b"%PDF-1.7 return".to_vec();
+    let att = core
+        .attach_file(
+            task,
+            "return.pdf".into(),
+            "application/pdf".into(),
+            bytes.clone(),
+        )
+        .await
+        .expect("attach");
+
+    assert_eq!(att.filename, "return.pdf");
+    assert_eq!(att.size_bytes, bytes.len() as u64);
+    assert_eq!(att.blob_key.len(), 32);
+    assert_eq!(att.blob_id.len(), 32, "16 bytes as lowercase hex");
+    assert!(
+        core.attachment_is_local(att.clone()).expect("locality"),
+        "the device that sealed the bytes has them"
+    );
+    assert_eq!(
+        core.attachment_bytes(att.id).await.expect("read back"),
+        bytes
+    );
+
+    let CoreQueryResult::Attachments { attachments } = core
+        .query(CoreQuery::TaskAttachments { task })
+        .await
+        .expect("list")
+    else {
+        panic!("wrong result variant");
+    };
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].id, att.id);
+}
+
+/// An empty file is refused as a typed error rather than recorded as an
+/// attachment with nothing behind it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_attachment_is_a_typed_error() {
+    let (_dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Nothing to attach"),
+        })
+        .await
+        .expect("create")
+        .entity;
+
+    assert!(matches!(
+        core.attach_file(task, "empty.txt".into(), "text/plain".into(), Vec::new())
+            .await,
+        Err(BindingError::Attachment(_))
+    ));
+}
+
+/// The one attachment failure a client renders rather than reports. Its own
+/// variant so "not downloaded" and "something went wrong" stay distinguishable
+/// on the Swift side.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attachment_whose_bytes_are_elsewhere_has_its_own_error() {
+    let (dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Attached elsewhere"),
+        })
+        .await
+        .expect("create")
+        .entity;
+    let att = core
+        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .await
+        .expect("attach");
+
+    // What a replica that synced the metadata and not the chunks looks like.
+    std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
+
+    assert!(!core.attachment_is_local(att.clone()).expect("locality"));
+    assert!(matches!(
+        core.attachment_bytes(att.id).await,
+        Err(BindingError::AttachmentNotHere { .. })
+    ));
+}
+
+/// A row whose fixed-width fields were tampered with is refused at the
+/// boundary, not passed into the vault.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_attachment_row_is_refused_at_the_boundary() {
+    let (_dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Malformed"),
+        })
+        .await
+        .expect("create")
+        .entity;
+    let mut att = core
+        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .await
+        .expect("attach");
+
+    att.blob_key.truncate(16);
+    assert!(matches!(
+        core.attachment_is_local(att),
+        Err(BindingError::BadFixedBytes { .. })
+    ));
+}

@@ -41,6 +41,7 @@
     clippy::manual_let_else
 )]
 
+pub mod attach;
 pub mod commands;
 pub mod config;
 pub mod core;
@@ -53,6 +54,7 @@ pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
 
+pub use attach::AttachError;
 pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
 pub use core::{Core, CoreError};

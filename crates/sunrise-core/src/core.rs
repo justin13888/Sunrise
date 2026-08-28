@@ -478,6 +478,27 @@ impl Core {
         self.cfg.clock.now_ms()
     }
 
+    /// Where this vault lives on disk.
+    ///
+    /// `pub(crate)` on purpose: the only caller is
+    /// [`crate::attach`], which needs the blob store rooted beside the
+    /// database. A public accessor would invite a client to open the vault
+    /// directory itself, and the single-writer guarantee is exactly what
+    /// stops that being safe.
+    pub(crate) fn vault_dir(&self) -> &std::path::Path {
+        &self.cfg.vault_dir
+    }
+
+    /// The injected randomness source.
+    ///
+    /// Attachments mint a per-blob key, and minting it from `OsRng` directly
+    /// would put a non-deterministic value in the core — which the
+    /// `clippy.toml` gate forbids and which would make an attachment test
+    /// unrepeatable.
+    pub(crate) fn rng(&self) -> &dyn crate::config::Rng {
+        self.cfg.rng.as_ref()
+    }
+
     /// Copy this vault's root key out, for handing to a device being paired.
     ///
     /// See [`crate::keychain::Keychain::export_vault_root_for_pairing`] for why

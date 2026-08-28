@@ -50,6 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use sunrise_core::{Command, Core, CoreConfig, CoreError, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
+use sunrise_id::EntityRef;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::error::RecvError;
@@ -135,6 +136,32 @@ pub enum BindingError {
         /// How many bytes it must carry.
         expected: u32,
     },
+    /// An attachment's metadata is on this device and its bytes are not.
+    ///
+    /// Its own variant rather than a `Core` message because it is the one
+    /// attachment failure that is **not** an error in the usual sense: the
+    /// vault is fine and the row is real. A client shows "not downloaded", not
+    /// "something went wrong", and it can only tell the two apart if the seam
+    /// keeps them apart.
+    #[error("attachment {id} has no bytes on this device")]
+    AttachmentNotHere {
+        /// The attachment.
+        id: String,
+    },
+    /// The attachment byte path failed for any other reason.
+    #[error("attachment: {0}")]
+    Attachment(String),
+}
+
+impl From<sunrise_core::AttachError> for BindingError {
+    fn from(e: sunrise_core::AttachError) -> Self {
+        match e {
+            sunrise_core::AttachError::BytesNotHere { id } => {
+                Self::AttachmentNotHere { id: id.to_str() }
+            }
+            other => Self::Attachment(other.to_string()),
+        }
+    }
 }
 
 impl From<sunrise_auth::LoginError> for BindingError {
@@ -339,6 +366,63 @@ impl SunriseCore {
         Ok(CapturePreview::from(
             &self.inner.capture(&text, &zone).await?,
         ))
+    }
+
+    /// Attach a file to a task: seal the bytes, store them, record the
+    /// metadata, and return the row that describes them.
+    ///
+    /// The bytes cross the seam whole rather than as a path. The core would
+    /// otherwise have to open a file the app chose, and on macOS an
+    /// app-chosen file arrives with a security scope the Rust side cannot
+    /// hold — so the app reads it and hands over what it read.
+    ///
+    /// `mime_type` is the caller's: the platform's own type database is what
+    /// knows that `.heic` is `image/heic`, and reimplementing that in the core
+    /// would be a worse answer that also had to be maintained.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] for an empty or oversized file, an unknown
+    /// parent task, or a blob store that could not be written.
+    pub async fn attach_file(
+        &self,
+        task: EntityRef,
+        filename: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    ) -> Result<dto::AttachmentItem, BindingError> {
+        let att = self
+            .inner
+            .attach_file(task, filename, mime_type, &bytes)
+            .await?;
+        Ok(dto::AttachmentItem::from(&att))
+    }
+
+    /// One attachment's plaintext, reassembled and verified.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::AttachmentNotHere`] when this device holds the metadata
+    /// but not the chunks — which is a state to render, not a failure to
+    /// report. Everything else is [`BindingError::Attachment`].
+    pub async fn attachment_bytes(&self, id: EntityRef) -> Result<Vec<u8>, BindingError> {
+        Ok(self.inner.attachment_bytes(id).await?)
+    }
+
+    /// Whether this device holds every chunk of `attachment`.
+    ///
+    /// A list of attachments needs this per row to choose between "open" and
+    /// "not downloaded", and asking by reassembling each file would read every
+    /// byte of every attachment to draw a list.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the blob store cannot be read.
+    pub fn attachment_is_local(
+        &self,
+        attachment: dto::AttachmentItem,
+    ) -> Result<bool, BindingError> {
+        Ok(self.inner.attachment_is_local(&attachment.to_domain()?)?)
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.
