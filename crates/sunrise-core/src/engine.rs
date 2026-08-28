@@ -3041,8 +3041,17 @@ fn materialize_remote(
             // create). That keeps "deleting a Context removes it from all
             // Tasks" true on every replica that sees the delete.
             purge_context_from_tasks(tx, target.bytes())?;
+            // Full-state, like every other delete: insert when this replica has
+            // not materialized the Context yet. Without the `else` the delete
+            // was dropped on arrival, the older create then landed live, and
+            // the replica sat permanently out of step with the one that
+            // deleted — the purge above ran, so the memberships were stripped
+            // while the Context itself stayed alive, which is worse than
+            // either outcome alone.
             if present {
                 update_context_row(tx, c, lww)?;
+            } else {
+                insert_context_row(tx, c, lww)?;
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
@@ -9655,6 +9664,58 @@ mod tests {
             task_context_ids(&dba, task),
             task_context_ids(&dbb, task),
             "both replicas agree"
+        );
+    }
+
+    /// A `ContextDelete` that overtakes its own `ContextCreate` materializes
+    /// the tombstone anyway.
+    ///
+    /// This was the last delete op still missing its insert-when-absent branch.
+    /// The failure was worse than a plain dropped delete: the membership purge
+    /// is keyed on the id alone and ran regardless, so B stripped the context
+    /// off its tasks and then let the older create land the Context *alive* —
+    /// a live context nothing is tagged with, on a replica whose peer has no
+    /// such context at all, and no later op to reconcile them.
+    #[test]
+    fn a_context_delete_that_overtakes_its_create_still_lands_as_a_tombstone() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let ctx = new_context(&ea, &mut dba, "errands");
+        set_clock(&ca, T0 + 1_000);
+        ea.apply(&mut dba, Command::DeleteContext(ctx)).unwrap();
+
+        // Delete first, create second.
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, ctx.bytes(), "context.delete"))
+            .unwrap();
+        let rb = read_context(dbb.conn(), ctx.bytes())
+            .unwrap()
+            .expect("the delete materialized a row of its own");
+        assert!(rb.deleted);
+        assert_eq!(rb.name, "errands", "and it carries the full state");
+
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, ctx.bytes(), "context.create"))
+            .unwrap();
+        assert!(
+            read_context(dbb.conn(), ctx.bytes())
+                .unwrap()
+                .unwrap()
+                .deleted,
+            "the older create loses LWW and does not resurrect it"
+        );
+        assert!(
+            context_rows(&eb, &dbb).is_empty(),
+            "and it stays out of the context list"
+        );
+        assert_eq!(
+            row_stamp(&dba, "contexts", "id", &ctx),
+            row_stamp(&dbb, "contexts", "id", &ctx),
+            "both replicas agree on the winning stamp"
         );
     }
 
