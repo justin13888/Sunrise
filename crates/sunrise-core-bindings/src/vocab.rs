@@ -155,6 +155,21 @@ pub fn recurrence_summary(rule: Recurrence) -> String {
     sunrise_domain::rrule_summary(&RRule::from(rule))
 }
 
+/// The synthetic Inbox stream's id.
+///
+/// `Query::StreamList` puts the Inbox first as an ordinary-looking row, and a
+/// client has to tell it apart: it cannot be renamed, recoloured or deleted,
+/// and offering those would produce a rejected command and a confused user.
+///
+/// Exported rather than hardcoded because the alternative is a client
+/// comparing against the literal all-zero id — or worse, against the string
+/// "Inbox", which is a display name and translatable.
+#[uniffi::export]
+#[must_use]
+pub fn inbox_stream_id() -> sunrise_id::EntityRef {
+    sunrise_domain::inbox_stream_ref()
+}
+
 /// An IANA zone, or UTC when the name is not one.
 fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
     jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)

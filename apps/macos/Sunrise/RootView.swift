@@ -41,28 +41,30 @@ struct VaultView: View {
     @State private var settings = AppSettings()
     @State private var account = AccountModel()
     @State private var sync = SyncStatusModel()
+    @State private var browse: BrowseModel
     @State private var list: TaskListModel
     @State private var capture: CaptureModel
-    @State private var selection: TaskListKind = .today
+    @State private var selection: Destination? = .list(.today)
     @State private var deviceID = ""
     @State private var showingSettings = false
 
     init(bridge: CoreBridge) {
         self.bridge = bridge
+        _browse = State(initialValue: BrowseModel(bridge: bridge))
         _list = State(initialValue: TaskListModel(bridge: bridge))
         _capture = State(initialValue: CaptureModel(bridge: bridge))
     }
 
     var body: some View {
         NavigationSplitView {
-            List(TaskListKind.allCases, selection: $selection) { kind in
-                Label(kind.title, systemImage: kind.symbol).tag(kind)
-            }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 240)
+            BrowseSidebar(model: browse, selection: $selection)
         } detail: {
             VStack(spacing: 0) {
                 SyncWarningBanner(presentation: sync.presentation)
-                TaskListView(model: list, capture: capture)
+                if let note = browse.undoNote {
+                    NoteBanner(text: note) { browse.dismissUndoNote() }
+                }
+                detail
             }
         }
         .toolbar {
@@ -86,7 +88,10 @@ struct VaultView: View {
                     .padding()
             }
         }
-        .onChange(of: selection) { _, kind in Task { await list.show(kind) } }
+        .onChange(of: selection) { _, destination in
+            guard case let .list(kind)? = destination else { return }
+            Task { await list.show(kind) }
+        }
         .task {
             deviceID = await bridge.deviceId()
             account.restore()
@@ -99,6 +104,20 @@ struct VaultView: View {
         .onChange(of: settings.relayURL) { Task { await startSync() } }
         .onChange(of: account.accessToken) { _, token in
             Task { await bridge.setSyncCredential(token) }
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch selection {
+        case .list:
+            TaskListView(model: list, capture: capture)
+        case .search, .focus, .routines, .review, .none:
+            ContentUnavailableView(
+                selection?.title ?? "Sunrise",
+                systemImage: selection?.symbol ?? "sun.max",
+                description: Text("Not built yet.")
+            )
         }
     }
 
@@ -120,5 +139,26 @@ struct VaultView: View {
             deviceID: deviceID,
             nowMs: await bridge.nowMs()
         )
+    }
+}
+
+/// A dismissible line of explanation. Not an error: what it reports has
+/// already happened.
+struct NoteBanner: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle")
+            Text(text).font(.callout)
+            Spacer()
+            Button("Dismiss", systemImage: "xmark", action: dismiss)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5))
     }
 }

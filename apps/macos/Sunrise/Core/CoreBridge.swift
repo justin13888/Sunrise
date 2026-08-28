@@ -53,6 +53,26 @@ actor CoreBridge {
         try await core.query(q: query)
     }
 
+    /// Submit a command **and record how to reverse it**.
+    ///
+    /// `label` is what the Undo menu item will say. The returned outcome
+    /// carries why nothing went on the stack when a command has no inverse —
+    /// a delete, most of all — and callers are expected to show that rather
+    /// than leave an Undo item that would do nothing.
+    func submitUndoable(_ command: CoreCommand, label: String) async throws -> UndoableOutcome {
+        try await core.submitUndoable(cmd: command, label: label)
+    }
+
+    /// Reverse the most recent recorded step; the label of what was undone,
+    /// or `nil` when there is nothing.
+    func undo() async throws -> String? { try await core.undo() }
+
+    /// Replay the most recently undone step.
+    func redo() async throws -> String? { try await core.redo() }
+
+    /// What the Undo and Redo menu items should say right now.
+    func undoState() -> UndoState { core.undoState() }
+
     /// Parse a capture line without writing anything. Debounce before calling:
     /// each one costs two vault reads to resolve `#stream` and `@context`.
     func previewCapture(_ text: String, timeZone: String) async throws -> CapturePreview {

@@ -1,34 +1,5 @@
 import Foundation
 
-/// Which list a view is showing.
-enum TaskListKind: Equatable, Hashable, CaseIterable, Identifiable {
-    case today
-    case inbox
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .today: "Today"
-        case .inbox: "Inbox"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .today: "sun.max"
-        case .inbox: "tray"
-        }
-    }
-
-    var emptyMessage: String {
-        switch self {
-        case .today: "Nothing is scheduled or due today."
-        case .inbox: "Your Inbox is empty."
-        }
-    }
-}
-
 /// One list of tasks, kept current.
 ///
 /// Every mutation goes to the core and comes back through the change stream;
@@ -67,11 +38,7 @@ final class TaskListModel {
         nowMs = await bridge.nowMs()
         names = await NameBook.load(from: bridge)
         do {
-            let query: CoreQuery = switch kind {
-            case .today: .today(nowMs: nowMs, contexts: [])
-            case .inbox: .inbox
-            }
-            guard case let .tasks(rows) = try await bridge.query(query) else {
+            guard case let .tasks(rows) = try await bridge.query(kind.query(nowMs: nowMs)) else {
                 tasks = []
                 groups = []
                 return
@@ -135,7 +102,16 @@ final class TaskListModel {
 
     /// Commit a parsed capture. The draft comes from `previewCapture`, so what
     /// is written is exactly what the preview showed.
+    ///
+    /// Captured into a stream list, an untagged line lands in *that* stream.
+    /// An explicit `#stream` in the line still wins: the user said where it
+    /// goes, and the list they happened to be looking at does not override
+    /// what they typed.
     func create(_ draft: TaskDraftIn) async {
+        var draft = draft
+        if case let .stream(id, _) = kind, draft.streamId == nil {
+            draft.streamId = id
+        }
         await run(.createTask(draft: draft))
     }
 

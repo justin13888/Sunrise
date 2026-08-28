@@ -10,7 +10,12 @@ struct TaskListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CaptureBar(model: capture) { draft in await model.create(draft) }
+            // A context list is the one place capture has nowhere to land: a
+            // capture writes to a stream, and there is no annotation for
+            // "give this the context I am looking at".
+            if model.kind.acceptsCapture {
+                CaptureBar(model: capture) { draft in await model.create(draft) }
+            }
 
             if let message = model.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
