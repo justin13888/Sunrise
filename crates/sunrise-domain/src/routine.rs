@@ -106,6 +106,10 @@ impl TaskTemplate {
             due_at: None,
             scheduling_constraints: Vec::new(),
             assignee: None,
+            // Routine occurrences inherit the Stream default, like any other
+            // task; a per-occurrence lead time would have to be re-set on
+            // every generated instance.
+            reminder_lead_s: None,
         }
     }
 }

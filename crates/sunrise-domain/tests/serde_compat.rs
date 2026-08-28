@@ -62,6 +62,7 @@ fn expected_task() -> Task {
     let mut blocked_by = BTreeSet::new();
     blocked_by.insert(eref(EntityKind::Task, 0x55));
     Task {
+        reminder_lead_s: None,
         id: eref(EntityKind::Task, 0x11),
         created_at: ts(T_CREATED),
         updated_at: ts(T_UPDATED),

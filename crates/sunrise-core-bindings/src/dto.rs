@@ -334,6 +334,9 @@ pub struct TaskItem {
     pub routine_id: Option<EntityRef>,
     /// Occurrence instant for routine-generated tasks.
     pub routine_occurrence: Option<jiff::Timestamp>,
+    /// Per-task reminder lead time in seconds; absent falls back to the
+    /// stream's, then to the device default.
+    pub reminder_lead_s: Option<u32>,
     /// Archived.
     pub archived: bool,
     /// Tombstoned.
@@ -364,6 +367,7 @@ impl From<&Task> for TaskItem {
             assignee,
             routine_id,
             routine_occurrence,
+            reminder_lead_s,
             archived,
             deleted,
             // Deliberately not exported: see the module docs.
@@ -394,6 +398,7 @@ impl From<&Task> for TaskItem {
             assignee: *assignee,
             routine_id: *routine_id,
             routine_occurrence: *routine_occurrence,
+            reminder_lead_s: *reminder_lead_s,
             archived: *archived,
             deleted: *deleted,
         }
@@ -425,6 +430,8 @@ pub struct TaskDraftIn {
     pub scheduling_constraints: Vec<Constraint>,
     /// Informational assignee.
     pub assignee: Option<EntityRef>,
+    /// Per-task reminder lead time in seconds.
+    pub reminder_lead_s: Option<u32>,
 }
 
 impl From<TaskDraftIn> for sunrise_domain::TaskDraft {
@@ -445,6 +452,7 @@ impl From<TaskDraftIn> for sunrise_domain::TaskDraft {
                 .map(ScheduleConstraint::from)
                 .collect(),
             assignee: d.assignee,
+            reminder_lead_s: d.reminder_lead_s,
         }
     }
 }
@@ -500,6 +508,10 @@ pub struct TaskEdit {
     pub set_assignee: Option<EntityRef>,
     /// Clear the assignee.
     pub clear_assignee: bool,
+    /// New reminder lead time, in seconds.
+    pub set_reminder_lead_s: Option<u32>,
+    /// Clear it, falling back to the stream's.
+    pub clear_reminder_lead_s: bool,
     /// Archive or unarchive.
     pub archived: Option<bool>,
 }
@@ -541,6 +553,7 @@ impl From<TaskEdit> for sunrise_domain::TaskPatch {
                 .map(|l| l.into_iter().map(ScheduleConstraint::from).collect()),
             blocked_by: e.blocked_by,
             assignee: patch_field(e.set_assignee, e.clear_assignee),
+            reminder_lead_s: patch_field(e.set_reminder_lead_s, e.clear_reminder_lead_s),
             archived: e.archived,
         }
     }
@@ -581,6 +594,8 @@ pub struct StreamItem {
     pub review_cadence: StreamReviewCadence,
     /// Context applied by default to tasks captured into this stream.
     pub default_context: Option<EntityRef>,
+    /// Default reminder lead time for this stream's tasks, in seconds.
+    pub reminder_lead_s: Option<u32>,
     /// Tombstoned.
     pub deleted: bool,
 }
@@ -602,6 +617,7 @@ impl From<&Stream> for StreamItem {
             paused_until,
             review_cadence,
             default_context,
+            reminder_lead_s,
             deleted,
             unknown: _,
         } = s;
@@ -620,6 +636,7 @@ impl From<&Stream> for StreamItem {
             paused_until: *paused_until,
             review_cadence: *review_cadence,
             default_context: *default_context,
+            reminder_lead_s: *reminder_lead_s,
             deleted: *deleted,
         }
     }
@@ -638,6 +655,8 @@ pub struct StreamDraftIn {
     pub parent_id: Option<EntityRef>,
     /// Review cadence.
     pub review_cadence: Option<StreamReviewCadence>,
+    /// Default reminder lead time for this stream's tasks, in seconds.
+    pub reminder_lead_s: Option<u32>,
 }
 
 impl From<StreamDraftIn> for sunrise_domain::StreamDraft {
@@ -648,6 +667,7 @@ impl From<StreamDraftIn> for sunrise_domain::StreamDraft {
             color: d.color,
             parent_id: d.parent_id,
             review_cadence: d.review_cadence,
+            reminder_lead_s: d.reminder_lead_s,
         }
     }
 }
@@ -677,6 +697,10 @@ pub struct StreamEdit {
     pub set_paused_until: Option<jiff::Timestamp>,
     /// Clear the pause deadline.
     pub clear_paused_until: bool,
+    /// New default reminder lead time, in seconds.
+    pub set_reminder_lead_s: Option<u32>,
+    /// Clear it, falling back to the device default.
+    pub clear_reminder_lead_s: bool,
 }
 
 impl From<StreamEdit> for sunrise_domain::StreamPatch {
@@ -690,6 +714,7 @@ impl From<StreamEdit> for sunrise_domain::StreamPatch {
             archived: e.archived,
             paused: e.paused,
             paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
+            reminder_lead_s: patch_field(e.set_reminder_lead_s, e.clear_reminder_lead_s),
         }
     }
 }

@@ -538,6 +538,7 @@ impl Engine {
         let stream = d.stream_id.unwrap_or_else(inbox_stream_ref);
         let op_id = self.fresh_op_id(now_ms);
         let task = Task {
+            reminder_lead_s: d.reminder_lead_s,
             id: task_id,
             created_at: ms_to_ts(now_ms as i64),
             updated_at: ms_to_ts(now_ms as i64),
@@ -673,6 +674,9 @@ impl Engine {
         }
         if let Some(a) = patch.assignee {
             task.assignee = a;
+        }
+        if let Some(lead) = patch.reminder_lead_s {
+            task.reminder_lead_s = lead;
         }
         if let Some(arch) = patch.archived {
             task.archived = arch;
@@ -950,6 +954,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let stream_id = self.fresh_id(EntityKind::Stream, now_ms);
         let stream = Stream {
+            reminder_lead_s: d.reminder_lead_s,
             id: stream_id,
             created_at: ms_to_ts(now_ms as i64),
             updated_at: ms_to_ts(now_ms as i64),
@@ -1019,6 +1024,9 @@ impl Engine {
         }
         if let Some(p) = patch.parent_id {
             stream.parent_id = p;
+        }
+        if let Some(lead) = patch.reminder_lead_s {
+            stream.reminder_lead_s = lead;
         }
         if let Some(rc) = patch.review_cadence {
             stream.review_cadence = rc;
@@ -3463,8 +3471,9 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
-          paused, paused_until_ms, review_cadence, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          paused, paused_until_ms, review_cadence, reminder_lead_s,
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3479,6 +3488,7 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
+            s.reminder_lead_s,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3495,7 +3505,8 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
              name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
-             review_cadence = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+             review_cadence = ?, reminder_lead_s = ?,
+             lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
             parent_blob,
@@ -3508,6 +3519,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
+            s.reminder_lead_s,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3523,7 +3535,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     let row = conn
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
-                    paused, paused_until_ms, review_cadence, icon
+                    paused, paused_until_ms, review_cadence, icon, reminder_lead_s
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -3539,6 +3551,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, Option<i64>>(8)?,
                     r.get::<_, String>(9)?,
                     r.get::<_, Option<String>>(10)?,
+                    r.get::<_, Option<u32>>(11)?,
                 ))
             },
         )
@@ -3555,6 +3568,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         paused_until_ms,
         cadence_str,
         icon,
+        reminder_lead_s,
     )) = row
     else {
         return Ok(None);
@@ -3566,6 +3580,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         EntityRef::new(EntityKind::Stream, a)
     });
     let stream = Stream {
+        reminder_lead_s,
         id: EntityRef::new(EntityKind::Stream, *id),
         created_at: ms_to_ts(created_ms.max(0)),
         updated_at: ms_to_ts(updated_ms.max(0)),
@@ -3834,10 +3849,10 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
           scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
           due_at_ms, due_at_kind, due_at_tz,
           completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
-          routine_id, routine_occurrence, archived, deleted, body,
+          routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -3862,6 +3877,7 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             t.deferred_count,
             t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
             t.routine_occurrence.map(|d| d.as_millisecond()),
+            t.reminder_lead_s,
             t.archived as i64,
             t.deleted as i64,
             body_blob,
@@ -3895,7 +3911,7 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             scheduled_at_ms = ?, scheduled_at_kind = ?, scheduled_at_tz = ?,
             due_at_ms = ?, due_at_kind = ?, due_at_tz = ?,
             completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
-            deferred_count = ?, archived = ?, deleted = ?,
+            deferred_count = ?, reminder_lead_s = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?, extra = ?,
             updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
@@ -3917,6 +3933,7 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             done_kind,
             done_tz,
             t.deferred_count,
+            t.reminder_lead_s,
             t.archived as i64,
             t.deleted as i64,
             body_blob,
@@ -4084,7 +4101,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     routine_id, routine_occurrence, created_at_ms, updated_at_ms,
                     scheduled_at_kind, scheduled_at_tz,
                     due_at_kind, due_at_tz,
-                    completed_at_kind, completed_at_tz, extra
+                    completed_at_kind, completed_at_tz, extra, reminder_lead_s
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -4114,6 +4131,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, Option<String>>(22)?,
                     r.get::<_, Option<String>>(23)?,
                     r.get::<_, Option<Vec<u8>>>(24)?,
+                    r.get::<_, Option<u32>>(25)?,
                 ))
             },
         )
@@ -4137,6 +4155,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         }
     }
     let task = Task {
+        reminder_lead_s: t.25,
         id: EntityRef::new(EntityKind::Task, *id),
         created_at: ms_to_ts(t.16.max(0)),
         updated_at: ms_to_ts(t.17.max(0)),
@@ -4204,10 +4223,10 @@ fn insert_task_row_or_ignore(
           scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
           due_at_ms, due_at_kind, due_at_tz,
           completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
-          routine_id, routine_occurrence, archived, deleted, body,
+          routine_id, routine_occurrence, reminder_lead_s, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -4230,6 +4249,7 @@ fn insert_task_row_or_ignore(
             t.deferred_count,
             t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
             t.routine_occurrence.map(|d| d.as_millisecond()),
+            t.reminder_lead_s,
             t.archived as i64,
             t.deleted as i64,
             body_blob,
@@ -4257,6 +4277,7 @@ fn build_routine_task(
 ) -> Task {
     let draft = routine.template.to_draft(Some(at));
     Task {
+        reminder_lead_s: draft.reminder_lead_s,
         id: occurrence_task_id(&routine.id, key),
         created_at: ms_to_ts(now_ms as i64),
         updated_at: ms_to_ts(now_ms as i64),
@@ -7919,6 +7940,118 @@ mod tests {
         assert!(!deleted(started_id), "started task is preserved");
     }
 
+    // ---- reminder lead time (docs/08-features/notifications.md) ----
+
+    /// A per-task lead time survives the materialized row. It used to be the
+    /// case for `Stream.icon` that it did not, and the field read back `None`
+    /// forever; this is the same shape of bug and the same shape of test.
+    #[test]
+    fn a_tasks_reminder_lead_time_survives_a_reread() {
+        let mut db = db();
+        let e = engine();
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "Standup".into(),
+                    reminder_lead_s: Some(900),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(
+            read_task(db.conn(), task.bytes())
+                .unwrap()
+                .unwrap()
+                .reminder_lead_s,
+            Some(900)
+        );
+
+        // `Some(0)` is a real answer -- "fire at the scheduled time" -- and
+        // must not read back as "not set".
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    reminder_lead_s: Some(Some(0)),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read_task(db.conn(), task.bytes())
+                .unwrap()
+                .unwrap()
+                .reminder_lead_s,
+            Some(0)
+        );
+
+        // Clearing falls back to the Stream's.
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    reminder_lead_s: Some(None),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read_task(db.conn(), task.bytes())
+                .unwrap()
+                .unwrap()
+                .reminder_lead_s,
+            None
+        );
+    }
+
+    #[test]
+    fn a_streams_reminder_lead_time_survives_a_reread() {
+        let mut db = db();
+        let e = engine();
+        let stream = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    reminder_lead_s: Some(1_800),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        assert_eq!(
+            read_stream(db.conn(), stream.bytes())
+                .unwrap()
+                .unwrap()
+                .reminder_lead_s,
+            Some(1_800)
+        );
+        e.apply(
+            &mut db,
+            Command::UpdateStream {
+                id: stream,
+                patch: StreamPatch {
+                    reminder_lead_s: Some(None),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read_stream(db.conn(), stream.bytes())
+                .unwrap()
+                .unwrap()
+                .reminder_lead_s,
+            None
+        );
+    }
+
     // ---- time blocks (docs/02-domain/time-blocks.md) ----
 
     /// A block on 2026-03-04, `hour..hour + len` floating (no zone), which is
@@ -9273,6 +9406,7 @@ mod tests {
                     color: None,
                     parent_id: None,
                     review_cadence: None,
+                    reminder_lead_s: None,
                 }),
             )
             .unwrap();

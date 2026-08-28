@@ -154,6 +154,13 @@ pub struct Stream {
     /// Optional default Context applied to new tasks captured into this Stream.
     #[serde(default)]
     pub default_context: Option<EntityRef>,
+    /// Default reminder lead time for this Stream's Tasks, in seconds.
+    ///
+    /// Middle of the lead-time hierarchy in
+    /// `docs/08-features/notifications.md`: a Task's own value wins, this is
+    /// the Stream default, and the device's global default is the floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_lead_s: Option<u32>,
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
@@ -177,6 +184,8 @@ pub struct StreamDraft {
     pub parent_id: Option<EntityRef>,
     /// Optional review cadence (defaults to `Weekly`).
     pub review_cadence: Option<StreamReviewCadence>,
+    /// Optional default reminder lead time for this Stream's Tasks, seconds.
+    pub reminder_lead_s: Option<u32>,
 }
 
 impl StreamDraft {
@@ -206,6 +215,9 @@ pub struct StreamPatch {
     pub paused: Option<bool>,
     /// New pause expiry.
     pub paused_until: Option<Option<Timestamp>>,
+    /// New default reminder lead time; `Some(None)` falls back to the device
+    /// default.
+    pub reminder_lead_s: Option<Option<u32>>,
 }
 
 impl StreamPatch {

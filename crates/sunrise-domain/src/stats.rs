@@ -532,6 +532,7 @@ mod tests {
 
     fn task(id: u8, stream: u8) -> Task {
         Task {
+            reminder_lead_s: None,
             id: eref(EntityKind::Task, id),
             created_at: ts(MON),
             updated_at: ts(MON),

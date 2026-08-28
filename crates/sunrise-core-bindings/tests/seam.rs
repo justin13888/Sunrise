@@ -49,6 +49,7 @@ fn draft(title: &str) -> TaskDraftIn {
         due_at: None,
         scheduling_constraints: Vec::new(),
         assignee: None,
+        reminder_lead_s: None,
     }
 }
 

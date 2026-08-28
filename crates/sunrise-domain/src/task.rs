@@ -147,6 +147,16 @@ pub struct Task {
     /// Occurrence date for routine-generated tasks.
     #[serde(default)]
     pub routine_occurrence: Option<Timestamp>,
+    /// How far ahead of `scheduled_at` this Task's reminder fires, in seconds.
+    ///
+    /// Top of the lead-time hierarchy in
+    /// `docs/08-features/notifications.md`: per-task, then per-Stream, then
+    /// the device's global default. `None` means "not set here", which is what
+    /// makes the fallback a hierarchy rather than three independent settings —
+    /// `Some(0)` is a real answer ("fire at the scheduled time") and must not
+    /// be confused with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder_lead_s: Option<u32>,
     /// Archived (out of default views).
     #[serde(default)]
     pub archived: bool,
@@ -187,6 +197,9 @@ pub struct TaskDraft {
     pub scheduling_constraints: Vec<ScheduleConstraint>,
     /// Optional assignee.
     pub assignee: Option<EntityRef>,
+    /// Optional per-task reminder lead time, in seconds.
+    #[serde(default)]
+    pub reminder_lead_s: Option<u32>,
 }
 
 /// Patch applied via `Command::UpdateTask`. `Some(None)` clears an optional
@@ -221,6 +234,8 @@ pub struct TaskPatch {
     pub blocked_by: Option<Vec<EntityRef>>,
     /// New assignee.
     pub assignee: Option<Option<EntityRef>>,
+    /// New reminder lead time; `Some(None)` falls back to the Stream's.
+    pub reminder_lead_s: Option<Option<u32>>,
     /// Archive or unarchive.
     pub archived: Option<bool>,
 }

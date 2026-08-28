@@ -560,6 +560,7 @@ mod tests {
 
     fn task(id: u8, stream: EntityRef, title: &str, created_ms: u64) -> Task {
         Task {
+            reminder_lead_s: None,
             id: eref(EntityKind::Task, id),
             created_at: ts(created_ms),
             updated_at: ts(created_ms),
@@ -589,6 +590,7 @@ mod tests {
 
     fn stream(id: u8, name: &str) -> Stream {
         Stream {
+            reminder_lead_s: None,
             id: eref(EntityKind::Stream, id),
             created_at: ts(MON),
             updated_at: ts(MON),

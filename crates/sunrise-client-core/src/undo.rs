@@ -231,6 +231,7 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
             .as_ref()
             .map(|_| t.blocked_by.iter().copied().collect()),
         assignee: patch.assignee.map(|_| t.assignee),
+        reminder_lead_s: patch.reminder_lead_s.map(|_| t.reminder_lead_s),
         archived: patch.archived.map(|_| t.archived),
     }
 }
@@ -299,6 +300,7 @@ mod tests {
 
     fn task(n: u8) -> Task {
         Task {
+            reminder_lead_s: None,
             id: tid(n),
             created_at: jiff::Timestamp::UNIX_EPOCH,
             updated_at: jiff::Timestamp::UNIX_EPOCH,

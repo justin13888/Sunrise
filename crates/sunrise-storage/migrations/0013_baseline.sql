@@ -114,6 +114,9 @@ CREATE TABLE streams (
     paused          INTEGER NOT NULL DEFAULT 0,
     paused_until_ms INTEGER,
     review_cadence  TEXT NOT NULL DEFAULT 'weekly',
+    -- Middle of the lead-time hierarchy: a Task's own value wins over this,
+    -- and this wins over the device's global default.
+    reminder_lead_s INTEGER,
     created_at_ms   INTEGER NOT NULL,
     updated_at_ms   INTEGER NOT NULL,
     lww_hlc_ms       INTEGER NOT NULL DEFAULT 0,
@@ -164,6 +167,10 @@ CREATE TABLE tasks (
     deferred_count         INTEGER NOT NULL DEFAULT 0,
     routine_id             BLOB,
     routine_occurrence     INTEGER,
+    -- Top of the lead-time hierarchy in docs/08-features/notifications.md.
+    -- NULL means "not set here", which is what makes the fallback a hierarchy:
+    -- 0 is a real answer ("fire at the scheduled time"), not an absence.
+    reminder_lead_s        INTEGER,
     archived               INTEGER NOT NULL DEFAULT 0,
     deleted                INTEGER NOT NULL DEFAULT 0,
     body                   BLOB,
