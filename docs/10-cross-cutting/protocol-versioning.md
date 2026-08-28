@@ -140,14 +140,25 @@ Client bits:
 
 | Bit | Name | Meaning when set |
 |---|---|---|
-| 32 | `CLI_LORO_LWW_REGISTER` | Client uses Loro LWW Register for scalar fields. |
-| 33 | `CLI_LORO_OR_SET` | Client uses Loro OR-Set semantics. |
-| 34 | `CLI_FRACTIONAL_INDEX` | Client emits fractional-index sort keys. |
+| 32 | `CLI_ENTITY_LWW` | Client resolves concurrent writes by entity-level LWW over `(hlc, device_id, seq)`. |
+| 33 | `CLI_HLC_TIMESTAMPS` | Client stamps every op with a hybrid logical clock and refuses one beyond the drift window. |
+| 34 | `CLI_FORWARD_COMPAT` | Client preserves and re-emits unknown CBOR map keys. |
 | 35 | `CLI_FTS5_PORTER_EN` | Client's FTS uses unicode61 + porter. |
 | 36 | `CLI_PRESENCE_BEACONS` | Client emits presence beacons. |
 | 37 | `CLI_DIAGNOSTIC_MODE` | Client supports diagnostic-mode log uploads. |
 
 **Required in v1.** Client MUST set 32, 33, 34, 35. Server MUST set 3. Missing required bit → session refused with `CAPABILITY_REQUIRED_MISSING`. Any other bit unset is a clean degrade.
+
+> **Bits 32–34 were redefined.** They originally asserted three Loro CRDT
+> capabilities — `CLI_LORO_LWW_REGISTER`, `CLI_LORO_OR_SET`,
+> `CLI_FRACTIONAL_INDEX`. [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)
+> replaced CRDT merge with entity-level LWW and deleted Loro, so for the whole
+> of v1 these REQUIRED bits asserted that a client implemented three things
+> nothing in the codebase does: a peer setting them was telling the truth about
+> nothing, and a peer refusing them was refused for the wrong reason. They now
+> name what v1 actually requires. The bit POSITIONS are unchanged, and the
+> redefinition is safe only because nothing ever shipped that read the old
+> meanings — a redefinition after 1.0 would be a `WIRE_PROTO_V` bump.
 
 Unknown bits set by the peer MUST be ignored (forward compatibility) and MUST NOT be echoed back in `HelloAck.capabilities`.
 

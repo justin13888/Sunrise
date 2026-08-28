@@ -27,7 +27,7 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 /// Maximum size of a decompressed payload — protects against zip-bombs.
 pub const MAX_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 
-/// Frame flags bitfield (only one bit defined in v1).
+/// Frame flags bitfield (one bit defined in v1: [`FrameFlags::ZSTD`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameFlags(u8);
 
@@ -50,14 +50,34 @@ impl FrameFlags {
         self.0
     }
 
-    /// Construct from a raw byte; returns `None` if reserved bits are set.
+    /// Construct from a raw byte, IGNORING bits this version does not define.
+    ///
+    /// This used to return `None` when a reserved bit was set, which made
+    /// adding a flag a breaking change: every existing peer would refuse every
+    /// frame from a newer one, for a bit it could safely have ignored.
+    /// `docs/10-cross-cutting/protocol-versioning.md` §6 classifies adding a
+    /// flag as a MINOR change, so a reader must tolerate it.
+    ///
+    /// The distinction from [`MsgKind::from_byte`], which still rejects, is not
+    /// inconsistency: an unknown message KIND means the payload cannot be
+    /// interpreted at all, while an unknown FLAG is metadata about a payload
+    /// that is still perfectly readable. The rule is "ignore what you can
+    /// safely ignore, refuse what you cannot".
+    ///
+    /// A flag that a future version makes load-bearing must therefore come
+    /// with a `WIRE_PROTO_V` bump, not merely a new bit.
     #[must_use]
-    pub const fn from_byte(b: u8) -> Option<Self> {
-        if b & !Self::ZSTD.0 == 0 {
-            Some(Self(b))
-        } else {
-            None
-        }
+    pub const fn from_byte(b: u8) -> Self {
+        Self(b & Self::ZSTD.0)
+    }
+
+    /// The raw byte as received, unknown bits included.
+    ///
+    /// Kept so a relay can echo a frame's flags without silently clearing a
+    /// bit it did not understand.
+    #[must_use]
+    pub const fn raw(b: u8) -> Self {
+        Self(b)
     }
 }
 
@@ -95,6 +115,11 @@ pub enum FrameError {
     #[error("unknown msg_kind: {0}")]
     UnknownMsgKind(#[from] UnknownMsgKind),
     /// Reserved flag bits were set.
+    ///
+    /// No longer produced: [`FrameFlags::from_byte`] ignores bits it does not
+    /// define rather than refusing the frame. The variant is retained because
+    /// it maps to a wire error code, and removing a code is a breaking change
+    /// per `docs/05-sync/wire-protocol.md`.
     #[error("reserved flag bits set: {0:#b}")]
     ReservedFlags(u8),
     /// Frame size exceeded the 4 MiB cap.
@@ -195,7 +220,9 @@ pub fn decode_frame(buf: &[u8]) -> Result<(FrameHeader, Vec<u8>), FrameError> {
         });
     }
     let msg_kind = MsgKind::from_byte(buf[5])?;
-    let flags = FrameFlags::from_byte(buf[6]).ok_or(FrameError::ReservedFlags(buf[6]))?;
+    // Unknown flag bits are IGNORED, not refused: adding a flag is a minor
+    // change (protocol-versioning.md §6), so a v1 reader must survive one.
+    let flags = FrameFlags::from_byte(buf[6]);
     let decompressed_len = u32::from_be_bytes([buf[7], buf[8], buf[9], buf[10]]);
     if (decompressed_len as usize) > MAX_DECOMPRESSED_BYTES {
         return Err(FrameError::DecompressBomb(decompressed_len as usize));
@@ -273,14 +300,31 @@ mod tests {
         ));
     }
 
+    /// A flag bit this version does not define must be IGNORED, not refused.
+    ///
+    /// Refusing made adding a flag a breaking change: every deployed peer
+    /// would reject every frame from a newer one over a bit it could have
+    /// safely skipped, which is exactly the "minor change" §6 says it is.
     #[test]
-    fn rejects_reserved_flags() {
+    fn unknown_flag_bits_are_ignored_not_refused() {
         let mut bytes = encode_frame(MsgKind::Ping, FrameFlags::EMPTY, b"x").unwrap();
-        bytes[6] = 0b0000_0010;
-        assert!(matches!(
-            decode_frame(&bytes),
-            Err(FrameError::ReservedFlags(_))
-        ));
+        bytes[6] = 0b1000_0010;
+        let (header, payload) = decode_frame(&bytes).expect("an unknown flag must not reject");
+        assert!(
+            !header.flags.zstd(),
+            "the defined bit is still read correctly"
+        );
+        assert_eq!(payload, b"x", "and the payload is still delivered");
+    }
+
+    /// ...while the ZSTD bit keeps working alongside an unknown one.
+    #[test]
+    fn a_known_flag_survives_an_unknown_neighbour() {
+        let mut bytes = encode_frame(MsgKind::Ping, FrameFlags::ZSTD, b"payload").unwrap();
+        bytes[6] |= 0b0100_0000;
+        let (header, payload) = decode_frame(&bytes).expect("decodes");
+        assert!(header.flags.zstd());
+        assert_eq!(payload, b"payload");
     }
 
     #[test]

@@ -15,7 +15,7 @@ Every frame begins with the protocol-versioning magic prefix per [`../10-cross-c
 2:3     kind         u8                      ; framing kind = 1 for the wire frame
 3:5     version      u16 big-endian          ; wire protocol version (1 in v1)
 5:6     msg_kind     u8                      ; the message-kind discriminator (table below)
-6:7     flags        u8                      ; bit 0 = compressed (zstd); bits 1-7 reserved (must be 0)
+6:7     flags        u8                      ; bit 0 = compressed (zstd); bits 1-7 reserved, IGNORED on read
 7:11    len_prefix   u32 big-endian          ; length of `payload` AFTER any compression
 11:N    payload      bytes                   ; deterministic CBOR (per §03.6); zstd-compressed iff flag bit 0 set
 ```
@@ -23,6 +23,17 @@ Every frame begins with the protocol-versioning magic prefix per [`../10-cross-c
 `msg_kind` is the discriminator. Payloads are canonical CBOR (deterministic per [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) §6); `sunrise_crypto::canonical_cbor` is the only encoder/decoder for wire payloads.
 
 ### Frame size limit
+
+A reader **ignores** flag bits it does not define rather than refusing the
+frame. Adding a flag is a minor change per
+[`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §6,
+and a reader that refused one would make every such addition breaking: every
+deployed peer would reject every frame from a newer one over a bit it could
+safely have skipped. An unknown message *kind* is still refused — the payload
+cannot be interpreted at all — and the difference between the two rules is the
+whole rule: ignore what you can safely ignore, refuse what you cannot. A flag a
+future version makes load-bearing therefore needs a `WIRE_PROTO_V` bump, not
+merely a new bit.
 
 Max frame: **4 MiB** at the transport (the `len_prefix` value is the on-the-wire, possibly compressed, byte count). Larger payloads are split at the application layer into multiple OpBatches; v1 has no multi-frame buffering protocol. A frame with `len_prefix > 4 MiB` is a protocol error: server closes with `PROTOCOL_FRAME_TOO_LARGE`.
 
@@ -55,8 +66,24 @@ KIND  NAME                  DIRECTION   PAYLOAD CDDL TAG
 0x0C  Ping                  C ↔ S       empty
 0x0D  Pong                  C ↔ S       empty
 0x0E  Error                 S → C       Error
-0x0F  Close                 C ↔ S       { reason: tstr, code: tstr }
+0x0F  Close                 C ↔ S       Close { code: ErrorCode, reason: tstr }
+0x12  RefreshToken          C → S       RefreshToken
 ```
+
+`0x10` and `0x11` are unassigned. `RefreshToken` takes `0x12` so the original
+v1 block `0x01..=0x0F` stays contiguous and a later addition is visibly one.
+
+`RefreshToken` presents a fresh bearer token on an **already open** session. It
+is out of band on purpose: a token expires mid-session because that is what
+tokens do, and without this frame the only remedy is to close the socket and
+renegotiate — dropping the subscription, re-running the handshake, and losing
+every op in flight. The server closes with `AUTH_TOKEN_EXPIRED` only when the
+client fails to refresh, not merely because time passed.
+
+`AUTH_TOKEN_EXPIRED` is deliberately distinguishable from `AUTH_TOKEN_INVALID`
+and `AUTH_DEVICE_REVOKED`: the first is recoverable by the client on its own,
+the other two require the user. A client that cannot tell them apart either
+re-prompts every hour or retries forever against a revoked device.
 
 Frames are capped at 4 MiB; if a payload would exceed that, the application splits into multiple OpBatches. v1 has no multi-frame protocol.
 

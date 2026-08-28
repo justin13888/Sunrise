@@ -161,6 +161,52 @@ pub struct ErrorPayload {
     pub reason: String,
 }
 
+/// `MsgKind::Close` payload: `{ reason: tstr, code: tstr }` per
+/// `docs/05-sync/wire-protocol.md`.
+///
+/// The code is a canonical [`ErrorCode`], so the reason a session ended is a
+/// value the client can branch on rather than a string it has to match. That
+/// matters for exactly one case today:
+/// [`ClosePayload::auth_token_expired`] — a close a client should answer by
+/// refreshing and reconnecting, NOT by prompting the user to sign in again.
+/// Without a distinguishable code the two are indistinguishable, and every
+/// expiry looks like a revocation.
+///
+/// Fields are ordered for canonical CBOR: `code` (4), `reason` (6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosePayload {
+    /// Canonical error code naming why the session ended.
+    pub code: ErrorCode,
+    /// Human-readable reason (diagnostic).
+    pub reason: String,
+}
+
+impl ClosePayload {
+    /// The close a server sends when a session's bearer token has expired and
+    /// the client did not refresh it in time.
+    ///
+    /// Recoverable, unlike [`ErrorCode::AuthTokenInvalid`] or
+    /// [`ErrorCode::AuthDeviceRevoked`]: the credential aged out, nothing was
+    /// withdrawn. A client that sees this refreshes and reconnects; a client
+    /// that sees the other two stops and asks the user.
+    ///
+    /// The behaviour behind this — expiry tracking and the `RefreshToken`
+    /// exchange — is wired separately (issue #7); this is the protocol surface.
+    #[must_use]
+    pub fn auth_token_expired() -> Self {
+        Self {
+            code: ErrorCode::AuthTokenExpired,
+            reason: "bearer token expired; refresh and reconnect".to_string(),
+        }
+    }
+
+    /// Whether this close is one the client should recover from on its own.
+    #[must_use]
+    pub const fn is_recoverable(&self) -> bool {
+        matches!(self.code, ErrorCode::AuthTokenExpired)
+    }
+}
+
 macro_rules! canonical_codec {
     ($ty:ty) => {
         impl $ty {
@@ -190,10 +236,37 @@ canonical_codec!(NackPayload);
 canonical_codec!(SubscribePayload);
 canonical_codec!(CaughtUpPayload);
 canonical_codec!(ErrorPayload);
+canonical_codec!(ClosePayload);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_round_trip() {
+        let c = ClosePayload::auth_token_expired();
+        let bytes = c.encode().unwrap();
+        assert_eq!(ClosePayload::decode(&bytes).unwrap(), c);
+    }
+
+    /// An expiry is recoverable; a revocation is not. A client that cannot
+    /// tell them apart either re-prompts the user every hour or keeps
+    /// retrying against a revoked device.
+    #[test]
+    fn only_an_expiry_is_recoverable() {
+        assert!(ClosePayload::auth_token_expired().is_recoverable());
+        for code in [
+            ErrorCode::AuthTokenInvalid,
+            ErrorCode::AuthDeviceRevoked,
+            ErrorCode::SyncProtocolVersionMismatch,
+        ] {
+            let c = ClosePayload {
+                code,
+                reason: String::new(),
+            };
+            assert!(!c.is_recoverable(), "{code:?} must not look recoverable");
+        }
+    }
 
     fn sample_op_batch() -> OpBatchPayload {
         OpBatchPayload {

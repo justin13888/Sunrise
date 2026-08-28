@@ -18,7 +18,12 @@
 //! 0x0D  Pong            C ↔ S
 //! 0x0E  Error           S → C
 //! 0x0F  Close           C ↔ S
+//! 0x12  RefreshToken    C → S
 //! ```
+//!
+//! `0x10` and `0x11` are deliberately unassigned; `RefreshToken` takes `0x12`
+//! so the v1 block `0x01..=0x0F` stays contiguous and a new kind is visibly a
+//! later addition rather than an edit of the original table.
 
 use thiserror::Error;
 
@@ -56,6 +61,19 @@ pub enum MsgKind {
     Error = 0x0E,
     /// `0x0F` Bidirectional: graceful close.
     Close = 0x0F,
+    /// `0x12` Client → Server: present a fresh bearer token on an ALREADY
+    /// OPEN session.
+    ///
+    /// Out of band on purpose. A token expires mid-session — that is what
+    /// tokens do — and without this frame the only remedy is to close the
+    /// socket and renegotiate, which drops the subscription, re-runs the
+    /// handshake, and loses every op in flight. With it, the server closes
+    /// with [`ErrorCode::AuthTokenExpired`] only when the client fails to
+    /// refresh, not merely because time passed.
+    ///
+    /// This commit adds the protocol surface; the behaviour behind it is
+    /// wired separately (issue #7).
+    RefreshToken = 0x12,
 }
 
 /// Error from [`MsgKind::from_byte`].
@@ -88,6 +106,7 @@ impl MsgKind {
             0x0D => Ok(Self::Pong),
             0x0E => Ok(Self::Error),
             0x0F => Ok(Self::Close),
+            0x12 => Ok(Self::RefreshToken),
             other => Err(UnknownMsgKind(other)),
         }
     }
@@ -115,6 +134,7 @@ mod tests {
             MsgKind::Pong,
             MsgKind::Error,
             MsgKind::Close,
+            MsgKind::RefreshToken,
         ];
         for k in all {
             assert_eq!(MsgKind::from_byte(k.as_byte()).unwrap(), k);
@@ -124,7 +144,20 @@ mod tests {
     #[test]
     fn unknown_kind_rejected() {
         assert_eq!(MsgKind::from_byte(0x00), Err(UnknownMsgKind(0x00)));
+        // 0x10 and 0x11 are unassigned and stay that way.
         assert_eq!(MsgKind::from_byte(0x10), Err(UnknownMsgKind(0x10)));
+        assert_eq!(MsgKind::from_byte(0x11), Err(UnknownMsgKind(0x11)));
+        assert_eq!(MsgKind::from_byte(0x13), Err(UnknownMsgKind(0x13)));
         assert_eq!(MsgKind::from_byte(0xff), Err(UnknownMsgKind(0xff)));
+    }
+
+    /// A message KIND is not a flag: an unrecognised one means the frame's
+    /// payload cannot be interpreted at all, so it is refused rather than
+    /// skipped. That is the opposite of the rule for `FrameFlags`, and the
+    /// difference is deliberate — see `frame.rs`.
+    #[test]
+    fn refresh_token_is_a_distinct_kind() {
+        assert_eq!(MsgKind::RefreshToken.as_byte(), 0x12);
+        assert_ne!(MsgKind::RefreshToken, MsgKind::Hello);
     }
 }

@@ -51,12 +51,25 @@ pub enum Capability {
     /// `7` Server accepts opt-in diagnostic bundles.
     SrvDiagnosticUpload,
     // --- client bits (32..64) ---
-    /// `32` Client uses Loro LWW Register for scalar fields (REQUIRED).
-    CliLoroLwwRegister,
-    /// `33` Client uses Loro OR-Set semantics (REQUIRED).
-    CliLoroOrSet,
-    /// `34` Client emits fractional-index sort keys (REQUIRED).
-    CliFractionalIndex,
+    //
+    // Bits 32, 33 and 34 originally asserted three Loro CRDT capabilities:
+    // `CliLoroLwwRegister`, `CliLoroOrSet` and `CliFractionalIndex`. ADR-0014
+    // replaced CRDT merge with entity-level LWW and deleted Loro, so for the
+    // whole of v1 these REQUIRED bits asserted that a client implemented three
+    // things nothing in the codebase does. A peer setting them was telling the
+    // truth about nothing; a peer refusing them was refused for the wrong
+    // reason. They are redefined here to what v1 actually requires of a client,
+    // and the redefinition is safe precisely because nothing ever shipped that
+    // read the old meanings.
+    /// `32` Client resolves concurrent writes by entity-level LWW over
+    /// `(hlc, device_id, seq)` (REQUIRED). ADR-0014, ADR-0016.
+    CliEntityLww,
+    /// `33` Client stamps every op with a hybrid logical clock and refuses one
+    /// beyond the drift window (REQUIRED). ADR-0016.
+    CliHlcTimestamps,
+    /// `34` Client preserves and re-emits unknown CBOR map keys (REQUIRED).
+    /// protocol-versioning.md §7.
+    CliForwardCompat,
     /// `35` Client uses unicode61 + porter FTS5 tokenizer (REQUIRED).
     CliFts5PorterEn,
     /// `36` Client emits presence beacons.
@@ -78,9 +91,9 @@ impl Capability {
             Self::SrvIntegrationGcal => 5,
             Self::SrvBillingStripe => 6,
             Self::SrvDiagnosticUpload => 7,
-            Self::CliLoroLwwRegister => 32,
-            Self::CliLoroOrSet => 33,
-            Self::CliFractionalIndex => 34,
+            Self::CliEntityLww => 32,
+            Self::CliHlcTimestamps => 33,
+            Self::CliForwardCompat => 34,
             Self::CliFts5PorterEn => 35,
             Self::CliPresenceBeacons => 36,
             Self::CliDiagnosticMode => 37,
@@ -88,12 +101,16 @@ impl Capability {
     }
 }
 
-/// Required client bits per spec §5: 32 (`CliLoroLwwRegister`),
-/// 33 (`CliLoroOrSet`), 34 (`CliFractionalIndex`), 35 (`CliFts5PorterEn`).
+/// Required client bits: 32 (`CliEntityLww`), 33 (`CliHlcTimestamps`),
+/// 34 (`CliForwardCompat`), 35 (`CliFts5PorterEn`).
+///
+/// Each one is a property a peer must actually hold for sync to be correct
+/// rather than merely quiet: agree on the merge rule, agree on the ordering
+/// key, and do not destroy fields you cannot read.
 pub const REQUIRED_CLIENT_BITS: CapabilityBits = CapabilityBits::EMPTY
-    .with(Capability::CliLoroLwwRegister)
-    .with(Capability::CliLoroOrSet)
-    .with(Capability::CliFractionalIndex)
+    .with(Capability::CliEntityLww)
+    .with(Capability::CliHlcTimestamps)
+    .with(Capability::CliForwardCompat)
     .with(Capability::CliFts5PorterEn);
 
 /// Required server bits: 3 (`SrvBlobPresign`).
@@ -106,10 +123,21 @@ mod tests {
 
     #[test]
     fn required_client_bits_set() {
-        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliLoroLwwRegister));
-        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliLoroOrSet));
-        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliFractionalIndex));
+        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliEntityLww));
+        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliHlcTimestamps));
+        assert!(REQUIRED_CLIENT_BITS.has(Capability::CliForwardCompat));
         assert!(REQUIRED_CLIENT_BITS.has(Capability::CliFts5PorterEn));
+    }
+
+    /// The bit POSITIONS are unchanged — only their meanings are. Pinning them
+    /// keeps the redefinition from turning into a silent renumbering, which
+    /// would be a genuine wire break rather than a documentation fix.
+    #[test]
+    fn the_redefined_client_bits_keep_their_positions() {
+        assert_eq!(Capability::CliEntityLww.bit(), 32);
+        assert_eq!(Capability::CliHlcTimestamps.bit(), 33);
+        assert_eq!(Capability::CliForwardCompat.bit(), 34);
+        assert_eq!(Capability::CliFts5PorterEn.bit(), 35);
     }
 
     #[test]
@@ -120,11 +148,11 @@ mod tests {
     #[test]
     fn intersection_works() {
         let a = CapabilityBits::EMPTY
-            .with(Capability::CliLoroLwwRegister)
-            .with(Capability::CliLoroOrSet);
-        let b = CapabilityBits::EMPTY.with(Capability::CliLoroLwwRegister);
+            .with(Capability::CliEntityLww)
+            .with(Capability::CliHlcTimestamps);
+        let b = CapabilityBits::EMPTY.with(Capability::CliEntityLww);
         let i = a.intersection(b);
-        assert!(i.has(Capability::CliLoroLwwRegister));
-        assert!(!i.has(Capability::CliLoroOrSet));
+        assert!(i.has(Capability::CliEntityLww));
+        assert!(!i.has(Capability::CliHlcTimestamps));
     }
 }

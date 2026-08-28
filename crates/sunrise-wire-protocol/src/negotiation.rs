@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(ack.wire_proto, 1);
         assert_eq!(ack.crypto_suite, 1);
         assert_eq!(ack.doc_schema_floor, 1);
-        assert!(CapabilityBits(ack.capabilities).has(Capability::CliLoroLwwRegister));
+        assert!(CapabilityBits(ack.capabilities).has(Capability::CliEntityLww));
         assert!(CapabilityBits(ack.capabilities).has(Capability::SrvBlobPresign));
     }
 
