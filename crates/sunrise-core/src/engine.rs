@@ -504,8 +504,8 @@ impl Engine {
             applied = true;
             // f. LWW materialization.
             materialize_remote(tx, &inner, &lww)?;
-            // g. Advance the sync cursor.
-            upsert_sync_cursor(tx, &env.stream_id, &env.device_id, env.seq)?;
+            // g. Advance the sync cursor to the end of the contiguous prefix.
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
             Ok(())
         })?;
 
@@ -2699,6 +2699,12 @@ impl Engine {
         // Same-transaction outbox enqueue: the pending marker commits with the op.
         Outbox::enqueue(tx, op_id, stream_id, ts_ms)
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        // A device has certainly applied its own ops, so its own cursor belongs
+        // in `sync_cursors` alongside every peer's. Without it the Subscribe
+        // frame claims nothing about this device, and the relay — which filters
+        // replay by those cursors — hands the device its entire own history
+        // back on every reconnect for it to re-dedupe.
+        upsert_sync_cursor(tx, stream_id, &device_id)?;
         // Forward-compat: record the wrapped Stream key (idempotent).
         self.keychain
             .persist_stream_key(tx, stream_id, self.rng.as_ref(), ts_ms)?;
@@ -2765,19 +2771,49 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
     out
 }
 
-/// Advance `sync_cursors(stream_id, device_id)` to `max(existing, seq)`.
+/// Set `sync_cursors(stream_id, device_id)` to the end of the **contiguous**
+/// applied prefix — the largest `n` for which every seq `1..=n` from that
+/// device on that stream is in the op log.
+///
+/// A high-water mark would be wrong, and used to be what this wrote. Ops do
+/// arrive out of order: a dropped frame followed by a later one leaves the log
+/// holding seqs `{1, 3}`. A `MAX` cursor then claims 3, and the relay — which
+/// now filters its replay by exactly this number (issue #19) — would skip the
+/// frame carrying seq 2 forever. The hole would never be refilled and never be
+/// noticed. That is silent data loss produced by the very mechanism meant to
+/// prevent it, so the cursor has to mean "I have everything through n", which
+/// is also how `CursorEntry.last_applied_seq` is read on the wire.
+///
+/// Regressing the cursor is impossible: the prefix is a function of the op log,
+/// and rows are only ever inserted, so it can only grow.
 fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
-    seq: u64,
 ) -> rusqlite::Result<()> {
+    // The prefix ends at the lowest present seq whose successor is absent —
+    // unless seq 1 itself is missing, in which case there is no prefix at all.
+    // `UNIQUE (stream_id, device_id, seq)` serves both scans.
+    let prefix: i64 = tx.query_row(
+        "SELECT CASE
+                  WHEN EXISTS (SELECT 1 FROM ops
+                               WHERE stream_id = ?1 AND device_id = ?2 AND seq = 1)
+                  THEN (SELECT COALESCE(MIN(o.seq), 0) FROM ops o
+                        WHERE o.stream_id = ?1 AND o.device_id = ?2
+                          AND NOT EXISTS (SELECT 1 FROM ops n
+                                          WHERE n.stream_id = ?1 AND n.device_id = ?2
+                                            AND n.seq = o.seq + 1))
+                  ELSE 0
+                END",
+        params![&stream_id[..], &device_id[..]],
+        |row| row.get(0),
+    )?;
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
          VALUES (?, ?, ?)
          ON CONFLICT(stream_id, device_id) DO UPDATE SET
             last_applied_seq = MAX(last_applied_seq, excluded.last_applied_seq)",
-        params![&stream_id[..], &device_id[..], seq],
+        params![&stream_id[..], &device_id[..], prefix],
     )?;
     Ok(())
 }
@@ -9652,6 +9688,84 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity), task_after_first);
         assert_eq!(op_count(&dbb), ops_after_first);
         assert_eq!(ops_after_first, 1, "exactly one remote op recorded");
+    }
+
+    /// Read the stored cursor for `(stream, device)`, or 0 if none.
+    fn cursor_for(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
+        db.conn()
+            .query_row(
+                "SELECT last_applied_seq FROM sync_cursors
+                 WHERE stream_id = ? AND device_id = ?",
+                params![&stream[..], &device[..]],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| u64::try_from(v).unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// The relay filters its replay by this number, so it has to mean "I have
+    /// everything through n". A hole must hold it back — otherwise the frame
+    /// carrying the missing op is skipped on the next subscribe and the hole
+    /// becomes permanent and invisible.
+    #[test]
+    fn a_cursor_stops_at_a_hole_rather_than_tracking_the_maximum() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        // Three ops from A, seqs 1..3 on the inbox stream.
+        let mut envs = Vec::new();
+        for title in ["one", "two", "three"] {
+            let res = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: title.into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            envs.push(env_bytes(&dba, &res.op_id));
+        }
+        let head = sunrise_cbor::decode_envelope_header(&envs[0]).unwrap();
+        let (stream, device) = (head.stream_id, head.device_id);
+
+        eb.apply_remote(&mut dbb, &envs[0]).unwrap();
+        assert_eq!(cursor_for(&dbb, &stream, &device), 1);
+
+        // Seq 2 is "lost"; seq 3 arrives. The cursor must stay at 1.
+        eb.apply_remote(&mut dbb, &envs[2]).unwrap();
+        assert_eq!(
+            cursor_for(&dbb, &stream, &device),
+            1,
+            "a max-based cursor would claim 3 and strand seq 2 forever"
+        );
+
+        // The hole is filled: the prefix jumps to cover everything at once.
+        eb.apply_remote(&mut dbb, &envs[1]).unwrap();
+        assert_eq!(cursor_for(&dbb, &stream, &device), 3);
+    }
+
+    /// A device has certainly applied its own ops, so its own cursor belongs in
+    /// `sync_cursors` — otherwise every Subscribe claims nothing about this
+    /// device and the relay replays its whole history back to it.
+    #[test]
+    fn a_local_commit_advances_this_devices_own_cursor() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "mine".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let head = sunrise_cbor::decode_envelope_header(&env_bytes(&dba, &res.op_id)).unwrap();
+        assert_eq!(cursor_for(&dba, &head.stream_id, &head.device_id), head.seq);
     }
 
     #[test]
