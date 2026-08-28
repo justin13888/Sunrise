@@ -8,8 +8,9 @@
 //! by SQLCipher; the key is derived from the vault root via
 //! `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`.
 //!
-//! v1 ships a single migration (`migrations/0001_init.sql`); future
-//! `STORAGE_V` bumps add new files and never edit prior ones.
+//! v1 ships a single migration — the `migrations/0013_baseline.sql` schema
+//! reset (ADR-0018); future `STORAGE_V` bumps add new files and never edit
+//! prior ones.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

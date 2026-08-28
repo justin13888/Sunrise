@@ -44,8 +44,13 @@ impl Energy {
 
 crate::unknown::lossy_enum!(Energy);
 
-/// Rich-text body. v1 stores a CRDT-text payload as opaque bytes; richer
-/// rendering is the UI's job.
+/// Rich-text body, stored as opaque bytes; richer rendering is the UI's job.
+///
+/// The bytes are **not** a CRDT-text payload. ADR-0014 replaced per-field
+/// character-level merge with entity-level last-writer-wins, and this
+/// workspace has no CRDT layer for a note body to be encoded against — a
+/// concurrent edit of a body resolves by the same LWW rule as every other
+/// field.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NoteBody(#[serde(with = "serde_bytes")] pub Vec<u8>);
