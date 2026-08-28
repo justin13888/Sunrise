@@ -35,6 +35,7 @@ pub mod note;
 pub mod notify;
 pub mod person;
 pub mod phrase;
+pub mod planning;
 pub mod recur;
 pub mod review;
 pub mod routine;
@@ -93,6 +94,7 @@ pub use phrase::{
     activity_phrase, constraint_summary, energy_budget_label, energy_fit_label, fmt_duration_ms,
     length_label, plan_reason, relative_day, short_duration,
 };
+pub use planning::{is_overdue, today_section, TodaySection};
 pub use recur::parse_recurrence;
 pub use review::{
     build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,
