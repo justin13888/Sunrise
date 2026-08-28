@@ -37,6 +37,12 @@ final class TaskListModel {
         timeZone = TimeZone.current.identifier
         nowMs = await bridge.nowMs()
         names = await NameBook.load(from: bridge)
+        guard kind.isWorthQuerying else {
+            tasks = []
+            groups = []
+            errorMessage = nil
+            return
+        }
         do {
             guard case let .tasks(rows) = try await bridge.query(kind.query(nowMs: nowMs)) else {
                 tasks = []

@@ -11,6 +11,10 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     case inbox
     case stream(id: EntityRef, name: String)
     case context(id: EntityRef, name: String)
+    /// Full-text search. The text is part of the kind so that a re-query on a
+    /// change batch searches for what is in the field *now* rather than for
+    /// whatever the last keystroke happened to be.
+    case search(text: String)
 
     var id: Self { self }
 
@@ -20,6 +24,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case .inbox: "Inbox"
         case let .stream(_, name): name
         case let .context(_, name): "@\(name)"
+        case .search: "Search"
         }
     }
 
@@ -29,6 +34,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case .inbox: "tray"
         case .stream: "number"
         case .context: "at"
+        case .search: "magnifyingglass"
         }
     }
 
@@ -38,6 +44,10 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case .inbox: "Your Inbox is empty."
         case let .stream(_, name): "Nothing in \(name) yet."
         case let .context(_, name): "Nothing carries @\(name)."
+        case let .search(text):
+            text.trimmed.isEmpty
+                ? "Type to search titles and notes."
+                : "Nothing matches \u{201c}\(text.trimmed)\u{201d}."
         }
     }
 
@@ -51,8 +61,15 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         case .inbox: .inbox
         case let .stream(id, _): .streamTasks(stream: id)
         case let .context(id, _): .contextTasks(context: id)
+        case let .search(text): .search(text: text.trimmed, limit: TaskListKind.searchLimit)
         }
     }
+
+    /// How many rows a search returns.
+    ///
+    /// A cap, not a page: search narrows as you type, and someone looking at
+    /// 200 matches is going to type another word rather than scroll.
+    static let searchLimit: UInt32 = 200
 
     /// Whether a new capture lands somewhere this list would show it.
     ///
@@ -60,7 +77,18 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// stream, and there is no way to say "give this the context I am looking
     /// at" without inventing an annotation the shared parser does not have.
     var acceptsCapture: Bool {
-        if case .context = self { return false }
+        switch self {
+        case .today, .inbox, .stream: true
+        case .context, .search: false
+        }
+    }
+
+    /// Whether running this list's query is worth a round trip.
+    ///
+    /// An empty search is not: `Query::Search` over an empty string is a
+    /// full-table scan whose answer nobody asked for.
+    var isWorthQuerying: Bool {
+        if case let .search(text) = self { return !text.trimmed.isEmpty }
         return true
     }
 }

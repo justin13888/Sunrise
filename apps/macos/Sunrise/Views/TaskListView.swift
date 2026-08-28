@@ -1,22 +1,39 @@
 import SwiftUI
 
-/// Today or Inbox: capture at the top, rows below.
+/// Any list of tasks: capture at the top where it makes sense, rows below.
 struct TaskListView: View {
     let model: TaskListModel
     @Bindable var capture: CaptureModel
 
-    @State private var editing: TaskItem?
-    @State private var foldedSections: Set<Int> = [TodaySection.overdue.rank]
-
     var body: some View {
         VStack(spacing: 0) {
-            // A context list is the one place capture has nowhere to land: a
+            // A context or search list is where capture has nowhere to land: a
             // capture writes to a stream, and there is no annotation for
             // "give this the context I am looking at".
             if model.kind.acceptsCapture {
                 CaptureBar(model: capture) { draft in await model.create(draft) }
             }
+            TaskRows(model: model)
+        }
+        .navigationTitle(model.kind.title)
+        .task(id: model.kind) { await model.refresh() }
+        .task { await model.follow() }
+    }
+}
 
+/// The rows, their grouping, and everything that can be done to one.
+///
+/// Split out of `TaskListView` because Search shows the same rows under a
+/// different header, and two copies of the context menu would be two places
+/// for "Defer a week" to mean different things.
+struct TaskRows: View {
+    let model: TaskListModel
+
+    @State private var editing: TaskItem?
+    @State private var foldedSections: Set<Int> = [TodaySection.overdue.rank]
+
+    var body: some View {
+        Group {
             if let message = model.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.callout)
@@ -44,7 +61,6 @@ struct TaskListView: View {
                 .listStyle(.inset)
             }
         }
-        .navigationTitle(model.kind.title)
         .sheet(item: $editing) { task in
             TaskEditorView(
                 task: task,
@@ -52,8 +68,6 @@ struct TaskListView: View {
                 delete: { await model.delete(task) }
             )
         }
-        .task(id: model.kind) { await model.refresh() }
-        .task { await model.follow() }
     }
 
     @ViewBuilder

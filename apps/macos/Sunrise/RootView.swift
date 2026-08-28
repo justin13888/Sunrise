@@ -44,6 +44,7 @@ struct VaultView: View {
     @State private var browse: BrowseModel
     @State private var list: TaskListModel
     @State private var capture: CaptureModel
+    @State private var search: SearchModel
     @State private var selection: Destination? = .list(.today)
     @State private var deviceID = ""
     @State private var showingSettings = false
@@ -53,6 +54,7 @@ struct VaultView: View {
         _browse = State(initialValue: BrowseModel(bridge: bridge))
         _list = State(initialValue: TaskListModel(bridge: bridge))
         _capture = State(initialValue: CaptureModel(bridge: bridge))
+        _search = State(initialValue: SearchModel(bridge: bridge))
     }
 
     var body: some View {
@@ -112,7 +114,9 @@ struct VaultView: View {
         switch selection {
         case .list:
             TaskListView(model: list, capture: capture)
-        case .search, .focus, .routines, .review, .none:
+        case .search:
+            SearchView(model: search)
+        case .focus, .routines, .review, .none:
             ContentUnavailableView(
                 selection?.title ?? "Sunrise",
                 systemImage: selection?.symbol ?? "sun.max",
