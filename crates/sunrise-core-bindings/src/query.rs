@@ -8,9 +8,10 @@ use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    ActionableTaskRow, ActivityRow, BlockGridRow, Cascade, ContextItem, ContextListRow,
-    DailyReviewReport, DeviceListRow, FocusTotals, PlanRow, RoutineItem, SessionRow, Snapshot,
-    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
+    ContextListRow, DailyReviewReport, DeviceListRow, FocusTotals, PlanRow, RoutineItem,
+    SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
+    WeeklyReviewReport,
 };
 
 /// A read query.
@@ -135,6 +136,12 @@ pub enum CoreQuery {
         /// "Now" (epoch ms).
         now_ms: u64,
     },
+    /// Live attachments on one task, oldest first. Metadata only: the bytes
+    /// come from the blob store and open with each row's `blob_key`.
+    TaskAttachments {
+        /// The task.
+        task: EntityRef,
+    },
     /// The calendar grid for one civil day, in the device's zone. Overlap,
     /// not containment: a block running past midnight is on both days.
     DayBlocks {
@@ -216,6 +223,7 @@ impl CoreQuery {
                 weeks,
                 now_ms,
             },
+            Self::TaskAttachments { task } => Query::TaskAttachments(task),
             Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
             Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
@@ -332,6 +340,11 @@ pub enum CoreQueryResult {
         /// The rows, earliest start first.
         blocks: Vec<BlockGridRow>,
     },
+    /// One task's attachment metadata.
+    Attachments {
+        /// The rows, oldest first.
+        attachments: Vec<AttachmentItem>,
+    },
     /// A rendered export document.
     Export {
         /// The document.
@@ -411,6 +424,9 @@ impl CoreQueryResult {
             },
             QueryResult::Blocks(b) => Self::Blocks {
                 blocks: b.iter().map(BlockGridRow::from).collect(),
+            },
+            QueryResult::Attachments(a) => Self::Attachments {
+                attachments: a.iter().map(AttachmentItem::from).collect(),
             },
             QueryResult::Export(body) => Self::Export { body },
         }

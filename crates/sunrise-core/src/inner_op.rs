@@ -28,7 +28,8 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine, Stream, Task,
+    Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
+    Stream, Task,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
@@ -69,6 +70,12 @@ pub(crate) enum InnerOp {
     BlockUpdate(Box<Block>),
     /// Tombstone a time block.
     BlockDelete(EntityRef),
+    /// Record attachment metadata. Write-once: every field but the tombstone
+    /// describes one specific run of ciphertext, so there is no update op.
+    AttachmentCreate(Box<Attachment>),
+    /// Tombstone attachment metadata. The blob itself is reclaimed by the
+    /// relay's GC after the device-cursor quorum, not here.
+    AttachmentDelete(EntityRef),
     /// Open a focus session (ADR-0013's `start` op). Append-only: the record
     /// is written once and never edited.
     FocusStart(Box<FocusStart>),
@@ -124,6 +131,8 @@ impl InnerOp {
             Self::BlockCreate(_) => "block.create",
             Self::BlockUpdate(_) => "block.update",
             Self::BlockDelete(_) => "block.delete",
+            Self::AttachmentCreate(_) => "attachment.create",
+            Self::AttachmentDelete(_) => "attachment.delete",
             Self::FocusStart(_) => "focus.start",
             Self::FocusEnd(_) => "focus.end",
             Self::FocusInterrupt(_) => "focus.interrupt",
@@ -140,6 +149,7 @@ impl InnerOp {
             Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
             Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
             Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => "block",
+            Self::AttachmentCreate(_) | Self::AttachmentDelete(_) => "attachment",
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
             Self::ReviewSnapshotCreate(_) => "review_snapshot",
         }
@@ -153,11 +163,13 @@ impl InnerOp {
             Self::ContextCreate(c) | Self::ContextUpdate(c) => c.id,
             Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) => rt.id,
             Self::BlockCreate(b) | Self::BlockUpdate(b) => b.id,
+            Self::AttachmentCreate(a) => a.id,
             Self::TaskDelete(r)
             | Self::StreamDelete(r)
             | Self::ContextDelete(r)
             | Self::RoutineDelete(r)
-            | Self::BlockDelete(r) => *r,
+            | Self::BlockDelete(r)
+            | Self::AttachmentDelete(r) => *r,
             Self::FocusStart(f) => f.id,
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,
@@ -173,6 +185,7 @@ impl InnerOp {
             | Self::ContextCreate(_)
             | Self::RoutineCreate(_)
             | Self::BlockCreate(_)
+            | Self::AttachmentCreate(_)
             | Self::FocusStart(_)
             | Self::ReviewSnapshotCreate(_) => OpEffect::Create,
             Self::TaskUpdate(_)
@@ -186,7 +199,8 @@ impl InnerOp {
             | Self::StreamDelete(_)
             | Self::ContextDelete(_)
             | Self::RoutineDelete(_)
-            | Self::BlockDelete(_) => OpEffect::Delete,
+            | Self::BlockDelete(_)
+            | Self::AttachmentDelete(_) => OpEffect::Delete,
         }
     }
 
@@ -204,6 +218,7 @@ impl InnerOp {
                 EntityKind::Routine
             }
             Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => EntityKind::Block,
+            Self::AttachmentCreate(_) | Self::AttachmentDelete(_) => EntityKind::Attachment,
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => {
                 EntityKind::FocusSession
             }

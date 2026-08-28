@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    ActivityEvent, Block, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit,
+    ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, Energy, EnergyFit,
     ExportDataset, ExportFormat, FocusSession, FocusStats, ReviewSnapshot, Routine, SessionPlan,
     Stream, StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
@@ -195,6 +195,11 @@ pub enum Query {
         /// Any instant inside the week to show (ms since epoch).
         week_ms: u64,
     },
+    /// Live Attachments on one Task, oldest first.
+    ///
+    /// Metadata only — the bytes are fetched separately from the blob store
+    /// and opened with the `blob_key` each row carries.
+    TaskAttachments(EntityRef),
     /// Full-text search over tasks.
     Search {
         /// Raw user query text (sanitized before hitting FTS5).
@@ -256,6 +261,8 @@ pub enum QueryResult {
     /// ever useful with its resolved title and bound task titles attached, and
     /// a second one-Block variant would be the same row under another name.
     Blocks(Vec<BlockRow>),
+    /// `TaskAttachments` returns one Task's attachment metadata.
+    Attachments(Vec<Attachment>),
     /// `ExportStats` returns the rendered document.
     Export(String),
 }

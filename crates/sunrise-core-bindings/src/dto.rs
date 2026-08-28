@@ -31,8 +31,8 @@ use sunrise_core::queries::{
 };
 use sunrise_core::CommandResult;
 use sunrise_domain::{
-    ActivityEvent, ActivityKind, Block, Calibration, Chunk, ConstraintSeverity, Context,
-    DailyReview, DateRange, EffectiveTaskState, Energy, EnergyFit, EnergyFocus, FocusEnd,
+    ActivityEvent, ActivityKind, Attachment, Block, Calibration, Chunk, ConstraintSeverity,
+    Context, DailyReview, DateRange, EffectiveTaskState, Energy, EnergyFit, EnergyFocus, FocusEnd,
     FocusKind, FocusSession, FocusStart, FocusStats, Frequency, Interruption, InterruptionReason,
     InterruptionTally, NoteBody, RRule, ReviewSnapshot, ReviewSnapshotStream, ReviewTotals,
     ReviewWindow, Routine, RoutineCatchupPolicy, RoutineDrift, RoutineRow, ScheduleConstraint,
@@ -57,6 +57,16 @@ const ALL_WEEKDAYS: [Weekday; 7] = [
 fn hex16(bytes: &[u8; 16]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(32);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// As [`hex16`], for the 32-byte digests attachment metadata carries.
+fn hex32(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
     for b in bytes {
         let _ = write!(s, "{b:02x}");
     }
@@ -2468,4 +2478,138 @@ impl From<BlockEdit> for sunrise_domain::BlockPatch {
             stream_id: e.stream_id,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+/// See [`sunrise_domain::Attachment`]: metadata for one encrypted blob.
+///
+/// `blob_key` crosses the seam because it has to — the bytes in the blob store
+/// are sealed under it and unreadable without it. It never leaves the device
+/// except inside an op envelope.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AttachmentItem {
+    /// Attachment id.
+    pub id: EntityRef,
+    /// Creation time.
+    pub created_at: jiff::Timestamp,
+    /// Last-update time.
+    pub updated_at: jiff::Timestamp,
+    /// Parent task.
+    pub parent: EntityRef,
+    /// Filename, informational.
+    pub filename: String,
+    /// MIME type.
+    pub mime_type: String,
+    /// Plaintext size in bytes.
+    pub size_bytes: u64,
+    /// Per-blob symmetric key, 32 bytes.
+    pub blob_key: Vec<u8>,
+    /// Blob id, 16 bytes, lowercase hex.
+    pub blob_id: String,
+    /// Chunk count.
+    pub chunk_count: u32,
+    /// BLAKE3 of the concatenated plaintext, 32 bytes, lowercase hex.
+    pub content_hash: String,
+    /// Tombstoned.
+    pub deleted: bool,
+}
+
+impl From<&Attachment> for AttachmentItem {
+    fn from(a: &Attachment) -> Self {
+        let Attachment {
+            id,
+            created_at,
+            updated_at,
+            parent,
+            filename,
+            mime_type,
+            size_bytes,
+            blob_key,
+            blob_id,
+            chunk_count,
+            content_hash,
+            deleted,
+            // Deliberately not exported: see the module docs.
+            unknown: _,
+        } = a;
+        Self {
+            id: *id,
+            created_at: *created_at,
+            updated_at: *updated_at,
+            parent: *parent,
+            filename: filename.clone(),
+            mime_type: mime_type.clone(),
+            size_bytes: *size_bytes,
+            blob_key: blob_key.to_vec(),
+            blob_id: hex16(blob_id),
+            chunk_count: *chunk_count,
+            content_hash: hex32(content_hash),
+            deleted: *deleted,
+        }
+    }
+}
+
+/// See [`sunrise_domain::AttachmentDraft`]. Every field is a fact about bytes
+/// the client already sealed and uploaded, so the client supplies it; the core
+/// fills only the id and the timestamps.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AttachmentDraftIn {
+    /// Parent task.
+    pub parent: EntityRef,
+    /// Filename.
+    pub filename: String,
+    /// MIME type.
+    pub mime_type: String,
+    /// Plaintext size in bytes.
+    pub size_bytes: u64,
+    /// Per-blob symmetric key; must be exactly 32 bytes.
+    pub blob_key: Vec<u8>,
+    /// Blob id as 32 lowercase hex characters.
+    pub blob_id: String,
+    /// Chunk count.
+    pub chunk_count: u32,
+    /// BLAKE3 of the concatenated plaintext, 64 lowercase hex characters.
+    pub content_hash: String,
+}
+
+impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
+    type Error = crate::BindingError;
+
+    fn try_from(d: AttachmentDraftIn) -> Result<Self, Self::Error> {
+        Ok(Self {
+            parent: d.parent,
+            filename: d.filename,
+            mime_type: d.mime_type,
+            size_bytes: d.size_bytes,
+            blob_key: fixed_bytes(&d.blob_key, "blob_key")?,
+            blob_id: from_hex(&d.blob_id, "blob_id")?,
+            chunk_count: d.chunk_count,
+            content_hash: from_hex(&d.content_hash, "content_hash")?,
+        })
+    }
+}
+
+fn bad_width<const N: usize>(field: &str) -> crate::BindingError {
+    crate::BindingError::BadFixedBytes {
+        field: field.to_string(),
+        expected: u32::try_from(N).unwrap_or(u32::MAX),
+    }
+}
+
+fn fixed_bytes<const N: usize>(raw: &[u8], field: &str) -> Result<[u8; N], crate::BindingError> {
+    <[u8; N]>::try_from(raw).map_err(|_| bad_width::<N>(field))
+}
+
+fn from_hex<const N: usize>(s: &str, field: &str) -> Result<[u8; N], crate::BindingError> {
+    let mut out = [0u8; N];
+    if s.len() != N * 2 {
+        return Err(bad_width::<N>(field));
+    }
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| bad_width::<N>(field))?;
+    }
+    Ok(out)
 }

@@ -54,7 +54,7 @@ pub use activity::{
     TRACKED_TASK_FIELDS,
 };
 pub use annotate::{parse as parse_annotate, EditError, TaskEdit};
-pub use attachment::Attachment;
+pub use attachment::{Attachment, AttachmentDraft};
 pub use block::{Block, BlockDraft, BlockPatch};
 pub use capture::now_ts;
 pub use common::{Energy, NoteBody};
@@ -116,6 +116,6 @@ pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use time::SunriseTime;
 pub use unknown::{CborValue, Unknowns};
 pub use validation::{
-    ValidationError, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN, MAX_TASK_ENVELOPE_BYTES,
-    MAX_TASK_TITLE_LEN,
+    ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,
+    MAX_FILENAME_LEN, MAX_MIME_TYPE_LEN, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN,
 };

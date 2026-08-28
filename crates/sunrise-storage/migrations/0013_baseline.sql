@@ -402,6 +402,17 @@ CREATE TABLE notes (
 );
 CREATE INDEX notes_by_parent ON notes (parent_kind, parent_id);
 
+-- Attachment METADATA only. The bytes live in the blob store, chunked and
+-- sealed under `blob_key`; this table never holds plaintext.
+--
+-- `blob_key` is a 32-byte symmetric key. It is at rest here exactly as safe as
+-- everything else in the vault -- the whole file is SQLCipher-encrypted -- and
+-- on the wire it travels sealed inside the op envelope, which is the only
+-- place it could travel: without it the ciphertext chunks are unreadable on
+-- every other device.
+--
+-- NO foreign key on `parent_id`, for the reason `task_blockers` gives: an
+-- attachment op can be materialized before its parent task's create arrives.
 CREATE TABLE attachments (
     id              BLOB PRIMARY KEY,
     parent_kind     TEXT NOT NULL,
@@ -409,11 +420,20 @@ CREATE TABLE attachments (
     filename        TEXT NOT NULL,
     mime_type       TEXT NOT NULL,
     size_bytes      INTEGER NOT NULL,
+    blob_key        BLOB NOT NULL,
     blob_id         BLOB NOT NULL,
     chunk_count     INTEGER NOT NULL,
     content_hash    BLOB NOT NULL,
-    deleted         INTEGER NOT NULL DEFAULT 0
+    deleted         INTEGER NOT NULL DEFAULT 0,
+    extra           BLOB,
+    created_at_ms   INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms   INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_ms      INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical INTEGER NOT NULL DEFAULT 0,
+    lww_seq         INTEGER NOT NULL DEFAULT 0,
+    lww_device      BLOB
 );
+CREATE INDEX attachments_by_parent ON attachments (parent_kind, parent_id);
 
 CREATE TABLE persons (
     id              BLOB PRIMARY KEY,

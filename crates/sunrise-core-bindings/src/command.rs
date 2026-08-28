@@ -11,8 +11,8 @@ use sunrise_domain::{Energy, InterruptionReason, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, RoutineDraftIn, RoutineEdit,
-    SnapshotDraftIn, StreamDraftIn, StreamEdit, TaskDraftIn, TaskEdit,
+    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, RoutineDraftIn,
+    RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit, TaskDraftIn, TaskEdit,
 };
 
 /// A mutating command.
@@ -151,6 +151,19 @@ pub enum CoreCommand {
         /// Task to unbind.
         task: EntityRef,
     },
+    /// Record an attachment against a task. The bytes are uploaded first,
+    /// sealed under a key the client generated; this writes the metadata that
+    /// makes the blob findable.
+    AttachFile {
+        /// The draft.
+        draft: AttachmentDraftIn,
+    },
+    /// Tombstone attachment metadata. The blob itself is reclaimed by the
+    /// relay's GC, not here.
+    DetachFile {
+        /// Target.
+        id: EntityRef,
+    },
     /// Run materialization for every live routine.
     MaterializeRoutines {
         /// Wall clock (epoch ms) to materialize against.
@@ -201,11 +214,13 @@ pub enum CoreCommand {
 impl CoreCommand {
     /// Lower into the core's own command type.
     ///
-    /// Infallible: every id arrived as an already-lifted `EntityRef`, so the
-    /// parsing that can fail happened at the boundary, in
+    /// Fallible in exactly one place: `AttachFile` carries fixed-width byte
+    /// arrays that UniFFI can only express as a `Vec<u8>` and a hex string, so
+    /// their length is checked here. Every id arrived as an already-lifted
+    /// `EntityRef`, and that parsing happened at the boundary in
     /// [`crate::types`]'s `custom_type!`.
-    pub(crate) fn into_core(self) -> Command {
-        match self {
+    pub(crate) fn into_core(self) -> Result<Command, crate::BindingError> {
+        Ok(match self {
             Self::CreateTask { draft } => Command::CreateTask(draft.into()),
             Self::UpdateTask { id, edit } => Command::UpdateTask {
                 id,
@@ -269,7 +284,9 @@ impl CoreCommand {
             Self::LogInterruption { session, reason } => {
                 Command::LogInterruption { session, reason }
             }
+            Self::AttachFile { draft } => Command::AttachFile(draft.try_into()?),
+            Self::DetachFile { id } => Command::DetachFile(id),
             Self::SaveReviewSnapshot { draft } => Command::SaveReviewSnapshot(draft.into()),
-        }
+        })
     }
 }

@@ -101,6 +101,18 @@ pub enum BindingError {
         /// How many bytes arrived.
         len: u32,
     },
+    /// A fixed-width field arrived at the wrong length, or was not hex.
+    ///
+    /// UniFFI cannot express `[u8; 32]`, so a key crosses as a `Vec<u8>` and a
+    /// digest as a hex string. Their width is a contract the seam has to check
+    /// somewhere, and here is the last place it can be checked cheaply.
+    #[error("{field} must be {expected} bytes")]
+    BadFixedBytes {
+        /// Which field.
+        field: String,
+        /// How many bytes it must carry.
+        expected: u32,
+    },
 }
 
 impl From<CoreError> for BindingError {
@@ -158,7 +170,7 @@ impl SunriseCore {
 
     /// Submit one mutating command.
     pub async fn submit(&self, cmd: CoreCommand) -> Result<CommandOutcome, BindingError> {
-        let res = self.inner.submit(cmd.into_core()).await?;
+        let res = self.inner.submit(cmd.into_core()?).await?;
         Ok(CommandOutcome::from(&res))
     }
 

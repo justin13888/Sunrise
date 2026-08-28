@@ -12,12 +12,15 @@ Files attached to Tasks, Notes, or Streams. The file content lives in the encryp
 Attachment = {
     id:            tstr .regexp "att_[A-Z0-9]{26}",
     created_at:    tdate,
+    updated_at:    tdate,
     parent:        EntityRef,           ; task, stream, note (only on a NoteBody-bearing entity)
     filename:      text<256>,
     mime_type:     text<128>,
     size_bytes:    uint .size 8,
-    sha256:        bstr .size 32,       ; of plaintext, for dedup and integrity
-    blob_ref:      BlobRef,             ; opaque pointer into blob store (per-blob key wrapped)
+    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext, for dedup and integrity
+    blob_key:      bstr .size 32,       ; per-blob symmetric key; sealed inside the op envelope
+    blob_id:       bstr .size 16,       ; assigned by the creating device
+    chunk_count:   uint,
     width?:        uint,                ; image only
     height?:       uint,
     thumbnail_ref?: BlobRef,             ; image only; max edge 512 px; AVIF preferred
@@ -26,12 +29,43 @@ Attachment = {
 }
 ```
 
+The `BlobRef` in earlier drafts is flattened into the three fields that make
+one up — `blob_key`, `blob_id`, `chunk_count` — rather than nested, so the
+op-envelope shape has no sub-record to version separately. The digest is
+BLAKE3, not SHA-256, matching the hash used everywhere else in the system
+including the relay's finalize check
+([`../06-server/api.md`](../06-server/api.md) §Blobs).
+
+## Write-once metadata
+
+An Attachment is created and thereafter only tombstoned. Every field but
+`deleted` describes one specific run of ciphertext identified by
+`content_hash`, so changing one would be describing different bytes: there is
+no update op and no patch type. Re-attaching an edited file is a new
+attachment, which is what content addressing already implies.
+
+The two commands are `AttachFile` and `DetachFile`; the read is
+`Query::TaskAttachments`.
+
+`blob_key` is generated **client-side, before upload** — the file has to be
+sealed under it to be uploadable at all, so the core cannot mint it after the
+fact. It is the one secret the metadata carries, and losing it orphans the
+blob on every other device, so it rides in the op envelope like the rest of
+the entity.
+
+## v1 scope
+
+`width`, `height`, `thumbnail_ref` and `duration_ms` are specified above and
+not yet modelled; they land with the thumbnail slice. The forward-compat
+`unknown` map means a build that adds them can round-trip through this one
+without loss.
+
 ## Storage
 
 - **Plaintext** is never on the wire and never stored unencrypted at rest.
 - Each attachment has a per-blob symmetric key, generated client-side.
 - Plaintext is encrypted with that key (AEAD; chunked so streaming partial reads work).
-- The wrapped key is stored in `BlobRef` along with the blob ID and chunking parameters.
+- The key is carried on the Attachment itself (`blob_key`) alongside the blob id and chunk count, sealed inside the op envelope.
 - The encrypted blob is uploaded to the server (or kept LAN-local in T3 topologies).
 
 ## Size policy
@@ -49,12 +83,17 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 - Re-tapping a `partial: true` attachment retries from byte 0 (chunks are 1 MiB each; the cache uses chunk granularity but resume-from-partial is not implemented in v1).
 - Cellular vs Wi-Fi: per-platform setting `auto_fetch_on_cellular: bool = false`.
 
-## TUI / web limitations
+## Client limitations
 
-- TUI cannot render most attachments. It shows metadata and can save-to-disk.
+- `sunrise-cli` renders nothing: it shows metadata and can save-to-disk.
 - Web in private-browsing mode cannot persist large attachment caches; falls back to per-session memory cache.
 
 ## Deletion
+
+`Command::DetachFile` performs the logical delete and is all of this that
+belongs in the core. The GC below needs the device-cursor quorum and the grace
+period, both of which are the relay's; `DELETE /api/v1/blobs/<id>` is
+correspondingly not implemented yet.
 
 Logical delete sets `deleted=true`. The encrypted blob is **garbage-collected** when:
 

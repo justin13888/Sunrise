@@ -18,6 +18,18 @@ pub const MAX_CONTEXT_NAME_LEN: usize = 64;
 /// Maximum length of a Block title per docs/02-domain/time-blocks.md.
 pub const MAX_BLOCK_TITLE_LEN: usize = 256;
 
+/// Maximum length of an Attachment filename per docs/02-domain/attachments.md.
+pub const MAX_FILENAME_LEN: usize = 256;
+
+/// Maximum length of an Attachment MIME type per docs/02-domain/attachments.md.
+pub const MAX_MIME_TYPE_LEN: usize = 128;
+
+/// Hard per-attachment size ceiling per docs/02-domain/attachments.md
+/// §Size policy: 100 MB on managed cloud, configurable on self-host. Enforced
+/// in the domain as well as at the relay, because a client that cannot upload
+/// the blob must not first write an op describing it.
+pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1000 * 1000;
+
 /// Per docs/02-domain/tasks.md §validation: encoded Task envelope ≤ 1.25 MiB.
 pub const MAX_TASK_ENVELOPE_BYTES: usize = 1_310_720;
 

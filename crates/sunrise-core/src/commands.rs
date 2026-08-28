@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
-    BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy, InterruptionReason,
-    ReviewSnapshotDraft, RoutineDraft, RoutinePatch, ScheduleConstraint, SessionLength,
-    StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
+    InterruptionReason, ReviewSnapshotDraft, RoutineDraft, RoutinePatch, ScheduleConstraint,
+    SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -128,6 +128,21 @@ pub enum Command {
         /// Task to unbind.
         task: EntityRef,
     },
+    /// Record an Attachment against a Task
+    /// (`docs/02-domain/attachments.md`).
+    ///
+    /// The bytes are uploaded first, sealed under a per-blob key the client
+    /// generated: the file has to be encrypted to be uploadable at all, so the
+    /// core cannot mint that key after the fact. This command writes the
+    /// metadata op that makes the blob findable, and is the only thing about
+    /// an attachment that ever reaches the op log.
+    AttachFile(AttachmentDraft),
+    /// Tombstone Attachment metadata.
+    ///
+    /// Step 1 of the spec's §Deletion, and all of it that belongs in the core:
+    /// reclaiming the blob needs the device-cursor quorum and the 30-day grace
+    /// period, which are the relay's job.
+    DetachFile(EntityRef),
     /// Run materialization for every live Routine using `now_ms` as the clock.
     /// Emitted by `Core::open` and the periodic core timer.
     MaterializeRoutines {
