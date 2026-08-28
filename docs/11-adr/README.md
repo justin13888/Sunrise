@@ -37,6 +37,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0017 | [Scheduled times are a tagged `SunriseTime`](./0017-sunrise-time-representation.md) | accepted |
 | 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
 | 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec) |
+| 0020 | [Three capabilities leave the v1 MUST set](./0020-v1-must-demotions.md) | accepted (amends the client parity matrix) |
 
 ## When to write a new ADR
 
