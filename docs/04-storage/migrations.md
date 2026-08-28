@@ -4,6 +4,17 @@ status: accepted
 
 # Migrations
 
+> **Pre-1.0 baseline.** As of `STORAGE_V = 13` the migration *list* is a single
+> file, `crates/sunrise-storage/migrations/0013_baseline.sql`. Migrations
+> 0001–0012 were collapsed into it and deleted, and a vault stamped
+> `0 < storage_v < 13` is **refused** (`DbError::StorageVPreBaseline` →
+> `STORAGE_V_TOO_OLD`) rather than upgraded. Nothing below changes: the runner,
+> the ordering rule, the single-transaction guarantee, and the append-only rule
+> for new migrations are all still in force, and the next schema change appends
+> file 0014 exactly as it always would have. See
+> [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why this was done
+> once, and why it does not happen again after 1.0.
+
 Two kinds of migrations:
 
 1. **Local DB migrations.** Schema changes in SQLite. Run on app launch.
@@ -16,7 +27,7 @@ Each migration:
 - Has a numeric version (`db_schema_version`), migrations applied in order.
 - Is idempotent (re-running is a no-op).
 - Is forward-only. No down-migration. (Restore from backup if a migration is wrong.)
-- Lives in `sunrise-core/migrations/<NNNN>_<name>.sql` *or* a Rust function for non-trivial transforms.
+- Lives in `crates/sunrise-storage/migrations/<NNNN>_<name>.sql` *or* a Rust function for non-trivial transforms.
 
 Framework: a custom thin layer (we don't use `refinery` because we want explicit transactions and a per-migration commit checkpoint that includes the version write).
 
@@ -75,6 +86,18 @@ If a migration is irrecoverable (a corrupt index, a bug), the user can trigger "
 This is an internal capability used by the app on first launch after major-version upgrades when materialization logic changes.
 
 ## Migration testing
+
+Today, with one migration in the list, `crates/sunrise-storage/src/db.rs`
+asserts the two facts that exist to assert:
+
+- a fresh vault applies the baseline and lands at `STORAGE_V`, with the tables
+  the collapse was supposed to preserve and without the schema it was supposed
+  to drop;
+- every `storage_v` in `1..13` is refused with `StorageVPreBaseline`, and a
+  `storage_v` above `STORAGE_V` with `StorageVTooNew`.
+
+When migration 0014 lands, the fixture regime below applies to it and to every
+migration after it:
 
 - Each migration ships with a "before" fixture (a small vault file) and an "after" expected state.
 - CI runs every migration over every prior fixture to ensure forward migration is correct.

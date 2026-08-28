@@ -3110,12 +3110,11 @@ fn ensure_stream_row(
     let parent_blob: Option<Vec<u8>> = parent.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
-         (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+         (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms)
-         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?)",
         params![
             id_blob,
-            Vec::<u8>::new(),
             vec![0u8; 32],
             parent_blob,
             archived as i64,
@@ -3137,13 +3136,12 @@ fn insert_stream_row(
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
-         (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
+         (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
           paused, paused_until_ms, review_cadence, lww_ts_ms, lww_device)
-         VALUES (?, ?, 1, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
-            Vec::<u8>::new(),
             vec![0u8; 32],
             parent_blob,
             s.archived as i64,
@@ -3977,16 +3975,15 @@ fn insert_routine_row(
     let streak_blob = encode_streak_state(r)?;
     tx.execute(
         "INSERT INTO routines
-         (id, stream_id, rrule, rrule_text, timezone, starts_at_ms, ends_at_ms,
+         (id, stream_id, rrule_text, timezone, starts_at_ms, ends_at_ms,
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
           last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
           streak_state, lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
-            rrule_text,
             rrule_text,
             r.timezone,
             r.starts_at.as_millisecond(),
@@ -4029,7 +4026,7 @@ fn update_routine_row(
     let streak_blob = encode_streak_state(r)?;
     tx.execute(
         "UPDATE routines SET
-            stream_id = ?, rrule = ?, rrule_text = ?, timezone = ?,
+            stream_id = ?, rrule_text = ?, timezone = ?,
             starts_at_ms = ?, ends_at_ms = ?, streak_counter = ?, paused = ?,
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
@@ -4038,7 +4035,6 @@ fn update_routine_row(
          WHERE id = ?",
         params![
             stream_blob,
-            rrule_text,
             rrule_text,
             r.timezone,
             r.starts_at.as_millisecond(),

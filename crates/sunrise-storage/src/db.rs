@@ -17,7 +17,7 @@
 //! passed to SQLCipher as a 64-char hex string with `PRAGMA kdf_iter = 1`
 //! (we already pre-derive, so SQLCipher's own KDF doesn't need iterations).
 
-use crate::migrations::MIGRATIONS;
+use crate::migrations::{BASELINE_STORAGE_V, MIGRATIONS};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use sunrise_cbor::version::STORAGE_V;
@@ -42,7 +42,7 @@ pub enum DbError {
     /// Schema version mismatch (DB older; needs upgrade).
     ///
     /// Retained for wire-code stability ([`ErrorCode::StorageVTooOld`]) but no
-    /// longer produced by [`Db::ensure_schema`], which now auto-applies pending
+    /// longer produced by [`Db::ensure_schema`], which auto-applies pending
     /// migrations instead of erroring on an older DB.
     #[error("STORAGE_V too old: db is {db_v}, binary expects {binary_v}")]
     StorageVTooOld {
@@ -50,6 +50,22 @@ pub enum DbError {
         db_v: u32,
         /// Version the binary needs.
         binary_v: u32,
+    },
+    /// The vault predates the pre-1.0 storage baseline reset (ADR-0018).
+    ///
+    /// Distinct from [`DbError::StorageVTooOld`] because it is not a
+    /// "run the migrations" condition: the migrations that would upgrade such
+    /// a vault were deleted, so there is nothing to run. It is terminal, and
+    /// the only remedy is a fresh vault.
+    #[error(
+        "vault predates the storage baseline: db is storage_v {db_v}, \
+         this build's baseline is {baseline_v}; pre-1.0 vaults are not upgraded"
+    )]
+    StorageVPreBaseline {
+        /// Version found in the DB.
+        db_v: u32,
+        /// [`BASELINE_STORAGE_V`].
+        baseline_v: u32,
     },
     /// Migration failed.
     #[error("migration {id} ({name}) failed: {source}")]
@@ -69,7 +85,9 @@ impl DbError {
     pub const fn as_error_code(&self) -> ErrorCode {
         match self {
             Self::StorageVTooNew { .. } => ErrorCode::StorageVTooNew,
-            Self::StorageVTooOld { .. } => ErrorCode::StorageVTooOld,
+            Self::StorageVTooOld { .. } | Self::StorageVPreBaseline { .. } => {
+                ErrorCode::StorageVTooOld
+            }
             _ => ErrorCode::FatalInternal,
         }
     }
@@ -155,105 +173,94 @@ impl Db {
             .unwrap_or(0);
         let binary_v: u32 = u32::from(STORAGE_V);
         if exists == 0 {
-            // Fresh DB: apply all migrations in a single transaction.
-            //
-            // Migrations are logged because they are the one storage operation
-            // that can leave a user unable to open their vault at all, and the
-            // failure arrives with no UI to report it through. Nothing here
-            // touches row content: only migration ids, names, and versions.
-            tracing::info!(
-                ev = "db.migrate.start",
-                from_v = 0u64,
-                to_v = u64::from(binary_v),
-                mode = "fresh",
-                "creating schema"
-            );
-            let tx = conn.transaction()?;
-            for m in MIGRATIONS {
-                tx.execute_batch(m.sql).map_err(|source| {
-                    tracing::error!(
-                        ev = "db.migrate.failed",
-                        from_v = 0u64,
-                        to_v = u64::from(m.id),
-                        err_code = "DB_MIGRATION_FAILED",
-                        err_kind = "permanent",
-                        retryable = false,
-                        cause = %source,
-                        "migration failed"
-                    );
-                    DbError::Migration {
-                        id: m.id,
-                        name: m.name,
-                        source,
-                    }
-                })?;
-            }
-            // Pin the storage version.
-            tx.execute(
-                "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-                rusqlite::params![binary_v, 0],
-            )?;
-            tx.commit()?;
-            tracing::info!(
-                ev = "db.migrate.ok",
-                from_v = 0u64,
-                to_v = u64::from(binary_v),
-                mode = "fresh",
-                "schema created"
-            );
-            return Ok(());
+            return Self::run_migrations(conn, 0, binary_v, "fresh");
         }
+
         let db_v: u32 =
             conn.query_row("SELECT storage_v FROM schema_meta", [], |row| row.get(0))?;
         if db_v > binary_v {
             return Err(DbError::StorageVTooNew { db_v, binary_v });
         }
-        if db_v < binary_v {
-            // Existing DB behind this binary: apply every pending migration
-            // (id > db_v) in ascending order inside ONE transaction, then pin
-            // the storage version to binary_v.
-            tracing::info!(
-                ev = "db.migrate.start",
+        // A vault stamped below the baseline cannot be carried forward: the
+        // incremental migrations that once described its shape were collapsed
+        // into `0013_baseline.sql` and deleted (ADR-0018). Refusing loudly is
+        // the only honest answer — running the baseline over it would try to
+        // CREATE tables that already exist, and skipping it would hand the
+        // engine a schema missing half its columns.
+        if db_v > 0 && db_v < BASELINE_STORAGE_V {
+            tracing::error!(
+                ev = "db.migrate.refused",
                 from_v = u64::from(db_v),
                 to_v = u64::from(binary_v),
-                mode = "upgrade",
-                "applying pending migrations"
+                err_code = "STORAGE_V_TOO_OLD",
+                err_kind = "permanent",
+                retryable = false,
+                "vault predates the storage baseline"
             );
-            let tx = conn.transaction()?;
-            for m in MIGRATIONS.iter().filter(|m| m.id > db_v) {
-                tx.execute_batch(m.sql).map_err(|source| {
-                    tracing::error!(
-                        ev = "db.migrate.failed",
-                        from_v = u64::from(db_v),
-                        to_v = u64::from(m.id),
-                        err_code = "DB_MIGRATION_FAILED",
-                        err_kind = "permanent",
-                        retryable = false,
-                        cause = %source,
-                        "migration failed"
-                    );
-                    DbError::Migration {
-                        id: m.id,
-                        name: m.name,
-                        source,
-                    }
-                })?;
-            }
-            // applied_at_ms stays 0: the storage layer has no injected clock,
-            // matching the fresh-DB path which also writes 0.
-            tx.execute(
-                "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-                rusqlite::params![binary_v, 0],
-            )?;
-            tx.commit()?;
-            tracing::info!(
-                ev = "db.migrate.ok",
-                from_v = u64::from(db_v),
-                to_v = u64::from(binary_v),
-                mode = "upgrade",
-                "migrations applied"
-            );
+            return Err(DbError::StorageVPreBaseline {
+                db_v,
+                baseline_v: BASELINE_STORAGE_V,
+            });
         }
+        if db_v < binary_v {
+            return Self::run_migrations(conn, db_v, binary_v, "upgrade");
+        }
+        Ok(())
+    }
+
+    /// Apply every migration with `id > from_v` in ascending order inside ONE
+    /// transaction, then pin `schema_meta.storage_v` to `to_v`.
+    ///
+    /// Migrations are logged because they are the one storage operation that
+    /// can leave a user unable to open their vault at all, and the failure
+    /// arrives with no UI to report it through. Nothing here touches row
+    /// content: only migration ids, names, and versions.
+    fn run_migrations(
+        conn: &mut Connection,
+        from_v: u32,
+        to_v: u32,
+        mode: &'static str,
+    ) -> Result<(), DbError> {
+        tracing::info!(
+            ev = "db.migrate.start",
+            from_v = u64::from(from_v),
+            to_v = u64::from(to_v),
+            mode,
+            "applying migrations"
+        );
+        let tx = conn.transaction()?;
+        for m in MIGRATIONS.iter().filter(|m| m.id > from_v) {
+            tx.execute_batch(m.sql).map_err(|source| {
+                tracing::error!(
+                    ev = "db.migrate.failed",
+                    from_v = u64::from(from_v),
+                    to_v = u64::from(m.id),
+                    err_code = "DB_MIGRATION_FAILED",
+                    err_kind = "permanent",
+                    retryable = false,
+                    cause = %source,
+                    "migration failed"
+                );
+                DbError::Migration {
+                    id: m.id,
+                    name: m.name,
+                    source,
+                }
+            })?;
+        }
+        // applied_at_ms stays 0: the storage layer has no injected clock.
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![to_v, 0],
+        )?;
+        tx.commit()?;
+        tracing::info!(
+            ev = "db.migrate.ok",
+            from_v = u64::from(from_v),
+            to_v = u64::from(to_v),
+            mode,
+            "migrations applied"
+        );
         Ok(())
     }
 
@@ -326,857 +333,141 @@ mod tests {
         assert!(res.is_err(), "wrong vault root must not open the DB");
     }
 
-    /// Build a DB that has ONLY migration 0001 applied and is stamped
-    /// `storage_v = 1`, simulating a real v1 vault opened by a newer binary.
-    fn seed_v1_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![1_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
+    /// A fresh vault applies the baseline and nothing else.
     #[test]
-    fn upgrades_v1_db_and_preserves_rows() {
-        // Sanity: this test only exercises the upgrade path if the binary is
-        // actually ahead of v1.
-        assert!(u32::from(STORAGE_V) >= 2);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v1_db(&conn);
-
-        // Insert a stream row against the v1 schema (no name/color columns).
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![7u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-
-        // Run the normal open path: pending migrations must auto-apply.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        // Schema upgraded to the binary version.
-        let v: u32 = conn
+    fn fresh_vault_applies_the_baseline() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        let v: u32 = db
+            .conn()
             .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
             .unwrap();
+        assert_eq!(v, BASELINE_STORAGE_V);
         assert_eq!(v, u32::from(STORAGE_V));
 
-        // Existing row intact, new columns present with defaults.
-        let (name, color): (String, String) = conn
-            .query_row(
-                "SELECT name, color FROM streams WHERE stream_id = ?",
-                rusqlite::params![vec![7u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(name, "");
-        assert_eq!(color, "slate");
-    }
-
-    /// Build a DB with migrations 0001+0002 applied, stamped `storage_v = 2`,
-    /// simulating a real v2 vault opened by a newer binary.
-    fn seed_v2_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
-        tx.execute_batch(MIGRATIONS[1].sql).unwrap();
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![2_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v2_db_adds_scheduling_constraints_column() {
-        // Only meaningful if the binary is ahead of v2.
-        assert!(u32::from(STORAGE_V) >= 3);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v2_db(&conn);
-
-        // Seed a stream + task row against the v2 schema (no
-        // scheduling_constraints column yet).
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms, name, color)
-             VALUES (?, ?, 1, ?, 0, 0, 0, 'S', 'slate')",
-            rusqlite::params![vec![1u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, stream_id, title, state)
-             VALUES (?, ?, 'seed', 'todo')",
-            rusqlite::params![vec![2u8; 16], vec![1u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies pending migrations (0003).
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // The new columns exist and default to NULL for the pre-existing row.
-        let (task_sc, routine_col): (Option<Vec<u8>>, i64) = conn
-            .query_row(
-                "SELECT scheduling_constraints,
-                        (SELECT COUNT(*) FROM pragma_table_info('routines')
-                         WHERE name = 'scheduling_constraints')
-                 FROM tasks WHERE id = ?",
-                rusqlite::params![vec![2u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert!(task_sc.is_none(), "seed row's constraints default to NULL");
-        assert_eq!(routine_col, 1, "routines gained the column too");
-    }
-
-    /// Build a DB with migrations 0001..0003 applied, stamped `storage_v = 3`,
-    /// simulating a real v3 vault opened by a newer binary.
-    fn seed_v3_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
-        tx.execute_batch(MIGRATIONS[1].sql).unwrap();
-        tx.execute_batch(MIGRATIONS[2].sql).unwrap();
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![3_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v3_db_adds_routine_materialization_columns() {
-        assert!(u32::from(STORAGE_V) >= 4);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v3_db(&conn);
-
-        // Seed a v3 routine row (no materialization columns yet).
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms, name, color)
-             VALUES (?, ?, 1, ?, 0, 0, 0, 'S', 'slate')",
-            rusqlite::params![vec![1u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO routines (id, stream_id, rrule, timezone, starts_at_ms)
-             VALUES (?, ?, 'FREQ=DAILY', 'UTC', 0)",
-            rusqlite::params![vec![9u8; 16], vec![1u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0004.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // New columns exist; defaults hold for the pre-existing row.
-        let (catchup, mat_until, template): (String, i64, Option<Vec<u8>>) = conn
-            .query_row(
-                "SELECT catchup_policy, materialized_until_ms, template
-                 FROM routines WHERE id = ?",
-                rusqlite::params![vec![9u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(catchup, "skip", "catchup_policy defaults to 'skip'");
-        assert_eq!(mat_until, 0, "materialized_until_ms defaults to 0");
-        assert!(template.is_none(), "template defaults to NULL");
-    }
-
-    /// Build a DB with migrations 0001..0004 applied, stamped `storage_v = 4`,
-    /// simulating a real v4 vault opened by a newer binary.
-    fn seed_v4_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..4] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![4_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v4_db_adds_sync_local_tables() {
-        assert!(u32::from(STORAGE_V) >= 5);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v4_db(&conn);
-
-        // Seed a v4 op row so we can prove existing data survives the upgrade.
-        conn.execute(
-            "INSERT INTO ops
-             (op_id, stream_id, device_id, seq, ts_ms, envelope,
-              inner_kind, target_kind, received_at)
-             VALUES (?, ?, ?, 1, 0, ?, 'task.create', 'task', 0)",
-            rusqlite::params![vec![1u8; 16], vec![0u8; 16], vec![7u8; 16], vec![9u8; 4]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0005.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // The pre-existing op row is intact.
-        let seq: i64 = conn
-            .query_row(
-                "SELECT seq FROM ops WHERE op_id = ?",
-                rusqlite::params![vec![1u8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(seq, 1);
-
-        // New tables exist.
-        for table in ["local_identity", "outbox", "sync_cursors"] {
-            let n: i64 = conn
+        // Spot-check that the collapse did not lose a table from the middle of
+        // the old sequence: one from 0001, one from 0005, one from 0010, one
+        // from 0011.
+        for table in [
+            "ops",
+            "streams",
+            "tasks",
+            "local_identity",
+            "sync_cursors",
+            "contexts",
+            "task_blockers",
+            "focus_sessions",
+            "review_snapshots",
+        ] {
+            let n: i64 = db
+                .conn()
                 .query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    "SELECT count(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = ?",
                     rusqlite::params![table],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 1, "table {table} should exist after v4->v5 upgrade");
+            assert_eq!(n, 1, "baseline must create `{table}`");
         }
     }
 
-    /// Build a DB with migrations 0001..0005 applied, stamped `storage_v = 5`,
-    /// simulating a real v5 vault opened by a newer binary.
-    fn seed_v5_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..5] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![5_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
+    /// ...and it does NOT recreate the schema the reset dropped.
     #[test]
-    fn upgrades_v5_db_adds_lww_metadata_columns() {
-        assert!(u32::from(STORAGE_V) >= 6);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v5_db(&conn);
-
-        // Seed a v5 task row (pre-LWW columns) so we can prove data survives.
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, stream_id, title, state)
-             VALUES (?, ?, 'survivor', 'todo')",
-            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0006.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // The pre-existing task row is intact, and its new columns hold defaults.
-        let (title, created, lww_ts): (String, i64, i64) = conn
+    fn baseline_omits_the_dead_schema() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        let journal: i64 = db
+            .conn()
             .query_row(
-                "SELECT title, created_at_ms, lww_ts_ms FROM tasks WHERE id = ?",
-                rusqlite::params![vec![1u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'merge_journal'",
+                [],
+                |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(title, "survivor");
-        assert_eq!(created, 0);
-        assert_eq!(lww_ts, 0);
+        assert_eq!(
+            journal, 0,
+            "merge_journal is a per-field journal for an entity-level merge model"
+        );
 
-        // The new LWW columns exist on all three materialized tables.
-        for (table, col) in [
-            ("tasks", "lww_device"),
-            ("tasks", "updated_at_ms"),
-            ("streams", "lww_ts_ms"),
-            ("streams", "lww_device"),
-            ("routines", "lww_ts_ms"),
-            ("routines", "lww_device"),
+        for (table, column) in [
+            ("streams", "doc_blob"),
+            ("streams", "doc_blob_v"),
+            ("routines", "rrule"),
+            ("routines", "extra"),
         ] {
-            let n: i64 = conn
+            let n: i64 = db
+                .conn()
                 .query_row(
-                    &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?"),
-                    rusqlite::params![col],
+                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = ?",
+                    rusqlite::params![table, column],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                n, 1,
-                "column {table}.{col} should exist after v5->v6 upgrade"
+            assert_eq!(n, 0, "`{table}.{column}` was dropped by the reset");
+        }
+    }
+
+    /// A vault from before the reset is REFUSED, with its own error — not
+    /// silently upgraded, and not confused with a too-new one.
+    #[test]
+    fn refuses_a_pre_baseline_vault() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        // A v12 vault: the last shape that existed before the baseline. Only
+        // `schema_meta` is needed — the refusal happens on the stamped version,
+        // before any DDL is considered.
+        conn.execute_batch(
+            "CREATE TABLE schema_meta (storage_v INTEGER NOT NULL,
+                                       applied_at_ms INTEGER NOT NULL);
+             INSERT INTO schema_meta (storage_v, applied_at_ms) VALUES (12, 0);",
+        )
+        .unwrap();
+
+        let err = Db::ensure_schema(&mut conn).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DbError::StorageVPreBaseline {
+                    db_v: 12,
+                    baseline_v: 13
+                }
+            ),
+            "expected a pre-baseline refusal, got {err:?}"
+        );
+        assert_eq!(err.as_error_code(), ErrorCode::StorageVTooOld);
+    }
+
+    /// Every pre-baseline version is refused, not just the last one.
+    #[test]
+    fn refuses_every_pre_baseline_version() {
+        for db_v in 1..BASELINE_STORAGE_V {
+            let mut conn = Connection::open_in_memory().unwrap();
+            Db::apply_pragmas(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_meta (storage_v INTEGER NOT NULL,
+                                           applied_at_ms INTEGER NOT NULL);
+                 INSERT INTO schema_meta (storage_v, applied_at_ms) VALUES (0, 0);",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE schema_meta SET storage_v = ?",
+                rusqlite::params![db_v],
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    Db::ensure_schema(&mut conn),
+                    Err(DbError::StorageVPreBaseline { .. })
+                ),
+                "storage_v = {db_v} must be refused"
             );
         }
     }
-
-    /// Build a DB with migrations 0001..0006 applied, stamped `storage_v = 6`,
-    /// simulating a real v6 vault opened by a newer binary.
-    fn seed_v6_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..6] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![6_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v6_db_adds_contexts_table_and_keeps_memberships() {
-        assert!(u32::from(STORAGE_V) >= 7);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v6_db(&conn);
-
-        // A v6 vault could already carry task↔context memberships (0001 shipped
-        // `task_contexts` long before the `contexts` table existed); they must
-        // survive the upgrade untouched.
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, stream_id, title, state)
-             VALUES (?, ?, 'tagged survivor', 'todo')",
-            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO task_contexts (task_id, context_id) VALUES (?, ?)",
-            rusqlite::params![vec![1u8; 16], vec![0xAAu8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0007.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // Pre-existing rows survived.
-        let (title, ctx): (String, Vec<u8>) = conn
-            .query_row(
-                "SELECT t.title, tc.context_id
-                 FROM tasks t JOIN task_contexts tc ON tc.task_id = t.id
-                 WHERE t.id = ?",
-                rusqlite::params![vec![1u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(title, "tagged survivor");
-        assert_eq!(ctx, vec![0xAAu8; 16]);
-
-        // The new table exists and accepts a Context row with LWW metadata.
-        conn.execute(
-            "INSERT INTO contexts
-             (id, name, description, archived, deleted, created_at_ms, updated_at_ms,
-              lww_ts_ms, lww_device)
-             VALUES (?, 'errands', NULL, 0, 0, 5, 5, 5, ?)",
-            rusqlite::params![vec![0xAAu8; 16], vec![7u8; 16]],
-        )
-        .unwrap();
-        let name: String = conn
-            .query_row(
-                "SELECT name FROM contexts WHERE id = ?",
-                rusqlite::params![vec![0xAAu8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(name, "errands");
-
-        // Two live contexts may share a name: uniqueness is a command-path rule,
-        // not a schema constraint, so concurrent remote creates cannot wedge the
-        // receive path with a constraint violation.
-        conn.execute(
-            "INSERT INTO contexts (id, name, created_at_ms, updated_at_ms)
-             VALUES (?, 'errands', 6, 6)",
-            rusqlite::params![vec![0xBBu8; 16]],
-        )
-        .unwrap();
-    }
-
-    /// Build a DB with migrations 0001..0007 applied, stamped `storage_v = 7`,
-    /// simulating a real v7 vault opened by a newer binary.
-    fn seed_v7_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..7] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![7_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v7_db_adds_task_blockers_and_routine_streak() {
-        assert!(u32::from(STORAGE_V) >= 9);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v7_db(&conn);
-
-        // A v7 vault carries tasks and routines that must survive untouched.
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, stream_id, title, state)
-             VALUES (?, ?, 'dependent survivor', 'todo')",
-            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO routines
-             (id, stream_id, rrule, timezone, starts_at_ms, streak_counter)
-             VALUES (?, ?, 'FREQ=DAILY', 'UTC', 0, 5)",
-            rusqlite::params![vec![9u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migrations 0008 + 0009.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // Pre-existing rows survived, and the pre-v9 routine reads as
-        // "no streak state yet" rather than as a decode failure.
-        let (title, streak, state): (String, i64, Option<Vec<u8>>) = conn
-            .query_row(
-                "SELECT t.title, r.streak_counter, r.streak_state
-                 FROM tasks t, routines r WHERE t.id = ? AND r.id = ?",
-                rusqlite::params![vec![1u8; 16], vec![9u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(title, "dependent survivor");
-        assert_eq!(streak, 5);
-        assert_eq!(state, None, "upgraded routines start with default state");
-
-        // The dependency index accepts an edge whose blocker does not exist on
-        // this replica yet — the out-of-order arrival case an FK would break.
-        conn.execute(
-            "INSERT INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
-            rusqlite::params![vec![1u8; 16], vec![0xEEu8; 16]],
-        )
-        .unwrap();
-        // ... and is idempotent on re-apply of the same edge.
-        conn.execute(
-            "INSERT OR IGNORE INTO task_blockers (task_id, blocker_id) VALUES (?, ?)",
-            rusqlite::params![vec![1u8; 16], vec![0xEEu8; 16]],
-        )
-        .unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM task_blockers WHERE blocker_id = ?",
-                rusqlite::params![vec![0xEEu8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1, "reverse lookup is indexed and deduped");
-
-        // The streak blob column accepts a write.
-        conn.execute(
-            "UPDATE routines SET streak_state = ? WHERE id = ?",
-            rusqlite::params![vec![0xA1u8, 0xA2], vec![9u8; 16]],
-        )
-        .unwrap();
-    }
-
-    /// Build a DB with migrations 0001..0009 applied, stamped `storage_v = 9`,
-    /// simulating a real v9 vault opened by a newer binary.
-    fn seed_v9_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..9] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![9_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v9_db_adds_focus_session_tables() {
-        assert!(u32::from(STORAGE_V) >= 10);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v9_db(&conn);
-
-        // A v9 vault carries tasks that must survive untouched.
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, stream_id, title, state)
-             VALUES (?, ?, 'survivor', 'todo')",
-            rusqlite::params![vec![1u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0010.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        let title: String = conn
-            .query_row(
-                "SELECT title FROM tasks WHERE id = ?",
-                rusqlite::params![vec![1u8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(title, "survivor");
-
-        // A `start` row lands for a task this replica has never seen — the
-        // out-of-order arrival case an FK would break.
-        conn.execute(
-            "INSERT INTO focus_sessions
-             (id, task_id, stream_id, started_at_ms, planned_ms, energy, kind)
-             VALUES (?, ?, ?, 1000, 1500000, 'high', 'work')",
-            rusqlite::params![vec![7u8; 16], vec![0xEEu8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-
-        // ... and so does an `end` whose `start` has not arrived: the two ops
-        // are separate rows precisely so neither arrival order loses one.
-        conn.execute(
-            "INSERT INTO focus_session_ends
-             (session_id, ended_at_ms, actual_focused_ms, completed_task)
-             VALUES (?, 2000, 900, 1)",
-            rusqlite::params![vec![0xABu8; 16]],
-        )
-        .unwrap();
-
-        // A session with no end row reads as running; the LEFT JOIN is the
-        // whole "dangling start is valid" mechanism.
-        let running: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM focus_sessions s
-                   LEFT JOIN focus_session_ends e ON e.session_id = s.id
-                  WHERE e.session_id IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(running, 1, "the start with no end reads as still running");
-
-        // Interruptions are a grow-only set: the same triple twice is one row.
-        for _ in 0..2 {
-            conn.execute(
-                "INSERT OR IGNORE INTO focus_interruptions (session_id, at_ms, reason)
-                 VALUES (?, 1500, 'meeting')",
-                rusqlite::params![vec![7u8; 16]],
-            )
-            .unwrap();
-        }
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM focus_interruptions WHERE session_id = ?",
-                rusqlite::params![vec![7u8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1, "re-delivery of one interruption is idempotent");
-
-        // Nothing in the schema stores a ticking elapsed value.
-        let cols: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT name FROM pragma_table_info('focus_sessions')")
-                .unwrap();
-            let v = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            v
-        };
-        assert!(
-            !cols.iter().any(|c| c.contains("elapsed")),
-            "elapsed is derived from the clock, never a column: {cols:?}"
-        );
-    }
-
-    /// Build a DB with migrations 0001..0010 applied, stamped `storage_v = 10`,
-    /// simulating a real v10 vault opened by a newer binary.
-    fn seed_v10_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..10] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![10_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v10_db_adds_review_snapshots() {
-        assert!(u32::from(STORAGE_V) >= 11);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v10_db(&conn);
-
-        // A v10 vault carries focus sessions that must survive untouched.
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms)
-             VALUES (?, ?, 1, ?, 0, 0, 0)",
-            rusqlite::params![vec![0u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO focus_sessions
-             (id, task_id, stream_id, started_at_ms, kind)
-             VALUES (?, ?, ?, 1000, 'work')",
-            rusqlite::params![vec![7u8; 16], vec![1u8; 16], vec![0u8; 16]],
-        )
-        .unwrap();
-
-        // Normal open path applies migration 0011.
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        let started: i64 = conn
-            .query_row(
-                "SELECT started_at_ms FROM focus_sessions WHERE id = ?",
-                rusqlite::params![vec![7u8; 16]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(started, 1000, "pre-v11 rows survive the upgrade");
-
-        // A snapshot naming a Stream this replica has never materialized still
-        // lands: the table deliberately has no foreign key, because a snapshot
-        // op can overtake the `stream.create` it references.
-        let insert = |id: u8, window_start: i64| {
-            conn.execute(
-                "INSERT OR IGNORE INTO review_snapshots
-                 (id, created_at_ms, window_start_ms, window_end_ms,
-                  completed, deferred, dropped, created, reopened, body)
-                 VALUES (?, 5000, ?, ?, 3, 1, 0, 7, 0, ?)",
-                rusqlite::params![
-                    vec![id; 16],
-                    window_start,
-                    window_start + 604_800_000,
-                    vec![0xA1u8, 0xA2]
-                ],
-            )
-            .unwrap()
-        };
-        insert(0x11, 1000);
-
-        // Append-only + idempotent: re-delivering the same op is one row, and
-        // a second device's review of the SAME week is a *separate* row rather
-        // than an overwrite.
-        insert(0x11, 1000);
-        insert(0x22, 1000);
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM review_snapshots WHERE window_start_ms = 1000",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 2, "two devices reviewing one week keep both snapshots");
-
-        // History reads newest window first.
-        insert(0x33, 605_800_000);
-        let ids: Vec<Vec<u8>> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM review_snapshots
-                     ORDER BY window_start_ms DESC, created_at_ms DESC, id ASC",
-                )
-                .unwrap();
-            let v = stmt
-                .query_map([], |r| r.get::<_, Vec<u8>>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            v
-        };
-        assert_eq!(ids.len(), 3);
-        assert_eq!(ids[0], vec![0x33u8; 16], "most recent window first");
-
-        // Nothing in the schema lets a snapshot be edited after the fact: the
-        // only mutable-looking columns are the LWW pair, which the engine never
-        // writes for an append-only family.
-        let cols: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT name FROM pragma_table_info('review_snapshots')")
-                .unwrap();
-            let v = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            v
-        };
-        assert!(
-            !cols.iter().any(|c| c == "updated_at_ms"),
-            "a snapshot is immutable; there is no update path: {cols:?}"
-        );
-    }
-
-    /// Build a DB with migrations 0001..0011 applied, stamped `storage_v = 11`,
-    /// simulating a real v11 vault opened by a newer binary.
-    fn seed_v11_db(conn: &Connection) {
-        let tx = conn.unchecked_transaction().unwrap();
-        for m in &MIGRATIONS[0..11] {
-            tx.execute_batch(m.sql).unwrap();
-        }
-        tx.execute(
-            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
-            rusqlite::params![11_u32, 0],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-
-    #[test]
-    fn upgrades_v11_db_adds_stream_pause_state_with_entity_defaults() {
-        assert!(u32::from(STORAGE_V) >= 12);
-
-        let mut conn = Connection::open_in_memory().unwrap();
-        Db::apply_pragmas(&conn).unwrap();
-        seed_v11_db(&conn);
-
-        conn.execute(
-            "INSERT INTO streams
-             (stream_id, doc_blob, doc_blob_v, head_root, last_op_seq,
-              created_at_ms, updated_at_ms, name, color)
-             VALUES (?, ?, 1, ?, 0, 0, 0, 'Work', 'sky')",
-            rusqlite::params![vec![3u8; 16], Vec::<u8>::new(), vec![0u8; 32]],
-        )
-        .unwrap();
-
-        Db::ensure_schema(&mut conn).unwrap();
-
-        let v: u32 = conn
-            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, u32::from(STORAGE_V));
-
-        // The pre-v12 row survives and takes the Stream entity's own defaults:
-        // not paused, reviewed weekly — which is how the hardcoded row reader
-        // had been behaving all along.
-        let (name, paused, until, cadence): (String, i64, Option<i64>, String) = conn
-            .query_row(
-                "SELECT name, paused, paused_until_ms, review_cadence
-                 FROM streams WHERE stream_id = ?",
-                rusqlite::params![vec![3u8; 16]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(name, "Work", "the existing row is untouched");
-        assert_eq!(paused, 0);
-        assert_eq!(until, None);
-        assert_eq!(cadence, "weekly");
-
-        // And the new columns are writable, which is the whole point: before
-        // v12 a pause had nowhere to persist to.
-        conn.execute(
-            "UPDATE streams SET paused = 1, paused_until_ms = ?, review_cadence = 'monthly'
-             WHERE stream_id = ?",
-            rusqlite::params![9_000_i64, vec![3u8; 16]],
-        )
-        .unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM streams WHERE paused != 0 AND review_cadence = 'monthly'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
-    }
-
     #[test]
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();
         Db::apply_pragmas(&conn).unwrap();
-        seed_v1_db(&conn);
+        Db::ensure_schema(&mut conn).unwrap();
         // Stamp a version strictly newer than this binary supports.
         let too_new = u32::from(STORAGE_V) + 1;
         conn.execute(

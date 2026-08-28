@@ -40,4 +40,4 @@ pub const DOC_SCHEMA_FLOOR: u16 = 1;
 pub const CRYPTO_SUITE_V: u16 = 1;
 
 /// Local storage schema version. Per-device; never appears on the wire.
-pub const STORAGE_V: u16 = 12;
+pub const STORAGE_V: u16 = 13;
