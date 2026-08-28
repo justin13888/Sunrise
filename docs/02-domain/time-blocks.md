@@ -13,39 +13,69 @@ A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks
 are different commitments, and flying to another timezone must move one and not
 the other.
 
+Shared types are defined in
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
+
+This is the **v1 shape** — what a device actually writes and signs today:
+
 ```cddl
 Block = {
-    id:           tstr .regexp "blk_[A-Z0-9]{26}",
-    created_at:   tdate,
-    updated_at:   tdate,
-    title?:       text<256>,                  ; defaults to bound task's title
+    id:           tstr .regexp "blk_[0-9A-HJKMNP-TV-Z]{26}",
+    created_at:   timestamp,
+    updated_at:   timestamp,
+    stream_id:    entity-ref,                 ; str_ ref; REQUIRED, not optional
     starts_at:    stime,                      ; see tasks.md §stime
     ends_at:      stime,                      ; resolves after starts_at
-    timezone:     text,                       ; IANA tz
-    title_track_task: bool .default false,    ; recompute title from the one bound Task
-    tasks:        [* tstr],                   ; bound task IDs
-    stream_id?:   tstr,                       ; for tinting / filtering
-    color?:       BlockColor,                 ; defaults to stream color
-    location?:    text<128>,
-    notes?:       NoteBody,
-    travel_time_before?: duration,            ; surfaced as a leading buffer
-    travel_time_after?:  duration,
-    source:       BlockSource,
-    external_id?: text,                       ; for round-tripping with Google Calendar
-    rrule?:       text,                       ; for recurring blocks (rare; usually use Routine)
+    title?:       text<256>,                  ; defaults to the bound task's title
+    title_track_task: bool,                   ; default false; recompute title from the one bound Task
+    tasks:        [* entity-ref],             ; tsk_ refs bound to this Block
     deleted:      bool,
+    unknown-fields,                           ; see overview.md
 }
+```
+
+Two corrections against earlier revisions of this spec:
+
+- **`stream_id` is required.** A Block always has an owning Stream; there is
+  no untinted Block. It was specified as optional and has never been written
+  that way.
+- **There is no `timezone` field.** `SunriseTime` subsumes it — a `zoned`
+  bound carries its own IANA zone, and a `floating` or `all_day` bound
+  deliberately carries none. A second, Block-level zone would be a third
+  answer to a question the bounds already answer, and the three could
+  disagree.
+
+### Specified but not modelled
+
+These are the calendar-integration slice. They are **not** on the wire today,
+and a build that adds them round-trips through this one without loss, because
+the forward-compat `unknown-fields` map preserves them verbatim:
+
+```cddl
+; Not yet modelled. Landing these is a DOC_SCHEMA_V bump, not a break.
+color?:              BlockColor    ; defaults to stream color
+location?:           text<128>
+notes?:              NoteBody
+travel_time_before_s?: uint        ; seconds, matching the rest of the domain
+travel_time_after_s?:  uint
+source?:             BlockSource
+external_id?:        tstr          ; for round-tripping with Google Calendar
+rrule?:              RRule         ; recurring blocks (rare; usually use a Routine)
 
 BlockSource = "sunrise"                       ; created in Sunrise
             / "import:gcal"                   ; imported from Google Calendar
             / "import:ics"                    ; imported from a one-shot .ics file
 ```
 
+`source` and `external_id` in particular cannot land before there is an
+importer to set them; `crates/sunrise-integrations` has no consumer
+([`../09-integrations/overview.md`](../09-integrations/overview.md)).
+
 ## Block title
 
 A Block's `title` is a **shadow copy** of the bound task's title at creation/binding time, not a live binding. Subsequent edits to the bound task's title do not propagate to the Block.
 
-- Optional `title_track_task: bool = false`. When true, the Block recomputes its title on read from the bound task's current title. CRDT field; default false to preserve user-edited Block titles.
+- Optional `title_track_task: bool = false`. When true, the Block recomputes its title on read from the bound task's current title. Default false to preserve user-edited Block titles.
 - Multi-task Blocks (N ≥ 2) ignore `title_track_task` and require an explicit `title`.
 
 ## Symmetry with `Task.blocks`
@@ -64,16 +94,6 @@ construction instead of by repair.
 A binding may name a Task this replica has not materialized yet — ops arrive
 out of order — so `block_tasks` carries no foreign key on `task_id`. The
 binding is a fact; the Task turns up later.
-
-## v1 scope
-
-`Block` in v1 carries `id`, `created_at`, `updated_at`, `stream_id`,
-`starts_at`, `ends_at`, `title`, `title_track_task`, `tasks` and `deleted`.
-`timezone` is subsumed by `SunriseTime` (a zoned bound carries its own zone).
-`color`, `location`, `notes`, the travel-time buffers, `source`, `external_id`
-and `rrule` are specified above and not yet modelled: they land with the
-calendar-integration slice, and the forward-compat `unknown` map means a build
-that adds them can round-trip through this one without loss.
 
 ## Why Blocks aren't Tasks
 
@@ -101,10 +121,16 @@ Blocks are the **bidirectional bridge** with external calendars. See [`../09-int
 
 This split prevents accidental write-amplification into the user's primary calendar.
 
-## CRDT mapping
+## Merge mapping
 
-- Map of LWW-register fields.
-- `tasks`: observed-remove set.
+The whole Block is one last-writer-wins unit on `(hlc, device_id, seq)`
+([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). `tasks` is an
+observed-remove set in the target state only; today a concurrent bind on one
+device and unbind on another resolves by timestamp.
+
+The `block_tasks` projection is the sole writer of the binding relation and
+`Task.blocks` is derived from it, so the two never disagree — see §Symmetry
+with `Task.blocks`.
 
 ## Conflicts
 
@@ -113,5 +139,5 @@ When two devices schedule overlapping Blocks for the same task, both Blocks coex
 The Calendar view shades the overlap region and shows a "Resolve" overflow menu with three actions:
 
 - **Keep both** — no-op; closes the menu.
-- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. CRDT-wise: tombstone the two original Blocks and create a new one in a single submit batch.
+- **Merge** — combines the two Blocks into one with the union time range and concatenated tasks. Mechanically: tombstone the two original Blocks and create a new one in a single submit batch.
 - **Adjust times** — opens a side-by-side editor for both Blocks.

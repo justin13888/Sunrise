@@ -6,18 +6,43 @@ status: accepted
 
 Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). Notes do not exist as standalone entities.
 
+> **Status: the `Note` entity is unreachable in v1.** `crates/sunrise-domain/src/note.rs`
+> defines the struct and `0013_baseline.sql` creates a `notes` table, and
+> nothing in between exists: no `Command`, no op kind, no `Query`, no UniFFI
+> surface, and no writer to the table. `Query::EntityById` refuses
+> `EntityKind::Note` explicitly. What *is* live is the `body` **field** on
+> Task, Stream and Routine — which is a `NoteBody`, a different thing from a
+> `Note`. See [`../implementation/overview.md`](../implementation/overview.md).
+
 ## Why constrained rich text (not Markdown)
 
 - Markdown editors invite comparison to Obsidian, Bear, etc.; we are not building an editor product.
-- A constrained schema is testable, CRDT-mergeable, and renders consistently across all clients (especially TUI).
+- A constrained schema is testable, mergeable, and renders consistently across every client.
 - We export to Markdown; we don't store as Markdown.
 
-## Schema
+## Wire shape
 
 ```cddl
-NoteBody = [* Block]
+; What is actually serialized, today, everywhere a NoteBody appears.
+NoteBody = bstr
+```
 
-Block =
+`NoteBody` is an **opaque byte string** on the wire. The core neither parses
+nor validates its contents; the grammar below is the contract editors and
+renderers agree on *inside* those bytes, not a shape the CBOR codec enforces.
+That distinction matters for two reasons: a body that fails the grammar still
+round-trips and still syncs, and adding a block kind is not a `DOC_SCHEMA_V`
+change.
+
+## Body grammar (renderer contract, not wire shape)
+
+```cddl
+; The decoded interior of a NoteBody's bytes. `NoteBlock` is deliberately not
+; called `Block` — that name is taken by the time-block entity in
+; time-blocks.md, and the two are unrelated.
+NoteBodyContent = [* NoteBlock]
+
+NoteBlock =
       Paragraph
     / Heading
     / List
@@ -29,7 +54,7 @@ Block =
 Paragraph = {kind: "p", inline: [* Inline]}
 Heading   = {kind: "h", level: 1..3, inline: [* Inline]}
 List      = {kind: "ul" / "ol", items: [+ ListItem]}
-ListItem  = {inline: [* Inline], children?: [* Block]}
+ListItem  = {inline: [* Inline], children?: [* NoteBlock]}
 Checklist = {kind: "task", items: [+ ChecklistItem]}
 ChecklistItem = {checked: bool, inline: [* Inline]}
 CodeBlock = {kind: "code", language?: text, content: text}
@@ -47,20 +72,46 @@ Mark = "bold" / "italic" / "underline" / "strike" / "code"
 
 Explicit non-features: tables, embedded images inline, custom styles, fonts, colors. Images attach via [`attachments.md`](./attachments.md).
 
-## CRDT mapping
+## The `Note` entity
 
-A `NoteBody` is stored as a Loro `RichText` doc. Concurrent edits merge character-level; concurrent block-structure edits use list semantics.
+Specified for completeness. **Nothing writes this today** — see the banner at
+the top of this file.
+
+```cddl
+Note = {
+    id:         tstr .regexp "not_[0-9A-HJKMNP-TV-Z]{26}",
+    created_at: timestamp,
+    updated_at: timestamp,
+    parent:     entity-ref,   ; Task, Stream or Block
+    body:       NoteBody,     ; opaque bstr
+    deleted:    bool,
+    unknown-fields,           ; see overview.md
+}
+```
+
+Shared types are defined in
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
+
+## Merge mapping
+
+A `NoteBody` is a byte string that merges as part of its owning entity's row:
+one last-writer-wins unit on `(hlc, device_id, seq)`
+([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). **Two people typing in
+the same body produce one survivor, not a character-level merge** — that needs
+a text CRDT, and the workspace ships no CRDT library. ADR-0014 §What we give
+up names this file specifically. Character-level merge is the target state.
 
 ## Editor surface
 
 | Platform | Editor |
 |---|---|
-| Desktop / Web | Tiptap or ProseMirror, schema-locked to NoteBody |
-| iOS | Native textview with custom toolbar |
-| Android | Native EditText with custom toolbar |
-| TUI | Vim-style modal editing; export-to-`$EDITOR` for long edits |
+| macOS | SwiftUI text editing, schema-locked to NoteBody |
+| Web (deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
+| iOS (deferred) | Native textview with custom toolbar |
+| Android (deferred) | Native EditText with custom toolbar |
+| `sunrise` CLI | Plain text only; no structured-body editing |
 
-All editors emit / consume the same `NoteBody` JSON (or its CRDT equivalent). The TUI's "open in $EDITOR" round-trips through Markdown via a lossy converter; the converter logs warnings on lossy elements.
+All editors emit and consume the same `NoteBody` bytes.
 
 ## In-app references
 

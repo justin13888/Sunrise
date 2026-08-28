@@ -8,34 +8,55 @@ A Person represents either a Sunrise identity (someone the user shares with) or 
 
 ## Fields
 
+> **Status: the `Person` entity is unreachable in v1.**
+> `crates/sunrise-domain/src/person.rs` defines the struct and
+> `0013_baseline.sql` creates a `persons` table; there is no `Command`, no op
+> kind, no `Query`, no UniFFI surface, and nothing writes the table.
+> `Query::EntityById` refuses `EntityKind::Person`. The only live use of a
+> `prs_` reference is `Task.assignee`, which the core carries as an opaque
+> label. Everything below the field list describes the sharing model as
+> designed, not as shipped — see
+> [`../implementation/overview.md`](../implementation/overview.md).
+
+Shared types are defined in
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
+
 ```cddl
 Person = {
-    id:            tstr .regexp "prs_[A-Z0-9]{26}",
-    created_at:    tdate,
-    updated_at:    tdate,
-    display_name:  text<128>,
-    handle?:       text<64>,                 ; "@carlos"
-    avatar?:       BlobRef,                  ; locally-stored, optional
-    notes?:        NoteBody,
-    linked_identity?: tstr,                  ; "idn_…" if this Person has a Sunrise identity
-    contact_methods: [* ContactMethod],      ; email, phone — locally only
+    id:            tstr .regexp "prs_[0-9A-HJKMNP-TV-Z]{26}",
+    created_at:    timestamp,
+    updated_at:    timestamp,
+    display_name:  tstr,                     ; UI label; treat as plaintext
+    identity_id?:  entity-ref,               ; idn_… if this Person has a Sunrise identity
     deleted:       bool,
+    unknown-fields,                          ; see overview.md
 }
-
-ContactMethod = {kind: "email" / "phone" / "other", value: text}
 ```
+
+The wire key is **`identity_id`**, not `linked_identity`. Earlier revisions of
+this spec used the latter; the struct has never spelled it that way, so a
+reader implementing against the old name would have found the field absent on
+every payload.
+
+**`handle`, `avatar`, `notes` and `contact_methods` do not exist**, and neither
+does a `ContactMethod` type. They were specified and never modelled. Absent
+means absent — a client cannot round-trip a handle by writing one, because
+nothing on the wire carries it. (`unknown-fields` would preserve a key a
+*newer* build wrote, but no build has ever written these.)
+
+`display_name` is not length-capped in the domain.
 
 ## Self
 
-The local user is also a Person. Their `linked_identity` is the user's own identity. UI treats self specially in some surfaces (e.g. assignment).
+The local user is also a Person. Their `identity_id` is the user's own identity. UI treats self specially in some surfaces (e.g. assignment).
 
 ## Linking to a cryptographic identity
 
-A Person becomes a Sunrise *peer* by linking to a `linked_identity`. This happens via:
+A Person becomes a Sunrise *peer* by linking to an `identity_id`. This happens via:
 
 1. **Invite link.** User generates a sharing invite for a Stream; sends the link OOB (Signal, email).
 2. **Recipient onboarding.** Recipient signs in / signs up; redeems invite. Their identity public key is exchanged with the sender.
-3. **Bidirectional mirror.** Each side adds the other as a Person with `linked_identity` set.
+3. **Bidirectional mirror.** Each side adds the other as a Person with `identity_id` set.
 
 After linking:
 
@@ -84,5 +105,9 @@ Elevation is **prospective**: ops the recipient already received as a viewer are
 
 ## What sharing is *not*
 
-- Not realtime collaborative editing of a Note like Google Docs. (CRDT supports it; UX surface is *not* prioritized for v1 — it's a single-cursor model with merged saves.)
+- Not realtime collaborative editing of a Note like Google Docs. It is a
+  single-cursor model with merged saves — and under v1's entity-level LWW
+  ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) that is not a
+  prioritisation call but a capability the merge model does not have. Two
+  people typing in one body produce one survivor.
 - Not a feed/social graph. There is no "who follows whom."

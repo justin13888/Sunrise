@@ -8,28 +8,45 @@ A long-lived bucket of related work. Streams are the **primary axis** of multi-s
 
 ## Fields
 
+Shared types are defined in
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
+
 ```cddl
 Stream = {
-    id:           tstr .regexp "str_[A-Z0-9]{26}",
-    created_at:   tdate,
-    updated_at:   tdate,
+    id:           tstr .regexp "str_[0-9A-HJKMNP-TV-Z]{26}",
+    created_at:   timestamp,
+    updated_at:   timestamp,
     name:         text<128>,
     description?: NoteBody,
-    color:        StreamColor,             ; from a fixed palette
-    icon?:        StreamIcon,              ; from a fixed icon set
-    parent_id?:   tstr,                    ; one-level nesting allowed
+    color:        StreamColor,             ; required; from the fixed palette below
+    icon?:        tstr,                    ; free-form icon id; omitted when unset
+    parent_id?:   entity-ref,              ; str_ ref; one-level nesting allowed
     sort_order:   tstr,                    ; fractional-index string
     archived:     bool,
     paused:       bool,                    ; routines pause; due-date warnings suppressed
-    paused_until?: tdate,                  ; auto-unpause time
-    review_cadence?: ReviewCadence,        ; weekly | biweekly | monthly | none
-    default_context?: tstr,                ; assigned to new tasks in this stream
-    integrations: { * IntegrationKey => IntegrationConfig },
+    paused_until?: timestamp,              ; auto-unpause time
+    review_cadence: ReviewCadence,         ; required, not optional
+    default_context?: entity-ref,          ; ctx_ ref; assigned to new tasks in this stream
+    reminder_lead_s?: uint,                ; seconds; Stream default for its Tasks
     deleted:      bool,
+    unknown-fields,                        ; see overview.md
 }
 
+StreamColor  = "slate" / "rose" / "amber" / "emerald"
+             / "sky" / "indigo" / "violet" / "pink"
 ReviewCadence = "weekly" / "biweekly" / "monthly" / "none"
 ```
+
+- `icon` is a plain string, not a closed `StreamIcon` enum. There is no fixed
+  icon set on the wire; which ids a client can render is a client concern.
+- `reminder_lead_s` is the middle rung of the notification lead-time hierarchy:
+  a Task's own `reminder_lead_s` wins, this is the Stream default, and the
+  device's global default is the floor. See
+  [`../08-features/notifications.md`](../08-features/notifications.md).
+- **There is no `integrations` map**, and no `IntegrationKey` /
+  `IntegrationConfig` type. Earlier revisions declared one; nothing has ever
+  serialized it. Calendar integration is not wired to a Stream field in v1 —
+  see [`../09-integrations/overview.md`](../09-integrations/overview.md).
 
 Built-in pseudo-stream:
 
@@ -63,6 +80,13 @@ The string is bounded by a defrag rule:
 - Defrag is a single op `stream.list.defrag` carrying the new index for every entry. It is idempotent — concurrent defrag from two devices produces the same output (lex-sort the entries by `(ts_ms, device_id_lex)` and re-assign indexes evenly across `[A, Z]`).
 - The trigger is per-device throttled to once per list per hour to prevent thrash.
 
+> **Not implemented in v1.** The op-kind registry in
+> `crates/sunrise-core/src/inner_op.rs` has `stream.create` / `stream.update` /
+> `stream.delete` and no `stream.list.defrag`, so nothing observes the 64-byte
+> bound and nothing defrags. `sort_order` is written and read; it just grows
+> unbounded under pathological reordering. Adding the op is a `DOC_SCHEMA_V`
+> bump, not a breaking change.
+
 ## Sharing
 
 A Stream is the **unit of sharing** with another identity. Sharing a Stream:
@@ -71,11 +95,17 @@ A Stream is the **unit of sharing** with another identity. Sharing a Stream:
 
 See [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md).
 
-## CRDT mapping
+## Merge mapping
 
-- Stream is a map.
-- Scalars: LWW-register.
-- `integrations` is a map keyed by integration kind; values are LWW-registers of opaque (per-integration) JSON.
+The whole Stream is one last-writer-wins unit on `(hlc, device_id, seq)`
+([ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
+[ADR-0016](../11-adr/0016-hlc-timestamps.md)). Per-field LWW registers are the
+target state, not the shipped one.
+
+`sort_order` is worth calling out: under entity LWW, two devices reordering
+the same list concurrently produce one survivor rather than an interleave. The
+fractional index still does its job — it keeps a *single* reorder from
+rewriting every sibling — but it does not make concurrent reorders merge.
 
 ## Validation
 

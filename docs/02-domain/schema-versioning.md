@@ -66,34 +66,54 @@ Avoid. If unavoidable:
 
 ## What this means for the v1 launch
 
-- **The CDDL specs in `02-domain/` are NOT currently authoritative.** They were
-  written against `DOC_SCHEMA_V = 2`; the constant is now `4`, and 8 of the 9
-  spec files have drifted from the Rust types they claim to describe. Treat
-  `crates/sunrise-domain/src/` as the source of truth until this is repaired.
-  Verified drift, per file:
+- **The CDDL specs in `02-domain/` are authoritative again.** All nine were
+  re-derived against `crates/sunrise-domain/src/` at `DOC_SCHEMA_V = 4`. An
+  earlier revision of this section recorded eight of the nine as drifted;
+  every item on that list is closed, and the repairs are listed below so the
+  closure can be re-checked rather than taken on trust.
 
-  | Spec | Status | Principal drift |
+  | Spec | Was | Repair |
   |---|---|---|
-  | `scheduling-constraints.md` | **matches** | Pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
-  | `tasks.md` | drifted | Missing `reminder_lead_s`; CDDL `estimated_duration` (ISO string) is really `estimated_duration_s` (seconds); declares a `blocked` state and a `blocks_others` field, neither of which is serialized. |
-  | `streams.md` | drifted | Missing `reminder_lead_s`; declares an `integrations` map, and `StreamIcon`/`IntegrationConfig` types, that do not exist. |
-  | `contexts-and-tags.md` | drifted | Declares a `color` field that does not exist. |
-  | `routines-and-recurrence.md` | drifted | `rrule` is a structured map, not an RFC 5545 string; missing the six streak/forgiveness fields. |
-  | `time-blocks.md` | drifted | Nine fields specified but not modelled; `stream_id` is required, not optional. Prose has a "v1 scope" caveat, the CDDL block does not. |
-  | `attachments.md` | drifted | Four thumbnail-slice fields not yet modelled. Prose carries a "v1 scope" caveat. |
-  | `notes.md` | drifted | `NoteBody` is an opaque `bstr`, not the structured block grammar the CDDL defines. The `Note` entity has no CDDL block at all. |
-  | `people-and-sharing.md` | drifted | Wire key is `identity_id`, CDDL says `linked_identity`; `handle`/`avatar`/`notes`/`contact_methods` do not exist. |
+  | `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
+  | `tasks.md` | drifted | Added `reminder_lead_s`; `estimated_duration` → `estimated_duration_s` (seconds); dropped the `blocked` state and the `blocks_others` field, neither of which is serialized; `deferred_count` is `int`, not `uint`. |
+  | `streams.md` | drifted | Added `reminder_lead_s`; deleted the `integrations` map and the `StreamIcon`/`IntegrationConfig` types; `icon` is a free `tstr`; `review_cadence` is required. |
+  | `contexts-and-tags.md` | drifted | Deleted the `color` field and `ContextColor`. |
+  | `routines-and-recurrence.md` | drifted | `rrule` is the structured `RRule` map, with `Frequency`/`Weekday`; added all six streak/forgiveness fields and `skipped_keys`; `estimated_duration_s` on `TaskTemplate`. |
+  | `time-blocks.md` | drifted | CDDL block now carries only the ten modelled fields; `stream_id` required; no `timezone`; the eight unmodelled fields moved to a separate, explicitly-not-on-the-wire block. |
+  | `attachments.md` | drifted | Same split: four thumbnail fields moved out of the live block. `parent` narrowed to Task, which is what validation enforces. |
+  | `notes.md` | drifted | `NoteBody` is declared as the `bstr` it is, with the block grammar relabelled a renderer contract; the `Note` entity gained a CDDL block. |
+  | `people-and-sharing.md` | drifted | `linked_identity` → `identity_id`; deleted `handle`/`avatar`/`notes`/`contact_methods` and `ContactMethod`. |
 
-  One drift is global: no CDDL block declares the `unknown` (`#[serde(flatten)]`)
-  map that every persisted entity carries, even though the mechanism is
-  described in prose below.
+  The global drift is closed too: every persisted entity's CDDL block now
+  declares `unknown-fields`, defined once in
+  [`overview.md` §Common CDDL types](./overview.md#common-cddl-types) along
+  with `entity-ref`, `timestamp` and the civil types. `Interruption` correctly
+  declares none, and neither do the two value types (`SchedulingConstraint`,
+  `stime`).
+
+  Two conventions changed in the process, both because the old spelling was
+  wrong rather than merely terse. `tdate` became `timestamp`: `tdate` is the
+  prelude's *tagged* date and nothing in the domain emits a CBOR tag. And
+  `[A-Z0-9]{26}` became `[0-9A-HJKMNP-TV-Z]{26}`: ULIDs are Crockford base32,
+  which excludes `I`, `L`, `O` and `U`, so the old character class matched ids
+  that cannot exist.
+
+  **What remains unpinned rather than undrifted.** Only
+  `scheduling-constraints.md` has a test that fails when the Rust and the CDDL
+  disagree. The other eight are now correct and will stay correct only as long
+  as someone re-reads them. Extending the `serde_json_shape_matches_cddl`
+  pattern is the fix — it is one `to_value` and a handful of `assert_eq!` per
+  entity, and it catches exactly the class of drift this section spent two
+  revisions describing. It is not done here because this stream owns `docs/`
+  and not `crates/`; it is worth a follow-up issue.
 
   Version 1 differed from 2 only in the five `SunriseTime` fields
   ([ADR-0017](../11-adr/0017-sunrise-time-representation.md)), which were bare
   instants and still decode as `instant`. Versions 3 and 4 added op families and
   changed the delete ops to full-state
   ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); neither is reflected
-  in the CDDL.
+  in the CDDL — they are op-family and op-shape changes, not entity-field
+  changes, so the entity blocks above are unaffected by them.
 - We expect rapid iteration in the first 6 months. Therefore, and these are
   implemented rather than planned:
   - Every entity carries an `unknown` map (`#[serde(flatten)]`) that preserves

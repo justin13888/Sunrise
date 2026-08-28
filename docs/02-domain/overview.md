@@ -47,6 +47,58 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 | Attachment | rare; capped per vault | [`attachments.md`](./attachments.md) |
 | FocusSession | 1–20/day; append-only, never edited | [`../08-features/focus-mode.md`](../08-features/focus-mode.md), [ADR-0013](../11-adr/0013-focus-session-op-representation.md) |
 
+## Common CDDL types
+
+Every entity spec in this directory writes its fields as CDDL. The rules below
+are shared by all of them and are defined once here rather than repeated.
+
+```cddl
+; ---------------------------------------------------------------------------
+; Identifiers. A typed reference is a 4-char prefix plus a 26-char Crockford
+; base32 ULID: 30 chars total. See identifiers.md for the prefix registry.
+; ---------------------------------------------------------------------------
+entity-ref = tstr .regexp "[a-z]{3}_[0-9A-HJKMNP-TV-Z]{26}"
+
+; ---------------------------------------------------------------------------
+; Time. Nothing in the domain emits a CBOR tag, so these are plain text
+; strings, NOT the prelude's tagged `tdate`. An instant is a jiff
+; `Timestamp` (RFC 3339, always UTC, `Z`-suffixed, fractional seconds only
+; when non-zero); the civil types are jiff `civil::*` values in their full
+; seconds form. See ../11-adr/0011-datetime-jiff.md.
+; ---------------------------------------------------------------------------
+timestamp      = tstr .regexp "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z"
+civil-datetime = tstr .regexp "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?"
+civil-date     = tstr .regexp "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+civil-time     = tstr .regexp "([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+
+; A few append-only records (FocusStart, FocusEnd, ReviewSnapshot) carry
+; integer epoch milliseconds under an explicit `_ms` key instead. That is the
+; exception, and the key name is what marks it.
+epoch-ms = int
+
+; ---------------------------------------------------------------------------
+; Rich text. v1 stores a NoteBody as an opaque byte string; the structured
+; block grammar in notes.md is the *rendering* contract, not the wire shape.
+; ---------------------------------------------------------------------------
+NoteBody = bstr
+
+; ---------------------------------------------------------------------------
+; Forward compatibility. EVERY persisted entity below carries this: fields a
+; newer DOC_SCHEMA_V wrote that this build does not model are preserved
+; verbatim at the top level of the entity map and re-emitted byte-for-byte.
+; It is spelled as a serde `flatten`, so the keys sit alongside the modelled
+; ones rather than nested under a container. See
+; ../10-cross-cutting/protocol-versioning.md §7.
+;
+; The one exception is Interruption (focus-mode), whose whole value is its
+; primary key; it declares no unknown-fields.
+; ---------------------------------------------------------------------------
+unknown-fields = ( * tstr => any )
+```
+
+`text<N>` below means a `tstr` of at most N **characters after trim** (not
+bytes) — the rule `validate_title` enforces.
+
 ## Hard rules
 
 - A **Task** belongs to exactly **one Stream** at a time. Tasks not yet assigned live in a special pseudo-stream `Inbox`.

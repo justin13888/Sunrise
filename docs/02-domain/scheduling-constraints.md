@@ -52,9 +52,15 @@ Window dimensions are evaluated in local wall-clock terms, and the "local" zone 
 
 `time_of_day` and `date_range` are civil (zone-less) values; the evaluating zone above is what pins them to instants. `days_of_week` is likewise computed against the evaluating zone's calendar day.
 
-## CRDT mapping
+## Merge mapping
 
-The **entire list** of `SchedulingConstraint` values on a Task or Routine is a **single LWW register** (whole-list replace on `(timestamp, device_id)`; see [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)). Constraints are always edited as a unit in the UI — there is no per-constraint identity, no add/remove of individual entries. Modeling this as an OR-Set would buy nothing (users never concurrently mutate individual entries) and would complicate convergence; whole-list LWW converges trivially and matches the editing model.
+A `SchedulingConstraint` is a **value type**: it mints no id and carries no
+`unknown-fields` map. Forward compat for it comes from its owner — an
+unmodelled key inside a constraint is preserved only if the whole
+`scheduling_constraints` value is preserved, which under whole-list replacement
+it is.
+
+The **entire list** of `SchedulingConstraint` values on a Task or Routine is replaced as one unit, and merges with the rest of its owning entity's row under entity-level LWW on `(hlc, device_id, seq)` ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), [ADR-0016](../11-adr/0016-hlc-timestamps.md)). Constraints are always edited as a unit in the UI — there is no per-constraint identity, no add/remove of individual entries. Modeling this as an OR-Set would buy nothing (users never concurrently mutate individual entries) and would complicate convergence; whole-list LWW converges trivially and matches the editing model.
 
 ## Storage projection
 
