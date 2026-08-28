@@ -213,6 +213,11 @@ docker-build tag="sunrise-server:dev":
       --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
       -t {{tag}} .
 
+# Render the Conventional-Commit changelog for a range, as the release notes do
+[group('release')]
+changelog from="" to="HEAD":
+    .github/scripts/changelog.sh "{{from}}" "{{to}}"
+
 # --- Aggregates (mirror the git hooks; handy to run by hand) ---
 
 # Everything the pre-commit hook runs
