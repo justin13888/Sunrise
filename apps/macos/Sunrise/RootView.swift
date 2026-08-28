@@ -6,7 +6,8 @@ import SwiftUI
 /// a first run has nothing to lose, a locked vault has everything to lose, and
 /// a failure is neither.
 struct RootView: View {
-    @State private var session = SessionModel.standard()
+    let session: SessionModel
+    let surfaces: AppSurfaces
 
     var body: some View {
         Group {
@@ -20,7 +21,11 @@ struct RootView: View {
                 LockedView(reason: reason, retry: session.start)
             case .unlocked:
                 if let bridge = session.bridge {
-                    VaultView(bridge: bridge)
+                    VaultView(bridge: bridge, surfaces: surfaces)
+                        // The menu bar item and the capture panel need the same
+                        // open vault this window is using, and this is the
+                        // first moment there is one.
+                        .task { surfaces.attach(bridge: bridge) }
                 }
             case let .failed(message):
                 ContentUnavailableView(
@@ -37,6 +42,7 @@ struct RootView: View {
 /// The unlocked app.
 struct VaultView: View {
     let bridge: CoreBridge
+    let surfaces: AppSurfaces
 
     @State private var settings = AppSettings()
     @State private var account = AccountModel()
@@ -57,8 +63,9 @@ struct VaultView: View {
     @State private var deviceID = ""
     @State private var showingSettings = false
 
-    init(bridge: CoreBridge) {
+    init(bridge: CoreBridge, surfaces: AppSurfaces) {
         self.bridge = bridge
+        self.surfaces = surfaces
         _browse = State(initialValue: BrowseModel(bridge: bridge))
         _list = State(initialValue: TaskListModel(bridge: bridge))
         _capture = State(initialValue: CaptureModel(bridge: bridge))
@@ -126,6 +133,7 @@ struct VaultView: View {
                     settings: settings,
                     account: account,
                     deviceID: deviceID,
+                    hotkey: surfaces.hotkeyStatus,
                     signIn: signIn
                 )
                 Button("Done") { showingSettings = false }

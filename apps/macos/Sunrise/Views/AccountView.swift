@@ -9,6 +9,7 @@ struct AccountView: View {
     @Bindable var settings: AppSettings
     let account: AccountModel
     let deviceID: String
+    let hotkey: HotkeyStatus
     let signIn: () async -> Void
 
     var body: some View {
@@ -27,6 +28,36 @@ struct AccountView: View {
                 LabeledContent("This device", value: String(deviceID.prefix(16)))
                     .monospaced()
                 accountRow
+            }
+
+            Section("Quick capture") {
+                LabeledContent("Shortcut") {
+                    HStack(spacing: 8) {
+                        Text("⌘⇧N").monospaced()
+                        Image(systemName: hotkey.isActive
+                            ? "checkmark.circle"
+                            : "exclamationmark.triangle")
+                            .foregroundStyle(hotkey.isActive ? .green : .orange)
+                    }
+                }
+                Text(hotkey.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // Named because `docs/07-clients/desktop.md` says quick capture
+                // needs it. It does not: the shortcut is registered with
+                // `RegisterEventHotKey`, which reserves one combination rather
+                // than observing every keystroke. Saying so is better than a
+                // settings screen that quietly contradicts the documentation.
+                LabeledContent("Accessibility permission") {
+                    HStack(spacing: 8) {
+                        Text(HotkeyCenter.accessibilityIsTrusted ? "Granted" : "Not granted")
+                            .foregroundStyle(.secondary)
+                        Button("Open Settings…") { HotkeyCenter.openAccessibilitySettings() }
+                    }
+                }
+                Text("Not required for the shortcut above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
