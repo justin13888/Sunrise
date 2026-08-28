@@ -176,7 +176,7 @@ Cert trust is a two-sided file exchange: the **first** run of each vault only ex
 cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
 ```
 
-> The server config is default-only (ephemeral, in-memory). The `-c sunrise.toml` flag in the binary's docstring is not wired up yet, so flags/config files have no effect.
+> The server reads `sunrise.toml` (`-c <path>` → `$SUNRISE_CONFIG` → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`); with no config it runs on defaults, which bind loopback in single-tenant mode with an in-memory store. Setting `[auth] oidc_issuer` + `oidc_client_id` installs the JWKS verifier. See `docs/06-server/self-hosting.md`.
 
 #### 5. macOS client
 

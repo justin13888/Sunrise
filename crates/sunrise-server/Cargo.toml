@@ -44,6 +44,9 @@ tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Already in the lock via `uniffi_macros`, so wiring it in here adds no new
+# dependency to the tree — see docs/01-architecture/dependencies.md.
+toml = { workspace = true }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-error = { workspace = true }

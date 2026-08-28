@@ -31,6 +31,7 @@ superseding decision named in the **Governing decision** column.
 | WebSocket client transport | `tokio-tungstenite` | 0.24.0 | [ADR-0005](../11-adr/0005-sync-transport.md) | Sync transport; `rustls-tls-webpki-roots`. |
 | TLS | `rustls` | 0.23.40 | [ADR-0005](../11-adr/0005-sync-transport.md) | `ring` backend, no OpenSSL. |
 | Frame compression | `zstd` | 0.13.3 | [wire-protocol.md](../05-sync/wire-protocol.md) | Wire-frame payload compression. |
+| Server config parsing | `toml` | 1.1.4 | [self-hosting.md](../06-server/self-hosting.md) | `sunrise-server` only, `default-features = false` + `parse`/`serde`. Added **zero** crates to the lock: it was already resolved as a `uniffi_macros` dependency of `sunrise-core-bindings`. See Reconciliations §g. |
 | Structured logging | `tracing` | 0.1.44 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) | The logging API for the whole workspace. Was already in the lock transitively via `tower-http`/`axum`; now a direct dependency of `sunrise-log`, `-server`, `-tui`, `-storage`, `-core`. |
 | Log subscriber | `tracing-subscriber` | 0.3.23 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended) | `default-features = false` + `std`/`fmt`/`env-filter`/`json`/`registry`. `ansi` deliberately off — no colour codes in NDJSON, and it drops `nu-ansi-term`. Adds `sharded-slab`, `thread_local`, `matchers`, `tracing-serde` to the lock, all MIT/Apache-2.0. |
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
@@ -165,3 +166,28 @@ It was accepted rather than hand-writing PKCE and the token grants. Those are
 the two places OAuth implementations reliably go wrong, and a vetted,
 widely-used crate getting them right is worth more than ten unused lock
 entries. `cargo deny check` passes with the advisory ignore list still empty.
+
+### g. `toml` — a new dependency that costs nothing
+
+`sunrise-server` reads `sunrise.toml`. The workspace has a standing preference
+for hand-rolling small grammars — `sunrise-client-core::config::parse_pairs`
+exists precisely because pulling a TOML crate in "to read a flat list of string
+pairs would be the largest dependency in the tree for the smallest grammar in
+it", and that reasoning was right for that case.
+
+It does not apply here, for two reasons.
+
+1. **The grammar is not small.** The server config is nested tables carrying
+   strings, booleans, integers, and string arrays. `parse_pairs` handles quoted
+   string values in a flat namespace and cannot express `allow_signup = false`
+   or `allowed_origins = [...]` without coercion. Extending it would mean
+   hand-writing a TOML subset parser for the file that decides whether the
+   server authenticates anyone — the wrong place to save a dependency.
+2. **It adds nothing to the tree.** `toml` 1.1.4 was already in `Cargo.lock`,
+   pulled by `uniffi_macros` for `sunrise-core-bindings`, along with
+   `toml_datetime`, `toml_parser`, and `toml_writer`. Naming it in
+   `sunrise-server` added exactly one line to the lock file: an edge, not a
+   crate. Nothing new is compiled and nothing new is audited.
+
+Pinned `default-features = false` with `parse` + `serde`, which excludes the
+serializer — the server reads config and never writes it.

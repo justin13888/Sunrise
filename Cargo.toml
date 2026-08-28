@@ -109,6 +109,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 
 # --- utility ---
 thiserror = { version = "1.0", default-features = false }
+# Server config parsing. Already in the lock as a `uniffi_macros` dependency,
+# so naming it here adds no crate to the tree that was not already built.
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
 once_cell = { version = "1.20", default-features = false, features = ["std"] }
 parking_lot = { version = "0.12", default-features = false }

@@ -13,25 +13,84 @@
 //! switches to a human line in dev builds. See
 //! `docs/10-cross-cutting/logging.md` §10.
 
+use std::process::ExitCode;
 use std::sync::Arc;
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_log::ProtoVersions;
-use sunrise_server::{build_router, config::ServerConfig, state::ServerState, OidcVerifier};
+use sunrise_server::{build_router, state::ServerState, OidcVerifier};
 
+/// `EX_CONFIG` from `sysexits.h`: the server was asked to run a configuration
+/// it cannot honour. Distinct from a crash so a supervisor does not restart
+/// into the same refusal forever.
+const EX_CONFIG: u8 = 78;
+
+/// Anything else that stops the server before or during serving.
+const EX_FAILURE: u8 = 1;
+
+/// Returns an [`ExitCode`] rather than a `Result` so the config refusals can
+/// exit 78. A `Result`-returning `main` reports every error as 1, which would
+/// tell a supervisor to restart into the same refusal forever.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => ExitCode::from(code),
+    }
+}
+
+/// The real entrypoint. `Err(code)` has already been logged.
+async fn run() -> Result<(), u8> {
     // First statement in the process: everything below this line can log, and
     // nothing above it needs to.
-    sunrise_log::init_stderr()?;
+    // The one place in the workspace where `print_stderr` is the right call:
+    // the failure being reported *is* the logger not existing, so there is no
+    // other channel. Exiting silently would leave an operator with a bare
+    // status code and nothing to read.
+    #[allow(clippy::print_stderr)]
+    if let Err(e) = sunrise_log::init_stderr() {
+        eprintln!("cannot initialize logging: {e}");
+        return Err(EX_FAILURE);
+    }
 
-    let cfg = ServerConfig::default();
+    // Argument and config-file handling. A config that cannot be resolved is
+    // fatal with EX_CONFIG (78) rather than a generic failure, because an
+    // operator's supervisor distinguishes "misconfigured, do not restart me"
+    // from "crashed, restart me".
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cfg = match sunrise_server::config::load(&args) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.start.refused",
+                err_code = "CONFIG_INVALID",
+                err_kind = "permanent",
+                retryable = false,
+                cause = %e,
+                "refusing to start"
+            );
+            return Err(EX_CONFIG);
+        }
+    };
     let bind = cfg.bind.clone();
 
     // `ServerState::try_new` installs the self-host `NullVerifier`, which maps
     // every caller to one synthetic account. When the config names an OIDC
     // issuer, the real JWKS-backed verifier replaces it here — that swap is
     // the only difference between self-host and managed at this layer.
-    let mut state = ServerState::try_new(cfg)?;
+    let mut state = match ServerState::try_new(cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.start.refused",
+                err_code = "CONFIG_INVALID",
+                err_kind = "permanent",
+                retryable = false,
+                cause = %e,
+                "refusing to start"
+            );
+            return Err(EX_CONFIG);
+        }
+    };
     if let Some(oidc) = OidcVerifier::from_server_config(&state.config, state.clock.clone()) {
         state = state.with_verifier(Arc::new(oidc));
     }
@@ -49,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cause = %e,
             "refusing to start"
         );
-        return Err(e.into());
+        return Err(EX_CONFIG);
     }
 
     let app = build_router(state);
@@ -77,8 +136,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    axum::serve(listener, app).await?;
+    let listener = match tokio::net::TcpListener::bind(&bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(ev = "srv.start.failed", bind = %bind, cause = %e, "cannot bind");
+            return Err(EX_FAILURE);
+        }
+    };
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!(ev = "srv.stop.failed", cause = %e, "server stopped");
+        return Err(EX_FAILURE);
+    }
 
     tracing::info!(ev = "srv.stop", "listener closed");
     Ok(())

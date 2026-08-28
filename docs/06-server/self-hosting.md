@@ -20,59 +20,68 @@ A first-class deployment topology, not a charity afterthought.
 
 ## Config (`sunrise.toml`)
 
-The server resolves the config file in this order: `--config <path>` flag → `$SUNRISE_CONFIG` env → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`. **First found wins.** A missing config is a fatal error with exit code 78 (`CONFIG`).
+The server resolves the config file in this order: `--config <path>` (also
+`-c <path>` and `--config=<path>`) → `$SUNRISE_CONFIG` → `./sunrise.toml` →
+`/etc/sunrise/sunrise.toml`. **First found wins.**
 
+A path named by the flag or the env var that cannot be read is a fatal error
+with exit code 78 (`EX_CONFIG`): naming a file is how an operator says the
+defaults are wrong, so falling back to them would run a server nobody asked
+for. Finding *no* config at all is **not** an error — the server then runs on
+its defaults, which bind loopback in single-tenant mode. A config that parses
+but describes an unsafe server (see "Refusals" below) also exits 78.
+
+Every key is optional and overlays the defaults, so a file that sets one key
+changes one thing.
 
 ```toml
 [server]
-listen = "0.0.0.0:443"
-public_url = "https://sunrise.example.com"
-
-[tls]
-mode = "acme"            # or "static"
-acme_email = "ops@example.com"
-# ACME certs renew at expiry - 30 days as a background task (no restart).
-# On renewal failure: retry hourly with exponential backoff up to 24h, then daily.
-# Warnings are logged at 14, 7, and 3 days remaining.
-
-[storage]
-mode = "single-binary"   # or "scaled"
-data_dir = "/var/lib/sunrise"
-sqlite_pool_size = 5      # WAL mode; writes serialize at the SQLite layer.
-                          # The server retries `database is locked` up to 3 times
-                          # with 50 ms backoff before returning 503 SERVER_OVERLOADED.
-
-# OR for scaled:
-# postgres_url = "postgres://..."
-# s3_endpoint = "https://s3.example.com"
-# s3_bucket = "sunrise-ops"
+listen           = "0.0.0.0:443"          # default "127.0.0.1:8443"
+allowed_origins  = ["https://app.example.com"]   # browser origins; must be scheme-qualified
+max_body_bytes   = 2097152                # default 2 MiB
 
 [auth]
-oidc_issuer       = "https://auth.example.com"   # required; any OIDC-conformant issuer
-oidc_client_id    = "sunrise"
-oidc_client_secret = "..."
-allow_signup      = false                        # if false, only existing IdP users with prior accounts can use the server
-admin_emails      = ["ops@example.com"]
+oidc_issuer        = "https://auth.example.com"  # must be https
+oidc_client_id     = "sunrise"                   # tokens must carry it in `aud`
+allow_signup       = false                # default true
+require_device_sig = true                 # default false; requires an issuer
+token_leeway_secs  = 60                   # clock-skew allowance on exp/nbf
+jwks_ttl_secs      = 300                  # cache TTL for a JWKS with no cache headers
 
-[push]
-apns = { key_id = "...", team_id = "...", key_path = "..." }   # optional
-fcm  = { service_account_path = "..." }                         # optional
-web_push = { vapid_public_key = "...", vapid_private_key = "..." }
-# Relative paths in [push.apns] and [push.fcm] resolve against the config file's
-# directory (NOT the CWD). Absolute paths are used as-is.
-
-[observability]
-audit_retention_days = 30   # default; cron at 02:00 UTC deletes expired records.
-                            # Server logs use account_h everywhere; no email-tagged
-                            # buffer exists — there is no auth_log_retention_hours
-                            # setting in v1.
-
-[quotas]
-max_account_storage_mb = 51200
-max_ops_per_minute = 600
-max_devices = 50
-max_blob_size_mb = 100
+[storage]
+data_dir = "/var/lib/sunrise"             # expands to <dir>/sunrise.db and <dir>/blobs
+                                          # unset = ephemeral in-memory (tests only)
 ```
+
+Setting **both** `oidc_issuer` and `oidc_client_id` is what installs the JWKS
+verifier. With either missing the server stays single-tenant, where every
+caller maps to the same account.
+
+### Refusals
+
+The server exits 78 rather than starting, when:
+
+| Condition | Why |
+|---|---|
+| Single-tenant and `listen` is not loopback | Publishes one shared account namespace to the network |
+| `oidc_issuer` set without `oidc_client_id` | Tokens could not be audience-checked |
+| `oidc_issuer` is not `https://` | Bearer tokens over plaintext |
+| `require_device_sig` without an issuer | Device signatures are meaningless under the self-host verifier |
+| An origin is `*` or not scheme-qualified | Ambiguous CORS |
+| `max_body_bytes = 0` | Rejects every request |
+
+Unknown keys and unknown tables are **rejected**, not ignored. Writing a
+`[tls]` block and having it silently dropped would serve plaintext while the
+operator believed otherwise, so the parser names the offending key instead.
+
+### Not yet wired
+
+These appear in earlier drafts of this document and are **not implemented**;
+the parser will reject them rather than accept them silently:
+`[tls]` (terminate TLS at a reverse proxy for now), `[push]`, `[quotas]`,
+`[observability]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
+`s3_*`, `[server] public_url`, `[auth] oidc_client_secret` / `admin_emails`,
+and the `sunrise-server doctor` subcommand.
 
 ## Operator surfaces
 
