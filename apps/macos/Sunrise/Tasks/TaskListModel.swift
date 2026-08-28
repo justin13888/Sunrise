@@ -20,7 +20,12 @@ final class TaskListModel {
     /// cannot disagree about what "today" is.
     private(set) var timeZone: String = TimeZone.current.identifier
 
-    private let bridge: CoreBridge
+    /// The bridge, for the panes a task editor opens over one row —
+    /// attachments and the activity timeline. Exposed rather than proxied: both
+    /// own their own queries and their own change subscription, and routing
+    /// them through this model would make it the owner of state it does not
+    /// display.
+    let bridge: CoreBridge
 
     init(bridge: CoreBridge, kind: TaskListKind = .todayAll) {
         self.bridge = bridge

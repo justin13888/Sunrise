@@ -64,6 +64,7 @@ struct TaskRows: View {
         .sheet(item: $editing) { task in
             TaskEditorView(
                 task: task,
+                bridge: model.bridge,
                 apply: { await model.apply($0, to: task) },
                 delete: { await model.delete(task) }
             )

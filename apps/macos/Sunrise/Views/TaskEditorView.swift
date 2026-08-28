@@ -1,5 +1,27 @@
 import SwiftUI
 
+/// Which pane of the task editor is showing.
+///
+/// Attachments and the activity timeline are per-task reads with their own
+/// queries and their own change subscriptions, so they are panes rather than
+/// sections of one form: a form that ran three queries to draw a priority
+/// picker would pay for all three every time anyone edited a title.
+enum TaskEditorPane: String, CaseIterable, Identifiable {
+    case details
+    case attachments
+    case activity
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .details: "Details"
+        case .attachments: "Attachments"
+        case .activity: "Activity"
+        }
+    }
+}
+
 /// Edit the facets a Today or Inbox row shows.
 ///
 /// Only the fields these two views render. An editor that offered everything
@@ -11,6 +33,9 @@ struct TaskEditorView: View {
     let delete: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var pane: TaskEditorPane = .details
+    @State private var attachments: AttachmentsModel
+    @State private var activity: ActivityModel
     @State private var title: String
     @State private var priority: Int
     @State private var energy: Energy?
@@ -18,10 +43,17 @@ struct TaskEditorView: View {
     @State private var hasDue: Bool
     @State private var due: Date
 
-    init(task: TaskItem, apply: @escaping (TaskEdit) async -> Void, delete: @escaping () async -> Void) {
+    init(
+        task: TaskItem,
+        bridge: CoreBridge,
+        apply: @escaping (TaskEdit) async -> Void,
+        delete: @escaping () async -> Void
+    ) {
         self.task = task
         self.apply = apply
         self.delete = delete
+        _attachments = State(initialValue: AttachmentsModel(bridge: bridge, task: task.id))
+        _activity = State(initialValue: ActivityModel(bridge: bridge, entity: task.id))
         _title = State(initialValue: task.title)
         _priority = State(initialValue: Int(task.priority ?? 0))
         _energy = State(initialValue: task.energy)
@@ -41,6 +73,25 @@ struct TaskEditorView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Pane", selection: $pane) {
+                ForEach(TaskEditorPane.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding([.horizontal, .top], 12)
+
+            switch pane {
+            case .details: details
+            case .attachments: AttachmentsView(model: attachments)
+            case .activity: ActivityTimelineView(model: activity)
+            }
+        }
+        .frame(width: 460)
+        .padding(.vertical, 8)
+    }
+
+    private var details: some View {
         Form {
             TextField("Title", text: $title)
 
@@ -92,8 +143,6 @@ struct TaskEditorView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
-        .padding(.vertical, 8)
     }
 
     /// The split-optional shape the seam uses: `set` carries a new value,
