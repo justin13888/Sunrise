@@ -16,9 +16,9 @@
 
 use sunrise_crypto::{
     blake3_kdf::derive_key_32,
-    derive_key, encode_envelope, identity_id_from_pub,
+    chunk_aad, chunk_nonce, derive_key, encode_envelope, identity_id_from_pub,
     keys::{IdentitySigningKeyPair, StreamKey},
-    stream_root_init, stream_root_step, AeadAlgId,
+    open_chunk, seal_chunk, stream_root_init, stream_root_step, AeadAlgId,
 };
 use sunrise_crypto_test_vectors as vectors;
 
@@ -148,4 +148,47 @@ fn frozen_envelopes_round_trip_and_verify() {
         verify_envelope(&env, &vectors::DEVICE_SIGNING_PUBLIC)
             .expect("frozen envelope signature verifies under the frozen key");
     }
+}
+
+/// The chunk nonce is derived, never transmitted. Two implementations that
+/// derive it differently each round-trip their own bytes perfectly and cannot
+/// read each other's — which is why this is a frozen vector and not a
+/// round-trip test.
+#[test]
+fn blob_chunk_nonce_vectors_hold() {
+    for v in vectors::BLOB_CHUNK_NONCE_VECTORS {
+        assert_eq!(
+            chunk_nonce(&v.blob_key, v.chunk_idx),
+            v.nonce,
+            "blob chunk nonce drifted at index {}",
+            v.chunk_idx
+        );
+    }
+}
+
+#[test]
+fn a_sealed_blob_chunk_is_byte_exact_and_opens() {
+    use vectors::blob_chunk as v;
+
+    assert_eq!(chunk_aad(&v::BLOB_ID, v::CHUNK_IDX, v::CHUNK_COUNT), v::AAD);
+    let sealed = seal_chunk(
+        &v::BLOB_KEY,
+        &v::BLOB_ID,
+        v::CHUNK_IDX,
+        v::CHUNK_COUNT,
+        v::PLAINTEXT,
+    )
+    .expect("seal the frozen chunk");
+    assert_eq!(sealed, v::SEALED);
+    assert_eq!(
+        open_chunk(
+            &v::BLOB_KEY,
+            &v::BLOB_ID,
+            v::CHUNK_IDX,
+            v::CHUNK_COUNT,
+            &v::SEALED
+        )
+        .expect("open the frozen chunk"),
+        v::PLAINTEXT
+    );
 }

@@ -202,3 +202,64 @@ pub mod sealed_envelope {
         "c308da546d35f28d836eca4e4a51fb3a2b5655070c04",
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Blob chunks
+// ---------------------------------------------------------------------------
+
+/// One blob-chunk nonce derivation, frozen.
+///
+/// `docs/03-crypto/data-encryption-format.md` §Test vectors requires constant
+/// vectors for this derivation specifically: the nonce is *not* stored with
+/// the chunk, so an implementation that derives it differently produces
+/// ciphertext no other implementation can open — and nothing in a round-trip
+/// test would notice, because it would be self-consistent.
+#[derive(Debug, Clone, Copy)]
+pub struct BlobChunkNonceVector {
+    /// Per-blob key.
+    pub blob_key: [u8; 32],
+    /// Chunk index.
+    pub chunk_idx: u32,
+    /// Expected 24-byte nonce.
+    pub nonce: [u8; 24],
+}
+
+/// Nonce vectors at the first, second and a far index.
+pub const BLOB_CHUNK_NONCE_VECTORS: [BlobChunkNonceVector; 3] = [
+    BlobChunkNonceVector {
+        blob_key: [0x11; 32],
+        chunk_idx: 0,
+        nonce: hex("9fc613c31eb65eb42ebd54bd790f2c7d0f9811e90a848111"),
+    },
+    BlobChunkNonceVector {
+        blob_key: [0x11; 32],
+        chunk_idx: 1,
+        nonce: hex("f4a943628c81b445f7218db847298edb7f0d7e731415139f"),
+    },
+    BlobChunkNonceVector {
+        blob_key: [0x11; 32],
+        chunk_idx: 65_535,
+        nonce: hex("8f90d729bddf642ad4748ff95b7eca11938ba4d3e8a73421"),
+    },
+];
+
+/// A frozen sealed chunk, so the AAD and the AEAD binding are pinned too.
+pub mod blob_chunk {
+    /// Per-blob key.
+    pub const BLOB_KEY: [u8; 32] = [0x11; 32];
+    /// Blob id.
+    pub const BLOB_ID: [u8; 16] = [0x22; 16];
+    /// Chunk index.
+    pub const CHUNK_IDX: u32 = 1;
+    /// Total chunks in the blob.
+    pub const CHUNK_COUNT: u32 = 3;
+    /// Plaintext of the chunk.
+    pub const PLAINTEXT: &[u8] = b"sunrise blob chunk vector";
+    /// Canonical CBOR AAD: `{1: blob_id, 2: chunk_idx, 3: chunk_count}`.
+    pub const AAD: [u8; 23] = super::hex("a301502222222222222222222222222222222202010303");
+    /// Expected `ciphertext || tag`.
+    pub const SEALED: [u8; 41] = super::hex(concat!(
+        "d20f50e4fc0ee6d009ca35b2fcbf316c3d283653fb22168c93",
+        "fe841b1c37e50c6e977586204024de63",
+    ));
+}

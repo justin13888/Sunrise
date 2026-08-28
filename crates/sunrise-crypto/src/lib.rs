@@ -37,6 +37,7 @@
 
 pub mod aead;
 pub mod blake3_kdf;
+pub mod blob_chunk;
 pub mod device_cert;
 pub mod identity;
 pub mod keys;
@@ -50,6 +51,10 @@ pub use aead::{
     aead_open_xchacha, aead_seal_xchacha, AeadError, AEAD_KEY_LEN, AEAD_NONCE_LEN, AEAD_TAG_LEN,
 };
 pub use blake3_kdf::{derive_key, BLAKE3_OUT_LEN};
+pub use blob_chunk::{
+    chunk_aad, chunk_count_for, chunk_nonce, content_hash, open_chunk, seal_chunk, verify_content,
+    BlobChunkError, CHUNK_PLAINTEXT_LEN,
+};
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner};
 pub use identity::{identity_id_from_pub, IdentityId};
 pub use keys::{
