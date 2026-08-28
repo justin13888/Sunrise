@@ -467,54 +467,83 @@ impl From<TaskDraftIn> for sunrise_domain::TaskDraft {
 /// carries the new value and `clear_x` asks for the field to be emptied.
 /// Setting both is a contradiction, and **`clear` wins** — it is the one that
 /// cannot be expressed any other way.
+///
+/// Every field carries a UniFFI default, so the foreign side writes
+/// `TaskEdit()` and sets the two fields it means. Without them a client
+/// changing one field has to spell out all twenty-three, and the twenty-two it
+/// does not care about are exactly where a `false` gets typed for a `clear_`
+/// flag by accident.
 #[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct TaskEdit {
     /// New title.
+    #[uniffi(default = None)]
     pub title: Option<String>,
     /// New body.
+    #[uniffi(default = None)]
     pub set_body: Option<NoteBody>,
     /// Clear the body.
+    #[uniffi(default = false)]
     pub clear_body: bool,
     /// Move to another Stream. (A Stream move is `PromoteToStream`; this field
     /// exists because `TaskPatch` carries it.)
+    #[uniffi(default = None)]
     pub stream_id: Option<EntityRef>,
     /// Replace the whole context set.
+    #[uniffi(default = None)]
     pub contexts: Option<Vec<EntityRef>>,
     /// New state.
+    #[uniffi(default = None)]
     pub state: Option<TaskState>,
     /// New priority.
+    #[uniffi(default = None)]
     pub set_priority: Option<u8>,
     /// Clear the priority.
+    #[uniffi(default = false)]
     pub clear_priority: bool,
     /// New energy facet.
+    #[uniffi(default = None)]
     pub set_energy: Option<Energy>,
     /// Clear the energy facet.
+    #[uniffi(default = false)]
     pub clear_energy: bool,
     /// New estimate, in seconds.
+    #[uniffi(default = None)]
     pub set_estimated_duration_s: Option<u64>,
     /// Clear the estimate.
+    #[uniffi(default = false)]
     pub clear_estimated_duration: bool,
     /// New scheduled time.
+    #[uniffi(default = None)]
     pub set_scheduled_at: Option<TimeValue>,
     /// Clear the scheduled time.
+    #[uniffi(default = false)]
     pub clear_scheduled_at: bool,
     /// New deadline.
+    #[uniffi(default = None)]
     pub set_due_at: Option<TimeValue>,
     /// Clear the deadline.
+    #[uniffi(default = false)]
     pub clear_due_at: bool,
     /// Replace the whole constraint list.
+    #[uniffi(default = None)]
     pub scheduling_constraints: Option<Vec<Constraint>>,
     /// Replace the whole blocker set.
+    #[uniffi(default = None)]
     pub blocked_by: Option<Vec<EntityRef>>,
     /// New assignee.
+    #[uniffi(default = None)]
     pub set_assignee: Option<EntityRef>,
     /// Clear the assignee.
+    #[uniffi(default = false)]
     pub clear_assignee: bool,
     /// New reminder lead time, in seconds.
+    #[uniffi(default = None)]
     pub set_reminder_lead_s: Option<u32>,
     /// Clear it, falling back to the stream's.
+    #[uniffi(default = false)]
     pub clear_reminder_lead_s: bool,
     /// Archive or unarchive.
+    #[uniffi(default = None)]
     pub archived: Option<bool>,
 }
 
