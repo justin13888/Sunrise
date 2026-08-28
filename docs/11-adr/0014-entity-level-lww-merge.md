@@ -82,6 +82,34 @@ This is a real narrowing, not a free win. LWW at entity granularity means:
   wholesale rather than reconciling fields, so there is no per-field conflict to
   surface for review.
 
+### A delete is a full-state op, not a flag
+
+"The winning op's state replaces the entity" only converges if **every** op
+carries a full state to replace it with. A delete is not exempt, and it is the
+one place where the temptation to cut a corner is strongest: the id alone looks
+like enough, because the tombstone is all anyone reads afterwards.
+
+It is not enough. `InnerOp::TaskDelete` originally carried only an `EntityRef`,
+so when a delete won LWW the tombstone was set and the row stamped with the
+winning stamp while every other column kept whatever *that replica* happened to
+hold. Two replicas that had applied different updates before the delete then
+disagreed permanently — and because both carried the same winning stamp,
+neither would ever accept a correction. The divergence was stable, not
+transient, and invisible to the UI because tombstoned rows are filtered from
+every read. It surfaced only in a byte-identical convergence check
+(`crates/sunrise-e2e/tests/two_core_delete_convergence.rs`), reproducing about
+one run in four.
+
+So: **delete ops carry the entity's full state with `deleted` set**, and apply
+through the same path as an update. `DOC_SCHEMA_V = 4` is that change for
+`TaskDelete`.
+
+The rule generalises — any op that mutates an entity must carry the whole
+entity — but as of `DOC_SCHEMA_V = 4` only `TaskDelete` has been converted.
+`StreamDelete`, `ContextDelete`, `RoutineDelete`, `BlockDelete`, and
+`AttachmentDelete` still carry an `EntityRef` and have the same latent defect;
+whether to convert them is a separate decision, deliberately not taken here.
+
 ## Why it is nonetheless the right v1 decision
 
 Every field on v1's shipping entities is a **scalar**. There is no rich text, no

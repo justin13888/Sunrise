@@ -28,7 +28,7 @@ This document is the authoritative table of version numbers and the rules for ch
 ```
 WIRE_PROTO_V      = 1
 ENVELOPE_FORMAT_V = 3
-DOC_SCHEMA_V      = 3
+DOC_SCHEMA_V      = 4
 DOC_SCHEMA_FLOOR  = 1
 CRYPTO_SUITE_V    = 1
 STORAGE_V         = 13
@@ -45,9 +45,21 @@ Wire frames, op envelopes, recovery blobs, and storage rows all carry their resp
 
 `ENVELOPE_FORMAT_V` versions the op-envelope container (field layout, canonical ordering, AAD, signature input) and rides in the magic prefix. `DOC_SCHEMA_V` versions the entity shapes and rides in envelope field 12. Collapsing them into one number — which v1 did — meant that adding a field to a Task changed the magic prefix and made every already-signed envelope undecodable, the exact opposite of the rule in §6.
 
-`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret, and it moves only when a shape stops being readable — never merely because a newer one exists. It is `1` while `DOC_SCHEMA_V` is `3` because a v1 payload really does still decode: its bare-instant time fields read as `SunriseTime::Instant`, and every change since has been an added field that defaults.
+`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret, and it moves only when a shape stops being readable — never merely because a newer one exists. It is `1` while `DOC_SCHEMA_V` is `4` because a v1 payload really does still decode: its bare-instant time fields read as `SunriseTime::Instant`, and every change since has been an added field that defaults.
 
 One caveat the "any field is additive" rule does not cover: a new **op variant** is not a new field. `DOC_SCHEMA_V = 3` introduced the `blk_` and `att_` op families, and a build that predates them cannot decode one — it reports an invalid remote op rather than applying it wrongly. That is acceptable only pre-1.0, where no such build exists ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)); after 1.0 a new op family needs a negotiated capability bit, not a schema bump.
+
+`DOC_SCHEMA_V = 4` is a stronger case still: it changed the **shape of an
+existing variant**, not just added one. `TaskDelete` went from carrying a bare
+`EntityRef` to carrying the full `Task`, so a v3 build reading a v4 delete does
+not merely miss a field — it cannot decode the variant at all, and a v4 build
+reading a v3 delete would be missing the state it now relies on. Neither
+direction is salvageable by the additive rule, and the only reason it is
+acceptable is the same pre-1.0 licence: there are no deployed builds to strand.
+After 1.0 this would need a new variant alongside the old one, not a
+redefinition. The change itself is required for correctness — an id-only delete
+cannot converge under entity-level LWW
+([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
 
 `STORAGE_V` is per-device and never appears on the wire; `13` is the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below it is refused rather than upgraded.
 

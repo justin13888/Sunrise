@@ -42,8 +42,17 @@ pub(crate) enum InnerOp {
     TaskCreate(Task),
     /// Replace a task's full state.
     TaskUpdate(Task),
-    /// Tombstone a task.
-    TaskDelete(EntityRef),
+    /// Tombstone a task, carrying the task's **full state** with `deleted`
+    /// set — not just its id.
+    ///
+    /// A delete is an op like any other in a full-state op model, and
+    /// entity-level LWW (ADR-0014) is defined as "the winning op's state
+    /// replaces the entity". An id-only delete has no state to contribute, so
+    /// when it won it set the tombstone and left every other column at
+    /// whatever the local replica happened to hold — permanently divergent
+    /// across replicas that had applied different updates, and stable, because
+    /// both then carried the same winning stamp.
+    TaskDelete(Task),
     /// Create a stream (full state).
     StreamCreate(Stream),
     /// Replace a stream's full state.
@@ -158,14 +167,13 @@ impl InnerOp {
     /// The entity this op targets.
     pub(crate) fn target_ref(&self) -> EntityRef {
         match self {
-            Self::TaskCreate(t) | Self::TaskUpdate(t) => t.id,
+            Self::TaskCreate(t) | Self::TaskUpdate(t) | Self::TaskDelete(t) => t.id,
             Self::StreamCreate(s) | Self::StreamUpdate(s) => s.id,
             Self::ContextCreate(c) | Self::ContextUpdate(c) => c.id,
             Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) => rt.id,
             Self::BlockCreate(b) | Self::BlockUpdate(b) => b.id,
             Self::AttachmentCreate(a) => a.id,
-            Self::TaskDelete(r)
-            | Self::StreamDelete(r)
+            Self::StreamDelete(r)
             | Self::ContextDelete(r)
             | Self::RoutineDelete(r)
             | Self::BlockDelete(r)

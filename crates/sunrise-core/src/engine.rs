@@ -914,7 +914,7 @@ impl Engine {
         task.updated_at = ms_to_ts(now_ms as i64);
 
         let op_id = self.fresh_op_id(now_ms);
-        let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.id))?;
+        let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.clone()))?;
         let seq = self.next_seq(db, task.stream_id.bytes())?;
         let lww = self.lww_stamp(seq);
         let task_clone = task.clone();
@@ -1525,7 +1525,7 @@ impl Engine {
                 t.updated_at = ms_to_ts(now_ms as i64);
                 let task_seq = self.next_seq_tx(tx, t.stream_id.bytes())?;
                 let task_lww = self.lww_stamp(task_seq);
-                let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
+                let del_op = encode_inner_op(&InnerOp::TaskDelete(t.clone()))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
                 // Stamped with the TASK op's own stamp, not the routine op's:
                 // see the note on `Engine::lww_stamp`.
@@ -1727,7 +1727,7 @@ impl Engine {
             t.deleted = true;
             t.updated_at = ms_to_ts(now_ms as i64);
             let op_id = self.fresh_op_id(now_ms);
-            let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.id))?;
+            let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.clone()))?;
             let seq = self.next_seq(db, t.stream_id.bytes())?;
             let lww = self.lww_stamp(seq);
             let t_clone = t.clone();
@@ -2917,29 +2917,6 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
     incoming.seq >= row.seq
 }
 
-/// Tombstone a materialized task under LWW (delete op won). Stamps LWW columns
-/// and drops the task from the FTS index.
-fn tombstone_task(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
-    tx.execute(
-        "UPDATE tasks SET deleted = 1, updated_at_ms = ?,
-            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
-         WHERE id = ?",
-        params![
-            lww.hlc.physical_ms,
-            lww.hlc.physical_ms,
-            lww.hlc.logical,
-            lww.seq,
-            &lww.device[..],
-            &id[..]
-        ],
-    )?;
-    tx.execute(
-        "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
-        params![&id[..]],
-    )?;
-    Ok(())
-}
-
 /// Tombstone a materialized stream under LWW (delete op won).
 fn tombstone_stream(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
@@ -3050,10 +3027,24 @@ fn materialize_remote(
             replace_task_blockers(tx, t)?;
             ftsr_upsert_task(tx, t)?;
         }
-        InnerOp::TaskDelete(_) => {
+        InnerOp::TaskDelete(t) => {
+            // Applied exactly like TaskUpdate, because that is what it now is:
+            // a full-state op whose state happens to have `deleted` set. The
+            // whole row is replaced, so two replicas that had diverged on
+            // `title` before the delete converge on the deleting replica's
+            // state rather than each keeping its own.
+            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
             if present {
-                tombstone_task(tx, target.bytes(), lww)?;
+                update_task_row(tx, t, lww)?;
+                replace_task_contexts(tx, t)?;
+            } else {
+                insert_task_row(tx, t, lww)?;
+                insert_task_contexts(tx, t)?;
             }
+            replace_task_blockers(tx, t)?;
+            // Not `ftsr_upsert_task`: a tombstoned task must leave the search
+            // index, and `update_task_row` does not touch it.
+            ftsr_delete_task(tx, &t.id)?;
         }
         InnerOp::StreamCreate(s) | InnerOp::StreamUpdate(s) => {
             if present {

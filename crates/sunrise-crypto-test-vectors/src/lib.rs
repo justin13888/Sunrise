@@ -141,8 +141,8 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 3`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `3`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 4`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `4`, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
@@ -167,10 +167,10 @@ pub mod signed_only_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840b8",
-        "1ea32e8c80fecbefbc5bca6b00fa1bc10f150e0fa2a0da1cf2a7c8ab430e",
-        "3a26e070c87197bd02d80327a0404c865546b02a04a9efe8b88165405ab8",
-        "4ff0060c03",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584091",
+        "4bf575f88c9e2e57f909369367577caa4f0af03aa740536ba180bf3bdf94",
+        "3a78a58c9b409b85fda3dd5a2242b68df87c401d8f859eed6d0def366fee",
+        "5ecc080c04",
     ));
 }
 
@@ -196,9 +196,9 @@ pub mod sealed_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8709fbd",
-        "d2114f8e09562e49db809a1f920b58406e2af729a03e3a814c4b4548da97",
-        "84bf0972b06e66d9d3d93f0a0f8f28c09a213610b44dd43107ccd3235fb2",
-        "725101f41cf710233961a662dc185e1c5052fb0e0c03",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8d59a8d",
+        "bcff501f166c7591bc2c21d2880b58402efabc751a4bfa5c00b4dfcbab00",
+        "349ad4a5e0d1747565d5c8e0e18af2df9574c1bdc3c1630eac695543ee73",
+        "c308da546d35f28d836eca4e4a51fb3a2b5655070c04",
     ));
 }

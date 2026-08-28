@@ -47,7 +47,7 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// applying it wrongly. That is acceptable pre-1.0, where no build older than
 /// this one exists (ADR-0018), and it is why the op vocabulary is documented
 /// as a wire contract in `sunrise_core::inner_op`.
-pub const DOC_SCHEMA_V: u16 = 3;
+pub const DOC_SCHEMA_V: u16 = 4;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///

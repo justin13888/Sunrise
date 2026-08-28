@@ -118,43 +118,34 @@ async fn a_delete_replicates_as_a_tombstone() {
 /// ops by `(hlc, device_id, seq)`, and which one lands last is a property of
 /// the clock, not of the operation being a delete.
 ///
-/// # Ignored: this currently fails, and the failure is real
+/// # Why this shape, and what it used to catch
 ///
-/// It reproduces roughly one run in four. Both replicas agree on `deleted`, and
-/// then disagree on `title` **forever**:
+/// This failed roughly one run in four. Both replicas agreed on `deleted` and
+/// then disagreed on `title` **forever**:
 ///
 /// ```text
 /// a = CanonicalTask { title: "contested", deleted: true }
 /// b = CanonicalTask { title: "renamed",   deleted: true }
 /// ```
 ///
-/// The cause is that `InnerOp::TaskDelete` carries only the task id, while
-/// `TaskCreate`/`TaskUpdate` carry the entity's full state. Entity-level LWW
-/// (ADR-0014) is defined as "the winning op's state replaces the entity", and a
-/// delete has no state to contribute. So `tombstone_task` sets `deleted = 1`
-/// and stamps the row with the winning LWW stamp while leaving every other
-/// column at whatever this replica happened to hold — "contested" on the
-/// replica that authored the delete, "renamed" on the one that authored the
-/// update. Both then carry the *same* winning stamp, so neither will ever
-/// accept a correction: the divergence is stable, not transient.
+/// The cause was that `InnerOp::TaskDelete` carried only the task id, while
+/// `TaskCreate`/`TaskUpdate` carried the entity's full state. Entity-level LWW
+/// (ADR-0014) is defined as "the winning op's state replaces the entity", and
+/// an id-only delete has no state to contribute. So the tombstone was set and
+/// the row stamped with the winning LWW stamp while every other column stayed
+/// at whatever that replica happened to hold — "contested" on the replica that
+/// authored the delete, "renamed" on the one that authored the update. Both
+/// then carried the *same* winning stamp, so neither would ever accept a
+/// correction: the divergence was stable, not transient.
 ///
-/// Invisible in the UI, because a tombstoned task is filtered from every read.
-/// It stops being invisible on undelete, export, or any byte-identical
+/// It was invisible in the UI, because a tombstoned task is filtered from every
+/// read. It stopped being invisible on undelete, export, or any byte-identical
 /// convergence check — which is exactly what this suite is.
 ///
-/// Resolving it is a semantics decision, not a patch, and it belongs upstream
-/// of this test:
-///
-/// 1. Give `TaskDelete` the full entity state, as update has. Correct under the
-///    current LWW definition, but it is an op-format change and so a
-///    `DOC_SCHEMA_V` bump.
-/// 2. Declare that a tombstoned entity's other fields are unspecified, and
-///    define convergence on visible state only. Cheap, and defensible — but it
-///    concedes that undelete is not deterministic across devices.
-///
-/// (1) is the honest reading of ADR-0014 as written. (2) is a change to what
-/// ADR-0014 promises. Either way the ADR should say so explicitly.
-#[ignore = "real, reproducible divergence: see the doc comment above — TaskDelete carries no entity state"]
+/// `TaskDelete` now carries full entity state (`DOC_SCHEMA_V = 4`) and applies
+/// through the same path as `TaskUpdate`, so the whole row is replaced and both
+/// replicas land on the deleting replica's state. The assertions below are
+/// unchanged from when they were failing.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_delete_and_update_converge() {
     let (addr, _relay) = spawn_relay().await;
