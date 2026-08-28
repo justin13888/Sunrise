@@ -22,11 +22,11 @@ Any violation aborts decryption with `CRYPTO_NON_CANONICAL_CBOR` before any AEAD
 
 Every op (in-stream or control) is wrapped in a single envelope type. The envelope is the unit of storage in the `ops` table and the unit of transport on the wire.
 
-Every persisted/transmitted envelope begins with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3: `"SR" + kind=2 + version=DOC_SCHEMA_V (uint16 big-endian)`. Readers MUST verify the magic before any CBOR parse; mismatch → `PROTOCOL_BAD_MAGIC` and discard. The prefix is not part of the canonical CBOR; the bytes that follow are.
+Every persisted/transmitted envelope begins with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3: `"SR" + kind=2 + version=ENVELOPE_FORMAT_V (uint16 big-endian, currently 2)`. The prefix carries the **container format** version, not the document schema — see [ADR-0015](../11-adr/0015-envelope-doc-schema-split.md). Readers MUST verify the magic before any CBOR parse; mismatch → `PROTOCOL_BAD_MAGIC` and discard. The prefix is not part of the canonical CBOR; the bytes that follow are.
 
 ```cddl
 OpEnvelope = {
-    1: uint,            ; v             (envelope version, = 1; matches the magic-prefix version)
+    1: uint,            ; v             (ENVELOPE_FORMAT_V, = 2; matches the magic-prefix version)
     2: bstr .size 16,   ; stream_id     (raw 128-bit; see below for special values)
     3: bstr .size 16,   ; device_id     (raw 128-bit; signing device)
     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
@@ -39,8 +39,24 @@ OpEnvelope = {
                         ;   if aead_alg = 1: AEAD output (Op encoded as canonical CBOR, then encrypted)
                         ;   if aead_alg = 0: canonical-CBOR-encoded Op (signed-only control envelope)
     11: bstr .size 64,  ; sig           (Ed25519; see signature rules)
+    12: uint,           ; doc_schema_v  (DOC_SCHEMA_V of the inner Op; >= the reader's floor)
 }
 ```
+
+### Two versions, two rules
+
+Field `1` versions the **container**: the field layout, the canonical ordering, the AAD construction, and the signature input. Field `12` versions the **document schema** of the payload.
+
+A reader treats them differently, because the failure modes differ:
+
+| | Mismatch means | Reader behaviour |
+|---|---|---|
+| `v` (field 1, and the magic prefix) | "I do not know where the bytes are" | Hard reject — `PROTOCOL_BAD_MAGIC` |
+| `doc_schema_v` (field 12) | "I may not know what some payload fields mean" | Accept when `>= DOC_SCHEMA_FLOOR`; reject below it as `DOC_SCHEMA_TOO_OLD` |
+
+This is what makes the documented "adding a field is a minor change" true. Before the split, both roles were played by one number, so bumping `DOC_SCHEMA_V` to add a Task field changed the magic prefix and made every already-signed envelope undecodable.
+
+Field ids are non-negative CBOR integers, so deterministic (RFC 8949 §4.2.1) key ordering is numeric ordering: field `12` encodes as `0x0c` and sorts *after* field `11`. It is still covered by both the AAD and the signature, because both are defined by the fields they **exclude** — see below.
 
 ### Special `stream_id` values
 
@@ -62,11 +78,11 @@ When `aead_alg = 1`, the AEAD AAD is the canonical CBOR encoding of the envelope
 ```
 aad = canonical_cbor({
     1: v, 2: stream_id, 3: device_id, 4: seq, 5: ts_ms,
-    6: aead_alg, 7: sig_alg, 8: epoch, 9: nonce
+    6: aead_alg, 7: sig_alg, 8: epoch, 9: nonce, 12: doc_schema_v
 })
 ```
 
-This binds every metadata field to the ciphertext.
+This binds every metadata field to the ciphertext. The rule is stated by **exclusion**, not as "fields 1..9": any field added in a later container format is inside the AAD by construction, and cannot be rewritten by an attacker who does not hold the Stream key.
 
 ### Signature
 
@@ -77,7 +93,7 @@ sig_input = "sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 
 sig       = Ed25519_sign(D_S_priv, sig_input)
 ```
 
-Where `canonical_cbor_without_field_11` is the envelope encoded with all fields except `11` (sig).
+Where `canonical_cbor_without_field_11` is the envelope encoded with all fields except `11` (sig) — currently `{1..10, 12}`. As with the AAD, the rule is by exclusion, so a field added later is signed automatically.
 
 The signature covers the ciphertext (or signed-only payload) bit-for-bit and all metadata, so:
 

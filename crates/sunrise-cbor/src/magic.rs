@@ -24,7 +24,8 @@ pub const MAGIC_FIRST_TWO: [u8; 2] = [b'S', b'R'];
 pub enum MagicKind {
     /// Wire frame (versioned by `WIRE_PROTO_V`).
     Frame = 1,
-    /// Op envelope (versioned by `DOC_SCHEMA_V`).
+    /// Op envelope (versioned by `ENVELOPE_FORMAT_V` — the container format,
+    /// *not* the document schema it carries; see ADR-0015).
     OpEnvelope = 2,
     /// Recovery blob (versioned by recovery format version, currently 1).
     RecoveryBlob = 3,
@@ -148,7 +149,7 @@ pub fn expect_prefix(buf: &[u8], kind: MagicKind, version: u16) -> Result<(), Ma
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::version::{DOC_SCHEMA_V, WIRE_PROTO_V};
+    use crate::version::{ENVELOPE_FORMAT_V, WIRE_PROTO_V};
 
     #[test]
     fn round_trip_all_kinds() {
@@ -207,11 +208,13 @@ mod tests {
     }
 
     #[test]
-    fn op_envelope_v1_canonical_bytes() {
-        // Op-envelope magic at v1 should be `SR\x02\x00\x01`.
+    fn op_envelope_canonical_bytes() {
+        // Op-envelope magic carries ENVELOPE_FORMAT_V (= 2), not DOC_SCHEMA_V:
+        // `SR\x02\x00\x02`. Kind byte 0x02 and version 0x0002 coincide here;
+        // they are unrelated.
         let mut buf = [0u8; MAGIC_LEN];
-        write_prefix(&mut buf, MagicKind::OpEnvelope, DOC_SCHEMA_V);
-        assert_eq!(buf, *b"SR\x02\x00\x01");
+        write_prefix(&mut buf, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+        assert_eq!(buf, *b"SR\x02\x00\x02");
     }
 
     #[test]

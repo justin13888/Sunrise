@@ -58,7 +58,8 @@ pub use keys::{
 };
 pub use merkle::{stream_root_init, stream_root_step};
 pub use op_envelope::{
-    decode_envelope, encode_envelope, sign_envelope, verify_envelope, OpEnvelope, OpEnvelopeError,
+    decode_envelope, encode_envelope, seal_envelope, sign_envelope, verify_envelope, OpEnvelope,
+    OpEnvelopeError,
 };
 pub use recovery::{
     seal_recovery_blob, unseal_recovery_blob, RecoveryError, RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN,

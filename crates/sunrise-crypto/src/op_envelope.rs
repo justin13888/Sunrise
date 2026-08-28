@@ -4,7 +4,7 @@
 //!
 //! ```cddl
 //! OpEnvelope = {
-//!     1: uint,            ; v             (= 1)
+//!     1: uint,            ; v             (= ENVELOPE_FORMAT_V, currently 2)
 //!     2: bstr .size 16,   ; stream_id     (0x00..00 = vault-meta; otherwise a Stream)
 //!     3: bstr .size 16,   ; device_id     (signing device)
 //!     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
@@ -15,23 +15,39 @@
 //!     9: bstr .size 24,   ; nonce         (random 192-bit)
 //!     10: bstr,           ; ciphertext_or_payload
 //!     11: bstr .size 64,  ; sig           (Ed25519)
+//!     12: uint,           ; doc_schema_v  (schema of the *payload*, >= DOC_SCHEMA_FLOOR)
 //! }
 //! ```
 //!
+//! Field 1 is the **container format** version and field 12 the **document
+//! schema** version. They are separate on purpose (ADR-0015): a decoder that
+//! does not implement the container format cannot find the payload and must
+//! refuse, whereas a decoder meeting an unfamiliar document schema can still
+//! locate, authenticate, and decrypt the payload — so it accepts anything at or
+//! above [`DOC_SCHEMA_FLOOR`].
+//!
+//! Field ids are non-negative CBOR integers, so deterministic (RFC 8949 §4.2.1)
+//! key ordering is plain numeric ordering: field 12 encodes as `0x0c` and
+//! therefore sorts *after* field 11. It is nonetheless covered by both the AAD
+//! and the signature, because both are defined by which fields they *exclude*,
+//! not by an upper bound.
+//!
 //! The 5-byte magic prefix from `sunrise-cbor::magic` precedes the canonical
-//! CBOR on the wire / on disk; readers MUST verify it before decoding.
+//! CBOR on the wire / on disk; readers MUST verify it before decoding. It
+//! carries `ENVELOPE_FORMAT_V`.
 //!
 //! AAD (when `aead_alg = 1`) = canonical CBOR of the same map with fields 10
-//! and 11 removed.
+//! and 11 removed — i.e. `{1..9, 12}`.
 //!
-//! Signature input = `"sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 32)`.
+//! Signature input = `"sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 32)`
+//! — i.e. over `{1..10, 12}`.
 
 use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
-use sunrise_cbor::version::DOC_SCHEMA_V;
+use sunrise_cbor::version::{DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
 use sunrise_error::ErrorCode;
 use thiserror::Error;
 
@@ -63,6 +79,14 @@ pub enum OpEnvelopeError {
     /// AEAD verify failed.
     #[error("AEAD authentication failed")]
     AeadAuth,
+    /// The envelope's `doc_schema_v` (field 12) is below this build's floor.
+    #[error("doc_schema_v {got} is below the readable floor {floor}")]
+    DocSchemaTooOld {
+        /// The envelope's declared document schema version.
+        got: u32,
+        /// This build's [`DOC_SCHEMA_FLOOR`].
+        floor: u32,
+    },
 }
 
 impl OpEnvelopeError {
@@ -77,6 +101,7 @@ impl OpEnvelopeError {
             }
             Self::SigVerify => ErrorCode::CryptoSigVerifyFailed,
             Self::AeadAuth => ErrorCode::CryptoDecryptFailed,
+            Self::DocSchemaTooOld { .. } => ErrorCode::DocSchemaTooOld,
         }
     }
 }
@@ -88,7 +113,7 @@ impl OpEnvelopeError {
 /// 64-byte Ed25519 signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpEnvelope {
-    /// Envelope version (currently 1).
+    /// Envelope **container format** version — `ENVELOPE_FORMAT_V`.
     pub v: u32,
     /// 16 bytes; `0x00..00` denotes the vault-meta log.
     pub stream_id: [u8; 16],
@@ -111,169 +136,83 @@ pub struct OpEnvelope {
     pub payload: Vec<u8>,
     /// 64-byte Ed25519 signature.
     pub sig: [u8; 64],
+    /// Document schema version of the payload (field 12). Independent of
+    /// [`OpEnvelope::v`]; any value `>= DOC_SCHEMA_FLOOR` is readable.
+    pub doc_schema_v: u32,
 }
 
-// CBOR ground form. We use ciborium's `Value` to construct the canonical map
-// in field-id order (1..=11) so the encoded byte sequence matches the spec
-// regardless of the surrounding Rust struct.
+// CBOR ground form. We build the canonical map explicitly, in ascending
+// field-id order, so the encoded byte sequence matches the spec regardless of
+// the surrounding Rust struct. Field ids are non-negative integers, so RFC 8949
+// deterministic key ordering is numeric ordering (1..=12 all encode as a single
+// byte 0x01..=0x0c).
+//
+// The three encodings the format needs differ ONLY in which fields they omit,
+// so they are one function. Defining them by exclusion — rather than as
+// "fields 1..=9" and "fields 1..=10" — is what makes a newly added field land
+// inside the AAD and the signature automatically instead of silently escaping
+// both.
 
-/// Encode envelope to canonical CBOR (without magic prefix).
-fn encode_cbor_without_field_11(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
+/// Which fields to omit from a canonical encoding of the envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Omit {
+    /// Everything: the full on-the-wire encoding.
+    Nothing,
+    /// Field 11 (`sig`) — the signature input.
+    Sig,
+    /// Fields 10 (`payload`) and 11 (`sig`) — the AEAD associated data.
+    PayloadAndSig,
+}
+
+impl Omit {
+    const fn omits(self, field_id: u8) -> bool {
+        match self {
+            Self::Nothing => false,
+            Self::Sig => field_id == 11,
+            Self::PayloadAndSig => field_id == 10 || field_id == 11,
+        }
+    }
+}
+
+/// Encode the envelope to canonical CBOR, omitting the fields `omit` names.
+fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError> {
     use ciborium::value::{Integer, Value};
-    let map = [
-        (
-            Value::Integer(Integer::from(1)),
-            Value::Integer(Integer::from(env.v)),
-        ),
-        (
-            Value::Integer(Integer::from(2)),
-            Value::Bytes(env.stream_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(3)),
-            Value::Bytes(env.device_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(4)),
-            Value::Integer(env.seq.into()),
-        ),
-        (
-            Value::Integer(Integer::from(5)),
-            Value::Integer(env.ts_ms.into()),
-        ),
-        (
-            Value::Integer(Integer::from(6)),
-            Value::Integer(Integer::from(env.aead_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(7)),
-            Value::Integer(Integer::from(env.sig_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(8)),
-            Value::Integer(Integer::from(env.epoch)),
-        ),
-        (
-            Value::Integer(Integer::from(9)),
-            Value::Bytes(env.nonce.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(10)),
-            Value::Bytes(env.payload.clone()),
-        ),
-    ];
+
+    let mut map: Vec<(Value, Value)> = Vec::with_capacity(12);
+    let mut put = |id: u8, v: Value| {
+        if !omit.omits(id) {
+            map.push((Value::Integer(Integer::from(id)), v));
+        }
+    };
+
+    put(1, Value::Integer(Integer::from(env.v)));
+    put(2, Value::Bytes(env.stream_id.to_vec()));
+    put(3, Value::Bytes(env.device_id.to_vec()));
+    put(4, Value::Integer(env.seq.into()));
+    put(5, Value::Integer(env.ts_ms.into()));
+    put(6, Value::Integer(Integer::from(env.aead_alg as u32)));
+    put(7, Value::Integer(Integer::from(env.sig_alg as u32)));
+    put(8, Value::Integer(Integer::from(env.epoch)));
+    put(9, Value::Bytes(env.nonce.to_vec()));
+    put(10, Value::Bytes(env.payload.clone()));
+    put(11, Value::Bytes(env.sig.to_vec()));
+    put(12, Value::Integer(Integer::from(env.doc_schema_v)));
+
     let mut out = Vec::with_capacity(64 + env.payload.len());
-    ciborium::ser::into_writer(&Value::Map(map.to_vec()), &mut out)
+    ciborium::ser::into_writer(&Value::Map(map), &mut out)
         .map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
     Ok(out)
 }
 
-/// Encode envelope to canonical CBOR with the field 11 (sig) included.
-fn encode_cbor_full(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
-    use ciborium::value::{Integer, Value};
-    let map = [
-        (
-            Value::Integer(Integer::from(1)),
-            Value::Integer(Integer::from(env.v)),
-        ),
-        (
-            Value::Integer(Integer::from(2)),
-            Value::Bytes(env.stream_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(3)),
-            Value::Bytes(env.device_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(4)),
-            Value::Integer(env.seq.into()),
-        ),
-        (
-            Value::Integer(Integer::from(5)),
-            Value::Integer(env.ts_ms.into()),
-        ),
-        (
-            Value::Integer(Integer::from(6)),
-            Value::Integer(Integer::from(env.aead_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(7)),
-            Value::Integer(Integer::from(env.sig_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(8)),
-            Value::Integer(Integer::from(env.epoch)),
-        ),
-        (
-            Value::Integer(Integer::from(9)),
-            Value::Bytes(env.nonce.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(10)),
-            Value::Bytes(env.payload.clone()),
-        ),
-        (
-            Value::Integer(Integer::from(11)),
-            Value::Bytes(env.sig.to_vec()),
-        ),
-    ];
-    let mut out = Vec::with_capacity(64 + env.payload.len());
-    ciborium::ser::into_writer(&Value::Map(map.to_vec()), &mut out)
-        .map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
-    Ok(out)
-}
-
-/// AAD construction per spec — canonical CBOR of fields 1..=9.
+/// AAD construction per spec — canonical CBOR with fields 10 and 11 removed.
 fn encode_aad(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
-    use ciborium::value::{Integer, Value};
-    let map = [
-        (
-            Value::Integer(Integer::from(1)),
-            Value::Integer(Integer::from(env.v)),
-        ),
-        (
-            Value::Integer(Integer::from(2)),
-            Value::Bytes(env.stream_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(3)),
-            Value::Bytes(env.device_id.to_vec()),
-        ),
-        (
-            Value::Integer(Integer::from(4)),
-            Value::Integer(env.seq.into()),
-        ),
-        (
-            Value::Integer(Integer::from(5)),
-            Value::Integer(env.ts_ms.into()),
-        ),
-        (
-            Value::Integer(Integer::from(6)),
-            Value::Integer(Integer::from(env.aead_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(7)),
-            Value::Integer(Integer::from(env.sig_alg as u32)),
-        ),
-        (
-            Value::Integer(Integer::from(8)),
-            Value::Integer(Integer::from(env.epoch)),
-        ),
-        (
-            Value::Integer(Integer::from(9)),
-            Value::Bytes(env.nonce.to_vec()),
-        ),
-    ];
-    let mut out = Vec::with_capacity(64);
-    ciborium::ser::into_writer(&Value::Map(map.to_vec()), &mut out)
-        .map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
-    Ok(out)
+    encode_cbor(env, Omit::PayloadAndSig)
 }
 
 /// Compute the signature input bytes for a given envelope state (without the
 /// `sig` field).
 fn sig_input_bytes(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
-    let cbor_no_sig = encode_cbor_without_field_11(env)?;
+    let cbor_no_sig = encode_cbor(env, Omit::Sig)?;
     let hash = blake3::hash(&cbor_no_sig);
     let mut out = Vec::with_capacity(SIG_DOMAIN.len() + hash.as_bytes().len());
     out.extend_from_slice(SIG_DOMAIN);
@@ -321,15 +260,9 @@ pub fn encode_envelope(
     stream_key: Option<&StreamKey>,
     device_signing: &IdentitySigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
-    if aead_alg == AeadAlgId::None && epoch != 0 {
-        return Err(OpEnvelopeError::InconsistentAead);
-    }
-    if aead_alg == AeadAlgId::XChaCha20Poly1305 && stream_key.is_none() {
-        return Err(OpEnvelopeError::InconsistentAead);
-    }
-
-    let mut env = OpEnvelope {
-        v: u32::from(DOC_SCHEMA_V),
+    let env = OpEnvelope {
+        v: u32::from(ENVELOPE_FORMAT_V),
+        doc_schema_v: u32::from(DOC_SCHEMA_V),
         stream_id,
         device_id,
         seq,
@@ -338,29 +271,47 @@ pub fn encode_envelope(
         sig_alg: SigAlgId::Ed25519,
         epoch,
         nonce,
-        payload: Vec::new(),
+        payload: inner.to_vec(),
         sig: [0u8; 64],
     };
+    seal_envelope(env, stream_key, device_signing)
+}
 
-    match aead_alg {
-        AeadAlgId::None => {
-            env.payload = inner.to_vec();
-        }
-        AeadAlgId::XChaCha20Poly1305 => {
-            let aad = encode_aad(&env)?;
-            let key = stream_key.expect("verified above").as_bytes();
-            let ct = crate::aead::aead_seal_xchacha(key, &nonce, inner, &aad)
-                .map_err(|_| OpEnvelopeError::AeadAuth)?;
-            env.payload = ct;
-        }
+/// Seal (when `aead_alg = 1`), sign, and encode a pre-built envelope.
+///
+/// `env.payload` holds the *plaintext* inner op on entry; `env.sig` is ignored.
+/// This is the seam [`encode_envelope`] is built on, exposed so a caller that
+/// must control fields the convenience wrapper stamps for it — notably
+/// `doc_schema_v` — can do so without reimplementing the codec.
+///
+/// # Errors
+/// `InconsistentAead` for an aead/epoch/key mismatch; CBOR/AEAD failures.
+pub fn seal_envelope(
+    mut env: OpEnvelope,
+    stream_key: Option<&StreamKey>,
+    device_signing: &IdentitySigningKeyPair,
+) -> Result<Vec<u8>, OpEnvelopeError> {
+    if env.aead_alg == AeadAlgId::None && env.epoch != 0 {
+        return Err(OpEnvelopeError::InconsistentAead);
+    }
+    if env.aead_alg == AeadAlgId::XChaCha20Poly1305 && stream_key.is_none() {
+        return Err(OpEnvelopeError::InconsistentAead);
+    }
+
+    if env.aead_alg == AeadAlgId::XChaCha20Poly1305 {
+        let inner = std::mem::take(&mut env.payload);
+        let aad = encode_aad(&env)?;
+        let key = stream_key.expect("verified above").as_bytes();
+        env.payload = crate::aead::aead_seal_xchacha(key, &env.nonce, &inner, &aad)
+            .map_err(|_| OpEnvelopeError::AeadAuth)?;
     }
 
     sign_envelope(&mut env, device_signing)?;
 
-    let cbor = encode_cbor_full(&env)?;
+    let cbor = encode_cbor(&env, Omit::Nothing)?;
     let mut out = Vec::with_capacity(MAGIC_LEN + cbor.len());
     let mut prefix = [0u8; MAGIC_LEN];
-    write_prefix(&mut prefix, MagicKind::OpEnvelope, DOC_SCHEMA_V);
+    write_prefix(&mut prefix, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
     out.extend_from_slice(&prefix);
     out.extend_from_slice(&cbor);
     Ok(out)
@@ -375,7 +326,11 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         return Err(OpEnvelopeError::BadMagic);
     }
     let prefix = decode_prefix(&bytes[..MAGIC_LEN]).map_err(|_| OpEnvelopeError::BadMagic)?;
-    if prefix.kind != MagicKind::OpEnvelope || prefix.version != DOC_SCHEMA_V {
+    // The prefix carries the CONTAINER FORMAT version. A mismatch is the one
+    // thing a decoder cannot work around — it does not know the field layout,
+    // so it cannot even find the payload. The document schema is field 12 and
+    // is checked further down against the floor, not for equality.
+    if prefix.kind != MagicKind::OpEnvelope || prefix.version != ENVELOPE_FORMAT_V {
         return Err(OpEnvelopeError::BadMagic);
     }
     let cbor_bytes = &bytes[MAGIC_LEN..];
@@ -388,6 +343,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
 
     let mut env = OpEnvelope {
         v: 0,
+        doc_schema_v: 0,
         stream_id: [0u8; 16],
         device_id: [0u8; 16],
         seq: 0,
@@ -431,6 +387,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 let arr = bytes_n_from(&v, "sig", 64)?;
                 env.sig = arr;
             }
+            12 => env.doc_schema_v = u32_from(&v, "doc_schema_v")?,
             _ => {
                 // Unknown field; per forward-compat preserve verbatim. v1
                 // doesn't carry preserved-fields, but we do not reject.
@@ -439,7 +396,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
     }
 
     // All required fields must be present.
-    for required in 1..=11_i128 {
+    for required in 1..=12_i128 {
         if !seen_field_ids.contains(&required) {
             return Err(OpEnvelopeError::BadField(match required {
                 1 => "v",
@@ -453,11 +410,23 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 9 => "nonce",
                 10 => "payload",
                 11 => "sig",
+                12 => "doc_schema_v",
                 _ => unreachable!(),
             }));
         }
     }
 
+    if env.v != u32::from(ENVELOPE_FORMAT_V) {
+        return Err(OpEnvelopeError::BadField("v"));
+    }
+    // Forward compatibility: a NEWER document schema is readable. Only an
+    // older-than-floor one is not.
+    if env.doc_schema_v < u32::from(DOC_SCHEMA_FLOOR) {
+        return Err(OpEnvelopeError::DocSchemaTooOld {
+            got: env.doc_schema_v,
+            floor: u32::from(DOC_SCHEMA_FLOOR),
+        });
+    }
     if env.aead_alg == AeadAlgId::None && env.epoch != 0 {
         return Err(OpEnvelopeError::InconsistentAead);
     }
@@ -596,8 +565,8 @@ mod tests {
             &signing,
         )
         .unwrap();
-        // Magic prefix is `SR\x02\x00\x01`.
-        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x01");
+        // Magic prefix carries ENVELOPE_FORMAT_V: `SR\x02\x00\x02`.
+        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x02");
         let env = decode_envelope(&bytes).unwrap();
         verify_envelope(&env, &pub_bytes).unwrap();
         let plaintext = open_envelope(&env, &pub_bytes, None).unwrap();
@@ -647,9 +616,11 @@ mod tests {
             &signing,
         )
         .unwrap();
-        // Flip a byte in the signature region (last 64 bytes of CBOR).
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0x01;
+        // Flip a byte in the signature region. Field 11 is no longer last —
+        // field 12 (`doc_schema_v`) encodes as the trailing `0c 01` — so step
+        // back past it to land inside the 64-byte signature.
+        let in_sig = bytes.len() - 3;
+        bytes[in_sig] ^= 0x01;
         let env = decode_envelope(&bytes).unwrap();
         let bogus_pub = [9u8; 32];
         assert!(matches!(
@@ -711,6 +682,167 @@ mod tests {
         assert!(matches!(
             decode_envelope(&bytes),
             Err(OpEnvelopeError::BadMagic)
+        ));
+    }
+
+    /// Build an envelope carrying an arbitrary `doc_schema_v`, the way a
+    /// future build would.
+    fn envelope_at_doc_schema(doc_schema_v: u32, signing: &IdentitySigningKeyPair) -> Vec<u8> {
+        seal_envelope(
+            OpEnvelope {
+                v: u32::from(ENVELOPE_FORMAT_V),
+                doc_schema_v,
+                stream_id: [2u8; 16],
+                device_id: [3u8; 16],
+                seq: 1,
+                ts_ms: 1_700_000_000_000,
+                aead_alg: AeadAlgId::None,
+                sig_alg: SigAlgId::Ed25519,
+                epoch: 0,
+                nonce: [0u8; AEAD_NONCE_LEN],
+                payload: b"inner".to_vec(),
+                sig: [0u8; 64],
+            },
+            None,
+            signing,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn envelope_carries_both_versions_separately() {
+        let signing = fixed_signing();
+        let bytes = encode_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            1,
+            1,
+            AeadAlgId::None,
+            0,
+            [0u8; AEAD_NONCE_LEN],
+            None,
+            &signing,
+        )
+        .unwrap();
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.v, u32::from(ENVELOPE_FORMAT_V));
+        assert_eq!(env.doc_schema_v, u32::from(DOC_SCHEMA_V));
+    }
+
+    /// The point of the split. A build that has never heard of doc schema 99
+    /// still decodes, authenticates, and opens the envelope — it only cannot
+    /// interpret whatever new fields the *payload* carries.
+    #[test]
+    fn newer_doc_schema_still_decodes_and_verifies() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let bytes = envelope_at_doc_schema(99, &signing);
+        let env = decode_envelope(&bytes).expect("a newer doc schema is readable");
+        assert_eq!(env.doc_schema_v, 99);
+        assert_eq!(env.v, u32::from(ENVELOPE_FORMAT_V));
+        let plaintext = open_envelope(&env, &pub_bytes, None).unwrap();
+        assert_eq!(plaintext, b"inner");
+    }
+
+    /// ...but a schema below the floor is refused, with its own error rather
+    /// than the container-format one.
+    #[test]
+    fn doc_schema_below_floor_is_refused() {
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(u32::from(DOC_SCHEMA_FLOOR) - 1, &signing);
+        assert!(matches!(
+            decode_envelope(&bytes),
+            Err(OpEnvelopeError::DocSchemaTooOld { got: 0, floor: 1 })
+        ));
+    }
+
+    /// A container-format mismatch is fatal in the prefix, before any CBOR is
+    /// parsed — the decoder does not know the layout, so it cannot find a
+    /// payload to salvage.
+    #[test]
+    fn foreign_envelope_format_is_rejected_at_the_prefix() {
+        let signing = fixed_signing();
+        let mut bytes = envelope_at_doc_schema(1, &signing);
+        // Bump the prefix's version word to a format this build has never seen.
+        bytes[3] = 0xff;
+        bytes[4] = 0xff;
+        assert!(matches!(
+            decode_envelope(&bytes),
+            Err(OpEnvelopeError::BadMagic)
+        ));
+    }
+
+    /// Field 12 rides inside the signature input. Rewriting it therefore
+    /// invalidates the signature rather than passing unnoticed.
+    #[test]
+    fn doc_schema_is_covered_by_the_signature() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        let mut env = decode_envelope(&bytes).unwrap();
+        verify_envelope(&env, &pub_bytes).unwrap();
+        env.doc_schema_v = 2;
+        assert!(matches!(
+            verify_envelope(&env, &pub_bytes),
+            Err(OpEnvelopeError::SigVerify)
+        ));
+    }
+
+    /// ...and inside the AEAD associated data, so it cannot be rewritten by
+    /// anyone who does not hold the Stream key either.
+    #[test]
+    fn doc_schema_is_covered_by_the_aad() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let stream_key = fixed_stream_key();
+        let bytes = seal_envelope(
+            OpEnvelope {
+                v: u32::from(ENVELOPE_FORMAT_V),
+                doc_schema_v: 1,
+                stream_id: [2u8; 16],
+                device_id: [3u8; 16],
+                seq: 1,
+                ts_ms: 1,
+                aead_alg: AeadAlgId::XChaCha20Poly1305,
+                sig_alg: SigAlgId::Ed25519,
+                epoch: 1,
+                nonce: [0u8; AEAD_NONCE_LEN],
+                payload: b"secret".to_vec(),
+                sig: [0u8; 64],
+            },
+            Some(&stream_key),
+            &signing,
+        )
+        .unwrap();
+        let mut env = decode_envelope(&bytes).unwrap();
+        env.doc_schema_v = 7;
+        // Re-sign, so the signature gate cannot be what rejects it.
+        sign_envelope(&mut env, &signing).unwrap();
+        assert!(matches!(
+            open_envelope(&env, &pub_bytes, Some(&stream_key)),
+            Err(OpEnvelopeError::AeadAuth)
+        ));
+    }
+
+    #[test]
+    fn missing_doc_schema_field_is_refused() {
+        // A well-formed v2 container MUST carry field 12; a map without it is
+        // not a v2 envelope, whatever its prefix claims.
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        let mut value: ciborium::value::Value =
+            ciborium::de::from_reader(&bytes[MAGIC_LEN..]).unwrap();
+        if let ciborium::value::Value::Map(m) = &mut value {
+            m.retain(
+                |(k, _)| !matches!(k, ciborium::value::Value::Integer(i) if i128::from(*i) == 12),
+            );
+        }
+        let mut out = bytes[..MAGIC_LEN].to_vec();
+        ciborium::ser::into_writer(&value, &mut out).unwrap();
+        assert!(matches!(
+            decode_envelope(&out),
+            Err(OpEnvelopeError::BadField("doc_schema_v"))
         ));
     }
 
