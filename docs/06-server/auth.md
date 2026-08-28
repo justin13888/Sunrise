@@ -43,7 +43,14 @@ There are **no Sunrise-issued tokens and no refresh-token logic on the server si
 
 A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. See [`api.md`](./api.md) for the exact mechanics.
 
-For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). The server checks `exp` on every inbound message; on expiry it sends `Error { code: "AUTH_TOKEN_EXPIRED" }` followed by `Close { code: "auth_expired", reason: "renew and reconnect" }`, and the client renews via OIDC and reconnects.
+For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:
+
+- **On every inbound frame**, against the server clock. This is the cheap check and the one a busy session hits first.
+- **On a deadline timer** in the session loop. An idle session sends nothing, so the per-frame check never runs; without the timer a client could connect, go quiet, and hold an authenticated socket open indefinitely on a dead credential.
+
+On expiry the server sends `Error { code: "AUTH_TOKEN_EXPIRED" }` followed by `Close { code: "AUTH_TOKEN_EXPIRED", reason: … }`, and the client renews via OIDC and reconnects. Both codes are the canonical `ErrorCode`, not a bespoke string — a client has to be able to tell an aged-out credential (renew silently) from a withdrawn one (stop and ask the user), and an untyped close makes those indistinguishable.
+
+A session closed by the server keeps reading its socket briefly before dropping it. This is not politeness: closing a socket that still holds unread inbound bytes makes the kernel send RST rather than FIN, and an RST discards whatever the peer had not yet read — which is precisely the `Close` frame just written to explain the disconnect.
 
 ## Device binding
 

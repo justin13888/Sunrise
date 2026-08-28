@@ -28,11 +28,12 @@ use futures_util::{SinkExt, StreamExt};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
-    MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
-    REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, ErrorPayload,
+    FrameFlags, Hello, MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload,
+    REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
+use crate::auth::Verified;
 use crate::relay::{ConnId, CursorGap, FrameHead, RelayFrame};
 use std::collections::HashMap;
 
@@ -40,6 +41,59 @@ use std::collections::HashMap;
 #[must_use]
 pub fn router() -> Router<ServerState> {
     Router::new().route("/sync", get(handler))
+}
+
+/// The credential state of one live session.
+///
+/// A `/sync` session is long-lived and its bearer is not: the upgrade is the
+/// only place the token is presented, so without this the session simply
+/// outlived its own credential for as long as the socket stayed open. Holding
+/// the deadline here is what lets the loop end the session when the token
+/// does.
+#[derive(Debug, Clone)]
+struct SessionAuth {
+    /// Hashed account id — the relay channel namespace for this session.
+    account: [u8; 16],
+    /// Wall-clock ms at which the current token expires; `None` for a verifier
+    /// that issues no deadline (self-host).
+    expires_at_ms: Option<u64>,
+    /// The same instant on the monotonic timer, for the loop's expiry arm.
+    ///
+    /// Derived once per token rather than recomputed per iteration: a deadline
+    /// rebuilt from `now + remaining` on every loop pass is a deadline a busy
+    /// session can postpone forever.
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl SessionAuth {
+    fn new(account: [u8; 16], verified: &Verified, now_ms: u64) -> Self {
+        Self {
+            account,
+            expires_at_ms: verified.expires_at_ms,
+            deadline: verified
+                .expires_at_ms
+                .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms)),
+        }
+    }
+
+    /// Whether the token has expired as of `now_ms`.
+    fn is_expired(&self, now_ms: u64) -> bool {
+        self.expires_at_ms.is_some_and(|at| now_ms >= at)
+    }
+}
+
+/// How long is left on a deadline, floored at zero.
+fn expires_in(at_ms: u64, now_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(at_ms.saturating_sub(now_ms))
+}
+
+/// The session's expiry arm. Never resolves when there is no deadline, which
+/// is what keeps a self-host session alive.
+async fn expired(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn handler(
@@ -52,17 +106,19 @@ async fn handler(
     // carries no body to sign. Resolving the account here is also what applies
     // `allow_signup` to sync — a server with sign-up off must not relay for an
     // account it never provisioned.
-    let account_id = match crate::auth::request::authenticate_token(&state, &headers).await {
-        Ok((_subject, account)) => account.account_id,
-        Err(e) => {
-            state.metrics.incr("sunrise_sync_unauthenticated_total");
-            return e.into_response();
-        }
-    };
+    let (verified, account_id) =
+        match crate::auth::request::authenticate_token(&state, &headers).await {
+            Ok((v, account)) => (v, account.account_id),
+            Err(e) => {
+                state.metrics.incr("sunrise_sync_unauthenticated_total");
+                return e.into_response();
+            }
+        };
     // The channel namespace comes from the verified account, never from the
     // client. See `account_hash`.
     let account = account_hash(&account_id);
-    ws.on_upgrade(move |socket| async move { run_session(socket, state, account).await })
+    let auth = SessionAuth::new(account, &verified, state.clock.now_ms());
+    ws.on_upgrade(move |socket| async move { run_session(socket, state, auth).await })
 }
 
 /// Channel-namespace hash for a resolved account id.
@@ -82,8 +138,9 @@ fn account_hash(account_id: &str) -> [u8; 16] {
 }
 
 /// Session lifecycle: negotiate, then enter the sync loop.
-async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
+async fn run_session(socket: WebSocket, state: ServerState, auth: SessionAuth) {
     let conn_id = state.relay.next_conn();
+    let account = auth.account;
     let (mut sink, mut stream) = socket.split();
 
     // ---- Negotiation ----
@@ -173,7 +230,7 @@ async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
     );
 
     // ---- Sync loop ----
-    sync_loop(conn_id, sink, stream, state, account).await;
+    sync_loop(conn_id, sink, stream, state, auth).await;
 
     tracing::info!(
         ev = "srv.ws.disconnect",
@@ -187,9 +244,11 @@ async fn sync_loop(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: ServerState,
-    account: [u8; 16],
+    auth: SessionAuth,
 ) {
     use tokio::sync::broadcast::error::RecvError;
+
+    let account = auth.account;
 
     // Subscriptions: channels this connection is currently subscribed to,
     // keyed by stream so a re-Subscribe REPLACES rather than duplicates. A
@@ -207,12 +266,23 @@ async fn sync_loop(
         // any subscribed broadcast channel.
         let next_msg = stream.next();
         let next_relay = recv_first(&mut subs);
+        let deadline = expired(auth.deadline);
 
         tokio::select! {
             biased;
             inbound = next_msg => {
                 match inbound {
                     Some(Ok(Message::Binary(buf))) => {
+                        // `docs/06-server/auth.md`: the server checks `exp` on
+                        // every inbound message. Cheap, and it does not depend
+                        // on the timer arm having fired — the two disagree if
+                        // the injected clock and the monotonic timer disagree,
+                        // and the credential's own clock is the one that
+                        // decides.
+                        if auth.is_expired(state.clock.now_ms()) {
+                            end_expired(&mut sink, &state, &auth).await;
+                            break;
+                        }
                         if !handle_inbound(conn_id, &buf, &mut sink, &mut subs, account, &state).await {
                             break;
                         }
@@ -244,10 +314,66 @@ async fn sync_loop(
                     }
                 }
             }
+            // An idle session has no inbound frames to check `exp` against, so
+            // without this arm a client that connects and then goes quiet keeps
+            // an authenticated socket open indefinitely on a dead credential.
+            () = deadline => {
+                end_expired(&mut sink, &state, &auth).await;
+                break;
+            }
         }
     }
 
+    // Orderly teardown, and it is load-bearing rather than tidiness. Closing a
+    // socket that still holds unread *inbound* bytes makes the kernel send RST
+    // instead of FIN, and an RST discards whatever the peer has not yet read —
+    // including the frames just written to tell it why the session ended. That
+    // is exactly the shape of a server-initiated close: the client is
+    // mid-sentence when we stop listening. Reading to the peer's own close
+    // first is what makes a typed `Close` actually arrive; it showed up as a
+    // roughly 1-in-100 loss of the `AUTH_TOKEN_EXPIRED` frame.
+    //
+    // Bounded, because a peer that never closes must not pin the task. A
+    // client that closed first drains immediately.
     let _ = sink.close().await;
+    let _ = tokio::time::timeout(TEARDOWN_DRAIN, async {
+        while stream.next().await.is_some() {}
+    })
+    .await;
+}
+
+/// How long a closing session keeps reading before giving up on the peer.
+const TEARDOWN_DRAIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// End a session whose bearer has expired.
+///
+/// `Error` then `Close`, in that order, per `docs/06-server/auth.md`. Both
+/// carry [`ErrorCode::AuthTokenExpired`] so the client can tell "your
+/// credential aged out, renew and reconnect" from "your access was withdrawn,
+/// ask the user" — indistinguishable if the close were untyped, and the two
+/// call for opposite client behaviour.
+async fn end_expired(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &ServerState,
+    auth: &SessionAuth,
+) {
+    state.metrics.incr("sunrise_sync_token_expired_total");
+    tracing::info!(
+        ev = "srv.ws.token_expired",
+        account_h = %crate::logging::id_h(&auth.account),
+        "session ended: bearer expired without a refresh"
+    );
+    let _ = send_error_frame(
+        sink,
+        ErrorCode::AuthTokenExpired,
+        "bearer token expired; refresh and reconnect",
+    )
+    .await;
+    if let Ok(payload) = ClosePayload::auth_token_expired().encode() {
+        if let Ok(bytes) = encode_frame(MsgKind::Close, FrameFlags::EMPTY, &payload) {
+            let _ = sink.send(Message::Binary(bytes)).await;
+        }
+    }
 }
 
 /// Receive from any of the broadcast subscriptions; returns the index that
