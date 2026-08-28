@@ -656,6 +656,112 @@ mod tests {
         core.close().await.unwrap();
     }
 
+    /// `Core::submit` classifies every command into a `DomainEvent` by an
+    /// explicit match with a `_ => Updated` fallback, so a new command that
+    /// creates or deletes something is silently reported as an *update* unless
+    /// its arm is added. A client driving its view off `changes()` would then
+    /// never learn a Block or an Attachment appeared.
+    #[tokio::test]
+    async fn create_and_delete_commands_publish_the_right_change_event() {
+        use sunrise_domain::inbox::inbox_stream_ref;
+        use sunrise_domain::{AttachmentDraft, BlockDraft, SunriseTime, TaskDraft};
+
+        async fn next(rx: &mut tokio::sync::broadcast::Receiver<DomainEvent>) -> DomainEvent {
+            rx.recv().await.expect("an event")
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let mut events = core.changes();
+
+        let now = jiff::Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let hour = jiff::SignedDuration::from_hours(1);
+
+        let task = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: "Write the report".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == task));
+
+        let block = core
+            .submit(Command::CreateBlock(BlockDraft {
+                stream_id: inbox_stream_ref(),
+                starts_at: SunriseTime::instant(now),
+                ends_at: SunriseTime::instant(now + hour),
+                title: Some("Deep work".into()),
+                title_track_task: false,
+                tasks: Vec::new(),
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == block));
+
+        core.submit(Command::BindTask { block, task })
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Updated(id) if id == block));
+
+        let attachment = core
+            .submit(Command::AttachFile(AttachmentDraft {
+                parent: task,
+                filename: "receipt.pdf".into(),
+                mime_type: "application/pdf".into(),
+                size_bytes: 4096,
+                blob_key: [7u8; 32],
+                blob_id: [9u8; 16],
+                chunk_count: 1,
+                content_hash: [11u8; 32],
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == attachment));
+
+        core.submit(Command::DetachFile(attachment)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == attachment));
+
+        core.submit(Command::DeleteBlock(block)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == block));
+
+        core.close().await.unwrap();
+    }
+
+    /// The three notification reads answer through `Core`, not only through the
+    /// engine — which is the surface both clients actually call.
+    #[tokio::test]
+    async fn the_notification_reads_answer_through_the_core() {
+        use sunrise_domain::ReminderSettings;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let now_ms = core.now_ms();
+
+        assert!(matches!(
+            core.query(Query::MorningSummary { now_ms }).await.unwrap(),
+            QueryResult::MorningSummary(_)
+        ));
+        assert!(matches!(
+            core.query(Query::EndOfDayPlan { now_ms }).await.unwrap(),
+            QueryResult::EndOfDayPlan(_)
+        ));
+        assert!(matches!(
+            core.query(Query::ReminderIntents {
+                now_ms,
+                horizon_ms: now_ms + 86_400_000,
+                settings: ReminderSettings::default(),
+            })
+            .await
+            .unwrap(),
+            QueryResult::Reminders(_)
+        ));
+        core.close().await.unwrap();
+    }
+
     /// `docs/08-features/recurrence-engine.md` requires materialization on a
     /// periodic timer, not only at launch. Without it a long-running client
     /// stops generating occurrences once it passes the horizon computed at
