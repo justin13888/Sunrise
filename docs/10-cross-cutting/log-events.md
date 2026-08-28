@@ -43,6 +43,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.ws.disconnect` | info | `/sync` session ended. |
 | `srv.ws.subscribe` | debug | Subscribe frame processed; `n_streams`. |
 | `srv.relay.fanout` | debug | `OpBatch` republished to a channel; `stream_h`, `n_bytes`. The relay never decrypts, so shape is all it can report. |
+| `srv.relay.cursor_gap` | warn | A subscriber's cursor for a device is below what the ring still holds, so the ops between are gone; `stream_h`, `device_h`, `cursor`, `evicted_through`. Recoverable but never retryable — re-subscribing cannot reproduce them. |
 
 ### `db` — `sunrise-storage`
 
@@ -63,6 +64,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |
 | `sync.session.off` | info | No relay configured; running offline. |
 | `sync.backoff` | debug | Waiting before reconnect; `attempt`, `delay_ms`. A reconnect storm is visible as a run of these. |
+| `sync.op.retransmit` | debug | An op batch went unacked and was sent again; `batch_id`, `attempt`, `n_ops`. A run of these on one `batch_id` is a link that stays up but is not carrying our ops. |
+| `sync.loss_evidence` | debug | The session saw evidence the link is dropping data and pulled its resync forward; `cause` is `retransmit`, `undecodable_frame`, or `corrupt_op`. Nothing acks an inbound frame, so this is the only trace inbound loss leaves. |
 
 ### `ui` — `sunrise-cli`
 

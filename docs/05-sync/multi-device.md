@@ -28,7 +28,7 @@ See [`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboardi
 
 ## Sync cursors
 
-Each device maintains, per (Stream, originating-device) pair, the highest `seq` it has seen and applied. On connect, it sends all cursors and the server delivers ops since.
+Each device maintains, per (Stream, originating-device) pair, a cursor meaning "I have applied every op through this `seq`, with no holes" — a contiguous prefix, *not* the highest `seq` seen. On connect, it sends all cursors and the server delivers ops since. The distinction is a correctness invariant once the relay filters on cursors; see [`wire-protocol.md`](wire-protocol.md#a-cursor-is-a-contiguous-prefix-not-a-high-water-mark).
 
 This means: with N devices each producing ops, every other device tracks N cursors per Stream. Manageable; cursors are tiny (16 bytes ID + 8 bytes seq).
 

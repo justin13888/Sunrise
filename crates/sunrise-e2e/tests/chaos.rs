@@ -4,19 +4,23 @@
 //!
 //! # Why the convergence survives faults
 //!
-//! The client sync driver has **no in-session op retry**: an op that is sent but
-//! never acked (its `OpBatch` or the returning `Ack` was dropped/corrupted)
-//! stays stranded in the persistent outbox until the session ends and a fresh
-//! one re-drains it. On real TCP/`wss` this is a non-issue — frames are never
-//! silently lost (TCP is reliable, TLS AEAD rejects tampering), so either the
-//! ack arrives or the connection breaks and the driver reconnects. `Toxic`'s
-//! silent drop/corrupt models loss that a real transport would surface as a
-//! *broken connection*, so each scenario translates sustained loss into an
-//! explicit reconnect via a [`FaultHandle`] partition blip (see
-//! [`force_reconnect`]). On reconnect the driver re-drains the outbox and the
-//! relay replays its **entire retained ring** for each subscribed stream; the
-//! receiver's `OpLog` idempotence gate (keyed by op id) dedupes, so any op the
-//! peer skipped is recovered regardless of how far its per-device cursor jumped.
+//! The driver recovers *within* a session, so these scenarios heal the network
+//! and then simply wait — no test-driven reconnect is involved, which is what
+//! makes them meaningful. Two mechanisms do the work (issue #20):
+//!
+//! - **Outbound**, an `OpBatch` that goes unacked is retransmitted on a backoff.
+//!   Retransmission is safe because the receiver's `OpLog` idempotence gate,
+//!   keyed by op id, dedupes any batch that actually did land.
+//! - **Inbound**, nothing acks a frame, so a dropped one leaves no trace and no
+//!   outbound retry can help. The session instead re-subscribes on a timer with
+//!   its current cursors, and the relay replays whatever those cursors do not
+//!   cover.
+//!
+//! Before that, an op whose `OpBatch` or returning `Ack` was dropped stayed
+//! stranded in the outbox until the session *ended*, so each scenario had to
+//! manufacture a reconnect with a partition blip to make progress. That
+//! workaround is gone, and its absence is the assertion: if a scenario below
+//! converges, it converged over a link that was never cycled.
 //!
 //! # Determinism
 //!
@@ -130,30 +134,6 @@ async fn assert_count_never_exceeds(core: &Core, max: usize, window: Duration) {
 }
 
 // ---------------------------------------------------------------------------
-// Forced reconnect
-// ---------------------------------------------------------------------------
-
-/// Tear the core's current sync session down and let a fresh one form.
-///
-/// Cutting the link (`partition(true)`) alone does not disturb a session parked
-/// in `recv` — the partition check sits at the top of the recv loop, past the
-/// point an idle session is blocked. So we also submit a benign, count-neutral
-/// op: that fires the driver's `submit` branch, and the resulting send errors
-/// under the partition, ending the session. Clearing the partition then lets the
-/// next connect complete its handshake, re-drain the outbox, and replay the ring.
-///
-/// Callers set drop/corrupt back to zero *before* calling this so the fresh
-/// handshake and re-drain run clean.
-async fn force_reconnect(handle: &sunrise_e2e::chaos::FaultHandle, core: &Core, poke: EntityRef) {
-    handle.partition(true);
-    // Count-neutral poke: an update to an existing task, not a new task.
-    set_title(core, poke, "reconnect-poke").await;
-    // Comfortably longer than teardown + a couple of failed reconnect attempts.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    handle.partition(false);
-}
-
-// ---------------------------------------------------------------------------
 // Scenario (a): heavy frame drop, both directions, both links.
 // ---------------------------------------------------------------------------
 
@@ -194,11 +174,10 @@ async fn drop_heavy_converges() {
     // Let the lossy exchange actually run so frames drop and ops strand.
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    // Heal, then force each side through a fresh session.
+    // Heal only. Both sessions stay up: retransmit drains what stranded
+    // outbound, resync pulls back what was lost inbound.
     ha.set_drop_prob(0.0);
     hb.set_drop_prob(0.0);
-    force_reconnect(&ha, &a, a_tasks[0]).await;
-    force_reconnect(&hb, &b, b_tasks[0]).await;
 
     // Converge, then assert at rest with faults off.
     wait_tasks_converge(&a, &b, 15, TIMEOUT).await;
@@ -243,9 +222,9 @@ async fn corruption_never_applies() {
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
-    // Clean anchor: a converged baseline, and a task B can author an update on
-    // to force its reconnect during heal.
-    let anchor = create_task(&a, "anchor").await;
+    // Clean anchor: a converged baseline before corruption is switched on, so
+    // the assertions below measure only what the corrupted run did.
+    create_task(&a, "anchor").await;
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
 
     // Corruption ON, then the remaining 9 tasks (10 total from A).
@@ -257,10 +236,10 @@ async fn corruption_never_applies() {
     // Invariant during the corrupted run: B never materializes more than A made.
     assert_count_never_exceeds(&b, 10, Duration::from_millis(1500)).await;
 
-    // Heal: corruption off, force B through a fresh session so the ring replays
-    // clean copies of everything it skipped.
+    // Heal only. B's session stays up; its resync re-subscribes with the
+    // cursors it actually reached and the relay replays clean copies of every
+    // frame the corruption made it skip.
     hb.set_corrupt_prob(0.0);
-    force_reconnect(&hb, &b, anchor).await;
 
     wait_tasks_converge(&a, &b, 10, TIMEOUT).await;
     wait_pending_zero(&a, TIMEOUT).await;

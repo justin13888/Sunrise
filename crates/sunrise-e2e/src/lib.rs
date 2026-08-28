@@ -37,6 +37,15 @@ pub const E2E_CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// App identity string the harness cores advertise in their sync `Hello`.
 const APP_ID: &str = "0.1.0+e2e";
 
+/// Anti-entropy resync period for harness cores.
+///
+/// The driver's inbound-loss recovery is a periodic re-`Subscribe` with current
+/// cursors (`sunrise_core::sync_driver`), at 30 s in production. A chaos
+/// scenario has to watch that mechanism actually recover, inside a test, so the
+/// harness clocks it fast — the same knob a backoff constant gets, not a
+/// different code path.
+const HARNESS_RESYNC_INTERVAL: Duration = Duration::from_millis(200);
+
 // ---------------------------------------------------------------------------
 // Relay
 // ---------------------------------------------------------------------------
@@ -136,9 +145,14 @@ pub async fn open_core_with_factory(
     factory: TransportFactory,
 ) -> Arc<Core> {
     let cfg = CoreConfig {
-        sync: Some(SyncConfig {
-            url: format!("ws://{addr}/sync"),
-        }),
+        // Chaos scenarios have to observe autonomous recovery inside a test
+        // run, so the anti-entropy backstop is clocked in hundreds of
+        // milliseconds rather than the production 30 s. The mechanism is the
+        // same one; only its period is tuned, exactly like a backoff constant.
+        sync: Some(
+            SyncConfig::new(format!("ws://{addr}/sync"))
+                .with_resync_interval(HARNESS_RESYNC_INTERVAL),
+        ),
         ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };
     let core = Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(root)))

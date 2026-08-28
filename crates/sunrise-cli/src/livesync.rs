@@ -87,7 +87,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
         s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
     }
     SyncPlan {
-        sync: clean(env.url.as_deref()).map(|url| SyncConfig { url }),
+        sync: clean(env.url.as_deref()).map(SyncConfig::new),
         export_cert: clean(env.export_cert.as_deref()).map(PathBuf::from),
         trust_cert: clean(env.trust_cert.as_deref()).map(PathBuf::from),
     }
@@ -295,12 +295,7 @@ mod tests {
             trust_cert: Some("   ".into()), // whitespace-only -> None
         };
         let plan = plan_from_env(&env);
-        assert_eq!(
-            plan.sync,
-            Some(SyncConfig {
-                url: "ws://127.0.0.1:8443/sync".into()
-            })
-        );
+        assert_eq!(plan.sync, Some(SyncConfig::new("ws://127.0.0.1:8443/sync")));
         assert_eq!(plan.export_cert, Some(PathBuf::from("/tmp/self.cbor")));
         assert_eq!(plan.trust_cert, None);
         assert!(!plan.is_off());

@@ -153,7 +153,22 @@ Client → Close (or socket close)
 
 ## Cursors
 
-A device maintains, per (Stream, device_id) pair, the highest `seq` it has applied. On reconnect, it sends these cursors in `Subscribe`; the server replies with everything after.
+A device maintains, per (Stream, device_id) pair, a cursor `n` meaning **"I have applied every op through `seq` n, with no holes."** On reconnect, it sends these cursors in `Subscribe`; the server replies with everything after.
+
+### A cursor is a contiguous prefix, not a high-water mark
+
+This is a correctness invariant, not an implementation detail, and it is the single easiest thing to get wrong here.
+
+Ops genuinely do arrive out of order: a dropped frame followed by a later one leaves the op log holding seqs `{1, 3}`. A cursor defined as `MAX(seq)` over what has been applied would then claim `3` while `2` is still missing. Defined as a contiguous prefix, it correctly claims `1`.
+
+The distinction is invisible for as long as the relay ignores cursors and replays its whole ring — every hole refills on the next reconnect by accident. It stops being free the moment the relay honours cursors (the filtering described above): a max-based cursor of `3` makes the relay skip the frame carrying `2` on *every* subsequent subscribe, so the hole never refills and nothing ever notices. Cursor filtering and prefix semantics have to land together — filtering alone converts an accidental, self-healing data-loss window into a permanent and silent one.
+
+Two consequences follow, and both are load-bearing:
+
+- **Compute the prefix from the op log; never track it incrementally.** A counter advanced at apply time can drift from what was actually applied. Derived from the log it cannot, and because op rows are only ever inserted it can only grow.
+- **A device's own ops advance its own cursor.** A device has certainly applied what it authored. Omitting them means every `Subscribe` claims nothing about the sending device, and a cursor-filtering relay hands a device its entire own history back on every reconnect.
+
+Under-claiming is always safe — it costs one idempotent re-apply. Over-claiming is data loss. When in doubt, claim less.
 
 The relay reads each retained frame's per-device `(device_id, max_seq)` from the op envelope's **cleartext routing header** — fields 2/3/4, which are signed and AEAD-associated but not secret. Reading them is in scope; reading op *contents* is not, and remains an explicit non-responsibility ([`../06-server/overview.md`](../06-server/overview.md)).
 

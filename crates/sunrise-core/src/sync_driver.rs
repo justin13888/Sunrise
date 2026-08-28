@@ -28,6 +28,36 @@
 //! that yields a fresh [`Box<dyn Transport>`] per connection attempt. The
 //! production WebSocket factory (built on `sunrise_sync::WsTransport`) and the
 //! in-process loopback used by the tests are both just factories.
+//!
+//! # Recovering inside a session
+//!
+//! A live session is not a link that works — it is a link that has not
+//! *visibly* broken. Two mechanisms make the driver recover from a lossy one
+//! without waiting for the socket to die (issue #20):
+//!
+//! **Outbound: bounded per-batch retransmit.** An `OpBatch` that is not acked
+//! within a [`Backoff`] delay is sent again, up to the policy's five attempts,
+//! after which the session is torn down and a fresh one re-drains the outbox.
+//! Retransmitting is safe because an op batch is idempotent at the receiver —
+//! the `OpLog` gate is keyed on `(stream, device, seq)` — which is also why
+//! only `OpBatch` is ever retransmitted. Before this, an unacked op sat in the
+//! outbox until the session *ended*: on a lossy-but-not-broken link it could
+//! stay stranded indefinitely while the UI showed `Live`, which is the worst
+//! pair — no progress and no signal.
+//!
+//! **Inbound: resync.** Nothing acknowledges an inbound frame, so a dropped or
+//! mangled one leaves no trace at all; an outbound retry cannot help. The
+//! remedy is anti-entropy: re-send `Subscribe` with the current per-device
+//! cursors and let the relay replay whatever those cursors do not cover. Since
+//! issue #19 that costs the relay only the frames actually missing, so it is
+//! cheap enough to run on a timer ([`SyncConfig::resync_interval`]) as a
+//! backstop, and immediately — rate-limited by [`MIN_RESYNC_GAP`] — whenever
+//! the session sees evidence of loss: a retransmit, an undecodable frame, or a
+//! remote op that fails its integrity checks.
+//!
+//! The timer is the guarantee and the evidence is the latency optimisation.
+//! Evidence alone would miss the case where the *last* frame in each direction
+//! is the one that vanished, leaving nothing to notice.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -38,6 +68,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, Notify};
+use tokio::time::Instant;
 
 use crate::config::Rng;
 use crate::core::Core;
@@ -61,6 +92,22 @@ pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<BoxTransport, Transp
 /// must be able to produce a brand-new connection each time.
 pub type TransportFactory = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
 
+/// Default anti-entropy interval: how often a live session re-subscribes with
+/// its current cursors even with no evidence anything went wrong.
+///
+/// Long, because it is a backstop, not the delivery path — live fan-out is
+/// what makes a peer's change appear in seconds, and a resync past a
+/// cursor-filtering relay usually replays nothing at all.
+pub const DEFAULT_RESYNC_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Floor on the spacing between two resyncs.
+///
+/// Loss evidence arrives in bursts — a lossy link produces a retransmit and a
+/// mangled frame in the same breath — and each one wants a resync. Without a
+/// floor, a link dropping half its frames would spend the session
+/// re-subscribing.
+pub const MIN_RESYNC_GAP: Duration = Duration::from_millis(250);
+
 /// Client-side sync configuration carried in [`crate::CoreConfig`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncConfig {
@@ -68,6 +115,27 @@ pub struct SyncConfig {
     /// the production WebSocket factory the app assembles; the driver itself
     /// takes an already-built [`TransportFactory`].
     pub url: String,
+    /// How often a live session re-subscribes with its current cursors as an
+    /// anti-entropy backstop. Tests shorten it; see [`DEFAULT_RESYNC_INTERVAL`].
+    pub resync_interval: Duration,
+}
+
+impl SyncConfig {
+    /// Sync against `url` with the default resync interval.
+    #[must_use]
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            resync_interval: DEFAULT_RESYNC_INTERVAL,
+        }
+    }
+
+    /// Override the anti-entropy interval.
+    #[must_use]
+    pub const fn with_resync_interval(mut self, interval: Duration) -> Self {
+        self.resync_interval = interval;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -225,9 +293,19 @@ impl SyncShared {
 // Driver task
 // ---------------------------------------------------------------------------
 
-/// In-flight (sent, not yet acked) outbox batch: the op ids it carried.
+/// In-flight (sent, not yet acked) outbox batch.
+///
+/// Keeps the encoded frame so it can be sent again: without it "retry" would
+/// mean re-reading and re-encoding the outbox, which would produce a *different*
+/// `batch_id` and defeat the relay's idempotency key.
 struct InflightBatch {
     op_ids: Vec<[u8; 16]>,
+    frame: Vec<u8>,
+    /// Retry policy for this batch alone. Per batch, not per session, so one
+    /// unlucky batch does not consume another's attempts.
+    backoff: Backoff,
+    /// When this batch is considered lost and worth sending again.
+    due_at: Instant,
 }
 
 enum SessionEnd {
@@ -241,7 +319,73 @@ enum SessionEnd {
 enum SessionEvent {
     Shutdown,
     Submit,
+    /// A retransmit deadline or the resync deadline came due.
+    Timer,
     Recv(Result<Option<Vec<u8>>, TransportError>),
+}
+
+/// Why a session decided the link is losing data.
+///
+/// Not an error in itself — each of these is survivable on its own — but each
+/// one is evidence that something *inbound* may have been lost too, which
+/// nothing else in the protocol would reveal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LossEvidence {
+    /// An op batch went unacked long enough to be sent again.
+    Retransmit,
+    /// An inbound frame could not be decoded at the frame or payload level.
+    UndecodableFrame,
+    /// A remote op failed signature, AEAD, or CBOR checks. Distinct from an op
+    /// from an untrusted device, which is a policy outcome, not corruption.
+    CorruptOp,
+}
+
+impl LossEvidence {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retransmit => "retransmit",
+            Self::UndecodableFrame => "undecodable_frame",
+            Self::CorruptOp => "corrupt_op",
+        }
+    }
+}
+
+/// Deadlines a live session is waiting on, and the loss evidence that pulls
+/// the resync deadline forward.
+struct Deadlines {
+    /// Next anti-entropy resync.
+    resync_at: Instant,
+    /// Earliest a resync may happen at all, from [`MIN_RESYNC_GAP`].
+    resync_floor: Instant,
+    interval: Duration,
+}
+
+impl Deadlines {
+    fn new(interval: Duration) -> Self {
+        let now = Instant::now();
+        Self {
+            resync_at: now + interval,
+            resync_floor: now,
+            interval,
+        }
+    }
+
+    /// Record that a resync just happened.
+    fn resynced(&mut self) {
+        let now = Instant::now();
+        self.resync_floor = now + MIN_RESYNC_GAP;
+        self.resync_at = now + self.interval;
+    }
+
+    /// Bring the next resync forward to the earliest the floor allows.
+    fn note_loss(&mut self, evidence: LossEvidence) {
+        tracing::debug!(
+            ev = "sync.loss_evidence",
+            cause = evidence.as_str(),
+            "scheduling a resync"
+        );
+        self.resync_at = self.resync_at.min(self.resync_floor.max(Instant::now()));
+    }
 }
 
 /// Driver entry point. Runs until shutdown is requested or the `Core` is
@@ -253,6 +397,10 @@ pub(crate) async fn run(
     rng: Arc<dyn Rng>,
 ) {
     let mut backoff = Backoff::canonical();
+    let resync_interval = weak
+        .upgrade()
+        .and_then(|c| c.sync_resync_interval())
+        .unwrap_or(DEFAULT_RESYNC_INTERVAL);
     while !shared.is_shutdown() {
         // Connect (cancellable by shutdown).
         let connect_fut = factory();
@@ -288,7 +436,7 @@ pub(crate) async fn run(
 
         // A session needs the Core alive; if it's gone, stop.
         let Some(core) = weak.upgrade() else { break };
-        let end = session(&core, &shared, transport).await;
+        let end = session(&core, &shared, transport, rng.as_ref(), resync_interval).await;
         drop(core);
         shared.set_state(SyncState::Disconnected);
         tracing::info!(
@@ -341,7 +489,13 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
 
 /// One connected session: handshake → subscribe → drain + pump frames.
 #[allow(clippy::too_many_lines)]
-async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransport) -> SessionEnd {
+async fn session(
+    core: &Arc<Core>,
+    shared: &SyncShared,
+    mut transport: BoxTransport,
+    rng: &dyn Rng,
+    resync_interval: Duration,
+) -> SessionEnd {
     // ---- Handshake: Hello → HelloAck ----
     let hello = build_hello(core.app_string());
     let Ok(hello_bytes) = encode_hello(&hello) else {
@@ -396,6 +550,7 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
     let mut inflight_ops: HashSet<[u8; 16]> = HashSet::new();
     let mut batch_counter: u64 = 0;
     let mut pending_sends: Vec<Vec<u8>> = Vec::new();
+    let mut deadlines = Deadlines::new(resync_interval);
 
     // Initial outbox drain (fresh session: everything unacked is (re)sent —
     // idempotent apply on the peer tolerates replays).
@@ -406,6 +561,7 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
         &mut inflight,
         &mut batch_counter,
         &mut pending_sends,
+        rng,
     )
     .is_err()
     {
@@ -427,10 +583,12 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
             }
         }
 
+        let wake_at = next_deadline(&inflight, &deadlines);
         let ev = tokio::select! {
             biased;
             () = shared.shutdown_notified() => SessionEvent::Shutdown,
             () = shared.submit_notified() => SessionEvent::Submit,
+            () = tokio::time::sleep_until(wake_at) => SessionEvent::Timer,
             r = transport.recv_frame() => SessionEvent::Recv(r),
         };
 
@@ -447,10 +605,35 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
                     &mut inflight,
                     &mut batch_counter,
                     &mut pending_sends,
+                    rng,
                 )
                 .is_err()
                 {
                     return SessionEnd::Disconnected;
+                }
+            }
+            SessionEvent::Timer => {
+                // Exhausting a batch's retries means this link is not carrying
+                // our ops at all. Reconnecting is the escalation: a fresh
+                // session re-drains the outbox and re-subscribes from scratch.
+                if !retransmit_due(&mut inflight, &mut pending_sends, &mut deadlines, rng) {
+                    tracing::warn!(
+                        ev = "sync.session.error",
+                        err_code = "SYNC_NETWORK_UNAVAILABLE",
+                        err_kind = "transient",
+                        retryable = true,
+                        result = "failed",
+                        cause = "op batch unacked after the full retry policy",
+                        "tearing the session down to reconnect"
+                    );
+                    return SessionEnd::Disconnected;
+                }
+                if deadlines.resync_at <= Instant::now() {
+                    match encode_subscribe_all(core) {
+                        Ok(frame) => pending_sends.push(frame),
+                        Err(()) => return SessionEnd::Disconnected,
+                    }
+                    deadlines.resynced();
                 }
             }
             SessionEvent::Recv(Ok(Some(bytes))) => {
@@ -463,6 +646,7 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
                     &mut inflight,
                     &mut inflight_ops,
                     &mut pending_sends,
+                    &mut deadlines,
                 )
                 .await
                 .is_err()
@@ -474,6 +658,52 @@ async fn session(core: &Arc<Core>, shared: &SyncShared, mut transport: BoxTransp
             SessionEvent::Recv(Ok(None) | Err(_)) => return SessionEnd::Disconnected,
         }
     }
+}
+
+/// When the pump next has something to do on its own: the soonest retransmit
+/// deadline, or the next resync, whichever comes first.
+fn next_deadline(inflight: &HashMap<u64, InflightBatch>, deadlines: &Deadlines) -> Instant {
+    inflight
+        .values()
+        .map(|b| b.due_at)
+        .min()
+        .map_or(deadlines.resync_at, |d| d.min(deadlines.resync_at))
+}
+
+/// Queue a retransmit for every batch whose ack never arrived.
+///
+/// Returns false when a batch has exhausted the retry policy — the caller ends
+/// the session rather than retrying forever on a link that is clearly not
+/// delivering.
+fn retransmit_due(
+    inflight: &mut HashMap<u64, InflightBatch>,
+    out: &mut Vec<Vec<u8>>,
+    deadlines: &mut Deadlines,
+    rng: &dyn Rng,
+) -> bool {
+    let now = Instant::now();
+    for (batch_id, batch) in inflight.iter_mut() {
+        if batch.due_at > now {
+            continue;
+        }
+        let Some(delay) = batch.backoff.next_delay(rng_unit(rng)) else {
+            return false;
+        };
+        batch.backoff.record_attempt();
+        batch.due_at = now + delay;
+        tracing::debug!(
+            ev = "sync.op.retransmit",
+            batch_id = *batch_id,
+            attempt = u64::from(batch.backoff.attempt()),
+            n_ops = batch.op_ids.len() as u64,
+            "op batch unacked; sending again"
+        );
+        out.push(batch.frame.clone());
+        // An ack that never came is the clearest evidence this link drops
+        // frames, and the inbound direction has no ack of its own to miss.
+        deadlines.note_loss(LossEvidence::Retransmit);
+    }
+    true
 }
 
 /// Process one inbound frame. `Err(())` signals a disconnect (reconnect);
@@ -488,14 +718,22 @@ async fn handle_frame(
     inflight: &mut HashMap<u64, InflightBatch>,
     inflight_ops: &mut HashSet<[u8; 16]>,
     pending_sends: &mut Vec<Vec<u8>>,
+    deadlines: &mut Deadlines,
 ) -> Result<(), ()> {
     let Ok((header, payload)) = decode_frame(bytes) else {
-        // Junk frame: ignore rather than tearing down the session.
+        // Junk frame: keep the session, but a frame that will not decode means
+        // the link mangled it — and whatever mangled this one may have
+        // destroyed another outright, leaving no trace at all.
+        deadlines.note_loss(LossEvidence::UndecodableFrame);
         return Ok(());
     };
     match header.msg_kind {
         MsgKind::Ack => {
-            if let Ok(ack) = AckPayload::decode(&payload) {
+            let Ok(ack) = AckPayload::decode(&payload) else {
+                deadlines.note_loss(LossEvidence::UndecodableFrame);
+                return Ok(());
+            };
+            {
                 if let Some(batch) = inflight.remove(&ack.batch_id) {
                     for id in &batch.op_ids {
                         inflight_ops.remove(id);
@@ -507,28 +745,38 @@ async fn handle_frame(
             }
         }
         MsgKind::OpBatch => {
-            if let Ok(batch) = OpBatchPayload::decode(&payload) {
-                for env in &batch.ops {
-                    // Peer accounting (best-effort): decode the envelope header.
-                    if let Ok(oe) = sunrise_crypto::decode_envelope(env) {
-                        shared.note_peer(oe.device_id);
-                    }
-                    match core.apply_remote(env).await {
-                        Ok(Some(DomainEvent::Created(r))) if r.kind() == EntityKind::Stream => {
-                            // Newly-learned stream (StreamCreate): subscribe to
-                            // its channel so its task ops flow.
-                            let sid = *r.bytes();
-                            if subscribed.insert(sid) {
-                                if let Ok(frame) = encode_subscribe_one(sid) {
-                                    pending_sends.push(frame);
-                                }
+            let Ok(batch) = OpBatchPayload::decode(&payload) else {
+                deadlines.note_loss(LossEvidence::UndecodableFrame);
+                return Ok(());
+            };
+            for env in &batch.ops {
+                // Peer accounting (best-effort): decode the envelope header.
+                if let Ok(oe) = sunrise_crypto::decode_envelope(env) {
+                    shared.note_peer(oe.device_id);
+                }
+                match core.apply_remote(env).await {
+                    Ok(Some(DomainEvent::Created(r))) if r.kind() == EntityKind::Stream => {
+                        // Newly-learned stream (StreamCreate): subscribe to
+                        // its channel so its task ops flow.
+                        let sid = *r.bytes();
+                        if subscribed.insert(sid) {
+                            if let Ok(frame) = encode_subscribe_one(sid) {
+                                pending_sends.push(frame);
                             }
-                            shared.mark_synced(core.now_ms());
                         }
-                        Ok(Some(_)) => shared.mark_synced(core.now_ms()),
-                        // Idempotent re-receive (None) or untrusted / invalid
-                        // remote op (Err): skip and keep the session.
-                        Ok(None) | Err(_) => {}
+                        shared.mark_synced(core.now_ms());
+                    }
+                    Ok(Some(_)) => shared.mark_synced(core.now_ms()),
+                    // Idempotent re-receive: nothing to do, nothing wrong.
+                    Ok(None) => {}
+                    Err(e) => {
+                        // An op that fails its own integrity checks was
+                        // damaged in transit; an op from a device this vault
+                        // has not trusted is a policy outcome and says nothing
+                        // about the link. Only the first is evidence.
+                        if is_corruption(&e) {
+                            deadlines.note_loss(LossEvidence::CorruptOp);
+                        }
                     }
                 }
             }
@@ -537,6 +785,8 @@ async fn handle_frame(
         MsgKind::StreamUpdate => {
             if let Ok(cu) = CaughtUpPayload::decode(&payload) {
                 caught_up.insert(cu.stream_id);
+            } else {
+                deadlines.note_loss(LossEvidence::UndecodableFrame);
             }
         }
         MsgKind::Ping => {
@@ -571,6 +821,7 @@ fn build_outbox_frames(
     inflight: &mut HashMap<u64, InflightBatch>,
     batch_counter: &mut u64,
     out: &mut Vec<Vec<u8>>,
+    rng: &dyn Rng,
 ) -> Result<(), ()> {
     let groups = core.sync_outbox_grouped(inflight_ops).map_err(|_| ())?;
     for (stream_id, ops) in groups {
@@ -599,7 +850,19 @@ fn build_outbox_frames(
         for id in &op_ids {
             inflight_ops.insert(*id);
         }
-        inflight.insert(batch_id, InflightBatch { op_ids });
+        let backoff = Backoff::canonical();
+        // First deadline uses the policy's own initial delay, without consuming
+        // an attempt: attempt 0 is the original send.
+        let due_at = Instant::now() + backoff.next_delay(rng_unit(rng)).unwrap_or(MIN_RESYNC_GAP);
+        inflight.insert(
+            batch_id,
+            InflightBatch {
+                op_ids,
+                frame: frame.clone(),
+                backoff,
+                due_at,
+            },
+        );
         out.push(frame);
     }
     Ok(())
@@ -656,6 +919,28 @@ fn encode_hello(h: &Hello) -> Result<Vec<u8>, ()> {
     let mut buf = Vec::new();
     ciborium::ser::into_writer(h, &mut buf).map_err(|_| ())?;
     Ok(buf)
+}
+
+/// A `Subscribe` covering every known stream with its current cursors — the
+/// anti-entropy resync frame.
+///
+/// Identical in shape to the one the handshake sends, and safe to repeat: the
+/// relay replaces a stream's subscription rather than adding a second one, and
+/// replays only what the cursors do not already cover.
+fn encode_subscribe_all(core: &Core) -> Result<Vec<u8>, ()> {
+    let entries = core.sync_subscribe_entries().map_err(|_| ())?;
+    let sub = SubscribePayload { streams: entries };
+    let bytes = sub.encode().map_err(|_| ())?;
+    encode_frame(MsgKind::Subscribe, FrameFlags::EMPTY, &bytes).map_err(|_| ())
+}
+
+/// Whether an `apply_remote` failure means the bytes were damaged, as opposed
+/// to the op being well-formed but from a device this vault does not trust.
+fn is_corruption(e: &crate::core::CoreError) -> bool {
+    matches!(
+        e,
+        crate::core::CoreError::Engine(crate::engine::EngineError::RemoteOpInvalid(_))
+    )
 }
 
 fn encode_subscribe_one(stream_id: [u8; 16]) -> Result<Vec<u8>, ()> {
@@ -719,9 +1004,7 @@ mod tests {
 
     fn make_cfg(dir: &Path) -> CoreConfig {
         CoreConfig {
-            sync: Some(SyncConfig {
-                url: "ws://unused/sync".into(),
-            }),
+            sync: Some(SyncConfig::new("ws://unused/sync")),
             ..CoreConfig::with_clock(
                 dir.to_path_buf(),
                 "0.1.0+test",
@@ -739,6 +1022,18 @@ mod tests {
             )
             .await
             .unwrap(),
+        )
+    }
+
+    /// Open a core whose anti-entropy timer fires on a test timescale rather
+    /// than [`DEFAULT_RESYNC_INTERVAL`].
+    async fn open_arc_with_resync(dir: &Path, interval: Duration) -> Arc<Core> {
+        let mut cfg = make_cfg(dir);
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_resync_interval(interval));
+        Arc::new(
+            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
+                .await
+                .unwrap(),
         )
     }
 
@@ -782,6 +1077,12 @@ mod tests {
         inject: Vec<([u8; 16], Vec<Vec<u8>>)>,
         /// Simulate a transport drop right after the first Subscribe.
         close_after_subscribe: bool,
+        /// Receive this many OpBatches without acking them — a lossy link that
+        /// is not a broken one, which is precisely the case issue #20 names.
+        swallow_first_batches: usize,
+        /// Inject these OpBatches on the SECOND and later Subscribe frames, so
+        /// a test can tell an in-session resync from the initial subscribe.
+        inject_on_resync: Vec<([u8; 16], Vec<Vec<u8>>)>,
     }
 
     struct ServerInner {
@@ -794,6 +1095,11 @@ mod tests {
         ops: Vec<Vec<u8>>,
     }
 
+    /// How many Subscribe frames one fake server has seen, across all its
+    /// connections. Shared so a test can assert a re-subscribe happened
+    /// *within* a session rather than via a reconnect.
+    type SubCount = Arc<std::sync::atomic::AtomicU64>;
+
     fn harness(
         scripts: Vec<Script>,
     ) -> (
@@ -801,15 +1107,30 @@ mod tests {
         SharedServer,
         mpsc::UnboundedReceiver<RecvBatch>,
     ) {
+        let (f, s, rx, _) = harness_counting(scripts);
+        (f, s, rx)
+    }
+
+    fn harness_counting(
+        scripts: Vec<Script>,
+    ) -> (
+        TransportFactory,
+        SharedServer,
+        mpsc::UnboundedReceiver<RecvBatch>,
+        SubCount,
+    ) {
         let server: SharedServer = Arc::new(parking_lot::Mutex::new(ServerInner {
             connect_count: 0,
             scripts: scripts.into_iter().collect(),
         }));
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
+        let subs: SubCount = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let factory_server = server.clone();
+        let factory_subs = subs.clone();
         let factory: TransportFactory = Arc::new(move || {
             let server = factory_server.clone();
             let batch_tx = batch_tx.clone();
+            let subs = factory_subs.clone();
             let fut = async move {
                 let (client_end, server_end) = duplex();
                 let script = {
@@ -817,18 +1138,40 @@ mod tests {
                     s.connect_count += 1;
                     s.scripts.pop_front().unwrap_or_default()
                 };
-                tokio::spawn(run_fake_server(server_end, script, batch_tx));
+                tokio::spawn(run_fake_server(server_end, script, batch_tx, subs));
                 Ok(Box::new(client_end) as BoxTransport)
             };
             Box::pin(fut) as ConnectFuture
         });
-        (factory, server, batch_rx)
+        (factory, server, batch_rx, subs)
+    }
+
+    /// Push each `(stream, envelopes)` group to the client as one `OpBatch`.
+    /// Returns false once the client end is gone, so callers stop the server.
+    async fn send_op_batches(
+        t: &mut ChannelTransport,
+        groups: &[([u8; 16], Vec<Vec<u8>>)],
+    ) -> bool {
+        for (stream_id, envs) in groups {
+            let payload = OpBatchPayload {
+                ops: envs.clone(),
+                batch_id: 0,
+                stream_id: *stream_id,
+            };
+            let bytes = payload.encode().unwrap();
+            let f = encode_frame(MsgKind::OpBatch, FrameFlags::EMPTY, &bytes).unwrap();
+            if t.send_frame(f).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     async fn run_fake_server(
         mut t: ChannelTransport,
         script: Script,
         batch_tx: mpsc::UnboundedSender<RecvBatch>,
+        sub_count: SubCount,
     ) {
         // Expect Hello, reply HelloAck.
         let Ok(Some(frame)) = t.recv_frame().await else {
@@ -857,6 +1200,7 @@ mod tests {
 
         let mut subscribed: HashSet<[u8; 16]> = HashSet::new();
         let mut injected = false;
+        let mut swallowed = 0usize;
         loop {
             let frame = match t.recv_frame().await {
                 Ok(Some(f)) => f,
@@ -867,7 +1211,13 @@ mod tests {
             };
             match hh.msg_kind {
                 MsgKind::Subscribe => {
+                    let n = sub_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     if let Ok(sub) = SubscribePayload::decode(&payload) {
+                        // Only on a re-subscribe, so a test can attribute the
+                        // delivery to an in-session resync and nothing else.
+                        if n > 0 && !send_op_batches(&mut t, &script.inject_on_resync).await {
+                            return;
+                        }
                         for entry in &sub.streams {
                             if subscribed.insert(entry.stream_id) {
                                 let cu = CaughtUpPayload {
@@ -885,18 +1235,8 @@ mod tests {
                     }
                     if !injected {
                         injected = true;
-                        for (stream_id, envs) in &script.inject {
-                            let payload = OpBatchPayload {
-                                ops: envs.clone(),
-                                batch_id: 0,
-                                stream_id: *stream_id,
-                            };
-                            let bytes = payload.encode().unwrap();
-                            let f =
-                                encode_frame(MsgKind::OpBatch, FrameFlags::EMPTY, &bytes).unwrap();
-                            if t.send_frame(f).await.is_err() {
-                                return;
-                            }
+                        if !send_op_batches(&mut t, &script.inject).await {
+                            return;
                         }
                         if script.close_after_subscribe {
                             return; // simulate a transport drop
@@ -908,6 +1248,10 @@ mod tests {
                         let _ = batch_tx.send(RecvBatch {
                             ops: batch.ops.clone(),
                         });
+                        if swallowed < script.swallow_first_batches {
+                            swallowed += 1;
+                            continue; // received, deliberately not acked
+                        }
                         let ack = AckPayload {
                             batch_id: batch.batch_id,
                             stream_id: batch.stream_id,
@@ -1061,6 +1405,7 @@ mod tests {
         let script = Script {
             inject: vec![(stream, envs)],
             close_after_subscribe: false,
+            ..Default::default()
         };
         let (factory, _server, _batch_rx) = harness(vec![script]);
         core.start_sync(factory).unwrap();
@@ -1098,6 +1443,7 @@ mod tests {
         let script = Script {
             inject: vec![(stream, vec![dup.clone(), dup, sentinel])],
             close_after_subscribe: false,
+            ..Default::default()
         };
         let (factory, _server, _batch_rx) = harness(vec![script]);
         core.start_sync(factory).unwrap();
@@ -1129,10 +1475,12 @@ mod tests {
             Script {
                 inject: vec![],
                 close_after_subscribe: true,
+                ..Default::default()
             },
             Script {
                 inject: vec![(stream, envs)],
                 close_after_subscribe: false,
+                ..Default::default()
             },
         ];
         let (factory, server, _batch_rx) = harness(scripts);
@@ -1177,5 +1525,170 @@ mod tests {
             connects_before,
             "no reconnect was needed"
         );
+    }
+
+    // ---- Test (f): an unacked op batch is retransmitted inside the session ----
+    //
+    // The heart of issue #20. The server *receives* the batch and deliberately
+    // withholds the ack, which is a lossy link rather than a broken one: the
+    // socket stays up, so nothing tears the session down and, before the retry
+    // path existed, the op sat in the outbox indefinitely while the UI showed
+    // `Live`. The assertion that matters is not merely that the op arrives, but
+    // that it arrives *without a reconnect* — recovery has to happen in-session,
+    // because on a link like this no reconnect is ever coming.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unacked_batch_is_retransmitted_within_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+
+        let mut status_rx = core.sync_status();
+        let script = Script {
+            swallow_first_batches: 1,
+            ..Default::default()
+        };
+        let (factory, server, mut batch_rx) = harness(vec![script]);
+        core.start_sync(factory).unwrap();
+
+        let _ = collect_until_live(&mut status_rx).await;
+        let connects_before = server.lock().connect_count;
+
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "stranded".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        // First delivery: swallowed, never acked.
+        let first = timeout(Duration::from_secs(10), batch_rx.recv())
+            .await
+            .expect("server saw the original send")
+            .unwrap();
+        assert_eq!(first.ops.len(), 1);
+
+        // Second delivery: the retransmit, carrying the same op.
+        let second = timeout(Duration::from_secs(10), batch_rx.recv())
+            .await
+            .expect("server saw the retransmit")
+            .unwrap();
+        assert_eq!(second.ops, first.ops, "retransmit carried the same op");
+
+        // The retransmit was acked, so the outbox drained.
+        wait_pending_zero(&core).await;
+        assert_eq!(
+            server.lock().connect_count,
+            connects_before,
+            "recovered in-session: the link was never cycled"
+        );
+    }
+
+    // ---- Test (g): loss evidence pulls a resync forward, in-session ----
+    //
+    // Nothing acks an inbound frame, so a dropped one leaves no trace and no
+    // outbound retry can recover it. The driver instead treats a retransmit as
+    // evidence that this link is dropping frames in *both* directions and
+    // re-subscribes early. The injected batch is delivered only on the second
+    // and later Subscribe, so materializing it proves an in-session resync
+    // happened — a reconnect would show up as a second connect.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loss_evidence_triggers_an_in_session_resync() {
+        let (cert_b, stream, envs) = make_remote_tasks(&["only on resync"]).await;
+        let dir = tempfile::tempdir().unwrap();
+        // Long timer, so anything observed here came from the evidence path.
+        let core = open_arc_with_resync(dir.path(), Duration::from_secs(300)).await;
+        core.submit(Command::TrustDevice { cert_cbor: cert_b })
+            .await
+            .unwrap();
+
+        let script = Script {
+            // Withholding this ack is what produces the loss evidence.
+            swallow_first_batches: 1,
+            inject_on_resync: vec![(stream, envs)],
+            ..Default::default()
+        };
+        let (factory, server, _batch_rx, subs) = harness_counting(vec![script]);
+        core.start_sync(factory).unwrap();
+
+        // This local op is what gets swallowed, producing the retransmit that
+        // is the loss evidence. It also lands in the inbox, so the assertion
+        // below counts two: this one, and the remote op the resync delivers.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "provokes a retransmit".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        wait_inbox_len(&core, 2).await;
+        assert!(
+            subs.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "a second Subscribe was sent: the resync"
+        );
+        assert_eq!(
+            server.lock().connect_count,
+            1,
+            "the resync happened inside the original session"
+        );
+    }
+
+    // ---- Test (h): the resync timer fires with no evidence at all ----
+    //
+    // The evidence path cannot cover the case where the *last* frame in each
+    // direction is the one that vanished: there is then nothing left to notice
+    // it. Here the link is clean and nothing is withheld, so no evidence is
+    // ever produced, and only the timer can account for the resync. The timer
+    // is the guarantee; evidence is only the latency optimisation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resync_timer_fires_without_any_loss_evidence() {
+        let (cert_b, stream, envs) = make_remote_tasks(&["timer backstop"]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc_with_resync(dir.path(), Duration::from_millis(150)).await;
+        core.submit(Command::TrustDevice { cert_cbor: cert_b })
+            .await
+            .unwrap();
+
+        let script = Script {
+            inject_on_resync: vec![(stream, envs)],
+            ..Default::default()
+        };
+        let (factory, server, _batch_rx, subs) = harness_counting(vec![script]);
+        core.start_sync(factory).unwrap();
+
+        // Nothing is ever submitted locally here, so the inbox can only reach
+        // one via the injected remote op — which only the resync carries.
+        wait_inbox_len(&core, 1).await;
+        assert!(
+            subs.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "a second Subscribe was sent: the timer resync"
+        );
+        assert_eq!(
+            server.lock().connect_count,
+            1,
+            "the resync happened inside the original session"
+        );
+    }
+
+    /// Poll until the inbox holds exactly `n` tasks.
+    async fn wait_inbox_len(core: &Core, n: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            if inbox_len(core).await == n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("inbox never reached {n}; last = {}", inbox_len(core).await);
+    }
+
+    /// Poll until the DB-authoritative outbox count reaches zero.
+    async fn wait_pending_zero(core: &Core) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            if core.sync_pending().unwrap() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("outbox never drained");
     }
 }

@@ -496,6 +496,11 @@ impl Core {
     /// Build the subscribe set: every known stream (the zero meta/inbox stream,
     /// every stream we have ops for, and every declared stream) with its
     /// per-`(device)` cursors from `sync_cursors`.
+    /// The configured anti-entropy resync interval, when sync is configured.
+    pub(crate) fn sync_resync_interval(&self) -> Option<std::time::Duration> {
+        self.cfg.sync.as_ref().map(|s| s.resync_interval)
+    }
+
     pub(crate) fn sync_subscribe_entries(&self) -> Result<Vec<SubscribeEntry>, CoreError> {
         use rusqlite::params;
         let db = self.db.lock();

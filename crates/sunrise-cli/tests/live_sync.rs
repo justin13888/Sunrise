@@ -84,7 +84,7 @@ async fn tui_wiring_reaches_live_and_converges() {
     // B comes up first via the TUI path: export its cert, start sync. It does
     // not have A's cert yet, so its trust list is empty for now.
     let plan_b = SyncPlan {
-        sync: Some(SyncConfig { url: url.clone() }),
+        sync: Some(SyncConfig::new(url.clone())),
         export_cert: Some(cert_b.clone()),
         trust_cert: None,
     };
@@ -97,7 +97,7 @@ async fn tui_wiring_reaches_live_and_converges() {
     // A comes up via the same TUI path: trust B's cert (now on disk) and export
     // its own. This is precisely the binary's startup sequence.
     let plan_a = SyncPlan {
-        sync: Some(SyncConfig { url: url.clone() }),
+        sync: Some(SyncConfig::new(url.clone())),
         export_cert: Some(cert_a.clone()),
         trust_cert: Some(cert_b.clone()),
     };
