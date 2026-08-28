@@ -168,13 +168,22 @@ jobs:
           # docs/10-cross-cutting/logging.md §6.3 — no Plain<T>::expose() inside
           # code that emits log records.
           #
-          # The list below is the set of crates that actually call `tracing::*!`
-          # today (ADR-0010, amended). It used to be `crates/sunrise-log/src`
-          # plus three glob patterns that matched nothing and a
-          # `packages/sunrise-log/src` that never existed — a gate over one
-          # orphan crate that no other code could reach.
+          # The list below is every crate that emits a log record today
+          # (`sunrise-log`, `-server`, `-cli`, `-storage`, `-core`) plus the
+          # client-seam crates that are next in line to (`-sync`,
+          # `-client-core`, `-core-bindings`). It used to be
+          # `crates/sunrise-log/src` plus three glob patterns that matched
+          # nothing and a `packages/sunrise-log/src` that never existed — a
+          # gate over one orphan crate that no other code could reach. It also
+          # named `crates/sunrise-tui/src` until ADR-0019 deleted that crate:
+          # `grep-gate.sh` drops paths that do not exist, so a stale entry
+          # costs coverage without ever costing a red build, which is exactly
+          # how a gate rots unnoticed.
           #
-          # **When a crate starts logging, add it here.** The glob patterns are
+          # **When a crate starts logging, add it here.** Listing one before it
+          # logs is free — grep over a tree with no `.expose()` is a no-op —
+          # and it is the only way the gate is already in place on the commit
+          # that introduces the first `tracing::info!`. The glob patterns are
           # kept so a future `telemetry/` or `observability/` module in any
           # crate is covered the moment it appears; `grep-gate.sh` skips paths
           # that do not exist and fails if *none* do, so this cannot silently
@@ -188,5 +197,7 @@ jobs:
             crates/sunrise-storage/src \
             crates/sunrise-core/src \
             crates/sunrise-sync/src \
+            crates/sunrise-client-core/src \
+            crates/sunrise-core-bindings/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
 
