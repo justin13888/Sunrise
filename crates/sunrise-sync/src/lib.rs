@@ -29,7 +29,7 @@ pub mod transport;
 pub mod ws;
 
 pub use backoff::Backoff;
-pub use credential::TokenSource;
+pub use credential::{TokenSource, TokenWatch};
 pub use state::SyncState;
 pub use transport::{Transport, TransportError};
 #[cfg(feature = "ws")]

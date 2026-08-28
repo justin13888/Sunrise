@@ -78,11 +78,11 @@ use sunrise_error::ErrorCode;
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
 
-pub use sunrise_sync::TokenSource;
+pub use sunrise_sync::{TokenSource, TokenWatch};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
-    MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
-    REQUIRED_SERVER_BITS,
+    MsgKind, OpBatchPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
+    REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
 /// Boxed transport produced by a [`TransportFactory`].
@@ -384,6 +384,8 @@ enum SessionEvent {
     Submit,
     /// A retransmit deadline or the resync deadline came due.
     Timer,
+    /// The bearer was replaced while this session was live.
+    CredentialRenewed,
     Recv(Result<Option<Vec<u8>>, TransportError>),
 }
 
@@ -464,6 +466,14 @@ pub(crate) async fn run(
         .upgrade()
         .and_then(|c| c.sync_resync_interval())
         .unwrap_or(DEFAULT_RESYNC_INTERVAL);
+    // Held for the driver's whole life, not per session: a renewal written
+    // while the client is disconnected must still reach the next connect.
+    let credential = weak
+        .upgrade()
+        .map_or_else(TokenSource::empty, |c| c.sync_credential());
+    // One watch handle for the driver's life, so a renewal that lands between
+    // two sessions — or while a session is busy — is still observed.
+    let mut renewals = credential.watch();
     while !shared.is_shutdown() {
         // Connect (cancellable by shutdown).
         let connect_fut = factory();
@@ -499,7 +509,16 @@ pub(crate) async fn run(
 
         // A session needs the Core alive; if it's gone, stop.
         let Some(core) = weak.upgrade() else { break };
-        let end = session(&core, &shared, transport, rng.as_ref(), resync_interval).await;
+        let end = session(
+            &core,
+            &shared,
+            transport,
+            rng.as_ref(),
+            resync_interval,
+            &credential,
+            &mut renewals,
+        )
+        .await;
         drop(core);
         shared.set_state(SyncState::Disconnected);
         tracing::info!(
@@ -558,6 +577,8 @@ async fn session(
     mut transport: BoxTransport,
     rng: &dyn Rng,
     resync_interval: Duration,
+    credential: &TokenSource,
+    renewals: &mut TokenWatch,
 ) -> SessionEnd {
     // ---- Handshake: Hello → HelloAck ----
     let hello = build_hello(core.app_string());
@@ -614,6 +635,12 @@ async fn session(
     let mut batch_counter: u64 = 0;
     let mut pending_sends: Vec<Vec<u8>> = Vec::new();
     let mut deadlines = Deadlines::new(resync_interval);
+    // A renewal that landed while this client was disconnected is already in
+    // the credential the connect used, so it is marked seen rather than
+    // re-sent as a refresh the relay does not need.
+    if renewals.seen() != credential.version() {
+        let _ = renewals.changed().await;
+    }
 
     // Initial outbox drain (fresh session: everything unacked is (re)sent —
     // idempotent apply on the peer tolerates replays).
@@ -651,6 +678,7 @@ async fn session(
             biased;
             () = shared.shutdown_notified() => SessionEvent::Shutdown,
             () = shared.submit_notified() => SessionEvent::Submit,
+            _ = renewals.changed() => SessionEvent::CredentialRenewed,
             () = tokio::time::sleep_until(wake_at) => SessionEvent::Timer,
             r = transport.recv_frame() => SessionEvent::Recv(r),
         };
@@ -673,6 +701,15 @@ async fn session(
                 .is_err()
                 {
                     return SessionEnd::Disconnected;
+                }
+            }
+            // The renewal reaches the relay in-band. The alternative — waiting
+            // for `AUTH_TOKEN_EXPIRED` and reconnecting — costs a full
+            // handshake, a re-subscribe, and a catch-up window in which the
+            // session is not live, all on a schedule the client already knew.
+            SessionEvent::CredentialRenewed => {
+                if let Some(frame) = encode_refresh_token(credential) {
+                    pending_sends.push(frame);
                 }
             }
             SessionEvent::Timer => {
@@ -721,6 +758,22 @@ async fn session(
             SessionEvent::Recv(Ok(None) | Err(_)) => return SessionEnd::Disconnected,
         }
     }
+}
+
+/// Encode a `0x12 RefreshToken` frame for the source's current bearer.
+///
+/// `None` when there is no token to send — clearing the credential is not
+/// something to tell the relay about, and an empty `RefreshToken` would be
+/// rejected as an unverifiable one, ending a session that was working.
+fn encode_refresh_token(credential: &TokenSource) -> Option<Vec<u8>> {
+    let token = credential.get()?;
+    let payload = RefreshTokenPayload { token }.encode().ok()?;
+    let frame = encode_frame(MsgKind::RefreshToken, FrameFlags::EMPTY, &payload).ok()?;
+    tracing::debug!(
+        ev = "sync.credential.renewed",
+        "sending a refreshed bearer to the relay"
+    );
+    Some(frame)
 }
 
 /// When the pump next has something to do on its own: the soonest retransmit
@@ -1071,7 +1124,7 @@ mod tests {
     //! `submit_while_live` test drives the real driver task; the fake server
     //! scripts the protocol side.
 
-    use super::{BoxTransport, ConnectFuture, SyncConfig, TransportFactory};
+    use super::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
     use crate::config::Clock;
     use crate::{Command, Core, CoreConfig, DomainEvent, Query, QueryResult, SystemRng, Unlock};
     use async_trait::async_trait;
@@ -1197,6 +1250,11 @@ mod tests {
         ops: Vec<Vec<u8>>,
     }
 
+    /// Bearer tokens the fake relay received in `0x12 RefreshToken` frames,
+    /// in order. Shared so a test can assert the renewal reached a *live*
+    /// session rather than the next reconnect.
+    type SeenRefreshes = Arc<parking_lot::Mutex<Vec<String>>>;
+
     /// How many Subscribe frames one fake server has seen, across all its
     /// connections. Shared so a test can assert a re-subscribe happened
     /// *within* a session rather than via a reconnect.
@@ -1221,18 +1279,35 @@ mod tests {
         mpsc::UnboundedReceiver<RecvBatch>,
         SubCount,
     ) {
+        let (f, s, rx, subs, _) = harness_full(scripts);
+        (f, s, rx, subs)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn harness_full(
+        scripts: Vec<Script>,
+    ) -> (
+        TransportFactory,
+        SharedServer,
+        mpsc::UnboundedReceiver<RecvBatch>,
+        SubCount,
+        SeenRefreshes,
+    ) {
         let server: SharedServer = Arc::new(parking_lot::Mutex::new(ServerInner {
             connect_count: 0,
             scripts: scripts.into_iter().collect(),
         }));
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
         let subs: SubCount = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let refreshes: SeenRefreshes = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let factory_server = server.clone();
         let factory_subs = subs.clone();
+        let factory_refreshes = refreshes.clone();
         let factory: TransportFactory = Arc::new(move || {
             let server = factory_server.clone();
             let batch_tx = batch_tx.clone();
             let subs = factory_subs.clone();
+            let refreshes = factory_refreshes.clone();
             let fut = async move {
                 let (client_end, server_end) = duplex();
                 let script = {
@@ -1240,12 +1315,14 @@ mod tests {
                     s.connect_count += 1;
                     s.scripts.pop_front().unwrap_or_default()
                 };
-                tokio::spawn(run_fake_server(server_end, script, batch_tx, subs));
+                tokio::spawn(run_fake_server(
+                    server_end, script, batch_tx, subs, refreshes,
+                ));
                 Ok(Box::new(client_end) as BoxTransport)
             };
             Box::pin(fut) as ConnectFuture
         });
-        (factory, server, batch_rx, subs)
+        (factory, server, batch_rx, subs, refreshes)
     }
 
     /// Push each `(stream, envelopes)` group to the client as one `OpBatch`.
@@ -1332,6 +1409,7 @@ mod tests {
         script: Script,
         batch_tx: mpsc::UnboundedSender<RecvBatch>,
         sub_count: SubCount,
+        refreshes: SeenRefreshes,
     ) {
         // Expect Hello, reply HelloAck.
         let Ok(Some(frame)) = t.recv_frame().await else {
@@ -1403,6 +1481,11 @@ mod tests {
                         if t.send_frame(f).await.is_err() {
                             return;
                         }
+                    }
+                }
+                MsgKind::RefreshToken => {
+                    if let Ok(p) = sunrise_wire_protocol::RefreshTokenPayload::decode(&payload) {
+                        refreshes.lock().push(p.token);
                     }
                 }
                 MsgKind::Close => return,
@@ -1488,6 +1571,82 @@ mod tests {
     }
 
     // ---- Test (a): pending outbox drains, acks, reaches Live ----
+    /// A renewal written while a session is live reaches the relay **in that
+    /// session**, as a `0x12 RefreshToken` frame.
+    ///
+    /// The alternative — let the token expire, take the `AUTH_TOKEN_EXPIRED`
+    /// close, reconnect — costs a full handshake, a re-subscribe, and a
+    /// catch-up window in which the client is not live, all on a schedule the
+    /// client already knew in advance. That is the case this closes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewed_bearer_reaches_a_live_session_without_reconnecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut cfg = make_cfg(dir.path());
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
+        let core = Arc::new(
+            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
+                .await
+                .unwrap(),
+        );
+
+        let mut status_rx = core.sync_status();
+        let (factory, server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        core.start_sync(factory).unwrap();
+        let _ = collect_until_live(&mut status_rx).await;
+        let connects_when_live = server.lock().connect_count;
+
+        credential.set(Some("renewed-token".into()));
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while refreshes.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("no RefreshToken frame arrived");
+        assert_eq!(
+            refreshes.lock().as_slice(),
+            ["renewed-token".to_string()],
+            "the relay is told the new bearer, exactly once"
+        );
+        assert_eq!(
+            server.lock().connect_count,
+            connects_when_live,
+            "and without tearing the session down to do it"
+        );
+        core.shutdown().await;
+    }
+
+    /// Clearing the credential is not a renewal. An empty `RefreshToken` would
+    /// be rejected by the relay as an unverifiable token, ending a session
+    /// that was working — so nothing is sent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clearing_the_credential_sends_no_refresh_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut cfg = make_cfg(dir.path());
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
+        let core = Arc::new(
+            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
+                .await
+                .unwrap(),
+        );
+
+        let mut status_rx = core.sync_status();
+        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        core.start_sync(factory).unwrap();
+        let _ = collect_until_live(&mut status_rx).await;
+
+        credential.set(None);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            refreshes.lock().is_empty(),
+            "a cleared credential must not be sent as a refresh"
+        );
+        core.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn on_connect_drains_pending_outbox_and_reaches_live() {
         let dir = tempfile::tempdir().unwrap();

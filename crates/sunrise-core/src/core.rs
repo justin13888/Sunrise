@@ -501,6 +501,20 @@ impl Core {
         self.cfg.sync.as_ref().map(|s| s.resync_interval)
     }
 
+    /// The shared bearer this vault's sync sessions present.
+    ///
+    /// Empty when sync is unconfigured or the relay is self-host. The handle is
+    /// shared, so a renewal written here reaches both the live session (as a
+    /// `0x12 RefreshToken` frame) and the next reconnect.
+    pub(crate) fn sync_credential(&self) -> crate::sync_driver::TokenSource {
+        self.cfg
+            .sync
+            .as_ref()
+            .map_or_else(crate::sync_driver::TokenSource::empty, |s| {
+                s.credential.clone()
+            })
+    }
+
     pub(crate) fn sync_subscribe_entries(&self) -> Result<Vec<SubscribeEntry>, CoreError> {
         use rusqlite::params;
         let db = self.db.lock();

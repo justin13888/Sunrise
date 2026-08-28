@@ -26,4 +26,4 @@ tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
