@@ -21,6 +21,7 @@ struct BrowseSidebar: View {
                 ForEach(Destination.fixed) { destination in
                     Label(destination.title, systemImage: destination.symbol)
                         .tag(destination)
+                        .accessibilityIdentifier("sidebar.\(destination.title.lowercased())")
                 }
             }
 

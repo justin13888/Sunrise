@@ -3,6 +3,7 @@
 included:
   - Sunrise
   - SunriseTests
+  - SunriseUITests
 
 excluded:
   - ../../out

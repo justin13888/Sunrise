@@ -163,6 +163,31 @@ macos-app: macos-xcframework
       -quiet \
       CODE_SIGNING_ALLOWED=NO
 
+# Drive the real window (XCUITest); needs `sudo DevToolsSecurity -enable` once
+[group('macos')]
+macos-uitest: macos-xcframework
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Separate from `macos-app` because it needs one thing a build must not do
+    # for you. A macOS UI test takes control of another process, and the system
+    # kills the runner ("signal kill before establishing connection") unless
+    # developer mode is on — a one-time change to the machine's security
+    # posture. Signing is left on, too: the runner will not launch
+    # ad-hoc-unsigned.
+    if ! DevToolsSecurity -status | grep -q enabled; then
+      echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
+      exit 1
+    fi
+    cd apps/macos
+    xcodegen generate --quiet
+    xcodebuild test \
+      -project Sunrise.xcodeproj \
+      -scheme Sunrise \
+      -destination 'platform=macOS,arch=arm64' \
+      -only-testing:SunriseUITests \
+      -skip-testing:SunriseTests \
+      -quiet
+
 # Generate the Xcode project and open it. Everyday development entry point.
 [group('macos')]
 macos-open: macos-xcframework

@@ -85,6 +85,22 @@ targets:
             echo "warning: swiftlint not installed; skipping"
           fi
 
+  # Drives the real window. This is the only target that proves a click
+  # reaches the core: `SunriseTests` exercises the view *models*, which is a
+  # different claim.
+  SunriseUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: SunriseUITests
+    dependencies:
+      - target: Sunrise
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Sunrise
+
   SunriseTests:
     type: bundle.unit-test
     platform: macOS
@@ -109,3 +125,18 @@ schemes:
       gatherCoverageData: true
       targets:
         - SunriseTests
+        # Skipped by default, and not because it is optional.
+        #
+        # A macOS UI test takes control of another process, which the system
+        # refuses while developer mode is off: the runner is killed with
+        # "signal kill before establishing connection" before it can connect.
+        # Turning it on is a one-time change to the machine's security
+        # posture, not something a build should do:
+        #
+        #     sudo DevToolsSecurity -enable
+        #
+        # Then: `just macos-uitest`. Leaving it in the scheme keeps it
+        # compiled on every build — an uncompiled test target rots in a week
+        # — while keeping `just macos-app` honest about what it ran.
+        - name: SunriseUITests
+          skipped: true

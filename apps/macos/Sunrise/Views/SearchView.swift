@@ -21,6 +21,7 @@ struct SearchView: View {
                 )
                 .textFieldStyle(.plain)
                 .focused($isFocused)
+                .accessibilityIdentifier("search.field")
                 if !model.text.isEmpty {
                     Button("Clear", systemImage: "xmark.circle.fill") { model.clear() }
                         .labelStyle(.iconOnly)

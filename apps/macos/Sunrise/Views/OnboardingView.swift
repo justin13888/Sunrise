@@ -35,6 +35,7 @@ struct OnboardingView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(isWorking)
+            .accessibilityIdentifier("onboarding.create")
 
             if isWorking {
                 ProgressView().controlSize(.small)

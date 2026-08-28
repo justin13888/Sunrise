@@ -79,6 +79,17 @@ final class SessionModel {
     static func standard() -> SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
+        #if DEBUG
+        if let scratch = UITestHarness.scratchVault() {
+            // A UI test drives the real window, and the real window must not
+            // open the developer's vault or write to their login Keychain.
+            return SessionModel(
+                location: VaultLocation(directory: scratch),
+                rootStore: InMemoryVaultRootStore(),
+                appVersion: appVersion
+            )
+        }
+        #endif
         do {
             return SessionModel(
                 location: try VaultLocation.standard(),
