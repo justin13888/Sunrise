@@ -2576,6 +2576,32 @@ impl From<&Block> for BlockItem {
     }
 }
 
+impl BlockItem {
+    /// Back to the domain record this row was projected from.
+    ///
+    /// Infallible — every field is already the domain's own type — and
+    /// `unknown` is empty, because forward-compat fields are preserved in
+    /// storage and deliberately never exported. Nothing round-trips a Block
+    /// *back into the vault* through here; the callers are the read-only
+    /// conflict and merge helpers in [`crate::vocab`], which need a `Block` to
+    /// hand the domain and never write one.
+    pub(crate) fn to_domain(&self) -> Block {
+        Block {
+            id: self.id,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            stream_id: self.stream_id,
+            starts_at: SunriseTime::from(self.starts_at.clone()),
+            ends_at: SunriseTime::from(self.ends_at.clone()),
+            title: self.title.clone(),
+            title_track_task: self.title_track_task,
+            tasks: self.tasks.iter().copied().collect(),
+            deleted: self.deleted,
+            unknown: sunrise_domain::Unknowns::new(),
+        }
+    }
+}
+
 /// One row of the calendar grid. See [`sunrise_core::queries::BlockRow`].
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BlockGridRow {

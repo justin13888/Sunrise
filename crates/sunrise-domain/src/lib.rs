@@ -57,7 +57,7 @@ pub use activity::{
 };
 pub use annotate::{parse as parse_annotate, EditError, TaskEdit};
 pub use attachment::{Attachment, AttachmentDraft};
-pub use block::{Block, BlockDraft, BlockPatch};
+pub use block::{merge_blocks, overlaps, Block, BlockDraft, BlockOverlap, BlockPatch};
 pub use capture::now_ts;
 pub use common::{Energy, NoteBody};
 pub use constraint::{

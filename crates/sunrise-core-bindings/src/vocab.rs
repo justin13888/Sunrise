@@ -21,7 +21,9 @@ use sunrise_domain::{
     SessionLength, SunriseTime, TodaySection,
 };
 
-use crate::dto::{Constraint, Recurrence, RoutineItem, SessionRow, TimeValue};
+use crate::dto::{
+    BlockDraftIn, BlockGridRow, Constraint, Recurrence, RoutineItem, SessionRow, TimeValue,
+};
 use crate::BindingError;
 
 /// See [`sunrise_domain::TodaySection`].
@@ -311,4 +313,86 @@ pub fn inbox_stream_id() -> sunrise_id::EntityRef {
 /// An IANA zone, or UTC when the name is not one.
 fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
     jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+// ---------------------------------------------------------------------------
+// Calendar conflicts
+// ---------------------------------------------------------------------------
+
+/// One shaded region on the calendar grid: two Blocks and the time they share.
+///
+/// See [`sunrise_domain::BlockOverlap`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BlockConflict {
+    /// The earlier-starting Block.
+    pub a: sunrise_id::EntityRef,
+    /// The later-starting Block.
+    pub b: sunrise_id::EntityRef,
+    /// Start of the shared region (epoch ms).
+    pub from_ms: i64,
+    /// End of the shared region (epoch ms), exclusive.
+    pub to_ms: i64,
+}
+
+/// Every overlapping pair among the rows a calendar grid is showing.
+///
+/// See [`sunrise_domain::overlaps`]. Exported rather than computed in the
+/// client because "overlap" is a decision, not arithmetic: it is measured on
+/// [`sunrise_domain::SunriseTime::index_ms`] so that the four time kinds
+/// compare the way storage orders them, and back-to-back blocks are
+/// deliberately *not* a conflict. A client comparing its own two numbers would
+/// get the second of those wrong on its first well-planned day.
+#[uniffi::export]
+#[must_use]
+pub fn block_conflicts(rows: Vec<BlockGridRow>) -> Vec<BlockConflict> {
+    let blocks: Vec<sunrise_domain::Block> = rows.iter().map(|r| r.block.to_domain()).collect();
+    sunrise_domain::overlaps(&blocks)
+        .into_iter()
+        .map(|o| BlockConflict {
+            a: o.a,
+            b: o.b,
+            from_ms: o.from_ms,
+            to_ms: o.to_ms,
+        })
+        .collect()
+}
+
+/// The draft the Resolve menu's **Merge** action creates.
+///
+/// `docs/02-domain/time-blocks.md` §Conflicts defines merge as "tombstone the
+/// two original Blocks and create a new one with the union time range and
+/// concatenated tasks". This is the create half; the caller submits the two
+/// deletes alongside it.
+///
+/// The interesting part is not the union but **which time kind survives it**,
+/// and that is a domain decision: two bounds of the same kind stay that kind,
+/// two different kinds resolve to an instant rather than letting one silently
+/// re-anchor the other's meaning on the next flight. See
+/// [`sunrise_domain::merge_blocks`].
+///
+/// `tz` is the zone a floating or all-day bound resolves in when the kinds
+/// disagree; an unknown one falls back to UTC, as everywhere else here.
+///
+/// # Errors
+///
+/// [`BindingError::Core`] when the union does not validate — in practice only
+/// a merge that would bind two or more tasks with no title on either side,
+/// since a multi-task Block has no single task title to shadow.
+#[uniffi::export]
+pub fn merged_block_draft(
+    a: BlockGridRow,
+    b: BlockGridRow,
+    tz: String,
+) -> Result<BlockDraftIn, BindingError> {
+    let zone = zone_or_utc(&tz);
+    let draft = sunrise_domain::merge_blocks(&a.block.to_domain(), &b.block.to_domain(), &zone)
+        .map_err(|e| BindingError::Core(e.to_string()))?;
+    Ok(BlockDraftIn {
+        stream_id: draft.stream_id,
+        starts_at: TimeValue::from(&draft.starts_at),
+        ends_at: TimeValue::from(&draft.ends_at),
+        title: draft.title,
+        title_track_task: draft.title_track_task,
+        tasks: draft.tasks,
+    })
 }

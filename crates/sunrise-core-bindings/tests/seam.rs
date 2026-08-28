@@ -1320,3 +1320,106 @@ async fn a_malformed_attachment_row_is_refused_at_the_boundary() {
         Err(BindingError::BadFixedBytes { .. })
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Calendar conflicts
+// ---------------------------------------------------------------------------
+
+/// The Resolve menu, end to end across the seam: two overlapping blocks are
+/// reported as one shaded region, and merging them tombstones both and writes
+/// their union.
+///
+/// The whole point of running this against a real vault is that the merge is
+/// three commands the client submits — so a draft the seam produced but the
+/// core would reject would fail *here*, not in the app.
+#[tokio::test(flavor = "multi_thread")]
+async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
+    use sunrise_core_bindings::dto::BlockDraftIn;
+    use sunrise_core_bindings::vocab::{block_conflicts, merged_block_draft, time_value_ms};
+
+    let (_dir, core) = open_core().await;
+    let inbox = sunrise_core_bindings::vocab::inbox_stream_id();
+    let tz = "UTC";
+
+    let nine = TimeValue::Floating {
+        civil: "2026-03-04T09:00:00".parse().expect("civil"),
+    };
+    let ten = TimeValue::Floating {
+        civil: "2026-03-04T10:00:00".parse().expect("civil"),
+    };
+    let eleven = TimeValue::Floating {
+        civil: "2026-03-04T11:00:00".parse().expect("civil"),
+    };
+    let thirteen = TimeValue::Floating {
+        civil: "2026-03-04T13:00:00".parse().expect("civil"),
+    };
+
+    for (starts_at, ends_at, title) in [
+        (nine.clone(), eleven.clone(), "Deep work"),
+        (ten.clone(), thirteen.clone(), "Design review"),
+    ] {
+        core.submit(CoreCommand::CreateBlock {
+            draft: BlockDraftIn {
+                stream_id: inbox,
+                starts_at,
+                ends_at,
+                title: Some(title.into()),
+                title_track_task: false,
+                tasks: Vec::new(),
+            },
+        })
+        .await
+        .expect("create block");
+    }
+
+    let day_ms = u64::try_from(time_value_ms(nine.clone(), tz.into())).expect("day");
+    let CoreQueryResult::Blocks { blocks } = core
+        .query(CoreQuery::DayBlocks { day_ms })
+        .await
+        .expect("day grid")
+    else {
+        panic!("wrong result variant");
+    };
+    assert_eq!(blocks.len(), 2);
+
+    let conflicts = block_conflicts(blocks.clone());
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].from_ms, time_value_ms(ten, tz.into()));
+    assert_eq!(conflicts[0].to_ms, time_value_ms(eleven, tz.into()));
+
+    let draft = merged_block_draft(blocks[0].clone(), blocks[1].clone(), tz.into()).expect("merge");
+    assert_eq!(draft.title.as_deref(), Some("Deep work + Design review"));
+
+    // The three commands the Resolve menu's Merge submits, in the order it
+    // submits them.
+    for id in [blocks[0].block.id, blocks[1].block.id] {
+        core.submit(CoreCommand::DeleteBlock { id })
+            .await
+            .expect("tombstone the original");
+    }
+    core.submit(CoreCommand::CreateBlock { draft })
+        .await
+        .expect("the merged block is one the core accepts");
+
+    let CoreQueryResult::Blocks { blocks } = core
+        .query(CoreQuery::DayBlocks { day_ms })
+        .await
+        .expect("day grid")
+    else {
+        panic!("wrong result variant");
+    };
+    assert_eq!(blocks.len(), 1, "the two originals are tombstoned");
+    assert_eq!(
+        blocks[0].title.as_deref(),
+        Some("Deep work + Design review")
+    );
+    assert_eq!(
+        time_value_ms(blocks[0].block.starts_at.clone(), tz.into()),
+        time_value_ms(nine, tz.into())
+    );
+    assert_eq!(
+        time_value_ms(blocks[0].block.ends_at.clone(), tz.into()),
+        time_value_ms(thirteen, tz.into())
+    );
+    assert!(block_conflicts(blocks).is_empty());
+}
