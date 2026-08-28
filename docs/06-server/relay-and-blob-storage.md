@@ -25,6 +25,38 @@ The server stores op envelopes in a queue per `(stream_id, target_device_id)`. D
 - Op envelopes and blobs → local filesystem under `data/`.
 - No S3, no Postgres, no Redis.
 
+### Durable relay op log (implemented)
+
+As built, the self-host relay keeps op frames in the **same SQLite database** as
+accounts and devices (`relay_frames`, `relay_frame_heads`, `relay_evicted`)
+rather than as files under `data/ops/`. One file is then the entire server
+state, so a `tar` of it is a consistent backup, and an append plus its
+retention eviction commit in one transaction — which a file tree plus a
+separate metadata row could not give without the 2PC dance the managed
+deployment needs.
+
+The in-memory ring in front of it is live fan-out only. The durable log is the
+authority for replay, which is what makes two things true that were not before:
+
+- Passing the ring bound is no longer a loss event.
+- A **relay restart** no longer loses history. Previously it dropped retained
+  frames and eviction watermarks together, so a fresh process could not tell
+  "never held it" from "evicted it" and reported *no gap* — a returning device
+  was told it was caught up while ops were missing. No client-side change can
+  detect that; only the server knows.
+
+Retention is bounded per channel on two axes, enforced on every append:
+
+| Bound | Default | Why |
+|---|---|---|
+| Age | 30 days | The same window every other retention number here uses. A device gone longer is a re-pair, not a resync. |
+| Size | 256 MiB per channel | Bounds the disk by `channels × cap` instead of by uptime. Far above the 16 MiB memory ring, so it binds in practice only for genuinely long-abandoned devices. |
+
+Eviction under either bound raises `evicted_through` exactly as the ring does,
+so a cursor below it still produces the typed `SYNC_CURSOR_GAP`. That error is
+now rare rather than routine — and because it is durable, it is *correct*: the
+server only claims ops are gone when they actually are.
+
 ## Op write path
 
 1. Client `OpBatch` arrives over WS.

@@ -269,6 +269,13 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
+[[code]]
+id = 601
+name = "RELAY_STORAGE_UNAVAILABLE"
+kind = "transient"
+retryable = true
+since = "v1"
+
 # --- Integrations ---------------------------------------------------------
 
 [[code]]

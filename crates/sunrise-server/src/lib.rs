@@ -37,6 +37,7 @@ pub mod logging;
 pub mod metrics;
 pub mod push;
 pub mod relay;
+pub mod relay_log;
 pub mod routes;
 pub mod state;
 pub mod store;

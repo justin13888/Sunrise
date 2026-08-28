@@ -237,6 +237,7 @@ pub enum SyncState {
     Disconnected,
     CatchingUp,
     Live,
+    Degraded,
 }
 
 /// See [`sunrise_domain::ReminderKind`] — which of the spec's notification

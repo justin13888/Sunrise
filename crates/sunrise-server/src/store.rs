@@ -112,7 +112,10 @@ pub struct NewDevice {
 
 /// SQLite-backed account/device store.
 pub struct Store {
-    conn: Mutex<Connection>,
+    /// Shared with [`crate::relay_log`], which puts the durable relay op log
+    /// in this same database so one file is the whole server's state and a
+    /// `tar` of it is a consistent backup.
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl std::fmt::Debug for Store {
@@ -158,6 +161,41 @@ CREATE TABLE IF NOT EXISTS push_tokens (
     token         TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (device_id, platform)
+);
+
+-- Durable relay op log (see `relay_log.rs`). `bytes` is the verbatim wire
+-- frame: ciphertext the relay forwards and never opens.
+CREATE TABLE IF NOT EXISTS relay_frames (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_h  BLOB NOT NULL,
+    stream_id  BLOB NOT NULL,
+    bytes      BLOB NOT NULL,
+    n_bytes    INTEGER NOT NULL,
+    created_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS relay_frames_by_channel
+    ON relay_frames(account_h, stream_id, id);
+
+-- Routing heads, read from each op's cleartext envelope header. This is the
+-- only part of a frame the relay ever parses, and it is what makes
+-- cursor-filtered replay possible without opening the ciphertext.
+CREATE TABLE IF NOT EXISTS relay_frame_heads (
+    frame_id  INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+    device_id BLOB NOT NULL,
+    max_seq   INTEGER NOT NULL,
+    PRIMARY KEY (frame_id, device_id)
+);
+
+-- Per-channel, per-device high-water mark of what retention has deleted.
+-- Survives restart, which is the whole point: an in-memory watermark cannot
+-- tell 'never held it' from 'evicted it', so a fresh process reported no gaps
+-- and the loss was silent.
+CREATE TABLE IF NOT EXISTS relay_evicted (
+    account_h       BLOB NOT NULL,
+    stream_id       BLOB NOT NULL,
+    device_id       BLOB NOT NULL,
+    evicted_through INTEGER NOT NULL,
+    PRIMARY KEY (account_h, stream_id, device_id)
 );
 ";
 

@@ -176,7 +176,7 @@ Filtering is one-sided: a frame is skipped only when *every* device head in it i
 
 ### Cursor gaps
 
-The v1 relay's retained ring is bounded (4096 frames / 16 MiB per channel) and in-memory. When a frame is evicted, the channel raises an `evicted_through` watermark for each device it carried. A subscriber whose cursor for such a device is **below** that watermark is missing ops the relay can no longer produce, and receives:
+Replay is served from the relay's **durable** op log, bounded per channel by age (30 days) and size (256 MiB) — see [`../06-server/relay-and-blob-storage.md`](../06-server/relay-and-blob-storage.md). The in-memory ring in front of it is live fan-out only, so passing *its* bound costs nothing and a relay restart loses no history. When durable retention deletes a frame, the channel raises an `evicted_through` watermark for each device it carried. A subscriber whose cursor for such a device is **below** that watermark is missing ops the relay can no longer produce, and receives:
 
 ```
 Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_through M…" }
@@ -184,7 +184,9 @@ Error { code: "SYNC_CURSOR_GAP", reason: "…device <h> cursor N < evicted_throu
 
 before the (partial) replay and before `CaughtUp`, so a client cannot read "caught up" as "complete". This is recoverable but not *retryable*: re-sending the same `Subscribe` will never produce the missing ops. The client resyncs from a peer.
 
-Being caught up past everything evicted is **not** a gap — otherwise every healthy long-lived session would be told to resync each time the ring turned over. A server restart clears the ring and its watermarks together, so a fresh relay reports no gaps: it cannot distinguish "never held it" from "evicted it".
+Being caught up past everything evicted is **not** a gap — otherwise every healthy long-lived session would be told to resync each time retention turned over. Watermarks are durable, so a restart no longer resets them: a fresh relay reports exactly the gaps that are real. (While they lived only in memory, a restart cleared frames and watermarks together and the relay reported *no* gap at all — telling a returning device it was complete when it was not.)
+
+A client that receives this must not treat the following `CaughtUp` as completeness. The reference client latches a degraded sync state for the rest of the session and never reports `Live`, because no retry on that connection can produce the missing ops.
 
 ## Backfill from snapshot
 

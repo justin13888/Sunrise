@@ -6,8 +6,11 @@
 //!      │                         caught up
 //!      │                            ▼
 //!      └───────────────────────── Live ──disconnect──┐
-//!                                                    ▼
-//!                                             Disconnected
+//!                                    │               ▼
+//!                          relay reports a    Disconnected
+//!                            missing range           ▲
+//!                                    ▼               │
+//!                                Degraded ──disconnect┘
 //! ```
 //!
 //! The transitions themselves are driven by `sunrise-core::sync_driver`,
@@ -26,4 +29,14 @@ pub enum SyncState {
     CatchingUp,
     /// Live; ops flow in real time.
     Live,
+    /// Connected and receiving, but the relay has reported a range of ops it
+    /// can no longer produce, so local state is known to be incomplete.
+    ///
+    /// Distinct from every other state because it is the only one that is not
+    /// about the *connection*: the socket is healthy and ops are flowing. It
+    /// exists so a client can never answer "am I up to date?" with `Live`
+    /// when the relay has already said otherwise. Re-subscribing cannot clear
+    /// it — the ops are gone from the relay — so it persists for the rest of
+    /// the session and is resolved out of band.
+    Degraded,
 }

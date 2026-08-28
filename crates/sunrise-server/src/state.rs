@@ -44,6 +44,8 @@ pub struct ServerState {
     pub metrics: Metrics,
     /// Blob store root (self-host filesystem path).
     pub blob_root: Arc<std::path::PathBuf>,
+    /// Retention bounds for the durable relay op log.
+    pub durable_caps: crate::relay_log::DurableCaps,
 }
 
 impl ServerState {
@@ -83,7 +85,19 @@ impl ServerState {
             store,
             metrics: Metrics::new(),
             blob_root: Arc::new(blob_root),
+            durable_caps: crate::relay_log::DurableCaps::default(),
         }
+    }
+
+    /// Replace the durable log's retention bounds.
+    ///
+    /// Production uses the defaults. A test that has to reach *past* durable
+    /// retention — where the gap report lives now that the in-memory ring no
+    /// longer bounds history — cannot do so by publishing 256 MiB.
+    #[must_use]
+    pub const fn with_durable_caps(mut self, caps: crate::relay_log::DurableCaps) -> Self {
+        self.durable_caps = caps;
+        self
     }
 
     /// Whether the installed verifier is the single-tenant self-host one.

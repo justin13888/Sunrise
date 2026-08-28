@@ -20,7 +20,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 
 ## Non-responsibilities
 
-- Read content.
+- Read content. The relay does parse each op envelope's **cleartext routing header** (`stream_id`, `device_id`, `seq`) so it can filter a replay against a subscriber's cursors, and it stores the envelope bytes durably. Neither is a step toward reading content: the ciphertext field is never touched, and the bytes it stores are the bytes it already relays. See [`relay-and-blob-storage.md`](./relay-and-blob-storage.md).
 - Run business logic on content.
 - Generate human-readable notifications.
 - Run third-party integrations (Google Calendar OAuth flows happen on-device; the integration runs there).

@@ -48,11 +48,21 @@
 //!
 //! # Restart semantics
 //!
-//! The ring is in-memory only (v1 self-host). Server restart loses all
-//! retained history *and* its eviction watermarks, so a fresh hub reports no
-//! gaps: it cannot distinguish "never had it" from "evicted it". Clients
-//! recover via their own outbox + cursors. Multi-node servers swap this for a
-//! Postgres NOTIFY / Redis backend (Phase 17) without touching the WS handler.
+//! This ring is in-memory only, and on its own that was silent data loss: a
+//! restart dropped the retained history *and* its eviction watermarks
+//! together, so a fresh hub reported no gaps — it cannot distinguish "never
+//! had it" from "evicted it" — and told a returning device it was caught up
+//! while ops were missing.
+//!
+//! It no longer stands on its own. [`crate::relay_log`] holds the same frames
+//! durably and is the authority for replay; this ring is now purely the live
+//! fan-out path for already-connected sessions, and losing it on restart costs
+//! nothing. The eviction watermarks here are still maintained because the ring
+//! still bounds its own memory, but the gap a *client* is told about comes
+//! from durable retention, not from this.
+//!
+//! Multi-node servers swap the fan-out for a Postgres NOTIFY / Redis backend
+//! (Phase 17) without touching the WS handler.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -310,6 +320,24 @@ impl RelayHub {
         let gaps = ch.gaps_for(cursors);
         let rx = ch.tx.subscribe();
         Subscription { retained, gaps, rx }
+    }
+
+    /// Subscribe for **live fan-out only**, with no backlog and no gap report.
+    ///
+    /// Used by the session path, where replay comes from the durable log in
+    /// [`crate::relay_log`] rather than from this ring. The caller must take
+    /// this receiver *before* reading the durable log: a frame published in
+    /// between then arrives on both paths, and a duplicate is an idempotent
+    /// no-op at the client while a missed frame is data loss. Doing it the
+    /// other way round would open exactly that hole.
+    pub fn subscribe_live(&self, key: StreamKey) -> broadcast::Receiver<RelayFrame> {
+        let mut inner = self.inner.lock();
+        inner
+            .channels
+            .entry(key)
+            .or_insert_with(Channel::new)
+            .tx
+            .subscribe()
     }
 
     /// Publish a frame: append it to the channel's retained ring (creating

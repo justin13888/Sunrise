@@ -27,6 +27,7 @@ use sunrise_core::{
 };
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::{SunriseTime, Task, TaskState};
+use sunrise_id::EntityRef;
 use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_sync::WsTransport;
 use tokio::task::JoinHandle;
@@ -271,6 +272,61 @@ pub async fn canonical_tasks(core: &Core) -> Vec<CanonicalTask> {
     let mut rows: Vec<CanonicalTask> = all_tasks(core).await.iter().map(project_task).collect();
     rows.sort_by(|a, b| a.id.cmp(&b.id));
     rows
+}
+
+/// Canonical projection of one task **including tombstones**.
+///
+/// [`canonical_tasks`] is built on `StreamTasks`, which filters `deleted = 0`
+/// because that is what a UI wants. The consequence for convergence testing is
+/// that a deleted task simply vanishes from the comparison, so "both replicas
+/// agree" and "both replicas deleted it" become indistinguishable from "one
+/// replica never heard about it at all" — the two outcomes a delete test most
+/// needs to tell apart.
+///
+/// `EntityById` reads the row regardless of its tombstone flag, which makes the
+/// delete itself comparable rather than invisible.
+///
+/// Returns `None` only when the replica has never materialized the task.
+pub async fn canonical_task_by_id(core: &Core, id: EntityRef) -> Option<CanonicalTask> {
+    match core.query(Query::EntityById(id)).await {
+        Ok(QueryResult::Task(t)) => Some(project_task(&t)),
+        Ok(other) => panic!("expected Task, got {other:?}"),
+        // A replica that has not yet applied the create reports not-found.
+        Err(_) => None,
+    }
+}
+
+/// Assert both replicas agree on a task *including* whether it is deleted.
+///
+/// # Panics
+/// If either replica lacks the task, or the two projections differ.
+pub async fn assert_task_converged(a: &Core, b: &Core, id: EntityRef) {
+    let ta = canonical_task_by_id(a, id).await;
+    let tb = canonical_task_by_id(b, id).await;
+    assert!(ta.is_some(), "replica A never materialized {id}");
+    assert!(tb.is_some(), "replica B never materialized {id}");
+    assert_eq!(ta, tb, "replicas disagree about {id}");
+}
+
+/// Wait until both replicas agree on one task, tombstone included.
+///
+/// # Panics
+/// On timeout, reporting the last two projections seen.
+pub async fn wait_task_converges(a: &Core, b: &Core, id: EntityRef, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let ta = canonical_task_by_id(a, id).await;
+        let tb = canonical_task_by_id(b, id).await;
+        if ta.is_some() && ta == tb {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "task {id} never converged:\n  a = {:?}\n  b = {:?}",
+        canonical_task_by_id(a, id).await,
+        canonical_task_by_id(b, id).await
+    );
 }
 
 /// Canonical stream table for `core`, sorted by id (the synthetic Inbox row is

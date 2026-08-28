@@ -21,6 +21,7 @@ use sunrise_cbor::magic::{write_prefix, MagicKind, MAGIC_LEN};
 use sunrise_cbor::version::ENVELOPE_FORMAT_V;
 use sunrise_error::ErrorCode;
 use sunrise_server::relay::RingCaps;
+use sunrise_server::relay_log::DurableCaps;
 use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, CursorEntry, ErrorPayload, FrameFlags, Hello, MsgKind,
@@ -35,9 +36,18 @@ const STREAM: [u8; 16] = [0x11; 16];
 const DEVICE: [u8; 16] = [0x22; 16];
 
 async fn boot(caps: RingCaps) -> std::net::SocketAddr {
+    boot_with(caps, DurableCaps::default()).await
+}
+
+/// Boot with both bounds injectable. The durable bound is the one that decides
+/// whether a gap is reported now; the ring bound only decides how much of the
+/// replay is served from memory.
+async fn boot_with(caps: RingCaps, durable: DurableCaps) -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let state = ServerState::new(ServerConfig::default()).with_ring_caps(caps);
+    let state = ServerState::new(ServerConfig::default())
+        .with_ring_caps(caps)
+        .with_durable_caps(durable);
     let app = build_router(state);
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -210,13 +220,50 @@ async fn no_cursor_still_replays_the_whole_ring() {
 
 /// Issue #19's actual defect. Past the ring bounds the ops are gone; what
 /// changed is that the subscriber is told, with a code it can act on, instead
-/// of being handed a short replay and a CaughtUp marker.
+/// Passing the in-memory ring bound is no longer a loss event: the durable log
+/// behind it still holds the frames, so the subscriber gets a complete replay
+/// and no gap. This is the behaviour the ring bound used to make impossible.
 #[tokio::test]
-async fn a_cursor_past_the_ring_bound_gets_a_typed_gap_not_silence() {
+async fn a_cursor_past_the_ring_bound_is_served_from_the_durable_log() {
     let addr = boot(RingCaps {
         max_frames: 2,
         max_bytes: usize::MAX,
     })
+    .await;
+    let mut writer = connect(addr).await;
+    for seq in 1..=5 {
+        publish(&mut writer, seq).await;
+    }
+
+    let mut reader = connect(addr).await;
+    subscribe(&mut reader, Some(1)).await;
+    let replay = drain_until_caught_up(&mut reader).await;
+
+    assert!(
+        replay.errors.is_empty(),
+        "the ring bound is not a data-loss boundary any more: {:?}",
+        replay.errors
+    );
+    assert_eq!(
+        replay.seqs,
+        vec![2, 3, 4, 5],
+        "every op past the cursor is recovered, including those evicted from memory"
+    );
+}
+
+/// Past *durable* retention the ops are genuinely gone, and that is where the
+/// typed gap belongs. Still a real error — just rare now rather than routine.
+#[tokio::test]
+async fn a_cursor_past_durable_retention_gets_a_typed_gap_not_silence() {
+    // 8 bytes per stored frame is far under one envelope, so each append
+    // evicts the previous one.
+    let addr = boot_with(
+        RingCaps::default(),
+        DurableCaps {
+            max_bytes: 8,
+            max_age_ms: u64::MAX,
+        },
+    )
     .await;
     let mut writer = connect(addr).await;
     for seq in 1..=5 {
@@ -236,8 +283,8 @@ async fn a_cursor_past_the_ring_bound_gets_a_typed_gap_not_silence() {
     assert_eq!(replay.errors[0].code, ErrorCode::SyncCursorGap);
     assert_eq!(
         replay.seqs,
-        vec![4, 5],
-        "what survives is still delivered; seqs 2-3 are unrecoverable"
+        vec![5],
+        "what survives is still delivered; the rest is unrecoverable"
     );
 }
 
@@ -295,4 +342,61 @@ async fn resubscribing_replaces_the_receiver_rather_than_duplicating_it() {
         );
     }
     assert_eq!(seen, vec![1, 2]);
+}
+
+/// The case no client-side change can fix.
+///
+/// A restart used to drop every retained frame *and* every `evicted_through`
+/// watermark together. A fresh hub cannot tell "never held it" from "evicted
+/// it", so it reported no gap at all: the returning device was told it was
+/// caught up while ops were missing — silent, guaranteed data loss, asserted
+/// by the only party in a position to know better.
+///
+/// With the durable log the ops are simply still there.
+#[tokio::test]
+async fn ops_survive_a_relay_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("meta.db");
+
+    // ---- First process: publish five ops, then drop the server. ----
+    let addr1 = boot_persistent(&db).await;
+    let mut writer = connect(addr1).await;
+    for seq in 1..=5 {
+        publish(&mut writer, seq).await;
+    }
+    drop(writer);
+
+    // ---- Second process: same database, brand-new relay hub. ----
+    let addr2 = boot_persistent(&db).await;
+    let mut reader = connect(addr2).await;
+    subscribe(&mut reader, None).await;
+    let replay = drain_until_caught_up(&mut reader).await;
+
+    assert!(
+        replay.errors.is_empty(),
+        "nothing was lost, so nothing should be reported as a gap: {:?}",
+        replay.errors
+    );
+    assert_eq!(
+        replay.seqs,
+        vec![1, 2, 3, 4, 5],
+        "every op published before the restart is still served after it"
+    );
+}
+
+/// Boot a server whose SQLite lives at `db`, so a second boot on the same path
+/// is a restart rather than a fresh install.
+async fn boot_persistent(db: &std::path::Path) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cfg = ServerConfig {
+        sqlite_path: Some(db.to_path_buf()),
+        ..ServerConfig::default()
+    };
+    let app = build_router(ServerState::new(cfg));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    addr
 }

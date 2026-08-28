@@ -310,59 +310,7 @@ async fn handle_inbound(
             }
             true
         }
-        MsgKind::OpBatch => {
-            // Decode the typed payload to route by its stream-id. On decode
-            // failure, reply with a coded Error and do NOT fan out.
-            let batch = match extract_op_batch(&payload) {
-                Some(b) => b,
-                None => {
-                    let _ = send_error_frame(
-                        sink,
-                        ErrorCode::SyncOpInvalid,
-                        "malformed OpBatch payload",
-                    )
-                    .await;
-                    return true;
-                }
-            };
-            let stream_id = batch.stream_id;
-            let server_first_seen_ms = state.clock.now_ms();
-            // The relay never decrypts an op, so its whole view of a batch is
-            // shape: which stream, how many bytes. That is also everything a
-            // fan-out bug needs — a batch that never reaches a peer shows up
-            // here as a `srv.relay.fanout` with no matching arrival.
-            tracing::debug!(
-                ev = "srv.relay.fanout",
-                stream_h = %crate::logging::id_h(&stream_id),
-                n_bytes = buf.len() as u64,
-                "op batch republished"
-            );
-            // Republish the original raw frame bytes verbatim for fan-out,
-            // tagged with the per-device high-water marks read out of the
-            // envelopes' cleartext routing headers. That tag is what lets a
-            // later subscriber's cursor skip this frame.
-            state.relay.publish(
-                (account, stream_id),
-                RelayFrame {
-                    from: conn_id,
-                    bytes: buf.to_vec(),
-                    heads: frame_heads(&batch),
-                },
-            );
-            // Ack the batch with its stream-id + batch-id and the injected
-            // clock's first-seen timestamp.
-            let ack = AckPayload {
-                batch_id: batch.batch_id,
-                stream_id,
-                server_first_seen_ms,
-            };
-            if let Ok(bytes) = ack.encode() {
-                if let Ok(frame) = encode_frame(MsgKind::Ack, FrameFlags::EMPTY, &bytes) {
-                    let _ = sink.send(Message::Binary(frame)).await;
-                }
-            }
-            true
-        }
+        MsgKind::OpBatch => handle_op_batch(conn_id, buf, &payload, sink, account, state).await,
         MsgKind::Ping => {
             let pong = encode_frame(MsgKind::Pong, FrameFlags::EMPTY, &[]).unwrap_or_default();
             if !pong.is_empty() {
@@ -393,13 +341,38 @@ async fn join_stream(
         .iter()
         .map(|c| (c.device_id, c.last_applied_seq))
         .collect();
-    // Atomic snapshot + subscribe: retained frames first, then a CaughtUp
-    // marker for this stream, then live frames flow.
-    let subscription = state.relay.subscribe((account, sid), &cursors);
+    // Live receiver FIRST, then the durable read. A frame published between
+    // the two arrives on both paths; the client's op-log gate makes that a
+    // no-op. The reverse order would drop it entirely.
+    let rx = state.relay.subscribe_live((account, sid));
+    let (retained, gaps) = match state.store.relay_replay((account, sid), &cursors) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.relay.replay_failed",
+                err_code = %ErrorCode::RelayStorageUnavailable,
+                err_kind = "transient",
+                retryable = true,
+                result = "failed",
+                stream_h = %crate::logging::id_h(&sid),
+                cause = %e,
+                "could not read the durable op log"
+            );
+            // Never send CaughtUp here: the client would record a completeness
+            // it has no basis for. Ending the session makes it retry.
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::RelayStorageUnavailable,
+                "relay could not read its op log",
+            )
+            .await;
+            return false;
+        }
+    };
     // A gap goes out BEFORE the partial replay and before CaughtUp, so a client
     // cannot read "caught up" as "complete". Delivery continues either way: an
     // incomplete replay plus an explicit error beats one in silence.
-    if !subscription.gaps.is_empty() {
+    if !gaps.is_empty() {
         state.metrics.incr("sunrise_relay_cursor_gap_total");
         tracing::warn!(
             ev = "srv.relay.cursor_gap",
@@ -407,22 +380,18 @@ async fn join_stream(
             err_kind = "permanent",
             retryable = false,
             stream_h = %crate::logging::id_h(&sid),
-            n_devices = subscription.gaps.len() as u64,
-            "subscriber cursor predates the retained ring"
+            n_devices = gaps.len() as u64,
+            "subscriber cursor predates durable retention"
         );
-        if send_error_frame(
-            sink,
-            ErrorCode::SyncCursorGap,
-            &gap_reason(&sid, &subscription.gaps),
-        )
-        .await
-        .is_err()
+        if send_error_frame(sink, ErrorCode::SyncCursorGap, &gap_reason(&sid, &gaps))
+            .await
+            .is_err()
         {
             return false;
         }
     }
-    for retained in subscription.retained {
-        if sink.send(Message::Binary(retained.bytes)).await.is_err() {
+    for bytes in retained {
+        if sink.send(Message::Binary(bytes)).await.is_err() {
             return false;
         }
     }
@@ -430,8 +399,8 @@ async fn join_stream(
         return false;
     }
     match subs.iter_mut().find(|(s, _)| *s == sid) {
-        Some(slot) => slot.1 = subscription.rx,
-        None => subs.push((sid, subscription.rx)),
+        Some(slot) => slot.1 = rx,
+        None => subs.push((sid, rx)),
     }
     true
 }
@@ -517,6 +486,99 @@ fn gap_reason(stream_id: &[u8; 16], gaps: &[CursorGap]) -> String {
         );
     }
     out
+}
+
+/// Handle one inbound `OpBatch`: persist it durably, fan it out, then ack.
+///
+/// Split out of `handle_inbound` purely for length; the ordering inside it is
+/// load-bearing and documented at each step.
+async fn handle_op_batch(
+    conn_id: ConnId,
+    buf: &[u8],
+    payload: &[u8],
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    account: [u8; 16],
+    state: &ServerState,
+) -> bool {
+    // Decode the typed payload to route by its stream-id. On decode
+    // failure, reply with a coded Error and do NOT fan out.
+    let batch = match extract_op_batch(payload) {
+        Some(b) => b,
+        None => {
+            let _ =
+                send_error_frame(sink, ErrorCode::SyncOpInvalid, "malformed OpBatch payload").await;
+            return true;
+        }
+    };
+    let stream_id = batch.stream_id;
+    let server_first_seen_ms = state.clock.now_ms();
+    // The relay never decrypts an op, so its whole view of a batch is
+    // shape: which stream, how many bytes. That is also everything a
+    // fan-out bug needs — a batch that never reaches a peer shows up
+    // here as a `srv.relay.fanout` with no matching arrival.
+    tracing::debug!(
+        ev = "srv.relay.fanout",
+        stream_h = %crate::logging::id_h(&stream_id),
+        n_bytes = buf.len() as u64,
+        "op batch republished"
+    );
+    let heads = frame_heads(&batch);
+    // Durable first, and only then the ack. Acking an op the server
+    // has not committed would promise a durability that does not
+    // exist — and the client drops an acked op from its outbox, so the
+    // op would be gone from both sides at once.
+    if let Err(e) = state.store.relay_append(
+        (account, stream_id),
+        buf,
+        &heads,
+        server_first_seen_ms,
+        state.durable_caps,
+    ) {
+        tracing::error!(
+            ev = "srv.relay.append_failed",
+            err_code = %ErrorCode::RelayStorageUnavailable,
+            err_kind = "transient",
+            retryable = true,
+            result = "failed",
+            stream_h = %crate::logging::id_h(&stream_id),
+            cause = %e,
+            "could not persist an op batch; refusing to ack it"
+        );
+        state.metrics.incr("sunrise_relay_append_failed_total");
+        // No ack: the client keeps the op in its outbox and retries.
+        let _ = send_error_frame(
+            sink,
+            ErrorCode::RelayStorageUnavailable,
+            "relay could not durably store the batch",
+        )
+        .await;
+        return true;
+    }
+    // Republish the original raw frame bytes verbatim for fan-out,
+    // tagged with the per-device high-water marks read out of the
+    // envelopes' cleartext routing headers. That tag is what lets a
+    // later subscriber's cursor skip this frame.
+    state.relay.publish(
+        (account, stream_id),
+        RelayFrame {
+            from: conn_id,
+            bytes: buf.to_vec(),
+            heads,
+        },
+    );
+    // Ack the batch with its stream-id + batch-id and the injected
+    // clock's first-seen timestamp.
+    let ack = AckPayload {
+        batch_id: batch.batch_id,
+        stream_id,
+        server_first_seen_ms,
+    };
+    if let Ok(bytes) = ack.encode() {
+        if let Ok(frame) = encode_frame(MsgKind::Ack, FrameFlags::EMPTY, &bytes) {
+            let _ = sink.send(Message::Binary(frame)).await;
+        }
+    }
+    true
 }
 
 /// Decode the typed [`OpBatchPayload`] from a frame payload to route it by

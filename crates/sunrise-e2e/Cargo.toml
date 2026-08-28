@@ -18,6 +18,7 @@ sunrise-domain = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-sync = { workspace = true, features = ["ws"] }
+sunrise-id = { workspace = true }
 axum = { workspace = true }
 jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
@@ -28,7 +29,6 @@ rand_core = { workspace = true }
 
 [dev-dependencies]
 sunrise-pairing = { workspace = true }
-sunrise-id = { workspace = true }
 parking_lot = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3"

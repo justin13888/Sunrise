@@ -74,11 +74,13 @@ use crate::config::Rng;
 use crate::core::Core;
 use crate::events::{DomainEvent, SyncStatus};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
+use sunrise_error::ErrorCode;
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, FrameFlags, Hello, MsgKind,
-    OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
+    MsgKind, OpBatchPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
+    REQUIRED_SERVER_BITS,
 };
 
 /// Boxed transport produced by a [`TransportFactory`].
@@ -197,6 +199,26 @@ impl SyncShared {
             return;
         }
         s.state = new;
+        let snap = Self::status_of(&s);
+        drop(s);
+        let _ = self.sync_tx.send(snap);
+    }
+
+    /// Latch [`SyncState::Degraded`]: the relay has reported ops it can no
+    /// longer supply.
+    ///
+    /// Deliberately *not* cleared within the session — nothing that happens on
+    /// this connection can refill the hole, so any later `Live` would be a
+    /// lie. It does clear on reconnect, because the next `Subscribe` re-asks
+    /// the question: if the ops are still unavailable the relay reports the
+    /// gap again and this re-latches, and if a durable log has since made them
+    /// servable the state was correctly transient.
+    fn mark_degraded(&self) {
+        let mut s = self.inner.lock();
+        if s.state == SyncState::Degraded {
+            return;
+        }
+        s.state = SyncState::Degraded;
         let snap = Self::status_of(&s);
         drop(s);
         let _ = self.sync_tx.send(snap);
@@ -796,8 +818,43 @@ async fn handle_frame(
         }
         // Server-initiated close: reconnect.
         MsgKind::Close => return Err(()),
-        // Nack / Error are non-fatal in v1 self-host; every other kind is
-        // ignored. All fall through to a no-op.
+        MsgKind::Error => {
+            let Ok(err) = ErrorPayload::decode(&payload) else {
+                deadlines.note_loss(LossEvidence::UndecodableFrame);
+                return Ok(());
+            };
+            // A cursor gap is the one error the session cannot recover from by
+            // trying harder: the relay has said the ops between our cursor and
+            // its watermark are gone, so neither a retransmit nor a resync can
+            // produce them. Ignoring it — which is what this arm used to do —
+            // meant accepting the `CaughtUp` that follows and reporting `Live`
+            // while permanently missing data. Latch a degraded state instead;
+            // it outlives the session because the loss does.
+            if err.code == ErrorCode::SyncCursorGap {
+                tracing::warn!(
+                    ev = "sync.gap",
+                    err_code = %err.code,
+                    err_kind = "permanent",
+                    retryable = false,
+                    result = "degraded",
+                    cause = %err.reason,
+                    "relay cannot supply ops this device never received"
+                );
+                shared.mark_degraded();
+            } else {
+                tracing::warn!(
+                    ev = "sync.session.error",
+                    err_code = %err.code,
+                    err_kind = "transient",
+                    retryable = true,
+                    result = "failed",
+                    cause = %err.reason,
+                    "relay reported an error"
+                );
+            }
+        }
+        // Nack and every other kind are non-fatal in v1 self-host: they fall
+        // through to a no-op.
         _ => {}
     }
     Ok(())
@@ -983,10 +1040,11 @@ mod tests {
     use std::time::Duration;
     use sunrise_crypto::keys::VaultRootKey;
     use sunrise_domain::TaskDraft;
+    use sunrise_error::ErrorCode;
     use sunrise_sync::{SyncState, Transport, TransportError};
     use sunrise_wire_protocol::{
-        decode_frame, encode_frame, AckPayload, CaughtUpPayload, FrameFlags, HelloAck, MsgKind,
-        OpBatchPayload, SubscribePayload,
+        decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags,
+        HelloAck, MsgKind, OpBatchPayload, SubscribePayload,
     };
     use tokio::sync::{broadcast, mpsc};
     use tokio::time::timeout;
@@ -1083,6 +1141,9 @@ mod tests {
         /// Inject these OpBatches on the SECOND and later Subscribe frames, so
         /// a test can tell an in-session resync from the initial subscribe.
         inject_on_resync: Vec<([u8; 16], Vec<Vec<u8>>)>,
+        /// Send a `SYNC_CURSOR_GAP` Error before `CaughtUp`, exactly as the
+        /// relay does when a subscriber's cursor predates the retained ring.
+        gap_on_subscribe: bool,
     }
 
     struct ServerInner {
@@ -1167,6 +1228,64 @@ mod tests {
         true
     }
 
+    /// The fake server's Subscribe handling: optional resync injection, then a
+    /// `CaughtUp` per newly-subscribed stream. Returns false once the client is
+    /// gone.
+    async fn serve_subscribe(
+        t: &mut ChannelTransport,
+        script: &Script,
+        payload: &[u8],
+        subscribed: &mut HashSet<[u8; 16]>,
+        sub_count: &SubCount,
+        injected: &mut bool,
+    ) -> bool {
+        let n = sub_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(sub) = SubscribePayload::decode(payload) {
+            // Only on a re-subscribe, so a test can attribute the
+            // delivery to an in-session resync and nothing else.
+            if n > 0 && !send_op_batches(t, &script.inject_on_resync).await {
+                return false;
+            }
+            for entry in &sub.streams {
+                if subscribed.insert(entry.stream_id) {
+                    // Ordered exactly as the relay orders it: the
+                    // gap lands BEFORE CaughtUp, so a client that
+                    // ignores it goes on to read "caught up" as
+                    // "complete".
+                    if script.gap_on_subscribe {
+                        let e = ErrorPayload {
+                            code: ErrorCode::SyncCursorGap,
+                            reason: "retained ring no longer covers stream".into(),
+                        };
+                        let bytes = e.encode().unwrap();
+                        let f = encode_frame(MsgKind::Error, FrameFlags::EMPTY, &bytes).unwrap();
+                        if t.send_frame(f).await.is_err() {
+                            return false;
+                        }
+                    }
+                    let cu = CaughtUpPayload {
+                        stream_id: entry.stream_id,
+                    };
+                    let bytes = cu.encode().unwrap();
+                    let f = encode_frame(MsgKind::StreamUpdate, FrameFlags::EMPTY, &bytes).unwrap();
+                    if t.send_frame(f).await.is_err() {
+                        return false;
+                    }
+                }
+            }
+        }
+        if !*injected {
+            *injected = true;
+            if !send_op_batches(t, &script.inject).await {
+                return false;
+            }
+            if script.close_after_subscribe {
+                return false; // simulate a transport drop
+            }
+        }
+        true
+    }
+
     async fn run_fake_server(
         mut t: ChannelTransport,
         script: Script,
@@ -1211,36 +1330,17 @@ mod tests {
             };
             match hh.msg_kind {
                 MsgKind::Subscribe => {
-                    let n = sub_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if let Ok(sub) = SubscribePayload::decode(&payload) {
-                        // Only on a re-subscribe, so a test can attribute the
-                        // delivery to an in-session resync and nothing else.
-                        if n > 0 && !send_op_batches(&mut t, &script.inject_on_resync).await {
-                            return;
-                        }
-                        for entry in &sub.streams {
-                            if subscribed.insert(entry.stream_id) {
-                                let cu = CaughtUpPayload {
-                                    stream_id: entry.stream_id,
-                                };
-                                let bytes = cu.encode().unwrap();
-                                let f =
-                                    encode_frame(MsgKind::StreamUpdate, FrameFlags::EMPTY, &bytes)
-                                        .unwrap();
-                                if t.send_frame(f).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    if !injected {
-                        injected = true;
-                        if !send_op_batches(&mut t, &script.inject).await {
-                            return;
-                        }
-                        if script.close_after_subscribe {
-                            return; // simulate a transport drop
-                        }
+                    if !serve_subscribe(
+                        &mut t,
+                        &script,
+                        &payload,
+                        &mut subscribed,
+                        &sub_count,
+                        &mut injected,
+                    )
+                    .await
+                    {
+                        return;
                     }
                 }
                 MsgKind::OpBatch => {
@@ -1665,6 +1765,64 @@ mod tests {
             server.lock().connect_count,
             1,
             "the resync happened inside the original session"
+        );
+    }
+
+    // ---- Test (i): a cursor gap degrades the session instead of going Live ----
+    //
+    // The relay sends `SYNC_CURSOR_GAP` *before* `CaughtUp` precisely so a
+    // client cannot read "caught up" as "complete". Until this arm existed the
+    // driver discarded the Error, accepted the `CaughtUp`, and reported `Live`
+    // while permanently missing ops the relay can never resend — the same "no
+    // progress, no signal" failure as issue #20, one layer up. Re-subscribing
+    // cannot fix it, so the state has to survive the rest of the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cursor_gap_degrades_the_session_and_never_reports_live() {
+        let dir = tempfile::tempdir().unwrap();
+        // Short resync timer: proves the degraded latch survives re-subscribes,
+        // which are the only thing that could plausibly clear it.
+        let core = open_arc_with_resync(dir.path(), Duration::from_millis(100)).await;
+
+        let script = Script {
+            gap_on_subscribe: true,
+            ..Default::default()
+        };
+        let (factory, _server, _batch_rx) = harness(vec![script]);
+        core.start_sync(factory).unwrap();
+
+        wait_state(&core, SyncState::Degraded).await;
+
+        // Hold through several resync cycles: still degraded, never Live.
+        for _ in 0..5u32 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let s = sync_state(&core).await;
+            assert_eq!(
+                s,
+                SyncState::Degraded,
+                "a gap the relay cannot fill must not resolve to Live"
+            );
+        }
+    }
+
+    async fn sync_state(core: &Core) -> SyncState {
+        match core.query(Query::SyncStatus).await.unwrap() {
+            QueryResult::SyncStatus(s) => s.state,
+            other => panic!("expected sync status, got {other:?}"),
+        }
+    }
+
+    /// Poll until the driver reports `want`.
+    async fn wait_state(core: &Core, want: SyncState) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            if sync_state(core).await == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!(
+            "never reached {want:?}; last = {:?}",
+            sync_state(core).await
         );
     }
 

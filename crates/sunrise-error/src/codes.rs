@@ -95,6 +95,10 @@ pub enum ErrorCode {
     // Relay
     /// Receiver's grant for this Stream was revoked.
     RelayGrantRevoked,
+    /// The relay could not read or write its own durable op log, so it can
+    /// neither ack a batch nor prove a replay was complete. Transient: the
+    /// client keeps the op and retries.
+    RelayStorageUnavailable,
 
     // Integrations
     /// Integration OAuth refresh failed; user must re-auth.
@@ -147,6 +151,7 @@ impl ErrorCode {
             Self::DocSchemaTooNew => "DOC_SCHEMA_TOO_NEW",
             Self::CapabilityRequiredMissing => "CAPABILITY_REQUIRED_MISSING",
             Self::RelayGrantRevoked => "RELAY_GRANT_REVOKED",
+            Self::RelayStorageUnavailable => "RELAY_STORAGE_UNAVAILABLE",
             Self::IntegrationReauthRequired => "INTEGRATION_REAUTH_REQUIRED",
             Self::IntegrationRateLimited => "INTEGRATION_RATE_LIMITED",
             Self::FatalInternal => "FATAL_INTERNAL",
@@ -197,6 +202,7 @@ impl ErrorCode {
             | Self::AuthQuotaExceeded
             | Self::StorageVaultLocked
             | Self::SyncNetworkUnavailable
+            | Self::RelayStorageUnavailable
             | Self::IntegrationRateLimited => ErrorKind::Transient,
         }
     }
@@ -211,13 +217,14 @@ impl ErrorCode {
                 | Self::AuthQuotaExceeded
                 | Self::StorageVaultLocked
                 | Self::SyncNetworkUnavailable
+                | Self::RelayStorageUnavailable
                 | Self::IntegrationRateLimited
         )
     }
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 37] {
+    pub const fn all() -> [Self; 38] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -253,6 +260,7 @@ impl ErrorCode {
             Self::DocSchemaTooNew,
             Self::CapabilityRequiredMissing,
             Self::RelayGrantRevoked,
+            Self::RelayStorageUnavailable,
             Self::IntegrationReauthRequired,
             Self::IntegrationRateLimited,
             Self::FatalInternal,
