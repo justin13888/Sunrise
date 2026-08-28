@@ -78,6 +78,56 @@ impl Subject {
     }
 }
 
+/// A verified token: who it names, and when it stops being valid.
+///
+/// The expiry is the reason this exists rather than [`TokenVerifier::verify`]
+/// returning a bare [`Subject`]. `exp` was validated and then dropped on the
+/// floor, so nothing downstream could tell a session how long its credential
+/// had left — which is the whole of mid-session expiry (issue #7). A `Subject`
+/// is an *identity*, and identity does not expire; the deadline belongs beside
+/// it, not inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    /// The principal the token names.
+    pub subject: Subject,
+    /// Wall-clock milliseconds at which the token's `exp` falls.
+    ///
+    /// `None` means **this verifier issues no deadline at all**, not "already
+    /// expired" and not "expires soon". Only [`NullVerifier`] does that: the
+    /// self-host single-tenant path has no IdP and therefore no token to age
+    /// out. A `None` deadline is never enforced, so read it as "not
+    /// applicable" — anything that treats it as "expired now" would break
+    /// self-host, and anything that treats it as "never verify again" would be
+    /// wrong for a real verifier, which always sets it.
+    pub expires_at_ms: Option<u64>,
+}
+
+impl Verified {
+    /// A verification result with no expiry deadline.
+    #[must_use]
+    pub const fn new(subject: Subject) -> Self {
+        Self {
+            subject,
+            expires_at_ms: None,
+        }
+    }
+
+    /// Attach the deadline the token's `exp` falls at.
+    #[must_use]
+    pub const fn expiring_at(mut self, at_ms: u64) -> Self {
+        self.expires_at_ms = Some(at_ms);
+        self
+    }
+
+    /// Whether the token is already past its deadline at `now_ms`.
+    ///
+    /// A verifier that issues no deadline is never expired.
+    #[must_use]
+    pub fn is_expired_at(&self, now_ms: u64) -> bool {
+        self.expires_at_ms.is_some_and(|at| now_ms >= at)
+    }
+}
+
 /// Token verification error.
 #[derive(Debug, Error)]
 pub enum AuthError {
@@ -99,8 +149,8 @@ pub enum AuthError {
 /// verifier via the [`crate::ServerState`] and calls `verify`.
 #[async_trait]
 pub trait TokenVerifier: Send + Sync + std::fmt::Debug {
-    /// Verify a bearer token; on success, return the subject.
-    async fn verify(&self, bearer: &str) -> Result<Subject, AuthError>;
+    /// Verify a bearer token; on success, return the subject and its deadline.
+    async fn verify(&self, bearer: &str) -> Result<Verified, AuthError>;
 
     /// Whether this verifier maps every caller to a single shared identity.
     ///
@@ -124,8 +174,10 @@ pub struct NullVerifier;
 
 #[async_trait]
 impl TokenVerifier for NullVerifier {
-    async fn verify(&self, _bearer: &str) -> Result<Subject, AuthError> {
-        Ok(Subject::new(SELF_HOST_ISSUER, "self-host"))
+    async fn verify(&self, _bearer: &str) -> Result<Verified, AuthError> {
+        // No IdP, so no `exp` and no deadline. A self-host session is bounded
+        // by the process, not by a credential.
+        Ok(Verified::new(Subject::new(SELF_HOST_ISSUER, "self-host")))
     }
 
     fn is_single_tenant(&self) -> bool {
@@ -133,16 +185,42 @@ impl TokenVerifier for NullVerifier {
     }
 }
 
-/// Test verifier that accepts a fixed map of `bearer → subject`.
+/// Test verifier that accepts a fixed map of `bearer → verified token`.
+///
+/// The value is a [`Verified`] rather than a [`Subject`] so a test can give a
+/// bearer a deadline, which is what makes mid-session expiry and the
+/// `RefreshToken` exchange testable without a real IdP or a real clock.
 #[derive(Debug, Default, Clone)]
 pub struct StaticVerifier {
     /// Allowed bearers; a bearer not in the map is rejected.
-    pub allowed: std::collections::HashMap<String, Subject>,
+    pub allowed: std::collections::HashMap<String, Verified>,
+}
+
+impl StaticVerifier {
+    /// Accept `bearer` as `subject`, with no expiry deadline.
+    #[must_use]
+    pub fn with(mut self, bearer: impl Into<String>, subject: Subject) -> Self {
+        self.allowed.insert(bearer.into(), Verified::new(subject));
+        self
+    }
+
+    /// Accept `bearer` as `subject`, expiring at `at_ms`.
+    #[must_use]
+    pub fn with_expiring(
+        mut self,
+        bearer: impl Into<String>,
+        subject: Subject,
+        at_ms: u64,
+    ) -> Self {
+        self.allowed
+            .insert(bearer.into(), Verified::new(subject).expiring_at(at_ms));
+        self
+    }
 }
 
 #[async_trait]
 impl TokenVerifier for StaticVerifier {
-    async fn verify(&self, bearer: &str) -> Result<Subject, AuthError> {
+    async fn verify(&self, bearer: &str) -> Result<Verified, AuthError> {
         self.allowed
             .get(bearer)
             .cloned()
@@ -165,8 +243,12 @@ mod tests {
     #[tokio::test]
     async fn null_verifier_accepts_anything() {
         let v = NullVerifier;
-        let s = v.verify("anything").await.unwrap();
-        assert_eq!(s.subject, "self-host");
+        let v = v.verify("anything").await.unwrap();
+        assert_eq!(v.subject.subject, "self-host");
+        assert_eq!(
+            v.expires_at_ms, None,
+            "self-host issues no credential, so nothing ages out"
+        );
     }
 
     /// `ws_handshake.rs` connects with no `Authorization` header at all, which
@@ -185,11 +267,27 @@ mod tests {
 
     #[tokio::test]
     async fn static_verifier_accepts_known() {
-        let mut v = StaticVerifier::default();
-        v.allowed
-            .insert("secret".into(), Subject::new("iss", "alice"));
-        let s = v.verify("secret").await.unwrap();
-        assert_eq!(s.subject, "alice");
+        let v = StaticVerifier::default().with("secret", Subject::new("iss", "alice"));
+        let got = v.verify("secret").await.unwrap();
+        assert_eq!(got.subject.subject, "alice");
+        assert_eq!(got.expires_at_ms, None);
+    }
+
+    /// A deadline in the past is not treated as "no deadline". The two are
+    /// distinct and the distinction is load-bearing: `None` means self-host,
+    /// `Some(past)` means close the session.
+    #[test]
+    fn an_absent_deadline_is_not_an_elapsed_one() {
+        let none = Verified::new(Subject::new("iss", "alice"));
+        assert!(!none.is_expired_at(u64::MAX));
+
+        let past = Verified::new(Subject::new("iss", "alice")).expiring_at(1_000);
+        assert!(
+            past.is_expired_at(1_000),
+            "expiry is inclusive at the instant"
+        );
+        assert!(past.is_expired_at(1_001));
+        assert!(!past.is_expired_at(999));
     }
 
     /// Two principals that differ only by where the issuer ends and the subject

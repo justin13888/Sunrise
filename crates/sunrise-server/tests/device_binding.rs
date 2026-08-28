@@ -13,7 +13,6 @@
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::to_bytes;
@@ -44,10 +43,9 @@ fn b64(b: &[u8]) -> String {
 
 /// Two accounts, plus a third bearer whose token carries a device claim.
 fn verifier() -> StaticVerifier {
-    let mut allowed = HashMap::new();
-    allowed.insert("alice".to_string(), Subject::new(ISSUER, "alice"));
-    allowed.insert("bob".to_string(), Subject::new(ISSUER, "bob"));
-    StaticVerifier { allowed }
+    StaticVerifier::default()
+        .with("alice", Subject::new(ISSUER, "alice"))
+        .with("bob", Subject::new(ISSUER, "bob"))
 }
 
 fn boot(require_device_sig: bool) -> axum::Router {
@@ -324,13 +322,13 @@ async fn a_token_device_claim_must_match_the_header() {
         ..Default::default()
     };
     // A bearer whose token claims device "SOMEONE-ELSE".
-    let mut allowed = HashMap::new();
     let mut claimed = Subject::new(ISSUER, "alice");
     claimed.device_id = Some("SOMEONE-ELSE".into());
-    allowed.insert("alice-claimed".to_string(), claimed);
-    allowed.insert("alice".to_string(), Subject::new(ISSUER, "alice"));
-    let state = ServerState::with_clock(cfg, Arc::new(FixedClock(T0_MS)))
-        .with_verifier(Arc::new(StaticVerifier { allowed }));
+    let verifier = StaticVerifier::default()
+        .with("alice-claimed", claimed)
+        .with("alice", Subject::new(ISSUER, "alice"));
+    let state =
+        ServerState::with_clock(cfg, Arc::new(FixedClock(T0_MS))).with_verifier(Arc::new(verifier));
     let app = build_router(state);
 
     let (id, key) = register(&app, "alice", 1, "laptop").await;

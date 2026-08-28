@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 
 use super::http::{CachePolicy, HttpFetch, HttpResponse};
-use super::{AuthError, Subject, TokenVerifier};
+use super::{AuthError, Subject, TokenVerifier, Verified};
 use crate::state::Clock;
 
 /// The URI-namespaced device-id claim from `docs/06-server/auth.md`
@@ -319,7 +319,7 @@ struct Claims {
 
 #[async_trait]
 impl TokenVerifier for OidcVerifier {
-    async fn verify(&self, bearer: &str) -> Result<Subject, AuthError> {
+    async fn verify(&self, bearer: &str) -> Result<Verified, AuthError> {
         if bearer.trim().is_empty() {
             return Err(AuthError::Missing);
         }
@@ -397,11 +397,21 @@ impl TokenVerifier for OidcVerifier {
             }
         }
 
-        Ok(Subject {
-            issuer: claims.iss,
-            subject: claims.sub,
-            email: claims.email,
-            device_id: claims.device_id,
+        // `exp` is the session's deadline, not merely an admission check. It
+        // was validated here and then dropped on the floor, which is precisely
+        // why a sync session could outlive its own credential; it now travels
+        // with the subject. The comparison above already rejected anything at
+        // or before `now`, so `exp` is positive and the conversion is exact.
+        let expires_at_ms = u64::try_from(exp).unwrap_or(0).saturating_mul(1_000);
+
+        Ok(Verified {
+            subject: Subject {
+                issuer: claims.iss,
+                subject: claims.sub,
+                email: claims.email,
+                device_id: claims.device_id,
+            },
+            expires_at_ms: Some(expires_at_ms),
         })
     }
 }

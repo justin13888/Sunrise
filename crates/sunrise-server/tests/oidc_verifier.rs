@@ -184,13 +184,33 @@ fn mint_rs256(key_der_b64: &str, kid: &str, claims: &serde_json::Value) -> Strin
 async fn a_valid_token_is_accepted_and_yields_the_iss_sub_pair() {
     let idp = FakeIdp::new(rsa_jwks("k1", KEY_A_N));
     let v = verifier(idp, TestClock::new(T0_MS));
-    let subject = v
+    let verified = v
         .verify(&mint_rs256(KEY_A_DER_B64, "k1", &good_claims()))
         .await
         .expect("a correctly signed, in-date, correctly audienced token must verify");
-    assert_eq!(subject.issuer, ISSUER);
-    assert_eq!(subject.subject, "user-123");
-    assert_eq!(subject.email.as_deref(), Some("user@example.com"));
+    assert_eq!(verified.subject.issuer, ISSUER);
+    assert_eq!(verified.subject.subject, "user-123");
+    assert_eq!(verified.subject.email.as_deref(), Some("user@example.com"));
+}
+
+/// The deadline the whole of mid-session expiry rests on. `exp` used to be
+/// checked and thrown away, so a session had no way to know when its
+/// credential died; it now comes back with the subject, in wall-clock ms.
+#[tokio::test]
+async fn verification_surfaces_the_tokens_expiry() {
+    let idp = FakeIdp::new(rsa_jwks("k1", KEY_A_N));
+    let v = verifier(idp, TestClock::new(T0_MS));
+    let verified = v
+        .verify(&mint_rs256(KEY_A_DER_B64, "k1", &good_claims()))
+        .await
+        .unwrap();
+    assert_eq!(
+        verified.expires_at_ms,
+        Some((T0_SECS as u64 + 3600) * 1000),
+        "the deadline is the token's own exp, in milliseconds"
+    );
+    assert!(!verified.is_expired_at(T0_MS));
+    assert!(verified.is_expired_at(T0_MS + 3_600_000));
 }
 
 /// The account key is `(iss, sub)`, so the verifier must surface both — a
@@ -201,11 +221,11 @@ async fn the_device_id_claim_is_surfaced_when_present() {
     let v = verifier(idp, TestClock::new(T0_MS));
     let mut claims = good_claims();
     claims["https://sunrise.app/device_id"] = serde_json::json!("DEV123");
-    let subject = v
+    let verified = v
         .verify(&mint_rs256(KEY_A_DER_B64, "k1", &claims))
         .await
         .unwrap();
-    assert_eq!(subject.device_id.as_deref(), Some("DEV123"));
+    assert_eq!(verified.subject.device_id.as_deref(), Some("DEV123"));
 }
 
 /// `aud` may be an array; the server's client id only has to be a member.
@@ -552,8 +572,8 @@ async fn an_eddsa_issuer_verifies_through_the_same_path() {
     let pkcs8 = ed25519_pkcs8(&sk.to_bytes(), pk.as_bytes());
     let token = encode(&header, &good_claims(), &EncodingKey::from_ed_der(&pkcs8)).unwrap();
 
-    let subject = v.verify(&token).await.expect("an Ed25519 JWKS must work");
-    assert_eq!(subject.subject, "user-123");
+    let verified = v.verify(&token).await.expect("an Ed25519 JWKS must work");
+    assert_eq!(verified.subject.subject, "user-123");
 
     // And a token from a different Ed25519 key still fails.
     let other = ed25519_dalek::SigningKey::from_bytes(&[43u8; 32]);

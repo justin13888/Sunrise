@@ -223,16 +223,15 @@ mod tests {
     }
 
     fn two_tenants() -> StaticVerifier {
-        let mut allowed = std::collections::HashMap::new();
-        allowed.insert(
-            "alice".to_string(),
-            Subject::new("https://idp.example", "alice").with_email("alice@example.com"),
-        );
-        allowed.insert(
-            "bob".to_string(),
-            Subject::new("https://idp.example", "bob").with_email("bob@example.com"),
-        );
-        StaticVerifier { allowed }
+        StaticVerifier::default()
+            .with(
+                "alice",
+                Subject::new("https://idp.example", "alice").with_email("alice@example.com"),
+            )
+            .with(
+                "bob",
+                Subject::new("https://idp.example", "bob").with_email("bob@example.com"),
+            )
     }
 
     /// Two OIDC subjects on one server must not see each other's account.

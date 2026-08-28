@@ -44,7 +44,7 @@ pub mod store;
 pub mod ws;
 
 pub use auth::oidc::{OidcConfig, OidcVerifier};
-pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier};
+pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier, Verified};
 pub use config::ServerConfig;
 pub use error::ApiError;
 pub use logging::{account_h, id_h};

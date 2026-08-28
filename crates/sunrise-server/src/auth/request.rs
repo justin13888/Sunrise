@@ -10,7 +10,7 @@
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 
 use super::device_sig::{self, DEVICE_HEADER, DEVICE_SIG_HEADER};
-use super::{extract_bearer, Subject};
+use super::{extract_bearer, Subject, Verified};
 use crate::error::{codes, ApiError};
 use crate::state::ServerState;
 use crate::store::{Account, Device};
@@ -71,7 +71,7 @@ fn device_not_owner(message: &str) -> ApiError {
 pub async fn authenticate_token(
     state: &ServerState,
     headers: &HeaderMap,
-) -> Result<(Subject, Account), ApiError> {
+) -> Result<(Verified, Account), ApiError> {
     // An absent header verifies the empty string. `NullVerifier` (self-host,
     // single-tenant) accepts it; every real verifier rejects it. Enabling auth
     // is therefore purely a matter of configuring a verifier.
@@ -79,8 +79,8 @@ pub async fn authenticate_token(
     // Both failure arms log at `warn` with the stable code and nothing else.
     // "Which token" is never a loggable question — `bearer` is a credential,
     // and `ApiError::message` is written to be safe here (see error.rs).
-    let subject = match state.token_verifier.verify(bearer).await {
-        Ok(s) => s,
+    let verified = match state.token_verifier.verify(bearer).await {
+        Ok(v) => v,
         Err(e) => {
             let api: ApiError = e.into();
             tracing::warn!(
@@ -94,32 +94,32 @@ pub async fn authenticate_token(
             return Err(api);
         }
     };
-    let account =
-        match state
-            .store
-            .resolve_account(&subject, state.config.allow_signup, state.clock.now_ms())
-        {
-            Ok(a) => a,
-            Err(e) => {
-                let api: ApiError = e.into();
-                tracing::warn!(
-                    ev = "srv.auth.rejected",
-                    err_code = api.code,
-                    err_kind = "user",
-                    retryable = false,
-                    status = api.status.as_u16(),
-                    "account not resolved"
-                );
-                return Err(api);
-            }
-        };
+    let account = match state.store.resolve_account(
+        &verified.subject,
+        state.config.allow_signup,
+        state.clock.now_ms(),
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            let api: ApiError = e.into();
+            tracing::warn!(
+                ev = "srv.auth.rejected",
+                err_code = api.code,
+                err_kind = "user",
+                retryable = false,
+                status = api.status.as_u16(),
+                "account not resolved"
+            );
+            return Err(api);
+        }
+    };
     tracing::debug!(
         ev = "srv.auth.ok",
         account_h = %crate::logging::account_h(&account.account_id),
         tier = %account.tier,
         "bearer accepted"
     );
-    Ok((subject, account))
+    Ok((verified, account))
 }
 
 /// Run the full pipeline for a REST request.
@@ -150,10 +150,10 @@ async fn authenticate_with(
     ctx: RequestContext<'_>,
     require_binding: bool,
 ) -> Result<Caller, ApiError> {
-    let (subject, account) = authenticate_token(state, ctx.headers).await?;
-    let device = bind_device(state, &subject, &account, ctx, require_binding)?;
+    let (verified, account) = authenticate_token(state, ctx.headers).await?;
+    let device = bind_device(state, &verified.subject, &account, ctx, require_binding)?;
     Ok(Caller {
-        subject,
+        subject: verified.subject,
         account,
         device,
     })

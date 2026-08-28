@@ -14,7 +14,6 @@
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
 use std::sync::Arc;
 use sunrise_server::{build_router, ServerConfig, ServerState, StaticVerifier, Subject};
 use sunrise_wire_protocol::{
@@ -29,16 +28,9 @@ type Ws =
 
 /// Two accounts, each with its own bearer.
 fn two_tenant_verifier() -> StaticVerifier {
-    let mut allowed = HashMap::new();
-    allowed.insert(
-        "alice-token".to_string(),
-        Subject::new("https://idp.example", "alice"),
-    );
-    allowed.insert(
-        "bob-token".to_string(),
-        Subject::new("https://idp.example", "bob"),
-    );
-    StaticVerifier { allowed }
+    StaticVerifier::default()
+        .with("alice-token", Subject::new("https://idp.example", "alice"))
+        .with("bob-token", Subject::new("https://idp.example", "bob"))
 }
 
 async fn boot() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
