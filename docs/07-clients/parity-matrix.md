@@ -5,7 +5,9 @@ status: accepted
 # Client Feature Parity Matrix
 
 Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x;
-**MAY** = future; **N/A** = doesn't apply on the platform.
+**MAY** = future; **N/A** = doesn't apply on the platform; ***deferred*** =
+specified, not scheduled for v1, with the reason recorded in
+[`../11-adr/`](../11-adr/).
 
 Two clients ship in v1: the **macOS** app and the **CLI**. iOS, Android and Web
 are **deferred** — specified, not scheduled, and carrying no MUSTs, because a
@@ -21,7 +23,7 @@ release so the table records what was withdrawn rather than quietly losing it.
 | Today / Inbox / Stream views | MUST | MUST (list form) | — | — | — | — |
 | Focus mode | MUST | MUST (`next`, `focus <id>`) | — | — | — | — |
 | Time-blocking on calendar grid | MUST | N/A | — | — | — | — |
-| Notes (rich text) | MUST | MAY | — | — | — | — |
+| Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | — | — | — | — |
 | Attachments — view image/PDF | MUST | N/A | — | — | — | — |
 | Attachments — upload | MUST | MAY | — | — | — | — |
 | Search (FTS) | MUST | MUST | — | — | — | — |
@@ -33,9 +35,9 @@ release so the table records what was withdrawn rather than quietly losing it.
 | Multi-account | MUST | MUST (`SUNRISE_VAULT`) | — | — | — | — |
 | Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | — | — | — | — |
 | Pairing — show QR | MUST | MAY (ASCII QR) | — | — | — | — |
-| Sharing — accept invite | MUST | MAY | — | — | — | — |
-| Sharing — view shared stream as editor | MUST | MUST | — | — | — | — |
-| Calendar integration (Google) | MUST | MAY | — | — | — | — |
+| Sharing — accept invite | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | — | — | — | — |
+| Sharing — view shared stream as editor | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — | — |
+| Calendar integration (Google) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | — | — | — | — |
 | iCal import / export | MUST | MUST | — | — | — | — |
 | Background sync | MUST (while running) | N/A (`sync --once` for cron) | — | — | — | — |
 | Menu bar | MUST | N/A | — | — | — | — |
@@ -48,12 +50,50 @@ release so the table records what was withdrawn rather than quietly losing it.
 | Print / PDF export | SHOULD | MAY (`export`) | — | — | — | — |
 | First-run pairing | MUST | SHOULD | — | — | — | — |
 
+## The v1 scoping pass (ADR-0020)
+
+Five cells above changed as part of defining v1 — four lose a MUST, one keeps it
+and gains a scope note. [ADR-0020](../11-adr/0020-v1-must-demotions.md) is the
+record of why.
+
+**This is not a regression, and a later reader should not read it as one.** The
+hard rule below governs a *released* capability: a v1.0 → v1.1 release cannot
+remove a MUST. v1 has not shipped. These marks are a pre-1.0 v1 definition being
+set once, before anything was promised to a user — no shipped capability is
+being withdrawn, because none of these ever shipped. Had v1.0 been out, the
+answer would have been to build them.
+
+- **Sharing — accept invite** (macOS) and **Sharing — view shared stream as
+  editor** (macOS and CLI) → *deferred*. The crypto and domain designs are
+  specified in full and the underlying primitives are frozen and tested, but the
+  entity the design operates on does not exist: nothing anywhere reads or writes
+  the `persons` table, and no `share_grant` op is implemented. Closing it is a
+  second, security-critical epic — a sharing model that is almost right in an
+  end-to-end-encrypted product is a vulnerability, not a partial feature.
+- **Calendar integration (Google)** (macOS) → *deferred*. Already decided:
+  [issue #4](https://github.com/justin13888/Sunrise/issues/4) was deferred out of
+  the v1 epic, and two accepted specs cannot disagree about whether it ships. The
+  provider itself is implemented and tested; what is missing is the wiring and
+  storage around it.
+- **Notes (rich text)** (macOS) stays a **MUST** and is being met — this is a
+  scope clarification, not a deferral. The row means a **Task's `body`**:
+  persisted, FTS-indexed and editable across the seam. It does **not** mean the
+  free-standing `Note` entity (specified, never wired), and it does not mean
+  collaborative text — a body merges as one last-writer-wins unit
+  ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), so two devices editing
+  one body concurrently leave one survivor, not a merge.
+
 ## Hard rules
 
 - A capability MUST not regress mid-version. A v1.0 → v1.1 release cannot
   remove a MUST.
 - A capability marked N/A is a deliberate choice; if revisited, document the
   change in [`../11-adr/`](../11-adr/).
+- A capability marked *deferred* carries no MUST, exactly as a deferred client
+  does. A capability may only become *deferred* **before** the version that
+  would have carried it ships, and only with the reason recorded in
+  [`../11-adr/`](../11-adr/) — never to make this table agree with the code
+  after the fact.
 - A user can run **without** any specific OS feature (Live Activities,
   Spotlight, etc.); fallbacks via plain notifications must exist.
 - **A deferred client has no MUSTs.** When one is scheduled, its column is
