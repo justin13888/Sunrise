@@ -40,12 +40,19 @@ final class SavedViewsModel {
     }
 
     /// Save `destination` under `name`, replacing any view of that name.
+    ///
+    /// A destination the store has no word for is refused *with a sentence*
+    /// rather than saved as something else. See ``Destination/primary``.
     func save(name: String, destination: Destination, query: String, contexts: [String]) async {
         let trimmed = name.trimmed
         guard !trimmed.isEmpty else { return }
+        guard let primary = destination.primary else {
+            errorMessage = "\(destination.title) cannot be saved as a view yet."
+            return
+        }
         let view = SavedView(
             name: trimmed,
-            view: destination.primary,
+            view: primary,
             query: destination.savesQuery ? query : "",
             contexts: contexts,
             // Written by the store; whatever is passed here is overwritten on
@@ -132,8 +139,15 @@ final class SavedViewsModel {
 
 extension Destination {
     /// Which primary view this destination is, in the saved-view store's
-    /// vocabulary.
-    var primary: PrimaryView {
+    /// vocabulary — or `nil` when the store has no word for it.
+    ///
+    /// The two daily briefs are the `nil`. `PrimaryView` mirrors
+    /// `sunrise_client_core::views::View` variant for variant, deliberately,
+    /// so that adding a view upstream fails the seam's build rather than
+    /// producing an unrepresentable value — and `View` has no `Morning` or
+    /// `Evening`. The honest answer is therefore "this cannot be saved", not a
+    /// nearest-neighbour that would recall the morning brief as Today.
+    var primary: PrimaryView? {
         switch self {
         case let .list(kind):
             switch kind {
@@ -147,8 +161,12 @@ extension Destination {
         case .focus: .focus
         case .routines: .routines
         case .review: .review
+        case .morning, .evening: nil
         }
     }
+
+    /// Whether the store can name this destination at all.
+    var isSaveable: Bool { primary != nil }
 
     /// Whether a saved view of this destination should carry search text.
     var savesQuery: Bool { primary == .search }

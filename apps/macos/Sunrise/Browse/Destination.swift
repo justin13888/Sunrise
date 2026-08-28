@@ -124,14 +124,24 @@ enum Destination: Equatable, Hashable, Identifiable {
     case focus
     case routines
     case review
+    /// The morning summary, backed by `Query::MorningSummary`.
+    case morning
+    /// The end-of-day plan, backed by `Query::EndOfDayPlan`.
+    case evening
 
     var id: Self { self }
 
     /// The primary views every client presents, in the order
     /// `docs/07-clients/parity-matrix.md` lists them. Streams and contexts are
     /// not here: they are data, and the sidebar reads them from the vault.
+    ///
+    /// The two briefs bracket the list because that is when they are read.
+    /// They are also the only entries a *notification* can open — see
+    /// ``DeepLink`` — and putting them in the sidebar rather than behind an
+    /// alert means someone who never allows notifications still has them.
     static let fixed: [Destination] = [
-        .list(.todayAll), .list(.inbox), .search, .calendar, .focus, .routines, .review
+        .morning, .list(.todayAll), .list(.inbox), .search,
+        .calendar, .focus, .routines, .review, .evening
     ]
 
     var title: String {
@@ -142,6 +152,8 @@ enum Destination: Equatable, Hashable, Identifiable {
         case .focus: "Focus"
         case .routines: "Routines"
         case .review: "Review"
+        case .morning: "Morning"
+        case .evening: "Evening"
         }
     }
 
@@ -153,6 +165,8 @@ enum Destination: Equatable, Hashable, Identifiable {
         case .focus: "timer"
         case .routines: "repeat"
         case .review: "chart.line.uptrend.xyaxis"
+        case .morning: "sunrise"
+        case .evening: "moon.stars"
         }
     }
 }

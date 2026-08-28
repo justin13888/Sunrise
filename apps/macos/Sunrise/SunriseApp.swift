@@ -30,8 +30,7 @@ struct SunriseApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appInfo) {
-                Button("Quick Capture") { surfaces.openQuickCapture() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                AppMenuItems(surfaces: surfaces)
             }
         }
 
@@ -49,6 +48,32 @@ enum SunriseWindow: String {
     case main
 }
 
+/// What the app menu adds: capture, and the two daily briefs.
+///
+/// A `View` rather than the buttons written inline, so that it has an
+/// environment to read `openWindow` from — the menu has to work with every
+/// window closed, which is exactly when someone reaches for ⌘⌥M.
+private struct AppMenuItems: View {
+    let surfaces: AppSurfaces
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Quick Capture") { surfaces.openQuickCapture() }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+        Divider()
+        Button("Morning Summary") { show(.morning) }
+            .keyboardShortcut("m", modifiers: [.command, .option])
+        Button("End of Day") { show(.evening) }
+            .keyboardShortcut("e", modifiers: [.command, .option])
+    }
+
+    private func show(_ destination: Destination) {
+        openWindow(id: SunriseWindow.main.rawValue)
+        surfaces.show(destination)
+    }
+}
+
 /// Cross-surface state: the menu bar's snapshot, the hotkey, and the quick
 /// capture panel.
 ///
@@ -61,6 +86,14 @@ enum SunriseWindow: String {
 final class AppSurfaces {
     private(set) var menuBar: MenuBarModel?
     private(set) var hotkeyStatus: HotkeyStatus = .idle
+
+    /// Where ⌘⌥M wants the window to be.
+    ///
+    /// Set here and consumed by `VaultView`, because the window's selection is
+    /// the window's state: this object exists in scenes that have no sidebar
+    /// at all, and reaching into one from here would be reaching into a view
+    /// that may not be on screen.
+    private(set) var pendingDestination: Destination?
 
     private let hotkey = HotkeyCenter()
     private var panel: QuickCapturePanel?
@@ -96,6 +129,24 @@ final class AppSurfaces {
             return
         }
         panel.present()
+    }
+
+    /// Go to a screen.
+    ///
+    /// Set here and consumed by `VaultView`, because the window's selection is
+    /// the window's state — this object exists in scenes that have no sidebar
+    /// at all.
+    func show(_ destination: Destination) {
+        pendingDestination = destination
+    }
+
+    /// The window has taken the pending destination; stop offering it.
+    ///
+    /// Cleared rather than left set, so that navigating away from the morning
+    /// view and pressing ⌘⌥M again goes back to it instead of doing nothing —
+    /// the same value twice is two requests, not one.
+    func destinationTaken() {
+        pendingDestination = nil
     }
 
     /// Release the hotkey watcher.

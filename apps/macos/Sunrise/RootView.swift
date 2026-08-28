@@ -55,6 +55,8 @@ struct VaultView: View {
     @State private var focus: FocusModel
     @State private var routines: RoutineModel
     @State private var review: ReviewModel
+    @State private var morning: MorningSummaryModel
+    @State private var evening: EndOfDayPlanModel
     @State private var undo: UndoModel
     @State private var savedViews = SavedViewsModel()
     @State private var savingView = false
@@ -74,6 +76,8 @@ struct VaultView: View {
         _focus = State(initialValue: FocusModel(bridge: bridge))
         _routines = State(initialValue: RoutineModel(bridge: bridge))
         _review = State(initialValue: ReviewModel(bridge: bridge))
+        _morning = State(initialValue: MorningSummaryModel(bridge: bridge))
+        _evening = State(initialValue: EndOfDayPlanModel(bridge: bridge))
         _undo = State(initialValue: UndoModel(bridge: bridge))
     }
 
@@ -102,7 +106,8 @@ struct VaultView: View {
                     model: savedViews,
                     contexts: list.names,
                     recall: { selection = $0 },
-                    saveCurrent: { savingView = true }
+                    saveCurrent: { savingView = true },
+                    canSaveCurrent: selection?.isSaveable ?? false
                 )
             }
             ToolbarItem(placement: .status) {
@@ -145,6 +150,13 @@ struct VaultView: View {
             guard case let .list(kind)? = destination else { return }
             Task { await list.show(kind) }
         }
+        // ⌘⌥M asked for a screen. The window is the only thing that can grant
+        // that, so it is the thing that takes the request and clears it.
+        .onChange(of: surfaces.pendingDestination) { _, destination in
+            guard let destination else { return }
+            selection = destination
+            surfaces.destinationTaken()
+        }
         .task {
             deviceID = await bridge.deviceId()
             account.restore()
@@ -177,6 +189,10 @@ struct VaultView: View {
             RoutinesView(model: routines)
         case .review:
             ReviewView(model: review)
+        case .morning:
+            MorningSummaryView(model: morning)
+        case .evening:
+            EndOfDayPlanView(model: evening)
         case .none:
             ContentUnavailableView(
                 "Sunrise",
