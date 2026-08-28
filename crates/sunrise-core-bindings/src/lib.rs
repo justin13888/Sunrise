@@ -280,9 +280,19 @@ impl SunriseCore {
         label: String,
     ) -> Result<client::UndoableOutcome, BindingError> {
         let lowered = cmd.into_core()?;
-        // Read before write. The order is the whole correctness argument.
-        let recorded = client::record(&self.inner, label, vec![lowered.clone()]).await;
-        let res = self.inner.submit(lowered).await?;
+        // A create is recorded *after* the write and everything else *before*
+        // it, and neither order is a preference: an edit's inverse reads the
+        // values the write is about to overwrite, and a create's inverse names
+        // the entity the write is about to mint.
+        let (res, recorded) = if sunrise_client_core::undo::is_create(&lowered) {
+            let res = self.inner.submit(lowered.clone()).await?;
+            let recorded = client::record_create(label, lowered, res.entity);
+            (res, recorded)
+        } else {
+            // Read before write. The order is the whole correctness argument.
+            let recorded = client::record(&self.inner, label, vec![lowered.clone()]).await;
+            (self.inner.submit(lowered).await?, recorded)
+        };
         let not_undoable = match recorded {
             Ok(entry) => {
                 if let Ok(mut g) = self.undo_stacks.lock() {
@@ -305,10 +315,14 @@ impl SunriseCore {
     /// op, and a device undoing what another has since changed loses the LWW
     /// tie exactly as a manual edit would.
     pub async fn undo(&self) -> Result<Option<String>, BindingError> {
-        let Some(entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_undo()) else {
+        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_undo()) else {
             return Ok(None);
         };
-        self.apply(&entry.backward).await?;
+        let minted = self.apply(&entry.backward).await?;
+        // If the step being applied contains a create — which is what the redo
+        // of an undone create is — the way back out has to name the entity
+        // this replay minted, not the one the original create did.
+        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
         let label = entry.label.clone();
         if let Ok(mut g) = self.undo_stacks.lock() {
             g.push_undone(entry);
@@ -318,10 +332,14 @@ impl SunriseCore {
 
     /// Replay the most recently undone step. Returns its label, or `None`.
     pub async fn redo(&self) -> Result<Option<String>, BindingError> {
-        let Some(entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_redo()) else {
+        let Some(mut entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_redo()) else {
             return Ok(None);
         };
-        self.apply(&entry.backward).await?;
+        let minted = self.apply(&entry.backward).await?;
+        // Replaying a create makes a *different* entity. Bind the undo that
+        // goes back on the stack to that one, or the next undo would delete an
+        // already-tombstoned id and leave this entity live for ever.
+        sunrise_client_core::undo::rebind_creates(&entry.backward, &mut entry.forward, &minted);
         let label = entry.label.clone();
         if let Ok(mut g) = self.undo_stacks.lock() {
             g.push_redone(entry);
@@ -559,11 +577,17 @@ impl SunriseCore {
     ///
     /// Not exported: an undo step is a list of commands the seam built, never
     /// one a client hands in.
-    async fn apply(&self, cmds: &[Command]) -> Result<(), BindingError> {
+    /// Submit a recorded step, returning the entity each command touched.
+    ///
+    /// The ids matter for exactly one command shape: a create, whose entity is
+    /// minted here and nowhere else. Everything else returns the id it was
+    /// already given, which the caller ignores.
+    async fn apply(&self, cmds: &[Command]) -> Result<Vec<EntityRef>, BindingError> {
+        let mut touched = Vec::with_capacity(cmds.len());
         for cmd in cmds {
-            self.inner.submit(cmd.clone()).await?;
+            touched.push(self.inner.submit(cmd.clone()).await?.entity);
         }
-        Ok(())
+        Ok(touched)
     }
 }
 

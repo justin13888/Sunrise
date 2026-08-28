@@ -17,6 +17,11 @@
 //! * Undoing a completion is a re-open op. It converges like any other write,
 //!   and a device undoing what another has since changed loses the LWW tie
 //!   exactly as a manual edit would.
+//! * **Undoing a create deletes what it made**, and that step is recorded
+//!   *after* the write rather than before it — the id to delete is the one the
+//!   core just minted, and it does not exist a moment earlier. Redoing it
+//!   creates a fresh entity with a fresh id, so the step is re-bound to that
+//!   id as it is replayed; see [`sunrise_client_core::undo::rebind_creates`].
 //! * **A delete cannot be undone.** The core writes a tombstone and has no
 //!   restore op. The seam says so — [`UndoRefusal::Deleted`] — rather than
 //!   accepting the step and offering an undo that would silently do nothing.
@@ -35,7 +40,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sunrise_client_core::undo::{invert, EntityLookup, NotUndoable, UndoEntry, MAX_DEPTH};
+use sunrise_client_core::undo::{
+    invert, invert_create, EntityLookup, NotUndoable, UndoEntry, MAX_DEPTH,
+};
 use sunrise_client_core::views;
 use sunrise_client_core::views::View;
 use sunrise_core::queries::{ContextRow, StreamRow};
@@ -264,6 +271,26 @@ pub(crate) async fn record(
     Ok(UndoEntry {
         label,
         forward: cmds,
+        backward,
+    })
+}
+
+/// Build the step that undoes a create, from the id the core just minted.
+///
+/// The mirror image of [`record`], and the ordering is inverted for the same
+/// reason it is fixed there: an edit's inverse reads values the write is about
+/// to overwrite, so it must be built *first*; a create's inverse names an
+/// entity that does not exist until the write lands, so it can only be built
+/// *after*. `created` is the `CommandResult::entity` of that write.
+pub(crate) fn record_create(
+    label: String,
+    cmd: Command,
+    created: EntityRef,
+) -> Result<UndoEntry, UndoRefusal> {
+    let backward = vec![invert_create(&cmd, created).map_err(UndoRefusal::from)?];
+    Ok(UndoEntry {
+        label,
+        forward: vec![cmd],
         backward,
     })
 }

@@ -24,5 +24,8 @@ pub mod undo;
 pub mod views;
 
 pub use config::parse_pairs;
-pub use undo::{invert, EntityLookup, NotUndoable, UndoEntry, MAX_DEPTH};
+pub use undo::{
+    invert, invert_create, is_create, rebind_creates, EntityLookup, NotUndoable, UndoEntry,
+    MAX_DEPTH,
+};
 pub use views::{SavedView, View};

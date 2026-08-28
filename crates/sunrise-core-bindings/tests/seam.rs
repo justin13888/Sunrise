@@ -883,6 +883,67 @@ async fn undo_reopens_a_completed_task_and_redo_finishes_it_again() {
     core.shutdown().await;
 }
 
+/// Creating is undoable, and the inverse is the delete of what the create
+/// minted — read off the write, because a moment earlier there was no id to
+/// name.
+///
+/// The **second** undo is the load-bearing half. A redone create is a
+/// different entity, so a step that kept naming the first id would re-delete
+/// an already-tombstoned row and leave the redone one live for ever.
+#[tokio::test(flavor = "multi_thread")]
+async fn undoing_a_create_deletes_it_and_redo_makes_it_again() {
+    let (_dir, core) = open_core().await;
+    let out = core
+        .submit_undoable(
+            CoreCommand::CreateTask {
+                draft: draft("Renew passport"),
+            },
+            "new task \u{201c}Renew passport\u{201d}".into(),
+        )
+        .await
+        .expect("create");
+
+    assert!(out.not_undoable.is_none(), "a create is reversible");
+    assert_eq!(
+        core.undo_state().undo_label.as_deref(),
+        Some("new task \u{201c}Renew passport\u{201d}"),
+        "the menu item is offered rather than greyed out"
+    );
+    let first = out.outcome.entity;
+    assert_eq!(inbox_len(&core).await, 1);
+
+    core.undo().await.expect("undo");
+    assert_eq!(inbox_len(&core).await, 0, "the delete reached storage");
+
+    core.redo().await.expect("redo");
+    assert_eq!(inbox_len(&core).await, 1, "and the redo put one back");
+
+    // Honest about what a redo is: a fresh write, and therefore a fresh
+    // entity. There is no id-preserving create in the core, and the step is
+    // re-bound to what the replay actually minted rather than pretending.
+    let second = only_inbox_task(&core).await;
+    assert_ne!(second, first, "a replayed create mints a new entity");
+
+    core.undo().await.expect("undo again");
+    assert_eq!(
+        inbox_len(&core).await,
+        0,
+        "the second undo deletes what the redo made, not the id from the first round"
+    );
+    core.shutdown().await;
+}
+
+/// The id of the one task in the Inbox.
+async fn only_inbox_task(core: &SunriseCore) -> sunrise_id::EntityRef {
+    match core.query(CoreQuery::Inbox).await.expect("inbox") {
+        CoreQueryResult::Tasks { tasks } => {
+            assert_eq!(tasks.len(), 1, "expected exactly one task");
+            tasks[0].id
+        }
+        other => panic!("expected tasks, got {other:?}"),
+    }
+}
+
 /// A delete is submitted and reported as un-undoable — not refused, and not
 /// silently accepted onto a stack that would do nothing.
 #[tokio::test(flavor = "multi_thread")]

@@ -18,6 +18,10 @@
 //!   op, and it converges like any other. Two devices undoing the same thing
 //!   is idempotent; a device undoing what another has since changed loses the
 //!   LWW tie exactly as a manual edit would. That is the honest behaviour.
+//! * A **create is undone by deleting what it minted** ([`invert_create`]).
+//!   That inverse is the one that cannot be built by [`invert`]: the id to
+//!   delete does not exist until the core has minted it, so it is read off
+//!   `CommandResult::entity` *after* the write instead of off a row before it.
 //! * A **delete cannot be undone.** `Command::DeleteTask` writes a tombstone
 //!   and the core has no restore op, so there is nothing to invert into. The
 //!   caller is told so rather than the step being silently skipped — which is
@@ -26,6 +30,21 @@
 //!   PN-counter the engine increments; undo restores the date, and the count
 //!   keeps its history. A review that said "deferred three times" should not
 //!   change its mind because one of them was undone.
+//!
+//! # Redoing a create mints a fresh entity
+//!
+//! Undo of a create deletes the entity; redo replays the create, and the core
+//! mints a **new** id for it — there is no id-preserving create command, and
+//! inventing one would mean either a caller-supplied id on every create draft
+//! or a restore op the merge model does not have. So the step is re-bound
+//! instead: [`rebind_creates`] points the replayed step's inverse at the id
+//! the replay actually minted, so `create → undo → redo → undo` deletes the
+//! *second* entity rather than re-deleting the first and leaking the second.
+//!
+//! Nothing can be holding a reference to the first id by then. Recording any
+//! new write clears the redo stack, so the only path back to a redo is
+//! create → undo → redo with no write in between, and a reference to the
+//! created entity would itself have been a write.
 //!
 //! [ADR-0014]: ../../../docs/11-adr/0014-entity-level-lww-merge.md
 
@@ -120,6 +139,92 @@ pub fn invert<S: EntityLookup + ?Sized>(
     Ok(out)
 }
 
+/// Whether `cmd` mints a new entity.
+///
+/// The one shape [`invert`] cannot handle, and the reason is timing rather
+/// than semantics: a create *is* reversible — by deleting what it made — but
+/// the thing to delete does not exist until the core has made it. A caller
+/// routes these to [`invert_create`] after the write instead of reading rows
+/// before it.
+#[must_use]
+pub const fn is_create(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::CreateTask(_)
+            | Command::CreateStream(_)
+            | Command::CreateContext(_)
+            | Command::CreateRoutine(_)
+            | Command::CreateBlock(_)
+            | Command::AttachFile(_)
+    )
+}
+
+/// The inverse of a create: the delete of the entity it minted.
+///
+/// `created` is `CommandResult::entity` — the id the core assigned. Passing
+/// anything else deletes the wrong entity, which is why this takes the result
+/// of the write rather than trying to guess from the draft.
+///
+/// The delete names a **bare `EntityRef`**, and that is *not* the id-only
+/// delete [ADR-0014] fixed. The ADR is about ops: `InnerOp::TaskDelete` carries
+/// the whole `Task` with `deleted` set, because a tombstone that replaces only
+/// an id leaves the rest of the row at whatever each replica happened to hold.
+/// `Command::DeleteTask` is a *command*, and the engine builds that full-state
+/// op from the row it is about to tombstone. Commands name entities; ops carry
+/// state, and this returns a command.
+///
+/// # Errors
+///
+/// [`NotUndoable::Unsupported`] for a command that either creates nothing or
+/// creates something with no delete to invert into: `StartFocus` and
+/// `SaveReviewSnapshot` mint append-only records, and the core has no command
+/// that removes one.
+///
+/// [ADR-0014]: ../../../docs/11-adr/0014-entity-level-lww-merge.md
+pub fn invert_create(cmd: &Command, created: EntityRef) -> Result<Command, NotUndoable> {
+    match cmd {
+        Command::CreateTask(_) => Ok(Command::DeleteTask(created)),
+        Command::CreateStream(_) => Ok(Command::DeleteStream(created)),
+        Command::CreateContext(_) => Ok(Command::DeleteContext(created)),
+        // Undoing a routine removes the routine, not the occurrences it has
+        // already materialized — `DeleteRoutine` stops generation and leaves
+        // existing Tasks standing, and undo is a new write, not a rollback.
+        Command::CreateRoutine(_) => Ok(Command::DeleteRoutine(created)),
+        Command::CreateBlock(_) => Ok(Command::DeleteBlock(created)),
+        Command::AttachFile(_) => Ok(Command::DetachFile(created)),
+        _ => Err(NotUndoable::Unsupported),
+    }
+}
+
+/// Point the inverses of the creates in `applied` at the entities the core
+/// just minted for them.
+///
+/// `entities[i]` is what `applied[i]` returned; `inverse` is what [`invert`]
+/// produces, which is the inverses in **reverse** order, so `applied[i]`'s
+/// inverse sits at `inverse[len - 1 - i]`.
+///
+/// Needed because a replayed create is not the same entity as the original:
+/// redoing one mints a fresh id, and the delete that undoes it has to name the
+/// new one. Without this, `create → undo → redo → undo` would re-delete the
+/// already-tombstoned first entity and leave the second live for ever.
+///
+/// A no-op for a step with no creates in it, and for mismatched lengths —
+/// which cannot happen from [`invert`]'s output, and would be a worse failure
+/// to turn into an error after the write has already landed.
+pub fn rebind_creates(applied: &[Command], inverse: &mut [Command], entities: &[EntityRef]) {
+    if applied.is_empty() || applied.len() != inverse.len() || applied.len() != entities.len() {
+        return;
+    }
+    let last = applied.len() - 1;
+    for (i, (cmd, id)) in applied.iter().zip(entities).enumerate() {
+        // `invert_create` refuses everything that is not a create, so this
+        // doubles as the test for one.
+        if let Ok(inv) = invert_create(cmd, *id) {
+            inverse[last - i] = inv;
+        }
+    }
+}
+
 /// The inverse of one command.
 fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Command, NotUndoable> {
     match cmd {
@@ -198,6 +303,10 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
         | Command::DeleteStream(_)
         | Command::DeleteContext(_)
         | Command::DeleteRoutine(_) => Err(NotUndoable::Deleted),
+        // Creates land here too, and `Unsupported` is the right answer *from
+        // here*: a create is reversible, but the entity to delete does not
+        // exist until the core has minted it. See [`invert_create`], which the
+        // caller reaches for once it holds the result of the write.
         _ => Err(NotUndoable::Unsupported),
     }
 }
@@ -257,7 +366,12 @@ fn task<S: EntityLookup + ?Sized>(state: &S, id: EntityRef) -> Result<&Task, Not
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use sunrise_domain::{Energy, RRule, StreamColor, TaskTemplate, Unknowns};
+    use sunrise_core::commands::FocusStartDraft;
+    use sunrise_domain::{
+        AttachmentDraft, BlockDraft, ContextDraft, Energy, FocusKind, RRule, RoutineCatchupPolicy,
+        RoutineDraft, SessionLength, StreamColor, StreamDraft, SunriseTime, TaskDraft,
+        TaskTemplate, Unknowns,
+    };
     use sunrise_id::EntityKind;
 
     /// The simplest possible holder of rows — what every client is, minus the
@@ -567,6 +681,225 @@ mod tests {
             &back[..],
             [Command::UpdateRoutine { patch, .. }] if patch.paused == Some(false)
         ));
+    }
+
+    // ---- creates ----
+
+    /// Every create the core has that owns an entity, paired with the id the
+    /// core would mint for it. A table so the `match` in [`invert_create`]
+    /// cannot grow a seventh create without this covering it.
+    fn every_create() -> Vec<(Command, EntityRef)> {
+        vec![
+            (
+                Command::CreateTask(TaskDraft {
+                    title: "Renew passport".into(),
+                    body: None,
+                    stream_id: None,
+                    contexts: Vec::new(),
+                    priority: None,
+                    energy: None,
+                    estimated_duration_s: None,
+                    scheduled_at: None,
+                    due_at: None,
+                    scheduling_constraints: Vec::new(),
+                    assignee: None,
+                    reminder_lead_s: None,
+                }),
+                tid(7),
+            ),
+            (
+                Command::CreateStream(StreamDraft {
+                    name: "Travel".into(),
+                    ..StreamDraft::default()
+                }),
+                sid(7),
+            ),
+            (
+                Command::CreateContext(ContextDraft {
+                    name: "home".into(),
+                    description: None,
+                }),
+                cid(7),
+            ),
+            (
+                Command::CreateRoutine(RoutineDraft {
+                    template: TaskTemplate {
+                        title: "Water plants".into(),
+                        stream_id: sid(1),
+                        contexts: Vec::new(),
+                        energy: None,
+                        priority: None,
+                        estimated_duration_s: None,
+                        body: None,
+                    },
+                    rrule: RRule::parse("FREQ=DAILY").expect("valid rrule"),
+                    timezone: "UTC".into(),
+                    starts_at: jiff::Timestamp::UNIX_EPOCH,
+                    ends_at: None,
+                    scheduling_constraints: Vec::new(),
+                    catchup_policy: RoutineCatchupPolicy::Skip,
+                }),
+                rid(7),
+            ),
+            (
+                Command::CreateBlock(BlockDraft {
+                    stream_id: sid(1),
+                    starts_at: SunriseTime::Instant {
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                    ends_at: SunriseTime::Instant {
+                        at: jiff::Timestamp::UNIX_EPOCH,
+                    },
+                    title: Some("Deep work".into()),
+                    title_track_task: false,
+                    tasks: Vec::new(),
+                }),
+                EntityRef::new(EntityKind::Block, [7; 16]),
+            ),
+            (
+                Command::AttachFile(AttachmentDraft {
+                    parent: tid(1),
+                    filename: "scan.pdf".into(),
+                    mime_type: "application/pdf".into(),
+                    size_bytes: 1,
+                    blob_key: [0; 32],
+                    blob_id: [0; 16],
+                    chunk_count: 1,
+                    content_hash: [0; 32],
+                }),
+                EntityRef::new(EntityKind::Attachment, [7; 16]),
+            ),
+        ]
+    }
+
+    /// The id a delete names, whichever kind of delete it is.
+    fn deletes(cmd: &Command) -> Option<EntityRef> {
+        match cmd {
+            Command::DeleteTask(id)
+            | Command::DeleteStream(id)
+            | Command::DeleteContext(id)
+            | Command::DeleteRoutine(id)
+            | Command::DeleteBlock(id)
+            | Command::DetachFile(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn undoing_a_create_deletes_the_entity_it_minted() {
+        for (cmd, minted) in every_create() {
+            assert!(is_create(&cmd), "{cmd:?} is a create");
+            let back = invert_create(&cmd, minted).expect("a create is invertible once applied");
+            assert_eq!(
+                deletes(&back),
+                Some(minted),
+                "{cmd:?} must invert to the delete of the id the core minted, not another"
+            );
+        }
+    }
+
+    #[test]
+    fn a_create_cannot_be_inverted_before_it_is_applied() {
+        // Not "unsupported for ever" — unsupported *from here*. `invert` reads
+        // rows that already exist, and the entity a create makes does not.
+        let rows = Rows::default();
+        for (cmd, _) in every_create() {
+            assert_eq!(
+                invert(&rows, &[cmd]).unwrap_err(),
+                NotUndoable::Unsupported,
+                "the id to delete does not exist yet"
+            );
+        }
+    }
+
+    #[test]
+    fn a_create_with_no_delete_to_invert_into_is_refused() {
+        // `StartFocus` mints an append-only record and the core has no command
+        // that removes one. Refused rather than mapped onto some other delete.
+        let start = Command::StartFocus(FocusStartDraft {
+            task_id: tid(1),
+            kind: FocusKind::Work,
+            length: SessionLength::UntilDone,
+            energy: None,
+        });
+        assert!(!is_create(&start));
+        assert_eq!(
+            invert_create(&start, EntityRef::new(EntityKind::FocusSession, [1; 16])).unwrap_err(),
+            NotUndoable::Unsupported
+        );
+    }
+
+    #[test]
+    fn redoing_a_create_rebinds_the_undo_to_the_entity_the_replay_minted() {
+        // The whole point: a replayed create is a *different* entity. Without
+        // rebinding, the next undo would delete the already-tombstoned first
+        // id and leave the second live for ever.
+        let (create, first) = every_create().remove(0);
+        let entry = UndoEntry {
+            label: "new task".into(),
+            forward: vec![create.clone()],
+            backward: vec![invert_create(&create, first).expect("invertible")],
+        };
+        assert_eq!(deletes(&entry.backward[0]), Some(first));
+
+        // Undo stores the step flipped, and redo applies that step's
+        // `backward` — the create — then binds its `forward` to what came
+        // back.
+        let mut flipped = entry.clone().flipped();
+        let second = tid(9);
+        rebind_creates(&flipped.backward, &mut flipped.forward, &[second]);
+        let after_redo = flipped.flipped();
+        assert_eq!(
+            deletes(&after_redo.backward[0]),
+            Some(second),
+            "the next undo deletes what the redo made, not what the first create made"
+        );
+    }
+
+    #[test]
+    fn a_rebind_leaves_the_inverses_of_everything_that_is_not_a_create_alone() {
+        let rows = rows_with(task(1));
+        let forward = vec![
+            Command::CompleteTask(tid(1)),
+            Command::CreateContext(ContextDraft {
+                name: "home".into(),
+                description: None,
+            }),
+        ];
+        // `invert` refuses a batch containing a create, so the inverse is
+        // assembled the way a caller assembles it: the pre-read half, and the
+        // minted half on top. Reversed order, like `invert`'s own output.
+        let mut backward = vec![
+            invert_create(&forward[1], cid(3)).expect("invertible"),
+            invert(&rows, &forward[..1]).expect("invertible").remove(0),
+        ];
+        rebind_creates(&forward, &mut backward, &[tid(1), cid(4)]);
+        assert!(
+            matches!(&backward[1], Command::UpdateTask { id, .. } if *id == tid(1)),
+            "the completion's inverse is untouched"
+        );
+        assert_eq!(
+            deletes(&backward[0]),
+            Some(cid(4)),
+            "only the create is re-bound, and to the id its own replay returned"
+        );
+    }
+
+    #[test]
+    fn a_create_round_trip_converges() {
+        // Two flips is the identity: create → undo → redo → undo settles on
+        // "the entity is gone" rather than oscillating into a shape the two
+        // sides disagree about.
+        let (create, minted) = every_create().remove(0);
+        let entry = UndoEntry {
+            label: "new task".into(),
+            forward: vec![create],
+            backward: vec![Command::DeleteTask(minted)],
+        };
+        let round_trip = entry.clone().flipped().flipped();
+        assert!(matches!(round_trip.forward[..], [Command::CreateTask(_)]));
+        assert_eq!(deletes(&round_trip.backward[0]), Some(minted));
+        assert_eq!(round_trip.label, entry.label);
     }
 
     #[test]
