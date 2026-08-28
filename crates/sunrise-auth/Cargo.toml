@@ -1,0 +1,34 @@
+[package]
+name = "sunrise-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Client-side OIDC login: discovery, PKCE, loopback redirect, token exchange"
+
+[lints]
+workspace = true
+
+[dependencies]
+oauth2 = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-rustls = { workspace = true }
+# `client-legacy` is the pooled hyper 1.x client, as `sunrise-server` uses for
+# the JWKS fetch. It does not follow redirects, which is what keeps the token
+# endpoint from being an SSRF pivot.
+hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
+url = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }

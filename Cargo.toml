@@ -60,11 +60,14 @@ zeroize = { version = "1.8", default-features = false, features = ["alloc", "der
 # Dropping `use_pem` sheds `pem` + `simple_asn1`: JWKS keys arrive as
 # base64url `n`/`e` components, never PEM.
 jsonwebtoken = { version = "9.3", default-features = false }
+oauth2 = { version = "5.0", default-features = false }
 # HTTPS for the JWKS/discovery fetch. `ring` + `webpki-tokio` reuse the rustls
 # stack and Mozilla root bundle already in the tree; `aws-lc-rs` (the default)
 # would add a C toolchain dependency for no gain here.
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "webpki-tokio"] }
 http-body-util = { version = "0.1", default-features = false }
+# The `http` types `oauth2` speaks and `hyper` already uses; no new crate.
+http = { version = "1.1", default-features = false }
 
 # --- TLS / transport ---
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }

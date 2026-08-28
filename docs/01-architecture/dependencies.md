@@ -39,13 +39,21 @@ superseding decision named in the **Governing decision** column.
 | Snapshot testing | `insta` | 1.48.0 | [testing.md](../10-cross-cutting/testing.md) | Declared `1.40`, resolved to `1.48.0` in `Cargo.lock`; `yaml` feature. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the entry stays because snapshot testing is still the right tool for the next renderer that needs it. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / ws-handshake benches that feed `bench/baseline.json`. |
 | Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
-| Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed; `chrono` and the unused `time` dependency were removed. See Reconciliations §d. |
+| Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
+| OIDC client (PKCE, code + refresh grants) | `oauth2` | 5.0.0 | [auth.md](../06-server/auth.md), issue #7 | `sunrise-auth` only, `default-features = false`. Disabling defaults is load-bearing: the defaults pull `reqwest`, a second HTTP stack beside the `hyper` + `hyper-rustls` one `sunrise-server` already uses for JWKS. With them off, `oauth2` speaks `http::Request`/`Response` and the client is supplied — which is also what makes the whole flow testable against an in-memory issuer. **Costs `chrono` and its timezone-detection stack (10 crates) transitively**, used only by `oauth2`'s RFC 7662 introspection module, which Sunrise never calls; accepted rather than hand-writing PKCE and refresh. MIT OR Apache-2.0; clean under `cargo deny check`. |
+| URL parsing (redirect + query handling) | `url` | 2.5.8 | — (supporting `oauth2`) | Already present transitively; made direct in `sunrise-auth` so the loopback redirect's query parsing does not depend on a transitive. |
+| `http` request/response types | `http` | 1.4.0 | — (supporting `oauth2`/`hyper`) | Already present via `hyper`; made direct in `sunrise-auth` because it is the currency `oauth2` hands the HTTP client. |
+| JWT / JWKS verification | `jsonwebtoken` | 9.3.1 | [auth.md](../06-server/auth.md) | `sunrise-server` only, `default-features = false` (`use_pem` off). Pinned to 9.x deliberately: it links `ring`, which `rustls` already pulls in, so the JWT/JWKS surface costs one crate. 10.x/11.x replaced `ring` with either `aws-lc-rs` (C toolchain, cmake + bindgen) or `rust_crypto`, which drags in `rsa` 0.9 and the unpatched RUSTSEC-2023-0071 Marvin advisory — that alone would red `cargo deny check`. Dropping `use_pem` sheds `pem` + `simple_asn1`; JWKS keys arrive as base64url `n`/`e`, never PEM. |
+| HTTPS for issuer fetches | `hyper-rustls` | 0.27.9 | [auth.md](../06-server/auth.md) | `sunrise-server` (JWKS + discovery) and `sunrise-auth` (discovery + token endpoint). `ring` + `webpki-tokio` reuse the rustls stack and Mozilla root bundle already in the tree; the default `aws-lc-rs` would add a C toolchain for no gain. |
 | RRULE parsing | *none (hand-written)* | — | [recurrence-engine.md](../08-features/recurrence-engine.md), [routines-and-recurrence.md](../02-domain/routines-and-recurrence.md) | Hand-written parser at `crates/sunrise-domain/src/rrule.rs`. See Reconciliations §c. |
 
 Supporting utility crates (`serde`, `thiserror`, `anyhow`, `hyper`, `tower`,
 `tower-http`, `subtle`, `zeroize`, `rand`, `parking_lot`, etc.) follow their
 declared caret ranges in `Cargo.toml` and are not individually pinned here;
-they carry no independent design decision.
+they carry no independent design decision. The auth crates above are the
+exception in the other direction: `jsonwebtoken` and `hyper-rustls` are
+utility-shaped but their *feature* choices are security decisions, so they are
+listed.
 
 ## Bun workspace pins
 
@@ -110,8 +118,10 @@ datetime library. The migration **landed**:
 - `jiff` is declared in `[workspace.dependencies]` (`0.2`, resolving to
   `0.2.32` in `Cargo.lock`) with `default-features = false` plus `std`,
   `serde`, and `tzdb-bundle-platform`.
-- `chrono` was **removed** — no `chrono::` usage remains and it is absent
-  from `Cargo.lock`.
+- `chrono` was **removed** — no `chrono::` usage remains anywhere in the
+  workspace. It reappeared in `Cargo.lock` later as a transitive dependency of
+  `oauth2`; that is a lock-file fact, not a datetime decision, and §f explains
+  it.
 - `time` (declared `0.3`, never consumed) was **removed** with it.
 
 Storage stays epoch-ms integers and op CBOR stays RFC 3339 strings, so neither
@@ -130,3 +140,28 @@ as `1.40` in `[workspace.dependencies]`, it resolved to **`1.48.0`** while it
 had a consumer. The declaration stays — snapshot testing is the right tool for
 whatever renders next, and re-adding it later would be a decision to re-argue
 for no reason.
+
+### f. `chrono` is back in the lock file, and nothing calls it
+
+[ADR-0011](../11-adr/0011-datetime-jiff.md) chose `jiff` and the migration
+removed `chrono` from `Cargo.lock` entirely. Adding `oauth2` for the OIDC login
+flow (issue #7) puts it back — `oauth2` depends on `chrono` unconditionally,
+with the `clock` feature, which also drags in `iana-time-zone`,
+`android_system_properties`, `core-foundation-sys`, and four `windows-*`
+crates. Eleven new entries in the lock file, ten of them serving `chrono`.
+
+Two things are worth writing down rather than discovering later:
+
+1. **`oauth2` uses `chrono` in exactly one module**: `introspection.rs`, the
+   RFC 7662 token-introspection endpoint, which Sunrise does not call. The cost
+   is real and the benefit is zero — but the dependency is not optional
+   upstream, so it cannot be feature-gated away.
+2. **ADR-0011 is not weakened.** It governs the code in this repository, and no
+   Sunrise crate gains a `chrono` import; `jiff` remains the sole datetime
+   library anything here calls. What changed is the transitive closure, not the
+   decision.
+
+It was accepted rather than hand-writing PKCE and the token grants. Those are
+the two places OAuth implementations reliably go wrong, and a vetted,
+widely-used crate getting them right is worth more than ten unused lock
+entries. `cargo deny check` passes with the advisory ignore list still empty.
