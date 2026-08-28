@@ -170,7 +170,7 @@ pub fn parse(
                 // so "next saturday" beats "next".
                 let (consumed, parsed) = take_date(&words, i, rest, now, tz);
                 if let Some(ts) = parsed {
-                    draft.scheduled_at = Some(ts);
+                    draft.scheduled_at = Some(ts.into());
                 } else {
                     unresolved.push(Unresolved::UnparseableDate(
                         words[i..i + consumed].join(" "),
@@ -183,7 +183,7 @@ pub fn parse(
                 if let Some(body) = strip_due(w) {
                     // `*due:tomorrow*` — single-token form.
                     if let Some(ts) = parse_when(body, now, tz) {
-                        draft.due_at = Some(ts);
+                        draft.due_at = Some(ts.into());
                     } else {
                         unresolved.push(Unresolved::UnparseableDate(body.to_string()));
                         title_words.push(w);

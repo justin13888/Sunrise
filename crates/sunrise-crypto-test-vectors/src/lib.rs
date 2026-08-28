@@ -141,8 +141,8 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 1`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `1`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 2`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `2`, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
@@ -162,10 +162,10 @@ pub mod signed_only_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404e",
-        "eb8efa26da3a3d01660956f68d48972a2599fa77660a0cc0046b475a210a",
-        "ab8f256c45b80bc00c0502dae74ee117c8faa68d6f60733b8d003bdb2e37",
-        "f968030c01",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840e5",
+        "0fd3d53059e6631339fc6f397e3c7e608053c5808bb971c3783c6783d5c4",
+        "f4016a9154bc5930abe7ba3366fd8189f0ba9d8f1ef4c05e89eb0b9476d8",
+        "db8b090c02",
     ));
 }
 
@@ -191,9 +191,9 @@ pub mod sealed_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8aba81d",
-        "ff354b6cf029a0b818298dbaa40b5840c228871a4c8691ab88b7bfaad789",
-        "b970d51862a3f59bcca561c9c31cfbea14bee09250a88e0331214ae50325",
-        "0b4c9738b6ca4142b31b6de74efd9fa53ee75b020c01",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb80ba4ed",
+        "e8234dfdfc3fe700fad4136d9b0b58407615c35ab58c604399b575c8ab7c",
+        "bbd38ad9be9317ed4e505f2e8a269437be10c6ffbb4554c06f6663897838",
+        "55f4059d0225ccd159d3c2bdfec5a4b8b6881d060c02",
     ));
 }

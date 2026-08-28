@@ -7,6 +7,7 @@ use jiff::Timestamp;
 use std::collections::BTreeMap;
 use sunrise_core::queries::{ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, StreamRow};
 use sunrise_domain::rrule::RRule;
+use sunrise_domain::SunriseTime;
 use sunrise_domain::{
     break_after, materialization_horizon_days, ActivityEvent, DailyReview, Energy, FocusKind,
     FocusStats, ReviewSnapshot, Routine, Segment, SessionLength, Task, TaskTemplate, Trends,
@@ -97,7 +98,10 @@ pub fn sort_today(tasks: &mut [Task], now_ms: u64, tz: &jiff::tz::TimeZone) {
     tasks.sort_by_key(|t| {
         (
             today_group(t, now_ms, tz) as u8,
-            t.due_at.or(t.scheduled_at),
+            t.due_at
+                .as_ref()
+                .or(t.scheduled_at.as_ref())
+                .map(SunriseTime::index_ms),
             std::cmp::Reverse(t.priority),
             t.id,
         )
@@ -140,16 +144,18 @@ fn today_group(t: &Task, now_ms: u64, tz: &jiff::tz::TimeZone) -> TodayGroup {
         return TodayGroup::Anytime;
     };
     let today = now.to_zoned(tz.clone()).date();
-    let day_of = |ts: Timestamp| ts.to_zoned(tz.clone()).date();
-    if t.due_at.is_some_and(|d| day_of(d) < today)
-        || t.scheduled_at.is_some_and(|s| day_of(s) < today)
+    // A zone-less time resolves in the DEVICE zone here, which is what makes
+    // "Tuesday morning" land in Tuesday's group wherever the user is.
+    let day_of = |t: &SunriseTime| t.to_instant(tz).to_zoned(tz.clone()).date();
+    if t.due_at.as_ref().is_some_and(|d| day_of(d) < today)
+        || t.scheduled_at.as_ref().is_some_and(|s| day_of(s) < today)
     {
         return TodayGroup::Overdue;
     }
-    if t.due_at.is_some_and(|d| day_of(d) == today) {
+    if t.due_at.as_ref().is_some_and(|d| day_of(d) == today) {
         return TodayGroup::DueToday;
     }
-    if t.scheduled_at.is_some_and(|s| day_of(s) == today) {
+    if t.scheduled_at.as_ref().is_some_and(|s| day_of(s) == today) {
         return TodayGroup::Scheduled;
     }
     if t.due_at.is_some() || t.scheduled_at.is_some() {

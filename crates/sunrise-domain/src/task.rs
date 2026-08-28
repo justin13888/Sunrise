@@ -2,6 +2,7 @@
 
 use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
+use crate::time::SunriseTime;
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -78,18 +79,23 @@ pub struct Task {
     /// the ISO string to keep CBOR canonical).
     #[serde(default)]
     pub estimated_duration_s: Option<u64>,
-    /// When the user intends to do it.
+    /// When the user intends to do it. See [`SunriseTime`] — "Tuesday
+    /// morning" and "09:00 New York" are not the same kind of answer as
+    /// "this instant", and v1 stored all three as the last one.
     #[serde(default)]
-    pub scheduled_at: Option<Timestamp>,
+    pub scheduled_at: Option<SunriseTime>,
     /// Hard deadline.
     #[serde(default)]
-    pub due_at: Option<Timestamp>,
+    pub due_at: Option<SunriseTime>,
     /// Scheduling constraints (value list; whole list is one LWW register).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
-    /// Set on transition to Done.
+    /// Set on transition to Done. Always written as
+    /// [`SunriseTime::Instant`] — a completion is a recorded fact about a
+    /// moment, not a plan — but typed like its siblings so a reader has one
+    /// shape to handle.
     #[serde(default)]
-    pub completed_at: Option<Timestamp>,
+    pub completed_at: Option<SunriseTime>,
     /// PN-counter; system-incremented on defer.
     #[serde(default)]
     pub deferred_count: i64,
@@ -135,9 +141,9 @@ pub struct TaskDraft {
     /// Optional estimated duration in seconds.
     pub estimated_duration_s: Option<u64>,
     /// Optional scheduled_at.
-    pub scheduled_at: Option<Timestamp>,
+    pub scheduled_at: Option<SunriseTime>,
     /// Optional due_at.
-    pub due_at: Option<Timestamp>,
+    pub due_at: Option<SunriseTime>,
     /// Optional scheduling constraints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scheduling_constraints: Vec<ScheduleConstraint>,
@@ -167,9 +173,9 @@ pub struct TaskPatch {
     /// New duration.
     pub estimated_duration_s: Option<Option<u64>>,
     /// New scheduled_at.
-    pub scheduled_at: Option<Option<Timestamp>>,
+    pub scheduled_at: Option<Option<SunriseTime>>,
     /// New due_at.
-    pub due_at: Option<Option<Timestamp>>,
+    pub due_at: Option<Option<SunriseTime>>,
     /// Replace the whole scheduling-constraints list (LWW). `None` leaves it
     /// unchanged; `Some(vec![])` clears it; `Some(list)` replaces it.
     pub scheduling_constraints: Option<Vec<ScheduleConstraint>>,
@@ -189,8 +195,12 @@ impl TaskDraft {
     /// once the full graph is known).
     pub fn validate(&self) -> Result<(), ValidationError> {
         let _ = validate_title(&self.title, "task.title", MAX_TASK_TITLE_LEN)?;
-        if let (Some(s), Some(d)) = (self.scheduled_at, self.due_at) {
-            if d < s {
+        if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
+            // Compared on the storage index key, which is the same key SQL
+            // orders on — so "the deadline is before the plan" means the same
+            // thing to the validator and to a `WHERE due_at_ms < ?` query,
+            // whatever kinds the two values are.
+            if d.index_ms() < s.index_ms() {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -215,8 +225,12 @@ impl Task {
     /// deadline invariant): `scheduled_at ≤ due_at` when both are present, and
     /// the scheduling-constraint list is valid.
     pub fn validate_invariants(&self) -> Result<(), ValidationError> {
-        if let (Some(s), Some(d)) = (self.scheduled_at, self.due_at) {
-            if d < s {
+        if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
+            // Compared on the storage index key, which is the same key SQL
+            // orders on — so "the deadline is before the plan" means the same
+            // thing to the validator and to a `WHERE due_at_ms < ?` query,
+            // whatever kinds the two values are.
+            if d.index_ms() < s.index_ms() {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -281,8 +295,8 @@ mod tests {
         let later = now + jiff::SignedDuration::from_hours(1);
         let d = TaskDraft {
             title: "x".into(),
-            scheduled_at: Some(later),
-            due_at: Some(now),
+            scheduled_at: Some(later.into()),
+            due_at: Some(now.into()),
             ..Default::default()
         };
         assert_eq!(d.validate(), Err(ValidationError::DueBeforeScheduled));

@@ -307,7 +307,8 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
         if transitioned_to_done {
             let done_at = task
                 .completed_at
-                .and_then(|t| u64::try_from(t.as_millisecond()).ok())
+                .as_ref()
+                .and_then(|t| u64::try_from(t.index_ms()).ok())
                 .unwrap_or(op.at_ms);
             if let Some(i) = grid.index_of(done_at) {
                 bump(
@@ -638,7 +639,7 @@ mod tests {
         done.state = TaskState::Done;
         // Completed in week 1, but the op that carries it is stamped in week 2
         // (a device that was offline and synced late).
-        done.completed_at = Some(ts(MON - WEEK_MS + 3_600_000));
+        done.completed_at = Some(ts(MON - WEEK_MS + 3_600_000).into());
 
         let trends = fold_trends(
             &[
@@ -657,7 +658,7 @@ mod tests {
         let t = task(1, 9);
         let mut done = t.clone();
         done.state = TaskState::Done;
-        done.completed_at = Some(ts(MON - WEEK_MS));
+        done.completed_at = Some(ts(MON - WEEK_MS).into());
         let mut reopened = done.clone();
         reopened.state = TaskState::Todo;
         reopened.completed_at = None;
@@ -685,13 +686,13 @@ mod tests {
         let t = task(1, 9);
         let mut done = t.clone();
         done.state = TaskState::Done;
-        done.completed_at = Some(ts(MON - 2 * WEEK_MS));
+        done.completed_at = Some(ts(MON - 2 * WEEK_MS).into());
         let mut reopened = done.clone();
         reopened.state = TaskState::Todo;
         reopened.completed_at = None;
         let mut redone = reopened.clone();
         redone.state = TaskState::Done;
-        redone.completed_at = Some(ts(MON));
+        redone.completed_at = Some(ts(MON).into());
 
         let trends = fold_trends(
             &[
@@ -712,7 +713,7 @@ mod tests {
         let t = task(1, 9);
         let mut done = t.clone();
         done.state = TaskState::Done;
-        done.completed_at = Some(ts(MON - 40 * WEEK_MS));
+        done.completed_at = Some(ts(MON - 40 * WEEK_MS).into());
         let mut reopened = done.clone();
         reopened.state = TaskState::Todo;
 
@@ -777,7 +778,7 @@ mod tests {
         let g = grid3();
         let mut t = task(1, 9);
         t.state = TaskState::Done;
-        t.completed_at = Some(ts(MON));
+        t.completed_at = Some(ts(MON).into());
         let trends = fold_trends(&[op(1, MON, OpPayload::TaskCreated(Box::new(t)))], &g);
         assert_eq!(trends.overall[2].created, 1);
         assert_eq!(trends.overall[2].completed, 1);
@@ -788,7 +789,7 @@ mod tests {
         let g = grid3();
         let mut done = task(1, 9);
         done.state = TaskState::Done;
-        done.completed_at = Some(ts(MON));
+        done.completed_at = Some(ts(MON).into());
         // Only the update is in the input — the create was compacted away.
         let trends = fold_trends(&[op(1, MON, OpPayload::TaskUpdated(Box::new(done)))], &g);
         assert!(

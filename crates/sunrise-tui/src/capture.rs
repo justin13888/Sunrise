@@ -108,11 +108,11 @@ pub fn preview_line(
     if let Some(p) = d.priority {
         parts.push(format!("!{p}"));
     }
-    if let Some(ts) = d.scheduled_at {
-        parts.push(format!("^{}", local_stamp(ts, tz)));
+    if let Some(ts) = d.scheduled_at.as_ref() {
+        parts.push(format!("^{}", local_stamp(ts.to_instant(tz), tz)));
     }
-    if let Some(ts) = d.due_at {
-        parts.push(format!("due {}", local_stamp(ts, tz)));
+    if let Some(ts) = d.due_at.as_ref() {
+        parts.push(format!("due {}", local_stamp(ts.to_instant(tz), tz)));
     }
     if let Some(secs) = d.estimated_duration_s {
         parts.push(format!("~{}", duration_label(secs)));

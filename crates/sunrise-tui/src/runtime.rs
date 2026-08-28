@@ -1088,7 +1088,14 @@ fn create_routine_outcome(state: &mut ViewState, text: &str, now_ms: u64) -> Out
     let title = parsed.draft.title.clone();
     // `^when` anchors the series; with none given the series starts now, which
     // is what "every day, starting today" means.
-    let starts_at = parsed.draft.scheduled_at.unwrap_or_else(|| now_ts(now_ms));
+    // A Routine's start is a real instant: the recurrence engine resolves each
+    // occurrence against the routine's OWN timezone, so a floating start would
+    // be resolved twice against two different zones.
+    let starts_at = parsed
+        .draft
+        .scheduled_at
+        .as_ref()
+        .map_or_else(|| now_ts(now_ms), |t| t.to_instant(&state.tz));
     let draft = RoutineDraft {
         template: TaskTemplate {
             title: parsed.draft.title,
@@ -1743,7 +1750,7 @@ fn submit_prompt(state: &mut ViewState, now_ms: u64) -> Outcome {
                         .map(|id| Command::UpdateTask {
                             id: *id,
                             patch: TaskPatch {
-                                scheduled_at: Some(Some(at)),
+                                scheduled_at: Some(Some(at.into())),
                                 ..Default::default()
                             },
                         })

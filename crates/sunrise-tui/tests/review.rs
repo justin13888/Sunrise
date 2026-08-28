@@ -162,7 +162,7 @@ async fn the_daily_glance_separates_what_is_blocked_from_what_is_planned() {
                     i64::try_from(now).expect("in range"),
                 )
                 .ok()
-                .map(Some),
+                .map(|t| Some(t.into())),
                 blocked_by,
                 ..Default::default()
             },

@@ -61,6 +61,9 @@ impl TaskTemplate {
     /// Build a `TaskDraft` for this occurrence.
     #[must_use]
     pub fn to_draft(&self, scheduled_at: Option<Timestamp>) -> TaskDraft {
+        // A materialized occurrence lands on a computed INSTANT: the recurrence
+        // engine has already resolved the routine's own timezone (`Routine.tz`)
+        // against the occurrence date, so there is nothing left floating.
         TaskDraft {
             title: self.title.clone(),
             body: self.body.clone(),
@@ -69,7 +72,7 @@ impl TaskTemplate {
             priority: self.priority,
             energy: self.energy,
             estimated_duration_s: self.estimated_duration_s,
-            scheduled_at,
+            scheduled_at: scheduled_at.map(Into::into),
             due_at: None,
             scheduling_constraints: Vec::new(),
             assignee: None,

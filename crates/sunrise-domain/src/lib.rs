@@ -40,6 +40,7 @@ pub mod stats;
 pub mod streak;
 pub mod stream;
 pub mod task;
+pub mod time;
 pub mod validation;
 
 pub use activity::{
@@ -97,6 +98,7 @@ pub use streak::{
 };
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
+pub use time::SunriseTime;
 pub use validation::{
     ValidationError, MAX_CONTEXT_NAME_LEN, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN,
 };

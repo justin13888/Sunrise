@@ -62,6 +62,7 @@ use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
+use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
     activity_for_entities, activity_table, break_after, build_daily_review, build_weekly_review,
     effective_state, focus_table, fold_activity, fold_focus_stats, fold_trends, inbox_stream_ref,
@@ -623,7 +624,7 @@ impl Engine {
             }
             task.state = state;
             if state == TaskState::Done {
-                task.completed_at = Some(ms_to_ts(now_ms as i64));
+                task.completed_at = Some(ms_to_ts(now_ms as i64).into());
             } else {
                 task.completed_at = None;
             }
@@ -798,14 +799,17 @@ impl Engine {
         &self,
         task: &Task,
     ) -> Result<Vec<ScheduleConstraint>, EngineError> {
-        let Some(at) = task.scheduled_at else {
+        let Some(at) = task.scheduled_at.as_ref() else {
             return Ok(Vec::new());
         };
         if task.scheduling_constraints.is_empty() {
             return Ok(Vec::new());
         }
         let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
-        let zdt = at.to_zoned(tz);
+        // Constraints are civil windows, so a zone-less `scheduled_at` must be
+        // resolved in the DEVICE zone before they can be evaluated — which is
+        // exactly what `to_instant` does, and the reason it takes a zone.
+        let zdt = at.to_instant(&tz).to_zoned(tz);
         let (hard, soft) = violations_by_severity(&task.scheduling_constraints, &zdt);
         if !hard.is_empty() {
             return Err(ValidationError::HardScheduleConstraint.into());
@@ -831,7 +835,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        task.scheduled_at = Some(ms_to_ts(to_ms as i64));
+        task.scheduled_at = Some(ms_to_ts(to_ms as i64).into());
         task.deferred_count = task.deferred_count.saturating_add(1);
         // Deferring *is* scheduling, so it clears the same constraint gate.
         let soft_violations = self.check_schedule_constraints(&task)?;
@@ -1923,10 +1927,12 @@ impl Engine {
                 priority: task.priority,
                 due_at_ms: task
                     .due_at
-                    .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
+                    .as_ref()
+                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
                 scheduled_at_ms: task
                     .scheduled_at
-                    .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
+                    .as_ref()
+                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
                 estimated_duration_s: task.estimated_duration_s,
             });
             tasks.insert(task.id, task);
@@ -3549,7 +3555,39 @@ fn find_context_by_name(
     Ok(None)
 }
 
+/// Split an optional [`SunriseTime`] into its three storage columns:
+/// `(index_ms, kind, tz)`.
+///
+/// The index key is what every range query and `ORDER BY` in the engine reads,
+/// so adding kinds did not require touching one of them; the two sidecars are
+/// what let the kind survive the round trip. See the `tasks` table comment in
+/// `0013_baseline.sql`.
+fn time_to_parts(t: Option<&SunriseTime>) -> (Option<i64>, Option<&'static str>, Option<String>) {
+    match t {
+        None => (None, None, None),
+        Some(v) => {
+            let (ms, kind, tz) = v.to_parts();
+            (Some(ms), Some(kind), tz.map(ToOwned::to_owned))
+        }
+    }
+}
+
+/// Rebuild an optional [`SunriseTime`] from its three storage columns.
+///
+/// A row with an index key but no kind is read as an instant: that is what a
+/// column written before the kind existed means, and what a build that does not
+/// understand a future kind should fall back to.
+fn time_from_parts(ms: Option<i64>, kind: Option<&str>, tz: Option<&str>) -> Option<SunriseTime> {
+    ms.map(|ms| {
+        SunriseTime::from_parts(ms, kind.unwrap_or(sunrise_domain::time::kind::INSTANT), tz)
+    })
+}
+
 fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::Result<()> {
+    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
+    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
+    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3557,11 +3595,13 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
     tx.execute(
         "INSERT INTO tasks
          (id, stream_id, title, state, priority, energy, estimated_min,
-          scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
+          scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
+          due_at_ms, due_at_kind, due_at_tz,
+          completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -3574,9 +3614,15 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
                 let m = s / 60;
                 i64::try_from(m).ok()
             }),
-            t.scheduled_at.map(|d| d.as_millisecond()),
-            t.due_at.map(|d| d.as_millisecond()),
-            t.completed_at.map(|d| d.as_millisecond()),
+            sched_ms,
+            sched_kind,
+            sched_tz,
+            due_ms,
+            due_kind,
+            due_tz,
+            done_ms,
+            done_kind,
+            done_tz,
             t.deferred_count,
             t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
             t.routine_occurrence.map(|d| d.as_millisecond()),
@@ -3596,6 +3642,10 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
 }
 
 fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::Result<()> {
+    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
+    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
+    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3603,8 +3653,11 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
     tx.execute(
         "UPDATE tasks SET
             stream_id = ?, title = ?, state = ?, priority = ?,
-            energy = ?, estimated_min = ?, scheduled_at_ms = ?, due_at_ms = ?,
-            completed_at_ms = ?, deferred_count = ?, archived = ?, deleted = ?,
+            energy = ?, estimated_min = ?,
+            scheduled_at_ms = ?, scheduled_at_kind = ?, scheduled_at_tz = ?,
+            due_at_ms = ?, due_at_kind = ?, due_at_tz = ?,
+            completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
+            deferred_count = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?,
             updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
@@ -3616,9 +3669,15 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             t.energy.map(energy_str),
             t.estimated_duration_s
                 .and_then(|s| i64::try_from(s / 60).ok()),
-            t.scheduled_at.map(|d| d.as_millisecond()),
-            t.due_at.map(|d| d.as_millisecond()),
-            t.completed_at.map(|d| d.as_millisecond()),
+            sched_ms,
+            sched_kind,
+            sched_tz,
+            due_ms,
+            due_kind,
+            due_tz,
+            done_ms,
+            done_kind,
+            done_tz,
             t.deferred_count,
             t.archived as i64,
             t.deleted as i64,
@@ -3783,7 +3842,10 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
             "SELECT stream_id, title, state, priority, energy, estimated_min,
                     scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
                     archived, deleted, body, scheduling_constraints,
-                    routine_id, routine_occurrence, created_at_ms, updated_at_ms
+                    routine_id, routine_occurrence, created_at_ms, updated_at_ms,
+                    scheduled_at_kind, scheduled_at_tz,
+                    due_at_kind, due_at_tz,
+                    completed_at_kind, completed_at_tz
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -3806,6 +3868,12 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, Option<i64>>(15)?,
                     r.get::<_, i64>(16)?,
                     r.get::<_, i64>(17)?,
+                    r.get::<_, Option<String>>(18)?,
+                    r.get::<_, Option<String>>(19)?,
+                    r.get::<_, Option<String>>(20)?,
+                    r.get::<_, Option<String>>(21)?,
+                    r.get::<_, Option<String>>(22)?,
+                    r.get::<_, Option<String>>(23)?,
                 ))
             },
         )
@@ -3843,10 +3911,10 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
             let secs = m.checked_mul(60)?;
             u64::try_from(secs).ok()
         }),
-        scheduled_at: t.6.map(|m| ms_to_ts(m.max(0))),
-        due_at: t.7.map(|m| ms_to_ts(m.max(0))),
+        scheduled_at: time_from_parts(t.6, t.18.as_deref(), t.19.as_deref()),
+        due_at: time_from_parts(t.7, t.20.as_deref(), t.21.as_deref()),
         scheduling_constraints: decode_constraints(t.13)?,
-        completed_at: t.8.map(|m| ms_to_ts(m.max(0))),
+        completed_at: time_from_parts(t.8, t.22.as_deref(), t.23.as_deref()),
         deferred_count: t.9,
         blocks: BTreeSet::new(),
         // Restored from the dependency index (migration 0008). Before it
@@ -3877,6 +3945,9 @@ fn insert_task_row_or_ignore(
     t: &Task,
     lww: &LwwStamp,
 ) -> rusqlite::Result<bool> {
+    let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
+    let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
+    let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3884,11 +3955,13 @@ fn insert_task_row_or_ignore(
     let changed = tx.execute(
         "INSERT OR IGNORE INTO tasks
          (id, stream_id, title, state, priority, energy, estimated_min,
-          scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
+          scheduled_at_ms, scheduled_at_kind, scheduled_at_tz,
+          due_at_ms, due_at_kind, due_at_tz,
+          completed_at_ms, completed_at_kind, completed_at_tz, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -3899,9 +3972,15 @@ fn insert_task_row_or_ignore(
             t.energy.map(energy_str),
             t.estimated_duration_s
                 .and_then(|s| i64::try_from(s / 60).ok()),
-            t.scheduled_at.map(|d| d.as_millisecond()),
-            t.due_at.map(|d| d.as_millisecond()),
-            t.completed_at.map(|d| d.as_millisecond()),
+            sched_ms,
+            sched_kind,
+            sched_tz,
+            due_ms,
+            due_kind,
+            due_tz,
+            done_ms,
+            done_kind,
+            done_tz,
             t.deferred_count,
             t.routine_id.as_ref().map(|r| r.bytes().to_vec()),
             t.routine_occurrence.map(|d| d.as_millisecond()),
@@ -3942,7 +4021,7 @@ fn build_routine_task(
         priority: draft.priority,
         energy: draft.energy,
         estimated_duration_s: draft.estimated_duration_s,
-        scheduled_at: Some(at),
+        scheduled_at: Some(at.into()),
         due_at: None,
         // Routine constraints are copied verbatim onto each occurrence.
         scheduling_constraints: routine.scheduling_constraints.clone(),
@@ -5816,7 +5895,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "soon".into(),
-                due_at: Some(due_soon),
+                due_at: Some(due_soon.into()),
                 ..Default::default()
             }),
         )
@@ -5826,7 +5905,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "far".into(),
-                due_at: Some(far),
+                due_at: Some(far.into()),
                 ..Default::default()
             }),
         )
@@ -5868,7 +5947,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "at home".into(),
-                due_at: Some(due_soon),
+                due_at: Some(due_soon.into()),
                 contexts: vec![home],
                 ..Default::default()
             }),
@@ -5878,7 +5957,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "at work".into(),
-                due_at: Some(due_soon),
+                due_at: Some(due_soon.into()),
                 contexts: vec![work],
                 ..Default::default()
             }),
@@ -5888,7 +5967,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "anywhere".into(),
-                due_at: Some(due_soon),
+                due_at: Some(due_soon.into()),
                 ..Default::default()
             }),
         )
@@ -6328,7 +6407,7 @@ mod tests {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "x".into(),
-                    scheduled_at: Some(scheduled),
+                    scheduled_at: Some(scheduled.into()),
                     ..Default::default()
                 }),
             )
@@ -6337,7 +6416,7 @@ mod tests {
         // used to slip through silently; the invariant re-check must reject it.
         let earlier = ms_to_ts(now + 3_600_000);
         let patch = TaskPatch {
-            due_at: Some(Some(earlier)),
+            due_at: Some(Some(earlier.into())),
             ..Default::default()
         };
         let res = e.apply(
@@ -6550,7 +6629,7 @@ mod tests {
             };
             assert_eq!(t.routine_id, Some(rid));
             assert_eq!(t.routine_occurrence, Some(o.at));
-            assert_eq!(t.scheduled_at, Some(o.at));
+            assert_eq!(t.scheduled_at, Some(o.at.into()));
             assert_eq!(t.scheduling_constraints, vec![c]);
         }
     }
@@ -7268,6 +7347,122 @@ mod tests {
             seq: 0,
         };
         assert!(lww_wins(&stamp(0, 0, [0u8; 16], 0), &row));
+    }
+
+    /// A clock pinned to a named zone, so a test can move a device between
+    /// timezones the way a plane does.
+    #[derive(Debug)]
+    struct ZonedClock(u64, &'static str);
+    impl Clock for ZonedClock {
+        fn now_ms(&self) -> u64 {
+            self.0
+        }
+        fn timezone(&self) -> String {
+            self.1.to_string()
+        }
+    }
+
+    /// #6: the three zone-less kinds must survive being written on one device
+    /// and read on another in a different zone. A `Timestamp` could not
+    /// express any of them, so all three used to collapse into "some UTC
+    /// instant" and moved when the reader did.
+    #[test]
+    fn zone_less_times_survive_a_device_timezone_change() {
+        use jiff::civil;
+
+        let cases = [
+            SunriseTime::floating(civil::date(2026, 3, 3).at(9, 0, 0, 0)),
+            SunriseTime::all_day(civil::date(2026, 7, 4)),
+            SunriseTime::zoned(civil::date(2026, 3, 3).at(9, 0, 0, 0), "America/New_York"),
+        ];
+
+        for want in cases {
+            let kc = Arc::new(Keychain::for_test_seeded(
+                VaultRootKey::from_bytes(ROOT),
+                [1u8; 32],
+            ));
+            let writer = Engine::from_clock(
+                Arc::new(ZonedClock(T0, "Europe/Berlin")),
+                Arc::new(SystemRng),
+                Arc::clone(&kc),
+            );
+            let mut db = db_root(ROOT);
+            let res = writer
+                .apply(
+                    &mut db,
+                    Command::CreateTask(TaskDraft {
+                        title: "t".into(),
+                        scheduled_at: Some(want.clone()),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+
+            // The same vault, read by a device in a different zone.
+            let reader = Engine::from_clock(
+                Arc::new(ZonedClock(T0, "Pacific/Auckland")),
+                Arc::new(SystemRng),
+                kc,
+            );
+            let got = read_task_t(&reader, &db, res.entity).scheduled_at;
+            assert_eq!(
+                got,
+                Some(want.clone()),
+                "the stored value must not depend on who reads it"
+            );
+
+            // ...and the resolution follows the reader for the zone-less kinds
+            // while staying put for the zoned one — which is the entire point
+            // of keeping the kinds apart.
+            let berlin = jiff::tz::TimeZone::get("Europe/Berlin").unwrap();
+            let auckland = jiff::tz::TimeZone::get("Pacific/Auckland").unwrap();
+            let moves = want.to_instant(&berlin) != want.to_instant(&auckland);
+            assert_eq!(
+                moves,
+                !matches!(want, SunriseTime::Zoned { .. }),
+                "only zone-less kinds follow the reader ({want:?})"
+            );
+        }
+    }
+
+    /// ...and the kind survives the op envelope, not just the local table:
+    /// a replica that only ever saw the CBOR must reconstruct the same value.
+    #[test]
+    fn zone_less_times_round_trip_through_op_cbor() {
+        use jiff::civil;
+
+        for want in [
+            SunriseTime::floating(civil::date(2026, 3, 3).at(9, 0, 0, 0)),
+            SunriseTime::all_day(civil::date(2026, 7, 4)),
+            SunriseTime::zoned(civil::date(2026, 3, 3).at(9, 0, 0, 0), "America/New_York"),
+        ] {
+            let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+            let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+            let ea = engine_seeded(ROOT, [1u8; 32], ca);
+            let eb = engine_seeded(ROOT, [2u8; 32], cb);
+            let mut dba = db_root(ROOT);
+            let mut dbb = db_root(ROOT);
+            trust(&eb, &mut dbb, &ea);
+
+            let created = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: "t".into(),
+                        due_at: Some(want.clone()),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            eb.apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+                .unwrap();
+
+            assert_eq!(
+                read_task_t(&eb, &dbb, created.entity).due_at,
+                Some(want.clone()),
+                "kind lost in transit for {want:?}"
+            );
+        }
     }
 
     /// #21: before HLCs, a device whose wall clock ran fast won every conflict
@@ -8172,7 +8367,7 @@ mod tests {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "deploy at 10pm".into(),
-                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS)),
+                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
                     scheduling_constraints: vec![sample_constraint()],
                     ..Default::default()
                 }),
@@ -8197,7 +8392,7 @@ mod tests {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "deploy at noon".into(),
-                scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
                 scheduling_constraints: vec![sample_constraint()],
                 ..Default::default()
             }),
@@ -8215,7 +8410,7 @@ mod tests {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "deploy at 10pm".into(),
-                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS)),
+                    scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
                     scheduling_constraints: vec![soft],
                     ..Default::default()
                 }),
@@ -8233,7 +8428,7 @@ mod tests {
                 Command::UpdateTask {
                     id: res.entity,
                     patch: TaskPatch {
-                        scheduled_at: Some(Some(ms_to_ts(INSIDE_WINDOW_MS))),
+                        scheduled_at: Some(Some(ms_to_ts(INSIDE_WINDOW_MS).into())),
                         ..Default::default()
                     },
                 },
@@ -8251,7 +8446,7 @@ mod tests {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "deploy".into(),
-                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
                     scheduling_constraints: vec![sample_constraint()],
                     ..Default::default()
                 }),
@@ -8266,7 +8461,7 @@ mod tests {
                 Command::UpdateTask {
                     id,
                     patch: TaskPatch {
-                        scheduled_at: Some(Some(ms_to_ts(OUTSIDE_WINDOW_MS))),
+                        scheduled_at: Some(Some(ms_to_ts(OUTSIDE_WINDOW_MS).into())),
                         ..Default::default()
                     },
                 },
@@ -8290,7 +8485,7 @@ mod tests {
         ));
         assert_eq!(
             read_task_t(&e, &db, id).scheduled_at,
-            Some(ms_to_ts(INSIDE_WINDOW_MS)),
+            Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
             "both rejections left the schedule untouched"
         );
     }
@@ -8307,7 +8502,7 @@ mod tests {
                 &mut db,
                 Command::CreateTask(TaskDraft {
                     title: "deploy".into(),
-                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS)),
+                    scheduled_at: Some(ms_to_ts(INSIDE_WINDOW_MS).into()),
                     ..Default::default()
                 }),
             )
@@ -9783,7 +9978,7 @@ mod tests {
                 Command::UpdateTask {
                     id,
                     patch: TaskPatch {
-                        due_at: Some(Some(ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY) as i64))),
+                        due_at: Some(Some(ms_to_ts((REVIEW_MON + 2 * REVIEW_DAY) as i64).into())),
                         ..Default::default()
                     },
                 },
@@ -10084,7 +10279,9 @@ mod tests {
                 Command::UpdateTask {
                     id,
                     patch: TaskPatch {
-                        scheduled_at: Some(Some(ms_to_ts((REVIEW_MON + 25 * 3_600_000) as i64))),
+                        scheduled_at: Some(Some(
+                            ms_to_ts((REVIEW_MON + 25 * 3_600_000) as i64).into(),
+                        )),
                         blocked_by: if id == waiting {
                             Some(vec![blocker])
                         } else {

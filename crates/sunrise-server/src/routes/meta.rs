@@ -4,7 +4,7 @@
 use crate::state::ServerState;
 use axum::{extract::State, routing::get, Json, Router};
 use serde::Serialize;
-use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_wire_protocol::capability::REQUIRED_SERVER_BITS;
 
 /// Server meta response.
@@ -49,7 +49,7 @@ async fn handler(State(state): State<ServerState>) -> Json<MetaResponse> {
         server_app_v: state.config.server_app_v.clone(),
         wire_proto_supported: vec![u32::from(WIRE_PROTO_V)],
         crypto_suite_supported: vec![u32::from(CRYPTO_SUITE_V)],
-        doc_schema_floor: u32::from(DOC_SCHEMA_V),
+        doc_schema_floor: u32::from(DOC_SCHEMA_FLOOR),
         capabilities: REQUIRED_SERVER_BITS.0,
         oidc_issuer: state.config.oidc_issuer.clone(),
         oidc_client_id: state.config.oidc_client_id.clone(),

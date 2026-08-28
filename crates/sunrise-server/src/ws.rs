@@ -25,6 +25,7 @@ use axum::{
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
@@ -124,9 +125,9 @@ async fn run_session(socket: WebSocket, state: ServerState, account: [u8; 16]) {
     let server_time_ms = state.clock.now_ms();
     let ack = match hello.negotiate(
         state.config.server_app_v.clone(),
-        &[1],
-        &[1],
-        1,
+        &[u32::from(WIRE_PROTO_V)],
+        &[u32::from(CRYPTO_SUITE_V)],
+        u32::from(DOC_SCHEMA_FLOOR),
         server_caps,
         server_time_ms,
     ) {

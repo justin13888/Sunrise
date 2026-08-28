@@ -42,7 +42,7 @@ use tokio::sync::{broadcast, Notify};
 use crate::config::Rng;
 use crate::core::Core;
 use crate::events::{DomainEvent, SyncStatus};
-use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
 use sunrise_wire_protocol::{
@@ -640,7 +640,11 @@ fn build_hello(app: &str) -> Hello {
         client_app_v,
         client_platform,
         wire_proto_supported: vec![u32::from(WIRE_PROTO_V)],
-        doc_schema_min: u32::from(DOC_SCHEMA_V),
+        // The floor is what this build can READ; DOC_SCHEMA_V is what it
+        // WRITES. Advertising the same number for both would tell a peer we
+        // cannot read our own predecessor, which is exactly the forward
+        // compatibility the split exists to keep.
+        doc_schema_min: u32::from(DOC_SCHEMA_FLOOR),
         doc_schema_max: u32::from(DOC_SCHEMA_V),
         crypto_suite_supported: vec![u32::from(CRYPTO_SUITE_V)],
         capabilities: REQUIRED_CLIENT_BITS.0 | REQUIRED_SERVER_BITS.0,

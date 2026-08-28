@@ -10,6 +10,7 @@
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use sunrise_domain::capture::{normalize_title, parse, parse_when, Capture, NamedRef, Unresolved};
+use sunrise_domain::SunriseTime;
 use sunrise_id::{EntityKind, EntityRef};
 
 /// 2026-08-21 is a Friday. Fixed so weekday arithmetic is checkable by hand.
@@ -57,9 +58,9 @@ fn run(input: &str) -> Capture {
     parse(input, now(), &utc(), &sr, &cr)
 }
 
-/// Local civil time of a timestamp in UTC, as `YYYY-MM-DD HH:MM`.
-fn civil(ts: Timestamp) -> String {
-    let z = ts.to_zoned(utc());
+/// Local civil time of a [`SunriseTime`] in UTC, as `YYYY-MM-DD HH:MM`.
+fn civil(t: &SunriseTime) -> String {
+    let z = t.to_instant(&utc()).to_zoned(utc());
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         z.year(),
@@ -84,7 +85,7 @@ fn spec_example_full_annotation() {
     assert_eq!(c.draft.estimated_duration_s, Some(3600));
     // Friday 2026-08-21; "next saturday" is the Saturday of the following
     // week, not tomorrow.
-    assert_eq!(civil(c.draft.scheduled_at.unwrap()), "2026-08-29 00:00");
+    assert_eq!(civil(&c.draft.scheduled_at.unwrap()), "2026-08-29 00:00");
     assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
 }
 
@@ -235,7 +236,7 @@ fn date_keywords() {
     ];
     for (input, want) in cases {
         let ts = parse_when(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"));
-        assert_eq!(civil(ts), want, "for {input}");
+        assert_eq!(civil(&ts.into()), want, "for {input}");
     }
 }
 
@@ -255,7 +256,7 @@ fn weekday_arithmetic() {
     ];
     for (input, want) in cases {
         let ts = parse_when(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"));
-        assert_eq!(civil(ts), want, "for {input}");
+        assert_eq!(civil(&ts.into()), want, "for {input}");
     }
 }
 
@@ -274,7 +275,7 @@ fn times_and_meridiem() {
     ];
     for (input, want) in cases {
         let ts = parse_when(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"));
-        assert_eq!(civil(ts), want, "for {input}");
+        assert_eq!(civil(&ts.into()), want, "for {input}");
     }
 }
 
@@ -288,7 +289,7 @@ fn relative_spans() {
     ];
     for (input, want) in cases {
         let ts = parse_when(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"));
-        assert_eq!(civil(ts), want, "for {input}");
+        assert_eq!(civil(&ts.into()), want, "for {input}");
     }
 }
 
@@ -329,7 +330,7 @@ fn dst_gap_is_resolved_compatibly() {
 #[test]
 fn due_token_sets_due_not_scheduled() {
     let c = run("File taxes *due:2026-04-15*");
-    assert_eq!(civil(c.draft.due_at.unwrap()), "2026-04-15 00:00");
+    assert_eq!(civil(&c.draft.due_at.unwrap()), "2026-04-15 00:00");
     assert!(c.draft.scheduled_at.is_none());
     assert_eq!(c.draft.title, "File taxes");
 }

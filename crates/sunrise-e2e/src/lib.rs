@@ -26,7 +26,7 @@ use sunrise_core::{
     TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_domain::{Task, TaskState};
+use sunrise_domain::{SunriseTime, Task, TaskState};
 use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_sync::WsTransport;
 use tokio::task::JoinHandle;
@@ -219,8 +219,8 @@ fn project_task(t: &Task) -> CanonicalTask {
         title: t.title.clone(),
         state: state_str(t.state),
         stream_id: *t.stream_id.bytes(),
-        scheduled_at_ms: t.scheduled_at.map(jiff::Timestamp::as_millisecond),
-        due_at_ms: t.due_at.map(jiff::Timestamp::as_millisecond),
+        scheduled_at_ms: t.scheduled_at.as_ref().map(SunriseTime::index_ms),
+        due_at_ms: t.due_at.as_ref().map(SunriseTime::index_ms),
         deleted: t.deleted,
         priority: t.priority,
         constraints: t

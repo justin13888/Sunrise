@@ -3,6 +3,7 @@
 //! A Block is a scheduled time range that may bind to 0..N Tasks. Tasks may
 //! reference 0..N Blocks via `Task.blocks` (OR-Set).
 
+use crate::time::SunriseTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -19,10 +20,12 @@ pub struct Block {
     pub updated_at: Timestamp,
     /// Owning Stream.
     pub stream_id: EntityRef,
-    /// Start time.
-    pub starts_at: Timestamp,
-    /// End time. MUST be > `starts_at`.
-    pub ends_at: Timestamp,
+    /// Start time. See [`SunriseTime`]: a block at "09:00" is a different
+    /// commitment from a block at a fixed instant, and a device that changes
+    /// zone must move one and not the other.
+    pub starts_at: SunriseTime,
+    /// End time. MUST resolve after `starts_at`.
+    pub ends_at: SunriseTime,
     /// Optional title (free text; UI may compose from bound tasks).
     #[serde(default)]
     pub title: Option<String>,
@@ -40,9 +43,9 @@ pub struct BlockDraft {
     /// Owning Stream.
     pub stream_id: EntityRef,
     /// Start.
-    pub starts_at: Timestamp,
+    pub starts_at: SunriseTime,
     /// End.
-    pub ends_at: Timestamp,
+    pub ends_at: SunriseTime,
     /// Optional title.
     pub title: Option<String>,
     /// Optional tasks to bind on creation.

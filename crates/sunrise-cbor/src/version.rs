@@ -29,13 +29,22 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// Rides in `OpEnvelope` field 12 and in `Hello.doc_schema_{min,max}`. Bumping
 /// it is a **forward-compatible** act: older readers keep decoding, and see
 /// fields they do not know as preserved unknowns.
-pub const DOC_SCHEMA_V: u16 = 1;
+///
+/// `2` re-typed `Task.scheduled_at` / `due_at` / `completed_at` and
+/// `Block.starts_at` / `ends_at` from a bare instant to a tagged
+/// `SunriseTime` (issue #6, ADR-0017). A v1 payload still decodes: the bare
+/// instant reads as `SunriseTime::Instant`, which is why the floor stays at 1.
+pub const DOC_SCHEMA_V: u16 = 2;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///
 /// An envelope below the floor is refused: its entity shapes predate anything
 /// this build knows how to read. An envelope at or above it is accepted —
 /// forward compatibility is the whole point of splitting the two versions.
+///
+/// Still `1` even though [`DOC_SCHEMA_V`] is `2`, because a v1 payload really
+/// does still decode. The floor moves only when a shape stops being readable,
+/// never merely because a newer one exists.
 pub const DOC_SCHEMA_FLOOR: u16 = 1;
 
 /// Crypto suite version constant (AEAD, signature, KDF, HPKE choices).

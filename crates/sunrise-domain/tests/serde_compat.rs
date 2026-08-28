@@ -18,6 +18,7 @@ use sunrise_domain::common::{Energy, NoteBody};
 use sunrise_domain::routine::{Routine, RoutineCatchupPolicy, TaskTemplate};
 use sunrise_domain::rrule::{Frequency, RRule, Weekday};
 use sunrise_domain::task::{Task, TaskState};
+use sunrise_domain::SunriseTime;
 use sunrise_id::{EntityKind, EntityRef};
 
 // Same ms constants used to generate the chrono-era fixtures.
@@ -66,12 +67,12 @@ fn expected_task() -> Task {
         priority: Some(3),
         energy: Some(Energy::High),
         estimated_duration_s: Some(5400),
-        scheduled_at: Some(ts(T_SCHEDULED)),
-        due_at: Some(ts(T_DUE)),
+        scheduled_at: Some(ts(T_SCHEDULED).into()),
+        due_at: Some(ts(T_DUE).into()),
         // New field defaults to empty and is skipped on the wire, so the
         // chrono-era fixtures still decode and re-encode byte-identically.
         scheduling_constraints: Vec::new(),
-        completed_at: Some(ts(T_COMPLETED)),
+        completed_at: Some(ts(T_COMPLETED).into()),
         deferred_count: 2,
         blocks,
         blocked_by,
@@ -142,14 +143,27 @@ fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
 }
 
+/// The Task fixture is NOT canonical any more, and that is the point.
+///
+/// `DOC_SCHEMA_V = 2` re-typed `scheduled_at` / `due_at` / `completed_at` from
+/// a bare instant to a tagged [`SunriseTime`] (issue #6), so a v1 payload no
+/// longer re-encodes to its own bytes. What must still hold — and what
+/// `docs/10-cross-cutting/protocol-versioning.md` promises for a minor schema
+/// change — is that the older payload still DECODES, with value identity, and
+/// that each bare instant reads as an `Instant` and not as something else.
 #[test]
 fn chrono_task_fixture_decodes_under_jiff() {
     let bytes = fixture("task_chrono_v1.cbor");
-    // Canonical decode: asserts jiff re-encodes to the exact chrono bytes.
-    let task: Task = decode_canonical(&bytes).expect("task fixture is canonical under jiff");
+    let task: Task = ciborium::de::from_reader(&bytes[..]).expect("v1 task payload decodes");
 
     let expected = expected_task();
     assert_eq!(task, expected, "full-value identity for Task");
+
+    // ...and re-encoding it now produces the v2 shape, which round-trips
+    // canonically from here on.
+    let v2 = encode_canonical(&task).expect("re-encode at v2");
+    let again: Task = decode_canonical(&v2).expect("v2 is canonical");
+    assert_eq!(again, expected);
 
     // Explicit per-timestamp value checks (the migration's core claim).
     assert_eq!(
@@ -162,28 +176,32 @@ fn chrono_task_fixture_decodes_under_jiff() {
     );
     assert_eq!(
         task.scheduled_at,
-        Some(Timestamp::from_millisecond(T_SCHEDULED).unwrap())
+        Some(SunriseTime::instant(
+            Timestamp::from_millisecond(T_SCHEDULED).unwrap()
+        )),
+        "a v1 bare instant reads back as an Instant, not a floating time"
     );
     assert_eq!(
         task.due_at,
-        Some(Timestamp::from_millisecond(T_DUE).unwrap())
+        Some(Timestamp::from_millisecond(T_DUE).unwrap().into())
     );
     assert_eq!(
         task.completed_at,
-        Some(Timestamp::from_millisecond(T_COMPLETED).unwrap())
+        Some(Timestamp::from_millisecond(T_COMPLETED).unwrap().into())
     );
     assert_eq!(
         task.routine_occurrence,
         Some(Timestamp::from_millisecond(T_ROUTINE_OCC).unwrap())
     );
 
-    // Round-trip stability under jiff.
-    let re = encode_canonical(&task).unwrap();
-    let back: Task = decode_canonical(&re).unwrap();
-    assert_eq!(back, expected);
-    assert_eq!(
-        re, bytes,
-        "jiff re-encode is byte-identical to chrono fixture"
+    // The three re-typed fields are the ONLY thing that moved: everything
+    // else in the v1 payload still re-encodes byte-identically. Asserted by
+    // decoding the v2 re-encode and comparing values, plus checking that the
+    // v1 bytes are no longer reproducible only because of those fields.
+    assert_ne!(
+        v2, bytes,
+        "the tagged SunriseTime is a new encoding; if this matched, the kind \
+         was not being written"
     );
 }
 

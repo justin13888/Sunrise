@@ -43,6 +43,7 @@ use crate::routine::Routine;
 use crate::stats::{RoutineDrift, Trends, WeekBucket};
 use crate::stream::Stream;
 use crate::task::{Task, TaskState};
+use crate::time::SunriseTime;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -306,11 +307,7 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
         .iter()
         .filter(|t| !t.deleted && !t.archived)
         .filter(|t| !matches!(t.state, TaskState::Done | TaskState::Cancelled))
-        .filter(|t| {
-            commitment_at(t)
-                .and_then(ts_to_ms)
-                .is_some_and(|m| m < window.end_ms)
-        })
+        .filter(|t| commitment_at(t).is_some_and(|m| m < window.end_ms))
         .cloned()
         .collect();
     // Earliest commitment first: the thing that slipped furthest is the first
@@ -498,10 +495,11 @@ impl WeeklyReview {
 
 /// When a Task was committed to: the earlier of its deadline and its planned
 /// slot. `None` means the Task carries no commitment at all.
-fn commitment_at(t: &Task) -> Option<Timestamp> {
-    match (t.due_at, t.scheduled_at) {
-        (Some(due), Some(sched)) => Some(due.min(sched)),
-        (due, sched) => due.or(sched),
+fn commitment_at(t: &Task) -> Option<u64> {
+    let ms = |v: &SunriseTime| u64::try_from(v.index_ms()).ok();
+    match (t.due_at.as_ref(), t.scheduled_at.as_ref()) {
+        (Some(due), Some(sched)) => ms(due).zip(ms(sched)).map(|(d, s)| d.min(s)),
+        (due, sched) => due.and_then(ms).or_else(|| sched.and_then(ms)),
     }
 }
 
@@ -627,12 +625,12 @@ mod tests {
         let t1 = task(1, s, "finish the report", MON + DAY);
         let mut t1_done = t1.clone();
         t1_done.state = TaskState::Done;
-        t1_done.completed_at = Some(ts(MON + 2 * DAY));
+        t1_done.completed_at = Some(ts(MON + 2 * DAY).into());
 
         let t2 = task(2, s, "call the bank", MON + DAY);
         let mut t2_def = t2.clone();
         t2_def.deferred_count = 1;
-        t2_def.scheduled_at = Some(ts(MON + 5 * DAY));
+        t2_def.scheduled_at = Some(ts(MON + 5 * DAY).into());
 
         let t3 = task(3, s, "read the RFC", MON + 3 * DAY);
 
@@ -844,14 +842,14 @@ mod tests {
     fn step_four_lists_commitments_that_came_due_and_stayed_open() {
         let s = eref(EntityKind::Stream, 3);
         let mut due_and_open = task(20, s, "renew the domain", MON);
-        due_and_open.due_at = Some(ts(MON + 2 * DAY));
+        due_and_open.due_at = Some(ts(MON + 2 * DAY).into());
         let mut due_and_done = task(21, s, "pay the invoice", MON);
-        due_and_done.due_at = Some(ts(MON + 2 * DAY));
+        due_and_done.due_at = Some(ts(MON + 2 * DAY).into());
         due_and_done.state = TaskState::Done;
         let mut scheduled_open = task(22, s, "draft the memo", MON);
-        scheduled_open.scheduled_at = Some(ts(MON + 3 * DAY));
+        scheduled_open.scheduled_at = Some(ts(MON + 3 * DAY).into());
         let mut future = task(23, s, "next month's thing", MON);
-        future.due_at = Some(ts(MON + 40 * DAY));
+        future.due_at = Some(ts(MON + 40 * DAY).into());
         let unscheduled = task(24, s, "someday", MON);
 
         let f = Fixture {

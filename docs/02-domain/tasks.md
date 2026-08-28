@@ -21,10 +21,10 @@ Task = {
     priority?:     1..5,              ; 1 = highest, 5 = lowest; absent = unset
     energy?:       Energy,            ; "low" / "med" / "high"
     estimated_duration?: duration,    ; ISO 8601 duration
-    scheduled_at?: tdate,             ; when user intends to do it; the target ("soft") deadline
-    due_at?:       tdate,             ; the hard deadline; UI distinguishes from scheduled_at
+    scheduled_at?: stime,             ; when user intends to do it; the target ("soft") deadline
+    due_at?:       stime,             ; the hard deadline; UI distinguishes from scheduled_at
     scheduling_constraints?: [* SchedulingConstraint], ; see scheduling-constraints.md; whole list is one LWW register (max 16)
-    completed_at?: tdate,             ; set on transition to Done
+    completed_at?: stime,             ; set on transition to Done (always an `instant`)
     deferred_count: uint,             ; PN-counter; surfaced in review
     blocks:        [* tstr],          ; block IDs scheduling this task
     blocked_by:    [* tstr],          ; task IDs this depends on
@@ -50,6 +50,44 @@ Field-level rationale:
 - `scheduling_constraints` is an optional list (max 16) of requirement windows restricting when the Task should be scheduled or executed; the whole list is one LWW register. Full semantics in [`scheduling-constraints.md`](./scheduling-constraints.md).
 
 ### Deadline semantics
+
+### `stime` — the four kinds of time
+
+`scheduled_at`, `due_at`, and `completed_at` are `SunriseTime` values, not bare
+instants (issue #6, [ADR-0017](../11-adr/0017-sunrise-time-representation.md)):
+
+```cddl
+stime = { "kind": "instant",  "at":    tdate }
+      / { "kind": "zoned",    "civil": civil-datetime, "tz": tstr }
+      / { "kind": "floating", "civil": civil-datetime }
+      / { "kind": "all_day",  "date":  civil-date }
+```
+
+A UTC instant is exactly ONE of the four things a user means by "when", and
+storing the other three as instants corrupts them:
+
+| The user means | As a bare instant | What goes wrong |
+|---|---|---|
+| "the meeting, now" | correct | — |
+| "09:00 New York, whatever I'm doing" | the instant 09:00 was, once | breaks when the DST rule for that date changes |
+| "sometime Tuesday morning" | 09:00 UTC Tuesday | a Tuesday-morning task shows up Monday evening west of UTC |
+| "my birthday, the 4th" | midnight UTC on the 4th | the birthday lands on the 3rd west of UTC |
+
+`zoned` carries its zone, so the instant is derived and stays right across a
+tzdata change. `floating` and `all_day` carry no zone at all and resolve against
+the **reading device's** zone — that is the point, not an omission.
+
+`completed_at` is always written as `instant`: a completion is a recorded fact
+about a moment, not a plan. It is typed like its siblings so a reader has one
+shape to handle.
+
+**Storage.** Each field projects onto one epoch-millisecond index column plus a
+`_kind` and a `_tz` sidecar, so every existing range query and `ORDER BY` reads
+the index column unchanged. See `crates/sunrise-storage/migrations/0013_baseline.sql`.
+
+**Compatibility.** A payload written at `DOC_SCHEMA_V = 1`, where these fields
+were bare instants, still decodes: the bare value reads as `instant`. That is
+why `DOC_SCHEMA_FLOOR` stays at 1.
 
 There is no separate "target deadline" field: `scheduled_at` **is** the target deadline. `scheduled_at` records when the user *intends* to do the task — a soft target — and `due_at` is the **hard** deadline. If both are set, `scheduled_at` MUST be ≤ `due_at` (the `DueBeforeScheduled` invariant in domain validation, below). A `hard` scheduling constraint likewise blocks scheduling that would violate it; `soft` targets (including `scheduled_at`) only influence ranking. See [`scheduling-constraints.md`](./scheduling-constraints.md).
 
@@ -99,7 +137,7 @@ There is no separate "target deadline" field: `scheduled_at` **is** the target d
 ## Validation
 
 - `title` MUST be non-empty after trim.
-- `due_at` ≥ `scheduled_at` if both are set (UI may reorder if user inverts).
+- `due_at` ≥ `scheduled_at` if both are set (UI may reorder if user inverts), compared on the storage index key so the rule means the same thing to the validator and to a `WHERE due_at_ms < ?` query whatever kinds the two values are.
 - `blocked_by` MUST NOT contain `id` (no self-blocking).
 - `blocked_by` cycles are detected on submit and rejected (cycle = chain of blocked_by returning to start). The check is local; with concurrent edits, a cycle can transiently form across devices and will be broken by a deterministic tie-breaker on merge (see [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
 - A Task's serialized envelope (encrypted) MUST NOT exceed **1.25 MiB**. Enforcement is at submit time in `sunrise-core::submit`. Over-limit submits return `VALIDATION_PAYLOAD_TOO_LARGE`. The UI shows `"This task is too large to save — try moving the body to an attachment."` and offers a one-click conversion that creates an Attachment from the body.

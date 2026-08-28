@@ -8,14 +8,19 @@ A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks
 
 ## Fields
 
+`stime` is the four-kinded `SunriseTime` defined in
+[`tasks.md`](./tasks.md) §`stime`. A 09:00 block and a block at a fixed instant
+are different commitments, and flying to another timezone must move one and not
+the other.
+
 ```cddl
 Block = {
     id:           tstr .regexp "blk_[A-Z0-9]{26}",
     created_at:   tdate,
     updated_at:   tdate,
     title?:       text<256>,                  ; defaults to bound task's title
-    starts_at:    tdate,
-    ends_at:      tdate,                      ; > starts_at
+    starts_at:    stime,                      ; see tasks.md §stime
+    ends_at:      stime,                      ; resolves after starts_at
     timezone:     text,                       ; IANA tz
     tasks:        [* tstr],                   ; bound task IDs
     stream_id?:   tstr,                       ; for tinting / filtering

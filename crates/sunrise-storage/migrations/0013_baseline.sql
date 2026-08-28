@@ -125,6 +125,24 @@ CREATE TABLE streams (
 -- `extra` carries forward-compat unknowns: fields written by a newer
 -- DOC_SCHEMA_V that this build does not model, preserved verbatim so a
 -- round-trip through an older client does not destroy them.
+--
+-- SCHEDULED / DUE / COMPLETED are `SunriseTime` values (issue #6), each
+-- projected onto THREE columns:
+--
+--   *_at_ms    the epoch-millisecond INDEX key. Every range query and every
+--              ORDER BY in the engine reads this and nothing else, which is
+--              why adding zoned/floating/all-day kinds did not touch a single
+--              query. For an instant or a zoned time it is the true instant;
+--              for a floating time or an all-day date — which have no instant
+--              until a reader supplies a zone — it is the UTC anchoring, which
+--              is stable across devices and lossless.
+--   *_at_kind  'instant' | 'zoned' | 'floating' | 'all_day'. NULL for a NULL
+--              value; an UNRECOGNISED value degrades to 'instant' on read
+--              rather than failing the row.
+--   *_at_tz    the IANA zone name, non-NULL only for 'zoned'.
+--
+-- The kind cannot be inferred from the index key, and losing it is what made
+-- "sometime Tuesday morning" arrive on Monday evening for anyone west of UTC.
 CREATE TABLE tasks (
     id                     BLOB PRIMARY KEY,
     stream_id              BLOB NOT NULL REFERENCES streams (stream_id),
@@ -134,8 +152,14 @@ CREATE TABLE tasks (
     energy                 TEXT,
     estimated_min          INTEGER,
     scheduled_at_ms        INTEGER,
+    scheduled_at_kind      TEXT,
+    scheduled_at_tz        TEXT,
     due_at_ms              INTEGER,
+    due_at_kind            TEXT,
+    due_at_tz              TEXT,
     completed_at_ms        INTEGER,
+    completed_at_kind      TEXT,
+    completed_at_tz        TEXT,
     deferred_count         INTEGER NOT NULL DEFAULT 0,
     routine_id             BLOB,
     routine_occurrence     INTEGER,
@@ -238,13 +262,21 @@ CREATE TABLE routines (
 );
 
 -- --- time blocks ---
+-- Block bounds are `SunriseTime` values too, with the same three-column
+-- projection as the task times above. A 09:00 block is a different commitment
+-- from a block at a fixed instant, and flying to another timezone must move
+-- one and not the other.
 CREATE TABLE blocks (
-    id              BLOB PRIMARY KEY,
-    stream_id       BLOB NOT NULL REFERENCES streams (stream_id),
-    starts_at_ms    INTEGER NOT NULL,
-    ends_at_ms      INTEGER NOT NULL,
-    title           TEXT,
-    deleted         INTEGER NOT NULL DEFAULT 0
+    id               BLOB PRIMARY KEY,
+    stream_id        BLOB NOT NULL REFERENCES streams (stream_id),
+    starts_at_ms     INTEGER NOT NULL,
+    starts_at_kind   TEXT NOT NULL DEFAULT 'instant',
+    starts_at_tz     TEXT,
+    ends_at_ms       INTEGER NOT NULL,
+    ends_at_kind     TEXT NOT NULL DEFAULT 'instant',
+    ends_at_tz       TEXT,
+    title            TEXT,
+    deleted          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX blocks_by_time ON blocks (starts_at_ms);
 

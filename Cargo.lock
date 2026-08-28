@@ -2565,6 +2565,7 @@ name = "sunrise-domain"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ciborium",
  "jiff",
  "proptest",
  "serde",

@@ -616,11 +616,13 @@ pub fn render_focus(
         )),
         Line::from(format!(
             "scheduled: {}",
-            t.scheduled_at.map_or_else(dash, |ts| ts.to_string())
+            t.scheduled_at
+                .as_ref()
+                .map_or_else(dash, ToString::to_string)
         )),
         Line::from(format!(
             "due:       {}",
-            t.due_at.map_or_else(dash, |ts| ts.to_string())
+            t.due_at.as_ref().map_or_else(dash, ToString::to_string)
         )),
     ];
     if let Some(name) = state
@@ -1691,11 +1693,13 @@ fn render_triage(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
         )),
         Line::from(format!(
             "scheduled: {}",
-            t.scheduled_at.map_or_else(dash, |ts| ts.to_string())
+            t.scheduled_at
+                .as_ref()
+                .map_or_else(dash, ToString::to_string)
         )),
         Line::from(format!(
             "due:       {}",
-            t.due_at.map_or_else(dash, |ts| ts.to_string())
+            t.due_at.as_ref().map_or_else(dash, ToString::to_string)
         )),
     ];
     if let Some(body) = t.body.as_ref().filter(|b| !b.is_empty()) {
@@ -2158,14 +2162,14 @@ fn task_facets(
     }
     // A deadline outranks a plan: show `due` when there is one, otherwise the
     // scheduled slot, never both — two dates in a list row read as a range.
-    if let Some(due) = t.due_at {
-        let (text, overdue) = relative_day(due, now_ms, tz);
+    if let Some(due) = t.due_at.as_ref() {
+        let (text, overdue) = relative_day(due.to_instant(tz), now_ms, tz);
         out.push((
             text,
             Style::default().fg(if overdue { Color::Red } else { Color::Yellow }),
         ));
-    } else if let Some(at) = t.scheduled_at {
-        let (text, past) = relative_day(at, now_ms, tz);
+    } else if let Some(at) = t.scheduled_at.as_ref() {
+        let (text, past) = relative_day(at.to_instant(tz), now_ms, tz);
         out.push((
             text,
             Style::default().fg(if past { Color::Yellow } else { Color::Green }),
@@ -2378,7 +2382,7 @@ mod tests {
         t.stream_id = state.streams[1].id;
         t.priority = Some(2);
         t.energy = Some(Energy::High);
-        t.due_at = Some(jiff::Timestamp::UNIX_EPOCH);
+        t.due_at = Some(jiff::Timestamp::UNIX_EPOCH.into());
         t.deferred_count = 1;
         t.scheduling_constraints = vec![
             ScheduleConstraint {
@@ -2540,7 +2544,7 @@ mod tests {
         let mut state = ViewState::default();
         state.view = View::Routines;
         let mut row = fixtures::routine_row(1, "Water plants", "every 2 weeks on Mo", false);
-        row.next = Some("2026-03-02T09:00:00Z".parse().unwrap());
+        row.next = Some("2026-03-02T09:00:00Z".parse::<jiff::Timestamp>().unwrap());
         state.routines = vec![row];
         state.after_routines_loaded();
         let s = guarded_frame(100, 24, &state);
@@ -2572,7 +2576,12 @@ mod tests {
         t.energy = Some(sunrise_domain::Energy::High);
         t.estimated_duration_s = Some(1800);
         t.contexts = std::collections::BTreeSet::from([state.contexts[0].id]);
-        t.due_at = Some("2025-12-30T09:00:00Z".parse().unwrap());
+        t.due_at = Some(
+            "2025-12-30T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         t.deferred_count = 2;
         t.blocked_by = std::collections::BTreeSet::from([fixtures::fake_task(9).id]);
         // The badge reads the *derived* state, not the stored set: a blocker
@@ -2627,7 +2636,12 @@ mod tests {
         state.now_ms = 1_767_225_600_000;
         let mut t = dated_task(1, &"a very long title ".repeat(10));
         t.priority = Some(2);
-        t.due_at = Some("2026-01-05T09:00:00Z".parse().unwrap());
+        t.due_at = Some(
+            "2026-01-05T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         state.tasks = vec![t];
         state.after_tasks_loaded();
         let s = guarded_frame(80, 24, &state);
@@ -2645,13 +2659,33 @@ mod tests {
         state.now_ms = now_ms;
 
         let mut overdue = dated_task(1, "renew the passport");
-        overdue.due_at = Some("2025-12-28T09:00:00Z".parse().unwrap());
+        overdue.due_at = Some(
+            "2025-12-28T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         let mut due = dated_task(2, "file the tax return");
-        due.due_at = Some("2026-01-01T17:00:00Z".parse().unwrap());
+        due.due_at = Some(
+            "2026-01-01T17:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         let mut sched = dated_task(3, "standup");
-        sched.scheduled_at = Some("2026-01-01T09:00:00Z".parse().unwrap());
+        sched.scheduled_at = Some(
+            "2026-01-01T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         let mut soon = dated_task(5, "collect the parcel");
-        soon.scheduled_at = Some("2026-01-02T09:00:00Z".parse().unwrap());
+        soon.scheduled_at = Some(
+            "2026-01-02T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         let anytime = dated_task(4, "read the manual");
 
         state.tasks = vec![anytime, soon, sched, due, overdue];
@@ -2689,7 +2723,12 @@ mod tests {
         state.view = View::Today;
         state.now_ms = now_ms;
         let mut overdue = dated_task(1, "overdue one");
-        overdue.due_at = Some("2025-12-28T09:00:00Z".parse().unwrap());
+        overdue.due_at = Some(
+            "2025-12-28T09:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .into(),
+        );
         state.tasks = vec![overdue, dated_task(2, "anytime one")];
         crate::view::sort_today(&mut state.tasks, now_ms, &tz);
         state.after_tasks_loaded();

@@ -159,13 +159,13 @@ impl TaskEdit {
         }
         if let Some(set) = self.scheduled {
             patch.scheduled_at = Some(match set {
-                Set::To(t) => Some(t),
+                Set::To(t) => Some(t.into()),
                 Set::Clear => None,
             });
         }
         if let Some(set) = self.due {
             patch.due_at = Some(match set {
-                Set::To(t) => Some(t),
+                Set::To(t) => Some(t.into()),
                 Set::Clear => None,
             });
         }

@@ -495,7 +495,7 @@ mod tests {
         let t = task(1, 2, "Ship it");
         let mut done = t.clone();
         done.state = TaskState::Done;
-        done.completed_at = Some(ts(T0 + 5_000));
+        done.completed_at = Some(ts(T0 + 5_000).into());
 
         let events = fold_activity(&[
             op(1, T0, t.id, OpPayload::TaskCreated(Box::new(t.clone()))),
@@ -567,7 +567,7 @@ mod tests {
 
         let mut deferred = moved.clone();
         deferred.deferred_count = 1;
-        deferred.scheduled_at = Some(ts(T0 + 86_400_000));
+        deferred.scheduled_at = Some(ts(T0 + 86_400_000).into());
 
         let mut done = deferred.clone();
         done.state = TaskState::Done;

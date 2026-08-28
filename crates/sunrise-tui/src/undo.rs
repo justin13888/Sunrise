@@ -110,7 +110,7 @@ fn invert_one(state: &ViewState, cmd: &Command) -> Result<Command, NotUndoable> 
         Command::DeferTask { id, .. } => {
             // The date comes back; `deferred_count` is a PN-counter and keeps
             // its history on purpose.
-            let prev = task(state, *id)?.scheduled_at;
+            let prev = task(state, *id)?.scheduled_at.clone();
             Ok(Command::UpdateTask {
                 id: *id,
                 patch: TaskPatch {
@@ -206,8 +206,8 @@ fn inverse_task_patch(t: &sunrise_domain::Task, patch: &TaskPatch) -> TaskPatch 
         priority: patch.priority.map(|_| t.priority),
         energy: patch.energy.map(|_| t.energy),
         estimated_duration_s: patch.estimated_duration_s.map(|_| t.estimated_duration_s),
-        scheduled_at: patch.scheduled_at.map(|_| t.scheduled_at),
-        due_at: patch.due_at.map(|_| t.due_at),
+        scheduled_at: patch.scheduled_at.as_ref().map(|_| t.scheduled_at.clone()),
+        due_at: patch.due_at.as_ref().map(|_| t.due_at.clone()),
         scheduling_constraints: patch
             .scheduling_constraints
             .as_ref()

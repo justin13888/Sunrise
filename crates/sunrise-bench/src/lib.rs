@@ -170,8 +170,8 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 
     TaskDraft {
         title,
-        scheduled_at,
-        due_at,
+        scheduled_at: scheduled_at.map(Into::into),
+        due_at: due_at.map(Into::into),
         priority,
         ..Default::default()
     }
@@ -183,7 +183,7 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
 pub fn submit_draft() -> TaskDraft {
     TaskDraft {
         title: "review budget report".to_string(),
-        scheduled_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS)),
+        scheduled_at: Some(ts(i64::try_from(FIXED_NOW_MS).expect("fits") + DAY_MS).into()),
         ..Default::default()
     }
 }
