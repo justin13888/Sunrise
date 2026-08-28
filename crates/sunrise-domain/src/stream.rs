@@ -1,6 +1,7 @@
 //! Stream entity per `docs/02-domain/streams.md`.
 
 use crate::common::NoteBody;
+use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,7 @@ impl StreamColor {
 }
 
 /// Review cadence for a Stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamReviewCadence {
     /// Weekly review.
@@ -75,6 +76,37 @@ pub enum StreamReviewCadence {
     /// No review reminders.
     None,
 }
+
+impl StreamReviewCadence {
+    /// The stable lowercase wire/storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Weekly => "weekly",
+            Self::Biweekly => "biweekly",
+            Self::Monthly => "monthly",
+            Self::None => "none",
+        }
+    }
+
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`StreamReviewCadence::Weekly`] rather than failing.
+    ///
+    /// The documented default. Degrading to `None` would make a Stream silently
+    /// stop appearing in reviews.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "biweekly" => Self::Biweekly,
+            "monthly" => Self::Monthly,
+            "none" => Self::None,
+            // "weekly" and anything this build has never heard of.
+            _ => Self::Weekly,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(StreamReviewCadence);
 
 /// Persisted Stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +154,11 @@ pub struct Stream {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Draft used by the UI when creating a Stream.

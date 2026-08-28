@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Energy level facet on Task / Routine. Multi-stream operators sort work by
 /// energy in addition to priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Energy {
     /// Low cognitive demand.
@@ -14,6 +14,35 @@ pub enum Energy {
     /// High cognitive demand; deep-work block.
     High,
 }
+
+impl Energy {
+    /// The stable lowercase wire/storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Med => "med",
+            Self::High => "high",
+        }
+    }
+
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`Energy::Med`] rather than failing.
+    ///
+    /// The middle rung: an unknown energy must not make a task look unusually
+    /// cheap or unusually expensive to the planner.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "low" => Self::Low,
+            "high" => Self::High,
+            // "med" and anything this build has never heard of.
+            _ => Self::Med,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(Energy);
 
 /// Rich-text body. v1 stores a CRDT-text payload as opaque bytes; richer
 /// rendering is the UI's job.

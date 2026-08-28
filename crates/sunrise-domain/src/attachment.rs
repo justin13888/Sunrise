@@ -4,6 +4,7 @@
 //! encrypted; see `docs/03-crypto/data-encryption-format.md` §blob-chunks).
 //! This entity carries only the per-attachment metadata.
 
+use crate::unknown::Unknowns;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
@@ -41,4 +42,9 @@ pub struct Attachment {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }

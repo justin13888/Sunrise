@@ -1997,6 +1997,7 @@ pub(crate) mod fixtures {
     use std::collections::BTreeSet;
     use sunrise_core::queries::{ContextRow, FocusPlanRow, FocusSessionRow, StreamRow};
     use sunrise_domain::rrule::RRule;
+    use sunrise_domain::Unknowns;
     use sunrise_domain::{
         inbox_stream_ref, Chunk, Energy, EnergyFit, FocusKind, FocusSession, FocusStart, Routine,
         RoutineCatchupPolicy, SessionPlan, StreamColor, Task, TaskState, TaskTemplate, POMODORO_MS,
@@ -2026,6 +2027,7 @@ pub(crate) mod fixtures {
                     energy: Some(Energy::High),
                     kind: FocusKind::Work,
                     chunk: Some(Chunk { index: 2, total: 4 }),
+                    unknown: Unknowns::new(),
                 },
                 end: None,
                 interruptions: Vec::new(),
@@ -2045,6 +2047,7 @@ pub(crate) mod fixtures {
             actual_focused_ms: POMODORO_MS,
             interruptions: Vec::new(),
             completed_task: false,
+            unknown: Unknowns::new(),
         });
         row.running = false;
         row
@@ -2092,6 +2095,7 @@ pub(crate) mod fixtures {
             routine_occurrence: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -2133,6 +2137,7 @@ pub(crate) mod fixtures {
             paused_until: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 

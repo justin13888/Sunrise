@@ -417,6 +417,7 @@ mod tests {
     use crate::common::Energy;
     use crate::focus::FocusKind;
     use crate::stream::{StreamColor, StreamReviewCadence};
+    use crate::unknown::Unknowns;
     use jiff::Timestamp;
     use std::collections::BTreeSet;
     use sunrise_id::EntityKind;
@@ -456,6 +457,7 @@ mod tests {
             routine_occurrence: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -476,6 +478,7 @@ mod tests {
             review_cadence: StreamReviewCadence::Weekly,
             default_context: None,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -658,6 +661,7 @@ mod tests {
             energy: Some(Energy::High),
             kind: FocusKind::Work,
             chunk: None,
+            unknown: Unknowns::new(),
         };
         let end = FocusEnd {
             session_id: session,
@@ -665,6 +669,7 @@ mod tests {
             actual_focused_ms: 900_000,
             interruptions: Vec::new(),
             completed_task: true,
+            unknown: Unknowns::new(),
         };
         let events = fold_activity(&[
             op(1, T0, t.id, OpPayload::TaskCreated(Box::new(t.clone()))),
@@ -704,6 +709,7 @@ mod tests {
             actual_focused_ms: 1,
             interruptions: Vec::new(),
             completed_task: false,
+            unknown: Unknowns::new(),
         };
         let events = fold_activity(&[op(1, T0, session, OpPayload::FocusEnded(Box::new(end)))]);
         assert!(events.is_empty());

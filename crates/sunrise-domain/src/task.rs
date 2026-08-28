@@ -3,6 +3,7 @@
 use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::time::SunriseTime;
+use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use sunrise_id::EntityRef;
 /// User-visible Task state. `done` and `cancelled` are NOT terminal: a task
 /// can transition back to `todo`. `blocked` is **derived** at read time from
 /// `blocked_by` and the blockers' states; it is NOT persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     /// Pending; not yet started.
@@ -24,6 +25,38 @@ pub enum TaskState {
     /// User explicitly cancelled. Not terminal.
     Cancelled,
 }
+
+impl TaskState {
+    /// The stable lowercase wire/storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::InProgress => "in_progress",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`TaskState::Todo`] rather than failing.
+    ///
+    /// An unrecognised state is an OPEN item. Degrading to `Done` would silently
+    /// mark someone's work complete; degrading to `Todo` at worst shows a task
+    /// that a newer client considers handled.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "in_progress" => Self::InProgress,
+            "done" => Self::Done,
+            "cancelled" => Self::Cancelled,
+            // "todo" and anything this build has never heard of.
+            _ => Self::Todo,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(TaskState);
 
 impl TaskState {
     /// Allowed self-set transitions. (Note: `blocked` is derived, not
@@ -120,6 +153,11 @@ pub struct Task {
     /// Deleted (tombstone until compaction).
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Draft used by the UI when creating a Task. Only required fields appear;

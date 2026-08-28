@@ -155,6 +155,7 @@ mod tests {
     use super::*;
     use crate::routine::{RoutineCatchupPolicy, TaskTemplate};
     use crate::rrule::RRule;
+    use crate::unknown::Unknowns;
     use sunrise_id::{EntityKind, EntityRef};
 
     const T0: i64 = 1_700_000_000;
@@ -202,6 +203,7 @@ mod tests {
             paused_until: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 

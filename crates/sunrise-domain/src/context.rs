@@ -16,6 +16,7 @@
 //! name the same way instead of each re-implementing the prefix match.
 
 use crate::common::Energy;
+use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError, MAX_CONTEXT_NAME_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,11 @@ pub struct Context {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// How a Context name reads under the spec's two reserved prefixes.

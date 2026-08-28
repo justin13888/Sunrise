@@ -4,13 +4,14 @@ use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
+use crate::unknown::Unknowns;
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
 /// What to do when an occurrence is missed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutineCatchupPolicy {
     /// Skip missed occurrences silently.
@@ -20,6 +21,35 @@ pub enum RoutineCatchupPolicy {
     /// Queue every missed occurrence as a separate task.
     Queue,
 }
+
+impl RoutineCatchupPolicy {
+    /// The stable lowercase wire/storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Merge => "merge",
+            Self::Queue => "queue",
+        }
+    }
+
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`RoutineCatchupPolicy::Skip`] rather than failing.
+    ///
+    /// The least surprising: an unknown policy must not materialize a backlog of
+    /// missed occurrences the user never asked for.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "merge" => Self::Merge,
+            "queue" => Self::Queue,
+            // "skip" and anything this build has never heard of.
+            _ => Self::Skip,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(RoutineCatchupPolicy);
 
 /// Review cadence for routines (mirrors Stream cadences).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +211,11 @@ pub struct Routine {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Draft used by the UI when creating a Routine.

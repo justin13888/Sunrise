@@ -509,6 +509,7 @@ mod tests {
     use crate::routine::{RoutineCatchupPolicy, TaskTemplate};
     use crate::rrule::RRule;
     use crate::task::Task;
+    use crate::unknown::Unknowns;
     use std::collections::BTreeSet;
     use sunrise_id::EntityKind;
 
@@ -554,6 +555,7 @@ mod tests {
             routine_occurrence: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -852,6 +854,7 @@ mod tests {
             paused_until: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         }
     }
 

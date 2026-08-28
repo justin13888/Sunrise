@@ -17,6 +17,7 @@
 #![warn(missing_docs)]
 
 pub mod canonical;
+pub mod cbor_value;
 pub mod hlc;
 pub mod magic;
 pub mod version;
@@ -24,6 +25,7 @@ pub mod version;
 pub use canonical::{
     decode_canonical, decode_lenient, encode_canonical, CanonicalEncoding, CanonicalError,
 };
+pub use cbor_value::CborValue;
 pub use hlc::{Hlc, HlcError, MAX_DRIFT_MS};
 pub use magic::{decode_prefix, write_prefix, MagicError, MagicKind, MagicPrefix, MAGIC_LEN};
 pub use version::{

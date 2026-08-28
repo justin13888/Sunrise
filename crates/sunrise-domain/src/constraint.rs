@@ -29,7 +29,7 @@ pub const MAX_CONSTRAINTS: usize = 16;
 /// A `hard` violation blocks auto-scheduling and fails validation when the
 /// user schedules against it; a `soft` violation never blocks and only
 /// demotes ranking in planning views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintSeverity {
     /// Blocks scheduling and fails validation.
@@ -37,6 +37,33 @@ pub enum ConstraintSeverity {
     /// Only demotes ranking; never blocks.
     Soft,
 }
+
+impl ConstraintSeverity {
+    /// The stable lowercase wire/storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+            Self::Hard => "hard",
+        }
+    }
+
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`ConstraintSeverity::Soft`] rather than failing.
+    ///
+    /// An unknown severity must not HARD-block scheduling. A soft constraint
+    /// influences ranking; a hard one rejects the user's command outright.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "hard" => Self::Hard,
+            // "soft" and anything this build has never heard of.
+            _ => Self::Soft,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(ConstraintSeverity);
 
 /// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
 /// be strictly `< end` (no midnight wrap in v1).

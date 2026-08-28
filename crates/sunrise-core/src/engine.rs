@@ -63,6 +63,7 @@ use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::time::SunriseTime;
+use sunrise_domain::Unknowns;
 use sunrise_domain::{
     activity_for_entities, activity_table, break_after, build_daily_review, build_weekly_review,
     effective_state, focus_table, fold_activity, fold_focus_stats, fold_trends, inbox_stream_ref,
@@ -541,6 +542,7 @@ impl Engine {
             routine_occurrence: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         };
 
         // Scheduling gate: a `hard` constraint violated by this `scheduled_at`
@@ -942,6 +944,7 @@ impl Engine {
             review_cadence: d.review_cadence.unwrap_or(StreamReviewCadence::Weekly),
             default_context: None,
             deleted: false,
+            unknown: Unknowns::new(),
         };
 
         let op_id = self.fresh_op_id(now_ms);
@@ -1104,6 +1107,7 @@ impl Engine {
             description,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         };
 
         let op_id = self.fresh_op_id(now_ms);
@@ -1263,6 +1267,7 @@ impl Engine {
             paused_until: None,
             archived: false,
             deleted: false,
+            unknown: Unknowns::new(),
         };
         let stream = routine.template.stream_id;
         let op_id = self.fresh_op_id(now_ms);
@@ -1756,6 +1761,7 @@ impl Engine {
             energy: d.energy.or(task.energy),
             kind: d.kind,
             chunk,
+            unknown: Unknowns::new(),
         };
         let inner = encode_inner_op(&InnerOp::FocusStart(Box::new(start.clone())))?;
         let op_id = self.fresh_op_id(now_ms);
@@ -1817,6 +1823,7 @@ impl Engine {
             actual_focused_ms: actual,
             interruptions: view.interruptions.clone(),
             completed_task,
+            unknown: Unknowns::new(),
         };
         let inner = encode_inner_op(&InnerOp::FocusEnd(Box::new(end.clone())))?;
         let op_id = self.fresh_op_id(now_ms);
@@ -3121,6 +3128,7 @@ fn read_focus_sessions(
             energy: v.5.as_deref().and_then(parse_energy),
             kind: FocusKind::from_str_opt(&v.6).unwrap_or(FocusKind::Work),
             chunk,
+            unknown: Unknowns::new(),
         };
         let mine = interruptions.get(&id).cloned().unwrap_or_default();
         let end = v.9.map(|ended| FocusEnd {
@@ -3129,6 +3137,7 @@ fn read_focus_sessions(
             actual_focused_ms: v.10.and_then(|m| u64::try_from(m.max(0)).ok()).unwrap_or(0),
             interruptions: mine.clone(),
             completed_task: v.11.unwrap_or(0) != 0,
+            unknown: Unknowns::new(),
         });
         out.push(FocusSession {
             start,
@@ -3376,6 +3385,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         review_cadence: parse_cadence(&cadence_str),
         default_context: None,
         deleted: deleted != 0,
+        unknown: Unknowns::new(),
     };
     Ok(Some(stream))
 }
@@ -3521,6 +3531,7 @@ fn read_context(
         description,
         archived: archived != 0,
         deleted: deleted != 0,
+        unknown: Unknowns::new(),
     }))
 }
 
@@ -3555,6 +3566,33 @@ fn find_context_by_name(
     Ok(None)
 }
 
+/// Encode an entity's preserved unknown fields for the `extra` column, or
+/// `None` when there are none.
+///
+/// Hardcoding this column to `NULL` — which is what the three task writers did
+/// until now — is how a v2 field arriving on a v1 device got dropped on the
+/// floor: the entity carried it in memory for exactly one transaction, then the
+/// materialized row forgot it and the next outbound op re-emitted the entity
+/// without it. Every replica then converged on the truncated value.
+fn encode_unknowns(u: &sunrise_domain::Unknowns) -> rusqlite::Result<Option<Vec<u8>>> {
+    if u.is_empty() {
+        return Ok(None);
+    }
+    sunrise_cbor::encode_canonical(u)
+        .map(Some)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+/// Decode the `extra` column back into an entity's unknown map.
+///
+/// A blob this build cannot parse degrades to "no unknowns" rather than
+/// failing the read: losing a field nobody here can interpret is bad, and
+/// losing the whole Task because of it is worse.
+fn decode_unknowns(blob: Option<Vec<u8>>) -> sunrise_domain::Unknowns {
+    blob.and_then(|b| sunrise_cbor::decode_lenient(&b).ok())
+        .unwrap_or_default()
+}
+
 /// Split an optional [`SunriseTime`] into its three storage columns:
 /// `(index_ms, kind, tz)`.
 ///
@@ -3587,6 +3625,7 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
     let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
     let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
     let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+    let extra_blob = encode_unknowns(&t.unknown)?;
 
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
@@ -3601,7 +3640,7 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -3630,6 +3669,7 @@ fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            extra_blob,
             t.created_at.as_millisecond(),
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
@@ -3645,6 +3685,7 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
     let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
     let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
     let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+    let extra_blob = encode_unknowns(&t.unknown)?;
 
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
@@ -3658,7 +3699,7 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             due_at_ms = ?, due_at_kind = ?, due_at_tz = ?,
             completed_at_ms = ?, completed_at_kind = ?, completed_at_tz = ?,
             deferred_count = ?, archived = ?, deleted = ?,
-            body = ?, scheduling_constraints = ?,
+            body = ?, scheduling_constraints = ?, extra = ?,
             updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
@@ -3683,6 +3724,7 @@ fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            extra_blob,
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
             lww.hlc.logical,
@@ -3845,7 +3887,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     routine_id, routine_occurrence, created_at_ms, updated_at_ms,
                     scheduled_at_kind, scheduled_at_tz,
                     due_at_kind, due_at_tz,
-                    completed_at_kind, completed_at_tz
+                    completed_at_kind, completed_at_tz, extra
              FROM tasks WHERE id = ?",
             params![id_blob],
             |r| {
@@ -3874,6 +3916,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
                     r.get::<_, Option<String>>(21)?,
                     r.get::<_, Option<String>>(22)?,
                     r.get::<_, Option<String>>(23)?,
+                    r.get::<_, Option<Vec<u8>>>(24)?,
                 ))
             },
         )
@@ -3904,7 +3947,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         body: t.12.map(NoteBody),
         stream_id: EntityRef::new(EntityKind::Stream, stream_bytes),
         contexts,
-        state: parse_task_state(&t.2)?,
+        state: parse_task_state(&t.2),
         priority: t.3.and_then(|v| u8::try_from(v).ok()),
         energy: t.4.as_deref().and_then(parse_energy),
         estimated_duration_s: t.5.and_then(|m| {
@@ -3932,6 +3975,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
         routine_occurrence: t.15.map(|m| ms_to_ts(m.max(0))),
         archived: t.10 != 0,
         deleted: t.11 != 0,
+        unknown: decode_unknowns(t.24),
     };
     Ok(Some(task))
 }
@@ -3948,6 +3992,7 @@ fn insert_task_row_or_ignore(
     let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
     let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
     let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
+    let extra_blob = encode_unknowns(&t.unknown)?;
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3961,7 +4006,7 @@ fn insert_task_row_or_ignore(
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
           created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                  ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
@@ -3988,6 +4033,7 @@ fn insert_task_row_or_ignore(
             t.deleted as i64,
             body_blob,
             constraints_blob,
+            extra_blob,
             t.created_at.as_millisecond(),
             t.updated_at.as_millisecond(),
             lww.hlc.physical_ms,
@@ -4034,6 +4080,7 @@ fn build_routine_task(
         routine_occurrence: Some(at),
         archived: false,
         deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 
@@ -4322,6 +4369,7 @@ fn routine_from_row(
         paused_until: paused_until_ms.map(|m| ms_to_ts(m.max(0))),
         archived: archived != 0,
         deleted: deleted != 0,
+        unknown: Unknowns::new(),
     })
 }
 
@@ -4436,14 +4484,15 @@ fn task_state_str(s: TaskState) -> &'static str {
     }
 }
 
-fn parse_task_state(s: &str) -> Result<TaskState, EngineError> {
-    match s {
-        "todo" => Ok(TaskState::Todo),
-        "in_progress" => Ok(TaskState::InProgress),
-        "done" => Ok(TaskState::Done),
-        "cancelled" => Ok(TaskState::Cancelled),
-        other => Err(EngineError::Invalid(format!("unknown task state: {other}"))),
-    }
+/// Read a stored task state.
+///
+/// Lossy on purpose, and delegated to the domain so the storage projection and
+/// the wire decoder degrade the same way. A row written by a newer binary with
+/// a state this build has never heard of reads as `todo` — the task is still
+/// there and still open — rather than failing the whole read and taking every
+/// query that touches it down with it.
+fn parse_task_state(s: &str) -> TaskState {
+    TaskState::from_str_lossy(s)
 }
 
 fn energy_str(e: sunrise_domain::Energy) -> &'static str {
@@ -4531,6 +4580,7 @@ impl Engine {
             streams: d.streams,
             streaks: d.streaks,
             note: d.note,
+            unknown: Unknowns::new(),
         };
         let inner = encode_inner_op(&InnerOp::ReviewSnapshotCreate(Box::new(snapshot.clone())))?;
         let op_id = self.fresh_op_id(now_ms);
@@ -6693,6 +6743,7 @@ mod tests {
                 paused_until: None,
                 archived: false,
                 deleted: false,
+                unknown: Unknowns::new(),
             }
         }
 
@@ -7349,6 +7400,119 @@ mod tests {
         assert!(lww_wins(&stamp(0, 0, [0u8; 16], 0), &row));
     }
 
+    /// Build the `unknown` map a newer schema would have written.
+    fn future_fields() -> sunrise_domain::Unknowns {
+        use ciborium::value::Value;
+        let mut u = sunrise_domain::Unknowns::new();
+        u.insert(
+            "delegated_to".into(),
+            sunrise_domain::CborValue(Value::Text("prs_future".into())),
+        );
+        u.insert(
+            "zzz_sort_last".into(),
+            sunrise_domain::CborValue(Value::Integer(7.into())),
+        );
+        u
+    }
+
+    /// protocol-versioning.md §7: "a v1 client receiving a v2 op preserves the
+    /// unknown keys verbatim IN STORAGE and re-serializes them on outbound
+    /// merges".
+    ///
+    /// `tasks.extra` was hardcoded to NULL by all three task writers, so the
+    /// entity carried its unknown fields for exactly one transaction and the
+    /// materialized row forgot them. The next outbound op then re-emitted the
+    /// task WITHOUT them, and under entity-level LWW every replica converged on
+    /// the truncated value — a silent, permanent data loss caused by the older
+    /// device merely winning one conflict.
+    #[test]
+    fn unknown_entity_fields_survive_the_materialized_row() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "from a newer client".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // Stand in for an op written by a newer schema: put the future fields
+        // on the entity and write it back through the normal update path.
+        let mut task = read_task_t(&e, &db, created.entity);
+        task.unknown = future_fields();
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| update_task_row(tx, &task, &lww)).unwrap();
+
+        let back = read_task_t(&e, &db, created.entity);
+        assert_eq!(
+            back.unknown,
+            future_fields(),
+            "the projection must not forget what it could not interpret"
+        );
+
+        // ...and the fields ride back out in the entity's canonical CBOR, so
+        // an outbound op carries them to every peer.
+        let re = sunrise_cbor::encode_canonical(&back).unwrap();
+        let decoded: sunrise_domain::Task = sunrise_cbor::decode_canonical(&re).unwrap();
+        assert_eq!(decoded.unknown, future_fields());
+    }
+
+    /// An enum value from a newer schema must degrade, not reject: rejecting
+    /// one field's value rejects the whole op, and two replicas then diverge
+    /// permanently over one string.
+    #[test]
+    fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
+        use ciborium::value::Value;
+
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "t".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // Rewrite the stored state string to something no build understands.
+        db.conn()
+            .execute(
+                "UPDATE tasks SET state = 'delegated' WHERE id = ?",
+                params![&created.entity.bytes()[..]],
+            )
+            .unwrap();
+
+        let back = read_task_t(&e, &db, created.entity);
+        assert_eq!(
+            back.state,
+            TaskState::Todo,
+            "an unrecognised state must read as OPEN, never as done"
+        );
+
+        // The same rule on the wire: a Task encoded with an unknown state
+        // decodes rather than failing.
+        let mut v = ciborium::value::Value::serialized(&back).unwrap();
+        if let Value::Map(entries) = &mut v {
+            for (k, val) in entries.iter_mut() {
+                if matches!(k, Value::Text(t) if t == "state") {
+                    *val = Value::Text("delegated".into());
+                }
+            }
+        }
+        let bytes = sunrise_cbor::encode_canonical(&v).unwrap();
+        let decoded: sunrise_domain::Task = sunrise_cbor::decode_lenient(&bytes)
+            .expect("an unknown variant must not reject the op");
+        assert_eq!(decoded.state, TaskState::Todo);
+    }
+
     /// A clock pinned to a named zone, so a test can move a device between
     /// timezones the way a plane does.
     #[derive(Debug)]
@@ -7906,6 +8070,7 @@ mod tests {
                 paused_until: None,
                 archived: false,
                 deleted: false,
+                unknown: Unknowns::new(),
             }
         }
 

@@ -28,6 +28,7 @@
 
 use crate::common::Energy;
 use crate::deps::DependencyGraph;
+use crate::unknown::Unknowns;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_id::EntityRef;
@@ -56,7 +57,7 @@ pub const CYCLES_BEFORE_LONG_BREAK: u32 = 4;
 /// What a session *is*: focused work, or the break that follows it. Breaks are
 /// recorded so the timeline reconstructs, but they never count as focused time
 /// and never feed estimate calibration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusKind {
     /// A work segment.
@@ -64,6 +65,24 @@ pub enum FocusKind {
     /// A break segment.
     Break,
 }
+
+impl FocusKind {
+    /// Parse from the wire/storage string. An unrecognised value degrades to
+    /// [`FocusKind::Work`] rather than failing.
+    ///
+    /// Focus sessions default to work; counting an unknown kind as a break would
+    /// under-report time actually spent.
+    #[must_use]
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "break" => Self::Break,
+            // "work" and anything this build has never heard of.
+            _ => Self::Work,
+        }
+    }
+}
+
+crate::unknown::lossy_enum!(FocusKind);
 
 impl FocusKind {
     /// Wire/storage tag.
@@ -106,7 +125,7 @@ pub enum SessionLength {
 /// A one-tap reason for bailing out early or switching task
 /// (`docs/08-features/focus-mode.md` §Interruption capture). Data the user
 /// opted into; there is no shame UI and no score attached to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InterruptionReason {
     /// The user interrupted themselves.
@@ -143,6 +162,8 @@ impl InterruptionReason {
         }
     }
 }
+
+crate::unknown::lossy_enum!(InterruptionReason);
 
 /// "Chunk N of M" — the checkpoint marker shown when a task's estimate exceeds
 /// one session, so a long task shows visible progress *within* a sitting.
@@ -181,6 +202,11 @@ pub struct FocusStart {
     /// "Chunk N of M", when the task's estimate exceeds one session.
     #[serde(default)]
     pub chunk: Option<Chunk>,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// The `end` op: the frozen tail of a session. Immutable, and addressed to the
@@ -200,11 +226,22 @@ pub struct FocusEnd {
     pub interruptions: Vec<Interruption>,
     /// Whether the task was completed in this session.
     pub completed_task: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// One logged interruption. Its own append-only record: the `(session, at,
 /// reason)` triple is the primary key, so re-delivery is idempotent and two
 /// devices logging different interruptions on one session both survive.
+///
+/// The ONE entity with no `unknown` map. It has no identity apart from its
+/// three fields — the whole triple IS the key — so a preserved unknown field
+/// would change what the record *is* rather than what it says, and would give
+/// two records that a peer considers the same one different identities here.
+/// It is `Copy` and totally ordered for the same reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Interruption {
     /// Session interrupted.
@@ -895,6 +932,7 @@ mod tests {
             energy: Some(Energy::High),
             kind: FocusKind::Work,
             chunk: None,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -942,6 +980,7 @@ mod tests {
                 actual_focused_ms: 100_000,
                 interruptions: Vec::new(),
                 completed_task: true,
+                unknown: Unknowns::new(),
             }),
             ..s
         };
@@ -977,6 +1016,7 @@ mod tests {
                 actual_focused_ms: 240_000,
                 interruptions: Vec::new(),
                 completed_task: false,
+                unknown: Unknowns::new(),
             }),
             interruptions: Vec::new(),
         };

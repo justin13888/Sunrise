@@ -24,7 +24,7 @@ use sunrise_domain::common::{Energy, NoteBody};
 use sunrise_domain::routine::{Routine, RoutineCatchupPolicy, TaskTemplate};
 use sunrise_domain::rrule::{Frequency, RRule, Weekday};
 use sunrise_domain::task::{Task, TaskState};
-use sunrise_domain::SunriseTime;
+use sunrise_domain::{SunriseTime, Unknowns};
 use sunrise_id::{EntityKind, EntityRef};
 
 // Same ms constants used to generate the chrono-era fixtures.
@@ -87,6 +87,7 @@ fn expected_task() -> Task {
         routine_occurrence: Some(ts(T_ROUTINE_OCC)),
         archived: true,
         deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 
@@ -138,6 +139,7 @@ fn expected_routine() -> Routine {
         paused_until: Some(ts(R_PAUSED_UNTIL)),
         archived: false,
         deleted: false,
+        unknown: Unknowns::new(),
     }
 }
 

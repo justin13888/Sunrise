@@ -52,6 +52,7 @@ use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
 use sunrise_cbor::version::{DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
@@ -148,6 +149,15 @@ pub struct OpEnvelope {
     /// Document schema version of the payload (field 12). Independent of
     /// [`OpEnvelope::v`]; any value `>= DOC_SCHEMA_FLOOR` is readable.
     pub doc_schema_v: u32,
+    /// Envelope fields this build does not know, kept verbatim and re-emitted
+    /// in their canonical position.
+    ///
+    /// Discarding them — which is what the decoder did until now, with a
+    /// comment claiming otherwise — silently broke the signature for anyone
+    /// downstream: the sender signed over the field, so a re-encode without it
+    /// no longer verifies. Preserving them is what makes an envelope from a
+    /// newer container format survive a hop through this build.
+    pub unknown: BTreeMap<u64, sunrise_cbor::CborValue>,
 }
 
 // CBOR ground form. We build the canonical map explicitly, in ascending
@@ -187,10 +197,10 @@ impl Omit {
 fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError> {
     use ciborium::value::{Integer, Value};
 
-    let mut map: Vec<(Value, Value)> = Vec::with_capacity(12);
+    let mut map: Vec<(u64, Value)> = Vec::with_capacity(12 + env.unknown.len());
     let mut put = |id: u8, v: Value| {
         if !omit.omits(id) {
-            map.push((Value::Integer(Integer::from(id)), v));
+            map.push((u64::from(id), v));
         }
     };
 
@@ -213,8 +223,22 @@ fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError>
     put(11, Value::Bytes(env.sig.to_vec()));
     put(12, Value::Integer(Integer::from(env.doc_schema_v)));
 
+    // Preserved unknowns sit at their own field ids. Sorting the whole map by
+    // id afterwards puts each one exactly where its author put it: field ids
+    // are non-negative integers, so deterministic CBOR key order IS numeric
+    // order, and a byte-identical re-emission is what keeps the ORIGINAL
+    // signature verifiable after this build has handled the envelope.
+    for (id, value) in &env.unknown {
+        map.push((*id, value.0.clone()));
+    }
+    map.sort_by_key(|(id, _)| *id);
+
+    let entries: Vec<(Value, Value)> = map
+        .into_iter()
+        .map(|(id, v)| (Value::Integer(Integer::from(id)), v))
+        .collect();
     let mut out = Vec::with_capacity(64 + env.payload.len());
-    ciborium::ser::into_writer(&Value::Map(map), &mut out)
+    ciborium::ser::into_writer(&Value::Map(entries), &mut out)
         .map_err(|e| OpEnvelopeError::Cbor(e.to_string()))?;
     Ok(out)
 }
@@ -288,6 +312,7 @@ pub fn encode_envelope(
         nonce,
         payload: inner.to_vec(),
         sig: [0u8; 64],
+        unknown: BTreeMap::new(),
     };
     seal_envelope(env, stream_key, device_signing)
 }
@@ -369,6 +394,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         nonce: [0u8; AEAD_NONCE_LEN],
         payload: Vec::new(),
         sig: [0u8; 64],
+        unknown: BTreeMap::new(),
     };
     let mut seen_field_ids = Vec::new();
 
@@ -403,9 +429,18 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 env.sig = arr;
             }
             12 => env.doc_schema_v = u32_from(&v, "doc_schema_v")?,
-            _ => {
-                // Unknown field; per forward-compat preserve verbatim. v1
-                // doesn't carry preserved-fields, but we do not reject.
+            other => {
+                // Forward compat, for real this time. A field from a newer
+                // container format is kept at its own id and re-emitted in
+                // exactly the position it arrived in, so the sender's signature
+                // still verifies downstream. A negative id cannot appear in a
+                // Sunrise envelope and is refused rather than silently coerced.
+                let id = u64::try_from(other)
+                    .map_err(|_| OpEnvelopeError::BadField("negative field id"))?;
+                if contains_float_value(&v) {
+                    return Err(OpEnvelopeError::BadField("float in envelope"));
+                }
+                env.unknown.insert(id, sunrise_cbor::CborValue(v));
             }
         }
     }
@@ -484,6 +519,21 @@ pub fn open_envelope(
             aead_open_xchacha(key, &env.nonce, &env.payload, &aad)
                 .map_err(|_| OpEnvelopeError::AeadAuth)
         }
+    }
+}
+
+/// Canonical Sunrise CBOR has no floats anywhere, so a float in an unknown
+/// envelope field is malformed rather than merely unfamiliar.
+fn contains_float_value(v: &ciborium::value::Value) -> bool {
+    use ciborium::value::Value;
+    match v {
+        Value::Float(_) => true,
+        Value::Array(items) => items.iter().any(contains_float_value),
+        Value::Map(entries) => entries
+            .iter()
+            .any(|(k, val)| contains_float_value(k) || contains_float_value(val)),
+        Value::Tag(_, inner) => contains_float_value(inner),
+        _ => false,
     }
 }
 
@@ -731,6 +781,7 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"inner".to_vec(),
                 sig: [0u8; 64],
+                unknown: BTreeMap::new(),
             },
             None,
             signing,
@@ -839,6 +890,7 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"secret".to_vec(),
                 sig: [0u8; 64],
+                unknown: BTreeMap::new(),
             },
             Some(&stream_key),
             &signing,

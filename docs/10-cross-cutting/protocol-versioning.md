@@ -26,13 +26,28 @@ This document is the authoritative table of version numbers and the rules for ch
 ## 2. v1 version constants
 
 ```
-WIRE_PROTO_V    = 1
-DOC_SCHEMA_V    = 1
-CRYPTO_SUITE_V  = 1
-STORAGE_V       = 1
+WIRE_PROTO_V      = 1
+ENVELOPE_FORMAT_V = 3
+DOC_SCHEMA_V      = 2
+DOC_SCHEMA_FLOOR  = 1
+CRYPTO_SUITE_V    = 1
+STORAGE_V         = 13
 ```
 
-Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants. Decoders MUST refuse to interpret bytes as version `N` if the version field reads anything other than `N`; refusal is a clean error, not a guess.
+Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants.
+
+**Two different refusal rules, on purpose** (see [ADR-0015](../11-adr/0015-envelope-doc-schema-split.md)):
+
+| Constant | On mismatch | Why |
+|---|---|---|
+| `WIRE_PROTO_V`, `ENVELOPE_FORMAT_V`, `CRYPTO_SUITE_V` | hard refusal | The reader does not know the LAYOUT. It cannot find the payload, so there is nothing to salvage and a guess would be worse than an error. |
+| `DOC_SCHEMA_V` | accept when `>= DOC_SCHEMA_FLOOR` | The reader knows the layout and can authenticate and decrypt the payload; it merely may not understand some fields *inside* it, which §7 says it must preserve rather than reject. |
+
+`ENVELOPE_FORMAT_V` versions the op-envelope container (field layout, canonical ordering, AAD, signature input) and rides in the magic prefix. `DOC_SCHEMA_V` versions the entity shapes and rides in envelope field 12. Collapsing them into one number — which v1 did — meant that adding a field to a Task changed the magic prefix and made every already-signed envelope undecodable, the exact opposite of the rule in §6.
+
+`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret, and it moves only when a shape stops being readable — never merely because a newer one exists. It is `1` while `DOC_SCHEMA_V` is `2` because a v1 payload really does still decode: its bare-instant time fields read as `SunriseTime::Instant`.
+
+`STORAGE_V` is per-device and never appears on the wire; `13` is the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below it is refused rather than upgraded.
 
 ---
 
@@ -157,7 +172,17 @@ The negotiated `wire_proto` is logged on every session in field `proto.wire`. A 
 
 `DOC_SCHEMA_V` follows the rules in [02-domain/schema-versioning.md](../02-domain/schema-versioning.md). This section adds the wire-side rules.
 
-CRDT codec rule: **unknown CBOR map keys round-trip unchanged.** A v1 client receiving a v2 op preserves the unknown keys verbatim in storage and re-serializes them on outbound merges. This means:
+Codec rule: **unknown CBOR map keys round-trip unchanged.** A v1 client receiving a v2 op preserves the unknown keys verbatim in storage and re-serializes them on outbound merges.
+
+This is implemented in three places, and it needs all three:
+
+1. Every entity carries `#[serde(flatten)] unknown: Unknowns` (`sunrise_domain::unknown`), so an unfamiliar field is kept rather than discarded by serde's default behaviour. The one exception is `Interruption`, whose whole value is its primary key.
+2. `tasks.extra` persists that map, so the field survives materialization rather than living for one transaction.
+3. `encode_canonical` sorts map keys by their encoded bytes, so the preserved field is re-emitted in the position its author put it in. Without sorting, byte-exact re-emission is impossible: the writer put its new field where it declared it, and a reader can only append.
+
+Every enum that rides the wire also degrades rather than rejecting: an unrecognised variant reads as a named fallback chosen to be the SAFE reading (an unknown task state is `todo`, never `done`; an unknown constraint severity is `soft`, never `hard`). Rejecting one field's value would reject the whole op, and two replicas would then diverge permanently over one string. `RRule`'s `Frequency` and `Weekday` are deliberately NOT lossy: silently recurring on the wrong schedule is worse than failing the routine.
+
+This means:
 - v2-only fields persist on v1-only devices.
 - v1-only constraints (e.g., "title must be non-empty") are validated on **inbound user edits only**, not on inbound merged ops. A v1 client merging an op that produces an empty title silently accepts it and surfaces a `db.merge.invariant_violated` `warn` log; the UI shows the field as `<untitled>` rather than refusing the merge.
 
@@ -229,8 +254,12 @@ These are the data the operator uses to decide when a deprecation window can clo
 
 The crypto spec describes byte-exact test vectors. This spec adds:
 
-- `tests/fixtures/hello/v1.cbor` — canonical `Hello` and `HelloAck` byte fixtures.
-- `tests/fixtures/version-mismatch/*.cbor` — every error path above produces a fixture; clients and server both run a vector test that confirms decode + correct error.
-- `tests/fixtures/forward-compat/v1-reads-v2.json` — synthetic v2 op (with extra fields) decoded by a v1 codec; round-trip MUST preserve the v2 fields byte-for-byte.
+- `tests/fixtures/hello/v1.cbor` and `tests/fixtures/hello/ack_v1.cbor` — canonical `Hello` and `HelloAck` byte fixtures.
+- `tests/fixtures/version-mismatch/*.cbor` — every negotiation error path has a fixture, and the test decodes the FIXTURE (not a freshly built value) and asserts the error it produces: `wire-mismatch`, `crypto-mismatch`, `doc-schema-too-old`, `capability-missing`.
+- `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1` carrying two envelope fields this build does not know (ids 13 and 40, the second above 23 so its CBOR key needs two bytes). The round trip preserves them byte-for-byte.
 
-These fixtures are checked into the repo. Any change to the fixtures is a version-bump ADR.
+  CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
+
+These fixtures are checked into the repo. Any change to them is a version-bump ADR — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
+
+The forward-compat fixture also pins the reason preservation is not optional: the envelope signature covers every field the sender wrote, so a decoder that DROPS an unknown field cannot re-emit an envelope that still verifies. `dropping_an_unknown_field_breaks_the_senders_signature` asserts exactly that.

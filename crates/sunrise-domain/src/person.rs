@@ -4,6 +4,7 @@
 //! informational labels only) Task `assignee`. v1 does not implement
 //! delegation; assigning a Task to a non-self Person is a label, not access.
 
+use crate::unknown::Unknowns;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
@@ -26,4 +27,9 @@ pub struct Person {
     /// Tombstone.
     #[serde(default)]
     pub deleted: bool,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`] and
+    /// `docs/10-cross-cutting/protocol-versioning.md` §7.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
