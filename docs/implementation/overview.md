@@ -75,12 +75,16 @@ offset), the v1→v10 migration upgrade tests, and the FTS5 hostile-input propte
 
 Tracked so they are not rediscovered as surprises. Each now has an issue.
 
-- **A skewed clock wins every conflict, permanently**
-  ([#21](https://github.com/justin13888/Sunrise/issues/21)). `lww_wins` trusts
-  raw `env.ts_ms` from the device wall clock, with no bound. The naive fix is
-  worse than the bug: clamping against *local* time makes two replicas store
-  different values for the same row, breaking convergence outright. The real
-  answer is an HLC, which is a sealed-envelope change and so a protocol bump.
+**Fixed since this list was written:** the skewed-clock defect
+([#21](https://github.com/justin13888/Sunrise/issues/21)) — `lww_wins` trusted
+an unbounded `env.ts_ms`, so a fast device held a permanent veto over every
+conflict it entered. The comparison key is now `(hlc, device_id, seq)` and ops
+beyond a five-minute drift window are refused; see
+[ADR-0016](../11-adr/0016-hlc-timestamps.md). The note here was right that
+clamping against local time would have broken convergence — the fix stores the
+SENDER's stamp, never the receiver's post-merge reading, for exactly that
+reason.
+
 - **Ring eviction is silent data loss**
   ([#19](https://github.com/justin13888/Sunrise/issues/19)). The client builds
   real sync cursors and the server discards them, replaying the whole retained
@@ -204,7 +208,7 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **1123** tests, 0 failures, 3
+`cargo test --workspace --all-targets` passes **1182** tests, 0 failures, 3
 ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests spawn).
 
 The number is worth more than it used to be. Earlier revisions of this file
