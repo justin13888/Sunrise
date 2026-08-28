@@ -15,7 +15,7 @@ Numbers we promise. CI fails when a regression breaks them.
 | Android (baseline C) | 400 ms | 900 ms | 2 s |
 | Web (4G, cold cache, baseline A) | 1.5 s | 3 s | 5 s |
 | Web (warm cache, baseline A) | 250 ms | 500 ms | 1 s |
-| TUI (baseline A) | 100 ms | 250 ms | 500 ms |
+| CLI (baseline A) | 100 ms | 250 ms | 500 ms |
 
 ### Hardware baselines (CI-pinned)
 
@@ -41,7 +41,7 @@ All platforms: ≤100ms p95.
 - iOS (Baseline B): ≥10k ops/sec.
 - Android (Baseline C): ≥8k ops/sec.
 - Web (V8 + WASM, Baseline A): ≥5k ops/sec.
-- TUI (Baseline A): ≥40k ops/sec.
+- CLI (Baseline A): ≥40k ops/sec.
 
 ## Initial sync (10k tasks)
 
@@ -59,7 +59,7 @@ All platforms: ≤100ms p95.
 - iOS: ≤200 MB.
 - Android: ≤200 MB.
 - Web tab: ≤150 MB.
-- TUI: ≤80 MB.
+- CLI: ≤80 MB (a one-shot process; the number is a ceiling on the core, not on a long-running UI).
 
 ## Background impact
 
@@ -87,7 +87,7 @@ All platforms: ≤100ms p95.
 
 - `cargo bench` for core operations (Criterion).
 - Lighthouse for web cold-start budget.
-- Custom harnesses for app-launch numbers (perfetto on Android, MetricKit on iOS, hyperfine for TUI).
+- Custom harnesses for app-launch numbers (Instruments on macOS, hyperfine for the CLI).
 
 ## Regression policy
 

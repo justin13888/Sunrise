@@ -13,7 +13,7 @@ Accessibility is a baseline, not a feature. Every release passes the checks in t
 - **iOS:** VoiceOver, Dynamic Type, Reduce Motion, Differentiate Without Color, Voice Control.
 - **Android:** TalkBack, font scaling, color inversion, switch access.
 - **Desktop / Web:** NVDA, VoiceOver (macOS), JAWS; full keyboard equivalence.
-- **TUI:** runs in 256-color and monochrome; respects `NO_COLOR`; works with screen readers attached to terminal emulators.
+- **CLI:** plain text on stdout, one record per line, no colour and no glyph art — which makes it the most screen-reader-friendly surface Sunrise has, and a usable fallback for anything the GUI gets wrong.
 
 ## Concrete requirements
 
@@ -63,7 +63,7 @@ Accessibility is a baseline, not a feature. Every release passes the checks in t
 - **iOS Accessibility Inspector** smoke pass per release.
 - **Android Accessibility Scanner** smoke pass per release.
 - **Manual screen reader** spot checks: TalkBack on Android, VoiceOver on iOS and macOS, NVDA on Windows.
-- **TUI:** validate with `screen-reader-friendly` mode that outputs structured text rather than glyph-art.
+- **CLI:** already structured text; validate that every column a human needs is present without colour.
 
 ### Per-platform a11y CI
 

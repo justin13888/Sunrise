@@ -13,36 +13,40 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 ## Features
 
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
-- **CRDT-based sync**: Edit offline on any device and merge without conflicts.
-- **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours.
-- **Terminal-first**: a full-featured TUI is the shipping client for v1, with non-interactive subcommands for scripting and automation. A web PWA shell exists but runs on a stub core (see ADR-0012); mobile bindings are planned.
-- **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation.
+- **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
+- **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
+- **Scriptable**: `sunrise` is a one-shot CLI — capture, triage, review, export and sync from a shell, a cron job, or over SSH. The graphical client is a native SwiftUI macOS app ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)); iOS, Android and Web are deferred.
+- **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
 - **Calendar integrations**: Google Calendar and iCalendar.
 
 ## Architecture
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace covering crypto, sync, storage, the sync relay server, and the TUI.
-- **Clients**: the terminal client (`crates/sunrise-tui`) is the shipping client for v1. `apps/` holds a Bun workspace for the web PWA and shared UI tokens.
+- **Rust core** (`crates/`): a Cargo workspace covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam.
+- **Clients**: `sunrise-cli` ships today. The macOS app links the core through UniFFI (`crates/sunrise-core-bindings`); `apps/` holds a Bun workspace for the deferred web PWA and shared UI tokens.
 
 ### Project structure
 
 ```
-crates/        Rust workspace — the shared core and server
+crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-core            Single-writer vault: command/query + sync state
   sunrise-crypto          Frozen v1 crypto suite (keys, envelopes, recovery, pairing)
   sunrise-sync            Sync session states, backoff, transport trait + WebSocket client
   sunrise-wire-protocol   Sync wire protocol: frames, codecs, negotiation
   sunrise-storage         SQLite + SQLCipher (op log, blob store, FTS5)
   sunrise-server          Self-host sync relay (REST + WebSocket, OIDC)
-  sunrise-domain          Domain entities, validation, RRULE, routine generation
+  sunrise-domain          Entities, validation, RRULE, routine generation, the
+                          capture/annotate grammars, and the shared phrasing
+  sunrise-client-core     Client-side but UI-free: undo/redo, saved views
+  sunrise-cli             The `sunrise` command-line client
+  sunrise-core-bindings   UniFFI seam — Swift today, Kotlin later
   sunrise-integrations    Google Calendar + iCalendar
-  sunrise-tui             Terminal UI (Ratatui)
-  sunrise-core-bindings   UniFFI facade for iOS/Android
   …and supporting crates (cbor, id, error, log, onboarding, pairing, e2e)
+tools/
+  uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/
-  web/         Web PWA (React + Vite)
+  web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
   sunrise-ui/  Shared UI tokens and components
 schemas/       Versioned JSON schemas
@@ -57,6 +61,8 @@ docs/          Design source of truth: product, architecture, domain, crypto, sy
 - [Rust](https://rustup.rs) — toolchain version is pinned in `rust-toolchain.toml`
 - [just](https://github.com/casey/just) — command runner; all project tasks live in the `justfile`
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
+
+Building the macOS client additionally needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ### Getting started
 
@@ -73,20 +79,18 @@ just rust-test    # Rust: unit tests + cross-crate end-to-end tests
 
 ### Try it in 30 seconds
 
-The terminal client ships non-interactive subcommands, so you can drive a real
-vault without launching the UI:
+`sunrise` drives a real encrypted vault from the shell — no GUI, no daemon:
 
 ```bash
 export SUNRISE_VAULT=$(mktemp -d)
-cargo run -q -p sunrise-tui -- capture 'Renew passport #inbox ^+6h !1 ~1h'
-cargo run -q -p sunrise-tui -- capture 'Email Sara about Q3'
-cargo run -q -p sunrise-tui -- today
-cargo run -q -p sunrise-tui -- inbox
-cargo run -q -p sunrise-tui -- next               # the planner's ranked picks
-cargo run -q -p sunrise-tui -- search passport
-cargo run -q -p sunrise-tui -- review             # this week, folded
-cargo run -q -p sunrise-tui -- export trends json # to stdout, for jq
-cargo run -q -p sunrise-tui             # ...then the interactive TUI
+cargo run -q -p sunrise-cli -- capture 'Renew passport #inbox ^+6h !1 ~1h'
+cargo run -q -p sunrise-cli -- capture 'Email Sara about Q3'
+cargo run -q -p sunrise-cli -- today
+cargo run -q -p sunrise-cli -- inbox
+cargo run -q -p sunrise-cli -- next               # the planner's ranked picks
+cargo run -q -p sunrise-cli -- search passport
+cargo run -q -p sunrise-cli -- review             # this week, folded
+cargo run -q -p sunrise-cli -- export trends json # to stdout, for jq
 ```
 
 Capture syntax is `#stream @context ^when !priority ~duration *due:when*`.
@@ -95,17 +99,15 @@ so no input is ever silently dropped. `^when` takes `today`, `tonight`,
 `tomorrow`, weekday names (optionally `next friday`), `YYYY-MM-DD`, `+3d` /
 `+2w` / `+6h` / `+90m`, and an optional trailing time (`9am`, `14:30`).
 
-Inside the TUI: `1`–`7` (or `gt` / `gi` / `gs` / `g/` / `gf` / `gr` / `gv`)
-switch views; `c` capture, `A` annotate (`!1 %high ~30m @ctx`), `e` edit,
-`d` defer, `s` schedule, `D` delete, `m` move to stream, `Space` mark,
-`b` link blockers, `x` complete, `u` undo, `L` activity, `/` search,
-`:` command mode, and `?` shows every binding and command.
+Every surface parses that line with the same function
+(`sunrise_domain::capture::parse`), so a task captured from a script and one
+captured from the app are the same task.
 
 ### End-to-end QA
 
-This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual app runs are for visual/interaction QA. Run each command from the repo root.
+This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, **sync relay server**, and **TUI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell was removed: it never ran, and keeping a client that does not work is worse than not claiming one.
+> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is being built against the UniFFI seam in `crates/sunrise-core-bindings`, which generates and links today. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -125,38 +127,50 @@ Run the full JS/TS gate, the full Rust suite, and the lint/format checks. A gree
 
 ```bash
 bun run validate                          # Biome CI + typecheck + Vitest coverage
-cargo test --workspace --all-targets      # entire Rust workspace — 411 tests pass
+cargo test --workspace --all-targets      # entire Rust workspace
 cargo clippy --workspace --all-targets -- -D warnings   # pedantic-clean
 cargo fmt --check                         # formatting clean
+cargo deny check                          # advisories, bans, licences, sources
 ```
 
 `just validate && just rust-test` is the same pass wrapped in `just` recipes (what `just pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
 
-#### 3. Live sync demo (server + two clients)
+#### 3. Headless, no client at all
 
-The TUI wires live sync through three optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, and `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange (both instances share the fixed dev vault root, so stream keys derive identically). All three unset = fully offline (`sync: off` in the status line).
+Every layer is drivable with no UI. `cargo test -p sunrise-cli` runs the real
+`sunrise` binary against a real vault in a separate process, and boots a real
+relay in-process to watch two replicas converge.
+
+```bash
+cargo test -p sunrise-cli     # the whole stack, headless
+cargo test -p sunrise-e2e     # relay convergence, pairing, four chaos scenarios
+```
+
+#### 4. Live sync demo (server + two vaults)
+
+`sunrise` wires live sync through three optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, and `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange (both instances share the fixed dev vault root, so stream keys derive identically). All three unset = fully offline.
 
 ```bash
 # Terminal 0 — run the self-host relay:
 cargo run -p sunrise-server
 # → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
 
-# Terminal 1 — instance A (exports its cert, trusts B's):
+# Terminal 1 — vault A exports its cert and trusts B's:
 SUNRISE_VAULT=/tmp/vault-a \
 SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
 SUNRISE_EXPORT_CERT_FILE=/tmp/a.cert \
 SUNRISE_TRUST_CERT_FILE=/tmp/b.cert \
-cargo run -p sunrise-tui
+cargo run -p sunrise-cli -- capture 'Written on A'
 
-# Terminal 2 — instance B (exports its cert, trusts A's):
+# Terminal 2 — vault B exports its cert and trusts A's:
 SUNRISE_VAULT=/tmp/vault-b \
 SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
 SUNRISE_EXPORT_CERT_FILE=/tmp/b.cert \
 SUNRISE_TRUST_CERT_FILE=/tmp/a.cert \
-cargo run -p sunrise-tui
+cargo run -p sunrise-cli -- today
 ```
 
-Cert trust is a two-sided file exchange: the **first** launch of each instance only exports its cert (the peer's file doesn't exist yet); **restart both** so each picks up the peer cert and submits `TrustDevice`. Then capture a task (`c`) in one instance and watch it appear in the other; the status line shows `sync: live` (green) with the pending count. The same flow is proven headlessly by `cargo test -p sunrise-tui --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
+Cert trust is a two-sided file exchange: the **first** run of each vault only exports its cert (the peer's file doesn't exist yet); **run both again** so each picks up the peer cert and submits `TrustDevice`. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
 
 ```bash
 cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
@@ -164,79 +178,22 @@ cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture
 
 > The server config is default-only (ephemeral, in-memory). The `-c sunrise.toml` flag in the binary's docstring is not wired up yet, so flags/config files have no effect.
 
-#### 4. Terminal client — TUI feature tour (manual E2E)
-
-The TUI opens a real encrypted vault and is the quickest way to exercise the core command/query loop by hand. Use a throwaway vault so QA never touches real data:
+#### 5. macOS client
 
 ```bash
-SUNRISE_VAULT=$(mktemp -d) cargo run -p sunrise-tui
+just macos-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
 ```
 
-It opens (creating if needed) the vault at `$SUNRISE_VAULT` (default `~/.sunrise/vault`), unlocked with a fixed single-user dev key.
+That builds the release slices, generates the Swift bindings from the built
+library, and packages the framework the app links. The bindings generator lives
+in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
+lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features pull a
+version requiring rustc 1.91, which would break the workspace's 1.88 pin.
 
-**Views** (`1`–`7`, or the `g` chords):
+`out/` and `build/` are gitignored: the Swift is generated from the Rust on
+every build, so committing it would let the two drift.
 
-| Key | View | What it is |
-| --- | ---- | ---------- |
-| `1` / `gt` | Today | Overdue / Due today / Scheduled / Upcoming / Anytime, grouped |
-| `2` / `gi` | Inbox | Untriaged captures; `t` runs a one-at-a-time triage pass |
-| `3` / `gs` | Browse | Sidebar of **Streams** and **Contexts**; tasks of whichever is open |
-| `4` / `g/` | Search | FTS5 over titles and bodies, re-run on every keystroke |
-| `5` / `gf` | Focus | The ranked planner, then the running session |
-| `6` / `gr` | Routines | Recurring templates, with cadence, next occurrence and streak |
-| `7` / `gv` | Review | Weekly review, daily glance, 12-week trends, saved snapshots |
-
-**Selection and movement**
-
-| Input | Action |
-| ----- | ------ |
-| `j`/`k`, `↑`/`↓` | Move the cursor |
-| `gg` / `G`, `Home` / `End` | First / last row |
-| `PgUp`/`PgDn`, `^F`/`^B`, `^D`/`^U` | Page and half-page |
-| `Tab` | Cycle panes (Browse) or panels (Review) |
-| `h` / `l` | Sidebar / tasks (Browse) |
-| `Space` | Mark a row — a non-contiguous multi-selection |
-| `V` then `j`/`k` | Visual range |
-| `^Space` / `Esc` | Clear the marks |
-
-**Acting on tasks** — every operator applies to the marks, else the visual run, else the cursor.
-
-| Input | Action |
-| ----- | ------ |
-| `c` | Capture (`#stream @context ^when !1-5 ~30m *due:when*`), with a live preview |
-| `A` | Annotate: `!1 %high ~45m @home #travel due:friday`; `-` clears a facet |
-| `e` / `E` | Edit the title / the note body in `$EDITOR` |
-| `x` | Toggle done (re-opens a completed task) |
-| `d` / `s` | Defer / schedule (prompts) |
-| `m` / `D` | Move to a stream / delete (confirms) |
-| `b` / `B` | Make the marked tasks block this one / clear its blockers |
-| `L` | Activity feed — what actually happened to this task or stream |
-| `u` / `^R` | Undo / redo |
-| `F` | Start a focus session on the current pick |
-
-**Managing the vault** — in the Browse sidebar, `e` renames the row, `D` deletes it, `a` archives it and `p` pauses a stream. `S` creates a stream, `C` a context, `R` a routine (`water the plants #home ~10m | every 2 days`). In the Routines view `e` edits the cadence, `E` renames, `s` skips the next occurrence.
-
-**Command mode** (`:`; Tab completes, `↑` recalls):
-
-| Command | Action |
-| ------- | ------ |
-| `:q` | Quit |
-| `:view <name>` | Switch view by name or number |
-| `:capture <text>` | Capture without leaving the current view |
-| `:filter @ctx…` | Narrow every list to those contexts (bare `:filter` clears) |
-| `:focus plan` / `stats` / `energy <l\|m\|h>` / `length <p\|e\|u>` | Planner and calibration |
-| `:export <trends\|activity\|focus\|streaks> [json\|csv] [path]` | Write a stats dataset |
-| `:save <name>` / `:go <name>` / `:views` | Save this view, query and filter; recall it; list them |
-| `:open <tsk_…>` / `:devices` / `:preview <path>` | Jump to a task / list devices / show an image |
-| `:help` | The full key and command reference (`?` opens the same overlay) |
-
-QA flow: capture a few tasks (`c`), annotate one (`A !1 %high ~30m`), mark two with `Space` and defer them together (`d`), complete one (`x`) and undo it (`u`), tour the views, build a dependency (`Space` on a blocker, then `b` on its dependent) and check the planner hides the blocked task (`5`), run a search (`/`), open the Review view (`7`) and save a snapshot (`Enter`), then quit and re-launch with the same `SUNRISE_VAULT` to confirm data persisted.
-
-**Mouse** is off by default because capturing it steals the terminal's own text selection; `SUNRISE_MOUSE=1 cargo run -p sunrise-tui` turns it on. The wheel scrolls and a click moves the cursor — clicks never mutate.
-
-**Image preview:** the `images` feature is on by default, so `:preview <path>` (from the Focus view) renders a PNG or JPEG inline — using the terminal's graphics protocol where available, halfblocks otherwise. Point it at any sample image, e.g. `:preview ~/Pictures/sample.png`. To build without image support: `cargo run -p sunrise-tui --no-default-features`.
-
-#### 5. Benchmarks (manual)
+#### 6. Benchmarks (manual)
 
 Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (submit / query_today@10k / fts@10k / ws-handshake) and merges the results back for your platform.
 
@@ -245,7 +202,7 @@ just bench            # run the criterion suite only
 just bench-baseline   # run benches, then update bench/baseline.json for this platform
 ```
 
-#### 6. Chaos suite (manual)
+#### 7. Chaos suite (manual)
 
 Four fault-injection scenarios — heavy drop, corruption, delay, and partition — each proving the cores reconverge after the transport heals:
 
@@ -253,7 +210,7 @@ Four fault-injection scenarios — heavy drop, corruption, delay, and partition 
 cargo test -p sunrise-e2e --test chaos -- --nocapture
 ```
 
-#### 7. Web PWA (manual E2E)
+#### 8. Web PWA (manual E2E)
 
 ```bash
 bun run --filter @sunrise/web dev     # dev server at http://localhost:5174
@@ -267,19 +224,20 @@ bun run --filter @sunrise/web preview # serve the production build
 
 All project commands are centralized in the [`justfile`](justfile). Run `just` (or `just --list`) to see everything:
 
-| Command              | Description                                          |
-| -------------------- | ---------------------------------------------------- |
-| `just check`         | Lint & format check, no writes (Biome)               |
-| `just fix`           | Lint & format with autofix (Biome)                   |
-| `just ci`            | Strict CI lint check, no writes (Biome)              |
-| `just typecheck`     | Type-check every JS/TS workspace package             |
-| `just test`          | Run the JS/TS test suite once                        |
-| `just test-coverage` | Run the JS/TS test suite with coverage               |
-| `just rust-fmt`      | Format Rust code in place                            |
-| `just rust-clippy`   | Lint Rust with Clippy (warnings denied)              |
-| `just rust-check`    | Type-check the Rust workspace                        |
-| `just rust-test`     | Run the Rust test suite                              |
-| `just validate`      | Full local validation: Biome CI + typecheck + coverage |
+| Command                  | Description                                            |
+| ------------------------ | ------------------------------------------------------ |
+| `just check`             | Lint & format check, no writes (Biome)                 |
+| `just fix`               | Lint & format with autofix (Biome)                     |
+| `just ci`                | Strict CI lint check, no writes (Biome)                |
+| `just typecheck`         | Type-check every JS/TS workspace package               |
+| `just test`              | Run the JS/TS test suite once                          |
+| `just test-coverage`     | Run the JS/TS test suite with coverage                 |
+| `just rust-fmt`          | Format Rust code in place                              |
+| `just rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
+| `just rust-check`        | Type-check the Rust workspace                          |
+| `just rust-test`         | Run the Rust test suite                                |
+| `just macos-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
+| `just validate`          | Full local validation: Biome CI + typecheck + coverage |
 
 ### Git hooks
 

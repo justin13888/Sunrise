@@ -216,14 +216,14 @@ and the salt has to come back.
   stricter than the `/24` / `/48` truncation this section allows. Truncated
   prefixes become relevant when there is a rate limiter to explain.
 - Client logs: never log the device's own IP. Connection diagnostics use the
-  relay hostname (`relay`), which `sunrise_tui::livesync::relay_host` reduces
+  relay hostname (`relay`), which `sunrise_cli::livesync::relay_host` reduces
   from the configured URL — dropping any credentials and query string with it.
 
 ### 6.3 CI enforcement
 
 The `log-redaction` job in `.github/workflows/ci.yml` greps
 `\bplain[a-z_]*\.expose[[:space:]]*\(` across the `src` tree of every crate
-that emits log records — today `sunrise-log`, `sunrise-server`, `sunrise-tui`,
+that emits log records — today `sunrise-log`, `sunrise-server`, `sunrise-cli`,
 `sunrise-storage`, `sunrise-core`, `sunrise-sync` — plus any `telemetry/`,
 `logging/`, or `observability/` module in any crate. **A crate that starts
 logging must be added to that list.** It runs through
@@ -261,8 +261,8 @@ The catalogue lives in [`log-events.md`](./log-events.md), split into what is
 
 Implemented today: `sunrise-server` (startup, request lifecycle, auth outcome,
 WebSocket session, relay fan-out), `sunrise-storage` (migrations),
-`sunrise-core::sync_driver` + `sunrise-tui::livesync` (session lifecycle,
-backoff), and `sunrise-tui` (startup, keymap, dev pairing).
+`sunrise-core::sync_driver` + `sunrise-cli::livesync` (session lifecycle,
+backoff), and `sunrise-cli` (startup, dev pairing).
 
 Deliberately not implemented, with reasons, in the catalogue's *Reserved*
 section: the `crypto` hot path, per-transaction storage events, per-keystroke UI
@@ -278,7 +278,7 @@ events, quota and push (no such features), and integrations (no provider).
 | Destination | Format | Who uses it |
 |---|---|---|
 | `stderr` | NDJSON | `sunrise-server`. `SUNRISE_LOG_FORMAT=pretty` switches to a human line — **dev builds only**; a release binary refuses the request and stays on NDJSON, because release output is something a pipeline parses. |
-| file | NDJSON | `sunrise-tui`. `$XDG_STATE_HOME/sunrise/log/sunrise-tui.ndjson`, defaulting to `~/.local/state/sunrise/log/`; override with `SUNRISE_LOG_FILE`. **A full-screen terminal app cannot log to stderr**: a record written while Ratatui holds the alternate screen lands in the middle of the user's board and the diffing renderer never paints over it. If the file cannot be opened the TUI runs with no logging at all — falling back to stderr would trade a missing log for a broken display. |
+| file | NDJSON | `sunrise-cli`. `$XDG_STATE_HOME/sunrise/log/sunrise-cli.ndjson`, defaulting to `~/.local/state/sunrise/log/`; override with `SUNRISE_LOG_FILE`. **A command-line client cannot log to either standard stream**: stdout is its contract (`sunrise export … \| jq` has to work) and stderr is where it talks to the human running it. If the file cannot be opened the CLI runs with no logging at all — falling back to stderr would trade a missing log for corrupted output. |
 | capture | NDJSON | Tests (`sunrise_log::Capture`), so assertions are on the exact bytes a sink would receive. |
 
 **Rotation** is a size roll at 16 MiB keeping one previous generation
@@ -321,7 +321,7 @@ anything that could want to log:
 
 ```rust
 sunrise_log::init_stderr()?;                       // sunrise-server
-let _ = sunrise_log::init_file("sunrise-tui");     // sunrise-tui
+let _ = sunrise_log::init_file("sunrise-cli");     // sunrise-cli
 ```
 
 Both assemble the same stack:
@@ -357,7 +357,7 @@ one global dispatcher.
 | `crates/sunrise-log/tests/event_catalog.rs` | Every `ev` literal in `crates/*/src` is grammatical and catalogued. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
 | `crates/sunrise-server/tests/logging.rs` | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted, healthy traffic silent at `info`. |
-| `crates/sunrise-tui/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
+| `crates/sunrise-cli/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
 
 **Removed: the per-package conformance triple.** The original §11 asked every
 package for an `ev`-catalogue snapshot, a redaction property test, and a

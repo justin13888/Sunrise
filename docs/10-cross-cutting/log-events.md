@@ -53,7 +53,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `db.migrate.failed` | error | A migration statement failed; `from_v`, `to_v`, `err_code`, `cause`. The one storage failure that leaves a user unable to open a vault at all. |
 | `db.migrate.refused` | error | The vault predates the `STORAGE_V = 13` baseline (ADR-0018) and cannot be upgraded; `from_v`, `to_v`, `err_code`. Terminal: the remedy is a fresh vault. |
 
-### `sync` — `sunrise-core::sync_driver`, `sunrise-tui::livesync`
+### `sync` — `sunrise-core::sync_driver`, `sunrise-cli::livesync`
 
 | Event | Level | Meaning |
 |---|---|---|
@@ -64,13 +64,12 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.session.off` | info | No relay configured; running offline. |
 | `sync.backoff` | debug | Waiting before reconnect; `attempt`, `delay_ms`. A reconnect storm is visible as a run of these. |
 
-### `ui` — `sunrise-tui`
+### `ui` — `sunrise-cli`
 
 | Event | Level | Meaning |
 |---|---|---|
-| `ui.start` | info | TUI starting; `app_v` and the protocol versions. |
-| `ui.keymap.invalid` | warn | `keys.toml` entries were ignored; `n_ops` counts them. The file itself is right there to read, so the log records how many, not which. |
-| `ui.pair.cert_exported` | info/warn | Dev cert export step of the two-terminal demo; `result`. Never the path. |
+| `ui.start` | info | Client starting; `app_v` and the protocol versions. Emitted by `sunrise-cli`; the macOS app will emit the same name. |
+| `ui.pair.cert_exported` | info/warn | Dev cert export step of the two-vault demo; `result`. Never the path. |
 | `ui.pair.peer_trusted` | info/warn | Dev peer-trust step; `result`, `err_code` on failure. |
 
 ---
@@ -160,10 +159,10 @@ only push provider is `LoggingProvider`, which increments a metric.
 ### `ui` (interaction)
 
 Per-interaction UI logging is deliberately absent. `ui.input.lat` and
-`ui.action` fire on the keystroke path of a full-screen app whose log is a file
-on the user's own disk; the cost is real and the debugging value is close to
-zero, because the reducer (`sunrise_tui::runtime::apply_action`) is a pure
-function that unit-tests without any of it.
+`ui.action` would fire on the keystroke path of a GUI whose log is a file on
+the user's own disk; the cost is real and the debugging value is close to zero,
+because every decision a keystroke makes is either a `Command` the core already
+logs or a pure function that unit-tests without any of it.
 
 | Event | Level | Meaning |
 |---|---|---|

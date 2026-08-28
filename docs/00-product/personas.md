@@ -18,7 +18,7 @@ Sunrise targets one core persona with two adjacent variants. We refuse to dilute
 
 **Wins.**
 - Open Sunrise, see "today across all streams," not "all 412 tasks across all projects."
-- Capture from anywhere — TUI on a remote box, lock screen on iOS — and trust it shows up everywhere.
+- Capture from anywhere — `sunrise capture` on a remote box, a global hotkey on the Mac — and trust it shows up everywhere.
 - Hand off work mid-flight (laptop → phone) without thinking about sync.
 
 ## Variant A: The Solo Founder / Operator
@@ -27,7 +27,7 @@ Same profile, but everything is more concentrated. One company, many functions (
 
 ## Variant B: The Researcher / Grad Student
 
-Long-running projects (multi-year), heavy reading queue, recurring weekly review, citations and notes attached to tasks. Mostly solo. Wants TUI on a research compute box. Cares deeply about export and longevity.
+Long-running projects (multi-year), heavy reading queue, recurring weekly review, citations and notes attached to tasks. Mostly solo. Wants to capture and review from a research compute box over SSH — which `sunrise` covers, though *working* in the terminal all day does not survive [ADR-0019](../11-adr/0019-swiftui-macos-client.md). Cares deeply about export and longevity.
 
 ## Explicitly *not* targeted
 
@@ -38,6 +38,6 @@ Long-running projects (multi-year), heavy reading queue, recurring weekly review
 ## Implications for design
 
 - The *first* screen is "Today, across streams" — not a project picker.
-- Quick capture exists on every surface, including TUI and iOS lock screen.
+- Quick capture exists on every surface, including a shell over SSH.
 - Recurrence and routines are first-class, not bolted on.
 - Sharing is an integrity-preserving extension, not the core loop.

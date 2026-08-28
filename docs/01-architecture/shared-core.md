@@ -17,15 +17,20 @@ Per-platform UI consumes the core; nothing else does.
 
 ## Distribution
 
-| Platform | Form |
-|---|---|
-| Desktop (Tauri) | Linked Rust crate in the Tauri backend |
-| iOS | `xcframework` via UniFFI bindings |
-| Android | `.aar` via UniFFI bindings (JNI) |
-| Web | `wasm-bindgen` build, loaded as ES module |
-| TUI | Linked into the TUI binary |
+| Platform | Form | Status |
+|---|---|---|
+| macOS | `SunriseCore.xcframework` via UniFFI bindings (`just macos-xcframework`) | v1 |
+| CLI | Linked directly into the `sunrise` binary | v1 |
+| iOS | `xcframework` via UniFFI bindings — same seam, unproven slices | deferred |
+| Android | `.aar` via UniFFI bindings (JNI) — same seam | deferred |
+| Web | `wasm-bindgen` build, loaded as ES module | deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
 
-UniFFI is used for mobile bindings because it generates idiomatic Swift/Kotlin async APIs. WASM uses `wasm-bindgen` directly because UniFFI's WASM story is immature.
+UniFFI is used for every native binding because it generates idiomatic
+Swift/Kotlin async APIs from one annotated crate
+([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the seam lives in
+`crates/sunrise-core-bindings`, and `sunrise-domain` carries no uniffi
+dependency. WASM would use `wasm-bindgen` directly because UniFFI's WASM story
+is immature.
 
 ## Public surface (sketch)
 
@@ -106,7 +111,7 @@ Exactly **one** `Core` instance per vault path per process. Multiple processes a
 - Because `flock` degrades to per-process `fcntl` semantics over NFS and is a no-op on some FUSE filesystems, same-process exclusion is enforced separately by a process-local registry of canonicalized vault paths. That registry, not the OS lock, is the authority for the one-Core-per-vault-per-process invariant.
 - Acquisition retries for ~250 ms (13 attempts, 20 ms apart). On timeout, `Core::open` returns `CoreError::VAULT_LOCKED { holder_pid, holder_started_at }`, read from `<vault>/core.lock.owner` — a separate advisory payload file. The identity cannot live in `core.lock` itself because Windows `LockFileEx` is mandatory on the locked range, so a contender could never read it. The payload is best-effort and non-authoritative: it exists only for the error message. The caller decides whether to retry or surface the error.
 - The lock file contents are the holding process's PID and ISO 8601 start timestamp (≤ 64 bytes), rewritten on each open. They are **not** authoritative — they exist only for the error message — the lock itself is the OS lock.
-- The TUI's two-process model uses a single core daemon; both UI processes connect to it, neither holds `core.lock` directly. See [`../07-clients/tui.md`](../07-clients/tui.md).
+- There is no core daemon and no second process. The macOS app holds the vault lock for as long as it runs; `sunrise` is one-shot and releases it on exit. Two long-lived writers against one vault would need a daemon, which is a whole subsystem to buy something neither client needs.
 - On crash, the OS releases the lock; recovery is a normal unclean-shutdown reopen.
 
 `submit` calls within a single `Core` are **per-entity serialized**: the core acquires an in-memory lock keyed by `(stream_id, entity_id)` before applying. Cross-entity calls run concurrently. There is no global submit serialization — concurrent calls on different entities apply in parallel and commit in arrival order. CRDT merge guarantees convergence regardless of arrival order.

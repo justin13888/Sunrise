@@ -37,14 +37,15 @@ client*, which is the only measure that matters to a user.
 | `sunrise-storage` | 🟨 partial | Schema, op log, FTS5, and migration upgrade tests (v1→v10) are solid. `BlobStore` has no consumers; 7 tables are never written |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
-| `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-tui` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
+| `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-cli` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
 | `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
-| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds. Every command kind and every query is now reachable from the TUI except `TrustDevice` (env-driven) and `MaterializeRoutines` (timer-driven) |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements 5 entities behind 15 op kinds. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` covers the one-shot subset |
 | `sunrise-server` | 🟨 partial | Relay fanout, retained-ring replay, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is still a stub and remains unauthenticated ([#22](https://github.com/justin13888/Sunrise/issues/22)) |
 | `sunrise-integrations` | 🟨 partial | GCal read-only import is implemented: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID). iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
-| `sunrise-tui` | ✅ live | The v1 client, and now the reachability story for most of the core. Seven views (Today grouped by urgency, Inbox, Browse with a Streams **and Contexts** sidebar, Search, Focus, Routines, Review); capture and annotate through the shared parser with live previews; full CRUD over Tasks, Streams, Contexts and Routines; the dependency graph is writable (`b`); marks and visual-range bulk operations; undo/redo; the activity feed; the weekly/daily review, trends, snapshot history and export; a real line editor with the readline chords and bracketed paste; completion and history on the `:` line; optional mouse; saved views (`~/.config/sunrise/views.toml`); and non-interactive subcommands (`capture`, `today`, `inbox`, `next`, `focus`, `done`, `streams`, `contexts`, `routines`, `search`, `review`, `export`, `sync --once`) |
-| `sunrise-core-bindings` | 🟧 orphan | The JSON seam works and is tested, but there is **no UniFFI and no `extern "C"`** anywhere, so no symbol is callable from Swift or Kotlin |
+| `sunrise-cli` | ✅ live | The `sunrise` binary: thirteen one-shot subcommands (`capture`, `today`, `inbox`, `next`, `focus`, `done`, `streams`, `contexts`, `routines`, `search`, `review`, `export`, `sync --once`) plus the env-driven live-sync wiring. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process |
+| `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
+| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 22 commands, all 22 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync. `just macos-xcframework` generates the Swift and packages the framework |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
@@ -98,7 +99,7 @@ reason.
   ([#22](https://github.com/justin13888/Sunrise/issues/22)). The chunk-upload
   route the `init` response points at is not mounted, so every upload 404s. It
   also blocks attachments: `Command::AttachFile` and `Query::TaskAttachments` do
-  not exist, which is why the TUI's attachment pane is a placeholder.
+  not exist, so no client can offer attachments at all.
 - **Auth is checked once, at the WebSocket upgrade.** A token expiring
   mid-session does not terminate the connection. `auth.md` specifies an
   `AUTH_TOKEN_EXPIRED` close and an out-of-band `0x12 RefreshToken` frame;
@@ -120,7 +121,7 @@ Recorded because each presented as something other than what it was:
   the third event as a no-change update. The same ordering feeds
   `WeeklyReview`'s counts. Now ordered by `(ts_ms, device_id, seq)` — the
   authoring device's own causal counter, which is what a state-machine fold
-  needs. Found by wiring the TUI's activity overlay, not by a test.
+  needs. Found by wiring an activity feed against it, not by a test.
 - **`x` did not toggle.** Documented as "toggle done", it only ever completed:
   pressing it on a finished task re-sent `CompleteTask`, which the core accepts
   as a no-op. There was no path anywhere in the client to re-open a task.
@@ -179,13 +180,22 @@ Recorded because each presented as something other than what it was:
   an empty list forever. It also carried a second `Cargo.lock` that silently
   went stale whenever a workspace crate gained a dependency. Keeping ~160 lines
   of React that claimed to be a client was the same orphan problem ADR-0014
-  removed elsewhere. Git history preserves it. The TUI is the v1 client.
+  removed elsewhere. Git history preserves it.
+- **Ratatui TUI (`crates/sunrise-tui`).** Replaced by a native SwiftUI macOS
+  app over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)).
+  Everything in it that was not about drawing a terminal was rescued first,
+  into `sunrise-domain` (recurrence phrasing, the annotate grammar, the routine
+  projection, the shared vocabulary), `sunrise-client-core` (undo/redo, saved
+  views) and `sunrise-cli` (the subcommands). `ratatui`, `crossterm`,
+  `ratatui-image` and `image` left the workspace with it, and so did the
+  RUSTSEC-2024-0436 advisory suppression they required.
 
 ## Deferred by decision
 
 - **Web WASM core** — [ADR-0012](../11-adr/0012-web-wasm-deferred.md); MSRV
   blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
-- **iOS / Android / UniFFI** — platform-engineer owned.
+- **iOS / Android** — the UniFFI seam is built and generates Kotlin from the
+  same scaffolding; only macOS slices have been produced and proven.
 - **Apple Focus integration** — not wired.
 - **Focus Mode's platform effects** — the session record, planner, calibration,
   chunking and unblock cascade are live in the core
@@ -256,21 +266,17 @@ bun run validate                                        # no TS tests exist yet
   and the server now **refuses to bind a non-loopback address** while that is
   in use, since it maps every caller to one account. Configure an OIDC issuer
   for multi-user.
-- `cargo run -p sunrise-tui` — the terminal client. Reads the vault directory
-  from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and unlocks with a fixed
-  single-user dev key. Non-interactive subcommands (`capture`, `today`,
-  `inbox`, `streams`, `search`) drive the same vault without a terminal, which
-  is also how `crates/sunrise-tui/tests/cli.rs` exercises the whole stack.
+- `cargo run -p sunrise-cli -- <subcommand>` — the command-line client. Reads
+  the vault directory from `SUNRISE_VAULT` (default `~/.sunrise/vault`) and
+  unlocks with a fixed single-user dev key. Every subcommand is one-shot, which
+  is what lets `crates/sunrise-cli/tests/cli.rs` exercise the whole stack
+  through the real binary.
 
-> **Sync in the TUI:** setting `SUNRISE_SYNC_URL`
+> **Sync from the CLI:** setting `SUNRISE_SYNC_URL`
 > (e.g. `ws://127.0.0.1:8443/sync`) starts the WebSocket sync driver;
 > `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev
-> two-file device-cert exchange (see the README's live sync demo). The
-> status line shows `sync: live|catching-up|disconnected|off (N pending)`.
-> Unset, the TUI stays fully offline. The wiring is proven headlessly by
-> `cargo test -p sunrise-tui --test live_sync` and, end to end, by
+> two-file device-cert exchange (see the README's live sync demo).
+> `sunrise sync --once` drains the outbox and exits, bounded. Unset, the CLI
+> stays fully offline. The wiring is proven headlessly by
+> `cargo test -p sunrise-cli --test live_sync` and, end to end, by
 > `cargo test -p sunrise-e2e --test two_core_relay_convergence`.
->
-> The TUI subscribes to `Core::changes()`, so an inbound synced op repaints on
-> arrival rather than on the next keystroke. Bursts coalesce in a 50 ms window,
-> so an N-op catch-up batch repaints once.

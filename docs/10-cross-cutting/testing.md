@@ -42,7 +42,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
   - Cold launch → Today renders.
   - Capture → save → see in Today.
   - Mark done → state persists across relaunch.
-- Platform-specific tooling: XCTest, Espresso, Playwright (web), Tauri's WebDriver, asserting on Ratatui's snapshot for TUI.
+- Platform-specific tooling: XCTest on macOS; Espresso and Playwright when Android and Web are scheduled. The CLI needs none — `crates/sunrise-cli/tests/cli.rs` runs the real binary against a real vault, which covers the same three critical paths without a UI harness at all.
 
 ### 5. Network / chaos tests
 

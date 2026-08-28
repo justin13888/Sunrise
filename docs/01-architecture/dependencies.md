@@ -30,16 +30,13 @@ superseding decision named in the **Governing decision** column.
 | Async runtime | `tokio` | 1.52.3 | — (runtime substrate) | Multi-thread runtime for server + sync driver. |
 | WebSocket client transport | `tokio-tungstenite` | 0.24.0 | [ADR-0005](../11-adr/0005-sync-transport.md) | Sync transport; `rustls-tls-webpki-roots`. |
 | TLS | `rustls` | 0.23.40 | [ADR-0005](../11-adr/0005-sync-transport.md) | `ring` backend, no OpenSSL. |
-| TUI rendering | `ratatui` | 0.28.1 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui`. |
-| Terminal backend | `crossterm` | 0.28.1 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui`. |
-| TUI image preview | `ratatui-image` | 2.0.1 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui` only, behind the default-on `images` feature (`:preview <path>` in Focus). Pinned to the `2.0` line: it targets `ratatui ^0.28.1`; `3.x`+ requires a newer ratatui. Features `crossterm` + `rustix`, halfblocks fallback. Its transitive `icy_sixel` `0.1.3` ships **no `license` field** in its manifest (upstream README states MIT), so `cargo deny check licenses` emits an unlicensed-crate warning for it — accepted as MIT pending an upstream fix. |
-| Image decoding (TUI preview) | `image` | 0.25.10 | [ADR-0006](../11-adr/0006-tui-framework.md) | `sunrise-tui` only, `images` feature. `default-features = false` + `png` + `jpeg` only, to keep the decoder surface small. |
 | Frame compression | `zstd` | 0.13.3 | [wire-protocol.md](../05-sync/wire-protocol.md) | Wire-frame payload compression. |
 | Structured logging | `tracing` | 0.1.44 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) | The logging API for the whole workspace. Was already in the lock transitively via `tower-http`/`axum`; now a direct dependency of `sunrise-log`, `-server`, `-tui`, `-storage`, `-core`. |
 | Log subscriber | `tracing-subscriber` | 0.3.23 | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended) | `default-features = false` + `std`/`fmt`/`env-filter`/`json`/`registry`. `ansi` deliberately off — no colour codes in NDJSON, and it drops `nu-ansi-term`. Adds `sharded-slab`, `thread_local`, `matchers`, `tracing-serde` to the lock, all MIT/Apache-2.0. |
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
-| Snapshot testing | `insta` | 1.48.0 | [testing.md](../10-cross-cutting/testing.md) | Now consumed by `sunrise-tui`'s golden-frame render snapshots (declared `1.40`, resolved to `1.48.0` in `Cargo.lock`); `yaml` feature. See Reconciliations §e. |
+| Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. Disabling defaults is **load-bearing**: they pull `uniffi_bindgen -> cargo_metadata -> cargo-platform 0.3.3`, which requires rustc 1.91 and hard-fails the 1.88 pin in `rust-toolchain.toml`. The generator therefore lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile pinning `cargo-platform` to 0.3.2 (MSRV exactly 1.88). `cargo update` in that directory will re-break it; `just macos-xcframework` builds it `--locked`. |
+| Snapshot testing | `insta` | 1.48.0 | [testing.md](../10-cross-cutting/testing.md) | Declared `1.40`, resolved to `1.48.0` in `Cargo.lock`; `yaml` feature. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the entry stays because snapshot testing is still the right tool for the next renderer that needs it. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / ws-handshake benches that feed `bench/baseline.json`. |
 | Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
 | Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed; `chrono` and the unused `time` dependency were removed. See Reconciliations §d. |
@@ -124,10 +121,12 @@ chrono-era CBOR fixtures under the jiff types; `jiff::Timestamp` and
 `chrono::DateTime<Utc>` serialize a UTC instant to the identical RFC 3339
 string, so the canonical bytes are byte-identical.
 
-### e. `insta` — now consumed, so now in the lockfile
+### e. `insta` — consumed, then unconsumed again
 
-`insta` was previously *declared but unconsumed* (absent from `Cargo.lock`).
-It is now a dev-dependency of `sunrise-tui`, which uses it for golden-frame
-render snapshots of the TUI views. Declared as `1.40` in
-`[workspace.dependencies]`, it resolves to **`1.48.0`** in `Cargo.lock`. The
-table row above reflects the resolved version.
+`insta` was *declared but unconsumed*, then became a dev-dependency of
+`sunrise-tui` for golden-frame render snapshots, and is now unconsumed again:
+[ADR-0019](../11-adr/0019-swiftui-macos-client.md) deleted that crate. Declared
+as `1.40` in `[workspace.dependencies]`, it resolved to **`1.48.0`** while it
+had a consumer. The declaration stays — snapshot testing is the right tool for
+whatever renders next, and re-adding it later would be a decision to re-argue
+for no reason.
