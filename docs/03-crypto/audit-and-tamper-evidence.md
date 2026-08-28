@@ -27,13 +27,17 @@ root_n     = BLAKE3("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n, 3
 env_hash_n = BLAKE3(canonical_cbor_envelope_bytes_n, 32)
 ```
 
-Concurrent ops apply in `(ts_ms_clamped, device_id_lex, seq)` lexicographic order before being folded into the root, where:
+Concurrent ops apply in `(hlc_clamped, device_id_lex, seq)` lexicographic order before being folded into the root, where:
 
 ```
-ts_ms_clamped = clamp(envelope.ts_ms,
-                      server_first_seen_ms - 5 * 60_000,
-                      server_first_seen_ms + 5 * 60_000)
+hlc_clamped = (clamp(envelope.hlc.physical_ms,
+                     server_first_seen_ms - 5 * 60_000,
+                     server_first_seen_ms + 5 * 60_000),
+               envelope.hlc.logical)
 ```
+
+The clamp window is the same 5 minutes as `MAX_DRIFT_MS` in
+[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md), and for the same reason: a reading further out than that is a broken clock, and a *client* refuses such an op outright. The clamp is the relay-side equivalent for a party that cannot refuse.
 
 The relay timestamps every inbound op as `server_first_seen_ms` and includes it in the op's metadata as an unsigned addendum (see [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) §6). The annotation is part of every replicated op; relays MUST forward it unchanged. Two devices that have observed the same set of ops compute identical roots if both have observed the same `server_first_seen_ms` annotations.
 

@@ -141,30 +141,31 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 2` / `DOC_SCHEMA_V = 1`: field 1 is `2`,
-/// field 12 is `1`, and the magic prefix reads `5352 02 0002`.
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 1`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `1`, and the
+/// magic prefix reads `5352 02 0003`.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
-/// ts_ms = 1_700_000_000_000, AeadAlgId::None, epoch = 0, nonce = [0; 24],
+/// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
 pub mod signed_only_envelope {
     /// `seq` field.
     pub const SEQ: u64 = 7;
-    /// `ts_ms` field.
-    pub const TS_MS: u64 = 1_700_000_000_000;
+    /// `hlc` field's physical component (its logical component is 0).
+    pub const HLC_MS: u64 = 1_700_000_000_000;
     /// `epoch` field (MUST be 0 when `aead_alg = 0`).
     pub const EPOCH: u32 = 0;
     /// `nonce` field (unused when `aead_alg = 0`).
     pub const NONCE: [u8; 24] = [0x00; 24];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 183] = super::hex(concat!(
-        "5352020002ac010202502222222222222222222222222222222203503333",
-        "33333333333333333333333333330407051b0000018bcfe5680006000701",
-        "08000958180000000000000000000000000000000000000000000000000a",
-        "57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404d9c01",
-        "be5408043e64d8fc6359a189ed675c5f555990fd74bf42c7d127815efdaa",
-        "a4c11bfc9ff3053c127d99f2aaffd9e225aff8ab2d6bab9de54631527892",
-        "070c01",
+    pub const ENCODED: [u8; 185] = super::hex(concat!(
+        "5352020003ac010302502222222222222222222222222222222203503333",
+        "3333333333333333333333333333040705821b0000018bcfe56800000600",
+        "070108000958180000000000000000000000000000000000000000000000",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404e",
+        "eb8efa26da3a3d01660956f68d48972a2599fa77660a0cc0046b475a210a",
+        "ab8f256c45b80bc00c0502dae74ee117c8faa68d6f60733b8d003bdb2e37",
+        "f968030c01",
     ));
 }
 
@@ -172,13 +173,13 @@ pub mod signed_only_envelope {
 /// fixed stream key and a fixed nonce, so the ciphertext is reproducible.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
-/// ts_ms = 1_700_000_000_001, AeadAlgId::XChaCha20Poly1305, epoch = 3,
+/// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
 pub mod sealed_envelope {
     /// `seq` field.
     pub const SEQ: u64 = 9;
-    /// `ts_ms` field.
-    pub const TS_MS: u64 = 1_700_000_000_001;
+    /// `hlc` field's physical component (its logical component is 0).
+    pub const HLC_MS: u64 = 1_700_000_000_001;
     /// `epoch` field.
     pub const EPOCH: u32 = 3;
     /// `nonce` field.
@@ -186,13 +187,13 @@ pub mod sealed_envelope {
     /// Stream key the payload is sealed under.
     pub const STREAM_KEY: [u8; 32] = [0x44; 32];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 200] = super::hex(concat!(
-        "5352020002ac010202502222222222222222222222222222222203503333",
-        "33333333333333333333333333330409051b0000018bcfe5680106010701",
-        "08030958185555555555555555555555555555555555555555555555550a",
-        "58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8f04b5b4f77",
-        "6935c274055b7f5094695c0b58408437218e413feb2d19085e8ca6b2a536",
-        "10dcca776fdac8d39b76bd7085e76fdff711ef8362b51896cd23abb85607",
-        "38848cfff040f7855a76e0efe549d1f3e10b0c01",
+    pub const ENCODED: [u8; 202] = super::hex(concat!(
+        "5352020003ac010302502222222222222222222222222222222203503333",
+        "3333333333333333333333333333040905821b0000018bcfe56801000601",
+        "070108030958185555555555555555555555555555555555555555555555",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8aba81d",
+        "ff354b6cf029a0b818298dbaa40b5840c228871a4c8691ab88b7bfaad789",
+        "b970d51862a3f59bcca561c9c31cfbea14bee09250a88e0331214ae50325",
+        "0b4c9738b6ca4142b31b6de74efd9fa53ee75b020c01",
     ));
 }

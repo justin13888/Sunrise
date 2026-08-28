@@ -247,7 +247,7 @@ impl Keychain {
         &self,
         stream_id: [u8; 16],
         seq: u64,
-        ts_ms: u64,
+        hlc: sunrise_cbor::hlc::Hlc,
         inner: &[u8],
         rng: &dyn Rng,
     ) -> Result<Vec<u8>, OpEnvelopeError> {
@@ -259,7 +259,7 @@ impl Keychain {
             stream_id,
             self.device_id,
             seq,
-            ts_ms,
+            hlc,
             AeadAlgId::XChaCha20Poly1305,
             EPOCH,
             nonce,
@@ -591,7 +591,15 @@ mod tests {
         let mut d = db(&root);
         let kc = Keychain::open(&mut d, root, &clock(), &SystemRng).unwrap();
         let inner = b"inner op cbor bytes";
-        let env = kc.seal_op([0u8; 16], 1, 42, inner, &SystemRng).unwrap();
+        let env = kc
+            .seal_op(
+                [0u8; 16],
+                1,
+                sunrise_cbor::hlc::Hlc::at(42),
+                inner,
+                &SystemRng,
+            )
+            .unwrap();
         let back = kc.open_op(&env).unwrap();
         assert_eq!(&back, inner);
     }

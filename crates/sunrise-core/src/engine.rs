@@ -48,7 +48,7 @@
 )]
 
 use crate::commands::{Command, CommandResult, FocusStartDraft};
-use crate::config::{Clock, Rng};
+use crate::config::{Clock, HlcClock, Rng};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::Keychain;
@@ -59,6 +59,7 @@ use crate::queries::{
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
 use sunrise_domain::{
@@ -152,6 +153,7 @@ pub enum EngineError {
 #[derive(Clone)]
 pub struct Engine {
     clock: Arc<dyn Clock>,
+    hlc: Arc<dyn HlcClock>,
     rng: Arc<dyn Rng>,
     keychain: Arc<Keychain>,
 }
@@ -168,11 +170,40 @@ impl Engine {
     /// Construct. The keychain supplies the device id + signing key used to
     /// seal every op envelope.
     #[must_use]
-    pub fn new(clock: Arc<dyn Clock>, rng: Arc<dyn Rng>, keychain: Arc<Keychain>) -> Self {
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        hlc: Arc<dyn HlcClock>,
+        rng: Arc<dyn Rng>,
+        keychain: Arc<Keychain>,
+    ) -> Self {
         Self {
             clock,
+            hlc,
             rng,
             keychain,
+        }
+    }
+
+    /// Construct with the causal clock derived from `clock`.
+    ///
+    /// The shape a caller wants when it has no reason to substitute the HLC
+    /// independently of the wall clock: skew `clock` and the HLC skews with it.
+    #[must_use]
+    pub fn from_clock(clock: Arc<dyn Clock>, rng: Arc<dyn Rng>, keychain: Arc<Keychain>) -> Self {
+        let hlc = Arc::new(crate::config::MonotonicHlc::new(Arc::clone(&clock)));
+        Self::new(clock, hlc, rng, keychain)
+    }
+
+    /// Mint the LWW stamp for an op this device is about to emit.
+    ///
+    /// Called ONCE per emitted op: [`HlcClock::send`] is strictly increasing,
+    /// so calling it twice for one op would stamp two of its rows differently
+    /// and make the op non-atomic under merge.
+    fn lww_stamp(&self, seq: u64) -> LwwStamp {
+        LwwStamp {
+            hlc: self.hlc.send(),
+            device: self.keychain.device_id(),
+            seq,
         }
     }
 
@@ -340,13 +371,14 @@ impl Engine {
     ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
     ///    op was already present (`changes() == 0`), return `Ok(None)` with no
     ///    materialization and no event.
-    /// 6. LWW materialization: the entity's stored `(lww_ts_ms, lww_device)` is
-    ///    compared against the envelope's `(ts_ms, device_id)`
-    ///    lexicographically. The greater pair wins (ties on `ts_ms` broken by
-    ///    raw device-id memcmp — higher wins). A winning op performs the same
-    ///    materialized-row upsert the local path does and stamps the LWW
-    ///    columns from the envelope; a losing op keeps the row but stays
-    ///    recorded in the op log.
+    /// 5. Clock gate: the envelope's `hlc` is observed into this device's HLC.
+    ///    A reading beyond `MAX_DRIFT_MS` in the future is refused outright —
+    ///    see [`sunrise_cbor::hlc`].
+    /// 6. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
+    ///    is compared against the envelope's. The greater tuple wins. A winning
+    ///    op performs the same materialized-row upsert the local path does and
+    ///    stamps the row with the SENDER's values; a losing op keeps the row
+    ///    but stays recorded in the op log.
     /// 7. Advance `sync_cursors(stream_id, device_id)` to `max(seq)`.
     ///
     /// Remote ops are **not** enqueued in the outbox: the relay fans out to
@@ -388,6 +420,24 @@ impl Engine {
         let inner = decode_inner_op(&inner_cbor)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
 
+        // e. Clock gate. A reading far in OUR future is a broken or hostile
+        //    clock; absorbing it would drag this device's HLC forward with the
+        //    bad one and let the sender win every conflict for the length of
+        //    the skew. A reading in the past is fine and common — that is a
+        //    device coming back from a week offline.
+        self.hlc
+            .observe(env.hlc)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("hlc: {e}")))?;
+
+        // The row is stamped with the SENDER'S hlc and seq, never with this
+        // device's post-merge reading. Every replica must record the same stamp
+        // for the same op, or the LWW winner would depend on delivery order.
+        let lww = LwwStamp {
+            hlc: env.hlc,
+            device: env.device_id,
+            seq: env.seq,
+        };
+
         let now_ms = self.clock.now_ms();
         let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
         let target = inner.target_ref();
@@ -404,7 +454,7 @@ impl Engine {
                 &env.stream_id,
                 &env.device_id,
                 env.seq,
-                env.ts_ms,
+                env.hlc.physical_ms,
                 envelope_bytes,
                 inner_kind,
                 target_kind,
@@ -424,7 +474,7 @@ impl Engine {
             }
             applied = true;
             // f. LWW materialization.
-            materialize_remote(tx, &inner, env.ts_ms, &env.device_id)?;
+            materialize_remote(tx, &inner, &lww)?;
             // g. Advance the sync cursor.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id, env.seq)?;
             Ok(())
@@ -498,10 +548,11 @@ impl Engine {
 
         let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))?;
         let seq = self.next_seq(db, stream.bytes())?;
+        let lww = self.lww_stamp(seq);
 
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            insert_task_row(tx, &task, now_ms, &self.keychain.device_id())?;
+            insert_task_row(tx, &task, &lww)?;
             insert_task_contexts(tx, &task)?;
             replace_task_blockers(tx, &task)?;
             ftsr_upsert_task(tx, &task)?;
@@ -510,7 +561,7 @@ impl Engine {
                 &op_id,
                 stream.bytes(),
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "task.create",
                 "task",
@@ -639,6 +690,7 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
         let seq = self.next_seq(db, task.stream_id.bytes())?;
+        let lww = self.lww_stamp(seq);
 
         let task_for_persist = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
@@ -651,7 +703,7 @@ impl Engine {
                 false,
                 false,
             )?;
-            update_task_row(tx, &task_for_persist, now_ms, &self.keychain.device_id())?;
+            update_task_row(tx, &task_for_persist, &lww)?;
             replace_task_contexts(tx, &task_for_persist)?;
             replace_task_blockers(tx, &task_for_persist)?;
             ftsr_upsert_task(tx, &task_for_persist)?;
@@ -660,7 +712,7 @@ impl Engine {
                 &op_id,
                 task_for_persist.stream_id.bytes(),
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "task.update",
                 "task",
@@ -676,14 +728,15 @@ impl Engine {
             // replica through the ordinary full-state routine LWW path.
             if let Some((routine, routine_inner)) = &streak_op {
                 let routine_seq = self.next_seq_tx(tx, &META_STREAM)?;
+                let routine_lww = self.lww_stamp(routine_seq);
                 let routine_op_id = self.fresh_op_id(now_ms);
-                update_routine_row(tx, routine, now_ms, &self.keychain.device_id())?;
+                update_routine_row(tx, routine, &lww)?;
                 self.ops_insert(
                     tx,
                     &routine_op_id,
                     &META_STREAM,
                     routine_seq,
-                    now_ms,
+                    routine_lww.hlc,
                     routine_inner,
                     "routine.update",
                     "routine",
@@ -787,15 +840,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskUpdate(task.clone()))?;
         let seq = self.next_seq(db, task.stream_id.bytes())?;
+        let lww = self.lww_stamp(seq);
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone, now_ms, &self.keychain.device_id())?;
+            update_task_row(tx, &task_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 task_clone.stream_id.bytes(),
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "task.defer",
                 "task",
@@ -823,16 +877,17 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::TaskDelete(task.id))?;
         let seq = self.next_seq(db, task.stream_id.bytes())?;
+        let lww = self.lww_stamp(seq);
         let task_clone = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_task_row(tx, &task_clone, now_ms, &self.keychain.device_id())?;
+            update_task_row(tx, &task_clone, &lww)?;
             ftsr_delete_task(tx, &task_clone.id)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 task_clone.stream_id.bytes(),
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "task.delete",
                 "task",
@@ -889,15 +944,16 @@ impl Engine {
         let inner_op = encode_inner_op(&InnerOp::StreamCreate(stream.clone()))?;
         // Stream lifecycle ops route to the vault-meta log, not the new Stream.
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
+            insert_stream_row(tx, &stream_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "stream.create",
                 "stream",
@@ -953,15 +1009,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
+            update_stream_row(tx, &stream_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "stream.update",
                 "stream",
@@ -992,15 +1049,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.id))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_stream_row(tx, &stream_clone, now_ms, &self.keychain.device_id())?;
+            update_stream_row(tx, &stream_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "stream.delete",
                 "stream",
@@ -1047,14 +1105,15 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextCreate(ctx.clone()))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            insert_context_row(tx, &ctx, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "context.create",
                 "context",
@@ -1103,14 +1162,15 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextUpdate(ctx.clone()))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            update_context_row(tx, &ctx, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "context.update",
                 "context",
@@ -1144,15 +1204,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.id))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_context_row(tx, &ctx, now_ms, &self.keychain.device_id())?;
+            update_context_row(tx, &ctx, &lww)?;
             purge_context_from_tasks(tx, id.bytes())?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "context.delete",
                 "context",
@@ -1204,22 +1265,17 @@ impl Engine {
         let inner_op = encode_inner_op(&InnerOp::RoutineCreate(Box::new(routine.clone())))?;
         // Routine ops route to the vault-meta log.
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            insert_routine_row(
-                tx,
-                &routine_clone,
-                now_ms,
-                now_ms,
-                &self.keychain.device_id(),
-            )?;
+            insert_routine_row(tx, &routine_clone, now_ms, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "routine.create",
                 "routine",
@@ -1301,16 +1357,17 @@ impl Engine {
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
         let stream = routine.template.stream_id;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
-            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
+            update_routine_row(tx, &routine_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "routine.update",
                 "routine",
@@ -1341,15 +1398,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineDelete(id))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
+            update_routine_row(tx, &routine_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "routine.delete",
                 "routine",
@@ -1397,15 +1455,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
         let seq = self.next_seq(db, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            update_routine_row(tx, &routine_clone, now_ms, &self.keychain.device_id())?;
+            update_routine_row(tx, &routine_clone, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner_op,
                 "routine.update",
                 "routine",
@@ -1419,9 +1478,10 @@ impl Engine {
                 t.deleted = true;
                 t.updated_at = ms_to_ts(now_ms as i64);
                 let task_seq = self.next_seq_tx(tx, t.stream_id.bytes())?;
+                let task_lww = self.lww_stamp(task_seq);
                 let del_op = encode_inner_op(&InnerOp::TaskDelete(t.id))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                update_task_row(tx, &t, now_ms, &self.keychain.device_id())?;
+                update_task_row(tx, &t, &lww)?;
                 ftsr_delete_task(tx, &t.id)?;
                 let del_op_id = self.fresh_op_id(now_ms);
                 self.ops_insert(
@@ -1429,7 +1489,7 @@ impl Engine {
                     &del_op_id,
                     t.stream_id.bytes(),
                     task_seq,
-                    now_ms,
+                    task_lww.hlc,
                     &del_op,
                     "task.delete",
                     "task",
@@ -1533,8 +1593,12 @@ impl Engine {
             )?;
             for (key, at, title_override) in &jobs {
                 let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
-                let inserted =
-                    insert_task_row_or_ignore(tx, &task, now_ms, &self.keychain.device_id())?;
+                // Each materialized occurrence is its OWN op, so it gets its own
+                // seq and its own HLC tick. Minting both before the insert keeps
+                // the row's stamp and the op's envelope in agreement.
+                let seq = self.next_seq_tx(tx, task.stream_id.bytes())?;
+                let lww = self.lww_stamp(seq);
+                let inserted = insert_task_row_or_ignore(tx, &task, &lww)?;
                 if !inserted {
                     continue;
                 }
@@ -1542,7 +1606,6 @@ impl Engine {
                 ftsr_upsert_task(tx, &task)?;
                 let inner_op = encode_inner_op(&InnerOp::TaskCreate(task.clone()))
                     .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
-                let seq = self.next_seq_tx(tx, task.stream_id.bytes())?;
                 let mut rand = [0u8; 10];
                 rng.fill_bytes(&mut rand);
                 let op_id = *Ulid::from_timestamp_and_random(clock.now_ms(), rand).as_bytes();
@@ -1551,7 +1614,7 @@ impl Engine {
                     &op_id,
                     task.stream_id.bytes(),
                     seq,
-                    now_ms,
+                    lww.hlc,
                     &inner_op,
                     "task.create",
                     "task",
@@ -1618,16 +1681,17 @@ impl Engine {
             let op_id = self.fresh_op_id(now_ms);
             let inner_op = encode_inner_op(&InnerOp::TaskDelete(t.id))?;
             let seq = self.next_seq(db, t.stream_id.bytes())?;
+            let lww = self.lww_stamp(seq);
             let t_clone = t.clone();
             db.with_tx(|tx| -> rusqlite::Result<()> {
-                update_task_row(tx, &t_clone, now_ms, &self.keychain.device_id())?;
+                update_task_row(tx, &t_clone, &lww)?;
                 ftsr_delete_task(tx, &t_clone.id)?;
                 self.ops_insert(
                     tx,
                     &op_id,
                     t_clone.stream_id.bytes(),
                     seq,
-                    now_ms,
+                    lww.hlc,
                     &inner_op,
                     "task.delete",
                     "task",
@@ -1693,16 +1757,16 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let stream_bytes = *start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
-        let device = self.keychain.device_id();
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
             ensure_stream_row(tx, &start.stream_id, now_ms, None, false, false, false)?;
-            insert_focus_start_row(tx, &start, now_ms, &device)?;
+            insert_focus_start_row(tx, &start, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &stream_bytes,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner,
                 "focus.start",
                 "focus_session",
@@ -1754,15 +1818,15 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let stream_bytes = *view.start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
-        let device = self.keychain.device_id();
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_focus_end_row(tx, &end, now_ms, &device)?;
+            insert_focus_end_row(tx, &end, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &stream_bytes,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner,
                 "focus.end",
                 "focus_session",
@@ -1802,6 +1866,7 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let stream_bytes = *start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
             insert_interruption_row(tx, &interruption)?;
             self.ops_insert(
@@ -1809,7 +1874,7 @@ impl Engine {
                 &op_id,
                 &stream_bytes,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner,
                 "focus.interrupt",
                 "focus_session",
@@ -2413,7 +2478,7 @@ impl Engine {
         op_id: &[u8; 16],
         stream_id: &[u8; 16],
         seq: u64,
-        ts_ms: u64,
+        hlc: Hlc,
         inner_op: &[u8],
         inner_kind: &str,
         target_kind: &str,
@@ -2424,9 +2489,10 @@ impl Engine {
         deps: &[[u8; 16]],
     ) -> rusqlite::Result<()> {
         let device_id = self.keychain.device_id();
+        let ts_ms = hlc.physical_ms;
         let envelope = self
             .keychain
-            .seal_op(*stream_id, seq, ts_ms, inner_op, self.rng.as_ref())
+            .seal_op(*stream_id, seq, hlc, inner_op, self.rng.as_ref())
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
         if let Err(e) = OpLog::insert(
             tx,
@@ -2535,60 +2601,111 @@ fn upsert_sync_cursor(
     Ok(())
 }
 
-/// Read the stored `(lww_ts_ms, lww_device)` pair for `id` in `table`.
-/// `None` when the row is absent.
+/// The stamp that decides which of two writers to a materialized row survives.
+///
+/// Ordering is `(hlc, device, seq)`, in that order, and every term earns its
+/// place:
+///
+/// * `hlc` — a hybrid logical clock, not a wall clock. It is the whole point:
+///   an unbounded `ts_ms` let a device with a fast clock win every conflict it
+///   ever entered (issue #21), and gave no way to order two writes inside one
+///   millisecond.
+/// * `device` — raw 16-byte memcmp, higher wins. Breaks *cross-device* ties
+///   deterministically, so every replica picks the same winner.
+/// * `seq` — the writer's per-`(stream, device)` counter, already envelope
+///   field 4. Reached only when two ops from the SAME device carry an equal
+///   `hlc`, which the send rule makes impossible while a device's HLC state
+///   lives; it becomes possible across a process restart, when the logical
+///   counter resets to 0. In that window `seq` is what still orders them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LwwStamp {
+    /// Causal timestamp from the writing device.
+    pub hlc: Hlc,
+    /// The writing device's 16-byte id.
+    pub device: [u8; 16],
+    /// The writing device's per-`(stream, device)` sequence number.
+    pub seq: u64,
+}
+
+/// The stamp stored on a materialized row. `device` is `None` only for a
+/// placeholder row that no real op has yet stamped (the lazily created
+/// inbox/meta stream), which loses to everything.
+#[derive(Debug, Clone)]
+struct RowLww {
+    hlc: Hlc,
+    device: Option<Vec<u8>>,
+    seq: u64,
+}
+
+/// Read the stored LWW stamp for `id` in `table`. `None` when the row is
+/// absent.
 fn read_row_lww(
     tx: &Transaction<'_>,
     table: &str,
     id_col: &str,
     id: &[u8; 16],
-) -> rusqlite::Result<Option<(i64, Option<Vec<u8>>)>> {
-    let sql = format!("SELECT lww_ts_ms, lww_device FROM {table} WHERE {id_col} = ?");
+) -> rusqlite::Result<Option<RowLww>> {
+    let sql = format!(
+        "SELECT lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device
+         FROM {table} WHERE {id_col} = ?"
+    );
     tx.query_row(&sql, params![&id[..]], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+        Ok(RowLww {
+            hlc: Hlc {
+                physical_ms: u64::try_from(r.get::<_, i64>(0)?.max(0)).unwrap_or(0),
+                logical: u32::try_from(r.get::<_, i64>(1)?.max(0)).unwrap_or(u32::MAX),
+            },
+            device: r.get::<_, Option<Vec<u8>>>(3)?,
+            seq: u64::try_from(r.get::<_, i64>(2)?.max(0)).unwrap_or(0),
+        })
     })
     .optional()
 }
 
-/// Entity-level LWW decision: does the incoming `(env_ts, env_dev)` beat the
-/// row's stored `(row_ts, row_dev)`? Greater `ts` wins; ties are broken by raw
-/// 16-byte device-id memcmp (higher wins). A placeholder row with no stamped
-/// device (`lww_device IS NULL`) loses ties to any real op.
-fn lww_wins(env_ts: u64, env_dev: &[u8; 16], row_ts: i64, row_dev: Option<&[u8]>) -> bool {
-    let row_ts_u = u64::try_from(row_ts.max(0)).unwrap_or(0);
-    if env_ts != row_ts_u {
-        return env_ts > row_ts_u;
+/// Entity-level LWW decision: does the incoming stamp beat the row's stored
+/// one? Compares `(hlc, device, seq)` in that order.
+fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
+    if incoming.hlc != row.hlc {
+        return incoming.hlc > row.hlc;
     }
-    match row_dev {
-        None => true,
-        // Same device, same millisecond: this is NOT a conflict. The device-id
-        // memcmp exists to break *cross-device* ties deterministically, and
-        // applying it to a device's own successive ops made the later one lose
-        // to itself (`dev > dev` is false) — so on every remote replica the
-        // second op was silently discarded while the originating replica kept
-        // it. Permanent, undetected divergence, and easy to hit: creating a
-        // task and immediately patching it lands both ops in one millisecond.
-        //
-        // Ops from one device are causally ordered by their per-(stream,
-        // device) `seq`, so the arriving one is the newer state and must win.
-        // See `docs/05-sync/conflict-resolution.md`.
-        Some(rd) if rd == env_dev.as_slice() => true,
-        Some(rd) => env_dev.as_slice() > rd,
+    let Some(row_dev) = row.device.as_deref() else {
+        // A placeholder row no op has stamped loses to any real op.
+        return true;
+    };
+    if row_dev != incoming.device.as_slice() {
+        return incoming.device.as_slice() > row_dev;
     }
+    // Same device, same HLC. This is NOT a conflict, and the device-id memcmp
+    // must NOT be applied here: `dev > dev` is false, so a device's own later
+    // op would lose to its own earlier one — silently discarded on every remote
+    // replica while the originating replica kept it. Permanent, undetected
+    // divergence, and easy to hit before HLCs, when creating a task and
+    // immediately patching it landed both ops in one millisecond.
+    //
+    // Ops from one device are causally ordered by their per-(stream, device)
+    // `seq`, so the higher `seq` is the newer state and wins. Equal `seq` on the
+    // same device is the same op re-delivered; the caller's idempotence gate has
+    // already handled that, and `true` keeps a replay a harmless no-op rewrite.
+    //
+    // See `docs/05-sync/conflict-resolution.md` and ADR-0016.
+    incoming.seq >= row.seq
 }
 
 /// Tombstone a materialized task under LWW (delete op won). Stamps LWW columns
 /// and drops the task from the FTS index.
-fn tombstone_task(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    ts_ms: u64,
-    device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn tombstone_task(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE tasks SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+        "UPDATE tasks SET deleted = 1, updated_at_ms = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
-        params![ts_ms, ts_ms, &device[..], &id[..]],
+        params![
+            lww.hlc.physical_ms,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+            &id[..]
+        ],
     )?;
     tx.execute(
         "DELETE FROM search_idx WHERE kind = 'task' AND id = ?",
@@ -2598,39 +2715,45 @@ fn tombstone_task(
 }
 
 /// Tombstone a materialized stream under LWW (delete op won).
-fn tombstone_stream(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    ts_ms: u64,
-    device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn tombstone_stream(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE streams SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+        "UPDATE streams SET deleted = 1, updated_at_ms = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
-        params![ts_ms, ts_ms, &device[..], &id[..]],
+        params![
+            lww.hlc.physical_ms,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+            &id[..]
+        ],
     )?;
     Ok(())
 }
 
 /// Tombstone a materialized routine under LWW (delete op won).
-fn tombstone_routine(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    ts_ms: u64,
-    device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn tombstone_routine(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE routines SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+        "UPDATE routines SET deleted = 1, updated_at_ms = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
-        params![ts_ms, ts_ms, &device[..], &id[..]],
+        params![
+            lww.hlc.physical_ms,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+            &id[..]
+        ],
     )?;
     Ok(())
 }
 
 /// Apply one decoded remote inner op to the materialized tables under LWW.
 ///
-/// Compares the envelope's `(ts_ms, device_id)` against the target row's stored
-/// `(lww_ts_ms, lww_device)`. If the envelope wins (or the row is absent for a
+/// Compares the envelope's `(hlc, device, seq)` stamp against the target row's
+/// stored one. If the envelope wins (or the row is absent for a
 /// create/update), it performs the same insert/update the local path does and
 /// stamps the LWW columns from the envelope. A losing op is a no-op here (it is
 /// still recorded in the op log by the caller).
@@ -2641,9 +2764,9 @@ fn tombstone_routine(
 fn materialize_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
-    ts_ms: u64,
-    device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    let ts_ms = lww.hlc.physical_ms;
     // Focus ops never enter the LWW contest. Each writes one immutable record
     // keyed by the session's own id (start, end, and interruption in three
     // distinct tables), so there is nothing for a later op to overwrite and
@@ -2654,7 +2777,7 @@ fn materialize_remote(
         inner,
         InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_)
     ) {
-        return materialize_focus_remote(tx, inner, ts_ms, device);
+        return materialize_focus_remote(tx, inner, lww);
     }
     // A review snapshot is append-only for the same reason: it is keyed by its
     // own `rvw_` id, written once, and never edited. Running LWW here would let
@@ -2664,7 +2787,7 @@ fn materialize_remote(
     // an opaque blob, so a snapshot that overtakes a `stream.create` still
     // lands intact.
     if let InnerOp::ReviewSnapshotCreate(snapshot) = inner {
-        return insert_review_snapshot_row(tx, snapshot, ts_ms, device);
+        return insert_review_snapshot_row(tx, snapshot, lww);
     }
     let (table, id_col) = match inner.entity_kind() {
         EntityKind::Stream => ("streams", "stream_id"),
@@ -2675,10 +2798,7 @@ fn materialize_remote(
     };
     let target = inner.target_ref();
     let existing = read_row_lww(tx, table, id_col, target.bytes())?;
-    let wins = match &existing {
-        None => true,
-        Some((row_ts, row_dev)) => lww_wins(ts_ms, device, *row_ts, row_dev.as_deref()),
-    };
+    let wins = existing.as_ref().is_none_or(|row| lww_wins(lww, row));
     if !wins {
         return Ok(());
     }
@@ -2688,10 +2808,10 @@ fn materialize_remote(
             // The owning stream must exist before the task (FK).
             ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
             if present {
-                update_task_row(tx, t, ts_ms, device)?;
+                update_task_row(tx, t, lww)?;
                 replace_task_contexts(tx, t)?;
             } else {
-                insert_task_row(tx, t, ts_ms, device)?;
+                insert_task_row(tx, t, lww)?;
                 insert_task_contexts(tx, t)?;
             }
             // Dependency edges ride along with the full-state task op. They are
@@ -2704,26 +2824,26 @@ fn materialize_remote(
         }
         InnerOp::TaskDelete(_) => {
             if present {
-                tombstone_task(tx, target.bytes(), ts_ms, device)?;
+                tombstone_task(tx, target.bytes(), lww)?;
             }
         }
         InnerOp::StreamCreate(s) | InnerOp::StreamUpdate(s) => {
             if present {
-                update_stream_row(tx, s, ts_ms, device)?;
+                update_stream_row(tx, s, lww)?;
             } else {
-                insert_stream_row(tx, s, ts_ms, device)?;
+                insert_stream_row(tx, s, lww)?;
             }
         }
         InnerOp::StreamDelete(_) => {
             if present {
-                tombstone_stream(tx, target.bytes(), ts_ms, device)?;
+                tombstone_stream(tx, target.bytes(), lww)?;
             }
         }
         InnerOp::ContextCreate(c) | InnerOp::ContextUpdate(c) => {
             if present {
-                update_context_row(tx, c, ts_ms, device)?;
+                update_context_row(tx, c, lww)?;
             } else {
-                insert_context_row(tx, c, ts_ms, device)?;
+                insert_context_row(tx, c, lww)?;
             }
         }
         InnerOp::ContextDelete(_) => {
@@ -2734,20 +2854,20 @@ fn materialize_remote(
             // Tasks" true on every replica that sees the delete.
             purge_context_from_tasks(tx, target.bytes())?;
             if present {
-                tombstone_context(tx, target.bytes(), ts_ms, device)?;
+                tombstone_context(tx, target.bytes(), lww)?;
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
             ensure_stream_row(tx, &r.template.stream_id, ts_ms, None, false, false, false)?;
             if present {
-                update_routine_row(tx, r, ts_ms, device)?;
+                update_routine_row(tx, r, lww)?;
             } else {
-                insert_routine_row(tx, r, ts_ms, ts_ms, device)?;
+                insert_routine_row(tx, r, ts_ms, lww)?;
             }
         }
         InnerOp::RoutineDelete(_) => {
             if present {
-                tombstone_routine(tx, target.bytes(), ts_ms, device)?;
+                tombstone_routine(tx, target.bytes(), lww)?;
             }
         }
         // Handled by the append-only branch at the top of this function; the
@@ -2767,20 +2887,20 @@ fn materialize_remote(
 fn materialize_focus_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
-    ts_ms: u64,
-    device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    let ts_ms = lww.hlc.physical_ms;
     match inner {
         InnerOp::FocusStart(f) => {
             // The owning stream row must exist (the session's stream is also
             // its op-log routing stream).
             ensure_stream_row(tx, &f.stream_id, ts_ms, None, false, false, false)?;
-            insert_focus_start_row(tx, f, ts_ms, device)
+            insert_focus_start_row(tx, f, lww)
         }
         InnerOp::FocusEnd(f) => {
             // Deliberately no `ensure` of the start row: an `end` that arrived
             // first still lands, and the two join up when the start turns up.
-            insert_focus_end_row(tx, f, ts_ms, device)?;
+            insert_focus_end_row(tx, f, lww)?;
             for i in &f.interruptions {
                 insert_interruption_row(tx, i)?;
             }
@@ -2795,14 +2915,13 @@ fn materialize_focus_remote(
 fn insert_focus_start_row(
     tx: &Transaction<'_>,
     f: &FocusStart,
-    ts_ms: u64,
-    device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO focus_sessions
          (id, task_id, stream_id, started_at_ms, planned_ms, energy, kind,
-          chunk_index, chunk_total, lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          chunk_index, chunk_total, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.id.bytes()[..],
             &f.task_id.bytes()[..],
@@ -2813,8 +2932,10 @@ fn insert_focus_start_row(
             f.kind.as_str(),
             f.chunk.map(|c| i64::from(c.index)),
             f.chunk.map(|c| i64::from(c.total)),
-            ts_ms as i64,
-            &device[..],
+            lww.hlc.physical_ms as i64,
+            lww.hlc.logical,
+            lww.seq as i64,
+            &lww.device[..],
         ],
     )?;
     Ok(())
@@ -2826,20 +2947,21 @@ fn insert_focus_start_row(
 fn insert_focus_end_row(
     tx: &Transaction<'_>,
     f: &FocusEnd,
-    ts_ms: u64,
-    device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO focus_session_ends
-         (session_id, ended_at_ms, actual_focused_ms, completed_task, lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (session_id, ended_at_ms, actual_focused_ms, completed_task, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.session_id.bytes()[..],
             f.ended_at_ms as i64,
             f.actual_focused_ms as i64,
             i64::from(f.completed_task),
-            ts_ms as i64,
-            &device[..],
+            lww.hlc.physical_ms as i64,
+            lww.hlc.logical,
+            lww.seq as i64,
+            &lww.device[..],
         ],
     )?;
     Ok(())
@@ -3126,20 +3248,15 @@ fn ensure_stream_row(
     Ok(())
 }
 
-fn insert_stream_row(
-    tx: &Transaction<'_>,
-    s: &Stream,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
-          paused, paused_until_ms, review_cadence, lww_ts_ms, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          paused, paused_until_ms, review_cadence, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3153,26 +3270,23 @@ fn insert_stream_row(
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_stream_row(
-    tx: &Transaction<'_>,
-    s: &Stream,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     tx.execute(
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
              name = ?, color = ?, paused = ?, paused_until_ms = ?,
-             review_cadence = ?, lww_ts_ms = ?, lww_device = ?
+             review_cadence = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
             parent_blob,
@@ -3184,8 +3298,10 @@ fn update_stream_row(
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
             id_blob,
         ],
     )?;
@@ -3260,17 +3376,12 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
 
 // ---- context table operations ----
 
-fn insert_context_row(
-    tx: &Transaction<'_>,
-    c: &Context,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn insert_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO contexts
          (id, name, description, archived, deleted, created_at_ms, updated_at_ms,
-          lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             c.id.bytes().to_vec(),
             c.name,
@@ -3279,23 +3390,20 @@ fn insert_context_row(
             c.deleted as i64,
             c.created_at.as_millisecond(),
             c.updated_at.as_millisecond(),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_context_row(
-    tx: &Transaction<'_>,
-    c: &Context,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn update_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE contexts
          SET name = ?, description = ?, archived = ?, deleted = ?, updated_at_ms = ?,
-             lww_ts_ms = ?, lww_device = ?
+             lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             c.name,
@@ -3303,8 +3411,10 @@ fn update_context_row(
             c.archived as i64,
             c.deleted as i64,
             c.updated_at.as_millisecond(),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
             c.id.bytes().to_vec(),
         ],
     )?;
@@ -3312,16 +3422,19 @@ fn update_context_row(
 }
 
 /// Tombstone a materialized context under LWW (delete op won).
-fn tombstone_context(
-    tx: &Transaction<'_>,
-    id: &[u8; 16],
-    ts_ms: u64,
-    device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn tombstone_context(tx: &Transaction<'_>, id: &[u8; 16], lww: &LwwStamp) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE contexts SET deleted = 1, updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+        "UPDATE contexts SET deleted = 1, updated_at_ms = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
-        params![ts_ms, ts_ms, &device[..], &id[..]],
+        params![
+            lww.hlc.physical_ms,
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
+            &id[..]
+        ],
     )?;
     Ok(())
 }
@@ -3436,12 +3549,7 @@ fn find_context_by_name(
     Ok(None)
 }
 
-fn insert_task_row(
-    tx: &Transaction<'_>,
-    t: &Task,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn insert_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3452,9 +3560,9 @@ fn insert_task_row(
           scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
-          created_at_ms, updated_at_ms, lww_ts_ms, lww_device)
+          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
-                 ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -3478,19 +3586,16 @@ fn insert_task_row(
             constraints_blob,
             t.created_at.as_millisecond(),
             t.updated_at.as_millisecond(),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_task_row(
-    tx: &Transaction<'_>,
-    t: &Task,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn update_task_row(tx: &Transaction<'_>, t: &Task, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
@@ -3501,7 +3606,7 @@ fn update_task_row(
             energy = ?, estimated_min = ?, scheduled_at_ms = ?, due_at_ms = ?,
             completed_at_ms = ?, deferred_count = ?, archived = ?, deleted = ?,
             body = ?, scheduling_constraints = ?,
-            updated_at_ms = ?, lww_ts_ms = ?, lww_device = ?
+            updated_at_ms = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -3520,8 +3625,10 @@ fn update_task_row(
             body_blob,
             constraints_blob,
             t.updated_at.as_millisecond(),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
             id_blob,
         ],
     )?;
@@ -3768,8 +3875,7 @@ fn read_task(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Task>,
 fn insert_task_row_or_ignore(
     tx: &Transaction<'_>,
     t: &Task,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<bool> {
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
@@ -3781,9 +3887,9 @@ fn insert_task_row_or_ignore(
           scheduled_at_ms, due_at_ms, completed_at_ms, deferred_count,
           routine_id, routine_occurrence, archived, deleted, body,
           scheduling_constraints, extra, head_root,
-          created_at_ms, updated_at_ms, lww_ts_ms, lww_device)
+          created_at_ms, updated_at_ms, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
-                 ?, ?, ?, ?)",
+                 ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -3805,8 +3911,10 @@ fn insert_task_row_or_ignore(
             constraints_blob,
             t.created_at.as_millisecond(),
             t.updated_at.as_millisecond(),
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
         ],
     )?;
     Ok(changed > 0)
@@ -3961,8 +4069,7 @@ fn insert_routine_row(
     tx: &Transaction<'_>,
     r: &Routine,
     now_ms: u64,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
@@ -3979,8 +4086,8 @@ fn insert_routine_row(
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
           last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
-          streak_state, lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          streak_state, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -4002,19 +4109,16 @@ fn insert_routine_row(
             now_ms,
             now_ms,
             streak_blob,
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
         ],
     )?;
     Ok(())
 }
 
-fn update_routine_row(
-    tx: &Transaction<'_>,
-    r: &Routine,
-    lww_ts_ms: u64,
-    lww_device: &[u8; 16],
-) -> rusqlite::Result<()> {
+fn update_routine_row(tx: &Transaction<'_>, r: &Routine, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
     let rrule_text = r.rrule.to_rfc5545();
@@ -4031,7 +4135,7 @@ fn update_routine_row(
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
             last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?,
-            streak_state = ?, lww_ts_ms = ?, lww_device = ?
+            streak_state = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -4052,8 +4156,10 @@ fn update_routine_row(
             r.paused_until.map(|d| d.as_millisecond()),
             r.updated_at.as_millisecond(),
             streak_blob,
-            lww_ts_ms,
-            &lww_device[..],
+            lww.hlc.physical_ms,
+            lww.hlc.logical,
+            lww.seq,
+            &lww.device[..],
             id_blob,
         ],
     )?;
@@ -4352,15 +4458,15 @@ impl Engine {
         // A review spans the whole vault, so it routes to the meta log the way
         // Stream and Routine lifecycle ops do.
         let seq = self.next_seq(db, &META_STREAM)?;
-        let device = self.keychain.device_id();
+        let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            insert_review_snapshot_row(tx, &snapshot, now_ms, &device)?;
+            insert_review_snapshot_row(tx, &snapshot, &lww)?;
             self.ops_insert(
                 tx,
                 &op_id,
                 &META_STREAM,
                 seq,
-                now_ms,
+                lww.hlc,
                 &inner,
                 "review.snapshot",
                 "review_snapshot",
@@ -4904,8 +5010,7 @@ fn read_live_tasks(conn: &rusqlite::Connection) -> Result<Vec<Task>, EngineError
 fn insert_review_snapshot_row(
     tx: &Transaction<'_>,
     s: &ReviewSnapshot,
-    ts_ms: u64,
-    device: &[u8; 16],
+    lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
     let mut body = Vec::new();
     ciborium::ser::into_writer(s, &mut body)
@@ -4914,8 +5019,8 @@ fn insert_review_snapshot_row(
         "INSERT OR IGNORE INTO review_snapshots
          (id, created_at_ms, window_start_ms, window_end_ms,
           completed, deferred, dropped, created, reopened, body,
-          lww_ts_ms, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &s.id.bytes()[..],
             s.created_at.as_millisecond(),
@@ -4927,8 +5032,10 @@ fn insert_review_snapshot_row(
             i64::from(s.totals.created),
             i64::from(s.totals.reopened),
             body,
-            ts_ms as i64,
-            &device[..],
+            lww.hlc.physical_ms as i64,
+            lww.hlc.logical,
+            lww.seq as i64,
+            &lww.device[..],
         ],
     )?;
     Ok(())
@@ -4953,7 +5060,7 @@ mod tests {
 
     fn engine() -> Engine {
         let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        Engine::new(
+        Engine::from_clock(
             Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
             Arc::new(SystemRng),
             keychain,
@@ -5007,7 +5114,7 @@ mod tests {
         // per-(stream, device) seq sequences.
         let mut db = db();
         let clock = || Arc::new(FakeClock(PLMutex::new(1_700_000_000_000)));
-        let ea = Engine::new(
+        let ea = Engine::from_clock(
             clock(),
             Arc::new(SystemRng),
             Arc::new(Keychain::for_test_seeded(
@@ -5015,7 +5122,7 @@ mod tests {
                 [1u8; 32],
             )),
         );
-        let eb = Engine::new(
+        let eb = Engine::from_clock(
             clock(),
             Arc::new(SystemRng),
             Arc::new(Keychain::for_test_seeded(
@@ -6524,7 +6631,7 @@ mod tests {
                     false,
                     false,
                 )?;
-                insert_routine_row(tx, &r, NOW as u64, NOW as u64, &e.keychain.device_id())
+                insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
             e.materialize_one_routine(&mut db, &r, NOW as u64).unwrap();
@@ -6712,7 +6819,7 @@ mod tests {
             VaultRootKey::from_bytes(root),
             seed,
         ));
-        Engine::new(clock, Arc::new(SystemRng), kc)
+        Engine::from_clock(clock, Arc::new(SystemRng), kc)
     }
 
     fn set_clock(c: &FakeClock, v: u64) {
@@ -7074,6 +7181,25 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity).title, "A-late");
     }
 
+    fn stamp(hlc_ms: u64, logical: u32, device: [u8; 16], seq: u64) -> LwwStamp {
+        LwwStamp {
+            hlc: Hlc {
+                physical_ms: hlc_ms,
+                logical,
+            },
+            device,
+            seq,
+        }
+    }
+
+    fn row_of(s: &LwwStamp) -> RowLww {
+        RowLww {
+            hlc: s.hlc,
+            device: Some(s.device.to_vec()),
+            seq: s.seq,
+        }
+    }
+
     /// Regression: a device's own successive ops must not lose to each other.
     ///
     /// The device-id memcmp breaks *cross-device* ties. Applied to one device's
@@ -7082,21 +7208,290 @@ mod tests {
     /// permanent divergence with no error. Creating a task and patching it in
     /// the same millisecond is enough to trigger it, which is exactly what the
     /// blocker-convergence e2e was hitting about one run in six.
+    ///
+    /// The HLC makes the equal-stamp case unreachable while a device's clock
+    /// state lives, but it is still reachable across a process restart (the
+    /// logical counter resets to 0), so the guarantee is asserted directly.
     #[test]
-    fn same_device_ops_in_one_millisecond_do_not_lose_to_each_other() {
+    fn same_device_ops_at_one_hlc_do_not_lose_to_each_other() {
         let dev = [7u8; 16];
         assert!(
-            lww_wins(1000, &dev, 1000, Some(&dev[..])),
-            "a device's later op must win over its own earlier op at equal ts"
+            lww_wins(&stamp(1000, 0, dev, 2), &row_of(&stamp(1000, 0, dev, 1))),
+            "a device's later op must win over its own earlier op at an equal HLC"
         );
         // Cross-device ties are unaffected: still decided by memcmp.
         let lower = [1u8; 16];
         let higher = [9u8; 16];
-        assert!(lww_wins(1000, &higher, 1000, Some(&lower[..])));
-        assert!(!lww_wins(1000, &lower, 1000, Some(&higher[..])));
-        // And a real ts difference still dominates the device comparison.
-        assert!(!lww_wins(999, &higher, 1000, Some(&lower[..])));
-        assert!(lww_wins(1001, &lower, 1000, Some(&higher[..])));
+        assert!(lww_wins(
+            &stamp(1000, 0, higher, 1),
+            &row_of(&stamp(1000, 0, lower, 1))
+        ));
+        assert!(!lww_wins(
+            &stamp(1000, 0, lower, 1),
+            &row_of(&stamp(1000, 0, higher, 1))
+        ));
+        // And a real HLC difference still dominates the device comparison.
+        assert!(!lww_wins(
+            &stamp(999, 0, higher, 9),
+            &row_of(&stamp(1000, 0, lower, 1))
+        ));
+        assert!(lww_wins(
+            &stamp(1001, 0, lower, 1),
+            &row_of(&stamp(1000, 0, higher, 9))
+        ));
+        // The logical component orders inside one millisecond, which a bare
+        // wall clock could not do at all.
+        assert!(lww_wins(
+            &stamp(1000, 1, lower, 1),
+            &row_of(&stamp(1000, 0, higher, 1))
+        ));
+    }
+
+    /// `seq` is the LAST term, not the first: a lower-seq op from a device
+    /// whose HLC is ahead still wins.
+    #[test]
+    fn seq_never_overrides_the_hlc() {
+        let a = [1u8; 16];
+        let b = [2u8; 16];
+        assert!(lww_wins(
+            &stamp(2000, 0, a, 1),
+            &row_of(&stamp(1000, 0, b, 9999))
+        ));
+    }
+
+    /// A placeholder row that no op has stamped loses to everything.
+    #[test]
+    fn an_unstamped_row_loses_to_any_real_op() {
+        let row = RowLww {
+            hlc: Hlc::default(),
+            device: None,
+            seq: 0,
+        };
+        assert!(lww_wins(&stamp(0, 0, [0u8; 16], 0), &row));
+    }
+
+    /// #21: before HLCs, a device whose wall clock ran fast won every conflict
+    /// it ever entered, permanently. Its peer could re-edit the value a hundred
+    /// times and every one of those edits would lose to the same stale op,
+    /// because the peer's honest `ts_ms` was still the smaller number. That is
+    /// not a tie-break, it is a veto, and nothing in the system announced it.
+    ///
+    /// An HLC removes the veto because it is not a clock reading, it is a
+    /// causal position. B cannot edit a Task it has never seen, so by the time
+    /// B edits, B has ALREADY absorbed A's stamp and sits above it — whatever
+    /// A's wall clock says. The fast device gets no advantage it did not earn
+    /// by writing first.
+    #[test]
+    fn a_fast_clock_does_not_win_every_conflict() {
+        // A is four minutes fast — inside the drift window, so its ops are
+        // legitimate, just early.
+        let skew = 4 * 60 * 1000;
+        let ca = Arc::new(FakeClock(PLMutex::new(T0 + skew)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "orig".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .unwrap();
+
+        // Both edit without seeing the other's edit. A's wall clock reads four
+        // minutes later than B's throughout.
+        let a_up = ea
+            .apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: created.entity,
+                    patch: TaskPatch {
+                        title: Some("from-the-fast-device".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        let b_up = eb
+            .apply(
+                &mut dbb,
+                Command::UpdateTask {
+                    id: created.entity,
+                    patch: TaskPatch {
+                        title: Some("from-the-slow-device".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &a_up.op_id))
+            .unwrap();
+        ea.apply_remote(&mut dba, &env_bytes(&dbb, &b_up.op_id))
+            .unwrap();
+
+        // B's edit is causally later — it was made from a replica that had
+        // seen A's create — so it wins, on BOTH replicas. Under the old
+        // `(ts_ms, device_id)` rule A's four-minute lead would have won here
+        // and gone on winning every subsequent round.
+        assert_eq!(
+            read_task_t(&eb, &dbb, created.entity).title,
+            "from-the-slow-device"
+        );
+        assert_eq!(
+            read_task_t(&ea, &dba, created.entity).title,
+            "from-the-slow-device",
+            "the fast clock must not hold a permanent veto over its peer"
+        );
+
+        // And the reverse still works: A edits again, having seen B's op, and
+        // A's edit now wins. Neither device is stuck losing either.
+        let a_again = ea
+            .apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: created.entity,
+                    patch: TaskPatch {
+                        title: Some("and-back-to-a".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &a_again.op_id))
+            .unwrap();
+        assert_eq!(
+            read_task_t(&eb, &dbb, created.entity).title,
+            "and-back-to-a"
+        );
+    }
+
+    /// ...and a clock that is not merely fast but wrong is refused outright,
+    /// so it cannot drag its peers' clocks along with it.
+    #[test]
+    fn an_op_beyond_the_drift_window_is_refused() {
+        let ca = Arc::new(FakeClock(PLMutex::new(
+            T0 + sunrise_cbor::hlc::MAX_DRIFT_MS + 1,
+        )));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "from the future".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        let err = eb
+            .apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .unwrap_err();
+        assert!(
+            matches!(&err, EngineError::RemoteOpInvalid(m) if m.contains("hlc")),
+            "expected an HLC drift rejection, got {err:?}"
+        );
+
+        // Refused means refused: nothing was materialized and nothing was
+        // recorded in the op log.
+        let tasks: i64 = dbb
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tasks, 0);
+        let ops: i64 = dbb
+            .conn()
+            .query_row("SELECT COUNT(*) FROM ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ops, 0);
+    }
+
+    /// A peer that has been offline for a week is not a clock problem: its ops
+    /// are far in the PAST, which is legitimate and must be accepted.
+    #[test]
+    fn an_op_from_long_ago_is_accepted() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0 - 7 * 24 * 3_600_000)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "written a week ago".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .expect("an op from the past is not a drift violation");
+        assert_eq!(
+            read_task_t(&eb, &dbb, created.entity).title,
+            "written a week ago"
+        );
+    }
+
+    /// Every replica must record the SENDER's stamp, not its own post-merge
+    /// reading — otherwise the LWW winner would depend on delivery order.
+    #[test]
+    fn the_receiver_stores_the_senders_stamp() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0 + 60_000)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let created = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "t".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &created.op_id))
+            .unwrap();
+
+        let read = |db: &Db| -> (i64, i64, i64) {
+            db.conn()
+                .query_row(
+                    "SELECT lww_hlc_ms, lww_hlc_logical, lww_seq FROM tasks WHERE id = ?",
+                    params![&created.entity.bytes()[..]],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            read(&dba),
+            read(&dbb),
+            "both replicas must stamp the row identically"
+        );
+        assert_eq!(
+            read(&dbb).0,
+            T0 as i64,
+            "B stored A's physical clock, not its own"
+        );
     }
 
     #[test]
@@ -7340,7 +7735,7 @@ mod tests {
                     false,
                     false,
                 )?;
-                insert_routine_row(tx, &r, NOW as u64, NOW as u64, &e.keychain.device_id())
+                insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
             e.materialize_one_routine(d, &r, NOW as u64).unwrap();
@@ -7949,7 +8344,7 @@ mod tests {
 
     fn engine_clocked(clock: Arc<FakeClock>) -> Engine {
         let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        Engine::new(clock, Arc::new(SystemRng), keychain)
+        Engine::from_clock(clock, Arc::new(SystemRng), keychain)
     }
 
     fn routine_of(e: &Engine, db: &Db, rid: EntityRef) -> Routine {
@@ -8094,7 +8489,7 @@ mod tests {
         let ca = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
         let cb = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
         let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
-        let eb = engine_seeded(ROOT, [2u8; 32], cb);
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
         let mut dba = db_root(ROOT);
         let mut dbb = db_root(ROOT);
         trust(&eb, &mut dbb, &ea);
@@ -8106,7 +8501,11 @@ mod tests {
         eb.apply_remote(&mut dbb, &create_env_for(&dba, occ[0].0.bytes()))
             .unwrap();
 
+        // Both replicas move together. An hour of real skew between two peers
+        // is outside the HLC drift window on purpose; this test is about
+        // convergence, not about clock abuse.
         set_clock(&ca, (occ[0].1 + 3_600_000) as u64);
+        set_clock(&cb, (occ[0].1 + 3_600_000) as u64);
         ea.apply(&mut dba, Command::CompleteTask(occ[0].0)).unwrap();
         eb.apply_remote(
             &mut dbb,
@@ -8212,7 +8611,10 @@ mod tests {
     fn focus_engine(now_ms: u64) -> (Engine, Arc<FakeClock>) {
         let clock = Arc::new(FakeClock(PLMutex::new(now_ms)));
         let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        (Engine::new(clock.clone(), Arc::new(SystemRng), kc), clock)
+        (
+            Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc),
+            clock,
+        )
     }
 
     fn task_with(e: &Engine, db: &mut Db, title: &str, d: TaskDraft) -> EntityRef {

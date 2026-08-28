@@ -120,7 +120,12 @@ impl Core {
             cfg.clock.as_ref(),
             cfg.rng.as_ref(),
         )?);
-        let engine = Engine::new(cfg.clock.clone(), cfg.rng.clone(), keychain);
+        let engine = Engine::new(
+            cfg.clock.clone(),
+            cfg.hlc.clone(),
+            cfg.rng.clone(),
+            keychain,
+        );
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
         engine.apply(
@@ -625,13 +630,12 @@ mod tests {
     }
 
     fn cfg(dir: &std::path::Path) -> CoreConfig {
-        CoreConfig {
-            vault_dir: dir.to_path_buf(),
-            clock: Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-            rng: Arc::new(SystemRng),
-            app: "0.1.0+test".into(),
-            sync: None,
-        }
+        CoreConfig::with_clock(
+            dir.to_path_buf(),
+            "0.1.0+test",
+            Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
+            Arc::new(SystemRng),
+        )
     }
 
     fn unlock() -> Unlock {
@@ -666,13 +670,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let start_ms = 1_700_000_000_000u64;
         let clock = Arc::new(FakeClock(PLMutex::new(start_ms)));
-        let cfg = CoreConfig {
-            vault_dir: dir.path().to_path_buf(),
-            clock: clock.clone(),
-            rng: Arc::new(SystemRng),
-            app: "0.1.0+test".into(),
-            sync: None,
-        };
+        let cfg = CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            clock.clone(),
+            Arc::new(SystemRng),
+        );
         let core = Arc::new(Core::open(cfg, unlock()).await.unwrap());
 
         core.submit(Command::CreateRoutine(RoutineDraft {

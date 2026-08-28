@@ -5,7 +5,7 @@ status: accepted
 # Conflict Resolution
 
 > **Target state.** v1 resolves *every* field by entity-level LWW over
-> `(ts_ms, device_id)` — the "Scalar" row below applied to the whole entity.
+> `(hlc, device_id, seq)` — the "Scalar" row below applied to the whole entity.
 > The OR-Set, PN-counter, list, and RichText policies are not implemented; see
 > [ADR-0014](../11-adr/0014-entity-level-lww-merge.md).
 
@@ -15,12 +15,57 @@ The CRDT framework deterministically merges most concurrent edits. This spec doc
 
 | Field type | Policy |
 |---|---|
-| Scalar (title, due_at, priority, …) | LWW with `(ts_ms, device_id)` tiebreak |
+| Scalar (title, due_at, priority, …) | LWW with `(hlc, device_id, seq)` tiebreak |
 | Set membership (contexts, blocks↔tasks) | OR-Set: add wins over concurrent remove of an *earlier* add |
 | Counter (deferred_count, streak) | PN-counter (commutative add/sub) |
 | List (ordered children of a Stream) | Loro List with fractional indices; concurrent inserts at the same anchor get tiebroken by `device_id` |
 | Rich text (notes) | Loro RichText (CRDT character merge) |
 | Map (entity itself) | Map of the above types |
+
+## The comparison key
+
+The winner of any two writes to one entity is the greater of
+
+```
+(hlc, device_id, seq)
+```
+
+compared left to right, where
+
+| Term | What it is | Why it is there |
+|---|---|---|
+| `hlc` | `(physical_ms, logical)` — a hybrid logical clock, envelope field 5 | An unbounded device wall clock let one skewed device win every conflict it ever entered, permanently and silently (issue #21). It also could not order two writes inside one millisecond at all. |
+| `device_id` | the raw 16-byte id, memcmp, higher wins | Breaks *cross-device* ties deterministically, so every replica picks the same winner. |
+| `seq` | the writer's per-`(stream, device)` counter, envelope field 4 | Reached only when two ops from the SAME device carry an equal `hlc`. The HLC's send rule makes that impossible while a device's clock state lives; it becomes possible across a process restart, when the logical counter resets. |
+
+### The HLC rules
+
+- **Send.** `hlc = max(local, wall_clock) + 1` in the lexicographic sense: the
+  physical component takes the wall clock when the wall clock is ahead and the
+  logical counter resets; otherwise the logical counter increments. A device's
+  own ops are therefore strictly ordered even if its clock stalls or jumps
+  backwards.
+- **Receive.** `local = max(local, received, now) + 1`. After observing a peer's
+  op, this device sits above it, so everything it emits afterwards sorts after
+  the op that caused it. Causality without a vector clock.
+- **The receiver stores the SENDER's value**, not its own post-merge reading.
+  That is what makes the order replica-independent: two replicas that receive
+  the same op in different orders record the same stamp for it. Storing the
+  local post-merge value would make the winner depend on delivery order — the
+  exact divergence LWW exists to prevent.
+- **Drift bound.** An op whose `physical_ms` is more than `MAX_DRIFT_MS`
+  (5 minutes) beyond the receiver's own clock is REFUSED — not applied, not
+  logged, and not absorbed. Accepting it would drag the receiver's clock forward
+  with the bad one and propagate the skew to every peer it talks to next. An op
+  from the *past* is always accepted: that is a device coming back from a week
+  offline, not a clock fault.
+
+A fast clock therefore still wins a genuinely concurrent race, and that is
+correct — someone has to. What it can no longer do is win *forever*: a peer
+cannot edit an entity it has never seen, so by the time it edits, it has already
+absorbed the fast device's stamp and sits above it.
+
+See [ADR-0016](../11-adr/0016-hlc-timestamps.md).
 
 ## Specific decisions
 
@@ -47,17 +92,16 @@ Move = delete-source + create-destination. Ordering matters:
 
 Result after both apply: T has been deleted from S1 (idempotent), and exists in *both* S2 and S3 — both as legitimate creations. **One is a duplicate.**
 
-Resolution: deterministic — sort copies by `(create_op.ts_ms, create_op.device_id_lex, create_op.seq)` and keep the **last** entry; all earlier entries are auto-tombstoned. The same rule extends to N-way concurrent moves. Total ordering guarantees determinism. The merge journal records this.
+Resolution: deterministic — sort copies by `(create_op.hlc, create_op.device_id_lex, create_op.seq)` and keep the **last** entry; all earlier entries are auto-tombstoned. The same rule extends to N-way concurrent moves. Total ordering guarantees determinism. The merge journal records this.
 
 `device_id_lex` is the lex byte order of the raw 16-byte `device_id` (memcmp). No base-encoding is involved.
 
 The `device_id` tiebreak resolves **cross-device** ties only. Two ops from the
 *same* device are not concurrent — they are causally ordered by their
-per-`(stream, device)` `seq` — so when the incoming op and the target row's
-last writer are the same device, the incoming op wins regardless of the memcmp.
-Applying the memcmp there would make a device's later op lose to its own
-earlier one (`dev > dev` is false), silently discarding it on every remote
-replica while the originating replica kept it.
+per-`(stream, device)` `seq`, which is why `seq` is the third term of the
+comparison key. Applying the memcmp to a device's own ops would make its later
+op lose to its own earlier one (`dev > dev` is false), silently discarding it on
+every remote replica while the originating replica kept it.
 
 (We considered a "moved" relation, but it explodes in scope. The duplicate-and-tombstone path is simple and correct.)
 
@@ -74,7 +118,7 @@ Loro List handles this. Concurrent moves of the same item produce one final posi
 
 ### Concurrent share-then-revoke
 
-A grants share to peer P; B revokes the same share concurrently. We treat share grants and revokes as ordered by `(ts_ms, device_id)`; the later wins. Edge case: if grant wins after revoke, peer P briefly has access until A's revoke arrives — minimal exposure.
+A grants share to peer P; B revokes the same share concurrently. We treat share grants and revokes as ordered by the same `(hlc, device_id, seq)` key; the later wins. Edge case: if grant wins after revoke, peer P briefly has access until A's revoke arrives — minimal exposure.
 
 ## Merge journal
 

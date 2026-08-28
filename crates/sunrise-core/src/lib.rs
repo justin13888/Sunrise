@@ -54,7 +54,7 @@ pub mod unlock;
 pub mod vault_lock;
 
 pub use commands::{Command, CommandResult, FocusStartDraft};
-pub use config::{Clock, CoreConfig, Rng, SystemClock, SystemRng};
+pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
 pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};

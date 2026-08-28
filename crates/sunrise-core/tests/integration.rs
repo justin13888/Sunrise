@@ -31,15 +31,14 @@ impl Clock for FakeClock {
 }
 
 fn cfg(dir: &std::path::Path) -> CoreConfig {
-    CoreConfig {
-        vault_dir: dir.to_path_buf(),
-        clock: Arc::new(FakeClock {
+    CoreConfig::with_clock(
+        dir.to_path_buf(),
+        "0.1.0+integration",
+        Arc::new(FakeClock {
             ms: Mutex::new(1_700_000_000_000),
         }),
-        rng: Arc::new(SystemRng),
-        app: "0.1.0+integration".into(),
-        sync: None,
-    }
+        Arc::new(SystemRng),
+    )
 }
 
 fn unlock() -> Unlock {

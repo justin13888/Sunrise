@@ -136,13 +136,10 @@ pub async fn open_core_with_factory(
     factory: TransportFactory,
 ) -> Arc<Core> {
     let cfg = CoreConfig {
-        vault_dir: vault_dir.to_path_buf(),
-        clock,
-        rng: Arc::new(SystemRng),
-        app: APP_ID.into(),
         sync: Some(SyncConfig {
             url: format!("ws://{addr}/sync"),
         }),
+        ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };
     let core = Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(root)))
         .await

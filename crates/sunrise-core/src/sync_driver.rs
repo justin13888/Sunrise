@@ -715,13 +715,15 @@ mod tests {
 
     fn make_cfg(dir: &Path) -> CoreConfig {
         CoreConfig {
-            vault_dir: dir.to_path_buf(),
-            clock: Arc::new(TestClock(T0)),
-            rng: Arc::new(SystemRng),
-            app: "0.1.0+test".into(),
             sync: Some(SyncConfig {
                 url: "ws://unused/sync".into(),
             }),
+            ..CoreConfig::with_clock(
+                dir.to_path_buf(),
+                "0.1.0+test",
+                Arc::new(TestClock(T0)),
+                Arc::new(SystemRng),
+            )
         }
     }
 

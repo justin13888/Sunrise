@@ -22,15 +22,15 @@ Any violation aborts decryption with `CRYPTO_NON_CANONICAL_CBOR` before any AEAD
 
 Every op (in-stream or control) is wrapped in a single envelope type. The envelope is the unit of storage in the `ops` table and the unit of transport on the wire.
 
-Every persisted/transmitted envelope begins with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3: `"SR" + kind=2 + version=ENVELOPE_FORMAT_V (uint16 big-endian, currently 2)`. The prefix carries the **container format** version, not the document schema — see [ADR-0015](../11-adr/0015-envelope-doc-schema-split.md). Readers MUST verify the magic before any CBOR parse; mismatch → `PROTOCOL_BAD_MAGIC` and discard. The prefix is not part of the canonical CBOR; the bytes that follow are.
+Every persisted/transmitted envelope begins with the unified 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3: `"SR" + kind=2 + version=ENVELOPE_FORMAT_V (uint16 big-endian, currently 3)`. The prefix carries the **container format** version, not the document schema — see [ADR-0015](../11-adr/0015-envelope-doc-schema-split.md). Readers MUST verify the magic before any CBOR parse; mismatch → `PROTOCOL_BAD_MAGIC` and discard. The prefix is not part of the canonical CBOR; the bytes that follow are.
 
 ```cddl
 OpEnvelope = {
-    1: uint,            ; v             (ENVELOPE_FORMAT_V, = 2; matches the magic-prefix version)
+    1: uint,            ; v             (ENVELOPE_FORMAT_V, = 3; matches the magic-prefix version)
     2: bstr .size 16,   ; stream_id     (raw 128-bit; see below for special values)
     3: bstr .size 16,   ; device_id     (raw 128-bit; signing device)
     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
-    5: uint,            ; ts_ms         (device wall clock; advisory only)
+    5: [uint, uint],    ; hlc           ([physical_ms, logical]; hybrid logical clock)
     6: uint,            ; aead_alg      (1 = XChaCha20-Poly1305; 0 = none/control)
     7: uint,            ; sig_alg       (1 = Ed25519)
     8: uint,            ; epoch         (Stream-key epoch used for ciphertext; 0 if aead_alg = 0)
@@ -58,6 +58,20 @@ This is what makes the documented "adding a field is a minor change" true. Befor
 
 Field ids are non-negative CBOR integers, so deterministic (RFC 8949 §4.2.1) key ordering is numeric ordering: field `12` encodes as `0x0c` and sorts *after* field `11`. It is still covered by both the AAD and the signature, because both are defined by the fields they **exclude** — see below.
 
+### `hlc` — field 5
+
+A **hybrid logical clock**, not a wall clock: `[physical_ms, logical]`. It is
+the ordering key for last-writer-wins, and the reason it is not a bare
+`ts_ms` is that a bare `ts_ms` gave a device with a fast clock a permanent veto
+over every peer (issue #21). The merge rules, the receive rule, and the
+`MAX_DRIFT_MS` bound live in
+[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) and
+[ADR-0016](../11-adr/0016-hlc-timestamps.md).
+
+`hlc.physical_ms` is also the wall-clock reading used by "Signature key
+resolution" below — an HLC's physical component only ever runs at or ahead of
+the emitting device's true clock, never behind it.
+
 ### Special `stream_id` values
 
 | Value | Meaning |
@@ -77,7 +91,7 @@ When `aead_alg = 1`, the AEAD AAD is the canonical CBOR encoding of the envelope
 
 ```
 aad = canonical_cbor({
-    1: v, 2: stream_id, 3: device_id, 4: seq, 5: ts_ms,
+    1: v, 2: stream_id, 3: device_id, 4: seq, 5: hlc,
     6: aead_alg, 7: sig_alg, 8: epoch, 9: nonce, 12: doc_schema_v
 })
 ```
@@ -103,7 +117,7 @@ The signature covers the ciphertext (or signed-only payload) bit-for-bit and all
 
 ### Signature key resolution
 
-When verifying an op envelope's signature, select the device cert in force at `envelope.ts_ms`:
+When verifying an op envelope's signature, select the device cert in force at `envelope.hlc.physical_ms` (written `ts_ms` below):
 
 ```
 device_certs = vault_meta.device_certs[envelope.device_id]   // 1..N records

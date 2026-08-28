@@ -4,11 +4,11 @@
 //!
 //! ```cddl
 //! OpEnvelope = {
-//!     1: uint,            ; v             (= ENVELOPE_FORMAT_V, currently 2)
+//!     1: uint,            ; v             (= ENVELOPE_FORMAT_V, currently 3)
 //!     2: bstr .size 16,   ; stream_id     (0x00..00 = vault-meta; otherwise a Stream)
 //!     3: bstr .size 16,   ; device_id     (signing device)
 //!     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
-//!     5: uint,            ; ts_ms         (device wall clock)
+//!     5: [uint, uint],    ; hlc           ([physical_ms, logical]; see sunrise_cbor::hlc)
 //!     6: uint,            ; aead_alg      (1 = XChaCha20-Poly1305; 0 = none/control)
 //!     7: uint,            ; sig_alg       (1 = Ed25519)
 //!     8: uint,            ; epoch         (Stream-key epoch; 0 if aead_alg = 0)
@@ -18,6 +18,12 @@
 //!     12: uint,           ; doc_schema_v  (schema of the *payload*, >= DOC_SCHEMA_FLOOR)
 //! }
 //! ```
+//!
+//! Field 5 is a hybrid logical clock, not a bare wall clock: a two-element array
+//! `[physical_ms, logical]`. Ordering ops by an unbounded device wall clock let
+//! one skewed device win every conflict forever (issue #21); the logical
+//! component is what makes the order consistent with causality when the wall
+//! clocks disagree.
 //!
 //! Field 1 is the **container format** version and field 12 the **document
 //! schema** version. They are separate on purpose (ADR-0015): a decoder that
@@ -46,6 +52,7 @@ use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
+use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
 use sunrise_cbor::version::{DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
 use sunrise_error::ErrorCode;
@@ -121,8 +128,10 @@ pub struct OpEnvelope {
     pub device_id: [u8; 16],
     /// Per-`(stream_id, device_id)` monotonic; first op = 1.
     pub seq: u64,
-    /// Device wall clock at emit; advisory only.
-    pub ts_ms: u64,
+    /// Hybrid logical clock at emit. Its `physical_ms` doubles as the device
+    /// wall clock for cert resolution; the pair as a whole is the ordering key
+    /// for last-writer-wins.
+    pub hlc: Hlc,
     /// AEAD algorithm id.
     pub aead_alg: AeadAlgId,
     /// Signature algorithm id.
@@ -189,7 +198,13 @@ fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError>
     put(2, Value::Bytes(env.stream_id.to_vec()));
     put(3, Value::Bytes(env.device_id.to_vec()));
     put(4, Value::Integer(env.seq.into()));
-    put(5, Value::Integer(env.ts_ms.into()));
+    put(
+        5,
+        Value::Array(vec![
+            Value::Integer(env.hlc.physical_ms.into()),
+            Value::Integer(Integer::from(env.hlc.logical)),
+        ]),
+    );
     put(6, Value::Integer(Integer::from(env.aead_alg as u32)));
     put(7, Value::Integer(Integer::from(env.sig_alg as u32)));
     put(8, Value::Integer(Integer::from(env.epoch)));
@@ -253,7 +268,7 @@ pub fn encode_envelope(
     stream_id: [u8; 16],
     device_id: [u8; 16],
     seq: u64,
-    ts_ms: u64,
+    hlc: Hlc,
     aead_alg: AeadAlgId,
     epoch: u32,
     nonce: [u8; AEAD_NONCE_LEN],
@@ -266,7 +281,7 @@ pub fn encode_envelope(
         stream_id,
         device_id,
         seq,
-        ts_ms,
+        hlc,
         aead_alg,
         sig_alg: SigAlgId::Ed25519,
         epoch,
@@ -347,7 +362,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         stream_id: [0u8; 16],
         device_id: [0u8; 16],
         seq: 0,
-        ts_ms: 0,
+        hlc: Hlc::at(0),
         aead_alg: AeadAlgId::None,
         sig_alg: SigAlgId::Ed25519,
         epoch: 0,
@@ -368,7 +383,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
             2 => env.stream_id = bytes16_from(&v, "stream_id")?,
             3 => env.device_id = bytes16_from(&v, "device_id")?,
             4 => env.seq = u64_from(&v, "seq")?,
-            5 => env.ts_ms = u64_from(&v, "ts_ms")?,
+            5 => env.hlc = hlc_from(&v)?,
             6 => {
                 let raw = u32_from(&v, "aead_alg")?;
                 env.aead_alg = aead_alg_id(raw).ok_or(OpEnvelopeError::UnknownAlg("aead_alg"))?;
@@ -403,7 +418,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 2 => "stream_id",
                 3 => "device_id",
                 4 => "seq",
-                5 => "ts_ms",
+                5 => "hlc",
                 6 => "aead_alg",
                 7 => "sig_alg",
                 8 => "epoch",
@@ -494,6 +509,20 @@ fn u64_from(v: &ciborium::value::Value, field: &'static str) -> Result<u64, OpEn
     }
 }
 
+/// Field 5 is `[physical_ms, logical]`. A bare integer is the pre-HLC shape
+/// and is not accepted: it would silently decode as `logical = 0`, which is a
+/// *valid* HLC and would therefore be indistinguishable from a real one.
+fn hlc_from(v: &ciborium::value::Value) -> Result<Hlc, OpEnvelopeError> {
+    let arr = match v {
+        ciborium::value::Value::Array(a) if a.len() == 2 => a,
+        _ => return Err(OpEnvelopeError::BadField("hlc")),
+    };
+    Ok(Hlc {
+        physical_ms: u64_from(&arr[0], "hlc.physical_ms")?,
+        logical: u32_from(&arr[1], "hlc.logical")?,
+    })
+}
+
 fn bytes16_from(
     v: &ciborium::value::Value,
     field: &'static str,
@@ -557,7 +586,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1_700_000_000_000,
+            Hlc::at(1_700_000_000_000),
             AeadAlgId::None,
             0,
             [0u8; AEAD_NONCE_LEN],
@@ -565,8 +594,8 @@ mod tests {
             &signing,
         )
         .unwrap();
-        // Magic prefix carries ENVELOPE_FORMAT_V: `SR\x02\x00\x02`.
-        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x02");
+        // Magic prefix carries ENVELOPE_FORMAT_V: `SR\x02\x00\x03`.
+        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x03");
         let env = decode_envelope(&bytes).unwrap();
         verify_envelope(&env, &pub_bytes).unwrap();
         let plaintext = open_envelope(&env, &pub_bytes, None).unwrap();
@@ -584,7 +613,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1_700_000_000_000,
+            Hlc::at(1_700_000_000_000),
             AeadAlgId::XChaCha20Poly1305,
             4,
             [0xaau8; AEAD_NONCE_LEN],
@@ -608,7 +637,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1,
+            Hlc::at(1),
             AeadAlgId::XChaCha20Poly1305,
             1,
             [0u8; AEAD_NONCE_LEN],
@@ -639,7 +668,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1,
+            Hlc::at(1),
             AeadAlgId::XChaCha20Poly1305,
             1,
             [0u8; AEAD_NONCE_LEN],
@@ -670,7 +699,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1,
+            Hlc::at(1),
             AeadAlgId::None,
             0,
             [0u8; AEAD_NONCE_LEN],
@@ -695,7 +724,7 @@ mod tests {
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
-                ts_ms: 1_700_000_000_000,
+                hlc: Hlc::at(1_700_000_000_000),
                 aead_alg: AeadAlgId::None,
                 sig_alg: SigAlgId::Ed25519,
                 epoch: 0,
@@ -717,7 +746,7 @@ mod tests {
             [2u8; 16],
             [3u8; 16],
             1,
-            1,
+            Hlc::at(1),
             AeadAlgId::None,
             0,
             [0u8; AEAD_NONCE_LEN],
@@ -803,7 +832,7 @@ mod tests {
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
-                ts_ms: 1,
+                hlc: Hlc::at(1),
                 aead_alg: AeadAlgId::XChaCha20Poly1305,
                 sig_alg: SigAlgId::Ed25519,
                 epoch: 1,

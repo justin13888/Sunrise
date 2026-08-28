@@ -17,10 +17,12 @@
 #![warn(missing_docs)]
 
 pub mod canonical;
+pub mod hlc;
 pub mod magic;
 pub mod version;
 
 pub use canonical::{decode_canonical, encode_canonical, CanonicalEncoding, CanonicalError};
+pub use hlc::{Hlc, HlcError, MAX_DRIFT_MS};
 pub use magic::{decode_prefix, write_prefix, MagicError, MagicKind, MagicPrefix, MAGIC_LEN};
 pub use version::{
     CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V, STORAGE_V, WIRE_PROTO_V,

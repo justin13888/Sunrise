@@ -113,7 +113,7 @@ pub fn open_vault(seed: u64) -> BenchVault {
         rng.as_ref(),
     )
     .expect("open keychain");
-    let engine = Engine::new(clock, rng, Arc::new(keychain));
+    let engine = Engine::from_clock(clock, rng, Arc::new(keychain));
 
     BenchVault {
         engine,

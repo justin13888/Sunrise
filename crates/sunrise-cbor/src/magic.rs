@@ -209,12 +209,11 @@ mod tests {
 
     #[test]
     fn op_envelope_canonical_bytes() {
-        // Op-envelope magic carries ENVELOPE_FORMAT_V (= 2), not DOC_SCHEMA_V:
-        // `SR\x02\x00\x02`. Kind byte 0x02 and version 0x0002 coincide here;
-        // they are unrelated.
+        // Op-envelope magic carries ENVELOPE_FORMAT_V (= 3), not DOC_SCHEMA_V.
+        // The kind byte (0x02) and the version word are unrelated.
         let mut buf = [0u8; MAGIC_LEN];
         write_prefix(&mut buf, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
-        assert_eq!(buf, *b"SR\x02\x00\x02");
+        assert_eq!(buf, *b"SR\x02\x00\x03");
     }
 
     #[test]

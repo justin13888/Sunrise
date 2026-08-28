@@ -18,9 +18,11 @@ pub const WIRE_PROTO_V: u16 = 1;
 /// bytes; it accepts any document schema at or above its floor, because the
 /// container tells it where the payload is regardless.
 ///
-/// `2` is the first format that carries the document schema as its own field
-/// (field 12). See ADR-0015.
-pub const ENVELOPE_FORMAT_V: u16 = 2;
+/// `2` was the first format to carry the document schema as its own field
+/// (field 12); `3` changed field 5 from a bare wall-clock millisecond count to
+/// a hybrid logical clock `[physical_ms, logical]`. Neither number ever
+/// shipped: v1 opens at `3`. See ADR-0015 and ADR-0016.
+pub const ENVELOPE_FORMAT_V: u16 = 3;
 
 /// Document schema version constant (per-entity field shapes).
 ///

@@ -29,13 +29,12 @@ impl Clock for FixedClock {
 }
 
 fn cfg(dir: &std::path::Path) -> CoreConfig {
-    CoreConfig {
-        vault_dir: dir.to_path_buf(),
-        clock: Arc::new(FixedClock(Mutex::new(1_700_000_000_000))),
-        rng: Arc::new(SystemRng),
-        app: "0.1.0+e2e".into(),
-        sync: None,
-    }
+    CoreConfig::with_clock(
+        dir.to_path_buf(),
+        "0.1.0+e2e",
+        Arc::new(FixedClock(Mutex::new(1_700_000_000_000))),
+        Arc::new(SystemRng),
+    )
 }
 
 fn unlock(seed: u8) -> Unlock {

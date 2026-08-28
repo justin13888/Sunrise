@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use sunrise_core::{Command, Core, CoreConfig, Query, SystemRng, Unlock};
+use sunrise_core::{Command, Core, CoreConfig, Query, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
 use tokio::runtime::Runtime;
@@ -70,13 +70,7 @@ pub fn sunrise_open(vault_dir: String, vault_root_hex: String, app_v: String) ->
         Ok(b) => b,
         Err(e) => return e,
     };
-    let cfg = CoreConfig {
-        vault_dir: PathBuf::from(vault_dir),
-        clock: Arc::new(sunrise_core::SystemClock),
-        rng: Arc::new(SystemRng),
-        app: app_v,
-        sync: None,
-    };
+    let cfg = CoreConfig::production(PathBuf::from(vault_dir), app_v);
     let unlock = Unlock::DevicePaired(VaultRootKey::from_bytes(vault_root));
     let res = rt().block_on(Core::open(cfg, unlock));
     match res {

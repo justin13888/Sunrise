@@ -94,10 +94,13 @@ CREATE TABLE sync_cursors (
 );
 
 -- --- streams (materialized projection) ---
--- The entity-level LWW pair (`lww_ts_ms`, `lww_device`) decides which of two
--- concurrent writes to a row survives; see docs/05-sync/conflict-resolution.md.
--- `lww_device` is NULL only for a placeholder row no real op has stamped yet
--- (the lazily created inbox/meta stream).
+-- The entity-level LWW stamp decides which of two concurrent writes to a row
+-- survives. It is the triple `(lww_hlc_ms, lww_hlc_logical)`, `lww_device`,
+-- `lww_seq`, compared in that order — a hybrid logical clock, then the raw
+-- 16-byte device id (memcmp, higher wins), then the writer's per-(stream,
+-- device) sequence number. See docs/05-sync/conflict-resolution.md and
+-- ADR-0016. `lww_device` is NULL only for a placeholder row no real op has
+-- stamped yet (the lazily created inbox/meta stream).
 CREATE TABLE streams (
     stream_id       BLOB PRIMARY KEY,
     head_root       BLOB NOT NULL,
@@ -112,8 +115,10 @@ CREATE TABLE streams (
     review_cadence  TEXT NOT NULL DEFAULT 'weekly',
     created_at_ms   INTEGER NOT NULL,
     updated_at_ms   INTEGER NOT NULL,
-    lww_ts_ms       INTEGER NOT NULL DEFAULT 0,
-    lww_device      BLOB
+    lww_hlc_ms       INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical  INTEGER NOT NULL DEFAULT 0,
+    lww_seq          INTEGER NOT NULL DEFAULT 0,
+    lww_device       BLOB
 );
 
 -- --- tasks (materialized projection) ---
@@ -142,7 +147,9 @@ CREATE TABLE tasks (
     scheduling_constraints BLOB,
     created_at_ms          INTEGER NOT NULL DEFAULT 0,
     updated_at_ms          INTEGER NOT NULL DEFAULT 0,
-    lww_ts_ms              INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_ms             INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical        INTEGER NOT NULL DEFAULT 0,
+    lww_seq                INTEGER NOT NULL DEFAULT 0,
     lww_device             BLOB
 );
 CREATE INDEX tasks_by_stream ON tasks (stream_id);
@@ -189,8 +196,10 @@ CREATE TABLE contexts (
     deleted         INTEGER NOT NULL DEFAULT 0,
     created_at_ms   INTEGER NOT NULL DEFAULT 0,
     updated_at_ms   INTEGER NOT NULL DEFAULT 0,
-    lww_ts_ms       INTEGER NOT NULL DEFAULT 0,
-    lww_device      BLOB
+    lww_hlc_ms       INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical  INTEGER NOT NULL DEFAULT 0,
+    lww_seq          INTEGER NOT NULL DEFAULT 0,
+    lww_device       BLOB
 );
 CREATE INDEX contexts_by_name ON contexts (name COLLATE NOCASE) WHERE deleted = 0;
 
@@ -222,7 +231,9 @@ CREATE TABLE routines (
     scheduling_constraints BLOB,
     created_at_ms          INTEGER NOT NULL DEFAULT 0,
     updated_at_ms          INTEGER NOT NULL DEFAULT 0,
-    lww_ts_ms              INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_ms             INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical        INTEGER NOT NULL DEFAULT 0,
+    lww_seq                INTEGER NOT NULL DEFAULT 0,
     lww_device             BLOB
 );
 
@@ -267,7 +278,9 @@ CREATE TABLE focus_sessions (
     kind               TEXT NOT NULL,      -- 'work' | 'break'
     chunk_index        INTEGER,            -- "chunk N of M" checkpoint,
     chunk_total        INTEGER,            --   NULL when the estimate fits
-    lww_ts_ms          INTEGER,
+    lww_hlc_ms         INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical    INTEGER NOT NULL DEFAULT 0,
+    lww_seq            INTEGER NOT NULL DEFAULT 0,
     lww_device         BLOB
 );
 CREATE INDEX focus_sessions_by_task ON focus_sessions (task_id);
@@ -278,7 +291,9 @@ CREATE TABLE focus_session_ends (
     ended_at_ms        INTEGER NOT NULL,
     actual_focused_ms  INTEGER NOT NULL,   -- frozen here and nowhere else
     completed_task     INTEGER NOT NULL DEFAULT 0,
-    lww_ts_ms          INTEGER,
+    lww_hlc_ms         INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical    INTEGER NOT NULL DEFAULT 0,
+    lww_seq            INTEGER NOT NULL DEFAULT 0,
     lww_device         BLOB
 );
 
@@ -309,7 +324,9 @@ CREATE TABLE review_snapshots (
     reopened           INTEGER NOT NULL DEFAULT 0,
     body               BLOB NOT NULL,      -- canonical CBOR: per-stream rows,
                                            --   streaks, and the user's note
-    lww_ts_ms          INTEGER,
+    lww_hlc_ms         INTEGER NOT NULL DEFAULT 0,
+    lww_hlc_logical    INTEGER NOT NULL DEFAULT 0,
+    lww_seq            INTEGER NOT NULL DEFAULT 0,
     lww_device         BLOB
 );
 CREATE INDEX review_snapshots_by_window
