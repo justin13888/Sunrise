@@ -2274,6 +2274,7 @@ dependencies = [
 name = "sunrise-core-bindings"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "jiff",
  "sunrise-auth",
  "sunrise-client-core",
@@ -2281,6 +2282,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-pairing",
  "sunrise-sync",
  "tempfile",
  "thiserror 1.0.69",

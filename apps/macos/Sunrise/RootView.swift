@@ -45,6 +45,7 @@ struct VaultView: View {
     @State private var list: TaskListModel
     @State private var capture: CaptureModel
     @State private var search: SearchModel
+    @State private var calendar: CalendarModel
     @State private var focus: FocusModel
     @State private var routines: RoutineModel
     @State private var review: ReviewModel
@@ -62,6 +63,7 @@ struct VaultView: View {
         _list = State(initialValue: TaskListModel(bridge: bridge))
         _capture = State(initialValue: CaptureModel(bridge: bridge))
         _search = State(initialValue: SearchModel(bridge: bridge))
+        _calendar = State(initialValue: CalendarModel(bridge: bridge))
         _focus = State(initialValue: FocusModel(bridge: bridge))
         _routines = State(initialValue: RoutineModel(bridge: bridge))
         _review = State(initialValue: ReviewModel(bridge: bridge))
@@ -159,6 +161,8 @@ struct VaultView: View {
             TaskListView(model: list, capture: capture)
         case .search:
             SearchView(model: search)
+        case .calendar:
+            CalendarView(model: calendar)
         case .focus:
             FocusView(model: focus)
         case .routines:

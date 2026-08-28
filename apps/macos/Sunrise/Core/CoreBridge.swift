@@ -83,6 +83,46 @@ actor CoreBridge {
     /// rows in the same list cannot disagree about what "today" is.
     func nowMs() -> UInt64 { core.nowMs() }
 
+    // MARK: - Attachments
+
+    /// Seal a file's bytes into the vault and record them against a task.
+    ///
+    /// The bytes go over whole rather than as a path: a file the user picked
+    /// arrives with a security scope this process holds and the Rust side
+    /// cannot, so reading it is the app's job. `mimeType` is the app's too —
+    /// `UTType` is what knows a `.heic` is `image/heic`.
+    func attachFile(
+        to task: EntityRef,
+        filename: String,
+        mimeType: String,
+        bytes: Data
+    ) async throws -> AttachmentItem {
+        try await core.attachFile(task: task, filename: filename, mimeType: mimeType, bytes: bytes)
+    }
+
+    /// One attachment's plaintext, reassembled and hash-checked by the core.
+    ///
+    /// Throws `BindingError.AttachmentNotHere` when this device holds the row
+    /// and not the chunks — a state to render, not a failure to report.
+    func attachmentBytes(_ id: EntityRef) async throws -> Data {
+        try await core.attachmentBytes(id: id)
+    }
+
+    /// Whether this device holds every chunk of `attachment`.
+    func attachmentIsLocal(_ attachment: AttachmentItem) throws -> Bool {
+        try core.attachmentIsLocal(attachment: attachment)
+    }
+
+    // MARK: - Pairing
+
+    /// Seal this vault's root into a confirmed pairing.
+    ///
+    /// The root itself never reaches Swift. What comes back is ciphertext only
+    /// the device on the other end of the confirmed handshake can open.
+    func sendVaultRoot(to pairing: DevicePairing) throws -> String {
+        try core.sendVaultRoot(pairing: pairing)
+    }
+
     /// This device's stable id, hex-encoded — what a login binds its token to.
     func deviceId() -> String { core.deviceId() }
 

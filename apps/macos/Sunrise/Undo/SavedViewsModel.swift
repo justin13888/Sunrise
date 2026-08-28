@@ -93,6 +93,8 @@ final class SavedViewsModel {
             return .list(.context(id: first, name: name))
         case .search:
             return .search
+        case .calendar:
+            return .calendar
         case .focus:
             return .focus
         case .routines:
@@ -141,6 +143,7 @@ extension Destination {
             case .search: .search
             }
         case .search: .search
+        case .calendar: .calendar
         case .focus: .focus
         case .routines: .routines
         case .review: .review

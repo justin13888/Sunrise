@@ -120,6 +120,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 enum Destination: Equatable, Hashable, Identifiable {
     case list(TaskListKind)
     case search
+    case calendar
     case focus
     case routines
     case review
@@ -130,13 +131,14 @@ enum Destination: Equatable, Hashable, Identifiable {
     /// `docs/07-clients/parity-matrix.md` lists them. Streams and contexts are
     /// not here: they are data, and the sidebar reads them from the vault.
     static let fixed: [Destination] = [
-        .list(.todayAll), .list(.inbox), .search, .focus, .routines, .review
+        .list(.todayAll), .list(.inbox), .search, .calendar, .focus, .routines, .review
     ]
 
     var title: String {
         switch self {
         case let .list(kind): kind.title
         case .search: "Search"
+        case .calendar: "Calendar"
         case .focus: "Focus"
         case .routines: "Routines"
         case .review: "Review"
@@ -147,6 +149,7 @@ enum Destination: Equatable, Hashable, Identifiable {
         switch self {
         case let .list(kind): kind.symbol
         case .search: "magnifyingglass"
+        case .calendar: "calendar"
         case .focus: "timer"
         case .routines: "repeat"
         case .review: "chart.line.uptrend.xyaxis"

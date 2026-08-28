@@ -46,6 +46,11 @@ struct TaskRowView: View {
         }
         .contentShape(.rect)
         .onTapGesture(count: 2, perform: edit)
+        // Dragged onto the calendar grid, a task becomes a block bound to it.
+        // The payload is the id's own text — the same string the CLI accepts —
+        // so a drop target has something it can verify rather than an opaque
+        // pasteboard type only this app understands.
+        .draggable(facets.id)
         .padding(.vertical, 3)
     }
 

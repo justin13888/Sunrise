@@ -295,6 +295,8 @@ pub enum PrimaryView {
     Stream,
     /// Free-text search.
     Search,
+    /// The calendar grid: day and week time-blocking.
+    Calendar,
     /// Focus mode: one task, one session.
     Focus,
     /// Routines: recurring templates, with full CRUD.
@@ -310,6 +312,7 @@ impl From<View> for PrimaryView {
             View::Inbox => Self::Inbox,
             View::Stream => Self::Stream,
             View::Search => Self::Search,
+            View::Calendar => Self::Calendar,
             View::Focus => Self::Focus,
             View::Routines => Self::Routines,
             View::Review => Self::Review,
@@ -324,6 +327,7 @@ impl From<PrimaryView> for View {
             PrimaryView::Inbox => Self::Inbox,
             PrimaryView::Stream => Self::Stream,
             PrimaryView::Search => Self::Search,
+            PrimaryView::Calendar => Self::Calendar,
             PrimaryView::Focus => Self::Focus,
             PrimaryView::Routines => Self::Routines,
             PrimaryView::Review => Self::Review,

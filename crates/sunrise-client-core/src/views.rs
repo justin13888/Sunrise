@@ -38,6 +38,8 @@ pub enum View {
     Stream,
     /// Free-text search.
     Search,
+    /// The calendar grid: day and week time-blocking.
+    Calendar,
     /// Focus mode: one task, one session.
     Focus,
     /// Routines: recurring templates, with full CRUD.
@@ -214,6 +216,7 @@ const fn view_name(v: View) -> &'static str {
         View::Inbox => "inbox",
         View::Stream => "stream",
         View::Search => "search",
+        View::Calendar => "calendar",
         View::Focus => "focus",
         View::Routines => "routines",
         View::Review => "review",
@@ -227,6 +230,7 @@ fn parse_view_name(s: &str) -> Option<View> {
         "inbox" => View::Inbox,
         "stream" | "browse" => View::Stream,
         "search" => View::Search,
+        "calendar" | "blocks" => View::Calendar,
         "focus" => View::Focus,
         "routines" | "routine" => View::Routines,
         "review" | "stats" => View::Review,
