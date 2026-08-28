@@ -832,3 +832,282 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
     );
     core.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Undo / redo and saved views
+// ---------------------------------------------------------------------------
+
+/// Undo is a **new write**, and the round trip proves it reaches storage
+/// rather than only the stack.
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_reopens_a_completed_task_and_redo_finishes_it_again() {
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Renew passport"),
+        })
+        .await
+        .expect("create");
+
+    let done = core
+        .submit_undoable(
+            CoreCommand::CompleteTask { id: created.entity },
+            "complete \u{201c}Renew passport\u{201d}".into(),
+        )
+        .await
+        .expect("complete");
+    assert!(done.not_undoable.is_none(), "a completion is reversible");
+    assert_eq!(
+        core.undo_state().undo_label.as_deref(),
+        Some("complete \u{201c}Renew passport\u{201d}"),
+        "the menu says what it would undo"
+    );
+    assert_eq!(state_of(&core, created.entity).await, TaskState::Done);
+
+    assert_eq!(
+        core.undo().await.expect("undo"),
+        Some("complete \u{201c}Renew passport\u{201d}".into())
+    );
+    assert_eq!(
+        state_of(&core, created.entity).await,
+        TaskState::Todo,
+        "the reopen reached storage"
+    );
+
+    let after = core.undo_state();
+    assert!(after.undo_label.is_none(), "the stack is empty again");
+    assert!(after.redo_label.is_some(), "and the step is redoable");
+
+    core.redo().await.expect("redo");
+    assert_eq!(state_of(&core, created.entity).await, TaskState::Done);
+    core.shutdown().await;
+}
+
+/// A delete is submitted and reported as un-undoable — not refused, and not
+/// silently accepted onto a stack that would do nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_still_happens_and_says_it_cannot_be_undone() {
+    use sunrise_core_bindings::client::undo_refusal_explanation;
+    use sunrise_core_bindings::UndoRefusal;
+
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Cancel the gym"),
+        })
+        .await
+        .expect("create");
+
+    let out = core
+        .submit_undoable(
+            CoreCommand::DeleteTask { id: created.entity },
+            "delete \u{201c}Cancel the gym\u{201d}".into(),
+        )
+        .await
+        .expect("delete");
+
+    assert_eq!(out.not_undoable, Some(UndoRefusal::Deleted));
+    assert!(
+        undo_refusal_explanation(UndoRefusal::Deleted).contains("tombstone"),
+        "the seam words it, not each client"
+    );
+    assert_eq!(inbox_len(&core).await, 0, "the delete still happened");
+    assert!(
+        core.undo_state().undo_label.is_none(),
+        "nothing went on the stack, so nothing is offered"
+    );
+    core.shutdown().await;
+}
+
+/// A defer's date comes back; its counter does not. `deferred_count` is a
+/// PN-counter, and a review that said "deferred three times" should not change
+/// its mind because one of them was undone.
+#[tokio::test(flavor = "multi_thread")]
+async fn undoing_a_defer_restores_the_date_but_not_the_counter() {
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Book the ferry"),
+        })
+        .await
+        .expect("create");
+
+    let to = core.now_ms() + 86_400_000;
+    core.submit_undoable(
+        CoreCommand::DeferTask {
+            id: created.entity,
+            to_ms: to,
+        },
+        "defer".into(),
+    )
+    .await
+    .expect("defer");
+    assert_eq!(task_of(&core, created.entity).await.deferred_count, 1);
+
+    core.undo().await.expect("undo");
+
+    let after = task_of(&core, created.entity).await;
+    assert!(after.scheduled_at.is_none(), "the date came back");
+    assert_eq!(after.deferred_count, 1, "the history did not");
+    core.shutdown().await;
+}
+
+/// A new write after an undo closes the branch that was undone: replaying it
+/// would submit a command built against a vault that has since moved.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_step_clears_the_redo_stack() {
+    let (_dir, core) = open_core().await;
+    let a = core
+        .submit(CoreCommand::CreateTask { draft: draft("A") })
+        .await
+        .expect("create");
+    let b = core
+        .submit(CoreCommand::CreateTask { draft: draft("B") })
+        .await
+        .expect("create");
+
+    core.submit_undoable(CoreCommand::CompleteTask { id: a.entity }, "a".into())
+        .await
+        .expect("complete a");
+    core.undo().await.expect("undo");
+    assert!(core.undo_state().redo_label.is_some());
+
+    core.submit_undoable(CoreCommand::CompleteTask { id: b.entity }, "b".into())
+        .await
+        .expect("complete b");
+
+    assert!(
+        core.undo_state().redo_label.is_none(),
+        "the undone branch is no longer reachable"
+    );
+    core.shutdown().await;
+}
+
+/// An edit inverts only the fields it touched, read from the vault rather than
+/// from whatever the client was holding.
+#[tokio::test(flavor = "multi_thread")]
+async fn undoing_an_edit_restores_only_what_it_changed() {
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateTask {
+            draft: TaskDraftIn {
+                priority: Some(2),
+                estimated_duration_s: Some(1800),
+                ..draft("Write the brief")
+            },
+        })
+        .await
+        .expect("create");
+
+    core.submit_undoable(
+        CoreCommand::UpdateTask {
+            id: created.entity,
+            edit: TaskEdit {
+                set_priority: Some(5),
+                ..TaskEdit::default()
+            },
+        },
+        "set priority".into(),
+    )
+    .await
+    .expect("edit");
+    assert_eq!(task_of(&core, created.entity).await.priority, Some(5));
+
+    core.undo().await.expect("undo");
+
+    let after = task_of(&core, created.entity).await;
+    assert_eq!(after.priority, Some(2), "restored");
+    assert_eq!(
+        after.estimated_duration_s,
+        Some(1800),
+        "untouched fields stay untouched"
+    );
+    core.shutdown().await;
+}
+
+/// Saved views survive a write and a re-read, and carry the domain's own
+/// one-line summary rather than each client's.
+#[test]
+fn a_saved_view_round_trips_through_the_file() {
+    use sunrise_core_bindings::{PrimaryView, SavedView, SavedViews};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("nested").join("views.toml");
+    let store = SavedViews::at_path(path.to_string_lossy().into_owned());
+
+    assert!(
+        store.load().views.is_empty(),
+        "an absent file is an empty set, not an error"
+    );
+
+    store
+        .save(vec![SavedView {
+            name: "errands".into(),
+            view: PrimaryView::Search,
+            query: "passport".into(),
+            contexts: vec!["errands".into(), "home".into()],
+            summary: String::new(),
+        }])
+        .expect("save");
+
+    let read = store.load();
+    assert!(read.warnings.is_empty());
+    assert_eq!(read.views.len(), 1);
+    assert_eq!(read.views[0].name, "errands");
+    assert_eq!(read.views[0].view, PrimaryView::Search);
+    assert_eq!(read.views[0].contexts, vec!["errands", "home"]);
+    assert_eq!(
+        read.views[0].summary, "search \u{00b7} /passport \u{00b7} @errands @home",
+        "the summary is the domain's, not a client's"
+    );
+}
+
+/// One bad line costs that view and nothing else. A preference file that took
+/// the whole set down with it is how a typo costs someone their app.
+#[test]
+fn a_malformed_line_is_a_warning_not_a_lost_file() {
+    use sunrise_core_bindings::SavedViews;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("views.toml");
+    std::fs::write(
+        &path,
+        "good = \"view=today\"\nbad = \"view=nonesuch\"\nalso = \"context=typo\"\n",
+    )
+    .expect("write");
+
+    let read = SavedViews::at_path(path.to_string_lossy().into_owned()).load();
+    assert_eq!(read.views.len(), 1);
+    assert_eq!(read.views[0].name, "good");
+    assert_eq!(read.warnings.len(), 2, "{:?}", read.warnings);
+}
+
+/// A spec can be validated before it is written, by the same reader that will
+/// parse it back.
+#[test]
+fn a_typed_spec_is_checked_by_the_reader_that_will_read_it() {
+    use sunrise_core_bindings::client::parse_saved_view;
+
+    let ok = parse_saved_view("deep".into(), "view=today;contexts=deep-work".into())
+        .expect("a good spec");
+    assert_eq!(ok.contexts, vec!["deep-work"]);
+
+    // A typo'd key is refused rather than ignored: silently saving no filter
+    // would recall the wrong thing forever.
+    assert!(parse_saved_view("oops".into(), "view=today;context=deep".into()).is_err());
+}
+
+async fn task_of(core: &SunriseCore, id: sunrise_id::EntityRef) -> sunrise_core_bindings::TaskItem {
+    let CoreQueryResult::Task { task } = core
+        .query(CoreQuery::EntityById { id })
+        .await
+        .expect("entity by id")
+    else {
+        panic!("a task id must return a task");
+    };
+    task
+}
+
+async fn state_of(core: &SunriseCore, id: sunrise_id::EntityRef) -> TaskState {
+    task_of(core, id).await.state
+}

@@ -28,6 +28,7 @@ jiff = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
 sunrise-auth = { workspace = true }
+sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }

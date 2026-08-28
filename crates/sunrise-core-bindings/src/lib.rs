@@ -48,18 +48,22 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{Core, CoreConfig, CoreError, Unlock};
+use sunrise_core::{Command, Core, CoreConfig, CoreError, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::error::RecvError;
 
+pub mod client;
 pub mod command;
 pub mod dto;
 pub mod query;
 pub mod types;
 pub mod vocab;
 
+pub use client::{
+    PrimaryView, SavedView, SavedViewFile, SavedViews, UndoRefusal, UndoState, UndoableOutcome,
+};
 pub use command::CoreCommand;
 pub use dto::{CapturePreview, CommandOutcome, TaskItem};
 pub use query::{CoreQuery, CoreQueryResult};
@@ -161,6 +165,14 @@ pub struct SunriseCore {
     /// installed. A bare `tokio::spawn` there panics at runtime. Spawning
     /// through a captured handle works from any thread.
     rt: Handle,
+    /// The undo and redo stacks for this session.
+    ///
+    /// Session-scoped and deliberately not persisted: an inverse command is
+    /// only meaningful against the vault state it was read from, and one
+    /// restored from disk a week later would restore a value nothing on screen
+    /// has shown since. It is also **not** synced — undo is this device's
+    /// record of what *it* did.
+    undo_stacks: Mutex<client::UndoStacks>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -189,6 +201,7 @@ impl SunriseCore {
             // Inside an async exported method, so a runtime is definitely
             // installed. This is the only place that is guaranteed.
             rt: Handle::current(),
+            undo_stacks: Mutex::new(client::UndoStacks::default()),
         }))
     }
 
@@ -202,6 +215,87 @@ impl SunriseCore {
     pub async fn query(&self, q: CoreQuery) -> Result<CoreQueryResult, BindingError> {
         let res = self.inner.query(q.into_core()).await?;
         Ok(CoreQueryResult::from_core(res))
+    }
+
+    /// Submit one command **and record how to reverse it**.
+    ///
+    /// The rows the inverse is built from are read from the vault *before* the
+    /// command lands, because once it has landed the old values are gone.
+    ///
+    /// `label` is what a menu item says ("complete “Renew passport”"). The
+    /// seam does not compose it: only the caller knows which of several rows
+    /// on screen the user acted on.
+    ///
+    /// A command with no inverse is still **submitted** — refusing the write
+    /// because it cannot be undone would be a worse client — and the returned
+    /// [`client::UndoableOutcome`] carries why nothing went on the stack. Say
+    /// that out loud rather than offering an undo that silently does nothing:
+    /// a delete writes a tombstone the core cannot restore, and that fact
+    /// belongs in front of the user *before* they rely on undo.
+    pub async fn submit_undoable(
+        &self,
+        cmd: CoreCommand,
+        label: String,
+    ) -> Result<client::UndoableOutcome, BindingError> {
+        let lowered = cmd.into_core()?;
+        // Read before write. The order is the whole correctness argument.
+        let recorded = client::record(&self.inner, label, vec![lowered.clone()]).await;
+        let res = self.inner.submit(lowered).await?;
+        let not_undoable = match recorded {
+            Ok(entry) => {
+                if let Ok(mut g) = self.undo_stacks.lock() {
+                    g.push(entry);
+                }
+                None
+            }
+            Err(refusal) => Some(refusal),
+        };
+        Ok(client::UndoableOutcome {
+            outcome: CommandOutcome::from(&res),
+            not_undoable,
+        })
+    }
+
+    /// Reverse the most recent recorded step. Returns its label, or `None`
+    /// when there is nothing to undo.
+    ///
+    /// This is a **new write**, not a rollback: it converges like any other
+    /// op, and a device undoing what another has since changed loses the LWW
+    /// tie exactly as a manual edit would.
+    pub async fn undo(&self) -> Result<Option<String>, BindingError> {
+        let Some(entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_undo()) else {
+            return Ok(None);
+        };
+        self.apply(&entry.backward).await?;
+        let label = entry.label.clone();
+        if let Ok(mut g) = self.undo_stacks.lock() {
+            g.push_undone(entry);
+        }
+        Ok(Some(label))
+    }
+
+    /// Replay the most recently undone step. Returns its label, or `None`.
+    pub async fn redo(&self) -> Result<Option<String>, BindingError> {
+        let Some(entry) = self.undo_stacks.lock().ok().and_then(|mut g| g.take_redo()) else {
+            return Ok(None);
+        };
+        self.apply(&entry.backward).await?;
+        let label = entry.label.clone();
+        if let Ok(mut g) = self.undo_stacks.lock() {
+            g.push_redone(entry);
+        }
+        Ok(Some(label))
+    }
+
+    /// What can be undone or redone right now, for the menu.
+    ///
+    /// Sync: it reads two labels off a mutex and touches nothing else.
+    #[must_use]
+    pub fn undo_state(&self) -> client::UndoState {
+        self.undo_stacks
+            .lock()
+            .map(|g| g.state())
+            .unwrap_or_default()
     }
 
     /// Parse one capture line (`#stream @context ^when !priority ~duration`)
@@ -332,6 +426,19 @@ impl SunriseCore {
         Arc::new(Subscription {
             handle: Mutex::new(Some(handle)),
         })
+    }
+}
+
+impl SunriseCore {
+    /// Submit a recorded batch, stopping at the first failure.
+    ///
+    /// Not exported: an undo step is a list of commands the seam built, never
+    /// one a client hands in.
+    async fn apply(&self, cmds: &[Command]) -> Result<(), BindingError> {
+        for cmd in cmds {
+            self.inner.submit(cmd.clone()).await?;
+        }
+        Ok(())
     }
 }
 
