@@ -53,6 +53,36 @@ struct BrowseModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// The editor reads the **whole** stream, not the sidebar row.
+    ///
+    /// `StreamListRow` carries no review cadence, so an editor built on the
+    /// row would submit whatever its picker defaulted to — silently resetting
+    /// the cadence every time someone renamed a stream. This pins that the
+    /// read exists and that a rename leaves the cadence alone.
+    @Test
+    func renamingAStreamDoesNotResetItsReviewCadence() async throws {
+        let vault = try await TestVault()
+        let model = BrowseModel(bridge: vault.bridge)
+        await model.createStream(name: "Travel", color: .indigo, cadence: .weekly)
+        let row = try #require(model.visibleStreams.first { $0.name == "Travel" })
+
+        let loaded = try #require(await model.stream(row.id))
+        #expect(loaded.reviewCadence == .weekly, "the editor can see what the row cannot")
+
+        // Exactly what the editor submits when only the name was touched.
+        var edit = StreamEdit()
+        edit.name = "Trips"
+        edit.color = loaded.color
+        edit.reviewCadence = loaded.reviewCadence
+        await model.updateStream(row, edit)
+
+        let after = try #require(await model.stream(row.id))
+        #expect(after.name == "Trips")
+        #expect(after.reviewCadence == .weekly)
+        #expect(after.color == .indigo)
+        await vault.bridge.shutdown()
+    }
+
     /// Archiving is not deletion, and the sidebar has to be able to show one
     /// again — otherwise archiving is a one-way trip with a friendlier name.
     @Test

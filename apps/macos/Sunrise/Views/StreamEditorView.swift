@@ -5,10 +5,15 @@ import SwiftUI
 /// One sheet for both, because the fields are the same and a second sheet
 /// would be a second place for them to drift apart. `stream == nil` is a
 /// creation.
+///
+/// It takes the **whole** `StreamItem`, not the sidebar's `StreamListRow`.
+/// The row carries only what a sidebar shows — no review cadence — and a form
+/// that submitted a field it had never read would quietly reset it every time
+/// someone renamed a stream. One query is cheaper than that bug.
 struct StreamEditorView: View {
-    let stream: StreamListRow?
+    let stream: StreamItem?
     /// The name, and the edit that carries everything else. A creation reads
-    /// the name and the colour off it; an edit submits it whole.
+    /// the name, the colour and the cadence off it; an edit submits it whole.
     let commit: (String, StreamEdit) async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -16,16 +21,12 @@ struct StreamEditorView: View {
     @State private var color: StreamColor
     @State private var cadence: StreamReviewCadence
 
-    init(stream: StreamListRow?, commit: @escaping (String, StreamEdit) async -> Void) {
+    init(stream: StreamItem?, commit: @escaping (String, StreamEdit) async -> Void) {
         self.stream = stream
         self.commit = commit
         _name = State(initialValue: stream?.name ?? "")
         _color = State(initialValue: stream?.color ?? .slate)
-        // `StreamListRow` carries no cadence — the sidebar has no use for one
-        // — so an edit starts from the default rather than from a read the
-        // list did not make. Changing it is opt-in; leaving it alone submits
-        // no cadence at all.
-        _cadence = State(initialValue: .none)
+        _cadence = State(initialValue: stream?.reviewCadence ?? .none)
     }
 
     private var isCreating: Bool { stream == nil }
@@ -79,6 +80,42 @@ struct StreamEditorView: View {
         edit.color = color
         edit.reviewCadence = cadence
         return edit
+    }
+}
+
+/// Loads the whole stream, then edits it.
+///
+/// The sheet is presented from a sidebar row, which is not enough to edit
+/// with; this waits for the read rather than opening a form pre-filled with
+/// defaults the user never chose.
+struct StreamEditorLoader: View {
+    let row: StreamListRow
+    let model: BrowseModel
+    let commit: (StreamEdit) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var stream: StreamItem?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let stream {
+                StreamEditorView(stream: stream) { _, edit in await commit(edit) }
+            } else if failed {
+                VStack(spacing: 12) {
+                    Text("“\(row.name)” could not be read.")
+                    Button("Close") { dismiss() }
+                }
+                .padding(24)
+                .frame(width: 320)
+            } else {
+                ProgressView().padding(40).frame(width: 320)
+            }
+        }
+        .task {
+            stream = await model.stream(row.id)
+            failed = stream == nil
+        }
     }
 }
 

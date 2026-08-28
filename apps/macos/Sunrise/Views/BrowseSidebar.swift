@@ -48,7 +48,11 @@ struct BrowseSidebar: View {
         .task { await model.follow() }
         .sheet(isPresented: $newStream) {
             StreamEditorView(stream: nil) { name, edit in
-                await model.createStream(name: name, color: edit.color)
+                await model.createStream(
+                    name: name,
+                    color: edit.color,
+                    cadence: edit.reviewCadence
+                )
             }
         }
         .sheet(isPresented: $newContext) {
@@ -57,7 +61,7 @@ struct BrowseSidebar: View {
             }
         }
         .sheet(item: $editingStream) { row in
-            StreamEditorView(stream: row) { _, edit in
+            StreamEditorLoader(row: row, model: model) { edit in
                 await model.updateStream(row, edit)
             }
         }

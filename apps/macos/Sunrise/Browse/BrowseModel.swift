@@ -74,16 +74,33 @@ final class BrowseModel {
 
     // MARK: - Streams
 
-    func createStream(name: String, color: StreamColor?) async {
+    func createStream(
+        name: String,
+        color: StreamColor?,
+        cadence: StreamReviewCadence? = nil
+    ) async {
         let draft = StreamDraftIn(
             name: name.trimmed,
             description: nil,
             color: color,
             parentId: nil,
-            reviewCadence: nil,
+            reviewCadence: cadence,
             reminderLeadS: nil
         )
         await run(.createStream(draft: draft), label: "new stream “\(name.trimmed)”")
+    }
+
+    /// The whole stream behind a sidebar row.
+    ///
+    /// `StreamListRow` carries only what a sidebar shows, which is the right
+    /// shape for a list of N and the wrong one for an editor: a form that
+    /// submitted a field it never read would silently overwrite it. The editor
+    /// pays one query rather than guessing.
+    func stream(_ id: EntityRef) async -> StreamItem? {
+        guard case let .stream(item)? = try? await bridge.query(.entityById(id: id)) else {
+            return nil
+        }
+        return item
     }
 
     func updateStream(_ row: StreamListRow, _ edit: StreamEdit) async {
