@@ -30,6 +30,7 @@ pub mod deps;
 pub mod epoch_ms;
 pub mod export;
 pub mod focus;
+pub mod import;
 pub mod inbox;
 pub mod note;
 pub mod notify;
@@ -82,6 +83,7 @@ pub use focus::{
     PlanRanked, Segment, SessionLength, SessionPlan, SessionRecord, StreamFocus, UnblockCascade,
     CYCLES_BEFORE_LONG_BREAK, LONG_BREAK_MS, POMODORO_MS, SHORT_BREAK_MS,
 };
+pub use import::{block_uid, imported_block_id, uid_to_block, SUNRISE_UID_HOST};
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
 pub use notify::{
