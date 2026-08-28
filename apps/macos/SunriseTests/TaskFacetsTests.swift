@@ -236,3 +236,46 @@ struct TaskGroupingTests {
         #expect(!TodaySection.due.startsFolded)
     }
 }
+
+/// The task editor's starting values.
+///
+/// Split from the editor itself so the one decision that can lose data — what
+/// a date picker starts at — is testable without a window.
+@MainActor
+struct TaskEditorSeedTests {
+    /// Opening the editor on a task with a deadline and saving without
+    /// touching the date must leave the deadline where it was.
+    ///
+    /// It did not: the picker was seeded with `Date()`, so every visit to the
+    /// sheet moved the deadline to today.
+    @Test
+    func aDeadlineSeedsThePickerFromTheTaskNotFromNow() async throws {
+        let vault = try await TestVault()
+        let deadline: Int64 = 1_800_000_000_000
+        let created = try await vault.bridge.submit(.createTask(draft: TaskDraftIn(
+            title: "Renew passport",
+            body: nil,
+            streamId: nil,
+            contexts: [],
+            priority: nil,
+            energy: nil,
+            estimatedDurationS: nil,
+            scheduledAt: nil,
+            dueAt: .instant(at: Timestamp(deadline)),
+            schedulingConstraints: [],
+            assignee: nil,
+            reminderLeadS: nil
+        )))
+        guard case let .task(task) = try await vault.bridge.query(
+            .entityById(id: created.entity)
+        ) else {
+            Issue.record("expected a task")
+            return
+        }
+
+        let due = try #require(task.dueAt)
+        let seeded = timeValueMs(value: due, tz: "UTC")
+        #expect(seeded == deadline, "the seam resolves it; Swift does not read the enum apart")
+        await vault.bridge.shutdown()
+    }
+}

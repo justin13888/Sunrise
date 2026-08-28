@@ -27,7 +27,17 @@ struct TaskEditorView: View {
         _energy = State(initialValue: task.energy)
         _estimateMinutes = State(initialValue: Int((task.estimatedDurationS ?? 0) / 60))
         _hasDue = State(initialValue: task.dueAt != nil)
-        _due = State(initialValue: Date())
+        // Seeded from the task's own deadline, resolved by the seam. Starting
+        // the picker at "now" and then submitting it — which is what this did
+        // — silently moved every deadline to today the moment anyone opened
+        // the sheet to change something else.
+        _due = State(initialValue: task.dueAt.map {
+            Date(
+                timeIntervalSince1970: Double(
+                    timeValueMs(value: $0, tz: TimeZone.current.identifier)
+                ) / 1000
+            )
+        } ?? Date())
     }
 
     var body: some View {

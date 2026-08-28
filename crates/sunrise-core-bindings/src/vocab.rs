@@ -190,6 +190,24 @@ pub fn interruption_label(reason: InterruptionReason) -> String {
     reason.as_str().to_string()
 }
 
+/// Resolve a [`TimeValue`] to an instant, in epoch milliseconds.
+///
+/// See [`sunrise_domain::SunriseTime::to_instant`]. The four kinds are not
+/// interchangeable — "Tuesday morning", "09:00 New York" and "this instant"
+/// are three different answers — and collapsing them is exactly the decision
+/// the domain owns. A client that needs one number (to seed a date picker,
+/// say) asks for it here rather than reading the enum apart.
+///
+/// `tz` is the zone a floating or all-day value is read in; an unknown one
+/// falls back to UTC, as everywhere else in this module.
+#[uniffi::export]
+#[must_use]
+pub fn time_value_ms(value: TimeValue, tz: String) -> i64 {
+    SunriseTime::from(value)
+        .to_instant(&zone_or_utc(&tz))
+        .as_millisecond()
+}
+
 /// A dataset's lowercase wire name: `trends`, `activity`, `focus`, `streaks`.
 ///
 /// See [`sunrise_domain::ExportDataset::as_str`]. This is the name

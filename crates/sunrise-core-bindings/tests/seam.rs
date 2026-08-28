@@ -1167,3 +1167,27 @@ async fn a_one_field_stream_edit_leaves_the_rest_alone() {
     );
     core.shutdown().await;
 }
+
+/// A client seeding a date picker gets the domain's resolution of a
+/// `SunriseTime`, not its own reading of the enum.
+#[test]
+fn a_time_value_resolves_through_the_domain() {
+    use sunrise_core_bindings::dto::TimeValue;
+    use sunrise_core_bindings::vocab::time_value_ms;
+
+    let instant = TimeValue::Instant {
+        at: jiff::Timestamp::from_millisecond(1_700_000_000_000).expect("ts"),
+    };
+    assert_eq!(time_value_ms(instant, "UTC".into()), 1_700_000_000_000);
+
+    // An all-day value is midnight *in the reader's zone*, which is the whole
+    // reason a client must not do this arithmetic itself.
+    let all_day = TimeValue::AllDay {
+        date: "2026-03-10".parse().expect("date"),
+    };
+    let utc = time_value_ms(all_day.clone(), "UTC".into());
+    let ny = time_value_ms(all_day, "America/New_York".into());
+    // 10 March 2026 is after the US DST change, so New York is UTC-4 — which
+    // is precisely the arithmetic a client must not attempt on its own.
+    assert_eq!(ny - utc, 4 * 3_600_000);
+}
