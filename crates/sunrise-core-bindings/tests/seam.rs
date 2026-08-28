@@ -1423,3 +1423,188 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
     );
     assert!(block_conflicts(blocks).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Pairing
+// ---------------------------------------------------------------------------
+
+/// Both halves of a pairing, driven the way the app drives them, ending in a
+/// second vault opened on the transferred root.
+///
+/// This is the reachability claim for `sunrise-pairing`: it was correct and
+/// unreachable from any shipping binary, which is why sync between devices
+/// only ever worked in tests that handed both replicas the same literal key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_carries_the_vault_root_to_a_second_device() {
+    use sunrise_core_bindings::{DevicePairing, PairingStep};
+
+    let (dir, existing) = open_core().await;
+    existing
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Only on the first device"),
+        })
+        .await
+        .expect("create");
+
+    // The new device publishes a QR; the existing one reads it.
+    let new_device =
+        DevicePairing::offer("wss://relay.example/pair".into(), "Ada@Example.COM ".into())
+            .expect("offer");
+    let qr = new_device.qr_payload().expect("the new device has a QR");
+    let old_device = DevicePairing::accept(qr).expect("accept");
+    assert!(
+        old_device.qr_payload().is_none(),
+        "only the new device publishes one"
+    );
+
+    // Noise XX: three messages, alternating, starting with the new device.
+    old_device
+        .receive_message(new_device.next_message().expect("msg1"))
+        .expect("read msg1");
+    new_device
+        .receive_message(old_device.next_message().expect("msg2"))
+        .expect("read msg2");
+    old_device
+        .receive_message(new_device.next_message().expect("msg3"))
+        .expect("read msg3");
+
+    assert_eq!(new_device.step(), PairingStep::AwaitingConfirmation);
+    assert_eq!(old_device.step(), PairingStep::AwaitingConfirmation);
+
+    let sas = new_device.sas().expect("sas");
+    assert_eq!(sas.len(), 6);
+    assert_eq!(sas, old_device.sas().expect("sas"), "both sides agree");
+
+    new_device.confirm(true).expect("confirm");
+    old_device.confirm(true).expect("confirm");
+    assert_eq!(new_device.step(), PairingStep::Confirmed);
+
+    // The existing device seals its root; the new one opens it and uses it.
+    let root = vec![42u8; 32];
+    let sealed = old_device.seal_vault_root(root.clone()).expect("seal");
+    assert_ne!(
+        sealed.as_bytes(),
+        root.as_slice(),
+        "the clipboard sees ciphertext"
+    );
+    assert_eq!(new_device.open_vault_root(sealed).expect("open"), root);
+    assert_eq!(new_device.step(), PairingStep::Finished);
+
+    // The proof that the root is the right one: the same vault opens under it.
+    drop(existing);
+    let reopened = SunriseCore::open(
+        dir.path().to_string_lossy().into_owned(),
+        root,
+        "test".into(),
+    )
+    .await
+    .expect("the transferred root opens the vault");
+    assert_eq!(inbox_len(&reopened).await, 1);
+}
+
+/// A SAS mismatch is the one outcome a UI must not fall through. It ends the
+/// pairing rather than returning a value the caller might ignore.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejecting_the_sas_ends_the_pairing() {
+    use sunrise_core_bindings::{DevicePairing, PairingStep};
+
+    let new_device = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer");
+    let old_device = DevicePairing::accept(new_device.qr_payload().expect("qr")).expect("accept");
+
+    old_device
+        .receive_message(new_device.next_message().expect("msg1"))
+        .expect("read");
+    new_device
+        .receive_message(old_device.next_message().expect("msg2"))
+        .expect("read");
+    old_device
+        .receive_message(new_device.next_message().expect("msg3"))
+        .expect("read");
+
+    assert!(matches!(
+        old_device.confirm(false),
+        Err(BindingError::Pairing(_))
+    ));
+    assert_eq!(old_device.step(), PairingStep::Finished);
+    assert!(matches!(
+        old_device.seal_vault_root(vec![1u8; 32]),
+        Err(BindingError::Pairing(_))
+    ));
+}
+
+/// The SAS screen cannot be skipped: there is no path to the channel that does
+/// not go through a confirmation, and none to a confirmation before the
+/// transcript completes.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_root_cannot_move_before_the_sas_is_confirmed() {
+    use sunrise_core_bindings::DevicePairing;
+
+    let new_device = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer");
+    let old_device = DevicePairing::accept(new_device.qr_payload().expect("qr")).expect("accept");
+
+    assert!(matches!(new_device.sas(), Err(BindingError::Pairing(_))));
+    assert!(matches!(
+        old_device.seal_vault_root(vec![1u8; 32]),
+        Err(BindingError::Pairing(_))
+    ));
+    assert!(matches!(
+        old_device.confirm(true),
+        Err(BindingError::Pairing(_))
+    ));
+}
+
+/// A mistyped or truncated paste is refused by the decoder that wrote it,
+/// rather than producing a handshake that fails later for no visible reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_qr_that_is_not_one_is_refused_at_the_door() {
+    use sunrise_core_bindings::DevicePairing;
+
+    assert!(matches!(
+        DevicePairing::accept("not a qr payload".into()),
+        Err(BindingError::Pairing(_))
+    ));
+
+    let good = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer")
+        .qr_payload()
+        .expect("qr");
+    let truncated = good[..good.len() / 2].to_string();
+    assert!(matches!(
+        DevicePairing::accept(truncated),
+        Err(BindingError::Pairing(_))
+    ));
+}
+
+/// The two sides are not interchangeable: only the device that holds the vault
+/// sends the root, and only the one being added receives it.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_side_can_only_do_its_own_half() {
+    use sunrise_core_bindings::DevicePairing;
+
+    let new_device = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer");
+    let old_device = DevicePairing::accept(new_device.qr_payload().expect("qr")).expect("accept");
+
+    assert!(matches!(
+        new_device.seal_vault_root(vec![1u8; 32]),
+        Err(BindingError::Pairing(_))
+    ));
+    assert!(matches!(
+        old_device.open_vault_root("AAAA".into()),
+        Err(BindingError::Pairing(_))
+    ));
+}
+
+/// The account tag in a QR names an account without naming a person: it is
+/// four bytes of BLAKE3 over the normalized address.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_account_tag_is_normalized_and_not_the_address() {
+    use sunrise_core_bindings::pairing::pairing_account_tag;
+
+    let tag = pairing_account_tag("ada@example.com".into());
+    assert_eq!(tag.len(), 8, "four bytes as lowercase hex");
+    assert_eq!(tag, pairing_account_tag("  Ada@Example.COM ".into()));
+    assert_ne!(tag, pairing_account_tag("grace@example.com".into()));
+}

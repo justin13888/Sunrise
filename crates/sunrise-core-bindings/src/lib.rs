@@ -58,6 +58,7 @@ use tokio::sync::broadcast::error::RecvError;
 pub mod client;
 pub mod command;
 pub mod dto;
+pub mod pairing;
 pub mod query;
 pub mod types;
 pub mod vocab;
@@ -67,6 +68,7 @@ pub use client::{
 };
 pub use command::CoreCommand;
 pub use dto::{CapturePreview, CommandOutcome, TaskItem};
+pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use query::{CoreQuery, CoreQueryResult};
 pub use vocab::RelativeDay;
 
@@ -151,6 +153,19 @@ pub enum BindingError {
     /// The attachment byte path failed for any other reason.
     #[error("attachment: {0}")]
     Attachment(String),
+    /// A pairing step failed, was taken out of order, or was refused.
+    ///
+    /// Includes the SAS rejection, which is an error rather than a value on
+    /// purpose: "the codes did not match" is the one pairing outcome a UI must
+    /// never let fall through to the next screen.
+    #[error("pairing: {0}")]
+    Pairing(String),
+}
+
+impl From<sunrise_pairing::PairingError> for BindingError {
+    fn from(e: sunrise_pairing::PairingError) -> Self {
+        Self::Pairing(e.to_string())
+    }
 }
 
 impl From<sunrise_core::AttachError> for BindingError {

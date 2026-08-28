@@ -77,6 +77,19 @@ pub enum Role {
     ExistingDevice,
 }
 
+/// A throwaway X25519 static keypair, for one handshake only.
+///
+/// Not the device or identity key: long-term keys travel as transport
+/// messages *after* the handshake, so a captured transcript reveals no durable
+/// identity material.
+#[derive(Debug, Clone)]
+pub struct StaticKeyPair {
+    /// Private half, passed to [`PairingSession::new`].
+    pub private: Vec<u8>,
+    /// Public half, published in the QR as `n_static_pub`.
+    pub public: Vec<u8>,
+}
+
 /// An in-progress Noise XX handshake.
 ///
 /// Drive it by alternating [`Self::write_message`] and [`Self::read_message`]
@@ -111,9 +124,24 @@ impl PairingSession {
     /// caller-supplied "random" value here would be a footgun with no upside,
     /// since the key must be unpredictable to the relay.
     pub fn generate_static_key() -> Result<Vec<u8>, PairingError> {
+        Ok(Self::generate_static_keypair()?.private)
+    }
+
+    /// Both halves of a fresh static keypair.
+    ///
+    /// The **public** half is what the QR carries as `n_static_pub`, and it is
+    /// the whole of the QR path's authentication: a 256-bit value transferred
+    /// out of band binds the handshake, so a MITM on the relay has nothing to
+    /// substitute. [`Self::generate_static_key`] discards it, which is fine
+    /// for a test driving both sides in one process and useless for a device
+    /// that has to publish a QR.
+    pub fn generate_static_keypair() -> Result<StaticKeyPair, PairingError> {
         let params = NOISE_PARAMS.parse().map_err(PairingError::from)?;
         let kp = Builder::new(params).generate_keypair()?;
-        Ok(kp.private)
+        Ok(StaticKeyPair {
+            private: kp.private,
+            public: kp.public,
+        })
     }
 
     /// This side's role.

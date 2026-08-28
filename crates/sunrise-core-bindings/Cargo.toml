@@ -24,6 +24,7 @@ workspace = true
 # rustc 1.91 and hard-fails this workspace's 1.88 pin. The generator lives in
 # the workspace-excluded `tools/uniffi-bindgen` instead.
 uniffi = { version = "0.32.0", default-features = false, features = ["tokio"] }
+base64 = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
@@ -33,6 +34,7 @@ sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+sunrise-pairing = { workspace = true }
 sunrise-sync = { workspace = true, features = ["ws"] }
 
 [dev-dependencies]

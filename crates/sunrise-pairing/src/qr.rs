@@ -19,9 +19,17 @@ use thiserror::Error;
 const PAIRING_VERSION: u16 = 1;
 
 /// 10 lowercase hex chars representing the 5-byte magic prefix at v1.
-pub const MAGIC_V1_HEX: &str = "53520700010";
-// (Above: "SR" is 5352, kind=07 (PairingPayload), version=0001 → "53 52 07 00 01"
-// = 10 lower-hex chars: "5352070001")
+///
+/// `"SR"` is `5352`, kind `07` (`MagicKind::PairingPayload`), version `0001`
+/// — the five bytes `53 52 07 00 01`, which is ten hex characters.
+///
+/// The test below compares this against a prefix built from the constants
+/// rather than against another literal. It carried an eleventh character until
+/// D3, which made it the one thing in this module that could not produce a
+/// payload [`decode_qr_payload`] would accept — and nothing noticed, because
+/// the tests here each built their own magic string and the only other caller
+/// was a test in another crate that did the same.
+pub const MAGIC_V1_HEX: &str = "5352070001";
 
 /// QR payload as parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +135,16 @@ mod tests {
             account_email_hash: "abcdef01".to_string(),
             relay_url: "wss://relay.example/sync".to_string(),
         }
+    }
+
+    /// The exported constant has to *be* the prefix, not merely look like it.
+    #[test]
+    fn the_exported_magic_is_the_prefix_the_decoder_expects() {
+        assert_eq!(MAGIC_V1_HEX, fixture().magic_v1);
+        let mut p = fixture();
+        p.magic_v1 = MAGIC_V1_HEX.to_string();
+        let s = encode_qr_payload(&p).unwrap();
+        assert_eq!(decode_qr_payload(&s).unwrap(), p);
     }
 
     #[test]
