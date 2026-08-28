@@ -17,7 +17,7 @@ use crate::engine::{Engine, EngineError};
 use crate::events::{DomainEvent, SyncStatus};
 use crate::keychain::{Keychain, KeychainError};
 use crate::queries::{Query, QueryResult};
-use crate::sync_driver::{self, SyncShared, TransportFactory};
+use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
 use crate::unlock::Unlock;
 use crate::vault_lock::{VaultLock, VaultLockError};
 use parking_lot::Mutex;
@@ -80,6 +80,15 @@ pub struct Core {
     /// Live sync state, shared with the driver task. Present even in offline
     /// mode (state stays `Disconnected`); the driver, when started, owns it.
     sync_shared: Arc<SyncShared>,
+    /// The bearer this vault's sync sessions present.
+    ///
+    /// Owned by `Core`, not read back out of `cfg.sync` on demand. That
+    /// distinction is the whole point: a caller that configures sync *after*
+    /// open — every UniFFI caller does, via `start_sync(url, bearer)` — has no
+    /// `cfg.sync` to hold a credential, and a handle minted per call is a
+    /// different cell every time, so a renewal written through one is invisible
+    /// to the driver holding another.
+    sync_credential: TokenSource,
     /// The spawned driver task, if [`Core::start_sync`] has run. Aborted on
     /// `close`/drop so the task never leaks.
     sync_handle: Mutex<Option<JoinHandle<()>>>,
@@ -136,6 +145,10 @@ impl Core {
         )?;
         let initial_pending = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
         let sync_shared = SyncShared::new(sync_tx.clone(), initial_pending);
+        let sync_credential = cfg
+            .sync
+            .as_ref()
+            .map_or_else(TokenSource::empty, |s| s.credential.clone());
         Ok(Self {
             cfg,
             db: Mutex::new(db),
@@ -144,6 +157,7 @@ impl Core {
             changes_tx,
             sync_tx,
             sync_shared,
+            sync_credential,
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             closed: Mutex::new(false),
@@ -503,16 +517,14 @@ impl Core {
 
     /// The shared bearer this vault's sync sessions present.
     ///
-    /// Empty when sync is unconfigured or the relay is self-host. The handle is
-    /// shared, so a renewal written here reaches both the live session (as a
-    /// `0x12 RefreshToken` frame) and the next reconnect.
-    pub(crate) fn sync_credential(&self) -> crate::sync_driver::TokenSource {
-        self.cfg
-            .sync
-            .as_ref()
-            .map_or_else(crate::sync_driver::TokenSource::empty, |s| {
-                s.credential.clone()
-            })
+    /// One cell per `Core`, handed out by clone. Writing through it reaches
+    /// both the live session (as a `0x12 RefreshToken` frame) and the next
+    /// reconnect, whether or not sync was configured at open — which is what
+    /// makes it usable from the FFI seam, where the URL and the first bearer
+    /// only arrive at `start_sync`.
+    #[must_use]
+    pub fn sync_credential(&self) -> TokenSource {
+        self.sync_credential.clone()
     }
 
     pub(crate) fn sync_subscribe_entries(&self) -> Result<Vec<SubscribeEntry>, CoreError> {

@@ -1618,6 +1618,59 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// The credential a caller reaches through `Core` is the *same cell* the
+    /// driver watches, even when sync was never configured at open.
+    ///
+    /// This is the FFI seam's path: `SunriseCore::open` builds a
+    /// `CoreConfig::production`, which has `sync: None`, and the URL and first
+    /// bearer only arrive later at `start_sync`. While `sync_credential()`
+    /// minted a fresh `TokenSource` per call, that path had two cells — the
+    /// caller wrote one, the driver watched the other — so in-band renewal was
+    /// silently dead for every Swift caller while looking wired up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewal_reaches_the_driver_when_sync_was_unconfigured_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            Arc::new(TestClock(T0)),
+            Arc::new(SystemRng),
+        );
+        assert!(cfg.sync.is_none(), "the FFI seam opens with sync off");
+        let core = Arc::new(
+            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
+                .await
+                .unwrap(),
+        );
+
+        core.sync_credential().set(Some("issued-after-open".into()));
+        assert_eq!(
+            core.sync_credential().get().as_deref(),
+            Some("issued-after-open"),
+            "a write through one handle is visible through the next"
+        );
+
+        let mut status_rx = core.sync_status();
+        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        core.start_sync(factory).unwrap();
+        let _ = collect_until_live(&mut status_rx).await;
+
+        core.sync_credential()
+            .set(Some("renewed-after-open".into()));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while refreshes.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the renewal must reach the live session on this path too");
+        assert_eq!(
+            refreshes.lock().as_slice(),
+            ["renewed-after-open".to_string()]
+        );
+        core.shutdown().await;
+    }
+
     /// Clearing the credential is not a renewal. An empty `RefreshToken` would
     /// be rejected by the relay as an unverifiable token, ending a session
     /// that was working — so nothing is sent.

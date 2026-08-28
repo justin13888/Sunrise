@@ -137,13 +137,6 @@ pub struct SunriseCore {
     /// installed. A bare `tokio::spawn` there panics at runtime. Spawning
     /// through a captured handle works from any thread.
     rt: Handle,
-    /// The bearer the transport factory presents on every connect.
-    ///
-    /// Held here rather than captured in the factory closure because a sync
-    /// session outlives its tokens: the app renews against the issuer and
-    /// writes the result through [`SunriseCore::set_sync_credential`], and the
-    /// next reconnect picks it up without the driver being restarted.
-    credential: sunrise_core::TokenSource,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -172,7 +165,6 @@ impl SunriseCore {
             // Inside an async exported method, so a runtime is definitely
             // installed. This is the only place that is guaranteed.
             rt: Handle::current(),
-            credential: sunrise_core::TokenSource::empty(),
         }))
     }
 
@@ -232,9 +224,9 @@ impl SunriseCore {
     /// for why the spawn cannot use `tokio::spawn`.
     pub fn start_sync(&self, url: String, bearer: Option<String>) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
-        self.credential.set(bearer);
-        self.inner
-            .start_sync(ws_factory(&url, self.credential.clone()))?;
+        let credential = self.inner.sync_credential();
+        credential.set(bearer);
+        self.inner.start_sync(ws_factory(&url, credential))?;
         Ok(())
     }
 
@@ -244,7 +236,7 @@ impl SunriseCore {
     /// tokens: the app renews against the issuer on its own schedule and hands
     /// the result over here, without tearing the driver down.
     pub fn set_sync_credential(&self, bearer: Option<String>) {
-        self.credential.set(bearer);
+        self.inner.sync_credential().set(bearer);
     }
 
     /// Start the periodic routine-materialization timer.
