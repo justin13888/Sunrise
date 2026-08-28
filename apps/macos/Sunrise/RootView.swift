@@ -22,10 +22,14 @@ struct RootView: View {
             case .unlocked:
                 if let bridge = session.bridge {
                     VaultView(bridge: bridge, surfaces: surfaces)
-                        // The menu bar item and the capture panel need the same
-                        // open vault this window is using, and this is the
-                        // first moment there is one.
-                        .task { surfaces.attach(bridge: bridge) }
+                        // The menu bar item, the capture panel and the
+                        // reminder schedule need the same open vault this
+                        // window is using, and this is the first moment there
+                        // is one.
+                        .task {
+                            surfaces.attach(bridge: bridge)
+                            await surfaces.reminders?.start()
+                        }
                 }
             case let .failed(message):
                 ContentUnavailableView(
@@ -36,6 +40,17 @@ struct RootView: View {
             }
         }
         .task { await session.start() }
+        // Every `sunrise://` link the OS hands this process arrives here.
+        // Attached to the window's root rather than to a scene that may not
+        // exist: a link that arrives while Sunrise is closed opens this window
+        // to deliver it, which is exactly what a tapped reminder should do.
+        //
+        // Anything the parser refuses is dropped in silence, per
+        // `docs/07-clients/interaction-patterns.md`.
+        .onOpenURL { url in
+            guard let link = DeepLink(url: url) else { return }
+            surfaces.open(link)
+        }
     }
 }
 
@@ -137,9 +152,13 @@ struct VaultView: View {
                 AccountView(
                     settings: settings,
                     account: account,
+                    notifications: surfaces.notifications,
                     deviceID: deviceID,
                     hotkey: surfaces.hotkeyStatus,
-                    signIn: signIn
+                    authorization: surfaces.reminders?.authorization ?? .notDetermined,
+                    scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
+                    signIn: signIn,
+                    allowNotifications: { await surfaces.reminders?.requestAuthorization() }
                 )
                 Button("Done") { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
@@ -150,12 +169,19 @@ struct VaultView: View {
             guard case let .list(kind)? = destination else { return }
             Task { await list.show(kind) }
         }
-        // ⌘⌥M asked for a screen. The window is the only thing that can grant
-        // that, so it is the thing that takes the request and clears it.
+        // A deep link, a tapped notification or ⌘⌥M asked for a screen. The
+        // window is the only thing that can grant that, so it is the thing
+        // that takes the request and clears it.
         .onChange(of: surfaces.pendingDestination) { _, destination in
             guard let destination else { return }
             selection = destination
             surfaces.destinationTaken()
+        }
+        // Settings that change what the OS is holding: a new quiet window, a
+        // different lead time, or this Mac ceasing to be the primary device —
+        // which must make it go quiet, not merely stop adding.
+        .onChange(of: surfaces.notifications.policy) {
+            Task { await surfaces.reminders?.reconcile() }
         }
         .task {
             deviceID = await bridge.deviceId()
@@ -166,6 +192,10 @@ struct VaultView: View {
             await startSync()
         }
         .task { await sync.poll(from: bridge) }
+        // The schedule is only correct until the next write. A task created on
+        // the phone and synced here has to reach this Mac's notification
+        // centre without anybody opening a screen.
+        .task { await surfaces.reminders?.poll() }
         .task { await undo.follow() }
         .task { await savedViews.load() }
         .onChange(of: settings.relayURL) { Task { await startSync() } }

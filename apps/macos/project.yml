@@ -75,6 +75,32 @@ targets:
         # app-scoped group, which would have to land together with the
         # entitlement and a signing identity; both are release work.
         ENABLE_HARDENED_RUNTIME: NO
+    # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting
+    # behind it, so registering `sunrise://` needs a real plist. It is
+    # generated from here and gitignored, like the `.xcodeproj`: this file
+    # stays the source of truth. `GENERATE_INFOPLIST_FILE` above still
+    # supplies the rest — Xcode merges the `INFOPLIST_KEY_` settings into this
+    # base.
+    #
+    # Written outside `Sunrise/` on purpose: a plist inside the source path
+    # would also be copied into the bundle as a resource.
+    info:
+      path: Generated/Info.plist
+      properties:
+        # Per `docs/07-clients/interaction-patterns.md` §URL scheme.
+        # Notification bodies carry these links, so without the registration a
+        # tapped reminder opens nothing at all.
+        #
+        # `Viewer` rather than `Editor`: this app displays what the URL names,
+        # it does not claim ownership of a document format.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.sunrise.Sunrise
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [sunrise]
+        # XcodeGen writes literal defaults for these two; deferring to the
+        # build settings keeps one version number in this file.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false

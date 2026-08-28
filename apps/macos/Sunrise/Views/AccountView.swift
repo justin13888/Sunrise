@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Connection and account settings.
@@ -8,9 +9,15 @@ import SwiftUI
 struct AccountView: View {
     @Bindable var settings: AppSettings
     let account: AccountModel
+    @Bindable var notifications: NotificationPreferences
     let deviceID: String
     let hotkey: HotkeyStatus
+    /// The system's real answer, re-read rather than remembered.
+    let authorization: NotificationAuthorization
+    /// How many reminders the OS is holding for this Mac right now.
+    let scheduledCount: Int
     let signIn: () async -> Void
+    let allowNotifications: () async -> Void
 
     var body: some View {
         Form {
@@ -59,10 +66,105 @@ struct AccountView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            notificationSections
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .padding(.vertical, 8)
+    }
+
+    /// `Settings → Notifications`, as `docs/08-features/notifications.md`
+    /// specifies it: categories on or off, the global lead time, quiet hours,
+    /// and which device is primary.
+    ///
+    /// Per-Stream lead times are the one item on that list which is not here.
+    /// They are a field on the Stream entity — they describe the work, not the
+    /// machine — so they belong in the stream editor beside the rest of it,
+    /// and a copy on this screen would be a second place to set one value.
+    @ViewBuilder
+    private var notificationSections: some View {
+        Section("Notifications") {
+            LabeledContent("System permission") {
+                HStack(spacing: 8) {
+                    Text(authorization.summary).foregroundStyle(.secondary)
+                    Image(systemName: authorization.isActive
+                        ? "checkmark.circle"
+                        : "exclamationmark.triangle")
+                        .foregroundStyle(authorization.isActive ? .green : .orange)
+                    if authorization.canRequest {
+                        Button("Allow…") { Task { await allowNotifications() } }
+                    } else if !authorization.isActive {
+                        Button("Open Settings…") { Self.openNotificationSettings() }
+                    }
+                }
+            }
+            Text(authorization.explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Toggle("Remind me on this Mac", isOn: $notifications.isEnabled)
+            Toggle("This is my primary device", isOn: $notifications.isPrimaryDevice)
+            Text(
+                "Only the primary device delivers reminders — the core hands the others "
+                    + "nothing to schedule, so an account with four Macs still rings once."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Picker("Remind me", selection: $notifications.leadMinutes) {
+                ForEach(NotificationPreferences.leadChoices, id: \.self) { minutes in
+                    Text(Self.leadLabel(minutes)).tag(minutes)
+                }
+            }
+            Text(
+                "The fallback. A lead time set on a task wins over one set on its stream, "
+                    + "and either wins over this."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            LabeledContent("Scheduled now", value: "\(scheduledCount)")
+                .foregroundStyle(.secondary)
+        }
+
+        Section("Quiet hours") {
+            Toggle("Silence reminders overnight", isOn: $notifications.quietHoursEnabled)
+            Picker("From", selection: $notifications.quietStartMinutes) { clockChoices }
+                .disabled(!notifications.quietHoursEnabled)
+            Picker("Until", selection: $notifications.quietEndMinutes) { clockChoices }
+                .disabled(!notifications.quietHoursEnabled)
+            Picker("During quiet hours", selection: $notifications.quietPolicyIsDrop) {
+                Text("Hold until it ends").tag(false)
+                Text("Drop them").tag(true)
+            }
+            .disabled(!notifications.quietHoursEnabled)
+            Text(
+                "A held reminder fires when the window ends, and no more than four hours "
+                    + "after it was due — past that it is dropped rather than delivered late."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var clockChoices: some View {
+        ForEach(NotificationPreferences.clockChoices, id: \.self) { minutes in
+            Text(NotificationPreferences.clockLabel(minutesPastMidnight: minutes)).tag(minutes)
+        }
+    }
+
+    private static func leadLabel(_ minutes: Int) -> String {
+        minutes == 0 ? "At the scheduled time" : "\(minutes) minutes before"
+    }
+
+    /// The pane where a refused permission is granted again.
+    private static func openNotificationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.notifications"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @ViewBuilder

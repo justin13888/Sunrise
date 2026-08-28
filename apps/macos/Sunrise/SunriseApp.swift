@@ -62,15 +62,18 @@ private struct AppMenuItems: View {
         Button("Quick Capture") { surfaces.openQuickCapture() }
             .keyboardShortcut("n", modifiers: [.command, .shift])
         Divider()
-        Button("Morning Summary") { show(.morning) }
+        // The same two destinations a reminder opens into. A view reachable
+        // only from a notification would be a view nobody who declined
+        // notifications ever sees.
+        Button("Morning Summary") { show(.morningSummary) }
             .keyboardShortcut("m", modifiers: [.command, .option])
-        Button("End of Day") { show(.evening) }
+        Button("End of Day") { show(.endOfDayPlan) }
             .keyboardShortcut("e", modifiers: [.command, .option])
     }
 
-    private func show(_ destination: Destination) {
+    private func show(_ link: DeepLink) {
         openWindow(id: SunriseWindow.main.rawValue)
-        surfaces.show(destination)
+        surfaces.open(link)
     }
 }
 
@@ -87,7 +90,12 @@ final class AppSurfaces {
     private(set) var menuBar: MenuBarModel?
     private(set) var hotkeyStatus: HotkeyStatus = .idle
 
-    /// Where ⌘⌥M wants the window to be.
+    /// The local-notification schedule. Absent until the vault opens, for the
+    /// same reason the menu bar is: there is nothing to remind anyone about
+    /// until there is something to read it from.
+    private(set) var reminders: ReminderScheduler?
+
+    /// Where a deep link, a notification tap or ⌘⌥M wants the window to be.
     ///
     /// Set here and consumed by `VaultView`, because the window's selection is
     /// the window's state: this object exists in scenes that have no sidebar
@@ -95,8 +103,14 @@ final class AppSurfaces {
     /// that may not be on screen.
     private(set) var pendingDestination: Destination?
 
+    /// Notification settings are per device and never sync, so they live
+    /// beside the vault rather than in it — and they are read before the vault
+    /// is open, which is why this is not created in `attach`.
+    let notifications = NotificationPreferences()
+
     private let hotkey = HotkeyCenter()
     private var panel: QuickCapturePanel?
+    private var capture: CaptureModel?
     private var hotkeyWatcher: _Concurrency.Task<Void, Never>?
 
     /// Bind to an open vault. Called when the session unlocks; idempotent, so
@@ -104,7 +118,17 @@ final class AppSurfaces {
     func attach(bridge: CoreBridge) {
         guard menuBar == nil else { return }
         menuBar = MenuBarModel(bridge: bridge)
-        panel = QuickCapturePanel(bridge: bridge)
+        let panel = QuickCapturePanel(bridge: bridge)
+        self.panel = panel
+        capture = panel.capture
+        reminders = ReminderScheduler(
+            bridge: bridge,
+            preferences: notifications
+        ) { [weak self] link in
+            // A tapped notification arrives outside every view, so it is the
+            // one route that may have no window to land in.
+            self?.open(link, raisingAWindow: true)
+        }
         hotkey.register()
         hotkeyStatus = hotkey.status
         // Registration can fail — another app may already hold ⌘⇧N — and when
@@ -123,21 +147,59 @@ final class AppSurfaces {
     /// A no-op with an explanation rather than a crash when the vault is not
     /// open: capture writes, and a field that silently discarded what someone
     /// typed into it is worse than one that never appeared.
-    func openQuickCapture() {
+    func openQuickCapture(prefill: String = "") {
         guard let panel else {
             NSSound.beep()
             return
         }
         panel.present()
+        if !prefill.isEmpty { capture?.text = prefill }
     }
 
-    /// Go to a screen.
+    /// Act on a `sunrise://` link, from wherever it came.
     ///
-    /// Set here and consumed by `VaultView`, because the window's selection is
-    /// the window's state — this object exists in scenes that have no sidebar
-    /// at all.
-    func show(_ destination: Destination) {
+    /// One entry point for all three sources — an external URL, a tapped
+    /// notification, and the app menu — so a link cannot behave differently
+    /// depending on who opened it. What each one does is
+    /// ``DeepLink/destination``'s decision, not this method's; the split
+    /// between "goes to a screen" and "runs and stays out of the way" is the
+    /// interesting part and it is stated once, where it can be tested.
+    func open(_ link: DeepLink, raisingAWindow: Bool = false) {
+        if case let .capture(text) = link {
+            openQuickCapture(prefill: text)
+            return
+        }
+        if case let .task(entity, .complete) = link {
+            perform(.complete, on: entity)
+        }
+        if case let .task(entity, .snooze(span)) = link {
+            perform(.snooze(span), on: entity)
+        }
+        guard let destination = link.destination else { return }
         pendingDestination = destination
+        if raisingAWindow { raiseWindow(for: link) }
+    }
+
+    /// Make sure something is on screen to receive ``pendingDestination``.
+    ///
+    /// SwiftUI can only open a `WindowGroup` window from inside a view —
+    /// `openWindow` is an `@Environment` value — and a notification tap
+    /// arrives outside every one. Handing the link back to LaunchServices is
+    /// the supported way round it: the OS delivers it to this app's
+    /// `WindowGroup`, which opens a window to receive it, and the `onOpenURL`
+    /// on `RootView` finds the destination already set.
+    ///
+    /// Not recursive, by construction: `onOpenURL` calls ``open(_:)`` without
+    /// this flag, and the check below short-circuits once a window exists
+    /// anyway.
+    private func raiseWindow(for link: DeepLink) {
+        let app = NSApplication.shared
+        app.activate(ignoringOtherApps: true)
+        // Panels do not count: the capture field and the menu bar's own window
+        // cannot show a screen.
+        let hasWindow = app.windows.contains { $0.isVisible && $0.canBecomeMain }
+        guard !hasWindow, let url = link.url else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// The window has taken the pending destination; stop offering it.
@@ -147,6 +209,14 @@ final class AppSurfaces {
     /// the same value twice is two requests, not one.
     func destinationTaken() {
         pendingDestination = nil
+    }
+
+    private func perform(_ action: ReminderAction, on entity: EntityRef) {
+        guard let reminders else {
+            NSSound.beep()
+            return
+        }
+        _Concurrency.Task { await reminders.perform(action, on: entity) }
     }
 
     /// Release the hotkey watcher.
@@ -223,7 +293,9 @@ private struct MenuBarScene: View {
 @MainActor
 private final class QuickCapturePanel {
     private let panel: NSPanel
-    private let capture: CaptureModel
+    /// Exposed so a `sunrise://capture?text=…` link can seed the field after
+    /// `present()` has cleared it.
+    let capture: CaptureModel
 
     init(bridge: CoreBridge) {
         capture = CaptureModel(bridge: bridge)
