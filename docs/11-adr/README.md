@@ -23,8 +23,8 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0003 | [CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md) | superseded by 0014 |
 | 0004 | [Crypto primitives selection](./0004-crypto-primitives.md) | accepted |
 | 0005 | [WebSocket as default sync transport](./0005-sync-transport.md) | accepted |
-| 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | accepted |
-| 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted |
+| 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | superseded by 0019 |
+| 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted (0019 defers every platform but macOS; the shared-core half is unchanged) |
 | 0008 | [Local FTS over server-side search](./0008-search-strategy.md) | accepted |
 | 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted (amended by 0015: the envelope container is versioned separately from the doc schema) |
 | 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
@@ -36,6 +36,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0016 | [Hybrid logical clocks order writes](./0016-hlc-timestamps.md) | accepted |
 | 0017 | [Scheduled times are a tagged `SunriseTime`](./0017-sunrise-time-representation.md) | accepted |
 | 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
+| 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec) |
 
 ## When to write a new ADR
 

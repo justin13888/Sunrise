@@ -1,6 +1,14 @@
 # 0006 — TUI built with Ratatui
 
-**Status:** accepted
+**Status:** superseded by [0019](./0019-swiftui-macos-client.md)
+
+> **Superseded.** There is no TUI. [ADR-0019](./0019-swiftui-macos-client.md)
+> replaced the terminal client with a native SwiftUI macOS app over a UniFFI
+> seam, and `crates/sunrise-tui` was deleted; `ratatui`, `crossterm`,
+> `ratatui-image` and `image` left `[workspace.dependencies]` with it. The
+> headless subcommands survive as `sunrise-cli`. Kept for the record of why
+> Ratatui was the right choice *for a TUI* — that reasoning is unchanged, and
+> would apply again if a terminal client is ever revived.
 
 ## Context
 
