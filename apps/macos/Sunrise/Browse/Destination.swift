@@ -7,7 +7,13 @@ import Foundation
 /// went blank between the click and the next `StreamList` read would be a
 /// flicker with no cause the user can see.
 enum TaskListKind: Equatable, Hashable, Identifiable {
-    case today
+    /// Today, optionally narrowed to a set of contexts.
+    ///
+    /// `Query::Today` takes the filter itself, so a narrowed Today is one
+    /// query rather than a list this client sieves afterwards — and a saved
+    /// view that names contexts recalls a *filtered* Today rather than
+    /// silently dropping the part of itself it could not express.
+    case today(contexts: [EntityRef])
     case inbox
     case stream(id: EntityRef, name: String)
     case context(id: EntityRef, name: String)
@@ -18,9 +24,19 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 
     var id: Self { self }
 
+    /// Today with no filter — the sidebar's own entry.
+    static let todayAll = TaskListKind.today(contexts: [])
+
+    /// Whether this is Today, filtered or not. Today is the only list the
+    /// core sections by urgency, so it is the only one that groups.
+    var isToday: Bool {
+        if case .today = self { return true }
+        return false
+    }
+
     var title: String {
         switch self {
-        case .today: "Today"
+        case let .today(contexts): contexts.isEmpty ? "Today" : "Today · \(contexts.count) contexts"
         case .inbox: "Inbox"
         case let .stream(_, name): name
         case let .context(_, name): "@\(name)"
@@ -40,7 +56,10 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 
     var emptyMessage: String {
         switch self {
-        case .today: "Nothing is scheduled or due today."
+        case let .today(contexts):
+            contexts.isEmpty
+                ? "Nothing is scheduled or due today."
+                : "Nothing in those contexts is scheduled or due today."
         case .inbox: "Your Inbox is empty."
         case let .stream(_, name): "Nothing in \(name) yet."
         case let .context(_, name): "Nothing carries @\(name)."
@@ -57,7 +76,7 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
     /// contents depend on the clock.
     func query(nowMs: UInt64) -> CoreQuery {
         switch self {
-        case .today: .today(nowMs: nowMs, contexts: [])
+        case let .today(contexts): .today(nowMs: nowMs, contexts: contexts)
         case .inbox: .inbox
         case let .stream(id, _): .streamTasks(stream: id)
         case let .context(id, _): .contextTasks(context: id)
@@ -111,7 +130,7 @@ enum Destination: Equatable, Hashable, Identifiable {
     /// `docs/07-clients/parity-matrix.md` lists them. Streams and contexts are
     /// not here: they are data, and the sidebar reads them from the vault.
     static let fixed: [Destination] = [
-        .list(.today), .list(.inbox), .search, .focus, .routines, .review
+        .list(.todayAll), .list(.inbox), .search, .focus, .routines, .review
     ]
 
     var title: String {

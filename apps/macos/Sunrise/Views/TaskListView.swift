@@ -50,7 +50,7 @@ struct TaskRows: View {
                 )
             } else {
                 List {
-                    if model.kind == .today {
+                    if model.kind.isToday {
                         ForEach(model.groups) { group in
                             section(group)
                         }

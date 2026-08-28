@@ -146,7 +146,15 @@ final class BrowseModel {
     private func run(_ command: CoreCommand, label: String) async {
         do {
             let outcome = try await bridge.submitUndoable(command, label: label)
-            undoNote = outcome.notUndoable.map(undoRefusalExplanation(refusal:))
+            // Only a *delete* is worth saying out loud. A create has no
+            // inverse either — undoing one would mean deleting it, which the
+            // core cannot reverse — but there is nothing to warn about, and a
+            // banner on every "New stream" would train people to ignore the
+            // one that matters. For those, a greyed-out Undo menu is the
+            // honest signal: it offers nothing, and claims nothing.
+            undoNote = outcome.notUndoable == .deleted
+                ? undoRefusalExplanation(refusal: .deleted)
+                : nil
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

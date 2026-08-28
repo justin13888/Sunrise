@@ -125,7 +125,7 @@ struct TaskListModelTests {
         let inbox = TaskListModel(bridge: vault.bridge, kind: .inbox)
         await inbox.create(draft("Someday, learn Welsh"))
 
-        let today = TaskListModel(bridge: vault.bridge, kind: .today)
+        let today = TaskListModel(bridge: vault.bridge, kind: .todayAll)
         await today.refresh()
 
         #expect(inbox.tasks.count == 1)

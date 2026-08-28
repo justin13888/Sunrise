@@ -103,7 +103,9 @@ struct BrowseModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// An edit *is* undoable, so no note is shown for one.
+    /// Only a delete raises a note. An edit is undoable, and a create is not
+    /// but has nothing to warn about — a banner on every one of those would
+    /// train people to ignore the one that matters.
     @Test
     func anEditLeavesNoUndoNoteBecauseItIsUndoable() async throws {
         let vault = try await TestVault()
@@ -175,7 +177,7 @@ struct BrowseModelTests {
     /// at". The bar is hidden rather than writing somewhere invisible.
     @Test
     func aContextListDoesNotOfferCapture() {
-        #expect(TaskListKind.today.acceptsCapture)
+        #expect(TaskListKind.todayAll.acceptsCapture)
         #expect(TaskListKind.inbox.acceptsCapture)
         #expect(TaskListKind.stream(id: "str_x", name: "Travel").acceptsCapture)
         #expect(!TaskListKind.context(id: "ctx_x", name: "errands").acceptsCapture)

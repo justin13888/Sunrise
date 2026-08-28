@@ -22,7 +22,7 @@ final class TaskListModel {
 
     private let bridge: CoreBridge
 
-    init(bridge: CoreBridge, kind: TaskListKind = .today) {
+    init(bridge: CoreBridge, kind: TaskListKind = .todayAll) {
         self.bridge = bridge
         self.kind = kind
     }
@@ -50,7 +50,7 @@ final class TaskListModel {
                 return
             }
             tasks = rows
-            groups = kind == .today
+            groups = kind.isToday
                 ? TaskGrouping.today(tasks: rows, nowMs: nowMs, timeZone: timeZone)
                 : []
             errorMessage = nil

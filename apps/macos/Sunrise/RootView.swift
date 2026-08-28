@@ -48,7 +48,11 @@ struct VaultView: View {
     @State private var focus: FocusModel
     @State private var routines: RoutineModel
     @State private var review: ReviewModel
-    @State private var selection: Destination? = .list(.today)
+    @State private var undo: UndoModel
+    @State private var savedViews = SavedViewsModel()
+    @State private var savingView = false
+    @State private var newViewName = ""
+    @State private var selection: Destination? = .list(.todayAll)
     @State private var deviceID = ""
     @State private var showingSettings = false
 
@@ -61,6 +65,7 @@ struct VaultView: View {
         _focus = State(initialValue: FocusModel(bridge: bridge))
         _routines = State(initialValue: RoutineModel(bridge: bridge))
         _review = State(initialValue: ReviewModel(bridge: bridge))
+        _undo = State(initialValue: UndoModel(bridge: bridge))
     }
 
     var body: some View {
@@ -72,15 +77,45 @@ struct VaultView: View {
                 if let note = browse.undoNote {
                     NoteBanner(text: note) { browse.dismissUndoNote() }
                 }
+                if let note = savedViews.recallNote {
+                    NoteBanner(text: note) { savedViews.dismissRecallNote() }
+                }
+                if let action = undo.lastAction {
+                    NoteBanner(text: action) { undo.dismissLastAction() }
+                }
                 detail
             }
         }
         .toolbar {
+            ToolbarItemGroup {
+                UndoMenu(model: undo)
+                SavedViewsMenu(
+                    model: savedViews,
+                    contexts: list.names,
+                    recall: { selection = $0 },
+                    saveCurrent: { savingView = true }
+                )
+            }
             ToolbarItem(placement: .status) {
                 SyncStatusView(presentation: sync.presentation)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("Settings", systemImage: "gearshape") { showingSettings = true }
+            }
+        }
+        .sheet(isPresented: $savingView) {
+            SaveViewSheet(
+                name: $newViewName,
+                summary: selection?.title ?? "Today"
+            ) {
+                guard let selection else { return }
+                await savedViews.save(
+                    name: newViewName,
+                    destination: selection,
+                    query: search.text,
+                    contexts: currentContextNames
+                )
+                newViewName = ""
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -109,6 +144,8 @@ struct VaultView: View {
             await startSync()
         }
         .task { await sync.poll(from: bridge) }
+        .task { await undo.follow() }
+        .task { await savedViews.load() }
         .onChange(of: settings.relayURL) { Task { await startSync() } }
         .onChange(of: account.accessToken) { _, token in
             Task { await bridge.setSyncCredential(token) }
@@ -134,6 +171,19 @@ struct VaultView: View {
                 systemImage: "sun.max",
                 description: Text("Pick something on the left.")
             )
+        }
+    }
+
+    /// The context names a saved view of the current screen should carry.
+    ///
+    /// Only a filtered Today or a context list has any; everything else saves
+    /// no filter rather than one it could not honour on recall.
+    private var currentContextNames: [String] {
+        guard case let .list(kind)? = selection else { return [] }
+        switch kind {
+        case let .today(contexts): return contexts.compactMap { list.names.contexts[$0] }
+        case let .context(_, name): return [name]
+        case .inbox, .stream, .search: return []
         }
     }
 
