@@ -34,6 +34,7 @@ sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
+sunrise-integrations = { workspace = true }
 sunrise-pairing = { workspace = true }
 sunrise-sync = { workspace = true, features = ["ws"] }
 

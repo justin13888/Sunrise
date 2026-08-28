@@ -58,6 +58,7 @@ use tokio::sync::broadcast::error::RecvError;
 pub mod client;
 pub mod command;
 pub mod dto;
+pub mod ical;
 pub mod pairing;
 pub mod query;
 pub mod types;
@@ -68,6 +69,7 @@ pub use client::{
 };
 pub use command::CoreCommand;
 pub use dto::{CapturePreview, CommandOutcome, TaskItem};
+pub use ical::{IcalImportReport, IcalImportedBlock, IcalNotice};
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use query::{CoreQuery, CoreQueryResult};
 pub use vocab::RelativeDay;
@@ -153,6 +155,13 @@ pub enum BindingError {
     /// The attachment byte path failed for any other reason.
     #[error("attachment: {0}")]
     Attachment(String),
+    /// An `.ics` import or export failed.
+    ///
+    /// Its own variant rather than a `Core` message: a malformed calendar file
+    /// is the user's file being wrong, not the vault being wrong, and a client
+    /// says something quite different about the two.
+    #[error("calendar: {0}")]
+    Calendar(String),
     /// A pairing step failed, was taken out of order, or was refused.
     ///
     /// Includes the SAS rejection, which is an error rather than a value on
@@ -160,6 +169,12 @@ pub enum BindingError {
     /// never let fall through to the next screen.
     #[error("pairing: {0}")]
     Pairing(String),
+}
+
+impl From<sunrise_integrations::IntegrationError> for BindingError {
+    fn from(e: sunrise_integrations::IntegrationError) -> Self {
+        Self::Calendar(e.to_string())
+    }
 }
 
 impl From<sunrise_pairing::PairingError> for BindingError {
@@ -399,6 +414,83 @@ impl SunriseCore {
         Ok(CapturePreview::from(
             &self.inner.capture(&text, &zone).await?,
         ))
+    }
+
+    /// Import an `.ics` document's `VEVENT`s as time blocks.
+    ///
+    /// **Idempotent.** Each event is written to the Block that
+    /// `(source, UID)` derives, so importing the same file twice updates the
+    /// same Blocks rather than making a second calendar — and two paired
+    /// devices importing it independently converge on one set. A client may
+    /// therefore offer "import" without first asking the user whether they
+    /// have already done it.
+    ///
+    /// `stream_id` is where the Blocks land; `None` means the Inbox stream.
+    /// `source` distinguishes two calendars that happen to share a `UID` and
+    /// should stay separate; `None` means the shared one-shot `.ics` source,
+    /// which is what a file picker wants.
+    ///
+    /// The document arrives as text rather than a path: on macOS the file the
+    /// user picked carries a security scope only the app holds, so the app
+    /// reads it and hands over what it read — the same argument as
+    /// [`SunriseCore::attach_file`].
+    ///
+    /// The returned report's `notices` are **not** telemetry. They name every
+    /// piece of the file a Block cannot hold, and a client that discards them
+    /// is dropping the user's data without telling them.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Calendar`] when the text is not an iCalendar document
+    /// at all, or when the vault refuses a write. A single unusable event is
+    /// reported in the result instead, because refusing 200 good events over
+    /// one bad one would make the feature useless.
+    pub async fn import_ical(
+        &self,
+        text: String,
+        stream_id: Option<EntityRef>,
+        source: Option<String>,
+    ) -> Result<ical::IcalImportReport, BindingError> {
+        let stream = match stream_id {
+            Some(id) if id.kind() != sunrise_id::EntityKind::Stream => {
+                return Err(BindingError::BadId {
+                    id: id.to_str(),
+                    cause: "a calendar imports into a stream".into(),
+                })
+            }
+            Some(id) => id,
+            None => sunrise_domain::inbox_stream_ref(),
+        };
+        let source = source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(sunrise_integrations::ical_vault::ICS_SOURCE);
+        let report =
+            sunrise_integrations::ical_vault::import(&self.inner, &text, stream, source).await?;
+        Ok(ical::IcalImportReport::from(&report))
+    }
+
+    /// Render one window of the calendar as an `.ics` document.
+    ///
+    /// Returns the text; writing it is the app's, for the same reason import
+    /// takes text. `at_ms` is any instant inside the window to export — pass
+    /// [`SunriseCore::now_ms`] for "today" or "this week", or the instant the
+    /// calendar view is scrolled to.
+    ///
+    /// Every `UID` written is the Block's own id, so a document exported here
+    /// and imported back lands on the Blocks it came from instead of doubling
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Calendar`] when the vault cannot be read.
+    pub async fn export_ical(
+        &self,
+        window: sunrise_integrations::ical_vault::ExportWindow,
+        at_ms: u64,
+    ) -> Result<String, BindingError> {
+        Ok(sunrise_integrations::ical_vault::export(&self.inner, window, at_ms).await?)
     }
 
     /// Attach a file to a task: seal the bytes, store them, record the
