@@ -50,6 +50,16 @@ pub enum Capability {
     SrvBillingStripe,
     /// `7` Server accepts opt-in diagnostic bundles.
     SrvDiagnosticUpload,
+    /// `8` Server accepts `0x12 RefreshToken` in a live session and answers
+    /// with `0x13 RefreshTokenAck`.
+    ///
+    /// Optional, and the negotiation is the point. Without it a client cannot
+    /// tell a server that accepted its refresh from one too old to know the
+    /// frame, because both are silent — and the two call for opposite
+    /// behaviour: keep the session, or let it die and reconnect. A client that
+    /// does not see this bit agreed simply never sends the frame and renews by
+    /// reconnecting, which every server understands.
+    SrvTokenRefresh,
     // --- client bits (32..64) ---
     //
     // Bits 32, 33 and 34 originally asserted three Loro CRDT capabilities:
@@ -91,6 +101,7 @@ impl Capability {
             Self::SrvIntegrationGcal => 5,
             Self::SrvBillingStripe => 6,
             Self::SrvDiagnosticUpload => 7,
+            Self::SrvTokenRefresh => 8,
             Self::CliEntityLww => 32,
             Self::CliHlcTimestamps => 33,
             Self::CliForwardCompat => 34,

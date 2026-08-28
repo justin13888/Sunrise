@@ -12,6 +12,7 @@
 //! - [`CaughtUpPayload`] — `MsgKind::StreamUpdate` (`0x07`), see below
 //! - [`ErrorPayload`]    — `MsgKind::Error`    (`0x0E`)
 //! - [`RefreshTokenPayload`] — `MsgKind::RefreshToken` (`0x12`)
+//! - [`RefreshTokenAckPayload`] — `MsgKind::RefreshTokenAck` (`0x13`)
 //!
 //! # CaughtUp msg_kind
 //!
@@ -243,6 +244,23 @@ impl std::fmt::Debug for RefreshTokenPayload {
     }
 }
 
+/// `MsgKind::RefreshTokenAck` payload: `{ expires_at_ms: uint }`.
+///
+/// Sent server → client after a `RefreshTokenPayload` verified. Carries the
+/// deadline the server actually adopted rather than leaving the client to
+/// assume its own reading of the token's `exp` was the one that took effect —
+/// the two can differ by the server's configured leeway, and the client's
+/// renewal schedule is derived from this number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshTokenAckPayload {
+    /// When the session's credential now expires, in epoch milliseconds.
+    ///
+    /// Zero when the installed verifier issues no expiry at all — the
+    /// self-host `NullVerifier` does not — which the client reads as "no
+    /// deadline", not as "expired in 1970".
+    pub expires_at_ms: u64,
+}
+
 macro_rules! canonical_codec {
     ($ty:ty) => {
         impl $ty {
@@ -274,6 +292,7 @@ canonical_codec!(CaughtUpPayload);
 canonical_codec!(ErrorPayload);
 canonical_codec!(ClosePayload);
 canonical_codec!(RefreshTokenPayload);
+canonical_codec!(RefreshTokenAckPayload);
 
 #[cfg(test)]
 mod tests {

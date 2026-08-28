@@ -68,6 +68,7 @@ KIND  NAME                  DIRECTION   PAYLOAD CDDL TAG
 0x0E  Error                 S → C       Error
 0x0F  Close                 C ↔ S       Close { code: ErrorCode, reason: tstr }
 0x12  RefreshToken          C → S       RefreshToken
+0x13  RefreshTokenAck       S → C       RefreshTokenAck { expires_at_ms: uint }
 ```
 
 `0x10` and `0x11` are unassigned. `RefreshToken` takes `0x12` so the original
@@ -79,6 +80,17 @@ tokens do, and without this frame the only remedy is to close the socket and
 renegotiate — dropping the subscription, re-running the handshake, and losing
 every op in flight. The server closes with `AUTH_TOKEN_EXPIRED` only when the
 client fails to refresh, not merely because time passed.
+
+`RefreshTokenAck` is the positive half of that exchange, and it is gated on
+capability bit 8 (`SRV_TOKEN_REFRESH`); a client MUST NOT send `0x12` unless it
+saw that bit come back agreed. Without the ack, success is *silence* — and so
+is a server too old to know the frame, which calls for the opposite response.
+The ack carries `expires_at_ms`, the deadline the server actually adopted:
+it can differ from the client's own reading of the token's `exp` by the
+server's configured leeway, and the server's is the one that ends the session.
+`expires_at_ms = 0` means no deadline, which is what the self-host verifier
+issues. A rejected refresh still answers with `Error`, so every outcome —
+accepted, rejected, unsupported — is now distinguishable.
 
 `AUTH_TOKEN_EXPIRED` is deliberately distinguishable from `AUTH_TOKEN_INVALID`
 and `AUTH_DEVICE_REVOKED`: the first is recoverable by the client on its own,

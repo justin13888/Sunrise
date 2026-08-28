@@ -19,6 +19,7 @@
 //! 0x0E  Error           S → C
 //! 0x0F  Close           C ↔ S
 //! 0x12  RefreshToken    C → S
+//! 0x13  RefreshTokenAck S → C
 //! ```
 //!
 //! `0x10` and `0x11` are deliberately unassigned; `RefreshToken` takes `0x12`
@@ -74,6 +75,15 @@ pub enum MsgKind {
     /// This commit adds the protocol surface; the behaviour behind it is
     /// wired separately (issue #7).
     RefreshToken = 0x12,
+    /// `0x13` Server → Client: the bearer in a `RefreshToken` frame verified,
+    /// and the session's deadline has moved out to its `exp`.
+    ///
+    /// Sent only when `Capability::SrvTokenRefresh` was agreed at Hello. It
+    /// exists because silence is ambiguous: a server that accepted the refresh
+    /// and one too old to know `0x12` both say nothing, and the client's right
+    /// response differs — keep the session, or stop trusting it. A rejected
+    /// refresh still answers with `Error`, so every outcome is now explicit.
+    RefreshTokenAck = 0x13,
 }
 
 /// Error from [`MsgKind::from_byte`].
@@ -107,6 +117,7 @@ impl MsgKind {
             0x0E => Ok(Self::Error),
             0x0F => Ok(Self::Close),
             0x12 => Ok(Self::RefreshToken),
+            0x13 => Ok(Self::RefreshTokenAck),
             other => Err(UnknownMsgKind(other)),
         }
     }
@@ -135,6 +146,7 @@ mod tests {
             MsgKind::Error,
             MsgKind::Close,
             MsgKind::RefreshToken,
+            MsgKind::RefreshTokenAck,
         ];
         for k in all {
             assert_eq!(MsgKind::from_byte(k.as_byte()).unwrap(), k);
@@ -147,7 +159,7 @@ mod tests {
         // 0x10 and 0x11 are unassigned and stay that way.
         assert_eq!(MsgKind::from_byte(0x10), Err(UnknownMsgKind(0x10)));
         assert_eq!(MsgKind::from_byte(0x11), Err(UnknownMsgKind(0x11)));
-        assert_eq!(MsgKind::from_byte(0x13), Err(UnknownMsgKind(0x13)));
+        assert_eq!(MsgKind::from_byte(0x13), Ok(MsgKind::RefreshTokenAck));
         assert_eq!(MsgKind::from_byte(0xff), Err(UnknownMsgKind(0xff)));
     }
 
@@ -158,6 +170,7 @@ mod tests {
     #[test]
     fn refresh_token_is_a_distinct_kind() {
         assert_eq!(MsgKind::RefreshToken.as_byte(), 0x12);
+        assert_eq!(MsgKind::RefreshTokenAck.as_byte(), 0x13);
         assert_ne!(MsgKind::RefreshToken, MsgKind::Hello);
     }
 }

@@ -45,9 +45,9 @@ use std::time::Duration;
 use sunrise_error::ErrorCode;
 use sunrise_server::{build_router, Clock, ServerConfig, ServerState, StaticVerifier, Subject};
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, ClosePayload, ErrorPayload, FrameFlags, Hello, MsgKind,
-    RefreshTokenPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
-    REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, Capability, CapabilityBits, ClosePayload, ErrorPayload, FrameFlags,
+    Hello, HelloAck, MsgKind, RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry,
+    SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
@@ -103,14 +103,16 @@ fn hello() -> Hello {
         doc_schema_min: 1,
         doc_schema_max: 1,
         crypto_suite_supported: vec![1],
-        capabilities: REQUIRED_CLIENT_BITS.0 | REQUIRED_SERVER_BITS.0,
+        capabilities: REQUIRED_CLIENT_BITS.0
+            | REQUIRED_SERVER_BITS.0
+            | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0,
         trace: "01HXTRACE000000000000000000".into(),
     }
 }
 
 /// Hello + HelloAck only. Deliberately does not subscribe: an expired session
 /// must be able to fail on the very first frame it is asked to act on.
-async fn handshake(ws: &mut Ws) {
+async fn handshake(ws: &mut Ws) -> CapabilityBits {
     let mut payload = Vec::new();
     ciborium::ser::into_writer(&hello(), &mut payload).unwrap();
     let frame = encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &payload).unwrap();
@@ -119,7 +121,10 @@ async fn handshake(ws: &mut Ws) {
     let Message::Binary(buf) = msg else {
         panic!("expected a binary HelloAck")
     };
-    assert_eq!(decode_frame(&buf).unwrap().0.msg_kind, MsgKind::HelloAck);
+    let (h, payload) = decode_frame(&buf).unwrap();
+    assert_eq!(h.msg_kind, MsgKind::HelloAck);
+    let ack: HelloAck = ciborium::de::from_reader(&payload[..]).unwrap();
+    CapabilityBits(ack.capabilities)
 }
 
 async fn send_subscribe(ws: &mut Ws, stream: [u8; 16]) {
@@ -193,7 +198,7 @@ async fn an_inbound_frame_on_an_expired_token_ends_the_session() {
     );
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_subscribe(&mut ws, [7u8; 16]).await;
     assert_expired_close(&mut ws).await;
@@ -213,7 +218,7 @@ async fn an_idle_session_is_closed_when_its_token_expires() {
     );
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     // Nothing is sent from here on.
     assert_expired_close(&mut ws).await;
@@ -231,7 +236,7 @@ async fn a_session_with_no_deadline_is_never_closed() {
     let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_subscribe(&mut ws, [7u8; 16]).await;
     let (kind, _) = next_frame(&mut ws, Duration::from_secs(2))
@@ -272,9 +277,23 @@ async fn a_refresh_extends_the_session_without_a_reconnect() {
         .with_expiring("long", Subject::new(ISSUER, "alice"), T0_MS + 3_600_000);
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "short").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_refresh(&mut ws, "long").await;
+
+    // The refresh is acknowledged explicitly, carrying the deadline the server
+    // actually adopted. Silence used to be the only signal of success, which
+    // an old server ignoring the frame produces too.
+    let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("a successful refresh must be acknowledged");
+    assert_eq!(kind, MsgKind::RefreshTokenAck);
+    let ack = RefreshTokenAckPayload::decode(&payload).unwrap();
+    assert_eq!(
+        ack.expires_at_ms,
+        T0_MS + 3_600_000,
+        "the ack reports the new token's expiry, not the old one"
+    );
 
     // Well past the original 500 ms deadline. Without the refresh this window
     // is where `an_idle_session_is_closed_when_its_token_expires` fires.
@@ -302,7 +321,7 @@ async fn a_refresh_with_an_unverifiable_token_is_refused_but_keeps_the_session()
     let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_refresh(&mut ws, "not-a-token-this-server-knows").await;
     let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
@@ -334,7 +353,7 @@ async fn a_refresh_naming_another_principal_ends_the_session() {
         .with("bob-token", Subject::new(ISSUER, "bob"));
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_refresh(&mut ws, "bob-token").await;
     let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
@@ -364,7 +383,7 @@ async fn a_refresh_naming_another_device_ends_the_session() {
         .with("alice-other-device", other_device);
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_refresh(&mut ws, "alice-other-device").await;
     let (kind, _) = next_frame(&mut ws, Duration::from_secs(2))
@@ -390,7 +409,7 @@ async fn a_refresh_after_the_deadline_does_not_revive_the_session() {
         .with_expiring("long", Subject::new(ISSUER, "alice"), T0_MS + 3_600_000);
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "short").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     send_refresh(&mut ws, "long").await;
     assert_expired_close(&mut ws).await;
@@ -404,7 +423,7 @@ async fn a_refresh_with_an_undecodable_payload_is_refused() {
     let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
     let (addr, h) = boot(verifier, T0_MS).await;
     let mut ws = connect(addr, "alice-token").await;
-    handshake(&mut ws).await;
+    let _ = handshake(&mut ws).await;
 
     let frame = encode_frame(MsgKind::RefreshToken, FrameFlags::EMPTY, b"\xff not cbor").unwrap();
     ws.send(Message::Binary(frame)).await.unwrap();
@@ -415,6 +434,45 @@ async fn a_refresh_with_an_undecodable_payload_is_refused() {
     assert_eq!(
         ErrorPayload::decode(&payload).unwrap().code,
         ErrorCode::SyncOpInvalid
+    );
+    h.abort();
+}
+
+/// The relay advertises `SrvTokenRefresh`, so a client can tell in advance
+/// that an in-band refresh will be answered rather than ignored.
+#[tokio::test]
+async fn the_relay_advertises_the_token_refresh_capability() {
+    let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    let agreed = handshake(&mut ws).await;
+    assert!(
+        agreed.has(Capability::SrvTokenRefresh),
+        "the capability must come back agreed"
+    );
+    h.abort();
+}
+
+/// The self-host verifier issues no expiry, and the ack says so with a zero
+/// rather than a stale or invented deadline.
+#[tokio::test]
+async fn an_ack_for_a_token_with_no_expiry_reports_zero() {
+    let verifier = StaticVerifier::default().with("alice-token", Subject::new(ISSUER, "alice"));
+    let (addr, h) = boot(verifier, T0_MS).await;
+    let mut ws = connect(addr, "alice-token").await;
+    let _ = handshake(&mut ws).await;
+
+    send_refresh(&mut ws, "alice-token").await;
+    let (kind, payload) = next_frame(&mut ws, Duration::from_secs(2))
+        .await
+        .expect("the refresh must be acknowledged");
+    assert_eq!(kind, MsgKind::RefreshTokenAck);
+    assert_eq!(
+        RefreshTokenAckPayload::decode(&payload)
+            .unwrap()
+            .expires_at_ms,
+        0,
+        "no deadline is 0, which the client reads as no deadline"
     );
     h.abort();
 }

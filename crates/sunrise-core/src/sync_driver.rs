@@ -80,9 +80,10 @@ use sunrise_sync::{Backoff, SyncState, Transport, TransportError};
 
 pub use sunrise_sync::{TokenSource, TokenWatch};
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags, Hello,
-    MsgKind, OpBatchPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
-    REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
+    ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
+    RefreshTokenPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
+    REQUIRED_SERVER_BITS,
 };
 
 /// Boxed transport produced by a [`TransportFactory`].
@@ -569,6 +570,59 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
     }
 }
 
+/// Hello → HelloAck.
+///
+/// `Ok(refresh_negotiated)` on success — whether the relay agreed
+/// [`Capability::SrvTokenRefresh`], which decides whether this session may
+/// renew in band. `Err` carries the reason the session never started.
+async fn handshake(
+    core: &Arc<Core>,
+    shared: &SyncShared,
+    transport: &mut BoxTransport,
+) -> Result<bool, SessionEnd> {
+    let hello = build_hello(core.app_string());
+    let Ok(hello_bytes) = encode_hello(&hello) else {
+        return Err(SessionEnd::Disconnected);
+    };
+    let Ok(hello_frame) = encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &hello_bytes) else {
+        return Err(SessionEnd::Disconnected);
+    };
+    if transport.send_frame(hello_frame).await.is_err() {
+        return Err(SessionEnd::Disconnected);
+    }
+    // Whether the relay agreed to take an in-band refresh. A relay that did
+    // not gets no `0x12` at all: it would ignore the frame, and the client
+    // would have no way to tell that from acceptance.
+    loop {
+        let recv = tokio::select! {
+            biased;
+            () = shared.shutdown_notified() => {
+                let _ = transport.close().await;
+                return Err(SessionEnd::Shutdown);
+            }
+            r = transport.recv_frame() => r,
+        };
+        match recv {
+            Ok(Some(bytes)) => match decode_frame(&bytes) {
+                Ok((h, payload)) if h.msg_kind == MsgKind::HelloAck => {
+                    // An ack we cannot parse is treated as agreeing to nothing
+                    // optional, rather than as a failed session: the required
+                    // bits were already checked by the relay, and degrading
+                    // quietly is what an unknown-capability field is for.
+                    return Ok(decode_hello_ack(&payload).is_some_and(|ack| {
+                        CapabilityBits(ack.capabilities).has(Capability::SrvTokenRefresh)
+                    }));
+                }
+                Ok((h, _)) if h.msg_kind == MsgKind::Error => return Err(SessionEnd::Disconnected),
+                // Any other frame before HelloAck: keep waiting.
+                Ok(_) => {}
+                Err(_) => return Err(SessionEnd::Disconnected),
+            },
+            Ok(None) | Err(_) => return Err(SessionEnd::Disconnected),
+        }
+    }
+}
+
 /// One connected session: handshake → subscribe → drain + pump frames.
 #[allow(clippy::too_many_lines)]
 async fn session(
@@ -580,37 +634,10 @@ async fn session(
     credential: &TokenSource,
     renewals: &mut TokenWatch,
 ) -> SessionEnd {
-    // ---- Handshake: Hello → HelloAck ----
-    let hello = build_hello(core.app_string());
-    let Ok(hello_bytes) = encode_hello(&hello) else {
-        return SessionEnd::Disconnected;
+    let refresh_negotiated = match handshake(core, shared, &mut transport).await {
+        Ok(negotiated) => negotiated,
+        Err(end) => return end,
     };
-    let Ok(hello_frame) = encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &hello_bytes) else {
-        return SessionEnd::Disconnected;
-    };
-    if transport.send_frame(hello_frame).await.is_err() {
-        return SessionEnd::Disconnected;
-    }
-    loop {
-        let recv = tokio::select! {
-            biased;
-            () = shared.shutdown_notified() => {
-                let _ = transport.close().await;
-                return SessionEnd::Shutdown;
-            }
-            r = transport.recv_frame() => r,
-        };
-        match recv {
-            Ok(Some(bytes)) => match decode_frame(&bytes) {
-                Ok((h, _)) if h.msg_kind == MsgKind::HelloAck => break,
-                Ok((h, _)) if h.msg_kind == MsgKind::Error => return SessionEnd::Disconnected,
-                // Any other frame before HelloAck: keep waiting.
-                Ok(_) => {}
-                Err(_) => return SessionEnd::Disconnected,
-            },
-            Ok(None) | Err(_) => return SessionEnd::Disconnected,
-        }
-    }
 
     // ---- Subscribe to all known streams with their cursors ----
     let Ok(entries) = core.sync_subscribe_entries() else {
@@ -708,9 +735,7 @@ async fn session(
             // handshake, a re-subscribe, and a catch-up window in which the
             // session is not live, all on a schedule the client already knew.
             SessionEvent::CredentialRenewed => {
-                if let Some(frame) = encode_refresh_token(credential) {
-                    pending_sends.push(frame);
-                }
+                on_credential_renewed(refresh_negotiated, credential, &mut pending_sends);
             }
             SessionEvent::Timer => {
                 // Exhausting a batch's retries means this link is not carrying
@@ -758,6 +783,45 @@ async fn session(
             SessionEvent::Recv(Ok(None) | Err(_)) => return SessionEnd::Disconnected,
         }
     }
+}
+
+/// Queue an in-band `0x12`, or record why the renewal is waiting.
+///
+/// The frame goes only to a relay that agreed `SrvTokenRefresh`. One that did
+/// not would ignore it silently, which the client could not distinguish from
+/// acceptance — so the new bearer rides the next reconnect instead, a path
+/// every relay understands.
+fn on_credential_renewed(
+    refresh_negotiated: bool,
+    credential: &TokenSource,
+    pending_sends: &mut Vec<Vec<u8>>,
+) {
+    if !refresh_negotiated {
+        tracing::debug!(
+            ev = "sync.credential.renewed.deferred",
+            "relay did not negotiate in-band refresh; the new bearer waits for the next connect"
+        );
+        return;
+    }
+    if let Some(frame) = encode_refresh_token(credential) {
+        pending_sends.push(frame);
+    }
+}
+
+/// Record a relay's acceptance of a refreshed bearer.
+///
+/// The deadline is the relay's, not our own reading of the token's `exp`: the
+/// two differ by the relay's configured leeway, and the relay's is the one
+/// that ends the session.
+fn note_refresh_ack(payload: &[u8]) {
+    let expires_at_ms = RefreshTokenAckPayload::decode(payload)
+        .map(|p| p.expires_at_ms)
+        .unwrap_or_default();
+    tracing::debug!(
+        ev = "sync.credential.accepted",
+        expires_at_ms,
+        "relay accepted the refreshed bearer"
+    );
 }
 
 /// Encode a `0x12 RefreshToken` frame for the source's current bearer.
@@ -947,6 +1011,7 @@ async fn handle_frame(
                 );
             }
         }
+        MsgKind::RefreshTokenAck => note_refresh_ack(&payload),
         // Nack and every other kind are non-fatal in v1 self-host: they fall
         // through to a no-op.
         _ => {}
@@ -1061,9 +1126,18 @@ fn build_hello(app: &str) -> Hello {
         doc_schema_min: u32::from(DOC_SCHEMA_FLOOR),
         doc_schema_max: u32::from(DOC_SCHEMA_V),
         crypto_suite_supported: vec![u32::from(CRYPTO_SUITE_V)],
-        capabilities: REQUIRED_CLIENT_BITS.0 | REQUIRED_SERVER_BITS.0,
+        // The optional bit rides alongside the required ones. `HelloAck`
+        // carries the AND of the two sides, so asking is how we find out
+        // whether the relay can take an in-band refresh at all.
+        capabilities: REQUIRED_CLIENT_BITS.0
+            | REQUIRED_SERVER_BITS.0
+            | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0,
         trace: String::new(),
     }
+}
+
+fn decode_hello_ack(payload: &[u8]) -> Option<HelloAck> {
+    ciborium::de::from_reader(payload).ok()
 }
 
 fn encode_hello(h: &Hello) -> Result<Vec<u8>, ()> {
@@ -1137,8 +1211,8 @@ mod tests {
     use sunrise_error::ErrorCode;
     use sunrise_sync::{SyncState, Transport, TransportError};
     use sunrise_wire_protocol::{
-        decode_frame, encode_frame, AckPayload, CaughtUpPayload, ErrorPayload, FrameFlags,
-        HelloAck, MsgKind, OpBatchPayload, SubscribePayload,
+        decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
+        ErrorPayload, FrameFlags, HelloAck, MsgKind, OpBatchPayload, SubscribePayload,
     };
     use tokio::sync::{broadcast, mpsc};
     use tokio::time::timeout;
@@ -1279,13 +1353,14 @@ mod tests {
         mpsc::UnboundedReceiver<RecvBatch>,
         SubCount,
     ) {
-        let (f, s, rx, subs, _) = harness_full(scripts);
+        let (f, s, rx, subs, _) = harness_full(scripts, true);
         (f, s, rx, subs)
     }
 
     #[allow(clippy::type_complexity)]
     fn harness_full(
         scripts: Vec<Script>,
+        negotiate_refresh: bool,
     ) -> (
         TransportFactory,
         SharedServer,
@@ -1316,7 +1391,12 @@ mod tests {
                     s.scripts.pop_front().unwrap_or_default()
                 };
                 tokio::spawn(run_fake_server(
-                    server_end, script, batch_tx, subs, refreshes,
+                    server_end,
+                    script,
+                    batch_tx,
+                    subs,
+                    refreshes,
+                    negotiate_refresh,
                 ));
                 Ok(Box::new(client_end) as BoxTransport)
             };
@@ -1410,6 +1490,7 @@ mod tests {
         batch_tx: mpsc::UnboundedSender<RecvBatch>,
         sub_count: SubCount,
         refreshes: SeenRefreshes,
+        negotiate_refresh: bool,
     ) {
         // Expect Hello, reply HelloAck.
         let Ok(Some(frame)) = t.recv_frame().await else {
@@ -1426,7 +1507,11 @@ mod tests {
             wire_proto: 1,
             crypto_suite: 1,
             doc_schema_floor: 1,
-            capabilities: 0,
+            capabilities: if negotiate_refresh {
+                CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0
+            } else {
+                0
+            },
             server_time_ms: T0,
         };
         let mut buf = Vec::new();
@@ -1591,7 +1676,7 @@ mod tests {
         );
 
         let mut status_rx = core.sync_status();
-        let (factory, server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        let (factory, server, _batch_rx, _subs, refreshes) = harness_full(vec![], true);
         core.start_sync(factory).unwrap();
         let _ = collect_until_live(&mut status_rx).await;
         let connects_when_live = server.lock().connect_count;
@@ -1651,7 +1736,7 @@ mod tests {
         );
 
         let mut status_rx = core.sync_status();
-        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![], true);
         core.start_sync(factory).unwrap();
         let _ = collect_until_live(&mut status_rx).await;
 
@@ -1671,6 +1756,43 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// A relay that did not agree `SrvTokenRefresh` is sent **no** `0x12` at
+    /// all, and the renewal waits for the next connect.
+    ///
+    /// This is the reason the capability bit exists. An old relay ignores an
+    /// unknown frame silently, and a relay that accepted the refresh used to
+    /// be silent too — so the client could not tell "your session is good for
+    /// another hour" from "nothing happened", which call for opposite
+    /// behaviour. Negotiating first means the client only sends the frame to
+    /// someone it knows will answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_relay_that_does_not_negotiate_refresh_is_sent_no_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut cfg = make_cfg(dir.path());
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
+        let core = Arc::new(
+            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
+                .await
+                .unwrap(),
+        );
+
+        let mut status_rx = core.sync_status();
+        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![], false);
+        core.start_sync(factory).unwrap();
+        let _ = collect_until_live(&mut status_rx).await;
+
+        credential.set(Some("renewed-token".into()));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            refreshes.lock().is_empty(),
+            "a relay that did not advertise the capability must not be sent the frame"
+        );
+        // The credential is still updated; it simply rides the next connect.
+        assert_eq!(credential.get().as_deref(), Some("renewed-token"));
+        core.shutdown().await;
+    }
+
     /// Clearing the credential is not a renewal. An empty `RefreshToken` would
     /// be rejected by the relay as an unverifiable token, ending a session
     /// that was working — so nothing is sent.
@@ -1687,7 +1809,7 @@ mod tests {
         );
 
         let mut status_rx = core.sync_status();
-        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![]);
+        let (factory, _server, _batch_rx, _subs, refreshes) = harness_full(vec![], true);
         core.start_sync(factory).unwrap();
         let _ = collect_until_live(&mut status_rx).await;
 

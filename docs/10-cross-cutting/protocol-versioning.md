@@ -151,6 +151,7 @@ Server bits:
 | 5 | `SRV_INTEGRATION_GCAL` | Server provides Google Calendar OAuth proxy. |
 | 6 | `SRV_BILLING_STRIPE` | Server enforces Stripe-backed quotas. |
 | 7 | `SRV_DIAGNOSTIC_UPLOAD` | Server accepts opt-in diagnostic bundles. |
+| 8 | `SRV_TOKEN_REFRESH` | Server accepts `0x12 RefreshToken` mid-session and answers `0x13 RefreshTokenAck`. |
 
 Client bits:
 
@@ -175,6 +176,15 @@ Client bits:
 > name what v1 actually requires. The bit POSITIONS are unchanged, and the
 > redefinition is safe only because nothing ever shipped that read the old
 > meanings — a redefinition after 1.0 would be a `WIRE_PROTO_V` bump.
+
+> **Why bit 8 is negotiated rather than assumed.** A server that accepts a
+> `0x12` and one that has never heard of it are both *silent*, and the client's
+> correct response differs: keep the session, or stop trusting the credential
+> and let the session die. A client MUST NOT send `0x12` unless it saw bit 8
+> come back agreed in `HelloAck.capabilities`; without it, renewal happens by
+> reconnecting, which every server understands. Adding the bit and the `0x13`
+> frame is a **minor** change under §8.1 — a new capability bit and a frame
+> sent only when negotiated — so `WIRE_PROTO_V` stays at 1.
 
 Unknown bits set by the peer MUST be ignored (forward compatibility) and MUST NOT be echoed back in `HelloAck.capabilities`.
 

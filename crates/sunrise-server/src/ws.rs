@@ -28,9 +28,10 @@ use futures_util::{SinkExt, StreamExt};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
 use sunrise_wire_protocol::{
-    decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, ErrorPayload,
-    FrameFlags, Hello, MsgKind, OpBatchPayload, RefreshTokenPayload, SubscribeEntry,
-    SubscribePayload, REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
+    decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
+    ClosePayload, ErrorPayload, FrameFlags, Hello, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
+    RefreshTokenPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
+    REQUIRED_SERVER_BITS,
 };
 
 use crate::auth::Verified;
@@ -211,7 +212,13 @@ async fn run_session(socket: WebSocket, state: ServerState, auth: SessionAuth) {
             return;
         }
     };
-    let server_caps = REQUIRED_CLIENT_BITS.0 | REQUIRED_SERVER_BITS.0;
+    // `SrvTokenRefresh` is optional, so it rides on top of the required set.
+    // The client only sends `0x12` if it sees this bit come back agreed, which
+    // is what stops a refresh from being silently swallowed by a server that
+    // predates the frame.
+    let server_caps = REQUIRED_CLIENT_BITS.0
+        | REQUIRED_SERVER_BITS.0
+        | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0;
     let server_time_ms = state.clock.now_ms();
     let ack = match hello.negotiate(
         state.config.server_app_v.clone(),
@@ -560,7 +567,19 @@ async fn handle_refresh(
         account_h = %crate::logging::id_h(&auth.account),
         "session credential renewed without a reconnect"
     );
-    true
+    // Acknowledge explicitly. Every other outcome of a refresh already sends a
+    // frame; leaving success as the silent one made it indistinguishable from
+    // a server that never understood the request.
+    let ack = RefreshTokenAckPayload {
+        expires_at_ms: verified.expires_at_ms.unwrap_or(0),
+    };
+    match ack.encode() {
+        Ok(bytes) => match encode_frame(MsgKind::RefreshTokenAck, FrameFlags::EMPTY, &bytes) {
+            Ok(frame) => sink.send(Message::Binary(frame)).await.is_ok(),
+            Err(_) => true,
+        },
+        Err(_) => true,
+    }
 }
 
 /// Join one stream: filtered replay, gap report, CaughtUp, live receiver.
