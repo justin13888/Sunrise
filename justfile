@@ -198,6 +198,21 @@ macos-uitest: macos-xcframework
 macos-open: macos-xcframework
     cd apps/macos && xcodegen generate --quiet && open Sunrise.xcodeproj
 
+# --- Release artifacts ---
+
+# Same Dockerfile and the same build args the release workflow uses, so a
+# failure here is a failure there. Note the size of the job: a release build of
+# the workspace's C dependencies (SQLCipher, ring, zstd) inside a fresh
+# container wants ~10 GB of container storage and tens of minutes cold.
+
+# Build the sunrise-server image that the release workflow publishes to GHCR
+[group('release')]
+docker-build tag="sunrise-server:dev":
+    docker build \
+      --build-arg VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" \
+      --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
+      -t {{tag}} .
+
 # --- Aggregates (mirror the git hooks; handy to run by hand) ---
 
 # Everything the pre-commit hook runs

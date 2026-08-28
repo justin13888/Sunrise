@@ -1,0 +1,28 @@
+# Allowlist, not a blocklist: ignore everything, then re-admit exactly what
+# `cargo build -p sunrise-server` needs.
+#
+# The inverted form is deliberate. A blocklist has to be amended every time the
+# repository grows a directory, and the failure mode is silent: this tree
+# currently carries a 6 GB `target/` and a 284 MB `node_modules/`, either of
+# which lands in the build context the day someone forgets an entry —
+# invalidating the cache on every build and shipping bytes nobody inspected.
+# Here a new directory is excluded until someone says otherwise.
+*
+
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+
+# Both forms per directory. `!crates` re-admits the directory so the walk
+# descends into it at all; `!crates/**` re-admits what is inside. Relying on
+# either alone is relying on an implementation detail of how a given builder
+# prunes excluded subtrees.
+!crates
+!crates/**
+
+# Re-exclusions inside the admitted tree. A per-crate `target/` appears
+# whenever someone runs cargo from inside one crate; the workspace `target/` is
+# already covered by the leading `*`.
+crates/**/target
+crates/**/*.rs.bk
+**/.DS_Store
