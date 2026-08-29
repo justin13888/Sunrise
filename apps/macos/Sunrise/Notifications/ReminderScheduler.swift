@@ -175,9 +175,6 @@ final class ReminderScheduler {
         }
     }
 
-    /// The name ``RootView`` still calls. Prefer ``follow(debounce:)``.
-    func poll() async { await follow() }
-
     /// Re-read the authorization status every
     /// ``authorizationRefreshInterval``, and reconcile on what it says.
     ///

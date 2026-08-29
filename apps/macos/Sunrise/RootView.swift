@@ -252,8 +252,9 @@ struct VaultView: View {
         .task { await sync.poll(from: bridge) }
         // The schedule is only correct until the next write. A task created on
         // the phone and synced here has to reach this Mac's notification
-        // centre without anybody opening a screen.
-        .task { await surfaces.reminders?.poll() }
+        // centre without anybody opening a screen — so this follows the change
+        // feed rather than waking on a timer.
+        .task { await surfaces.reminders?.follow() }
         .task { await undo.follow() }
         .task { await savedViews.load() }
         .onChange(of: settings.relayURL) { Task { await startSync() } }
