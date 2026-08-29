@@ -85,30 +85,40 @@ final class SavedViewsModel {
             ? nil
             : "\(missing) of this view's contexts no longer exist and were not applied."
 
-        switch view.view {
-        case .today:
-            return .list(.today(contexts: resolved))
-        case .inbox:
-            return .list(.inbox)
-        case .stream:
-            // A saved "browse" view carries context names and no stream id —
-            // a stream id is a vault-local ULID and would not survive the
-            // trip. So it recalls the first context it names, and Today when
-            // it names none.
-            guard let first = resolved.first,
-                  let name = book.contexts[first] else { return .list(.todayAll) }
-            return .list(.context(id: first, name: name))
-        case .search:
-            return .search
-        case .calendar:
-            return .calendar
-        case .focus:
-            return .focus
-        case .routines:
-            return .routines
-        case .review:
-            return .review
+        return destination(for: view.view, contexts: resolved, book: book)
+    }
+
+    /// One primary view, as somewhere to be.
+    ///
+    /// Split out from ``recall(_:contexts:)`` rather than inlined: the store
+    /// now names ten views, and a function that both resolved context names
+    /// and branched ten ways was over the complexity the linter allows.
+    private func destination(
+        for view: PrimaryView,
+        contexts resolved: [EntityRef],
+        book: NameBook
+    ) -> Destination {
+        switch view {
+        case .today: .list(.today(contexts: resolved))
+        case .inbox: .list(.inbox)
+        case .stream: browse(contexts: resolved, book: book)
+        case .search: .search
+        case .calendar: .calendar
+        case .focus: .focus
+        case .routines: .routines
+        case .review: .review
+        case .morning: .morning
+        case .evening: .evening
         }
+    }
+
+    /// A saved "browse" view carries context names and no stream id — a stream
+    /// id is a vault-local ULID and would not survive the trip. So it recalls
+    /// the first context it names, and Today when it names none.
+    private func browse(contexts resolved: [EntityRef], book: NameBook) -> Destination {
+        guard let first = resolved.first,
+              let name = book.contexts[first] else { return .list(.todayAll) }
+        return .list(.context(id: first, name: name))
     }
 
     func dismissRecallNote() { recallNote = nil }
@@ -144,9 +154,10 @@ extension Destination {
     /// The two daily briefs are the `nil`. `PrimaryView` mirrors
     /// `sunrise_client_core::views::View` variant for variant, deliberately,
     /// so that adding a view upstream fails the seam's build rather than
-    /// producing an unrepresentable value — and `View` has no `Morning` or
-    /// `Evening`. The honest answer is therefore "this cannot be saved", not a
-    /// nearest-neighbour that would recall the morning brief as Today.
+    /// producing an unrepresentable value — which is how `Morning` and
+    /// `Evening` arriving upstream announced themselves. ``recall(_:contexts:)``
+    /// now round-trips them; whether a brief should be *savable* is a separate
+    /// question, so this still answers "no" rather than guessing.
     var primary: PrimaryView? {
         switch self {
         case let .list(kind):
