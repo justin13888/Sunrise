@@ -47,10 +47,45 @@ struct CalendarModelTests {
         )
 
         #expect(model.rows.count == 1)
+        // `#require`, not a subscript: an empty result is a failed expectation
+        // to report, and indexing one takes the whole runner down with it —
+        // which loses every test after this one as well as this one's reason.
         let placed = model.placed(dayOffset: 0)
         #expect(placed.count == 1)
-        #expect(placed[0].row.title == "Deep work")
-        #expect(placed[0].startMs == hour(model, 9))
+        let first = try #require(placed.first)
+        #expect(first.row.title == "Deep work")
+        #expect(first.startMs == hour(model, 9))
+        await vault.bridge.shutdown()
+    }
+
+    /// **The regression test for a core and a client that disagreed about
+    /// which day it is.**
+    ///
+    /// `Query::DayBlocks` folds the civil day in the *core's* device zone,
+    /// while the grid draws it in the zone the OS gives the app. A core that
+    /// could not name the OS zone fell back to UTC, and the two then covered
+    /// windows offset by hours — so blocks plainly on the grid came back from
+    /// the query as nothing at all.
+    ///
+    /// Both ends of the day are what pins it, at any offset and any time of
+    /// day: whenever the device is not on UTC, one of these two falls on a
+    /// different UTC date to the other, so a UTC window can never hold both.
+    @Test
+    func bothEndsOfTheCivilDayAreOnTheGrid() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+
+        await model.createBlock(
+            fromMs: hour(model, 0), toMs: hour(model, 1), title: "First thing", kind: .zoned
+        )
+        await model.createBlock(
+            fromMs: hour(model, 22), toMs: hour(model, 23), title: "Last thing", kind: .zoned
+        )
+
+        #expect(
+            Set(model.rows.compactMap(\.title)) == ["First thing", "Last thing"],
+            "the day the grid draws must be the day the core queried"
+        )
         await vault.bridge.shutdown()
     }
 
