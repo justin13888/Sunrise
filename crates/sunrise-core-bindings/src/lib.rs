@@ -59,6 +59,7 @@ pub mod client;
 pub mod command;
 pub mod dto;
 pub mod ical;
+pub mod notes;
 pub mod pairing;
 pub mod query;
 pub mod types;
@@ -70,6 +71,11 @@ pub use client::{
 pub use command::CoreCommand;
 pub use dto::{CapturePreview, CommandOutcome, TaskItem};
 pub use ical::{IcalImportReport, IcalImportedBlock, IcalNotice};
+pub use notes::{
+    decode_note_body, encode_note_body, note_body_limits, note_body_markdown, NoteBlock,
+    NoteBodyLimits, NoteChecklistItem, NoteDocument, NoteFidelity, NoteHeadingLevel, NoteInline,
+    NoteListItem, NoteMark,
+};
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use query::{CoreQuery, CoreQueryResult};
 pub use vocab::RelativeDay;
