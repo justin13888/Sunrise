@@ -123,8 +123,10 @@ struct CommandPaletteView: View {
 /// `?`: what the keyboard can do from here.
 ///
 /// It carries the vim-mode switch as well as the list. The spec makes vim mode
-/// a Settings toggle, and it will end up there too — but the sheet that answers
-/// "what are the keys" is where somebody asking that question already is, and
+/// a Settings toggle and Settings has one, bound to this same
+/// `KeyboardPreferences` — one setting, two doors. This is the second door
+/// because the sheet that answers "what are the keys" is where somebody asking
+/// that question already is, and
 /// `docs/10-cross-cutting/accessibility.md` requires the setting to be
 /// reachable rather than merely to exist.
 struct CheatSheetView: View {
