@@ -29,17 +29,23 @@ final class ReminderScheduler {
 
     private(set) var errorMessage: String?
 
-    /// How often the schedule is re-derived on its own.
+    /// How often the *authorization status* is re-read.
     ///
-    /// **Not the change feed, and that is deliberate.** `CoreBridge.changes()`
-    /// keeps exactly one subscription and cancels the previous one, so a
-    /// scheduler that followed it — for as long as the app is open, not just
-    /// while a screen is visible — would permanently steal the feed from
-    /// whatever list the user was looking at. Trading a live window for a
-    /// fresher notification schedule is the wrong way round: the OS is holding
-    /// a *day* of reminders, so five minutes of staleness costs nothing, and
-    /// the app's own edits reconcile immediately anyway.
-    static let pollInterval: Duration = .seconds(300)
+    /// The only thing left on a timer, because it is the only thing the change
+    /// feed cannot say: nothing tells an app that its notification permission
+    /// was revoked in System Settings, so that one fact still has to be asked
+    /// for. The schedule itself now follows changes — see ``follow(debounce:)``.
+    static let authorizationRefreshInterval: Duration = .seconds(300)
+
+    /// How long a change batch waits before it costs a reconcile.
+    ///
+    /// The feed is already coalesced on 50 ms; this adds a little on top
+    /// because a reconcile is a vault query plus a round trip to
+    /// `UNUserNotificationCenter`, and a user completing a run of tasks would
+    /// otherwise buy one of each per 50 ms. Half a second of latency against a
+    /// schedule the OS holds for four hours is not a trade worth thinking
+    /// about twice.
+    static let changeDebounce: Duration = .milliseconds(500)
 
     private let bridge: CoreBridge
     private let center: any NotificationCenterClient
@@ -138,14 +144,49 @@ final class ReminderScheduler {
         lastPlan = plan
     }
 
-    /// Re-derive the schedule every ``pollInterval``, for as long as the app
-    /// is open.
+    /// Reconcile on every change batch, for as long as the app is open.
     ///
-    /// Also the only thing that notices a permission revoked in System
-    /// Settings while Sunrise was running — hence the status re-read, which is
-    /// what makes ``reconcile()`` withdraw the schedule rather than keep
-    /// pushing at a service that has stopped listening.
-    func poll(every interval: Duration = ReminderScheduler.pollInterval) async {
+    /// This used to be a five-minute poll, and not by choice: `changes()` kept
+    /// a single subscription and cancelled the previous one, so a scheduler
+    /// that followed the feed for the life of the app would have permanently
+    /// stolen it from whatever list the user was looking at. Now that the
+    /// bridge fans out, following is simply correct — a reminder created on
+    /// another device reaches this Mac's notification centre about half a
+    /// second after the op lands, rather than up to five minutes later.
+    ///
+    /// **A lagged batch reconciles exactly like a complete one.** The schedule
+    /// is derived from a full `Query::ReminderIntents` read either way, so
+    /// there is nothing to patch — and the burst that causes a lag is a sync
+    /// catch-up, which is precisely when the reminders are new.
+    ///
+    /// The authorization watchdog runs alongside rather than inside the loop:
+    /// a permission revoked in System Settings produces no change event, and a
+    /// vault that is quiet all afternoon would otherwise never notice.
+    func follow(debounce: Duration = ReminderScheduler.changeDebounce) async {
+        let watchdog = _Concurrency.Task { [weak self] in
+            await self?.watchAuthorization()
+        }
+        defer { watchdog.cancel() }
+
+        for await batch in await bridge.changes() {
+            guard !batch.isClosed else { return }
+            try? await _Concurrency.Task.sleep(for: debounce)
+            await reconcile()
+        }
+    }
+
+    /// The name ``RootView`` still calls. Prefer ``follow(debounce:)``.
+    func poll() async { await follow() }
+
+    /// Re-read the authorization status every
+    /// ``authorizationRefreshInterval``, and reconcile on what it says.
+    ///
+    /// This is what makes ``reconcile()`` withdraw the schedule after the user
+    /// revokes permission, rather than keep pushing at a service that has
+    /// stopped listening.
+    func watchAuthorization(
+        every interval: Duration = ReminderScheduler.authorizationRefreshInterval
+    ) async {
         while !_Concurrency.Task.isCancelled {
             try? await _Concurrency.Task.sleep(for: interval)
             guard !_Concurrency.Task.isCancelled else { return }

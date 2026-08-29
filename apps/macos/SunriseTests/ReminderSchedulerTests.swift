@@ -398,10 +398,60 @@ struct ReminderSchedulerTests {
         await vault.bridge.shutdown()
     }
 
-    /// The poll interval, asserted rather than assumed: one that drifted to an
-    /// hour would still pass every other test here.
+    /// **The workaround this replaced.**
+    ///
+    /// The scheduler used to re-derive the schedule on a five-minute timer,
+    /// because `CoreBridge.changes()` allowed exactly one subscriber and a
+    /// scheduler that followed it would have stolen the feed from whatever
+    /// screen the user was looking at. A reminder created on another device
+    /// therefore took up to five minutes to reach this Mac. The bridge fans
+    /// out now, so the scheduler follows — and the write below arrives without
+    /// anything asking for it.
     @Test
-    func theSchedulerPollsRatherThanStealingTheChangeFeed() {
-        #expect(ReminderScheduler.pollInterval == .seconds(300))
+    func aWriteFromAnywhereReachesTheScheduleWithoutAPoll() async throws {
+        let vault = try await TestVault()
+        let name = "sunrise-tests-\(UUID().uuidString)"
+        defer { discard(name) }
+        let center = FakeNotificationCenter()
+        let scheduler = ReminderScheduler(
+            bridge: vault.bridge,
+            preferences: NotificationPreferences(defaults: scratchDefaults(name)),
+            center: center
+        ) { _ in }
+
+        await scheduler.start()
+        #expect(scheduler.scheduled.isEmpty, "nothing is scheduled yet")
+
+        let following = Task { await scheduler.follow(debounce: .milliseconds(10)) }
+        defer { following.cancel() }
+        // `follow` has to reach `changes()` before the write, or there is no
+        // notification to receive. Two actor hops; this is generous.
+        try? await Task.sleep(for: .milliseconds(100))
+
+        // The write a sync would have delivered — made behind the scheduler's
+        // back, exactly as another device's op arrives.
+        let now = await vault.bridge.nowMs()
+        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await list.create(scheduledTask("Collect the parcel", at: Int64(now) + 600_000))
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while scheduler.scheduled.isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(
+            scheduler.scheduled.first?.title == "Collect the parcel",
+            "the scheduler is not following the change feed"
+        )
+        await vault.bridge.shutdown()
+    }
+
+    /// The one timer left, asserted rather than assumed. It covers the
+    /// authorization status and nothing else: that is the single fact the
+    /// change feed cannot report, because revoking permission in System
+    /// Settings is not a vault write.
+    @Test
+    func onlyTheAuthorizationStatusIsStillOnATimer() {
+        #expect(ReminderScheduler.authorizationRefreshInterval == .seconds(300))
+        #expect(ReminderScheduler.changeDebounce == .milliseconds(500))
     }
 }
