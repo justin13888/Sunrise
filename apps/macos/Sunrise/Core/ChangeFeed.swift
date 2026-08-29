@@ -123,6 +123,85 @@ final class ChangeFeed: ChangeListener {
     }
 }
 
+/// Hands one upstream change feed to every screen that asked for it.
+///
+/// The core's `subscribe_changes` is perfectly happy to be called more than
+/// once — each call takes its own `tokio::sync::broadcast` receiver — but the
+/// bridge subscribes *once* and fans out here instead, for two reasons. A
+/// second FFI subscription is a second worker thread and a second receiver
+/// competing for the same 256 slots, so a slow screen would start costing the
+/// others their lag budget. And more importantly, fan-out in Swift is where the
+/// interesting behaviour can be tested without a vault: that a cancel is local
+/// to one consumer, and that a lag reaches **all** of them.
+///
+/// Each consumer gets its own unbounded stream. Dropping under load here would
+/// re-create, in Swift, exactly the loss `onLagged` exists to report; the
+/// coalescing window downstream is what keeps a burst cheap.
+actor ChangeBroadcast {
+    private var consumers: [Int: AsyncStream<CoreChange>.Continuation] = [:]
+    private var nextToken = 0
+    /// Sticky. A vault that closed has not re-opened, and a screen that
+    /// subscribes afterwards must be told rather than left waiting.
+    private var hasClosed = false
+
+    /// How many consumers are live. The bug this type exists for was invisible
+    /// precisely because nothing counted them.
+    var consumerCount: Int { consumers.count }
+
+    /// A stream of everything published from now on, with a lifetime of its
+    /// own: ending it detaches this consumer and disturbs no other.
+    func subscribe() -> AsyncStream<CoreChange> {
+        guard !hasClosed else {
+            return AsyncStream { continuation in
+                continuation.yield(.closed)
+                continuation.finish()
+            }
+        }
+        nextToken += 1
+        let token = nextToken
+        let (stream, continuation) = AsyncStream<CoreChange>.makeStream(
+            bufferingPolicy: .unbounded
+        )
+        // Fires when the consumer stops iterating, when its task is cancelled,
+        // or when its iterator is released — every way a screen can go away.
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            Task { await self.detach(token) }
+        }
+        consumers[token] = continuation
+        return stream
+    }
+
+    /// Hand one notification to **every** live consumer.
+    ///
+    /// A lag is not routed differently from a change, and that is the point:
+    /// `.lagged` means "re-run your queries", so a consumer that missed it
+    /// would keep showing pre-burst rows while its neighbour repainted.
+    func publish(_ change: CoreChange) {
+        for continuation in consumers.values {
+            continuation.yield(change)
+        }
+        if case .closed = change { closeAll() }
+    }
+
+    /// The upstream feed ended. End every consumer with it.
+    func finish() { closeAll() }
+
+    private func detach(_ token: Int) {
+        consumers.removeValue(forKey: token)
+    }
+
+    private func closeAll() {
+        hasClosed = true
+        let live = consumers.values
+        // Cleared first: `finish()` runs each continuation's termination
+        // handler, and a detach arriving into a half-emptied table would be
+        // removing tokens that were already gone.
+        consumers.removeAll()
+        for continuation in live { continuation.finish() }
+    }
+}
+
 /// Holds the accumulator and the one fact the async side needs: whether a
 /// flush is already scheduled.
 private actor Coalescer {

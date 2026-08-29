@@ -5,9 +5,10 @@ import Foundation
 /// An actor, so that the handle, its live change subscription and its sync
 /// state have a single owner. The generated `SunriseCore` is itself
 /// thread-safe — `@unchecked Sendable`, backed by an `Arc` — so this is not
-/// about data races on the handle. It is about the things *around* it: a
-/// second `subscribeChanges` would silently double every repaint, and a
-/// `shutdown` racing an in-flight `submit` would surface as a `rustPanic`.
+/// about data races on the handle. It is about the things *around* it: the one
+/// FFI change subscription has to be opened exactly once however many screens
+/// ask for a feed, and a `shutdown` racing an in-flight `submit` would surface
+/// as a `rustPanic`.
 ///
 /// Every method here is a pass-through. The bridge deliberately owns no
 /// vocabulary: what a task row says, when something is overdue, how a duration
@@ -16,7 +17,13 @@ import Foundation
 /// design exists to avoid.
 actor CoreBridge {
     private let core: SunriseCore
+    /// The one FFI subscription, opened lazily by ``startListening()``.
     private var subscription: Subscription?
+    /// Pumps that subscription into ``broadcast``.
+    private var upstream: Task<Void, Never>?
+    /// Where the one feed becomes as many feeds as there are screens.
+    private let broadcast = ChangeBroadcast()
+    private var isShutDown = false
 
     /// Open — or create — the vault at `directory`, keyed by a 32-byte root.
     ///
@@ -151,26 +158,63 @@ actor CoreBridge {
 
     // MARK: - Changes
 
-    /// A stream of repaints.
+    /// A stream of repaints, one per caller.
     ///
-    /// One subscription per bridge: calling this twice cancels the first, so a
-    /// view that re-subscribes on appear cannot leave a doubled feed behind.
+    /// Every screen calls this and every screen gets its own stream with its
+    /// own lifetime: ending one — a view disappearing, a `.task` cancelled —
+    /// leaves the others untouched. There is still exactly **one** FFI
+    /// subscription underneath, started on the first call and fanned out by
+    /// ``ChangeBroadcast``.
+    ///
+    /// It did not used to be that way, and the cost was not subtle. This
+    /// method cancelled the previous subscription, so the last screen to
+    /// appear owned the feed and every other one silently stopped repainting —
+    /// on sync, on another device's writes, and on writes from elsewhere in
+    /// this app. It also cost the notification scheduler its ability to follow
+    /// changes at all; see ``ReminderScheduler/follow(debounce:)``.
     ///
     /// Consumers **must** honour `ChangeBatch.isComplete`. When it is `false`
     /// the feed lost notifications and the id list is not the whole story —
-    /// re-run every query on screen rather than patching the rows named.
-    func changes(window: Duration = .milliseconds(50)) -> AsyncStream<ChangeBatch> {
-        subscription?.cancel()
-        let (raw, listener) = ChangeFeed.make()
-        subscription = core.subscribeChanges(listener: listener)
-        return raw.coalesced(window: window)
+    /// re-run every query on screen rather than patching the rows named. Every
+    /// live consumer is told about a lag, not just the one that was subscribed
+    /// first.
+    func changes(window: Duration = .milliseconds(50)) async -> AsyncStream<ChangeBatch> {
+        startListening()
+        return await broadcast.subscribe().coalesced(window: window)
     }
 
-    /// Stop the sync driver, end the change stream and release the vault lock.
-    /// Idempotent.
+    /// Open the one FFI subscription, on the first screen that asks for it.
+    ///
+    /// Kept for the life of the bridge rather than reference-counted down to
+    /// zero: tearing it down when the last screen disappears would leave a
+    /// window — between the last detach and the next attach — in which changes
+    /// arrive with nobody subscribed and are simply lost, which is the same
+    /// class of bug in a smaller costume.
+    private func startListening() {
+        guard subscription == nil, !isShutDown else { return }
+        let (raw, listener) = ChangeFeed.make()
+        subscription = core.subscribeChanges(listener: listener)
+        let broadcast = self.broadcast
+        upstream = Task {
+            for await change in raw {
+                await broadcast.publish(change)
+            }
+            // The listener finished without an `onClosed` — a cancelled
+            // subscription, or a torn-down vault. Consumers still have to be
+            // released rather than left awaiting a stream nothing will feed.
+            await broadcast.finish()
+        }
+    }
+
+    /// Stop the sync driver, end every change stream and release the vault
+    /// lock. Idempotent.
     func shutdown() async {
+        isShutDown = true
         subscription?.cancel()
         subscription = nil
+        upstream?.cancel()
+        upstream = nil
+        await broadcast.finish()
         await core.shutdown()
     }
 }

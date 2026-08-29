@@ -128,3 +128,123 @@ struct ChangeCoalescingTests {
         #expect(CoreChange(.forgotten(entity: "tsk_a")) == .entity("tsk_a"))
     }
 }
+
+/// Detaching a consumer costs an actor hop, so there is no synchronous moment
+/// to assert at. Poll rather than sleep a guessed amount.
+private func waitUntil(
+    timeout: Duration = .seconds(2),
+    _ condition: @Sendable () async -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}
+
+/// Drain a finished stream.
+private func drain(_ stream: AsyncStream<CoreChange>) async -> [CoreChange] {
+    var seen: [CoreChange] = []
+    for await change in stream { seen.append(change) }
+    return seen
+}
+
+/// The feed has one producer and as many consumers as there are screens.
+///
+/// It did not always: the bridge kept a single subscription and cancelled the
+/// previous one, so the last screen to appear owned the feed and every other
+/// one silently stopped repainting. These are the tests that fail against that.
+struct ChangeBroadcastTests {
+    @Test
+    func everyConsumerSeesEveryChange() async {
+        let broadcast = ChangeBroadcast()
+        let first = await broadcast.subscribe()
+        let second = await broadcast.subscribe()
+        let third = await broadcast.subscribe()
+
+        await broadcast.publish(.entity("tsk_a"))
+        await broadcast.publish(.entity("tsk_b"))
+        await broadcast.finish()
+
+        let expected: [CoreChange] = [.entity("tsk_a"), .entity("tsk_b")]
+        #expect(await drain(first) == expected)
+        #expect(await drain(second) == expected, "the second screen went dead")
+        #expect(await drain(third) == expected, "the third screen went dead")
+    }
+
+    /// The exact failure the old bridge had, at the level that can be made
+    /// deterministic: one consumer ending must not cost another its feed.
+    @Test
+    func endingOneConsumerLeavesTheOthersLive() async {
+        let broadcast = ChangeBroadcast()
+        let leaving = await broadcast.subscribe()
+        let staying = await broadcast.subscribe()
+
+        // A screen that appears and then goes away. Cancellation is how it
+        // actually happens: SwiftUI cancels the `.task` a view started, which
+        // ends the `for await` and terminates that consumer's stream.
+        let departed = Task {
+            for await _ in leaving {}
+        }
+        await broadcast.publish(.entity("tsk_a"))
+        departed.cancel()
+        await departed.value
+        #expect(
+            await waitUntil { await broadcast.consumerCount == 1 },
+            "a departed consumer was never detached"
+        )
+
+        await broadcast.publish(.entity("tsk_b"))
+        await broadcast.finish()
+        #expect(await drain(staying) == [.entity("tsk_a"), .entity("tsk_b")])
+    }
+
+    /// A lag means "re-run every query you are showing". A consumer that is
+    /// not told keeps rendering pre-burst rows while its neighbour repaints,
+    /// which is the worst of both: stale *and* inconsistent.
+    @Test
+    func aLagReachesEveryLiveConsumerNotJustTheFirst() async {
+        let broadcast = ChangeBroadcast()
+        let window = Duration.milliseconds(10)
+        let first = await broadcast.subscribe().coalesced(window: window)
+        let second = await broadcast.subscribe().coalesced(window: window)
+
+        await broadcast.publish(.entity("tsk_a"))
+        await broadcast.publish(.lagged(skipped: 4743))
+        await broadcast.finish()
+
+        var firstBatches: [ChangeBatch] = []
+        for await batch in first { firstBatches.append(batch) }
+        var secondBatches: [ChangeBatch] = []
+        for await batch in second { secondBatches.append(batch) }
+
+        #expect(firstBatches.contains { !$0.isComplete })
+        #expect(
+            secondBatches.contains { !$0.isComplete },
+            "the second consumer was never told it had lost notifications"
+        )
+    }
+
+    @Test
+    func aClosedVaultEndsEveryConsumer() async {
+        let broadcast = ChangeBroadcast()
+        let first = await broadcast.subscribe()
+        let second = await broadcast.subscribe()
+
+        await broadcast.publish(.closed)
+
+        #expect(await drain(first) == [.closed])
+        #expect(await drain(second) == [.closed])
+        #expect(await broadcast.consumerCount == 0)
+    }
+
+    /// A screen that appears after the vault closed is told so, rather than
+    /// left awaiting a stream nothing will ever feed.
+    @Test
+    func subscribingAfterCloseIsAnsweredRatherThanIgnored() async {
+        let broadcast = ChangeBroadcast()
+        await broadcast.finish()
+        #expect(await drain(broadcast.subscribe()) == [.closed])
+    }
+}
