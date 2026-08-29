@@ -19,8 +19,8 @@ and one entry in the justfile's `ffi_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 16k lines of Swift under `apps/macos/Sunrise/`, covered by 409 Swift
-Testing cases in 63 suites, built and linted `--strict` in CI on `macos-26`.
+Roughly 18k lines of Swift under `apps/macos/Sunrise/`, covered by 471 Swift
+Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
 
@@ -32,14 +32,16 @@ Evening, plus a row per Stream and per Context.
 |---|---|
 | Task list | Today / Inbox / per-Stream / per-Context / search results, with a capture bar |
 | Task editor | Details, a rich-text **Notes** pane over the Task `body`, Attachments, and an Activity timeline |
-| Calendar | Day and week Block grids; drag on empty grid to create, drop a task onto it to schedule |
+| Calendar | Day and week Block grids; drag on empty grid to create, drop a task onto it to schedule, drag a block to move it or its bottom edge to resize |
 | Focus | The planner's ranked picks, session start/end, interruption logging, unblock cascade |
 | Routines | Recurrence edited in plain English |
-| Review | Weekly, daily, trends and history, with CSV/JSON export |
+| Review | Weekly, daily, trends and history, with CSV/JSON export; the weekly and daily halves also print |
 | Morning / Evening | The two daily briefs, also saveable as views |
 | Settings | Vault switcher, relay URL, notification prefs, hotkey status, the vim toggle |
 | Pairing | A six-leg copy/paste handshake with SAS confirmation |
 | Menu bar | Quick capture, today's counts, sync status |
+| File menu | Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week, over the seam's iCal pair; Print… (⌘P) and Export as PDF… |
+| Import report | A sheet over the window listing what an `.ics` created and updated, and every notice **grouped by code** — an importer whose losses nobody sees is the failure the report exists to prevent |
 
 **Notes fidelity.** The editor works on structured blocks decoded at the seam,
 never on raw CBOR. The domain codec reports a `Fidelity` computed by re-encoding
@@ -49,10 +51,13 @@ is rendered **read-only** rather than rewritten. Under entity-level LWW
 older client from silently flattening a body it does not fully understand.
 
 **Not built here:** the free-standing `Note` entity, stream sharing, and Google
-Calendar, all three per [ADR-0020](../11-adr/0020-v1-must-demotions.md); and
-**iCal import/export, which is a MUST and is not met on this client** — the
-seam has `import_ical` / `export_ical` and the CLI calls them, but no Swift code
-does. See the status audit in
+Calendar, all three per [ADR-0020](../11-adr/0020-v1-must-demotions.md).
+
+That list used to carry a fourth entry — **iCal import/export**, the one v1
+MUST this client did not meet — and it no longer does: File → Import Calendar…
+(⌘⇧I) and Export Calendar ▸ Today | This Week now call the seam's
+`import_ical` / `export_ical` through `IcalModel`. **Every one of the 23 macOS
+MUSTs is met.** See the status audit in
 [`parity-matrix.md`](./parity-matrix.md#v1-status-audit).
 
 ## Architecture
@@ -163,12 +168,24 @@ document's intent, not yet implemented).
   across every surface. An intent **adopts the app's open vault** when there is
   one and otherwise opens and closes its own under a **counted lease**, sharing
   one in-flight open so two concurrent intents cannot race the vault lock.
-- **built — Drag and drop**, at three sites: a task row onto the calendar grid
-  (which creates a Block bound to it), and files onto a task's Attachments pane
-  (file importer or drop). There is **no** list reordering, no dropping a task
-  onto a sidebar stream, and no dragging an existing block to move or resize it
-  — that is done from the Adjust sheet. An earlier revision of this file
-  promised "tasks between streams", which was never built.
+- **built — Drag and drop**, at every site
+  [`interaction-patterns.md`](./interaction-patterns.md#drag-and-drop-matrix)
+  names but one. A task row is `.draggable` and reaches four destinations: the
+  calendar grid (creating a Block bound to it), a sidebar Stream (the same
+  command the `M` sheet sends), a sidebar Context (adding rather than replacing,
+  since a task has one Stream and any number of Contexts), and another task row
+  (reordering). An existing block drags to move and its bottom edge to resize,
+  both snapping to the grid's chosen step; the Adjust sheet is still there for
+  exact times. The sidebar's Streams reorder by `.onMove`, which writes
+  `Stream.sort_order` through the core and therefore **syncs** — task order does
+  not, because a Task has no ordering facet to write. Files drop onto a task's
+  Attachments pane. Today and Search decline a reorder drop rather than
+  accepting one that would snap back, because the core ranks those two lists.
+  The one gesture not built is **Calendar block → Task**, and it is a layout
+  consequence: this is a sidebar plus a *single* detail pane, so a grid and a
+  task list are never on screen together. `TaskListModel.bind(_:to:)` exists and
+  is tested, so the write is ready if a future layout makes the gesture
+  expressible.
 - **built — `sunrise://` URL scheme**, registered in `Info.plist` and handled by
   `onOpenURL`, for notification deep links
   ([`interaction-patterns.md`](./interaction-patterns.md)). When no main window
@@ -183,10 +200,20 @@ document's intent, not yet implemented).
   not task titles. The two are different features and only the second exists.
 - **specified — Continuity Camera** for attaching a scan from an iPhone. **Not
   implemented** — attachments come from the file importer or a drop.
-- **specified — Print / PDF export.** **Not implemented**; there is no
-  `NSPrintOperation`, no `ImageRenderer` and no ⌘P. The only export is the
-  Review screen's CSV/JSON, which is the same export the CLI writes. This is a
-  parity-matrix **SHOULD**, so it may slip to v1.x.
+- **built — Print / PDF export.** ⌘P and File → Export as PDF…, a
+  parity-matrix **SHOULD** that no longer has to slip to v1.x. The screen is
+  turned into a `PrintDocument` — a title, a stamp and a list of sections of
+  rows — which is a plain value a test can assert against, and only then handed
+  to `ImageRenderer` and paginated into a `PDFDocument`. Printing goes through
+  `PDFDocument.printOperation`; the PDF export writes the same pages to a save
+  panel. Splitting it there is deliberate: `ImageRenderer` and
+  `NSPrintOperation` cannot be exercised in a unit test, and everything that
+  decides *what appears on the page* lives on the testable side of that line.
+  Covered: task lists, search results, the calendar day and week grids, and the
+  weekly and daily reviews. **Not** covered, by decision: Review → Trends and
+  Review → History, which are a chart and a list of links rather than rows; both
+  render a title-and-date page and both already carry CSV/JSON export beside
+  them.
 
 ### Sandboxing
 

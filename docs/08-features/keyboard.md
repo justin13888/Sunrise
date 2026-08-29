@@ -13,9 +13,10 @@ Defaults follow platform conventions.
 > **There is no TUI column.** This table carried one until
 > [ADR-0019](../11-adr/0019-swiftui-macos-client.md) removed the terminal
 > client. The `sunrise` CLI that replaced it is **not** a keyboard-driven
-> client — it is a set of one-shot subcommands (`capture`, `today`, `inbox`,
-> `next`, `focus`, `done`, …), so it has no keymap to specify. The Win/Linux
-> and Web columns are unbuilt targets: macOS is the only shipping GUI client.
+> client — it is a set of twenty-three one-shot subcommands (`capture`, `edit`,
+> `defer`, `done`, `drop`, `today`, `inbox`, `next`, `focus`, `search`, …), so
+> it has no keymap to specify. The Win/Linux and Web columns are unbuilt
+> targets: macOS is the only shipping GUI client.
 
 > **Reading the macOS column.** Every binding below is **implemented and
 > reachable** in `apps/macos`, transcribed as data in
@@ -35,6 +36,8 @@ Defaults follow platform conventions.
 | Open command palette | `Cmd+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+P` |
 | Cheat sheet | `?` (in list), `Cmd+/` (menu) | `?` | `?` |
 | New stream | `Cmd+Shift+S` | `Ctrl+Shift+S` | — |
+| Import calendar (.ics) | `Cmd+Shift+I` | — | — |
+| Print the current screen | `Cmd+P` | — | — |
 | Morning summary | `Cmd+Opt+M` | — | — |
 | End-of-day plan | `Cmd+Opt+E` | — | — |
 | Mark done | `X` (when row selected) | same | same |
@@ -50,7 +53,7 @@ Defaults follow platform conventions.
 | Undo | `Cmd+Z` | `Ctrl+Z` | `Ctrl+Z` |
 | Redo | `Cmd+Shift+Z` | `Ctrl+Y` | `Ctrl+Y` |
 
-Two entries need their exact behaviour stated, because the obvious reading is
+Four entries need their exact behaviour stated, because the obvious reading is
 wrong:
 
 - **`Cmd+F` is not a find-in-current-list.** Both `Cmd+F` and `Cmd+K` navigate
@@ -59,6 +62,18 @@ wrong:
 - **`?` cannot be a menu key equivalent on macOS**, so the cheat sheet also
   carries `Cmd+/`, which is what appears in the Help menu. `?` works while the
   list has focus.
+- **`Cmd+P` prints the screen, not the selection.** It renders whatever the
+  detail pane is showing — a task list, search results, the calendar day or
+  week grid, or the weekly or daily review. On Review → Trends or → History it
+  produces a title-and-date page with no rows, by decision; both carry CSV/JSON
+  export instead. File → Export as PDF… is the same document written to a file
+  and carries no chord of its own.
+- **`Cmd+Shift+I` opens a file picker, not an import dialogue.** It is File →
+  Import Calendar…, and it raises the main window first, because the import's
+  *report* — what was created, what was updated, and every notice grouped by
+  code — is a sheet on that window and is the point of the feature. The
+  matching export is a submenu (Today | This Week) with no chord, since a
+  shortcut that silently picks a window would be guessing.
 
 **Remapping is not implemented.** An earlier revision of this file said the
 defaults were "user remappable in Settings". They are not: `Keymap.bindings` is

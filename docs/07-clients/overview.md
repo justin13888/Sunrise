@@ -82,7 +82,7 @@ the same kind of explicit dev affordance as `SUNRISE_TRUST_CERT_FILE` — and ho
 to open a vault created before per-vault keys existed. Such a vault is refused
 with its own typed error rather than opened by guessing the old constant, and
 the error quotes that constant so the data can be read out; the refusal follows
-the precedent of `STORAGE_V = 13` in
+the precedent of the `BASELINE_STORAGE_V = 13` refusal in
 [`../11-adr/0018-storage-baseline-reset.md`](../11-adr/0018-storage-baseline-reset.md).
 
 There is no passphrase, here or on macOS: the root is random, something local
@@ -95,9 +95,15 @@ same parser (`sunrise_domain::capture`).
 
 `edit` is the other half of that grammar: `sunrise_domain::annotate`, applied
 to a Task that already exists, so `#stream @ctx @-ctx !N %energy ~30m ^when
-due:when` reach every field a `TaskPatch` carries, and a trailing `-` clears
-one. It differs from capture in one deliberate way — a bare word is refused
-rather than absorbed, and **one bad token rejects the whole line**. A capture
+due:when` reach the facets a triage pass changes, and a trailing `-` clears one.
+It reaches six of `TaskPatch`'s fifteen fields — priority, energy, estimated
+duration, scheduled, due and contexts — plus the Stream, which travels as
+`Command::PromoteToStream` rather than as a patch field because the move
+re-keys the task's storage. **The title is not among them**, and neither is the
+`body`: a bare word is refused rather than read as a new title, so a task
+captured with a typo is re-titled from the macOS editor or not at all. That
+refusal is the deliberate difference from capture, and it goes one step
+further: **one bad token rejects the whole line**. A capture
 line is a title, so unrecognised text belongs in it; an edit line is not, and a
 script that mistyped one token is better served by a non-zero exit than by
 four of its five changes landing.

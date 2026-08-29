@@ -10,8 +10,11 @@ For one-shot data movement, in addition to the live CalDAV/Google integrations.
 > what ships.** `crates/sunrise-integrations` implements the syntax layer
 > (`ical`), the domain mapping (`ical_map`) and the vault driver
 > (`ical_vault`), reached today by `sunrise ical import` / `sunrise ical export`
-> and by `import_ical` / `export_ical` on the UniFFI seam. The macOS app does
-> not call either yet, which is an open parity gap.
+> and by `import_ical` / `export_ical` on the UniFFI seam. **Both shipping
+> clients call it**: the macOS app through File → Import Calendar… (⌘⇧I) and
+> Export Calendar ▸ Today | This Week, which closed the last open parity gap
+> on that client. The import's notices reach the user there, grouped by code,
+> rather than being counted.
 >
 > Where this document and the build disagree:
 >
@@ -27,7 +30,9 @@ For one-shot data movement, in addition to the live CalDAV/Google integrations.
 >   promises does not exist yet.
 > - **Export is windowed, not scoped by Stream.** `ExportWindow` is `Day` or
 >   `Week`, because `Query::DayBlocks` / `WeekBlocks` are the only Block windows
->   the core has. "Export this Stream as .ics" is not implemented.
+>   the core has — which is why the macOS menu offers exactly Today and This
+>   Week, and the CLI exactly `today` / `day` / `week`. "Export this Stream as
+>   .ics" is not implemented on either.
 > - **An exported file carries `UID`, `SUMMARY`, `DTSTART`, `DTEND` only** —
 >   nothing in the `Block` schema backs the rest, and emitting empty properties
 >   would be inventing content. No `DTSTAMP` is written, which some strict

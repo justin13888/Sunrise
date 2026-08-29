@@ -15,9 +15,9 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
-- **Scriptable**: `sunrise` is a one-shot CLI — capture, triage, review, export and sync from a shell, a cron job, or over SSH. The graphical client is a native SwiftUI macOS app ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)); iOS, Android and Web are deferred.
+- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical client is a native SwiftUI macOS app ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)); iOS, Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
-- **Calendar interchange**: import and export `.ics` (RFC 5545) from the CLI, so time blocks move in and out of any calendar app. Imports are idempotent — re-importing the same file updates the blocks it already made rather than duplicating them. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
+- **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
 
 ## Architecture
 
@@ -95,10 +95,25 @@ cargo run -q -p sunrise-cli -- search passport
 cargo run -q -p sunrise-cli -- review             # this week, folded
 cargo run -q -p sunrise-cli -- export trends json # to stdout, for jq
 
+# triage what is already captured:
+cargo run -q -p sunrise-cli -- edit <id> '!1 @home ~45m'   # re-facet a task
+cargo run -q -p sunrise-cli -- defer <id> tomorrow         # bumps deferred_count
+cargo run -q -p sunrise-cli -- drop <id>                   # soft delete
+cargo run -q -p sunrise-cli -- stream errands              # the tasks in one stream
+cargo run -q -p sunrise-cli -- context home                # …and in one context
+cargo run -q -p sunrise-cli -- streams move errands last   # syncs; writes sort_order
+cargo run -q -p sunrise-cli -- vaults                      # accounts on this machine
+
 # calendar interchange (RFC 5545), both directions:
 cargo run -q -p sunrise-cli -- ical import meetings.ics   # or `-` for stdin
 cargo run -q -p sunrise-cli -- ical export week out.ics   # or omit the path for stdout
 ```
+
+`edit` takes the same token grammar as `capture` applied to a task that already
+exists, with one deliberate difference: a bare word is refused rather than read
+as a new title, and **one bad token rejects the whole line** — a script that
+mistyped one token is better served by a non-zero exit than by four of its five
+changes landing. Re-titling a task is a macOS-only operation for now.
 
 `ical import` is idempotent: a Block's id is derived from `(source, uid)`, so
 re-importing the same file updates the blocks it already made instead of
@@ -120,7 +135,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. Its status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit); one MUST (iCal import/export) is not yet met there. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. Its status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit), where **every MUST in both shipping columns is now met** — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 

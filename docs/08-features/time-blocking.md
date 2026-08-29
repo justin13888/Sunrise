@@ -47,9 +47,12 @@ Calendars are a 10-year product; we use them, we don't compete with them.
 
 ## CLI experience
 
-There is none. Time blocks have a command path in the core but no CLI
-subcommand, so they are reachable only from the macOS client. This section
-described the terminal client's day column, removed by
+There is no *block* subcommand: a Block cannot be created, moved, bound or
+deleted from the CLI, so the grid itself is reachable only from the macOS
+client. The one exception is bulk movement — `sunrise ical import` writes Blocks
+through `Command::ImportBlock`, and `sunrise ical export [today|day|week]`
+reads them back out — which is data interchange rather than time-blocking. This
+section described the terminal client's day column, removed by
 [ADR-0019](../11-adr/0019-swiftui-macos-client.md).
 
 ## Interactions with reminders

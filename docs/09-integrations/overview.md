@@ -9,7 +9,7 @@ External integrations connect Sunrise to systems we *don't* build. Integrations 
 | Integration | Direction | v1 status | Spec |
 |---|---|---|---|
 | Google Calendar | Bidirectional *(target)* | **deferred** — the provider is implemented and tested as **read-only import**, with no consumer, no cursor storage and no UI ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
-| iCalendar (.ics) | Import / export | **live in the CLI and on the seam**, a narrow subset; not yet called by the macOS app | [`icalendar.md`](./icalendar.md) |
+| iCalendar (.ics) | Import / export | **live on both shipping clients**, a narrow subset — `sunrise ical import` / `export`, and the macOS File menu over the seam's `import_ical` / `export_ical` | [`icalendar.md`](./icalendar.md) |
 
 Neither integration implements the `IntegrationProvider` trait this crate
 declares — including the live iCal path, which is driven directly. The trait has
