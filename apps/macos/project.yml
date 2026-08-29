@@ -64,6 +64,18 @@ targets:
       - target: SunriseFFI
       - framework: ../../out/SunriseCore.xcframework
         embed: false
+      # `Sunrise/Intents/` — the App Intents / Shortcuts surface
+      # `docs/07-clients/parity-matrix.md` marks a MUST for macOS.
+      #
+      # Swift would autolink this from `import AppIntents` alone. It is named
+      # anyway because the *other* half of the feature is invisible in the
+      # sources: declaring the framework is what makes Xcode run
+      # `appintentsmetadataprocessor` over this target, and that step is what
+      # writes `Sunrise.app/Contents/Resources/Metadata.appintents`. Without
+      # that bundle the intents compile, link, and are never offered by
+      # Spotlight, Shortcuts or Siri — a surface that exists only in the
+      # binary. `AppIntentsMetadataTests` asserts the bundle is really there.
+      - sdk: AppIntents.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise
