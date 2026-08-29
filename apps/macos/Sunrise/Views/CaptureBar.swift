@@ -8,9 +8,12 @@ import SwiftUI
 /// says out loud when it could not place a token.
 struct CaptureBar: View {
     @Bindable var model: CaptureModel
+    /// The window's focus, so ⌘N can put the keyboard here from a menu item —
+    /// and so `Esc` can give it back to the list. A `@FocusState` of its own
+    /// would be private to this view, which is exactly the thing a shortcut
+    /// needs to reach.
+    var focus: FocusState<PaneFocus?>.Binding
     let commit: (TaskDraftIn) async -> Void
-
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -23,9 +26,16 @@ struct CaptureBar: View {
                     prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
                 )
                 .textFieldStyle(.plain)
-                .focused($isFocused)
+                .focused(focus, equals: .capture)
                 .onSubmit(submit)
                 .accessibilityIdentifier("capture.field")
+                // Escape out of the field and onto the rows, so somebody who
+                // hit ⌘N by mistake is one key from the list again rather than
+                // reaching for the mouse.
+                .onKeyPress(.escape) {
+                    focus.wrappedValue = .rows
+                    return .handled
+                }
                 Button("Add", action: submit)
                     .accessibilityIdentifier("capture.add")
                     .buttonStyle(.borderedProminent)
@@ -52,7 +62,7 @@ struct CaptureBar: View {
         guard let draft = model.takeDraft() else { return }
         Task {
             await commit(draft)
-            isFocused = true
+            focus.wrappedValue = .capture
         }
     }
 

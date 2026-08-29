@@ -6,8 +6,11 @@ import SwiftUI
 /// here completes, defers and edits identically to one found anywhere else.
 struct SearchView: View {
     @Bindable var model: SearchModel
-
-    @FocusState private var isFocused: Bool
+    let selection: ListSelection
+    let sheets: RowSheets
+    let preferences: KeyboardPreferences
+    var escapes = ListEscapes()
+    var focus: FocusState<PaneFocus?>.Binding
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,8 +23,19 @@ struct SearchView: View {
                     prompt: Text("Titles and notes")
                 )
                 .textFieldStyle(.plain)
-                .focused($isFocused)
+                .focused(focus, equals: .search)
                 .accessibilityIdentifier("search.field")
+                // Down out of the field and into the results, which is where
+                // the row keys live. Without it, search is the one list you
+                // cannot reach from the keyboard.
+                .onKeyPress(.downArrow) {
+                    focus.wrappedValue = .rows
+                    return .handled
+                }
+                .onKeyPress(.return) {
+                    focus.wrappedValue = .rows
+                    return .handled
+                }
                 if !model.text.isEmpty {
                     Button("Clear", systemImage: "xmark.circle.fill") { model.clear() }
                         .labelStyle(.iconOnly)
@@ -39,10 +53,17 @@ struct SearchView: View {
 
             resultCount
 
-            TaskRows(model: model.results)
+            TaskRows(
+                model: model.results,
+                selection: selection,
+                sheets: sheets,
+                preferences: preferences,
+                escapes: escapes,
+                focus: focus
+            )
         }
         .navigationTitle("Search")
-        .task { isFocused = true }
+        .task { focus.wrappedValue = .search }
         .task { await model.results.follow() }
     }
 

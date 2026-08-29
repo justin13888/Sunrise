@@ -28,9 +28,24 @@ struct SunriseApp: App {
         }
         .defaultSize(width: 1000, height: 700)
         .commands {
-            CommandGroup(replacing: .newItem) {}
+            // The menu bar is where `docs/08-features/keyboard.md`'s
+            // application-scope bindings live. Not decoration: the
+            // accessibility spec forbids a shortcut with no visible
+            // affordance, and a menu item is the affordance macOS already has
+            // — it works with no window open, it is readable by VoiceOver, and
+            // the system's own Keyboard settings can rebind it.
+            CommandGroup(replacing: .newItem) {
+                NewMenuItems(surfaces: surfaces)
+            }
             CommandGroup(after: .appInfo) {
                 AppMenuItems(surfaces: surfaces)
+            }
+            CommandGroup(after: .toolbar) {
+                GoMenuItems(surfaces: surfaces)
+            }
+            CommandGroup(after: .help) {
+                Divider()
+                CommandMenuItem(surfaces: surfaces, action: .cheatSheet)
             }
         }
 
@@ -77,6 +92,54 @@ private struct AppMenuItems: View {
     }
 }
 
+/// One menu item, bound to whatever the keymap says.
+///
+/// A view rather than a `Button` written out ten times, because every one of
+/// them does the same two things: open a window if there is none, and hand the
+/// action to it. ⌘1 pressed with the app in the background has to work, and
+/// that is the half people forget.
+private struct CommandMenuItem: View {
+    let surfaces: AppSurfaces
+    let action: AppAction
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button(action.title) {
+            openWindow(id: SunriseWindow.main.rawValue)
+            surfaces.request(action)
+        }
+        .keyboardShortcut(for: action)
+    }
+}
+
+/// The File menu's top: capture, and a new stream.
+private struct NewMenuItems: View {
+    let surfaces: AppSurfaces
+
+    var body: some View {
+        CommandMenuItem(surfaces: surfaces, action: .quickCapture)
+        CommandMenuItem(surfaces: surfaces, action: .newStream)
+    }
+}
+
+/// The View menu's additions: the two fixed lists, both searches, and the
+/// palette.
+private struct GoMenuItems: View {
+    let surfaces: AppSurfaces
+
+    var body: some View {
+        Divider()
+        CommandMenuItem(surfaces: surfaces, action: .today)
+        CommandMenuItem(surfaces: surfaces, action: .inbox)
+        Divider()
+        CommandMenuItem(surfaces: surfaces, action: .searchInView)
+        CommandMenuItem(surfaces: surfaces, action: .searchGlobal)
+        Divider()
+        CommandMenuItem(surfaces: surfaces, action: .commandPalette)
+    }
+}
+
 /// Cross-surface state: the menu bar's snapshot, the hotkey, and the quick
 /// capture panel.
 ///
@@ -102,6 +165,14 @@ final class AppSurfaces {
     /// at all, and reaching into one from here would be reaching into a view
     /// that may not be on screen.
     private(set) var pendingDestination: Destination?
+
+    /// What a menu item asked the window to do.
+    ///
+    /// The same shape as ``pendingDestination`` and for the same reason: the
+    /// menu bar exists in scenes that have no list, no palette and no capture
+    /// field, so a menu item cannot reach into one. It leaves the request here
+    /// and the window picks it up.
+    private(set) var pendingCommand: AppAction?
 
     /// Notification settings are per device and never sync, so they live
     /// beside the vault rather than in it — and they are read before the vault
@@ -209,6 +280,19 @@ final class AppSurfaces {
     /// the same value twice is two requests, not one.
     func destinationTaken() {
         pendingDestination = nil
+    }
+
+    /// Ask the window to run a keyboard action.
+    ///
+    /// Cleared by ``commandTaken()`` the moment the window has it, so pressing
+    /// ⌘⇧P twice opens the palette twice — the same value set twice with no
+    /// clearing in between is one change, and one change is one palette.
+    func request(_ action: AppAction) {
+        pendingCommand = action
+    }
+
+    func commandTaken() {
+        pendingCommand = nil
     }
 
     private func perform(_ action: ReminderAction, on entity: EntityRef) {

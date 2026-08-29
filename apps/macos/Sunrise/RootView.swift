@@ -80,6 +80,18 @@ struct VaultView: View {
     @State private var deviceID = ""
     @State private var showingSettings = false
 
+    // The keyboard. One selection and one set of row sheets for the whole
+    // window, shared by Today, a stream, Search and the command palette — so
+    // "Schedule…" means the same thing however it was asked for, and the rows
+    // it acts on are the rows the user can see highlighted.
+    @State private var keys = KeyboardPreferences()
+    @State private var rows = ListSelection()
+    @State private var sheets = RowSheets()
+    @State private var palette = CommandPaletteModel()
+    @State private var showingCheatSheet = false
+    @State private var creatingStream = false
+    @FocusState private var pane: PaneFocus?
+
     init(bridge: CoreBridge, surfaces: AppSurfaces) {
         self.bridge = bridge
         self.surfaces = surfaces
@@ -165,6 +177,46 @@ struct VaultView: View {
                     .padding()
             }
         }
+        .modifier(
+            KeyboardSurfaces(
+                sheets: sheets,
+                palette: palette,
+                preferences: keys,
+                list: activeList,
+                hasList: showsRows,
+                showingCheatSheet: $showingCheatSheet,
+                creatingStream: $creatingStream,
+                perform: perform,
+                createStream: { name, edit in
+                    await browse.createStream(
+                        name: name,
+                        color: edit.color,
+                        cadence: edit.reviewCadence
+                    )
+                }
+            )
+        )
+        // `?` from a view with no rows — Calendar, Focus, the two briefs. The
+        // spec says "in any view", and a cheat sheet that only appeared where
+        // the keys already worked would be the wrong way round.
+        //
+        // Refused while a field has the keyboard. A focused `TextField` should
+        // consume the press before it reaches this far, but "should" is not a
+        // good enough guarantee for a key that would otherwise interrupt
+        // someone mid-sentence.
+        .onKeyPress("?") {
+            guard pane != .capture, pane != .search else { return .ignored }
+            showingCheatSheet = true
+            return .handled
+        }
+        // A menu item or the palette asked for something only the window can
+        // grant. Taken and cleared the same way `pendingDestination` is, so
+        // pressing ⌘⇧P twice opens the palette twice.
+        .onChange(of: surfaces.pendingCommand) { _, command in
+            guard let command else { return }
+            surfaces.commandTaken()
+            perform(command)
+        }
         .onChange(of: selection) { _, destination in
             guard case let .list(kind)? = destination else { return }
             Task { await list.show(kind) }
@@ -208,9 +260,24 @@ struct VaultView: View {
     private var detail: some View {
         switch selection {
         case .list:
-            TaskListView(model: list, capture: capture)
+            TaskListView(
+                model: list,
+                capture: capture,
+                selection: rows,
+                sheets: sheets,
+                preferences: keys,
+                escapes: escapes,
+                focus: $pane
+            )
         case .search:
-            SearchView(model: search)
+            SearchView(
+                model: search,
+                selection: rows,
+                sheets: sheets,
+                preferences: keys,
+                escapes: escapes,
+                focus: $pane
+            )
         case .calendar:
             CalendarView(model: calendar)
         case .focus:
@@ -229,6 +296,108 @@ struct VaultView: View {
                 systemImage: "sun.max",
                 description: Text("Pick something on the left.")
             )
+        }
+    }
+
+    // MARK: - The keyboard
+
+    /// The list the row keys act on.
+    ///
+    /// Search draws the same rows through the same model, so it is a task list
+    /// as far as the keyboard is concerned — and `X` on a search result has to
+    /// complete it, not do nothing.
+    private var activeList: TaskListModel {
+        if case .search = selection { return search.results }
+        return list
+    }
+
+    /// Whether what is on screen has rows at all. Decides what the cheat sheet
+    /// prints and whether the palette offers the row commands.
+    private var showsRows: Bool {
+        switch selection {
+        case .list, .search: true
+        default: false
+        }
+    }
+
+    private var escapes: ListEscapes {
+        ListEscapes(
+            showFocus: { selection = .focus },
+            openSearch: { perform(.searchInView) },
+            openPalette: { perform(.commandPalette) },
+            openCheatSheet: { showingCheatSheet = true }
+        )
+    }
+
+    /// Run an application-scope action.
+    ///
+    /// The one place a menu item, a `sunrise://` link and the command palette
+    /// all end up, so a command cannot behave differently depending on how it
+    /// was asked for. Row-scoped actions are `ListCommand`'s, not this
+    /// method's — they need a list and a selection, and this has neither.
+    private func perform(_ action: AppAction) {
+        if navigate(action) { return }
+        if present(action) { return }
+        // What is left is a row action arriving from the command palette. It
+        // needs the list and the selection, which `ListCommand` has and this
+        // does not — and running it through the same function the key handler
+        // uses is why `X` and "Mark Done" cannot mean different things.
+        _ = ListCommand.perform(
+            action,
+            list: activeList,
+            selection: rows,
+            sheets: sheets,
+            escapes: escapes
+        )
+    }
+
+    /// The commands that change what the window is showing.
+    private func navigate(_ action: AppAction) -> Bool {
+        switch action {
+        case .today:
+            selection = .list(.todayAll)
+            pane = .rows
+        case .inbox:
+            selection = .list(.inbox)
+            pane = .rows
+        case .searchInView:
+            // This client has one search surface. ⌘F carries the query over —
+            // "keep looking" — and ⌘K starts a fresh one.
+            selection = .search
+            pane = .search
+        case .searchGlobal:
+            search.clear()
+            selection = .search
+            pane = .search
+        default: return false
+        }
+        return true
+    }
+
+    /// The commands that put something *over* the window, plus the two that go
+    /// straight to the undo stack.
+    private func present(_ action: AppAction) -> Bool {
+        switch action {
+        case .quickCaptureGlobal: surfaces.openQuickCapture()
+        case .quickCapture: openCapture()
+        case .commandPalette: palette.present(hasSelection: !rows.isEmpty && showsRows)
+        case .newStream: creatingStream = true
+        case .cheatSheet: showingCheatSheet = true
+        case .undo: Task { await undo.undo() }
+        case .redo: Task { await undo.redo() }
+        default: return false
+        }
+        return true
+    }
+
+    /// ⌘N. In-app capture is the bar at the top of a list; where there is no
+    /// bar — Search, a context list, the Calendar — the panel is the honest
+    /// fallback rather than a shortcut that quietly does nothing.
+    private func openCapture() {
+        if case let .list(kind)? = selection, kind.acceptsCapture {
+            pane = .capture
+        } else {
+            surfaces.openQuickCapture()
         }
     }
 

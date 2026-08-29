@@ -6,6 +6,15 @@ import Foundation
 /// nothing is patched locally on the way. That is slower by one round trip and
 /// it is the reason a completion made on another device and a completion made
 /// here look identical on screen.
+/// One entry of a "move to stream" picker.
+///
+/// A named type rather than the tuple it wants to be, because `ForEach` needs a
+/// key path to the id and Swift has none for a tuple label.
+struct StreamChoice: Identifiable, Hashable, Sendable {
+    let id: EntityRef
+    let name: String
+}
+
 @MainActor
 @Observable
 final class TaskListModel {
@@ -82,6 +91,35 @@ final class TaskListModel {
         TaskFacets(task: task, nowMs: nowMs, timeZone: timeZone, names: names)
     }
 
+    /// The rows in the order they are drawn.
+    ///
+    /// Today is sectioned, so its screen order is the sections' order and not
+    /// `tasks`'s. The keyboard moves down the screen rather than down the query,
+    /// which means the cursor has to walk this and not that.
+    var ordered: [TaskItem] {
+        kind.isToday ? groups.flatMap(\.tasks) : tasks
+    }
+
+    /// Resolve ids the selection is holding back into rows.
+    ///
+    /// Filtered from the list rather than looked up one at a time, so the
+    /// result is in screen order and cannot contain a row that has since left.
+    func rows(for ids: [EntityRef]) -> [TaskItem] {
+        let wanted = Set(ids)
+        return ordered.filter { wanted.contains($0.id) }
+    }
+
+    /// The streams a task can be moved into, by display name.
+    ///
+    /// Sorted here rather than in the picker: two pickers sorting it themselves
+    /// is two places for the order to differ. Localised comparison, so a vault
+    /// with an "Église" stream files it where the reader expects.
+    var streamChoices: [StreamChoice] {
+        names.streams
+            .map { StreamChoice(id: $0.key, name: $0.value) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
     // MARK: - Mutations
 
     func complete(_ task: TaskItem) async {
@@ -111,6 +149,64 @@ final class TaskListModel {
         await run(.updateTask(id: task.id, edit: edit))
     }
 
+    /// Give a task a scheduled time. Distinct from ``defer_(_:byDays:)``:
+    /// deferring bumps the deferral count, because being pushed out four times
+    /// is a fact about a task worth surfacing, and picking a date for the first
+    /// time is not a deferral.
+    func schedule(_ task: TaskItem, at date: Date) async {
+        var edit = TaskEdit()
+        edit.setScheduledAt = .instant(at: Int64(date.timeIntervalSince1970 * 1000))
+        await run(.updateTask(id: task.id, edit: edit))
+    }
+
+    func move(_ task: TaskItem, toStream stream: EntityRef) async {
+        await run(.promoteToStream(id: task.id, stream: stream))
+    }
+
+    /// Start a focus session on a task, from the list rather than from the
+    /// planner. One pomodoro, and the task's own energy facet — the two
+    /// defaults `FocusView` starts with, so `F` on a row and picking that row
+    /// in Focus produce the same session.
+    func startFocus(_ task: TaskItem) async {
+        await run(.startFocus(
+            taskId: task.id,
+            kind: .work,
+            length: .onePomodoro,
+            energy: nil
+        ))
+    }
+
+    // MARK: - The same, over a selection
+
+    /// Run a mutation over several rows.
+    ///
+    /// Sequential, and re-querying only once at the end. Twenty completions
+    /// that each refreshed would be twenty full re-reads of a list that is
+    /// changing under them — and nineteen of the answers would be thrown away.
+    func complete(_ tasks: [TaskItem]) async {
+        await runAll(tasks.map { .completeTask(id: $0.id) })
+    }
+
+    func delete(_ tasks: [TaskItem]) async {
+        await runAll(tasks.map { .deleteTask(id: $0.id) })
+    }
+
+    func defer_(_ tasks: [TaskItem], byDays days: Int) async {
+        let now = await bridge.nowMs()
+        let target = now &+ UInt64(max(1, days)) &* 24 &* 60 &* 60 &* 1000
+        await runAll(tasks.map { .deferTask(id: $0.id, toMs: target) })
+    }
+
+    func schedule(_ tasks: [TaskItem], at date: Date) async {
+        var edit = TaskEdit()
+        edit.setScheduledAt = .instant(at: Int64(date.timeIntervalSince1970 * 1000))
+        await runAll(tasks.map { .updateTask(id: $0.id, edit: edit) })
+    }
+
+    func move(_ tasks: [TaskItem], toStream stream: EntityRef) async {
+        await runAll(tasks.map { .promoteToStream(id: $0.id, stream: stream) })
+    }
+
     /// Commit a parsed capture. The draft comes from `previewCapture`, so what
     /// is written is exactly what the preview showed.
     ///
@@ -127,13 +223,32 @@ final class TaskListModel {
     }
 
     private func run(_ command: CoreCommand) async {
-        do {
-            _ = try await bridge.submit(command)
-            // The change stream will also fire; refreshing here means the row
-            // updates on the click rather than one broadcast hop later.
-            await refresh()
-        } catch {
-            errorMessage = error.localizedDescription
+        await runAll([command])
+    }
+
+    /// Submit every command, then re-read once.
+    ///
+    /// The first failure stops the batch and is reported. Carrying on would
+    /// leave a selection half-applied with nothing on screen to say which half
+    /// — and the core takes each command in its own transaction, so what
+    /// already landed has landed either way.
+    private func runAll(_ commands: [CoreCommand]) async {
+        guard !commands.isEmpty else { return }
+        var failure: String?
+        for command in commands {
+            do {
+                _ = try await bridge.submit(command)
+            } catch {
+                failure = error.localizedDescription
+                break
+            }
         }
+        // The change stream will also fire; refreshing here means the row
+        // updates on the click rather than one broadcast hop later. It runs
+        // after a failure too — the commands before the failing one landed —
+        // and the message is set afterwards, because a successful re-read
+        // clears it.
+        await refresh()
+        if let failure { errorMessage = failure }
     }
 }

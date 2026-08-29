@@ -7,6 +7,14 @@ import SwiftUI
 /// this app and in `sunrise-cli`.
 struct TaskRowView: View {
     let facets: TaskFacets
+    /// Whether the keyboard is standing on this row. Drawn even when the row is
+    /// not part of a multi-selection, because
+    /// `docs/10-cross-cutting/accessibility.md` forbids an invisible focus
+    /// indicator — a cursor you cannot see is a cursor that completes the wrong
+    /// task.
+    var isCursor = false
+    /// Whether `Space` has ticked this row into a multi-selection.
+    var isTicked = false
     let complete: () async -> Void
     let edit: () -> Void
 
@@ -21,6 +29,13 @@ struct TaskRowView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(facets.isDone ? "Completed" : "Complete “\(facets.title)”")
             .disabled(facets.isDone)
+
+            if isTicked {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -45,6 +60,12 @@ struct TaskRowView: View {
             Spacer(minLength: 0)
         }
         .contentShape(.rect)
+        // The enclosing `List` draws the highlight, so the cursor is visible
+        // without a background of our own. What it does *not* do is say so out
+        // loud, and a multi-selection made with `Space` has to reach VoiceOver
+        // as a selection rather than as an unexplained tick.
+        .accessibilityAddTraits(isTicked || isCursor ? [.isSelected] : [])
+        .accessibilityValue(isTicked ? "Selected" : "")
         .onTapGesture(count: 2, perform: edit)
         // Dragged onto the calendar grid, a task becomes a block bound to it.
         // The payload is the id's own text — the same string the CLI accepts —

@@ -4,6 +4,11 @@ import SwiftUI
 struct TaskListView: View {
     let model: TaskListModel
     @Bindable var capture: CaptureModel
+    let selection: ListSelection
+    let sheets: RowSheets
+    let preferences: KeyboardPreferences
+    var escapes = ListEscapes()
+    var focus: FocusState<PaneFocus?>.Binding
 
     var body: some View {
         VStack(spacing: 0) {
@@ -11,9 +16,16 @@ struct TaskListView: View {
             // capture writes to a stream, and there is no annotation for
             // "give this the context I am looking at".
             if model.kind.acceptsCapture {
-                CaptureBar(model: capture) { draft in await model.create(draft) }
+                CaptureBar(model: capture, focus: focus) { draft in await model.create(draft) }
             }
-            TaskRows(model: model)
+            TaskRows(
+                model: model,
+                selection: selection,
+                sheets: sheets,
+                preferences: preferences,
+                escapes: escapes,
+                focus: focus
+            )
         }
         .navigationTitle(model.kind.title)
         .task(id: model.kind) { await model.refresh() }
@@ -28,9 +40,24 @@ struct TaskListView: View {
 /// for "Defer a week" to mean different things.
 struct TaskRows: View {
     let model: TaskListModel
+    let selection: ListSelection
+    let sheets: RowSheets
+    let preferences: KeyboardPreferences
+    var escapes = ListEscapes()
+    var focus: FocusState<PaneFocus?>.Binding
 
-    @State private var editing: TaskItem?
+    @State private var vim = VimNormalMode()
     @State private var foldedSections: Set<Int> = [TodaySection.overdue.rank]
+
+    /// The rows the keyboard can reach: what is drawn, folded sections
+    /// excluded. A cursor inside a collapsed section would be a cursor nobody
+    /// can see, and `X` would then complete a task that is not on screen.
+    private var visible: [TaskItem] {
+        guard model.kind.isToday else { return model.tasks }
+        return model.groups
+            .filter { !foldedSections.contains($0.section.rank) }
+            .flatMap(\.tasks)
+    }
 
     var body: some View {
         Group {
@@ -49,26 +76,58 @@ struct TaskRows: View {
                     description: Text(model.kind.emptyMessage)
                 )
             } else {
-                List {
-                    if model.kind.isToday {
-                        ForEach(model.groups) { group in
-                            section(group)
-                        }
-                    } else {
-                        ForEach(model.tasks, id: \.id) { row($0) }
-                    }
-                }
-                .listStyle(.inset)
+                list
             }
         }
-        .sheet(item: $editing) { task in
-            TaskEditorView(
-                task: task,
-                bridge: model.bridge,
-                apply: { await model.apply($0, to: task) },
-                delete: { await model.delete(task) }
+        // The list is a query result, so it can change under the cursor at any
+        // moment — a sync, a completion, a fold. The selection is told every
+        // time, which is the only reason a cursor survives completing the row
+        // it was standing on.
+        .onChange(of: visible.map(\.id), initial: true) { _, ids in
+            selection.reconcile(with: ids)
+            vim.reset()
+        }
+    }
+
+    private var list: some View {
+        List(selection: selectionBinding) {
+            if model.kind.isToday {
+                ForEach(model.groups) { group in
+                    section(group)
+                }
+            } else {
+                ForEach(model.tasks, id: \.id) { row($0) }
+            }
+        }
+        .listStyle(.inset)
+        .focused(focus, equals: .rows)
+        // Every row-scoped binding in `docs/08-features/keyboard.md` arrives
+        // here, and only here: a focused capture field consumes its own
+        // keystrokes before the list ever sees them, which is what lets `d`
+        // mean Defer and still be a letter you can type.
+        .onKeyChord(scope: .list, vim: preferences.vimMode ? vim : nil) { action in
+            ListCommand.perform(
+                action,
+                list: model,
+                selection: selection,
+                sheets: sheets,
+                escapes: escapes
             )
         }
+        .accessibilityLabel(model.kind.title)
+    }
+
+    /// The list's own selection, expressed over the model.
+    ///
+    /// Bound rather than left to SwiftUI so that a click, a shift-click and an
+    /// arrow key all end up in one place. It also means the mouse and the
+    /// keyboard cannot disagree: whatever the list decides, ``ListSelection``
+    /// is told, and every action reads the answer from there.
+    private var selectionBinding: Binding<Set<EntityRef>> {
+        Binding(
+            get: { Set(selection.targets) },
+            set: { selection.adopt($0) }
+        )
     }
 
     @ViewBuilder
@@ -102,27 +161,130 @@ struct TaskRows: View {
     private func row(_ task: TaskItem) -> some View {
         TaskRowView(
             facets: model.facets(for: task),
+            isCursor: selection.cursor == task.id,
+            isTicked: selection.explicit.contains(task.id),
             complete: { await model.complete(task) },
-            edit: { editing = task }
+            edit: { sheets.editing = task }
         )
-        .contextMenu {
-            if task.state == .done || task.state == .cancelled {
-                Button("Reopen") { Task { await model.reopen(task) } }
-            } else {
-                Button("Complete") { Task { await model.complete(task) } }
-            }
-            Button("Edit…") { editing = task }
-            Divider()
-            Button("Defer to tomorrow") { Task { await model.defer_(task, byDays: 1) } }
-            Button("Defer a week") { Task { await model.defer_(task, byDays: 7) } }
-            Divider()
-            Button("Delete", role: .destructive) { Task { await model.delete(task) } }
-        }
+        .tag(task.id)
+        .contextMenu { rowMenu(task) }
         .swipeActions(edge: .trailing) {
             Button("Delete", role: .destructive) { Task { await model.delete(task) } }
             Button("Tomorrow") { Task { await model.defer_(task, byDays: 1) } }
                 .tint(.orange)
         }
+    }
+
+    /// The context menu, which is also the visible affordance every row
+    /// shortcut is required to have — see
+    /// `docs/10-cross-cutting/accessibility.md`. Each item prints its key, so
+    /// the menu teaches the keymap rather than merely duplicating it.
+    @ViewBuilder
+    private func rowMenu(_ task: TaskItem) -> some View {
+        if task.state == .done || task.state == .cancelled {
+            Button("Reopen") { Task { await model.reopen(task) } }
+        } else {
+            Button(labelled("Complete", .markDone)) { Task { await model.complete(task) } }
+        }
+        Button(labelled("Edit…", .openDetail)) { sheets.editing = task }
+        Divider()
+        Button(labelled("Defer to tomorrow", .deferTask)) {
+            Task { await model.defer_(task, byDays: 1) }
+        }
+        Button("Defer a week") { Task { await model.defer_(task, byDays: 7) } }
+        Button(labelled("Schedule…", .schedule)) { sheets.scheduling = TaskBatch([task]) }
+        Button(labelled("Move to stream…", .moveToStream)) { sheets.moving = TaskBatch([task]) }
+        Button(labelled("Start focus session", .focusMode)) {
+            Task {
+                await model.startFocus(task)
+                escapes.showFocus()
+            }
+        }
+        Divider()
+        Button("Delete", role: .destructive) { Task { await model.delete(task) } }
+    }
+
+    /// A menu title with its key beside it.
+    ///
+    /// `contextMenu` items cannot carry a `keyboardShortcut` — the keys here
+    /// are bare letters bound on the list, not menu equivalents — so the label
+    /// is where the binding becomes visible. Read from `Keymap` so it cannot
+    /// claim a key the list does not answer.
+    private func labelled(_ title: String, _ action: AppAction) -> String {
+        let keys = Keymap.shortcutLabel(for: action)
+        return keys.isEmpty ? title : "\(title)   \(keys)"
+    }
+}
+
+/// `S`: give the selection a time.
+struct ScheduleSheet: View {
+    let count: Int
+    let commit: (Date) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var date = Date()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(count == 1 ? "Schedule" : "Schedule \(count) tasks")
+                .font(.headline)
+            DatePicker("When", selection: $date)
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Schedule") {
+                    Task {
+                        await commit(date)
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 380)
+    }
+}
+
+/// `M`: move the selection into a stream.
+struct MoveToStreamSheet: View {
+    let count: Int
+    let streams: [StreamChoice]
+    let commit: (EntityRef) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var chosen: EntityRef = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(count == 1 ? "Move to stream" : "Move \(count) tasks")
+                .font(.headline)
+            Picker("Stream", selection: $chosen) {
+                ForEach(streams) { stream in
+                    Text(stream.name).tag(stream.id)
+                }
+            }
+            .labelsHidden()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Move") {
+                    Task {
+                        await commit(chosen)
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(chosen.isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+        .onAppear { chosen = streams.first?.id ?? "" }
     }
 }
 
