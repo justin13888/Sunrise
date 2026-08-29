@@ -100,13 +100,22 @@ answer would have been to build them.
 
 ## v1 status audit
 
-Measured at commit `55a7562` on branch `v1-rewrite` by tracing each capability
-from a **user-reachable surface** — a view something presents, a menu command, a
+Re-measured on branch `v1-rewrite` by tracing each capability from a
+**user-reachable surface** — a view something presents, a menu command, a
 subcommand, an OS entry point — down to a real seam or core call. A file that
 compiles is not evidence; an unreachable correct implementation counts as unmet,
 which is the whole point of grading this way.
 
 Verdicts: **met** / **partial** (reachable, narrower than the row) / **unmet**.
+
+**Every MUST in both shipping columns is now met.** The previous revision of
+this audit recorded one unmet macOS MUST (iCal import/export), one partial macOS
+MUST (drag-and-drop) and three partial CLI MUSTs (read/write tasks, the Stream
+view, multi-account); all five were closed in code, and each was re-traced from
+a surface rather than taken on report. What remains narrower than the prose
+around it is recorded in the cells below and in
+[What is still narrow](#what-is-still-narrow) — an audit whose every row says
+"met" is worth nothing if the narrowness is not written down beside it.
 
 ### macOS — 23 MUSTs
 
@@ -122,62 +131,91 @@ Verdicts: **met** / **partial** (reachable, narrower than the row) / **unmet**.
 | Attachments — upload | met | `Attach…` file importer **and** a drop target on the pane |
 | Search (FTS) | met | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
-| Keyboard navigation | met | all 20 macOS bindings, palette, cheat sheet — see [keyboard.md](../08-features/keyboard.md) |
-| Drag-and-drop | **partial** | three sites only: task row → calendar grid, files → attachments. No list reorder, no drop onto a sidebar stream, no drag to move or resize an existing block |
+| Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet |
+| Drag-and-drop | met | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built — the window is a sidebar plus one detail pane, so a grid and a task list are never both on screen and the gesture has no two surfaces to connect |
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
 | Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
-| iCal import / export | **unmet** | See the note below. |
+| iCal import / export | met | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
 | OS automation (App Intents) | met | six intents + `AppShortcutsProvider` + `TaskEntity`/`EntityStringQuery`; `IntentVault` counted lease |
 | Mouse | met | standard AppKit/SwiftUI controls, plus double-click-to-open and context menus |
 | First-run pairing | met | `OnboardingView` "Pair with that device", and the same route out of `LockedView` |
 
-**The one unmet macOS MUST is iCal import / export.** Both halves exist and are
-tested on the Rust side of the seam — `SunriseCore::import_ical` and
-`::export_ical` in `crates/sunrise-core-bindings`, with `IcalImportReport` and
-`IcalNotice` DTOs — and `sunrise-cli` consumes them. **`apps/macos` does not:**
-there is no wrapper on `CoreBridge`, no File → Import/Export menu item, and no
-occurrence of the word anywhere in the Swift sources. This is a correct
-implementation with no caller on the client the row applies to, which is the
-same failure mode the ledger's reachability criterion exists to surface. It is
-recorded as unmet rather than demoted — **no ADR demotes it**, and it should be
-closed in code.
+**iCal import / export was the one unmet macOS MUST, and it is now met.** The
+gap was never in the core: `SunriseCore::import_ical` / `::export_ical` and the
+`IcalImportReport` / `IcalNotice` DTOs were correct and tested, and
+`sunrise-cli` already consumed them — what was missing was a caller on the
+client the row applies to. `apps/macos` now has one: `CoreBridge.importIcal` /
+`.exportIcal`, an `IcalModel` holding the report as a value, and the two File
+menu items. The import's notices are **shown to the user, grouped by code**,
+rather than counted — an importer that silently drops a `VTODO` is the failure
+the notice list exists to prevent, and a notice nobody sees is the same failure
+one layer up. Export covers Today and This Week; a Stream-scoped export is
+still not built (see [icalendar.md](../09-integrations/icalendar.md)).
 
-Also unmet, and allowed to be: **Print / PDF export** is macOS **SHOULD**, and
-nothing implements it. There is no `NSPrintOperation`, no `ImageRenderer` and no
-`⌘P`; the only export path is the Review screen's CSV/JSON, and the seam's
-`ExportFormat` has exactly two variants. A SHOULD may slip to v1.x, so this is
-not a v1 blocker — but the row is not met and should not be read as met.
+**Print / PDF export** is macOS **SHOULD**, and it is now **met** as well: ⌘P
+and File → Export as PDF…, rendering through `ImageRenderer` into a paginated
+`PDFDocument` and then either `PDFDocument.printOperation` or a save panel. It
+covers the four surfaces with a paper shape — task lists, search results, the
+calendar day and week grids, and the weekly and daily reviews. It deliberately
+does **not** cover Review → Trends (a chart) or Review → History (links); both
+produce a title-and-date page with no rows, and both already carry the CSV/JSON
+export beside them, which remains the seam's only `ExportFormat` pair.
 
 ### CLI — 9 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
-| Read/write tasks | **partial** | `capture` (`CreateTask`) and `done` (`CompleteTask`) are the only two mutations. No update, defer, delete or promote path; a Task's `body` is unreachable |
-| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one |
-| Today / Inbox / Stream views (list form) | **partial** | `today` and `inbox` exist; there is **no stream view** — `Query::StreamTasks` is never issued. `streams` lists stream rows with open counts, not the tasks in one |
-| Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`. Note there is no way to *end* a session: `Command::EndFocus` has no CLI path |
+| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`). Two fields stay unwritable: a Task's **title** cannot be changed after capture (`TaskEdit` has no title field and a bare word is refused), and its `body` is the CLI's *Notes* row, which is a MAY |
+| Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
+| Today / Inbox / Stream views (list form) | met | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
+| Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`. Note there is still no way to *end* a session: `Command::EndFocus` has no CLI path, so a session opened here is closed from macOS or not at all |
 | Search (FTS) | met | `sunrise search <query>…` |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
-| Multi-account (`SUNRISE_VAULT`) | **partial** | separate vault *directories* work, but every one is unlocked with a hardcoded dev root constant, so they are not separate *accounts*. No passphrase, no per-vault unlock |
+| Multi-account (`SUNRISE_VAULT`) | met | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
 | iCal import / export | met | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
 
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
 `whoami` (OIDC + PKCE, token stored mode-0600 and device-bound), `review`,
-`export` as an *analytics* export, and device trust via
+`export` as an *analytics* export, `vaults`, and device trust via
 `SUNRISE_TRUST_CERT_FILE`, which reaches `Command::TrustDevice` on every
 subcommand. The last is security-relevant and unrowed.
 
-### What the audit did not change
+`SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
+carefully: it supplies a root outright and touches no keystore, which is how two
+vaults are told to be one account until pairing lands, and how a vault created
+before per-vault keys existed is opened. Such a vault is **refused** with a
+typed `PreMultiAccount` error rather than opened by guessing the old constant —
+and the refusal quotes that constant, so the data can still be read out once and
+moved. Refusing and then telling the user exactly how to proceed is the point:
+guessing would have left every such vault readable by anyone holding a copy of
+`sunrise`.
 
-Nothing above demotes a mark. Two rows are narrower in the tree than on paper
-(drag-and-drop on macOS, three CLI rows) and one macOS MUST is outright unmet;
-all are recorded as such rather than rewritten, per the hard rules below.
+### What is still narrow
+
+Nothing above demotes a mark, and nothing above is graded up past what a user
+can reach. What is narrower than the row's prose, recorded rather than smoothed
+over:
+
+- **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
+  or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
+  block → Task gesture, which the shipped layout cannot express. Print covers
+  four surfaces and skips two by decision.
+- **CLI.** A Task cannot be re-titled after capture, and its `body` is
+  unreachable. A focus session can be started but not ended. Streams, Contexts
+  and Routines can be listed and (for Streams) reordered, but none can be
+  created, renamed, archived or deleted. `Query::Today`'s context filter has no
+  flag. The mode-0600 keystore guarantee is `#[cfg(unix)]`; elsewhere the file
+  is written with default permissions.
+
+Every one of these is inside a row graded **met**, because each row asks for a
+capability and each capability is reachable. They are written down so that "met"
+never has to be re-derived from scratch to find out what it covered.
 
 ## Hard rules
 
