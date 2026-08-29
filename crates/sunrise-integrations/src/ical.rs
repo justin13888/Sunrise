@@ -19,6 +19,13 @@
 //! * Line unfolding (RFC 5545 §3.1) and `\\`-escapes (§3.3.11), both
 //!   directions, and CRLF or LF line endings on input.
 //!
+//! `RRULE` is read here and written back out verbatim, so an `.ics` that
+//! round-trips through this module keeps its recurrence rule. It is dropped
+//! one layer up: [`crate::ical_map`] does not model a recurring Block, so it
+//! turns the rule into an [`ICalNotice`] and imports the first occurrence
+//! only. Syntax and domain are separate questions, and this list answers the
+//! first one.
+//!
 //! # What is not read — and is reported rather than dropped
 //!
 //! Everything else produces an [`ICalNotice`]. The caller is expected to show
@@ -29,9 +36,12 @@
 //!
 //! Specifically unmodelled: `VTODO`, `VJOURNAL`, `VFREEBUSY`, `VALARM`,
 //! `VTIMEZONE` (a `TZID` is resolved against the bundled IANA tzdb instead of
-//! against an inline definition), `RRULE`/`RDATE`/`EXDATE`/`RECURRENCE-ID`,
+//! against an inline definition), `RDATE`/`EXDATE`/`RECURRENCE-ID`,
 //! `ATTACH`, `ATTENDEE`, `ORGANIZER`, `CATEGORIES`, `GEO`, `URL`, and any
 //! `X-` property.
+//!
+//! `RRULE` is deliberately absent from that list — it is read (see above), and
+//! the notice a user sees for it comes from [`crate::ical_map`], not from here.
 //!
 //! Seven properties are dropped **silently**, listed in [`BOOKKEEPING`]: they
 //! are iCalendar's own record-keeping, carry no user content, and Sunrise is
