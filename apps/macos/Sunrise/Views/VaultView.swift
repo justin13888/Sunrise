@@ -184,6 +184,11 @@ struct VaultView: View {
             guard case let .list(kind)? = destination else { return }
             Task { await list.show(kind) }
         }
+        // Keep the File menu's two print items in step with what is on screen;
+        // the menu lives in a scene that cannot see `selection`.
+        .modifier(
+            PrintMenuSync(surfaces: surfaces, destination: selection, reviewTab: review.tab)
+        )
         // A deep link, a tapped notification or ⌘⌥M asked for a screen. The
         // window is the only thing that can grant that, so it is the thing
         // that takes the request and clears it.

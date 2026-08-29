@@ -95,31 +95,94 @@ struct PrintDocumentTests {
     @Test
     func theScreensWithNoPaperShapeProduceNoDocument() async throws {
         let vault = try await TestVault()
-        let list = TaskListModel(bridge: vault.bridge)
-        let search = SearchModel(bridge: vault.bridge)
-        let calendar = CalendarModel(bridge: vault.bridge)
-        let review = ReviewModel(bridge: vault.bridge)
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Renew passport")))
+        let models = await PrintModels(bridge: vault.bridge)
 
-        func document(for destination: Destination?) -> PrintDocument? {
-            PrintDocument.forDestination(
-                destination,
-                list: list,
-                search: search,
-                calendar: calendar,
-                review: review
+        #expect(models.document(for: .focus) == nil)
+        #expect(models.document(for: .routines) == nil)
+        #expect(models.document(for: .morning) == nil)
+        #expect(models.document(for: .evening) == nil)
+        #expect(models.document(for: nil) == nil)
+
+        #expect(models.document(for: .list(.inbox))?.title == "Inbox")
+        #expect(models.document(for: .review)?.title == "Weekly Review")
+        // The Calendar has a paper shape; this vault simply has no blocks in
+        // it, which is the empty-document case and not the no-such-thing case.
+        // The difference is exactly what `refusal` exists to state.
+        #expect(PrintDocument.refusal(for: .calendar, reviewTab: .weekly) == nil)
+        #expect(models.document(for: .calendar) == nil)
+
+        await vault.bridge.shutdown()
+    }
+
+    /// Trends and History are the two the audit caught: they used to return a
+    /// document carrying a title and no rows, so ⌘P produced a blank page with
+    /// a heading on it instead of refusing. Both are deliberately out of
+    /// scope — a chart and a list of links, each with a CSV/JSON export beside
+    /// it — so the right answer is the one Focus and Routines already gave.
+    @Test
+    func trendsAndHistoryProduceNoDocumentRatherThanATitleOnlyPage() async throws {
+        let vault = try await TestVault()
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Renew passport")))
+        let models = await PrintModels(bridge: vault.bridge)
+
+        for tab in [ReviewTab.trends, .history] {
+            await models.show(tab)
+            #expect(
+                models.document(for: .review) == nil,
+                "\(tab.title) must produce no document, not an empty one"
             )
+            let reason = try #require(
+                PrintDocument.refusal(for: .review, reviewTab: tab),
+                "\(tab.title) must say why it cannot be printed"
+            )
+            #expect(reason.contains("export"), "the reason names the way out: \(reason)")
         }
 
-        #expect(document(for: .focus) == nil)
-        #expect(document(for: .routines) == nil)
-        #expect(document(for: .morning) == nil)
-        #expect(document(for: .evening) == nil)
-        #expect(document(for: nil) == nil)
+        // The weekly tab still prints, so this is a refusal aimed at two tabs
+        // and not a withdrawal of Review from printing altogether.
+        await models.show(.weekly)
+        #expect(PrintDocument.refusal(for: .review, reviewTab: .weekly) == nil)
+        #expect(models.document(for: .review)?.title == "Weekly Review")
 
-        #expect(document(for: .list(.todayAll))?.title == "Today")
-        #expect(document(for: .search)?.title == "Search")
-        #expect(document(for: .calendar)?.title == "Calendar — Day")
-        #expect(document(for: .review)?.title == "Weekly Review")
+        await vault.bridge.shutdown()
+    }
+
+    /// **The invariant, over every destination there is.** A document either
+    /// has rows or does not exist; the third case — a document with a title
+    /// and nothing under it — is a blank page the user only discovers at the
+    /// printer, and it is what Trends and History used to be. Enumerating
+    /// `Destination.fixed` rather than listing screens by hand is the point:
+    /// a destination added later is covered the day it is added.
+    ///
+    /// Every refusal also has to carry a sentence, because a greyed-out menu
+    /// item with nothing to read is the accessibility failure the reason
+    /// string exists to prevent.
+    @Test
+    func everyDestinationEitherPrintsRowsOrPrintsNothing() async throws {
+        let vault = try await TestVault()
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Renew passport")))
+        let models = await PrintModels(bridge: vault.bridge)
+
+        var destinations: [Destination?] = Destination.fixed
+        destinations.append(nil)
+
+        for tab in ReviewTab.allCases {
+            await models.show(tab)
+            for destination in destinations {
+                let label = "\(String(describing: destination)) / \(tab.title)"
+                let refusal = PrintDocument.refusal(for: destination, reviewTab: tab)
+                if let document = models.document(for: destination) {
+                    #expect(document.rowCount > 0, "a document with no rows is a blank page: \(label)")
+                    #expect(refusal == nil, "a printable screen must not also refuse: \(label)")
+                } else if let refusal {
+                    #expect(!refusal.isEmpty, "a refusal must say why: \(label)")
+                }
+                // The remaining case — no document and no refusal — is the
+                // screen that can print but is empty right now. It is allowed,
+                // and it is why the menu item stays enabled and beeps there.
+            }
+        }
 
         await vault.bridge.shutdown()
     }
@@ -132,7 +195,7 @@ struct PrintDocumentTests {
         let review = ReviewModel(bridge: vault.bridge)
         await review.refresh()
 
-        let document = PrintDocument.review(review)
+        let document = try #require(PrintDocument.review(review))
         #expect(document.title == "Weekly Review")
         let headings = document.sections.map(\.heading)
         #expect(headings.contains("This week"), "\(headings)")
@@ -140,6 +203,44 @@ struct PrintDocumentTests {
         #expect(counts == ["Completed", "Deferred", "Dropped", "Created", "Reopened"])
 
         await vault.bridge.shutdown()
+    }
+}
+
+/// The four models ⌘P reads, loaded, so a test can ask what any destination
+/// would print without rebuilding them per case.
+@MainActor
+private struct PrintModels {
+    let list: TaskListModel
+    let search: SearchModel
+    let calendar: CalendarModel
+    let review: ReviewModel
+
+    init(bridge: CoreBridge) async {
+        list = TaskListModel(bridge: bridge, kind: .inbox)
+        search = SearchModel(bridge: bridge)
+        calendar = CalendarModel(bridge: bridge)
+        review = ReviewModel(bridge: bridge)
+        await list.refresh()
+        await calendar.refresh()
+        await review.refresh()
+    }
+
+    /// Switch tabs and let the load settle. `ReviewModel.tab`'s `didSet`
+    /// starts a refresh in a detached task, so reading the report straight
+    /// after assigning would be a race with it rather than a test of it.
+    func show(_ tab: ReviewTab) async {
+        review.tab = tab
+        await review.refresh()
+    }
+
+    func document(for destination: Destination?) -> PrintDocument? {
+        PrintDocument.forDestination(
+            destination,
+            list: list,
+            search: search,
+            calendar: calendar,
+            review: review
+        )
     }
 }
 

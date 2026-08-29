@@ -199,25 +199,30 @@ extension PrintDocument {
         )
     }
 
-    /// The review, whichever tab is showing.
+    /// The review, whichever tab is showing, or `nil` when that tab has no
+    /// paper shape.
     ///
     /// Only the two report tabs produce a document. Trends is a chart and
     /// History is a list of links to other documents; printing either would
     /// produce a page of numbers with no chart, which is not what the person
     /// pressing ⌘P asked for. Both already have the CSV/JSON export beside
     /// them, which is the right shape for that data.
-    static func review(_ model: ReviewModel) -> PrintDocument {
+    ///
+    /// A report that has not loaded yet is `nil` too, for the same reason a
+    /// chart is: there is a title but nothing under it, and a heading on an
+    /// otherwise blank sheet is the one outcome worth refusing.
+    static func review(_ model: ReviewModel) -> PrintDocument? {
         let stamp = PrintStamp.date(msSinceEpoch: model.nowMs, timeZone: TimeZone.current.identifier)
         switch model.tab {
         case .weekly:
-            guard let report = model.weekly else { return empty("Weekly Review", stamp) }
+            guard let report = model.weekly else { return nil }
             return PrintDocument(
                 title: "Weekly Review",
                 subtitle: stamp,
                 sections: weeklySections(report)
             )
         case .daily:
-            guard let report = model.daily else { return empty("Daily Review", stamp) }
+            guard let report = model.daily else { return nil }
             return PrintDocument(
                 title: "Daily Review",
                 subtitle: stamp,
@@ -228,19 +233,69 @@ extension PrintDocument {
                 ].filter { !$0.rows.isEmpty }
             )
         case .trends, .history:
-            return empty(model.tab.title, stamp)
+            return nil
         }
     }
 
-    /// What ⌘P produces for whatever the window is showing, or `nil` where the
-    /// screen has no paper shape at all.
+    /// Why ⌘P cannot do anything on this screen, or `nil` where it can.
+    ///
+    /// **A pure function of which screen it is, and deliberately not of what
+    /// happens to be on it.** This answers "does this screen have a paper
+    /// shape at all", which is a property of the design and never changes
+    /// while the app runs; whether there is anything to print *right now* is
+    /// a different question, answered by ``forDestination(_:list:search:calendar:review:)``
+    /// returning `nil`. The two get different treatment on purpose: this one
+    /// greys the menu item out, because a command that can never work here
+    /// should not look available, while an empty Today list leaves ⌘P enabled
+    /// and beeps — a menu item that flickered as tasks came and went would be
+    /// worse than either.
+    ///
+    /// The answer is the **sentence**, not a `Bool`.
+    /// `docs/10-cross-cutting/accessibility.md` requires every interactive
+    /// element to have an accessible name and forbids a state signalled by
+    /// appearance alone; a dimmed "Print…" with nothing to read is exactly
+    /// that, and "greyed out" is not a reason. This string is what the
+    /// tooltip and the VoiceOver hint say.
+    static func refusal(for destination: Destination?, reviewTab: ReviewTab) -> String? {
+        switch destination {
+        case .list, .search, .calendar:
+            nil
+        case .review:
+            switch reviewTab {
+            case .weekly, .daily: nil
+            case .trends: "Trends is a chart. Use the CSV or JSON export beside it."
+            case .history: "History is a list of links. Use the CSV or JSON export beside it."
+            }
+        case .focus:
+            "Focus is one task and a timer, not a list."
+        case .routines:
+            "Routines are rules rather than things to do. Print a task list instead."
+        case .morning, .evening:
+            "The daily brief is a glance, not a document."
+        case .none:
+            "Nothing is selected."
+        }
+    }
+
+    /// What ⌘P produces for whatever the window is showing, or `nil` when
+    /// there is nothing to print.
     ///
     /// A function of the destination rather than a `switch` inside the window,
     /// so "does ⌘P do anything on the Focus screen?" is a question with an
-    /// answer a test can read. The three that return `nil` are deliberate:
-    /// Focus is a single task and a timer, Routines is a set of rules rather
-    /// than a set of things to do, and the two briefs are a glance whose whole
-    /// value is that they are on screen for sixty seconds.
+    /// answer a test can read. The screens that can never print are
+    /// ``refusal(for:reviewTab:)``'s decision, stated once so the greyed-out
+    /// menu item and this cannot disagree: Focus is a single task and a timer,
+    /// Routines is a set of rules rather than a set of things to do, the two
+    /// briefs are a glance whose whole value is that they are on screen for
+    /// sixty seconds, and Review's Trends and History are a chart and a list
+    /// of links.
+    ///
+    /// **A document with no rows collapses to `nil`.** Returning one would
+    /// hand the caller a title and a date with nothing under them, which
+    /// prints as a blank page with a heading — the failure a user only
+    /// discovers at the printer. `nil` is the answer every unprintable screen
+    /// already gives, so there is one "nothing to print" case rather than two
+    /// that behave alike but test differently.
     static func forDestination(
         _ destination: Destination?,
         list: TaskListModel,
@@ -248,17 +303,15 @@ extension PrintDocument {
         calendar: CalendarModel,
         review: ReviewModel
     ) -> PrintDocument? {
-        switch destination {
+        guard refusal(for: destination, reviewTab: review.tab) == nil else { return nil }
+        let document: PrintDocument? = switch destination {
         case .list: taskList(list)
         case .search: taskList(search.results)
         case .calendar: self.calendar(calendar)
         case .review: self.review(review)
         case .focus, .routines, .morning, .evening, .none: nil
         }
-    }
-
-    private static func empty(_ title: String, _ subtitle: String) -> PrintDocument {
-        PrintDocument(title: title, subtitle: subtitle, sections: [])
+        return document.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static func weeklySections(_ report: WeeklyReviewReport) -> [PrintSection] {

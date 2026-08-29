@@ -57,6 +57,25 @@ final class AppSurfaces {
     /// recurrence at all.
     private(set) var routineTimer: RoutineTimerState = .stopped
 
+    /// Why File → Print… / Export as PDF… is unavailable for the screen the
+    /// window is showing, or `nil` when it is available.
+    ///
+    /// Pushed here by `VaultView` rather than read from it, and for the same
+    /// reason ``pendingDestination`` travels the other way: the File menu is a
+    /// *scene* command that exists with every window closed, and the selection
+    /// it depends on is the window's own `@State`, which nothing outside that
+    /// view can observe. It starts as a refusal, which is the truthful answer
+    /// while there is no window and nothing selected.
+    ///
+    /// The sentence rather than a `Bool` — see
+    /// ``PrintDocument/refusal(for:reviewTab:)``, which produces it.
+    private(set) var printRefusal: String? = "Nothing is selected."
+
+    /// The window reporting what its current screen can do with ⌘P.
+    func printRefusalChanged(to reason: String?) {
+        printRefusal = reason
+    }
+
     /// Where a deep link, a notification tap or ⌘⌥M wants the window to be.
     ///
     /// Set here and consumed by `VaultView`, because the window's selection is

@@ -2,6 +2,33 @@ import AppKit
 import PDFKit
 import SwiftUI
 
+/// Keeps the File menu's two print items in step with the screen on show.
+///
+/// A modifier rather than an `onChange` written into the window, for the same
+/// reason `IcalSurfaces` is one: the File menu is a *scene* command that
+/// outlives every window, so it cannot read the window's `@State` selection —
+/// the window has to hand the answer over, and that hand-off is a thing worth
+/// naming once rather than four lines inside a two-hundred-line `body`.
+///
+/// `initial: true` because the first screen is shown without the selection
+/// ever changing. Without it the menu would be correct only after the first
+/// navigation, which is to say wrong exactly at launch.
+struct PrintMenuSync: ViewModifier {
+    let surfaces: AppSurfaces
+    let destination: Destination?
+    let reviewTab: ReviewTab
+
+    func body(content: Content) -> some View {
+        content.onChange(of: refusal, initial: true) { _, reason in
+            surfaces.printRefusalChanged(to: reason)
+        }
+    }
+
+    private var refusal: String? {
+        PrintDocument.refusal(for: destination, reviewTab: reviewTab)
+    }
+}
+
 /// One sheet of paper, drawn.
 ///
 /// Deliberately plain: a printed list is read on paper with no accent colour,
