@@ -33,6 +33,7 @@ pub mod focus;
 pub mod import;
 pub mod inbox;
 pub mod note;
+pub mod note_body;
 pub mod notify;
 pub mod person;
 pub mod phrase;
@@ -86,6 +87,11 @@ pub use focus::{
 pub use import::{block_uid, imported_block_id, uid_to_block, SUNRISE_UID_HOST};
 pub use inbox::{inbox_stream_ref, INBOX_STREAM_BYTES, INBOX_STREAM_ID};
 pub use note::Note;
+pub use note_body::{
+    decode as decode_note_body, encode as encode_note_body, to_markdown as note_body_to_markdown,
+    ChecklistItem, Fidelity, HeadingLevel, Inline, ListItem, Mark, NoteBlock, NoteDoc,
+    MAX_NEST_DEPTH, NOTE_BODY_MAX_BYTES, NOTE_BODY_SOFT_LIMIT_BYTES,
+};
 pub use notify::{
     apply_quiet_hours, build_end_of_day_plan, build_morning_summary, lead_time_s, plan_reminders,
     snooze_target, EndOfDayPlan, MorningSummary, QuietHours, QuietHoursPolicy, ReminderCandidate,
