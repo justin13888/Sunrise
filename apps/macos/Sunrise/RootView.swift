@@ -97,6 +97,8 @@ struct VaultView: View {
     @State private var palette = CommandPaletteModel()
     @State private var showingCheatSheet = false
     @State private var creatingStream = false
+    /// Off unless the first-run coachmark was ticked — see ``KeyboardTips``.
+    @State private var tips = KeyboardTips()
     @FocusState private var pane: PaneFocus?
 
     init(bridge: CoreBridge, surfaces: AppSurfaces) {
@@ -121,6 +123,12 @@ struct VaultView: View {
         } detail: {
             VStack(spacing: 0) {
                 SyncWarningBanner(presentation: sync.presentation)
+                // The other half of the first-run coachmark. Dismissing turns
+                // the preference off rather than hiding one instance: someone
+                // who has read it once has read it.
+                if tips.isEnabled {
+                    NoteBanner(text: KeyboardTips.hint) { tips.isEnabled = false }
+                }
                 if let note = browse.undoNote {
                     NoteBanner(text: note) { browse.dismissUndoNote() }
                 }
@@ -176,7 +184,8 @@ struct VaultView: View {
                     authorization: surfaces.reminders?.authorization ?? .notDetermined,
                     scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
                     signIn: signIn,
-                    allowNotifications: { await surfaces.reminders?.requestAuthorization() }
+                    allowNotifications: { await surfaces.reminders?.requestAuthorization() },
+                    keyboard: keys
                 )
                 Button("Done") { showingSettings = false }
                     .keyboardShortcut(.defaultAction)

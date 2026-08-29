@@ -18,6 +18,12 @@ struct AccountView: View {
     let scheduledCount: Int
     let signIn: () async -> Void
     let allowNotifications: () async -> Void
+    /// The keyboard preferences, for the one setting
+    /// `docs/07-clients/parity-matrix.md` §Vim-mode opt-in puts on this screen.
+    ///
+    /// The same object the `?` cheat sheet binds to, deliberately: two entry
+    /// points to one setting is a convenience, two copies of it is a bug.
+    @Bindable var keyboard: KeyboardPreferences
     /// Defaulted so `RootView` — which does not pass a session down — keeps
     /// compiling, and injectable so a test can drive this without the
     /// process-wide one.
@@ -77,6 +83,8 @@ struct AccountView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            keyboardSection
 
             notificationSections
         }
@@ -185,6 +193,31 @@ struct AccountView: View {
                 return try await bridge.sendVaultRoot(to: pairing)
             }
         )
+    }
+
+    /// `Settings → Keyboard`. One toggle, and it is the one the spec names.
+    ///
+    /// `docs/07-clients/parity-matrix.md` §Vim-mode opt-in calls for a settings
+    /// toggle `editor.vim_mode`; the `?` cheat sheet carries the same switch,
+    /// because that is where somebody asking "what are the keys" already is.
+    /// Both bind to the same ``KeyboardPreferences``, so this is one setting
+    /// with two entry points rather than two sources of truth — flip it here
+    /// and the sheet is already showing the vim section.
+    @ViewBuilder
+    private var keyboardSection: some View {
+        Section("Keyboard") {
+            Toggle("Vim-style motions", isOn: $keyboard.vimMode)
+                .accessibilityIdentifier("account.vimMode")
+            Text(
+                "h j k l, gg, G, u, ⌃R, / and : in any list. Additive — ⌘N, X and the "
+                    + "rest keep working. Stored on this Mac only, never synced."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            LabeledContent("Shortcut reference") {
+                Text("Press ? in any view").foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// `Settings → Notifications`, as `docs/08-features/notifications.md`

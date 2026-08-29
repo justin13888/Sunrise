@@ -18,6 +18,7 @@ struct OnboardingView: View {
     @State private var isWorking = false
     @State private var pairing: PairingModel?
     @State private var settings = AppSettings()
+    @State private var tips = KeyboardTips()
 
     var body: some View {
         VStack(spacing: 16) {
@@ -74,6 +75,12 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
             }
+
+            // `docs/08-features/keyboard.md` §Discoverability. Last on the
+            // screen and under a divider: it is an offer, not a step, and a
+            // first run must not read as a form to fill in.
+            Divider().frame(maxWidth: 320)
+            KeyboardTipsCoachmark(tips: tips)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
