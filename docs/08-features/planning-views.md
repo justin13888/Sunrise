@@ -37,7 +37,12 @@ A rolling view, span user-toggleable in the view header (chip group: 7 / 14 / 30
 Per Stream:
 
 - Header: name, color, paused/archived state, share status.
-- Default sort: priority then `sort_order` (manual).
+- Default sort: soonest first — `COALESCE(scheduled_at, due_at)`, then id as a
+  deterministic tiebreak so two replicas render one order. Not priority, and not
+  a manual order: a Task has no ordering facet to sort by. Manual arrangement of
+  a task list is per-device and applied client-side, per
+  [`../07-clients/interaction-patterns.md` §Reorder](../07-clients/interaction-patterns.md#reorder).
+  `sort_order` belongs to Streams, and orders the sidebar rather than this list.
 - **Sub-tabs (mutually exclusive)**: Open / Done / All / Routines. Rendered as full-width tabs at the top of the pane — not filter chips, since chips imply combinable filters and these states are mutually exclusive in v1.
 - Filters as chips: contexts, priority, energy, due date.
 
