@@ -63,6 +63,9 @@ USAGE:
 
   the vault's shape
     sunrise streams              list streams with open counts
+    sunrise streams move <id|name> before <id|name>
+    sunrise streams move <id|name> last
+                                 reorder the stream list; syncs to every device
     sunrise stream <id|name>     list the tasks in one stream
     sunrise contexts             list contexts with task counts
     sunrise context <id|name>    list the tasks carrying one context
@@ -362,6 +365,14 @@ async fn dispatch(
             print_tasks(core.query(Query::Inbox).await?);
             Ok(())
         }
+        // The listing, and the one mutation that belongs to the list rather
+        // than to any one row. `move` is a subcommand here instead of a verb
+        // of its own because it is about the *order of the plural*, which is
+        // what `streams` names; a top-level `sunrise move` would read as
+        // moving a task between streams, which `edit #stream` already does.
+        "streams" if rest.first().map(String::as_str) == Some("move") => {
+            move_stream(core, &rest[1..]).await
+        }
         "streams" => {
             if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
                 for s in rows {
@@ -564,6 +575,82 @@ async fn resolve_stream(
             .map_or_else(|| format!("no stream matches \"{typed}\""), unresolved_note)
             .into()
     })
+}
+
+/// `sunrise streams move <id|name> before <id|name>` /
+/// `sunrise streams move <id|name> last`.
+///
+/// The reorder the sidebar does by dragging, as one shot. Both halves are
+/// joined rather than taken positionally, so an unquoted multi-word name works
+/// exactly as it does for `sunrise stream home renovation`; `before` and
+/// `last` are what separate the two names, which is why a stream may not be
+/// called either. That is a cheaper rule than a flag, and it reads aloud.
+///
+/// The Inbox is refused on both sides: it is synthetic, it has no Stream
+/// entity to write a key to, and it is pinned to the top of every listing.
+async fn move_stream(core: &Core, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    const USAGE: &str = "usage: streams move <id|name> before <id|name>\n\
+                                streams move <id|name> last";
+
+    let sep = args
+        .iter()
+        .position(|a| a == "before" || a == "last")
+        .ok_or(USAGE)?;
+    let moved = args[..sep].join(" ");
+    let target = args[sep + 1..].join(" ");
+    let to_last = args[sep] == "last";
+    if moved.trim().is_empty() || to_last != target.trim().is_empty() {
+        return Err(USAGE.into());
+    }
+
+    let moved = resolve_stream(core, &moved, Archived::Include).await?;
+    let target = if to_last {
+        None
+    } else {
+        Some(resolve_stream(core, &target, Archived::Include).await?)
+    };
+    if moved == sunrise_domain::inbox_stream_ref() || target == Some(moved) {
+        return Err("the Inbox is not a stream and cannot be reordered".into());
+    }
+
+    let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
+        return Err("unexpected query result".into());
+    };
+    // Everything but the moved row and the synthetic Inbox, in list order.
+    // Dropping the moved row first is what makes "move it one place down"
+    // work: its own key must not be one of the bounds it lands between.
+    let others: Vec<_> = rows
+        .iter()
+        .filter(|s| s.id != moved && s.id != sunrise_domain::inbox_stream_ref())
+        .collect();
+    let at = match target {
+        None => others.len(),
+        Some(t) => others
+            .iter()
+            .position(|s| s.id == t)
+            .ok_or("that stream is not in the list")?,
+    };
+    let after = at.checked_sub(1).map(|i| others[i].sort_order.as_str());
+    let before = others.get(at).map(|s| s.sort_order.as_str());
+
+    let key = sunrise_domain::sort_order::between(after, before)
+        .map_err(|e| format!("cannot place that stream: {e}"))?;
+    let patch = sunrise_domain::StreamPatch {
+        sort_order: Some(key),
+        ..Default::default()
+    };
+    core.submit(Command::UpdateStream { id: moved, patch })
+        .await?;
+
+    // Print the new order, because the whole point of the command is the
+    // order and a silent success would have to be checked with a second one.
+    #[allow(clippy::print_stdout)]
+    if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
+        for s in rows {
+            println!("{}  {}", s.id.to_str(), s.name);
+        }
+    }
+    Ok(())
 }
 
 /// Turn `<id|name>` into a Context id. See [`resolve_stream`].

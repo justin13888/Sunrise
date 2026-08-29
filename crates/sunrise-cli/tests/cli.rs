@@ -1129,3 +1129,86 @@ fn ical_is_documented_in_the_usage_block() {
     assert!(help.contains("sunrise ical import"), "got {help}");
     assert!(help.contains("sunrise ical export"), "got {help}");
 }
+
+/// The stream names a `sunrise streams` listing printed, Inbox dropped — it is
+/// pinned to the top and is not part of any order under test.
+fn stream_order(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
+        .filter(|n| n != "Inbox")
+        .collect()
+}
+
+/// `streams move` reorders the list, and the new order is what the next
+/// `streams` prints — from a different process, so it really went to the vault
+/// rather than to a per-run cache.
+///
+/// The three Streams are seeded in-process for the same reason
+/// [`edit_moves_a_task_between_streams_and_tags_it`] seeds its one: the CLI
+/// reads and reorders Streams but mints none.
+#[tokio::test]
+async fn streams_move_reorders_the_list_and_persists_it() {
+    use sunrise_cli::livesync::{open_with_plan, SyncPlan};
+    use sunrise_core::Command as CoreCommand;
+    use sunrise_domain::StreamDraft;
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().to_path_buf();
+    {
+        let (core, _) = open_with_plan(
+            vault.clone(),
+            "0.1.0+test",
+            root_of(&vault),
+            &SyncPlan::default(),
+        )
+        .await
+        .expect("open the vault");
+        for name in ["Alpha", "Bravo", "Charlie"] {
+            core.submit(CoreCommand::CreateStream(StreamDraft {
+                name: name.into(),
+                ..Default::default()
+            }))
+            .await
+            .expect("create stream");
+        }
+        core.shutdown().await;
+    }
+
+    // A new stream is appended, so an untouched vault lists them as made.
+    assert_eq!(
+        stream_order(&stdout(&run(&vault, &["streams"]))),
+        ["Alpha", "Bravo", "Charlie"]
+    );
+
+    let out = run(&vault, &["streams", "move", "charlie", "before", "alpha"]);
+    assert!(out.status.success(), "move failed: {out:?}");
+    assert_eq!(stream_order(&stdout(&out)), ["Charlie", "Alpha", "Bravo"]);
+    // ...and a fresh process reads the same order back out of the vault.
+    assert_eq!(
+        stream_order(&stdout(&run(&vault, &["streams"]))),
+        ["Charlie", "Alpha", "Bravo"]
+    );
+
+    let out = run(&vault, &["streams", "move", "charlie", "last"]);
+    assert!(out.status.success(), "move to last failed: {out:?}");
+    assert_eq!(
+        stream_order(&stdout(&run(&vault, &["streams"]))),
+        ["Alpha", "Bravo", "Charlie"]
+    );
+
+    // A name that resolves to nothing fails loudly rather than shuffling
+    // something at random, and so does a half-typed command.
+    assert!(
+        !run(&vault, &["streams", "move", "nope", "before", "alpha"])
+            .status
+            .success()
+    );
+    assert!(!run(&vault, &["streams", "move", "alpha"]).status.success());
+    assert!(!run(&vault, &["streams", "move", "before", "alpha"])
+        .status
+        .success());
+    // The Inbox has no Stream entity behind it and no position to write.
+    assert!(!run(&vault, &["streams", "move", "inbox", "last"])
+        .status
+        .success());
+}
