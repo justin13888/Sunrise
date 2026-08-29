@@ -115,3 +115,42 @@ file they were written in.
 2. **A pre-1.0 vault worth preserving** — a beta programme, a dogfooding
    dataset. At that point "wipe it" stops being free and the next schema change
    is an appended migration, whatever else is in the file.
+
+---
+
+## Addendum — `0014_stream_sort_order.sql` landed (post-acceptance)
+
+**Nothing above is retracted. Two of its sentences have simply stopped
+describing the present, and this note says which, so a reader does not take a
+frozen description for a live one.**
+
+`0014_stream_sort_order.sql` is the first migration appended after this reset.
+It adds `streams.sort_order` — the column behind `Stream.sort_order`, which
+until then had no storage at all and was synthesized as the literal `"a0"` on
+every read — and backfills existing rows in the order the sidebar was already
+displaying them. `STORAGE_V` is now **14**.
+
+Overtaken as descriptions of the present, not as decisions:
+
+* **"`0013_baseline.sql` is the whole schema, and the sole entry in
+  `MIGRATIONS`."** It is the *baseline* and the *first* entry. The collapse
+  itself stands: 0001–0012 are still deleted, 0013 was not touched to make room
+  for 0014, and the append-only rule this ADR suspended once and reinstated is
+  what 0014 obeys. The Decision's own next sentence anticipated this exactly —
+  "the next schema change appends `0014_*.sql` exactly as it always would have"
+  — so this is the ADR working, not the ADR failing.
+* **"A vault at or above the floor and below `STORAGE_V` still upgrades
+  normally … there simply is not one yet."** There is one now: a vault at 13
+  upgrades to 14. The floor is unchanged.
+
+The consequence worth carrying forward is that **`STORAGE_V` and
+`BASELINE_STORAGE_V` have parted company**, and quoting `13` for both — which
+several documents did, and which this ADR's own title does — is now ambiguous
+in the one place ambiguity costs something: `STORAGE_V` decides whether a vault
+is too new, `BASELINE_STORAGE_V` decides whether it is refused outright. The
+title is left as written because it names the decision at the version it was
+taken.
+
+Neither `DOC_SCHEMA_V` nor any wire constant moved for this. `sort_order` was
+already a required `tstr` in the `Stream` payload, carrying `"a0"`; 0014 gave
+the field real storage rather than adding a field.
