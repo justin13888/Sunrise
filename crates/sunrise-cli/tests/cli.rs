@@ -214,6 +214,203 @@ fn done_refuses_something_that_is_not_a_task_id() {
     assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Writes beyond capture and done
+//
+// "Read/write tasks" is a CLI MUST that the v1 audit graded partial:
+// `CreateTask` and `CompleteTask` were the only two mutations this binary
+// could reach, so a task's fields could be set at capture time and never
+// again. `edit`, `defer` and `drop` are the triage half.
+// ---------------------------------------------------------------------------
+
+/// The scheduling facet, observed through the query path rather than through
+/// the write's own output — `^+6h` lands inside Today's rolling window and
+/// `^-` takes it back out, which is the same boundary
+/// `capture_applies_annotations_end_to_end` pins. Relative spans, not
+/// `tomorrow`, so the assertion does not depend on the host's zone.
+#[test]
+fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Renew passport"]));
+    assert!(
+        !stdout(&run(dir.path(), &["today"])).contains("Renew passport"),
+        "an unscheduled task must not start in Today"
+    );
+
+    let out = run(dir.path(), &["edit", &id, "^+6h"]);
+    assert!(out.status.success(), "edit failed: {out:?}");
+    assert!(
+        stdout(&out).starts_with(&id),
+        "edit must print the task it touched: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&run(dir.path(), &["today"])).contains("Renew passport"),
+        "the edit did not reach storage"
+    );
+
+    // `^-` is the clear form; without it a schedule set by accident would be
+    // unreachable.
+    assert!(run(dir.path(), &["edit", &id, "^-"]).status.success());
+    assert!(
+        !stdout(&run(dir.path(), &["today"])).contains("Renew passport"),
+        "^- must clear the schedule"
+    );
+}
+
+/// A `#stream` token is `Command::PromoteToStream`, not a patch field, and an
+/// `@ctx` token is a union with what the task already carries. Both are
+/// observed through the listings the previous commit added.
+#[tokio::test]
+async fn edit_moves_a_task_between_streams_and_tags_it() {
+    use sunrise_cli::livesync::{open_with_plan, SyncPlan};
+    use sunrise_core::Command as CoreCommand;
+    use sunrise_domain::{ContextDraft, StreamDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().to_path_buf();
+    // A second Stream and a Context to aim at. The CLI reads and captures
+    // against these but mints neither, so the fixture is built in-process.
+    {
+        let (core, _) = open_with_plan(vault.clone(), "0.1.0+test", DEV_ROOT, &SyncPlan::default())
+            .await
+            .expect("open the vault");
+        core.submit(CoreCommand::CreateStream(StreamDraft {
+            name: "Work".into(),
+            ..Default::default()
+        }))
+        .await
+        .expect("create stream");
+        core.submit(CoreCommand::CreateContext(ContextDraft {
+            name: "errands".into(),
+            description: None,
+        }))
+        .await
+        .expect("create context");
+        core.shutdown().await;
+    }
+
+    let id = id_of(&run(&vault, &["capture", "Renew passport"]));
+    let out = run(&vault, &["edit", &id, "#work @errands !1"]);
+    assert!(out.status.success(), "edit failed: {out:?}");
+
+    assert!(
+        stdout(&run(&vault, &["stream", "work"])).contains("Renew passport"),
+        "the task did not move streams"
+    );
+    assert!(
+        !stdout(&run(&vault, &["inbox"])).contains("Renew passport"),
+        "a moved task must leave the Inbox"
+    );
+    assert!(
+        stdout(&run(&vault, &["context", "errands"])).contains("Renew passport"),
+        "the context was not added"
+    );
+}
+
+/// Capture's rule is that unrecognised text survives in the title. An edit has
+/// no title to fall back into, so the opposite rule applies: one bad token
+/// rejects the whole line and **nothing** is written.
+#[test]
+fn edit_refuses_a_line_with_a_bad_token_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Renew passport"]));
+
+    let out = run(dir.path(), &["edit", &id, "^+6h nonsense"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not an edit token"), "got {err:?}");
+    assert!(
+        !stdout(&run(dir.path(), &["today"])).contains("Renew passport"),
+        "the good half of a rejected line must not be applied either"
+    );
+
+    // An id with no tokens, and tokens with no id, are both usage errors.
+    assert!(!run(dir.path(), &["edit", &id]).status.success());
+    assert!(!run(dir.path(), &["edit", "!1"]).status.success());
+    assert!(!run(dir.path(), &["edit"]).status.success());
+}
+
+/// `defer` is `Command::DeferTask`, not `edit ^when`: it bumps the task's
+/// `deferred_count`, and that counter is what the weekly review reports.
+#[test]
+fn defer_moves_the_task_and_the_review_counts_the_deferral() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Renew passport"]));
+
+    let out = run(dir.path(), &["defer", &id, "+3d"]);
+    assert!(out.status.success(), "defer failed: {out:?}");
+    assert!(stdout(&out).contains("deferred to"), "{:?}", stdout(&out));
+
+    let review = stdout(&run(dir.path(), &["review"]));
+    assert!(review.contains("deferred 1"), "got {review:?}");
+
+    // A date the parser will not guess at must fail rather than land the task
+    // somewhere arbitrary.
+    let bad = run(dir.path(), &["defer", &id, "whenever"]);
+    assert!(!bad.status.success(), "expected a non-zero exit: {bad:?}");
+    assert!(!run(dir.path(), &["defer", &id]).status.success());
+    assert!(!run(dir.path(), &["defer"]).status.success());
+}
+
+/// A triage surface that can say yes (`done`) and not no is half a surface.
+#[test]
+fn drop_soft_deletes_a_task_and_the_review_counts_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Renew passport"]));
+    run(dir.path(), &["capture", "Keep this one"]);
+
+    let out = run(dir.path(), &["drop", &id]);
+    assert!(out.status.success(), "drop failed: {out:?}");
+
+    let inbox = stdout(&run(dir.path(), &["inbox"]));
+    assert!(!inbox.contains("Renew passport"), "got {inbox:?}");
+    assert!(
+        inbox.contains("Keep this one"),
+        "drop must take one task, not the stream: {inbox:?}"
+    );
+
+    let review = stdout(&run(dir.path(), &["review"]));
+    assert!(review.contains("dropped 1"), "got {review:?}");
+
+    assert!(!run(dir.path(), &["drop", "not-an-id"]).status.success());
+    assert!(!run(dir.path(), &["drop"]).status.success());
+}
+
+/// Bulk is the automation case: one process, several tasks, one line.
+#[test]
+fn edit_defer_and_drop_all_take_several_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = id_of(&run(dir.path(), &["capture", "First thing"]));
+    let b = id_of(&run(dir.path(), &["capture", "Second thing"]));
+
+    let out = run(dir.path(), &["edit", &a, &b, "^+6h"]);
+    assert!(out.status.success(), "bulk edit failed: {out:?}");
+    assert_eq!(stdout(&out).lines().count(), 2, "one line per task");
+    let today = stdout(&run(dir.path(), &["today"]));
+    assert!(today.contains("First thing") && today.contains("Second thing"));
+
+    assert!(run(dir.path(), &["defer", &a, &b, "+3d"]).status.success());
+    let out = run(dir.path(), &["drop", &a, &b]);
+    assert!(out.status.success(), "bulk drop failed: {out:?}");
+    assert!(stdout(&run(dir.path(), &["inbox"])).trim().is_empty());
+}
+
+/// Discoverable, or it does not exist for a user.
+#[test]
+fn the_write_verbs_are_documented_in_the_usage_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let help = stdout(&run(dir.path(), &["help"]));
+    for line in [
+        "sunrise edit",
+        "sunrise defer",
+        "sunrise drop",
+        "EDIT SYNTAX",
+    ] {
+        assert!(help.contains(line), "{line} missing from help:\n{help}");
+    }
+}
+
 /// A CLI's stdout is its contract: `export … | jq` has to work, which is the
 /// opposite of the interactive `:export` (that one writes a file, because the
 /// alternate screen is no place for a CSV).

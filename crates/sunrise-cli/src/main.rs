@@ -58,7 +58,11 @@ sunrise — command-line client for Sunrise
 USAGE:
   capture and triage
     sunrise capture <text>...    parse and commit one task, then exit
+    sunrise edit <id>... <tokens>...
+                                 change a task's fields (see EDIT SYNTAX)
+    sunrise defer <id>... <when> push tasks out, counting the deferral
     sunrise done <id>...         complete one or more tasks
+    sunrise drop <id>...         soft-delete one or more tasks
     sunrise today                list today's tasks
     sunrise inbox                list inbox tasks
     sunrise next                 the focus planner's top picks
@@ -96,6 +100,16 @@ CAPTURE SYNTAX:
     #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
 
     sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
+
+EDIT SYNTAX:
+    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when
+    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-
+
+    sunrise edit tsk_01J… '#work !1 ^next friday'
+    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
+
+    Bare words are refused: an edit line is not a title, and the whole
+    line is rejected if any token is, so nothing is half-applied.
 
 ENVIRONMENT:
     SUNRISE_VAULT             vault directory (default ~/.sunrise/vault)
@@ -304,12 +318,12 @@ async fn dispatch(
         // multi-word name (`sunrise stream home renovation`) works, exactly as
         // `capture` and `search` already join theirs.
         "stream" => {
-            let id = resolve_stream(core, &rest.join(" ")).await?;
+            let id = resolve_stream(core, &rest.join(" "), Archived::Include).await?;
             print_tasks(core.query(Query::StreamTasks(id)).await?);
             Ok(())
         }
         "context" => {
-            let id = resolve_context(core, &rest.join(" ")).await?;
+            let id = resolve_context(core, &rest.join(" "), Archived::Include).await?;
             print_tasks(core.query(Query::ContextTasks(id)).await?);
             Ok(())
         }
@@ -363,12 +377,31 @@ async fn dispatch(
             Some("next") | None => next(core, true).await,
             Some(id) => focus_on(core, id).await,
         },
+        "edit" => edit(core, rest).await,
+        "defer" => defer(core, rest).await,
+        "drop" => drop_tasks(core, rest).await,
         "review" => review(core).await,
         "export" => export(core, rest).await,
         "ical" => ical(core, rest).await,
         "sync" => sync_once(core, rest).await,
         other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
     }
+}
+
+/// Whether a resolver may land on an archived Stream / Context.
+///
+/// The domain rule (`docs/02-domain/contexts-and-tags.md`, and
+/// [`sunrise_domain::annotate`]'s module docs) is that an archived entity stays
+/// on the Tasks that carry it but must never be a target for **new input**.
+/// Listing is not new input — `sunrise contexts` prints archived rows, and a
+/// row you can see but cannot open is a dead end — so the two cases differ and
+/// the caller says which one it is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Archived {
+    /// Listing (`sunrise stream`, `sunrise context`): archived rows count.
+    Include,
+    /// New input (`sunrise edit`'s `#stream` / `@context`): live rows only.
+    Exclude,
 }
 
 /// Readable phrasing for an unresolved capture / annotate token.
@@ -394,21 +427,33 @@ fn unresolved_note(u: &sunrise_domain::capture::Unresolved) -> String {
 ///
 /// Returned as owned pairs because [`sunrise_domain::NamedRef`] borrows its
 /// name and the query result is a temporary.
-async fn stream_names(core: &Core) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
+async fn stream_names(
+    core: &Core,
+    archived: Archived,
+) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
     let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
         return Err("unexpected query result".into());
     };
-    Ok(rows.into_iter().map(|s| (s.id, s.name)).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|s| archived == Archived::Include || !s.archived)
+        .map(|s| (s.id, s.name))
+        .collect())
 }
 
 /// The Contexts as capture-parser candidates. See [`stream_names`].
 async fn context_names(
     core: &Core,
+    archived: Archived,
 ) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
     let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? else {
         return Err("unexpected query result".into());
     };
-    Ok(rows.into_iter().map(|c| (c.id, c.name)).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|c| archived == Archived::Include || !c.archived)
+        .map(|c| (c.id, c.name))
+        .collect())
 }
 
 fn named(rows: &[(EntityRef, String)]) -> Vec<sunrise_domain::NamedRef<'_>> {
@@ -426,7 +471,11 @@ fn named(rows: &[(EntityRef, String)]) -> Vec<sunrise_domain::NamedRef<'_>> {
 /// [`sunrise_domain::resolve_named`] — the same exact-then-unique-prefix rule
 /// `#stream` obeys in a capture line, because a user who types `#work` in one
 /// place and `sunrise stream work` in another means the same Stream.
-async fn resolve_stream(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std::error::Error>> {
+async fn resolve_stream(
+    core: &Core,
+    raw: &str,
+    archived: Archived,
+) -> Result<EntityRef, Box<dyn std::error::Error>> {
     let typed = raw.trim().trim_start_matches('#').trim();
     if typed.is_empty() {
         return Err("usage: stream <id|name>; `sunrise streams` lists them".into());
@@ -434,7 +483,7 @@ async fn resolve_stream(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std
     if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
         return Ok(id);
     }
-    let rows = stream_names(core).await?;
+    let rows = stream_names(core, archived).await?;
     let mut unresolved = Vec::new();
     sunrise_domain::resolve_named(
         typed,
@@ -451,7 +500,11 @@ async fn resolve_stream(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std
 }
 
 /// Turn `<id|name>` into a Context id. See [`resolve_stream`].
-async fn resolve_context(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std::error::Error>> {
+async fn resolve_context(
+    core: &Core,
+    raw: &str,
+    archived: Archived,
+) -> Result<EntityRef, Box<dyn std::error::Error>> {
     let typed = raw.trim().trim_start_matches('@').trim();
     if typed.is_empty() {
         return Err("usage: context <id|name>; `sunrise contexts` lists them".into());
@@ -459,7 +512,7 @@ async fn resolve_context(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn st
     if let Ok(id) = EntityRef::parse(typed, EntityKind::Context) {
         return Ok(id);
     }
-    let rows = context_names(core).await?;
+    let rows = context_names(core, archived).await?;
     let mut unresolved = Vec::new();
     sunrise_domain::resolve_named(
         typed,
@@ -491,6 +544,169 @@ async fn done(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
         println!("done  {raw}");
     }
     Ok(())
+}
+
+/// Split `<id>... <rest>...` at the first argument that is not a task id.
+///
+/// Lets every mutating verb take a list of tasks and then its own tail —
+/// `edit tsk_a tsk_b '!1 ^tomorrow'`, `defer tsk_a tsk_b tomorrow` — with the
+/// same shape `done <id>...` already has. An argument that is not a task id
+/// ends the list rather than failing, because the tail is a legitimate part of
+/// the line; a *leading* argument that is not an id yields an empty list, and
+/// the caller refuses that.
+fn split_task_ids(rest: &[String]) -> (Vec<EntityRef>, &[String]) {
+    let mut ids = Vec::new();
+    for (i, raw) in rest.iter().enumerate() {
+        match EntityRef::parse(raw, EntityKind::Task) {
+            Ok(id) => ids.push(id),
+            Err(_) => return (ids, &rest[i..]),
+        }
+    }
+    (ids, &[])
+}
+
+/// One task's current contexts, which an annotate line needs because contexts
+/// are a *replace* field: "add `@home`" is only expressible as the union of
+/// `@home` with what that particular task already carries.
+async fn task_contexts(
+    core: &Core,
+    id: EntityRef,
+) -> Result<Vec<EntityRef>, Box<dyn std::error::Error>> {
+    let QueryResult::Task(t) = core.query(Query::EntityById(id)).await? else {
+        return Err(format!("no such task: {}", id.to_str()).into());
+    };
+    Ok(t.contexts.iter().copied().collect())
+}
+
+/// `edit <id>... <tokens>...` — change a task's facets with the annotate
+/// grammar.
+///
+/// The grammar is [`sunrise_domain::annotate`]'s, unchanged and unextended:
+/// `#stream @ctx @-ctx !N %energy ~30m ^when due:when`, with `-` clearing any
+/// of them. It is the same vocabulary the app's edit line uses, which is the
+/// point — `docs/07-clients/overview.md` §"What clients share" puts the
+/// annotate grammar in `sunrise-domain` so two surfaces cannot disagree about
+/// what `^next friday` means.
+///
+/// **Nothing is written unless the whole line parses.** Capture's rule is the
+/// opposite — an unrecognised token stays in the title, because a capture line
+/// *is* a title — but an edit has no title to fall back into, and a script
+/// that mistyped `!9` and got four of its five changes applied is worse off
+/// than one that got a non-zero exit. So the errors are reported first and the
+/// command exits without touching the vault.
+///
+/// A `#stream` token becomes [`Command::PromoteToStream`] rather than a patch
+/// field: moving between Streams re-keys the task's storage, and `TaskPatch`
+/// deliberately does not carry it.
+async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout, clippy::print_stderr)]
+    let (ids, tail) = split_task_ids(rest);
+    if ids.is_empty() {
+        return Err("usage: edit <id>... <tokens>...; see `sunrise help`".into());
+    }
+    let line = tail.join(" ");
+    if line.trim().is_empty() {
+        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
+    }
+
+    // Live rows only: an archived Stream or Context stays on the tasks that
+    // carry it but must never be the target of new input.
+    let streams = stream_names(core, Archived::Exclude).await?;
+    let contexts = context_names(core, Archived::Exclude).await?;
+    let streams = named(&streams);
+    let contexts = named(&contexts);
+    // System zone, so `^tomorrow 9am` means the user's 9am, exactly as in
+    // `capture`.
+    let tz = jiff::tz::TimeZone::system();
+    let edit = sunrise_domain::parse_annotate(
+        &line,
+        &streams,
+        &contexts,
+        sunrise_domain::now_ts(core.now_ms()),
+        &tz,
+    );
+    if !edit.errors.is_empty() {
+        for e in &edit.errors {
+            eprintln!("note: {}", e.describe());
+        }
+        return Err("nothing was changed; fix the line and run it again".into());
+    }
+    if edit.is_empty() {
+        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
+    }
+
+    let preview = edit.preview(&streams, &contexts, &tz);
+    for id in ids {
+        let patch = edit.patch_for(&task_contexts(core, id).await?);
+        core.submit(Command::UpdateTask { id, patch }).await?;
+        if let Some(stream) = edit.stream() {
+            core.submit(Command::PromoteToStream { id, stream }).await?;
+        }
+        println!("{}  {preview}", id.to_str());
+    }
+    Ok(())
+}
+
+/// `defer <id>... <when>` — push tasks out to a new date.
+///
+/// Separate from `edit ^when`, which merely sets `scheduled_at`. This is
+/// [`Command::DeferTask`], which also bumps the task's `deferred_count`, and
+/// that counter is what `sunrise review` reports as "deferred" — a task moved
+/// four times is the signal the weekly review exists to surface. Spelling a
+/// real defer as a schedule change would quietly zero that signal out.
+async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    let (ids, tail) = split_task_ids(rest);
+    if ids.is_empty() {
+        return Err("usage: defer <id>... <when>; see `sunrise help`".into());
+    }
+    let phrase = tail.join(" ");
+    if phrase.trim().is_empty() {
+        return Err("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`".into());
+    }
+    let tz = jiff::tz::TimeZone::system();
+    let now = sunrise_domain::now_ts(core.now_ms());
+    let to = sunrise_domain::capture::parse_when(&phrase, now, &tz)
+        .ok_or_else(|| format!("could not read the date \"{phrase}\""))?;
+    let to_ms = u64::try_from(to.as_millisecond()).map_err(|_| "that date is before the epoch")?;
+    for id in ids {
+        core.submit(Command::DeferTask { id, to_ms }).await?;
+        println!("{}  deferred to {}", id.to_str(), stamp(to, &tz));
+    }
+    Ok(())
+}
+
+/// `drop <id>...` — soft-delete tasks.
+///
+/// Named for the review's own vocabulary: `sunrise review` counts "dropped",
+/// and a triage surface that can only say yes (`done`) and not no is half a
+/// surface. Soft, like every other client's delete — the op is a tombstone,
+/// not an erase.
+async fn drop_tasks(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    if rest.is_empty() {
+        return Err("drop needs at least one task id".into());
+    }
+    for raw in rest {
+        let id = EntityRef::parse(raw, EntityKind::Task)
+            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+        core.submit(Command::DeleteTask(id)).await?;
+        println!("dropped  {raw}");
+    }
+    Ok(())
+}
+
+/// `YYYY-MM-DD HH:MM` in `tz`, the same shape the annotate preview uses.
+fn stamp(ts: jiff::Timestamp, tz: &jiff::tz::TimeZone) -> String {
+    let dt = ts.to_zoned(tz.clone()).datetime();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute()
+    )
 }
 
 /// `next` / `focus next` — the planner's ranked picks, optionally opening

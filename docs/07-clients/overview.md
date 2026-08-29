@@ -33,7 +33,11 @@ daemon, no socket, no second process.
 ```
 capture and triage
   sunrise capture <text>...    parse and commit one task, then exit
+  sunrise edit <id>... <tokens>...
+                               change a task's fields (annotate grammar)
+  sunrise defer <id>... <when> push tasks out, counting the deferral
   sunrise done <id>...         complete one or more tasks
+  sunrise drop <id>...         soft-delete one or more tasks
   sunrise today | inbox        list today's tasks / the inbox
   sunrise next                 the focus planner's top picks
   sunrise search <query>...    full-text search
@@ -55,6 +59,19 @@ plumbing
 Capture takes the same grammar every surface does —
 `#stream @context ^when !priority ~duration *due:when*` — because it calls the
 same parser (`sunrise_domain::capture`).
+
+`edit` is the other half of that grammar: `sunrise_domain::annotate`, applied
+to a Task that already exists, so `#stream @ctx @-ctx !N %energy ~30m ^when
+due:when` reach every field a `TaskPatch` carries, and a trailing `-` clears
+one. It differs from capture in one deliberate way — a bare word is refused
+rather than absorbed, and **one bad token rejects the whole line**. A capture
+line is a title, so unrecognised text belongs in it; an edit line is not, and a
+script that mistyped one token is better served by a non-zero exit than by
+four of its five changes landing.
+
+`defer` is not `edit ^when`. It is `Command::DeferTask`, which also bumps the
+Task's `deferred_count` — the counter `sunrise review` reports as "deferred",
+and the signal the weekly review exists to surface.
 
 `export` writes to **stdout** unless given a path, so it pipes into `jq`. That
 is the general rule: stdout is the contract, human-facing notes go to stderr,

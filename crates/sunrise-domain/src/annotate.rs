@@ -81,7 +81,9 @@ impl EditError {
             Self::BadEnergy(s) => format!("energy \"{s}\" is not low/med/high"),
             Self::BadDuration(s) => format!("could not read the duration \"{s}\""),
             Self::BadDate(s) => format!("could not read the date \"{s}\""),
-            Self::NotAToken(s) => format!("\"{s}\" is not an edit token (e edits the title)"),
+            Self::NotAToken(s) => {
+                format!("\"{s}\" is not an edit token; an edit line is not a title")
+            }
         }
     }
 }
@@ -577,7 +579,10 @@ mod tests {
         let e = edit("tomorow");
         assert!(e.is_empty());
         assert_eq!(e.errors, vec![EditError::NotAToken("tomorow".into())]);
-        assert!(e.error_note().unwrap().contains("e edits the title"));
+        assert!(e
+            .error_note()
+            .unwrap()
+            .contains("an edit line is not a title"));
     }
 
     #[test]
