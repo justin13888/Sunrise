@@ -18,9 +18,20 @@ struct AccountView: View {
     let scheduledCount: Int
     let signIn: () async -> Void
     let allowNotifications: () async -> Void
+    /// Defaulted so `RootView` — which does not pass a session down — keeps
+    /// compiling, and injectable so a test can drive this without the
+    /// process-wide one.
+    var session: SessionModel? = SessionModel.active
+
+    @State private var pairing: PairingModel?
+    @State private var newVaultName = ""
+    @State private var addingVault = false
+    @State private var switching = false
 
     var body: some View {
         Form {
+            vaultSection
+
             Section("Sync") {
                 TextField("Relay URL", text: $settings.relayURL, prompt: Text("ws://127.0.0.1:8443/sync"))
                     .textContentType(.URL)
@@ -72,6 +83,108 @@ struct AccountView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .padding(.vertical, 8)
+        .sheet(item: $pairing) { model in
+            PairingView(model: model) { pairing = nil }
+        }
+        .alert("Add a vault", isPresented: $addingVault) {
+            TextField("Name", text: $newVaultName)
+            Button("Cancel", role: .cancel) { newVaultName = "" }
+            Button("Add") {
+                let name = newVaultName
+                newVaultName = ""
+                switchVault { await session?.addVault(named: name) }
+            }
+        } message: {
+            Text(
+                """
+                A separate, separately encrypted vault with its own key. \
+                Sunrise closes the one that is open before it opens the new one.
+                """
+            )
+        }
+    }
+
+    /// The vaults on this Mac, and the two things you can do about them.
+    ///
+    /// Absent entirely when the session has no registry — the UI-test harness
+    /// and the unit tests run one fixed vault, and a switcher over a list of
+    /// one it cannot change would be a control that does nothing.
+    @ViewBuilder
+    private var vaultSection: some View {
+        if let session, let vaults = session.vaults {
+            Section("Vaults") {
+                Picker("Open vault", selection: selection(vaults)) {
+                    ForEach(vaults.vaults) { vault in
+                        Text(vault.name).tag(vault.id)
+                    }
+                }
+                .disabled(switching)
+                .accessibilityIdentifier("account.vaultPicker")
+
+                Text(
+                    """
+                    Only one vault is open at a time. Switching closes the one \
+                    you are in — the core holds a lock on it — and then opens \
+                    the other, so anything unsaved is written first.
+                    """
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                HStack(spacing: 12) {
+                    Button("Add a vault…") { addingVault = true }
+                        .disabled(switching)
+                        .accessibilityIdentifier("account.addVault")
+                    if switching {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer()
+                    Button("Add a device…") { pairing = makePairing(session) }
+                        .disabled(session.bridge == nil)
+                        .accessibilityIdentifier("account.addDevice")
+                }
+                Text(
+                    """
+                    "Add a device" hands this vault's key to another Mac, after \
+                    you have compared six digits on both screens.
+                    """
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The picker writes through `SessionModel.switchTo`, never straight into
+    /// the registry: selecting a vault the app has not opened yet would leave
+    /// the list and the open core disagreeing about which vault this is.
+    private func selection(_ vaults: VaultRegistry) -> Binding<String> {
+        Binding(
+            get: { vaults.selectedID },
+            set: { id in
+                guard let descriptor = vaults.vaults.first(where: { $0.id == id }) else { return }
+                switchVault { await session?.switchTo(descriptor) }
+            }
+        )
+    }
+
+    private func switchVault(_ work: @escaping () async -> Void) {
+        switching = true
+        Task {
+            await work()
+            switching = false
+        }
+    }
+
+    private func makePairing(_ session: SessionModel) -> PairingModel {
+        PairingModel(
+            intent: .addAnotherDevice,
+            relayURL: settings.relayURL.trimmed,
+            sealRoot: { [bridge = session.bridge] pairing in
+                guard let bridge else { throw PairingUIError.noOpenVault }
+                return try await bridge.sendVaultRoot(to: pairing)
+            }
+        )
     }
 
     /// `Settings → Notifications`, as `docs/08-features/notifications.md`
