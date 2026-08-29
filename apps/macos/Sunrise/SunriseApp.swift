@@ -153,6 +153,15 @@ final class AppSurfaces {
     private(set) var menuBar: MenuBarModel?
     private(set) var hotkeyStatus: HotkeyStatus = .idle
 
+    /// The vault these surfaces are bound to, or `nil` between one being
+    /// closed and the next being opened.
+    ///
+    /// Held rather than only closed over, because a capture has to be written
+    /// to whichever core is open *at the moment return is pressed*. A closure
+    /// that captured the bridge `attach` was called with would keep writing
+    /// into a `Core` that ``SessionModel/switchTo(_:)`` has already shut down.
+    private(set) var vault: CoreBridge?
+
     /// The local-notification schedule. Absent until the vault opens, for the
     /// same reason the menu bar is: there is nothing to remind anyone about
     /// until there is something to read it from.
@@ -184,12 +193,27 @@ final class AppSurfaces {
     private var capture: CaptureModel?
     private var hotkeyWatcher: _Concurrency.Task<Void, Never>?
 
-    /// Bind to an open vault. Called when the session unlocks; idempotent, so
-    /// a re-render cannot double the subscriptions behind it.
+    /// Bind to an open vault. Called when the session unlocks, and again on
+    /// every vault it opens after that.
+    ///
+    /// **Rebuilds rather than skipping.** This used to return early when
+    /// `menuBar` was already set, which was right while a Mac had exactly one
+    /// vault and wrong the moment multi-account switching landed:
+    /// ``SessionModel/switchTo(_:)`` shuts the old `Core` down, and every
+    /// object below holds a bridge to it. Left in place they would show the
+    /// previous vault's counts, schedule the previous vault's reminders, and —
+    /// worst — accept a ⌘⇧N capture into a core that cannot write it.
+    ///
+    /// Still safe to call twice with the same bridge: tearing down and
+    /// rebuilding costs one subscription, and the alternative is the silent
+    /// data loss above.
     func attach(bridge: CoreBridge) {
-        guard menuBar == nil else { return }
+        releaseVault()
+        vault = bridge
         menuBar = MenuBarModel(bridge: bridge)
-        let panel = QuickCapturePanel(bridge: bridge)
+        let panel = QuickCapturePanel(bridge: bridge) { [weak self] draft in
+            try await self?.commitCapture(draft)
+        }
         self.panel = panel
         capture = panel.capture
         reminders = ReminderScheduler(
@@ -225,6 +249,18 @@ final class AppSurfaces {
         }
         panel.present()
         if !prefill.isEmpty { capture?.text = prefill }
+    }
+
+    /// Write one captured line into the vault that is open *now*.
+    ///
+    /// Throws rather than swallowing. This used to be `try?` inside the panel,
+    /// which meant a capture the core refused — most sharply, one aimed at a
+    /// vault that had just been switched away from — vanished with no error at
+    /// all. Quick capture is the fastest way in this app to record a thought
+    /// and it was, until this, also the fastest way to lose one.
+    func commitCapture(_ draft: TaskDraftIn) async throws {
+        guard let vault else { throw CaptureError.noOpenVault }
+        _ = try await vault.submit(.createTask(draft: draft))
     }
 
     /// Act on a `sunrise://` link, from wherever it came.
@@ -303,17 +339,50 @@ final class AppSurfaces {
         _Concurrency.Task { await reminders.perform(action, on: entity) }
     }
 
-    /// Release the hotkey watcher.
+    /// Let go of everything bound to the vault that is open.
     ///
     /// Not a `deinit`: `hotkeyWatcher` is main-actor isolated and a `deinit` is
     /// not, so cancelling there is exactly the kind of cross-actor touch Swift
-    /// 6 refuses. This object lives as long as the app anyway; the method
-    /// exists so a test can stop the watcher it started.
-    func detach() {
+    /// 6 refuses. `attach` calls this first, and a test calls ``detach()``.
+    ///
+    /// The panel is closed rather than merely dropped, because its content view
+    /// is an `NSHostingView` holding the old `CaptureModel` — and a borderless
+    /// panel left on screen over the new vault would take a line and write it
+    /// nowhere.
+    private func releaseVault() {
         hotkeyWatcher?.cancel()
         hotkeyWatcher = nil
+        panel?.close()
+        panel = nil
+        capture = nil
+        menuBar = nil
+        reminders = nil
+        vault = nil
+    }
+
+    /// Release the vault surfaces *and* the hotkey.
+    ///
+    /// The hotkey is the one thing `attach` does not rebuild — it is a
+    /// registration with the window server, not a thing bound to a vault — so
+    /// giving it back belongs here and not in ``releaseVault()``.
+    func detach() {
+        releaseVault()
         hotkey.unregister()
         hotkeyStatus = hotkey.status
+    }
+}
+
+/// Why a capture could not be written.
+enum CaptureError: Error, Equatable, LocalizedError {
+    /// No vault is open — the window between one being closed and the next
+    /// being opened, which multi-account switching made reachable.
+    case noOpenVault
+
+    var errorDescription: String? {
+        switch self {
+        case .noOpenVault:
+            "No vault is open. Open Sunrise and try again."
+        }
     }
 }
 
@@ -345,9 +414,14 @@ private struct MenuBarScene: View {
                 openCapture: { surfaces.openQuickCapture() },
                 hotkey: surfaces.hotkeyStatus
             )
-            .task { await model.refresh() }
-            .task { await model.poll() }
-            .task { await model.follow() }
+            // Keyed on the model's identity, not left bare. A vault switch
+            // hands this branch a *different* `MenuBarModel` in the same place
+            // in the view tree, and a bare `.task` would keep running against
+            // the one that was replaced — the new vault's counts would never
+            // be read.
+            .task(id: ObjectIdentifier(model)) { await model.refresh() }
+            .task(id: ObjectIdentifier(model)) { await model.poll() }
+            .task(id: ObjectIdentifier(model)) { await model.follow() }
         } else {
             // The vault is not open: locked, first run, or still starting.
             // Saying so beats an empty menu, and the main window is where every
@@ -381,7 +455,7 @@ private final class QuickCapturePanel {
     /// `present()` has cleared it.
     let capture: CaptureModel
 
-    init(bridge: CoreBridge) {
+    init(bridge: CoreBridge, commit: @escaping (TaskDraftIn) async throws -> Void) {
         capture = CaptureModel(bridge: bridge)
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 120),
@@ -392,13 +466,7 @@ private final class QuickCapturePanel {
         let model = capture
         let dismiss: () -> Void = { [weak panel] in panel?.orderOut(nil) }
         panel.contentView = NSHostingView(
-            rootView: QuickCaptureView(
-                model: model,
-                commit: { draft in
-                    _ = try? await bridge.submit(.createTask(draft: draft))
-                },
-                dismiss: dismiss
-            )
+            rootView: QuickCaptureView(model: model, commit: commit, dismiss: dismiss)
         )
         FloatingPanel.configure(panel)
         panel.isReleasedWhenClosed = false
@@ -414,5 +482,16 @@ private final class QuickCapturePanel {
         panel.center()
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// Take it off screen and drop what it was hosting.
+    ///
+    /// `isReleasedWhenClosed` is false, so `close()` is not a deallocation —
+    /// clearing `contentView` is what actually lets go of the `CaptureModel`
+    /// and the bridge behind it.
+    func close() {
+        panel.orderOut(nil)
+        panel.contentView = nil
+        panel.close()
     }
 }

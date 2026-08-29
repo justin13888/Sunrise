@@ -26,7 +26,14 @@ struct RootView: View {
                         // reminder schedule need the same open vault this
                         // window is using, and this is the first moment there
                         // is one.
-                        .task {
+                        //
+                        // Keyed on the bridge's identity: switching vaults
+                        // opens a different `Core`, and the three surfaces
+                        // above have to be rebuilt against it. Without the id
+                        // this would not re-run if SwiftUI ever reused the
+                        // view — and the surfaces would go on writing to a
+                        // core that has been shut down.
+                        .task(id: ObjectIdentifier(bridge)) {
                             surfaces.attach(bridge: bridge)
                             await surfaces.reminders?.start()
                         }

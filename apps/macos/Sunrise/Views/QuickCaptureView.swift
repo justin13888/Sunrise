@@ -11,11 +11,15 @@ import SwiftUI
 /// system-wide hotkey).
 struct QuickCaptureView: View {
     @Bindable var model: CaptureModel
-    let commit: (TaskDraftIn) async -> Void
+    /// Throwing, and that is the point. A capture the core refuses has to be
+    /// visible: this panel is the fastest way in the app to record a thought,
+    /// and a swallowed error made it the fastest way to lose one.
+    let commit: (TaskDraftIn) async throws -> Void
     let dismiss: () -> Void
 
     @FocusState private var focused: Bool
     @State private var confirmation: String?
+    @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -49,6 +53,15 @@ struct QuickCaptureView: View {
                     .font(.caption)
                     .foregroundStyle(.green)
             }
+            // Not dismissed on a timer, unlike the confirmation above: this
+            // one asks the user to do something — the line it names is back in
+            // the field, waiting to be sent again.
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("quick-capture.failure")
+            }
         }
         .padding(16)
         .frame(width: 560)
@@ -59,15 +72,28 @@ struct QuickCaptureView: View {
 
     /// Commit and stay open, so a burst of three thoughts is three lines rather
     /// than three trips to the hotkey. Escape closes it.
+    ///
+    /// `takeDraft()` clears the field, which is right when the write lands and
+    /// wrong when it does not — so the typed line is kept here and put back on
+    /// a failure. The user's words are the one thing this surface may not lose.
     private func submit() {
+        let typed = model.text
         guard let draft = model.takeDraft() else { return }
         let title = draft.title
         _Concurrency.Task {
-            await commit(draft)
-            confirmation = "Captured “\(title)”"
-            focused = true
-            try? await _Concurrency.Task.sleep(for: .seconds(2))
-            if confirmation?.contains(title) == true { confirmation = nil }
+            do {
+                try await commit(draft)
+                failure = nil
+                confirmation = "Captured “\(title)”"
+                focused = true
+                try? await _Concurrency.Task.sleep(for: .seconds(2))
+                if confirmation?.contains(title) == true { confirmation = nil }
+            } catch {
+                confirmation = nil
+                model.text = typed
+                failure = "Not saved: \(error.localizedDescription)"
+                focused = true
+            }
         }
     }
 
