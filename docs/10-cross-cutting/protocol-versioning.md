@@ -31,7 +31,7 @@ ENVELOPE_FORMAT_V = 3
 DOC_SCHEMA_V      = 4
 DOC_SCHEMA_FLOOR  = 1
 CRYPTO_SUITE_V    = 1
-STORAGE_V         = 13
+STORAGE_V         = 14
 ```
 
 Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants.
@@ -63,7 +63,7 @@ redefinition. The change itself is required for correctness — an id-only delet
 cannot converge under entity-level LWW
 ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
 
-`STORAGE_V` is per-device and never appears on the wire; `13` is the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below it is refused rather than upgraded.
+`STORAGE_V` is per-device and never appears on the wire. It is `14`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. `0014_stream_sort_order.sql` is the first migration appended after the reset, so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
 
 ---
 

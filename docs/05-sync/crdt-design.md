@@ -7,9 +7,10 @@ status: accepted
 > **This document describes target state, not v1.**
 > [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003:
 > Sunrise v1 merges at **entity granularity with last-writer-wins in SQLite**
-> (`sunrise-core::engine::lww_wins`; the `lww_*` columns now arrive in
-> `0013_baseline.sql`, which collapsed the numbered migrations per
-> [ADR-0018](../11-adr/0018-storage-baseline-reset.md)) and
+> (`sunrise-core::engine::lww_wins`; the `lww_*` columns arrive in
+> `0013_baseline.sql`, the collapse of the numbered migrations per
+> [ADR-0018](../11-adr/0018-storage-baseline-reset.md), which later migrations
+> append to rather than replace) and
 > ships **no CRDT library**. The per-field types below — OR-Sets, PN-counters,
 > RichText, fractional-index lists — are the design we would adopt when
 > collaborative note bodies or per-field merge become real requirements. See

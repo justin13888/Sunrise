@@ -60,7 +60,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `db.migrate.start` | info | Schema work beginning; `from_v`, `to_v`, `mode` (`fresh`/`upgrade`). |
 | `db.migrate.ok` | info | Schema at `to_v`. |
 | `db.migrate.failed` | error | A migration statement failed; `from_v`, `to_v`, `err_code`, `cause`. The one storage failure that leaves a user unable to open a vault at all. |
-| `db.migrate.refused` | error | The vault predates the `STORAGE_V = 13` baseline (ADR-0018) and cannot be upgraded; `from_v`, `to_v`, `err_code`. Terminal: the remedy is a fresh vault. |
+| `db.migrate.refused` | error | The vault predates the `BASELINE_STORAGE_V = 13` baseline (ADR-0018) and cannot be upgraded; `from_v`, `to_v`, `err_code`. Terminal: the remedy is a fresh vault. |
 
 ### `sync` — `sunrise-core::sync_driver`, `sunrise-cli::livesync`
 

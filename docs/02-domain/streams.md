@@ -106,6 +106,16 @@ Writing it:
   no defined place in the list, and one such write is permanent, because
   nothing over the alphabet sorts after it.
 - `sunrise streams move <id|name> before <id|name>` / `… last` is the CLI verb.
+- On macOS it is a drag: the sidebar's stream section is a `ForEach` with
+  `.onMove`, which computes the key from the same seam helper and submits
+  `UpdateStream`. The Inbox sits outside that `ForEach` because it sits outside
+  the *order* — it is synthetic, the core pins it to the top, and nothing may
+  be dropped above it.
+- The column is `streams.sort_order`, added by
+  `crates/sunrise-storage/migrations/0014_stream_sort_order.sql` at
+  `STORAGE_V = 14`. `DOC_SCHEMA_V` did **not** move for it: `sort_order` was
+  already a required `tstr` on the wire, carrying `"a0"`, so a real value went
+  into a field that already existed rather than a field being added.
 
 The string is bounded by a defrag rule:
 

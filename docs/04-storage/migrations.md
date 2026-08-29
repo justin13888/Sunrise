@@ -4,16 +4,17 @@ status: accepted
 
 # Migrations
 
-> **Pre-1.0 baseline.** As of `STORAGE_V = 13` the migration *list* is a single
-> file, `crates/sunrise-storage/migrations/0013_baseline.sql`. Migrations
-> 0001–0012 were collapsed into it and deleted, and a vault stamped
-> `0 < storage_v < 13` is **refused** (`DbError::StorageVPreBaseline` →
-> `STORAGE_V_TOO_OLD`) rather than upgraded. Nothing below changes: the runner,
-> the ordering rule, the single-transaction guarantee, and the append-only rule
-> for new migrations are all still in force, and the next schema change appends
-> file 0014 exactly as it always would have. See
-> [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why this was done
-> once, and why it does not happen again after 1.0.
+> **Pre-1.0 baseline, and one append on top of it.** `BASELINE_STORAGE_V` is
+> **13**: migrations 0001–0012 were collapsed into
+> `crates/sunrise-storage/migrations/0013_baseline.sql` and deleted, and a vault
+> stamped `0 < storage_v < 13` is **refused**
+> (`DbError::StorageVPreBaseline` → `STORAGE_V_TOO_OLD`) rather than upgraded.
+> `STORAGE_V` is now **14**: `0014_stream_sort_order.sql` is the first migration
+> appended after that reset, and 0013 was not touched to make room for it —
+> which is exactly the append-only rule the reset reinstated, exercised once.
+> The runner, the ordering rule and the single-transaction guarantee are
+> unchanged. See [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why
+> the collapse was done once, and why it does not happen again after 1.0.
 
 Two kinds of migrations:
 
@@ -87,17 +88,24 @@ This is an internal capability used by the app on first launch after major-versi
 
 ## Migration testing
 
-Today, with one migration in the list, `crates/sunrise-storage/src/db.rs`
-asserts the two facts that exist to assert:
+With two migrations in the list, `crates/sunrise-storage/src/db.rs` and
+`migrations.rs` assert:
 
-- a fresh vault applies the baseline and lands at `STORAGE_V`, with the tables
-  the collapse was supposed to preserve and without the schema it was supposed
-  to drop;
+- a fresh vault applies both and lands at `STORAGE_V`, with the tables the
+  collapse was supposed to preserve and without the schema it was supposed to
+  drop;
 - every `storage_v` in `1..13` is refused with `StorageVPreBaseline`, and a
-  `storage_v` above `STORAGE_V` with `StorageVTooNew`.
+  `storage_v` above `STORAGE_V` with `StorageVTooNew`;
+- 0014 adds `streams.sort_order` defaulting to the "never ordered" empty
+  string, and its backfill hands every pre-existing row a key **in the order
+  those rows were already being displayed** — asserted by replaying 0013 and
+  then 0014 by hand, because a fresh vault has no rows for a backfill to touch,
+  which is precisely the case a fresh-vault test cannot cover;
+- migration ids strictly ascend, and `current_storage_v()` equals the
+  `STORAGE_V` constant, so the list and the constant cannot drift apart.
 
-When migration 0014 lands, the fixture regime below applies to it and to every
-migration after it:
+Migration 0014 has landed, so the fixture regime below applies to it and to
+every migration after it:
 
 - Each migration ships with a "before" fixture (a small vault file) and an "after" expected state.
 - CI runs every migration over every prior fixture to ensure forward migration is correct.

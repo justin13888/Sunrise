@@ -30,7 +30,10 @@ All multi-row writes are wrapped in a single `BEGIN IMMEDIATE … COMMIT`. Reads
 
 > **The schema itself lives in
 > [`crates/sunrise-storage/migrations/0013_baseline.sql`](../../crates/sunrise-storage/migrations/0013_baseline.sql),
-> and that file is the source of truth.** It is one file, not a sequence
+> and that file is the source of truth**, together with the migrations appended
+> after it — today just
+> [`0014_stream_sort_order.sql`](../../crates/sunrise-storage/migrations/0014_stream_sort_order.sql),
+> which adds `streams.sort_order`. The baseline is a collapse, not a sequence
 > ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and it carries the
 > design rationale for each table on the table. This section describes the
 > *shape and the reasons*; it deliberately does not restate every column, because
