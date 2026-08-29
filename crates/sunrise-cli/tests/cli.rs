@@ -420,6 +420,165 @@ fn edit_defer_and_drop_all_take_several_ids() {
 }
 
 // ---------------------------------------------------------------------------
+// Retitling
+//
+// The last unwritable field. `edit` reaches six of `TaskPatch`'s fields and
+// deliberately not this one: its grammar refuses bare words, so a task
+// captured with a typo used to be fixable only from the macOS app. `retitle`
+// is the other half, and the tests below are mostly about the seam *between*
+// the two verbs — each has the rule the other must not have.
+// ---------------------------------------------------------------------------
+
+/// The typo case the parity matrix names, followed through the FTS index: a
+/// rename nobody can search for has only half landed.
+#[test]
+fn retitle_fixes_a_typo_and_search_finds_the_new_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Renew pasport"]));
+
+    let out = run(dir.path(), &["retitle", &id, "Renew", "passport"]);
+    assert!(out.status.success(), "retitle failed: {out:?}");
+    let line = stdout(&out);
+    assert!(line.contains("Renew passport"), "got {line:?}");
+    assert!(
+        line.contains("Renew pasport"),
+        "the old title is echoed so the change is visible: {line:?}"
+    );
+
+    // A separate process, through the query path, and through search — the
+    // rename has to reach the FTS index and not just the row.
+    let inbox = stdout(&run(dir.path(), &["inbox"]));
+    assert!(inbox.contains("Renew passport"), "got {inbox:?}");
+    assert!(
+        !inbox.contains("pasport"),
+        "the typo must be gone: {inbox:?}"
+    );
+    assert!(
+        stdout(&run(dir.path(), &["search", "passport"])).contains(&id),
+        "the new title must be searchable"
+    );
+    assert!(
+        !stdout(&run(dir.path(), &["search", "pasport"])).contains(&id),
+        "the old title must not still be indexed"
+    );
+}
+
+/// **The reason retitle is its own verb.** The two tails are parsed by
+/// opposite rules, and each rule is right for its own verb: `retitle`'s tail
+/// is a title by construction, so `#work` in it is four characters of text;
+/// `edit`'s is all grammar, so a bare word stays a rejected token. Neither
+/// could hold both rules at once, which is what a `--title` flag would have
+/// asked of `edit`.
+#[test]
+fn a_title_is_all_text_where_an_edit_line_is_all_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Placeholder"]));
+
+    // Sigils in a title are text, not tokens: the task is not moved to a
+    // stream, not given a priority, and not rejected for "tomorow".
+    let out = run(dir.path(), &["retitle", &id, "#work !1 tomorow"]);
+    assert!(out.status.success(), "retitle must absorb sigils: {out:?}");
+    assert!(
+        stdout(&run(dir.path(), &["inbox"])).contains("#work !1 tomorow"),
+        "the sigils belong in the title verbatim"
+    );
+
+    // And the rule `edit` depends on is untouched: a bare word is still a
+    // malformed token, never a new title, and it still rejects the whole line.
+    let out = run(dir.path(), &["edit", &id, "^+6h tomorow"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not an edit token"),
+        "got {out:?}"
+    );
+    assert!(
+        !stdout(&run(dir.path(), &["today"])).contains("#work"),
+        "the good half of a rejected edit line must still not be applied"
+    );
+}
+
+/// A title is the one field where "empty" is a line to refuse rather than a
+/// value to store: `!-` clears a priority and nothing clears a title.
+#[test]
+fn retitle_refuses_an_empty_title_rather_than_writing_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Keep this title"]));
+
+    for args in [
+        vec!["retitle", &id, "   "],
+        vec!["retitle", &id],
+        vec!["retitle", "not-an-id"],
+        vec!["retitle"],
+    ] {
+        let out = run(dir.path(), &args);
+        assert!(!out.status.success(), "{args:?} must fail: {out:?}");
+    }
+    assert!(
+        stdout(&run(dir.path(), &["inbox"])).contains("Keep this title"),
+        "no refusal above may have written anything"
+    );
+}
+
+/// Every other mutating verb takes `<id>...`; this one does not, because a
+/// title is what tells two tasks apart. Refused with an explanation rather
+/// than silently retitling the first and dropping the rest.
+#[test]
+fn retitle_takes_one_task_where_the_other_verbs_take_a_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = id_of(&run(dir.path(), &["capture", "First thing"]));
+    let b = id_of(&run(dir.path(), &["capture", "Second thing"]));
+
+    let out = run(dir.path(), &["retitle", &a, &b, "Same name"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("retitle takes one task"),
+        "the refusal must say why: {out:?}"
+    );
+    let inbox = stdout(&run(dir.path(), &["inbox"]));
+    assert!(
+        inbox.contains("First thing") && inbox.contains("Second thing"),
+        "neither task may have been renamed: {inbox:?}"
+    );
+}
+
+/// `focus end` closes what `focus <id>` opened. Without it a session started
+/// here could only be closed from macOS, which is not a CLI a cron job can
+/// use — and `--done` is the focus screen's "complete" action, which
+/// auto-completes the task.
+#[test]
+fn focus_end_closes_the_running_session_and_done_completes_the_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = id_of(&run(dir.path(), &["capture", "Write the report"]));
+
+    // Nothing running yet: a refusal, not a silent success.
+    assert!(!run(dir.path(), &["focus", "end"]).status.success());
+
+    assert!(run(dir.path(), &["focus", &id]).status.success());
+    let out = run(dir.path(), &["focus", "end"]);
+    assert!(out.status.success(), "focus end failed: {out:?}");
+    assert!(stdout(&out).starts_with("fcs_"), "got {out:?}");
+    // A session is immutable once closed, so the second end finds none.
+    assert!(!run(dir.path(), &["focus", "end"]).status.success());
+    assert!(
+        stdout(&run(dir.path(), &["review"])).contains("completed 0"),
+        "a plain end must not complete the task"
+    );
+
+    // `--done` is the user saying they finished it.
+    assert!(run(dir.path(), &["focus", &id]).status.success());
+    let out = run(dir.path(), &["focus", "end", "--done"]);
+    assert!(out.status.success(), "focus end --done failed: {out:?}");
+    assert!(
+        stdout(&run(dir.path(), &["review"])).contains("completed 1"),
+        "--done must complete the task the session was opened on"
+    );
+
+    assert!(!run(dir.path(), &["focus", "end", "--nope"])
+        .status
+        .success());
+}
+
+// ---------------------------------------------------------------------------
 // Multi-account
 //
 // `SUNRISE_VAULT` has always given each vault its own directory. Until
@@ -618,8 +777,10 @@ fn the_write_verbs_are_documented_in_the_usage_block() {
     let help = stdout(&run(dir.path(), &["help"]));
     for line in [
         "sunrise edit",
+        "sunrise retitle",
         "sunrise defer",
         "sunrise drop",
+        "sunrise focus end",
         "EDIT SYNTAX",
     ] {
         assert!(help.contains(line), "{line} missing from help:\n{help}");

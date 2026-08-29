@@ -35,6 +35,8 @@ capture and triage
   sunrise capture <text>...    parse and commit one task, then exit
   sunrise edit <id>... <tokens>...
                                change a task's fields (annotate grammar)
+  sunrise retitle <id> <text>...
+                               give one task a new title
   sunrise defer <id>... <when> push tasks out, counting the deferral
   sunrise done <id>...         complete one or more tasks
   sunrise drop <id>...         soft-delete one or more tasks
@@ -64,6 +66,8 @@ account
 
 plumbing
   sunrise focus <id>           open a focus session on a task
+  sunrise focus end [--done]   close every running session; --done completes
+                               the task it was opened on
   sunrise sync --once          drain the outbox and exit (cron / CI)
 ```
 
@@ -107,13 +111,32 @@ It reaches six of `TaskPatch`'s fifteen fields — priority, energy, estimated
 duration, scheduled, due and contexts — plus the Stream, which travels as
 `Command::PromoteToStream` rather than as a patch field because the move
 re-keys the task's storage. **The title is not among them**, and neither is the
-`body`: a bare word is refused rather than read as a new title, so a task
-captured with a typo is re-titled from the macOS editor or not at all. That
-refusal is the deliberate difference from capture, and it goes one step
-further: **one bad token rejects the whole line**. A capture line is a title, so
-unrecognised text belongs in it; an edit line is not, and a script that mistyped
-one token is better served by a non-zero exit than by four of its five changes
-landing.
+`body`: a bare word is refused rather than read as a new title. That refusal is
+the deliberate difference from capture, and it goes one step further: **one bad
+token rejects the whole line**. A capture line is a title, so unrecognised text
+belongs in it; an edit line is not, and a script that mistyped one token is
+better served by a non-zero exit than by four of its five changes landing.
+
+`retitle` is the title, and it is a **separate verb** precisely so that refusal
+can stand. A title is free text that will sooner or later contain a `#` or a
+`!`, so a title token inside the annotate grammar — or a `--title` flag, which
+has to swallow the rest of the line — would make a bare word mean "title text"
+in one reading and "malformed token" in another, and `edit` would have to stop
+refusing it to tell the two apart. Split in two, each verb keeps the rule that
+is right for it: `retitle`'s tail is a title by construction and absorbs
+anything, exactly as `capture`'s does, while `edit`'s stays all grammar.
+
+It takes **one** task where the other mutating verbs take `<id>...`: a title is
+the field that tells two tasks apart, so one title applied to five is a mistake
+worth refusing rather than a bulk operation worth offering. Empty is refused
+too — `!-` clears a priority, and nothing clears a title.
+
+`focus end` closes what `focus <id>` and `next` opened, so a session started
+here no longer has to be closed from the app. It looks the session up rather
+than taking an `fcs_` id, because neither of those commands ever printed one,
+and it closes **every** running session: two devices starting concurrently both
+mint a valid session, so "end my focus" means all of them. `--done` is the focus
+screen's "complete" action, which also completes the task.
 
 `defer` is not `edit ^when`. It is `Command::DeferTask`, which also bumps the
 Task's `deferred_count` — the counter `sunrise review` reports as "deferred",

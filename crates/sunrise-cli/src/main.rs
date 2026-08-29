@@ -53,6 +53,8 @@ USAGE:
     sunrise capture <text>...    parse and commit one task, then exit
     sunrise edit <id>... <tokens>...
                                  change a task's fields (see EDIT SYNTAX)
+    sunrise retitle <id> <text>...
+                                 give one task a new title
     sunrise defer <id>... <when> push tasks out, counting the deferral
     sunrise done <id>...         complete one or more tasks
     sunrise drop <id>...         soft-delete one or more tasks
@@ -90,6 +92,8 @@ USAGE:
 
   plumbing
     sunrise focus <id>           open a focus session on a task
+    sunrise focus end [--done]   close every running session; --done also
+                                 completes the task it was opened on
     sunrise sync --once          drain the outbox and exit (cron / CI)
     sunrise help                 show this message
 
@@ -107,6 +111,7 @@ EDIT SYNTAX:
 
     Bare words are refused: an edit line is not a title, and the whole
     line is rejected if any token is, so nothing is half-applied.
+    The title is `sunrise retitle`, which is all title and no grammar.
 
 ENVIRONMENT:
     SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
@@ -451,11 +456,16 @@ async fn dispatch(
         // `docs/07-clients/tui.md` §Capture from anywhere: "sunrise focus
         // next — picks next Today task and enters focus".
         "next" => next(core, false).await,
+        // `end` sits beside `next` for the same reason: neither is a task id
+        // (`tsk_…` is the only thing `focus_on` accepts), so a bare word here
+        // is unambiguously a mode and never a mistyped target.
         "focus" => match rest.first().map(String::as_str) {
             Some("next") | None => next(core, true).await,
+            Some("end") => end_focus(core, &rest[1..]).await,
             Some(id) => focus_on(core, id).await,
         },
         "edit" => edit(core, rest).await,
+        "retitle" => retitle(core, rest).await,
         "defer" => defer(core, rest).await,
         "drop" => drop_tasks(core, rest).await,
         "review" => review(core).await,
@@ -801,6 +811,70 @@ async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// `retitle <id> <text>...` — give one task a new title.
+///
+/// **Its own verb rather than a token in the annotate grammar, and rather than
+/// a flag on `edit`.** [`sunrise_domain::annotate`] states the rule this
+/// preserves: an edit line is not a title, so a bare word there is refused and
+/// one bad token rejects the whole line. A title is free text containing
+/// spaces and, sooner or later, a `#` or a `!`; putting it inside that grammar
+/// would make a bare word mean "title text" in one reading and "malformed
+/// token" in another, and the refusal `edit` depends on would have to be
+/// weakened to tell them apart. A `--title` flag has the same defect one level
+/// up — it has to swallow the rest of the line, so `edit <id> --title fix the
+/// typo !1` has no answer for where the title stops.
+///
+/// Split into two verbs, each gets the rule that is right for it: `retitle`'s
+/// tail is a title by construction and absorbs anything, exactly as `capture`'s
+/// does, while `edit`'s stays all grammar. Nothing here touches
+/// [`sunrise_domain::parse_annotate`].
+///
+/// **One task, not a list.** Every other mutating verb takes `<id>...` because
+/// its change is uniform across them; a title is the field that tells two tasks
+/// apart, so applying one to five is a mistake worth refusing rather than a
+/// bulk operation worth offering.
+///
+/// The write path already existed: [`sunrise_domain::TaskPatch`] carries
+/// `title`, and both it and the engine trim and reject an empty one. This
+/// checks it here as well so the refusal costs no round trip and names the
+/// command the user typed.
+async fn retitle(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    let (ids, tail) = split_task_ids(rest);
+    let [id] = ids[..] else {
+        if ids.is_empty() {
+            return Err("usage: retitle <id> <text>...; see `sunrise help`".into());
+        }
+        return Err("retitle takes one task: a title is what tells two tasks \
+                    apart, so one title for several of them loses the \
+                    difference rather than saving a command"
+            .into());
+    };
+    // A title is the one field where empty is not a value to store but a line
+    // to refuse — `!-` clears a priority, and nothing clears a title.
+    let title = sunrise_domain::validation::validate_title(
+        &tail.join(" "),
+        "task.title",
+        sunrise_domain::MAX_TASK_TITLE_LEN,
+    )
+    .map_err(|e| format!("that title will not do: {e}"))?;
+
+    // Read first, so a mistyped id fails before anything is written and the
+    // old title can be shown beside the new one.
+    let QueryResult::Task(before) = core.query(Query::EntityById(id)).await? else {
+        return Err(format!("no such task: {}", id.to_str()).into());
+    };
+    let patch = sunrise_domain::TaskPatch {
+        title: Some(title.clone()),
+        ..Default::default()
+    };
+    core.submit(Command::UpdateTask { id, patch }).await?;
+    // Both titles, because the whole point of the command is that the old one
+    // was wrong and a silent success would have to be checked with a `search`.
+    println!("{}  {title}  (was {:?})", id.to_str(), before.title);
+    Ok(())
+}
+
 /// `defer <id>... <when>` — push tasks out to a new date.
 ///
 /// Separate from `edit ^when`, which merely sets `scheduled_at`. This is
@@ -923,6 +997,49 @@ async fn focus_on(core: &Core, raw: &str) -> Result<(), Box<dyn std::error::Erro
         }))
         .await?;
     println!("{}  focus session started", res.entity.to_str());
+    Ok(())
+}
+
+/// `focus end [--done]` — close the running session(s).
+///
+/// The session id is looked up rather than typed: `focus <id>` and `next` both
+/// take a **task**, and neither prints the `fcs_` id they minted, so requiring
+/// one here would name a thing this surface never gave the user.
+///
+/// Every running session is closed, not just one. Two devices starting
+/// concurrently mint different ids and both are valid
+/// ([`Command::StartFocus`]), so "end my focus" means all of them; closing one
+/// and leaving the rest running is the state a user would have to discover
+/// with a second command.
+///
+/// `actual_focused_ms` is left `None`, which freezes the derived elapsed time.
+/// A one-shot process tracked no pauses, so it has no smaller real figure to
+/// offer and must not invent one.
+async fn end_focus(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    let completed_task = match rest.first().map(String::as_str) {
+        None => false,
+        Some("--done") if rest.len() == 1 => true,
+        Some(other) => return Err(format!("usage: focus end [--done]; got {other:?}").into()),
+    };
+    let QueryResult::FocusSessions(rows) = core.query(Query::RunningFocusSessions).await? else {
+        return Err("unexpected query result".into());
+    };
+    if rows.is_empty() {
+        return Err("no focus session is running; `sunrise focus <id>` opens one".into());
+    }
+    for r in rows {
+        let id = r.session.start.id;
+        core.submit(Command::EndFocus {
+            session: id,
+            actual_focused_ms: None,
+            completed_task,
+        })
+        .await?;
+        // Minutes, because a focus session is reported in minutes everywhere
+        // else and a millisecond count is not a thing anyone reads.
+        println!("{}  focused {}m", id.to_str(), r.focused_ms / 60_000);
+    }
     Ok(())
 }
 
