@@ -16,10 +16,10 @@ import SwiftUI
 struct LockedView: View {
     let reason: SessionModel.LockReason
     let retry: () async -> Void
-    /// Defaulted so `RootView` — which does not pass a session down — keeps
-    /// compiling, and injectable so a test can drive this without the
-    /// process-wide one.
-    var session: SessionModel? = SessionModel.active
+    /// The session this screen is a phase of. Passed in by ``RootView``, which
+    /// owns it; optional only so a preview can stand this screen up without
+    /// one.
+    let session: SessionModel?
 
     @State private var pairing: PairingModel?
     @State private var settings = AppSettings()

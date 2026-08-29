@@ -185,3 +185,64 @@ struct SessionModelTests {
         #expect(session.phase == .failed("the Keychain is locked"))
     }
 }
+
+/// The three screens `RootView` builds that need the session it is showing.
+///
+/// They used to default to `SessionModel.active`, a memoized process-wide
+/// instance, because `RootView` did not pass one down. That worked and was
+/// still wrong: the screen that switches vaults has to act on the session the
+/// window is actually rendering, and a global is the one thing that cannot be
+/// proved to be that. The global is gone; these are the call sites that
+/// replaced it, and this is what stops one of them silently regrowing a
+/// default.
+@MainActor
+struct SessionInjectionTests {
+    private func session() -> SessionModel {
+        SessionModel(
+            location: VaultLocation(directory: URL(filePath: "/dev/null")),
+            rootStore: StubRootStore(),
+            appVersion: "test"
+        )
+    }
+
+    @Test
+    func onboardingAdoptsAPairedRootIntoTheSessionItWasGiven() {
+        let model = session()
+        let view = OnboardingView(create: {}, session: model)
+        #expect(view.session === model)
+    }
+
+    @Test
+    func theLockedScreenPairsIntoTheSessionItWasGiven() {
+        let model = session()
+        let view = LockedView(reason: .keyMissingForExistingVault, retry: {}, session: model)
+        #expect(view.session === model)
+    }
+
+    /// Settings is the sharpest of the three: it both switches vaults and seals
+    /// this vault's root to another Mac, and `session.bridge` is what it seals
+    /// with. Sealing from a session other than the open one would hand a second
+    /// device the wrong key.
+    @Test
+    func settingsSwitchesAndSealsWithTheSessionItWasGiven() throws {
+        let suite = "sunrise-tests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let model = session()
+        let view = AccountView(
+            settings: AppSettings(defaults: defaults),
+            account: AccountModel(),
+            notifications: NotificationPreferences(defaults: defaults),
+            deviceID: "device",
+            hotkey: .active,
+            authorization: .authorized,
+            scheduledCount: 0,
+            signIn: {},
+            allowNotifications: {},
+            keyboard: KeyboardPreferences(defaults: defaults),
+            session: model
+        )
+        #expect(view.session === model)
+    }
+}

@@ -16,12 +16,15 @@ struct RootView: View {
                 ProgressView("Opening your vault…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .firstRun:
-                OnboardingView(create: session.createVault)
+                // The session goes down with it: "Pair with that device"
+                // adopts a vault root, which is a thing only the session can
+                // do.
+                OnboardingView(create: session.createVault, session: session)
             case let .locked(reason):
-                LockedView(reason: reason, retry: session.start)
+                LockedView(reason: reason, retry: session.start, session: session)
             case .unlocked:
                 if let bridge = session.bridge {
-                    VaultView(bridge: bridge, surfaces: surfaces)
+                    VaultView(bridge: bridge, session: session, surfaces: surfaces)
                         // The menu bar item, the capture panel and the
                         // reminder schedule need the same open vault this
                         // window is using, and this is the first moment there
@@ -64,6 +67,9 @@ struct RootView: View {
 /// The unlocked app.
 struct VaultView: View {
     let bridge: CoreBridge
+    /// Carried through to Settings, which is where a vault is switched and
+    /// where a second Mac is handed this vault's key.
+    let session: SessionModel
     let surfaces: AppSurfaces
 
     @State private var settings = AppSettings()
@@ -101,8 +107,9 @@ struct VaultView: View {
     @State private var tips = KeyboardTips()
     @FocusState private var pane: PaneFocus?
 
-    init(bridge: CoreBridge, surfaces: AppSurfaces) {
+    init(bridge: CoreBridge, session: SessionModel, surfaces: AppSurfaces) {
         self.bridge = bridge
+        self.session = session
         self.surfaces = surfaces
         _browse = State(initialValue: BrowseModel(bridge: bridge))
         _list = State(initialValue: TaskListModel(bridge: bridge))
@@ -185,7 +192,8 @@ struct VaultView: View {
                     scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
                     signIn: signIn,
                     allowNotifications: { await surfaces.reminders?.requestAuthorization() },
-                    keyboard: keys
+                    keyboard: keys,
+                    session: session
                 )
                 Button("Done") { showingSettings = false }
                     .keyboardShortcut(.defaultAction)

@@ -113,33 +113,21 @@ final class SessionModel {
         configurationError = failure
     }
 
-    /// The one session this process has.
-    ///
-    /// Memoized because it must be: `crates/sunrise-core/src/vault_lock.rs`
-    /// admits one open vault per process, so a second `SessionModel` could
-    /// only ever be the one that fails. `@State` initialisers are not
-    /// guaranteed to run once, and the screens that switch vaults have to be
-    /// acting on the session the window is actually showing.
-    private static var shared: SessionModel?
-
-    /// The live session, for the screens that cannot be handed one.
-    ///
-    /// `Views/AccountView.swift`, `OnboardingView` and `LockedView` are all
-    /// constructed by `RootView`, which does not pass the session down. They
-    /// default to this and take an explicit one in tests.
-    static var active: SessionModel? { shared }
-
     /// The app's own configuration. Falls straight to `.failed` when the
     /// Application Support directory is unusable, rather than pretending it is
     /// a first run.
+    ///
+    /// There is no memoized `shared` behind this and no `active` in front of
+    /// it. There used to be, so that `OnboardingView`, `LockedView` and
+    /// `AccountView` — which `RootView` built without passing the session down
+    /// — could reach one; they are handed it explicitly now, and a global that
+    /// nothing reads is a global that will eventually be read by mistake.
+    ///
+    /// `crates/sunrise-core/src/vault_lock.rs` still admits one open vault per
+    /// process, and that invariant does not depend on this being memoized: a
+    /// `SessionModel` opens nothing until ``start()`` is called, and the only
+    /// caller is the view built from the `@State` SwiftUI actually kept.
     static func standard() -> SessionModel {
-        if let shared { return shared }
-        let model = build()
-        shared = model
-        return model
-    }
-
-    private static func build() -> SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
         #if DEBUG

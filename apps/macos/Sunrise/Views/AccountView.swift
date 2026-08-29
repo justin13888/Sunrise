@@ -24,10 +24,11 @@ struct AccountView: View {
     /// The same object the `?` cheat sheet binds to, deliberately: two entry
     /// points to one setting is a convenience, two copies of it is a bug.
     @Bindable var keyboard: KeyboardPreferences
-    /// Defaulted so `RootView` — which does not pass a session down — keeps
-    /// compiling, and injectable so a test can drive this without the
-    /// process-wide one.
-    var session: SessionModel? = SessionModel.active
+    /// The open session, for the vault switcher and for sealing a root to a
+    /// new device. Passed in by ``VaultView``, which is handed it by
+    /// ``RootView``; optional only so a preview can stand this screen up
+    /// without one, which is what hides the Vaults section.
+    let session: SessionModel?
 
     @State private var pairing: PairingModel?
     @State private var newVaultName = ""
