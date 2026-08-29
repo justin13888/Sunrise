@@ -126,15 +126,72 @@ impl Clock for SystemClock {
     }
 
     fn timezone(&self) -> String {
-        // `TimeZone::system()` reads the OS zone (TZ / /etc/localtime) and
-        // already falls back to UTC when it cannot resolve one. Only the
-        // production clock consults it; tests inject a fake and get a fixed
-        // zone, so no test outcome depends on the host's timezone.
-        jiff::tz::TimeZone::system()
-            .iana_name()
-            .unwrap_or("UTC")
-            .to_string()
+        // Only the production clock consults the OS zone; tests inject a fake
+        // and get a fixed zone, so no test outcome depends on the host's.
+        system_iana_name().unwrap_or_else(|| "UTC".to_string())
     }
+}
+
+/// Where every Unix keeps the pointer to the device's zone.
+const LOCALTIME: &str = "/etc/localtime";
+
+/// The device's IANA zone name, or `None` when the OS will not name one.
+///
+/// # Why this is not just `TimeZone::system()`
+///
+/// It is asked first, and on Linux and Windows it answers. On **macOS it does
+/// not**: `/etc/localtime` there points into a versioned tree —
+/// `/var/db/timezone/zoneinfo/America/Toronto`, itself a link to
+/// `/var/db/timezone/tz/<tzdb-version>/zoneinfo/…` — which is not one of the
+/// TZ directories jiff strips a name from. It returns a nameless zone whose
+/// offset is **zero**, so `iana_name()` is `None` and the old fallback made
+/// every Mac claim to be in UTC.
+///
+/// That is not cosmetic. The device zone decides which civil day
+/// `Query::DayBlocks` covers and which instants a Task's scheduling
+/// constraints evaluate against, while the clients render civil time in the
+/// zone the OS gives *them*. West of UTC the two disagree for the last hours
+/// of every evening, and the calendar grid quietly returns nothing for blocks
+/// that are plainly on it.
+fn system_iana_name() -> Option<String> {
+    if let Some(name) = jiff::tz::TimeZone::system().iana_name() {
+        return Some(name.to_string());
+    }
+    // `read_link` first: it is the shortest spelling, and the one that still
+    // names the zone on a macOS whose canonical path buries it under a tzdb
+    // version directory. `canonicalize` is the fallback for a chain of links.
+    std::fs::read_link(LOCALTIME)
+        .ok()
+        .and_then(|p| zone_name_in(&p))
+        .or_else(|| {
+            std::fs::canonicalize(LOCALTIME)
+                .ok()
+                .and_then(|p| zone_name_in(&p))
+        })
+}
+
+/// Pull `America/Toronto` out of `…/zoneinfo/America/Toronto`.
+///
+/// Anchored on the **last** `zoneinfo` component so a versioned or nested tree
+/// resolves the same as a flat one, and the `posix/` and `right/` sub-trees
+/// some distributions ship are stepped over. The result is only returned when
+/// the tzdb actually knows it, so a path this does not understand degrades to
+/// UTC rather than naming a zone nothing can load.
+fn zone_name_in(path: &std::path::Path) -> Option<String> {
+    let parts: Vec<&str> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let anchor = parts.iter().rposition(|p| *p == "zoneinfo")?;
+    let mut tail = &parts[anchor + 1..];
+    if matches!(tail.first(), Some(&"posix" | &"right")) {
+        tail = &tail[1..];
+    }
+    if tail.is_empty() {
+        return None;
+    }
+    let name = tail.join("/");
+    jiff::tz::TimeZone::get(&name).is_ok().then_some(name)
 }
 
 /// Production CSPRNG backed by `getrandom`.
@@ -226,6 +283,78 @@ mod tests {
         fn now_ms(&self) -> u64 {
             *self.ms.lock()
         }
+    }
+
+    // ---- the device zone ----
+
+    /// **The regression test for the calendar's missing blocks.**
+    ///
+    /// macOS points `/etc/localtime` into a versioned tree jiff does not strip
+    /// a name from, so `TimeZone::system().iana_name()` is `None` there and
+    /// this used to answer `"UTC"` on every Mac. The core then folded civil
+    /// days in UTC while the client rendered them in the real zone, and west
+    /// of Greenwich the two named different days for the last hours of every
+    /// evening — a day query that returned nothing for blocks visibly on the
+    /// grid.
+    #[test]
+    fn a_versioned_macos_zoneinfo_path_still_names_its_zone() {
+        let macos = std::path::Path::new("/var/db/timezone/zoneinfo/America/Toronto");
+        assert_eq!(zone_name_in(macos).as_deref(), Some("America/Toronto"));
+        let canonical =
+            std::path::Path::new("/private/var/db/timezone/tz/2026c.1.0/zoneinfo/America/Toronto");
+        assert_eq!(zone_name_in(canonical).as_deref(), Some("America/Toronto"));
+    }
+
+    #[test]
+    fn the_ordinary_unix_zoneinfo_paths_name_their_zone() {
+        for (path, want) in [
+            ("/usr/share/zoneinfo/Europe/London", "Europe/London"),
+            ("/usr/share/zoneinfo/posix/Europe/London", "Europe/London"),
+            ("/usr/share/zoneinfo/right/Europe/London", "Europe/London"),
+            ("/usr/share/zoneinfo/UTC", "UTC"),
+            (
+                "/usr/share/zoneinfo/America/Argentina/Ushuaia",
+                "America/Argentina/Ushuaia",
+            ),
+        ] {
+            assert_eq!(
+                zone_name_in(std::path::Path::new(path)).as_deref(),
+                Some(want),
+                "{path}"
+            );
+        }
+    }
+
+    /// A path the tzdb cannot load must produce no name at all. Returning the
+    /// text anyway would hand the engine a zone every lookup then silently
+    /// resolves to UTC, which is the bug this guards wearing a name tag.
+    #[test]
+    fn a_path_that_names_no_real_zone_is_refused() {
+        for path in [
+            "/etc/localtime",
+            "/usr/share/zoneinfo",
+            "/usr/share/zoneinfo/Mars/Olympus_Mons",
+            "/var/db/timezone/tz/2026c.1.0/America/Toronto",
+        ] {
+            assert_eq!(zone_name_in(std::path::Path::new(path)), None, "{path}");
+        }
+    }
+
+    /// End to end on whatever host is running this: the production clock must
+    /// name the zone `/etc/localtime` points at. Deliberately compared against
+    /// the link rather than a literal — the zone of a CI runner is not ours to
+    /// pin — and skipped where there is no link to compare against, which is
+    /// every Windows host and a container with a copied `/etc/localtime`.
+    #[test]
+    #[cfg(unix)]
+    fn the_production_clock_names_the_zone_this_device_is_in() {
+        let Some(expected) = std::fs::read_link(LOCALTIME)
+            .ok()
+            .and_then(|p| zone_name_in(&p))
+        else {
+            return;
+        };
+        assert_eq!(SystemClock.timezone(), expected);
     }
 
     #[test]
