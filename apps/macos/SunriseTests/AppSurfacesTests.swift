@@ -201,7 +201,81 @@ struct AppSurfacesTests {
         #expect(surfaces.vault == nil)
         #expect(surfaces.menuBar == nil)
         #expect(surfaces.reminders == nil)
+        #expect(surfaces.ical == nil)
         #expect(surfaces.hotkeyStatus == .idle)
         await clean(fixture, surfaces)
+    }
+
+    // MARK: - Routine materialization
+
+    /// **`CoreBridge.startRoutineTimer` had no caller at all.**
+    ///
+    /// Nothing in the running app started periodic materialization, so
+    /// recurrence advanced only when `Core::open` ran it once at unlock or
+    /// somebody pressed "Generate now" — a Mac left open across midnight
+    /// simply stopped generating. This asserts the call is made, that it
+    /// crosses the seam against a real core, and that the vault it names is
+    /// the one that is open.
+    @Test
+    func theRoutineTimerRunsAgainstTheOpenVault() async throws {
+        let fixture = try fixture()
+        let session = fixture.session
+        let surfaces = AppSurfaces()
+
+        await session.start()
+        await session.createVault()
+        let bridge = try #require(session.bridge)
+        #expect(surfaces.routineTimer == .stopped, "nothing has started one yet")
+
+        surfaces.attach(bridge: bridge)
+        await surfaces.startRoutineTimer()
+
+        #expect(surfaces.routineTimerIsRunning(against: bridge))
+        #expect(surfaces.routineTimer.summary == "Running")
+        await clean(fixture, surfaces)
+    }
+
+    /// The timer belongs to the `Core`, and a vault switch shuts that `Core`
+    /// down. A client that started one timer at launch would leave every vault
+    /// opened after the first with no recurrence — and would have no way to
+    /// tell, because "a timer is running" was true the whole time.
+    @Test
+    func aVaultSwitchRestartsTheTimerAgainstTheNewVault() async throws {
+        let fixture = try fixture()
+        let session = fixture.session
+        let surfaces = AppSurfaces()
+
+        await session.start()
+        await session.createVault()
+        let first = try #require(session.bridge)
+        surfaces.attach(bridge: first)
+        await surfaces.startRoutineTimer()
+        #expect(surfaces.routineTimerIsRunning(against: first))
+
+        await session.switchTo(fixture.second)
+        await session.createVault()
+        let second = try #require(session.bridge)
+
+        // `attach` alone must not carry the claim over: at this point the old
+        // core is shut down and the new one has no timer.
+        surfaces.attach(bridge: second)
+        #expect(surfaces.routineTimer == .stopped, "the old vault's timer went down with it")
+        #expect(!surfaces.routineTimerIsRunning(against: first))
+
+        await surfaces.startRoutineTimer()
+        #expect(surfaces.routineTimerIsRunning(against: second))
+        #expect(!surfaces.routineTimerIsRunning(against: first))
+        await clean(fixture, surfaces)
+    }
+
+    /// With no vault there is nothing to start, and saying "running" would be
+    /// the same lie in a smaller costume.
+    @Test
+    func theTimerStaysStoppedWithNoVaultOpen() async {
+        let surfaces = AppSurfaces()
+        await surfaces.startRoutineTimer()
+        #expect(surfaces.routineTimer == .stopped)
+        #expect(surfaces.routineTimer.summary == "Not running")
+        surfaces.detach()
     }
 }
