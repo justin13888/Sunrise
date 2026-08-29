@@ -163,17 +163,22 @@ and File → Export as PDF…, rendering through `ImageRenderer` into a paginate
 covers the four surfaces with a paper shape — task lists, search results, the
 calendar day and week grids, and the weekly and daily reviews. It deliberately
 does **not** cover Review → Trends (a chart) or Review → History (links); both
-produce a title-and-date page with no rows, and both already carry the CSV/JSON
-export beside them, which remains the seam's only `ExportFormat` pair.
+already carry the CSV/JSON export beside them, which remains the seam's only
+`ExportFormat` pair. On those two the menu item is **disabled and says why** —
+the reason is a sentence used as both `.help` and `.accessibilityHint`, because
+[`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
+forbids a state carried by appearance alone. A screen that *can* print but is
+empty right now stays enabled and beeps; that is a different condition, and a
+menu item flickering as tasks come and go would explain less.
 
 ### CLI — 9 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
-| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`). Two fields stay unwritable: a Task's **title** cannot be changed after capture (`TaskEdit` has no title field and a bare word is refused), and its `body` is the CLI's *Notes* row, which is a MAY |
+| Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
 | Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
 | Today / Inbox / Stream views (list form) | met | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
-| Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`. Note there is still no way to *end* a session: `Command::EndFocus` has no CLI path, so a session opened here is closed from macOS or not at all |
+| Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
 | Search (FTS) | met | `sunrise search <query>…` |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
 | Multi-account (`SUNRISE_VAULT`) | met | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
@@ -206,12 +211,13 @@ over:
   or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
   block → Task gesture, which the shipped layout cannot express. Print covers
   four surfaces and skips two by decision.
-- **CLI.** A Task cannot be re-titled after capture, and its `body` is
-  unreachable. A focus session can be started but not ended. Streams, Contexts
-  and Routines can be listed and (for Streams) reordered, but none can be
-  created, renamed, archived or deleted. `Query::Today`'s context filter has no
-  flag. The mode-0600 keystore guarantee is `#[cfg(unix)]`; elsewhere the file
-  is written with default permissions.
+- **CLI.** A Task's `body` is unreachable — Notes is a CLI **MAY**, and what
+  plain stdin should become as structured `NoteBlock`s is a design question
+  rather than a gap. Streams, Contexts and Routines can be listed and (for
+  Streams) reordered, but none can be created, renamed, archived or deleted;
+  the row asks for *read + capture*, and that is what it has.
+  `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
+  is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
 
 Every one of these is inside a row graded **met**, because each row asks for a
 capability and each capability is reachable. They are written down so that "met"
