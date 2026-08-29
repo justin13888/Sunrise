@@ -17,14 +17,14 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
 - **Scriptable**: `sunrise` is a one-shot CLI — capture, triage, review, export and sync from a shell, a cron job, or over SSH. The graphical client is a native SwiftUI macOS app ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)); iOS, Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
-- **Calendar integrations**: Google Calendar and iCalendar.
+- **Calendar interchange**: import and export `.ics` (RFC 5545) from the CLI, so time blocks move in and out of any calendar app. Imports are idempotent — re-importing the same file updates the blocks it already made rather than duplicating them. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
 
 ## Architecture
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam.
-- **Clients**: `sunrise-cli` ships today. The macOS app links the core through UniFFI (`crates/sunrise-core-bindings`); `apps/` holds a Bun workspace for the deferred web PWA and shared UI tokens.
+- **Rust core** (`crates/`): a Cargo workspace of 21 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
+- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/macos`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
 
 ### Project structure
 
@@ -41,14 +41,17 @@ crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-client-core     Client-side but UI-free: undo/redo, saved views
   sunrise-cli             The `sunrise` command-line client
   sunrise-core-bindings   UniFFI seam — Swift today, Kotlin later
-  sunrise-integrations    Google Calendar + iCalendar
-  …and supporting crates (cbor, id, error, log, onboarding, pairing, e2e)
+  sunrise-auth            Client-side OIDC relying party (PKCE, token storage)
+  sunrise-pairing         Noise XX device pairing + SAS confirmation
+  sunrise-integrations    iCalendar (live) + Google Calendar (deferred, see #4)
+  …and supporting crates (cbor, id, error, log, onboarding, bench, e2e)
 tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/
+  macos/       Native SwiftUI client over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
-  sunrise-ui/  Shared UI tokens and components
+  sunrise-ui/  Shared UI tokens, consumed only by the deferred web app
 schemas/       Versioned JSON schemas
 docs/          Design source of truth: product, architecture, domain, crypto, sync, ADRs + implementation notes
 ```
@@ -91,7 +94,17 @@ cargo run -q -p sunrise-cli -- next               # the planner's ranked picks
 cargo run -q -p sunrise-cli -- search passport
 cargo run -q -p sunrise-cli -- review             # this week, folded
 cargo run -q -p sunrise-cli -- export trends json # to stdout, for jq
+
+# calendar interchange (RFC 5545), both directions:
+cargo run -q -p sunrise-cli -- ical import meetings.ics   # or `-` for stdin
+cargo run -q -p sunrise-cli -- ical export week out.ics   # or omit the path for stdout
 ```
+
+`ical import` is idempotent: a Block's id is derived from `(source, uid)`, so
+re-importing the same file updates the blocks it already made instead of
+minting duplicates. Anything the RFC 5545 subset does not model — `VTODO`,
+`VALARM`, `VTIMEZONE`, `RRULE`, and the rest — is **reported on stderr**, never
+dropped silently.
 
 Capture syntax is `#stream @context ^when !priority ~duration *due:when*`.
 Anything the parser cannot resolve is reported on stderr and left in the title,
@@ -107,7 +120,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is being built against the UniFFI seam in `crates/sunrise-core-bindings`, which generates and links today. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. Its status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit); one MUST (iCal import/export) is not yet met there. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -190,10 +203,18 @@ cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback red
 
 ```bash
 just macos-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
+just macos-app            # + xcodegen, swiftlint --strict, xcodebuild test
+just macos-open           # open the generated project in Xcode
+just macos-uitest         # the XCUITest target, which macos-app does not run
 ```
 
-That builds the release slices, generates the Swift bindings from the built
-library, and packages the framework the app links. The bindings generator lives
+`just macos-app` is exactly what CI runs on `macos-26`. Note that the UI test
+target is `skipped: true` in the scheme — macOS XCUITest needs
+`sudo DevToolsSecurity -enable` — so `just macos-uitest` is the only thing that
+drives the real window, and it runs on a developer machine only.
+
+`macos-xcframework` builds the release slices, generates the Swift bindings from
+the built library, and packages the framework the app links. The bindings generator lives
 in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
 lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features pull a
 version requiring rustc 1.91, which would break the workspace's 1.88 pin.
@@ -244,7 +265,9 @@ All project commands are centralized in the [`justfile`](justfile). Run `just` (
 | `just rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
 | `just rust-check`        | Type-check the Rust workspace                          |
 | `just rust-test`         | Run the Rust test suite                                |
+| `just orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
 | `just macos-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
+| `just macos-app`         | Build, SwiftLint `--strict` and test the macOS app     |
 | `just validate`          | Full local validation: Biome CI + typecheck + coverage |
 
 ### Git hooks
