@@ -41,18 +41,15 @@ final class SavedViewsModel {
 
     /// Save `destination` under `name`, replacing any view of that name.
     ///
-    /// A destination the store has no word for is refused *with a sentence*
-    /// rather than saved as something else. See ``Destination/primary``.
+    /// Every destination the sidebar offers can be named by the store — see
+    /// ``Destination/primary`` — so the only thing refused here is an empty
+    /// name, which would produce a view nobody could pick out of the menu.
     func save(name: String, destination: Destination, query: String, contexts: [String]) async {
         let trimmed = name.trimmed
         guard !trimmed.isEmpty else { return }
-        guard let primary = destination.primary else {
-            errorMessage = "\(destination.title) cannot be saved as a view yet."
-            return
-        }
         let view = SavedView(
             name: trimmed,
-            view: primary,
+            view: destination.primary,
             query: destination.savesQuery ? query : "",
             contexts: contexts,
             // Written by the store; whatever is passed here is overwritten on
@@ -149,16 +146,16 @@ final class SavedViewsModel {
 
 extension Destination {
     /// Which primary view this destination is, in the saved-view store's
-    /// vocabulary — or `nil` when the store has no word for it.
+    /// vocabulary.
     ///
-    /// The two daily briefs are the `nil`. `PrimaryView` mirrors
+    /// Total, and that is the point. `PrimaryView` mirrors
     /// `sunrise_client_core::views::View` variant for variant, deliberately,
     /// so that adding a view upstream fails the seam's build rather than
     /// producing an unrepresentable value — which is how `Morning` and
-    /// `Evening` arriving upstream announced themselves. ``recall(_:contexts:)``
-    /// now round-trips them; whether a brief should be *savable* is a separate
-    /// question, so this still answers "no" rather than guessing.
-    var primary: PrimaryView? {
+    /// `Evening` announced themselves. Now that the store names all ten, every
+    /// destination the sidebar offers can be saved, and the menu item that used
+    /// to grey out on the two briefs has nothing left to grey out for.
+    var primary: PrimaryView {
         switch self {
         case let .list(kind):
             switch kind {
@@ -172,12 +169,10 @@ extension Destination {
         case .focus: .focus
         case .routines: .routines
         case .review: .review
-        case .morning, .evening: nil
+        case .morning: .morning
+        case .evening: .evening
         }
     }
-
-    /// Whether the store can name this destination at all.
-    var isSaveable: Bool { primary != nil }
 
     /// Whether a saved view of this destination should carry search text.
     var savesQuery: Bool { primary == .search }

@@ -6,10 +6,6 @@ struct SavedViewsMenu: View {
     let contexts: NameBook
     let recall: (Destination) -> Void
     let saveCurrent: () -> Void
-    /// Whether what is on screen is something the store can name. The two
-    /// daily briefs are not — see ``Destination/primary`` — and a disabled
-    /// item beats one that saves the wrong screen.
-    var canSaveCurrent = true
 
     var body: some View {
         Menu("Views", systemImage: "bookmark") {
@@ -38,7 +34,6 @@ struct SavedViewsMenu: View {
             }
             Divider()
             Button("Save this view…", action: saveCurrent)
-                .disabled(!canSaveCurrent)
             if !model.warnings.isEmpty {
                 Divider()
                 ForEach(Array(model.warnings.enumerated()), id: \.offset) { _, warning in

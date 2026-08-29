@@ -226,6 +226,60 @@ struct SavedViewsModelTests {
         #expect(model.views.first?.query.isEmpty == true)
     }
 
+    /// The two daily briefs. `View::Morning` and `View::Evening` exist upstream
+    /// now, so "Save this view…" on either of them has to write a view that
+    /// recalls as itself — the menu item used to be greyed out here because
+    /// `Destination.primary` answered `nil`.
+    @Test
+    func theMorningBriefSavesAndRecallsAsItself() async throws {
+        try await briefRoundTrips(.morning, as: .morning)
+    }
+
+    @Test
+    func theEveningBriefSavesAndRecallsAsItself() async throws {
+        try await briefRoundTrips(.evening, as: .evening)
+    }
+
+    private func briefRoundTrips(
+        _ destination: Destination,
+        as primary: PrimaryView
+    ) async throws {
+        let (model, cleanup) = scratchStore()
+        defer { cleanup() }
+
+        await model.save(name: "brief", destination: destination, query: "", contexts: [])
+        await model.load()
+
+        let view = try #require(model.views.first)
+        #expect(view.view == primary)
+        #expect(model.recall(view, contexts: NameBook()) == destination)
+        #expect(model.errorMessage == nil, "a brief is not a refusal any more")
+    }
+
+    /// `Destination.primary` is total, and the sidebar is the list that proves
+    /// it: anything the user can be looking at, they can save. A view added to
+    /// `Destination.fixed` without a `PrimaryView` behind it fails here rather
+    /// than as a menu item that silently does nothing.
+    @Test
+    func everySidebarDestinationCanBeSaved() async throws {
+        let (model, cleanup) = scratchStore()
+        defer { cleanup() }
+
+        for destination in Destination.fixed {
+            await model.save(
+                name: "v-\(destination.title)",
+                destination: destination,
+                query: "",
+                contexts: []
+            )
+        }
+        await model.load()
+
+        #expect(model.views.count == Destination.fixed.count)
+        #expect(model.warnings.isEmpty)
+        #expect(model.errorMessage == nil)
+    }
+
     private func scratchStore() -> (SavedViewsModel, () -> Void) {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "sunrise-views-\(UUID().uuidString)")

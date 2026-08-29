@@ -133,8 +133,7 @@ struct VaultView: View {
                     model: savedViews,
                     contexts: list.names,
                     recall: { selection = $0 },
-                    saveCurrent: { savingView = true },
-                    canSaveCurrent: selection?.isSaveable ?? false
+                    saveCurrent: { savingView = true }
                 )
             }
             ToolbarItem(placement: .status) {
