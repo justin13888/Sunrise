@@ -44,6 +44,7 @@ pub mod routine;
 pub mod routine_gen;
 pub mod rrule;
 pub mod schema;
+pub mod sort_order;
 pub mod stats;
 pub mod streak;
 pub mod stream;
@@ -120,6 +121,10 @@ pub use routine_gen::{
 };
 pub use rrule::{rrule_summary, Frequency, RRule, RRuleParseError, Weekday};
 pub use schema::DOC_SCHEMA_V;
+pub use sort_order::{
+    append_after as sort_order_append_after, between as sort_order_between, SortOrderError,
+    DEFRAG_THRESHOLD_BYTES as SORT_ORDER_DEFRAG_THRESHOLD_BYTES,
+};
 pub use stats::{
     days_between, fold_trends, routine_drift, RoutineDrift, StatsError, StreamTrend, Trends,
     WeekBucket, WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
