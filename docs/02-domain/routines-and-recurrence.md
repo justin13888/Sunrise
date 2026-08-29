@@ -128,9 +128,14 @@ supported set rather than silently dropping it.
 
 `EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
 
-> Both statements are about an importer that is not reachable in v1.
-> `crates/sunrise-integrations` implements an iCal VEVENT subset but nothing
-> depends on it — see [`../09-integrations/overview.md`](../09-integrations/overview.md).
+> **Both statements describe a Routine importer that does not exist.** The iCal
+> importer is reachable now — `sunrise ical import`, and `import_ical` on the
+> seam — but it imports a `VEVENT` as a **Block**, never as a Routine, so
+> nothing maps `EXDATE` to `Routine.skip_dates`. `EXDATE`, `RDATE` and `RRULE`
+> itself are all reported as unmapped and dropped, which means a recurring
+> event imports as a single occurrence. See
+> [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md) for what
+> the subset does and does not carry.
 
 Sunrise extensions — **specified, not implemented.** Neither has a field in
 `Routine`, and `RRule` has no room for one; both would be a `DOC_SCHEMA_V`
