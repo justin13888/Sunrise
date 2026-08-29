@@ -103,24 +103,37 @@ These run via local OS APIs (deep links into the app for desktop; native action 
 
 ### Action wiring (per platform)
 
-| Action | iOS | Android | Web |
-|---|---|---|---|
-| Complete task | UNNotificationAction `complete`, deep link `sunrise://task/<id>?action=complete` | Notification `Action` with `PendingIntent` carrying the same URI | Web Push `actions[0].action = "complete"`, app handles in `notificationclick` |
-| Snooze 1h | `snooze_1h` | same | `actions[1]` |
-| Open | tap body | tap body | default action |
+| Action | macOS | iOS | Android | Web |
+|---|---|---|---|---|
+| Complete task | `UNNotificationAction` `complete`, deep link `sunrise://task/<id>?action=complete` | same | Notification `Action` with `PendingIntent` carrying the same URI | Web Push `actions[0].action = "complete"`, app handles in `notificationclick` |
+| Snooze | one action per span the domain offers (`Query::ReminderIntents` carries the targets; the client does no date arithmetic of its own) | `snooze_1h` | same | `actions[1]` |
+| Open | tap body | tap body | tap body | default action |
+
+macOS is the only column implemented today; the other three are
+[deferred clients](./parity-matrix.md) and carry no MUSTs.
 
 The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to an op without opening UI when possible.
 
 ## URL scheme
 
-`sunrise://` deep links for:
+`sunrise://` deep links. The scheme is registered by the macOS app through
+`project.yml`'s `info:` block, because `CFBundleURLTypes` has no
+`INFOPLIST_KEY_` equivalent and the generated plist is gitignored.
 
-- `sunrise://entity/<EntityRef>` — open entity in detail.
-- `sunrise://capture?text=…&stream=…` — open quick capture pre-filled.
-- `sunrise://focus/<TaskId>` — start focus on a task.
-- `sunrise://share/<token>` — accept a share invite.
+| Link | Status | Notes |
+|---|---|---|
+| `sunrise://morning` | **live** | The morning summary. Also ⌘⌥M. |
+| `sunrise://evening` | **live** | End-of-day planning. Also ⌘⌥E. |
+| `sunrise://capture?text=…` | **live** | Opens quick capture pre-filled. |
+| `sunrise://entity/<EntityRef>` | **live** | Opens *the screen the entity lives on* — a Block routes to the calendar, a Task to Today — not a detail window. There is no standalone entity detail window to open, so a route promising one would be a link that goes nowhere. |
+| `sunrise://task/<id>?action=…` | **live** | `complete`, `open`, or a snooze span. This is what a notification action button fires. |
+| `sunrise://focus/<TaskId>` | not implemented | Focus is reachable by `F` on a row and from the sidebar; no route exists yet. |
+| `sunrise://share/<token>` | not implemented | Sharing is deferred from v1 — [ADR-0020](../11-adr/0020-v1-must-demotions.md). A token route cannot precede a grant model. |
 
 All deep links are validated; unknown shapes are ignored (no shell injection).
+A link naming an entity that does not exist resolves to the nearest sensible
+screen rather than an error dialog, because a notification tapped after its task
+was deleted elsewhere is an ordinary event, not a failure.
 
 ## Conflict-of-shortcut handling
 
