@@ -14,13 +14,42 @@ struct VaultLocation: Sendable {
     /// one directory would race for the vault lock, and the app has no way to
     /// tell the user why it lost.
     static func standard(fileManager: FileManager = .default) throws -> VaultLocation {
+        try forVault(VaultRegistry.firstVaultID, fileManager: fileManager)
+    }
+
+    /// Where the vault registered under `id` lives.
+    ///
+    /// The first vault keeps `Sunrise/vault` — the path every existing install
+    /// already has — and every vault added afterwards goes under
+    /// `Sunrise/vaults/<id>`. Moving the original into the new layout would be
+    /// a migration whose failure mode is an unopenable vault, in exchange for
+    /// tidiness nobody can see.
+    ///
+    /// Throws rather than sanitising an unexpected id: every id this app
+    /// generates is a UUID, so one that is not is a bug, and quietly rewriting
+    /// it into a different path is how a vault gets written to two places.
+    static func forVault(_ id: String, fileManager: FileManager = .default) throws -> VaultLocation {
+        guard isSafeIdentifier(id) else { throw VaultLocationError.unusableIdentifier(id) }
         let support = try fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
-        return VaultLocation(directory: support.appending(path: "Sunrise/vault"))
+        let root = support.appending(path: "Sunrise")
+        guard id != VaultRegistry.firstVaultID else {
+            return VaultLocation(directory: root.appending(path: "vault"))
+        }
+        return VaultLocation(directory: root.appending(path: "vaults").appending(path: id))
+    }
+
+    /// Lowercase alphanumerics and hyphens only — which is exactly a lowercased
+    /// `UUID` string, and excludes `.`, `/` and everything else that could
+    /// climb out of the directory it names.
+    static func isSafeIdentifier(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 64 && id.allSatisfy {
+            $0.isASCII && ($0.isLowercase && $0.isLetter || $0.isNumber || $0 == "-")
+        }
     }
 
     /// Whether a vault has already been created here.
@@ -37,5 +66,16 @@ struct VaultLocation: Sendable {
         guard found, isDirectory.boolValue else { return false }
         let contents = try? fileManager.contentsOfDirectory(atPath: directory.path(percentEncoded: false))
         return !(contents ?? []).isEmpty
+    }
+}
+
+enum VaultLocationError: Error, Equatable, LocalizedError {
+    case unusableIdentifier(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unusableIdentifier(id):
+            "\"\(id)\" is not a usable vault identifier."
+        }
     }
 }

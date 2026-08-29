@@ -48,14 +48,22 @@ final class SessionModel {
     private(set) var phase: Phase = .starting
     private(set) var bridge: CoreBridge?
 
-    private let location: VaultLocation
-    private let rootStore: any VaultRootStore
+    /// The vaults this Mac knows about, or `nil` in the single-vault
+    /// configuration the tests and the UI-test harness use. Non-`nil` is what
+    /// puts the switcher on screen.
+    let vaults: VaultRegistry?
+
+    /// Both `var`: switching vaults replaces them together, and replacing only
+    /// one would file a vault's key under another vault's name.
+    private var location: VaultLocation
+    private var rootStore: any VaultRootStore
     private let appVersion: String
     private let openBridge: @Sendable (URL, Data, String) async throws -> CoreBridge
+    private let resolve: @Sendable (VaultDescriptor) throws -> VaultBinding
     /// Set when the app could not even work out where its vault goes. Checked
     /// first by `start`, so retrying reports the real cause rather than
     /// falling through to a first-run screen against a nonsense path.
-    private let configurationError: String?
+    private var configurationError: String?
 
     init(
         location: VaultLocation,
@@ -66,6 +74,8 @@ final class SessionModel {
             try await CoreBridge.open(directory: $0, vaultRoot: $1, appVersion: $2)
         }
     ) {
+        vaults = nil
+        resolve = { descriptor in throw VaultLocationError.unusableIdentifier(descriptor.id) }
         self.location = location
         self.rootStore = rootStore
         self.appVersion = appVersion
@@ -73,10 +83,63 @@ final class SessionModel {
         self.openBridge = openBridge
     }
 
+    /// The multi-vault configuration: a registry, and a way to turn any entry
+    /// in it into a directory and a Keychain account.
+    init(
+        vaults: VaultRegistry,
+        appVersion: String,
+        resolve: @escaping @Sendable (VaultDescriptor) throws -> VaultBinding,
+        openBridge: @escaping @Sendable (URL, Data, String) async throws -> CoreBridge = {
+            try await CoreBridge.open(directory: $0, vaultRoot: $1, appVersion: $2)
+        }
+    ) {
+        self.vaults = vaults
+        self.resolve = resolve
+        self.appVersion = appVersion
+        self.openBridge = openBridge
+
+        // Resolved here rather than lazily, so a Mac with no usable
+        // Application Support directory reports that instead of looking like a
+        // first run against a path that does not exist.
+        var resolved: VaultBinding?
+        var failure: String?
+        do {
+            resolved = try resolve(vaults.selected)
+        } catch {
+            failure = error.localizedDescription
+        }
+        location = resolved?.location ?? VaultLocation(directory: URL(filePath: "/dev/null"))
+        rootStore = resolved?.rootStore ?? KeychainVaultRootStore(vaultName: vaults.selectedID)
+        configurationError = failure
+    }
+
+    /// The one session this process has.
+    ///
+    /// Memoized because it must be: `crates/sunrise-core/src/vault_lock.rs`
+    /// admits one open vault per process, so a second `SessionModel` could
+    /// only ever be the one that fails. `@State` initialisers are not
+    /// guaranteed to run once, and the screens that switch vaults have to be
+    /// acting on the session the window is actually showing.
+    private static var shared: SessionModel?
+
+    /// The live session, for the screens that cannot be handed one.
+    ///
+    /// `Views/AccountView.swift`, `OnboardingView` and `LockedView` are all
+    /// constructed by `RootView`, which does not pass the session down. They
+    /// default to this and take an explicit one in tests.
+    static var active: SessionModel? { shared }
+
     /// The app's own configuration. Falls straight to `.failed` when the
     /// Application Support directory is unusable, rather than pretending it is
     /// a first run.
     static func standard() -> SessionModel {
+        if let shared { return shared }
+        let model = build()
+        shared = model
+        return model
+    }
+
+    private static func build() -> SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
         #if DEBUG
@@ -90,20 +153,18 @@ final class SessionModel {
             )
         }
         #endif
-        do {
-            return SessionModel(
-                location: try VaultLocation.standard(),
-                rootStore: KeychainVaultRootStore(),
-                appVersion: appVersion
-            )
-        } catch {
-            return SessionModel(
-                location: VaultLocation(directory: URL(filePath: "/dev/null")),
-                rootStore: KeychainVaultRootStore(),
-                appVersion: appVersion,
-                configurationError: error.localizedDescription
-            )
-        }
+        return SessionModel(
+            vaults: VaultRegistry(),
+            appVersion: appVersion,
+            resolve: { descriptor in
+                VaultBinding(
+                    location: try VaultLocation.forVault(descriptor.id),
+                    // The `vaultName` parameter that has existed since this
+                    // store was written and has never been passed anything.
+                    rootStore: KeychainVaultRootStore(vaultName: descriptor.id)
+                )
+            }
+        )
     }
 
     /// Decide the launch state and, where possible, open the vault.
@@ -150,6 +211,85 @@ final class SessionModel {
         }
     }
 
+    /// Take the vault root a completed pairing produced, and open with it.
+    ///
+    /// The counterpart to `createVault`, and the opposite of it in the way
+    /// that matters: this root is not new, so it is the one thing that can
+    /// legitimately be written over a vault that already exists on disk. That
+    /// is the entire point of `LockReason.keyMissingForExistingVault` — the
+    /// vault is here, the key is not, and pairing is how the key comes back.
+    ///
+    /// Refused from `.unlocked`, where there is a live core holding the lock
+    /// and a root that is already working.
+    func adoptVaultRoot(_ root: Data) async {
+        guard phase != .unlocked else { return }
+        guard root.count == VaultRoot.byteCount else {
+            phase = .failed(VaultRootError.wrongLength(root.count).localizedDescription)
+            return
+        }
+        phase = .starting
+        do {
+            // Stored before opening, for the same reason `createVault` does:
+            // a vault opened under a key that was never persisted is
+            // unreadable on the next launch.
+            try rootStore.store(root)
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return
+        }
+        await open(with: root)
+    }
+
+    /// Close the vault that is open and open another one.
+    ///
+    /// **The order here is the whole method.** `vault_lock.rs` admits one open
+    /// vault per process — a process-local registry of canonicalized paths,
+    /// checked before the OS lock — and `CoreBridge.shutdown()` is what drops
+    /// the Rust `Core` that holds it. Opening the new vault before closing the
+    /// old one does not fail to compile and does not fail on the second vault
+    /// either: it fails on whichever `Core::open` loses the race, thirteen
+    /// retries later, with a message naming this very process as the holder.
+    ///
+    /// Resolving comes first because it can fail and costs nothing — a URL and
+    /// a Keychain query descriptor — so a bad descriptor leaves the vault that
+    /// is currently open exactly where it was.
+    func switchTo(_ descriptor: VaultDescriptor) async {
+        guard let vaults else { return }
+        guard descriptor.id != vaults.selectedID || phase != .unlocked else { return }
+
+        let binding: VaultBinding
+        do {
+            binding = try resolve(descriptor)
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return
+        }
+
+        // 1. Let go. Nothing below can succeed until this returns.
+        await bridge?.shutdown()
+        bridge = nil
+        phase = .starting
+
+        // 2. Re-point. Both halves together: a directory from one vault and a
+        //    Keychain account from another is an unreadable vault.
+        location = binding.location
+        rootStore = binding.rootStore
+        configurationError = nil
+        vaults.select(descriptor.id)
+
+        // 3. Open, through the same launch decision as a cold start — so a
+        //    vault that has a directory and no key lands on the locked screen
+        //    rather than being handed a new key.
+        await start()
+    }
+
+    /// Register a vault and switch to it. The new one has no key and no
+    /// directory, so it arrives at `.firstRun`: create, or pair.
+    func addVault(named name: String) async {
+        guard let vaults else { return }
+        await switchTo(vaults.add(name: name))
+    }
+
     private func open(with root: Data) async {
         do {
             bridge = try await openBridge(location.directory, root, appVersion)
@@ -165,4 +305,13 @@ final class SessionModel {
         bridge = nil
         phase = .starting
     }
+}
+
+/// Where one vault's data and one vault's key live, resolved together.
+///
+/// A pair rather than two values, because they are only ever correct together:
+/// see `SessionModel.switchTo`.
+struct VaultBinding: Sendable {
+    let location: VaultLocation
+    let rootStore: any VaultRootStore
 }
