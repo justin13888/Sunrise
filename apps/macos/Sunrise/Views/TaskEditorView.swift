@@ -8,6 +8,7 @@ import SwiftUI
 /// picker would pay for all three every time anyone edited a title.
 enum TaskEditorPane: String, CaseIterable, Identifiable {
     case details
+    case notes
     case attachments
     case activity
 
@@ -16,6 +17,7 @@ enum TaskEditorPane: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .details: "Details"
+        case .notes: "Notes"
         case .attachments: "Attachments"
         case .activity: "Activity"
         }
@@ -36,6 +38,7 @@ struct TaskEditorView: View {
     @State private var pane: TaskEditorPane = .details
     @State private var attachments: AttachmentsModel
     @State private var activity: ActivityModel
+    @State private var note: NoteEditorModel
     @State private var title: String
     @State private var priority: Int
     @State private var energy: Energy?
@@ -53,6 +56,9 @@ struct TaskEditorView: View {
         self.apply = apply
         self.delete = delete
         _attachments = State(initialValue: AttachmentsModel(bridge: bridge, task: task.id))
+        // Seeded from the task's own body. The editor decides for itself
+        // whether that body is one it may write back — see `NoteEditorModel`.
+        _note = State(initialValue: NoteEditorModel(body: task.body))
         _activity = State(initialValue: ActivityModel(bridge: bridge, entity: task.id))
         _title = State(initialValue: task.title)
         _priority = State(initialValue: Int(task.priority ?? 0))
@@ -83,6 +89,7 @@ struct TaskEditorView: View {
 
             switch pane {
             case .details: details
+            case .notes: NoteBodyEditor(model: note)
             case .attachments: AttachmentsView(model: attachments)
             case .activity: ActivityTimelineView(model: activity)
             }
@@ -173,6 +180,11 @@ struct TaskEditorView: View {
         } else {
             edit.clearDueAt = true
         }
+        // Sets neither body field unless the note was actually changed. The
+        // other facets above always say what they mean, because this form
+        // owns all of them; a body it could not fully read is one it must
+        // leave exactly as it found it.
+        note.apply(to: &edit)
         return edit
     }
 }
