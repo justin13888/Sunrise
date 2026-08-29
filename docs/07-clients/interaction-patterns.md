@@ -106,10 +106,30 @@ Deferred clients (iOS, Android, Web) are omitted; see
 | From → To | macOS | CLI |
 |---|---|---|
 | Task → Stream | Yes | N/A |
+| Task → Context | Yes | N/A |
 | Task → Calendar block | Yes | N/A |
-| Calendar block → Task | Yes | N/A |
+| Calendar block → Task | **No** — see below | N/A |
+| Calendar block → Calendar (move / resize) | Yes | N/A |
 | File → Task (attach) | Yes | N/A |
 | Task → Task (reorder) | Yes | N/A |
+| Stream → Stream (reorder) | Yes | N/A |
+
+**Calendar block → Task is the one cell not built, and it is a layout
+consequence rather than a missing write.** The macOS window is a sidebar plus a
+*single* detail pane, so the calendar grid and a task list are never on screen
+at the same time; the gesture has no two surfaces to drag between. The write it
+would perform exists and is tested — `TaskListModel.bind(_:to:)`, the same
+`Command::BindTask` the grid's own drop issues — so a future layout that puts a
+list beside the grid makes the cell reachable without new core work. Until then
+a Block is bound to a Task from the grid side, by dropping the task onto it.
+
+Every other cell is live in `apps/macos`: `TaskRowView` is `.draggable`, and the
+drop targets are the sidebar's stream and context rows (`BrowseSidebar`), the
+task rows themselves (`TaskListView`, which declines the drop in Today and in
+Search because the core ranks those lists), the calendar grid and its block
+chips (`CalendarView`), and the attachments pane (`AttachmentsView`). Stream
+reorder is `ForEach.onMove` writing `Stream.sort_order` through the core, so it
+syncs; task reorder is per-device, per [§Reorder](#reorder) above.
 
 ### Drag-and-drop UX tokens
 
