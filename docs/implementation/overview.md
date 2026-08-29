@@ -13,6 +13,14 @@ overstated the product substantially — several "shipped" crates are not
 reachable from any binary. The table below reports *reachability from a running
 client*, which is the only measure that matters to a user.
 
+**Last verified at commit `55a7562` on `v1-rewrite`.** Every row was re-checked
+against the source at that commit, and every number in
+[Test suite](#test-suite) is measured rather than remembered. The companion
+document is the per-capability
+[status audit](../07-clients/parity-matrix.md#v1-status-audit), which grades the
+v1 MUSTs the same way; this file grades crates, that one grades capabilities,
+and a crate can be reachable while a capability inside it is not.
+
 ## Legend
 
 | Mark | Meaning |
@@ -27,13 +35,13 @@ client*, which is the only measure that matters to a user.
 
 | Crate / Component | Status | Notes |
 |---|---|---|
-| Workspace + CI | ✅ live | Cargo + Bun workspace; `legacy/` archived and excluded |
+| Workspace + CI | ✅ live | Cargo + Bun workspace, 21 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
-| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, and export. `Block` (5 commands, 3 op kinds, 2 queries) and `Attachment` (2 commands, 2 op kinds, `Query::TaskAttachments`) also have full command paths, reachable from macOS but not from the CLI. `Note` and `Person` are the two that genuinely have none: a struct and a dead table, with nothing in between |
+| `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, export, the `note_body` block-grammar codec, the `notify` reminder planner, and `import`'s stable `(source, uid)` → Block id hash. `Block` (6 commands, 3 op kinds, 4 queries) and `Attachment` (2 commands, 2 op kinds, `Query::TaskAttachments`) have full command paths: Block is now reachable from **both** clients (macOS calendar grid; CLI via `ical import` / `ical export`), Attachment from macOS only. `Note` and `Person` are the two entities that genuinely have no path: a struct and a dead table, with nothing in between |
 | `sunrise-storage` | 🟨 partial | Schema, op log and FTS5 are solid. `BlobStore` has two external consumers (`sunrise-core::attach`, `sunrise-server::routes::blobs`), so it is reachable from the macOS client. **2** tables are never written — `notes` and `persons`, matching the two entities with no command path. The migration story is one baseline (`0013_baseline.sql`) per [ADR-0018](../11-adr/0018-storage-baseline-reset.md), not an upgrade chain: `db.rs` refuses any vault stamped below the baseline with a typed `STORAGE_V_PRE_BASELINE`, and `refuses_every_pre_baseline_version` asserts that for every version below it |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
 | `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
@@ -41,17 +49,17 @@ client*, which is the only measure that matters to a user.
 | `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests |
 | `sunrise-auth` | ✅ live | Client-side OIDC relying party: discovery, PKCE, a loopback redirect listener, token exchange and refresh, and credential storage. Consumed by `sunrise-cli` (`login` / `logout` / `whoami`) and by `sunrise-core-bindings`, so it reaches the macOS app. 35 tests |
-| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements **8** entities behind **21** op kinds (`InnerOp`), exposed as **29** commands and **29** queries. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` covers the one-shot subset |
+| `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements **8** entities behind **21** op kinds (`InnerOp`), exposed as **30** commands and **29** queries — `Command::ImportBlock` is the one added this cycle, the write half of an external calendar import. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` covers the one-shot subset. `SystemClock::timezone()` now resolves the device's real IANA zone (see [Fixed this cycle](#fixed-this-cycle)) |
 | `sunrise-server` | ✅ live | Relay fanout, cursor-scoped replay backed by a durable SQLite relay log, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` authenticates at the upgrade and scopes fanout to the verified subject. Blob 2PC is **implemented**, not a stub: `init` / `PUT :upload_id/:chunk_idx` / `finalize` / `GET :blob_id` are all mounted, content-addressed and hash-verified on finalize, with a round-trip test. Its auth is stricter than `/sync`'s — bearer plus account plus device binding ([#22](https://github.com/justin13888/Sunrise/issues/22) is closed by this) |
-| `sunrise-integrations` | ⬜ deferred | Implemented and tested, with **no v1 consumer by decision**. GCal read-only import is real: PKCE token exchange/refresh with the durable-refresh-token rule, and change detection that suppresses phantom deletes on window slide and page truncation. Transport is injected, so it is fully testable without a network — but nothing has been run against the live API yet (needs a Google OAuth client ID), `IntegrationProvider` has no implementor, and `EventSyncer` is `#[cfg(test)]`-only. No crate depends on it because its only consumer would be read-only external calendar sync ([#4](https://github.com/justin13888/Sunrise/issues/4)), which is deliberately out of v1. The crate is waiting on that issue, not orphaned by accident. iCal remains a subset (no VTIMEZONE/VTODO/VALARM) |
-| `sunrise-cli` | ✅ live | The `sunrise` binary: thirteen one-shot subcommands (`capture`, `today`, `inbox`, `next`, `focus`, `done`, `streams`, `contexts`, `routines`, `search`, `review`, `export`, `sync --once`) plus the env-driven live-sync wiring. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process |
+| `sunrise-integrations` | 🟨 partial | **No longer an orphan.** The iCal half is live and dual-consumed: `ical` (RFC 5545 syntax) → `ical_map` (domain mapping) → `ical_vault` (the vault driver), reached by `sunrise-cli`'s `ical import` / `ical export` and by `SunriseCore::import_ical` / `::export_ical` on the seam. Imports are idempotent because the Block id *is* a hash of `(source, uid)`. The subset is narrow and **reports rather than drops**: `VTODO`, `VALARM`, `VTIMEZONE`, `VJOURNAL`, `VFREEBUSY`, `RDATE`/`EXDATE`/`RECURRENCE-ID`, `ATTACH`, `ATTENDEE` and any `X-` property each raise an `ICalNotice`. `RRULE`, `DESCRIPTION` and `LOCATION` parse and are then reported at the domain boundary, because `Block` has no field for them — so **a recurring event imports as a single occurrence**, and an exported `.ics` carries only `UID`, `SUMMARY`, `DTSTART`, `DTEND`. The GCal half is **implemented, tested and unconsumed**, deferred to [#4](https://github.com/justin13888/Sunrise/issues/4) by [ADR-0020](../11-adr/0020-v1-must-demotions.md): PKCE exchange/refresh with the durable-refresh-token rule and change detection that suppresses phantom deletes, all with injected transport, but nothing has run against the live API (needs a Google OAuth client ID) and there is no `impl EventSyncer` anywhere. `IntegrationProvider` still has **no implementor** — not even the live iCal path uses it, so the crate's own claim that integrations "run through" it is not true today |
+| `sunrise-cli` | ✅ live | The `sunrise` binary: **seventeen** one-shot subcommands — `capture`, `done`, `today`, `inbox`, `next`, `search`, `streams`, `contexts`, `routines`, `review`, `export`, `ical` (`import` / `export`), `focus`, `login`, `logout`, `whoami`, `sync --once` — plus the env-driven live-sync wiring. Arg parsing is hand-rolled, not clap. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process. Three of its MUSTs are met only in part; see the [status audit](../07-clients/parity-matrix.md#v1-status-audit) |
 | `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
-| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 29 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync. `just macos-xcframework` generates the Swift and packages the framework |
+| `sunrise-core-bindings` | 🟨 partial | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync — now **fanned out to every subscriber** rather than one. Added this cycle: `DevicePairing`, the `NoteBody` block codec (`decode_note_body` / `encode_note_body` / `note_body_markdown`, with `NoteFidelity`), `SavedViews`, snooze targets, and `import_ical` / `export_ical`. Partial for one reason: **the iCal pair has no Swift caller**, so a correct seam method is unreachable from the only client that requires it |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
-| `apps/macos` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~8.1k lines of app source, 162 Swift Testing cases and 4 XCTest UI tests (skipped by default). Built by XcodeGen from `project.yml`, linking the generated xcframework. **Not built in CI**, so nothing catches a Swift-side break. Several parity-matrix MUSTs are unmet — notifications, QR pairing, Spotlight and calendar; see the note below the table |
+| `apps/macos` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~16.0k lines of app source, **409 Swift Testing cases in 63 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Now built in CI** — a `macos-app` job on `macos-26` runs `just macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR — so a Swift-side break is caught. Landed this cycle: pairing, the vault switcher, the notes editor, keyboard navigation with a command palette, App Intents, and reminders. **Partial for two reasons**: the iCal MUST is unmet (no Swift caller for the seam pair), and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
-| `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Both consumers import only `taskStateGlyph` and hardcode colours |
+| `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Its **one** consumer (`apps/web`, itself deferred) imports only `taskStateGlyph` and hardcodes colours. It had two until the Tauri shell was removed; the macOS app is Swift and does not consume it, so no shipping client does |
 
 ### Entities without a command path
 
@@ -60,13 +68,31 @@ prefixes and `notes` / `persons` tables in the baseline schema, and have no
 command, no op kind and no query. Nothing can write them; the two tables are
 the only ones in the schema with no writer.
 
-This collides with `docs/07-clients/parity-matrix.md`, which marks
-**Notes (rich text)** as a MUST for macOS and marks the sharing rows MUST as
-well — sharing being what `Person` exists to model. Either the matrix is
-aspirational on those rows or the implementation is missing; that is a
-scope decision, not a documentation one, so the matrix is **left unchanged
-here** pending the MUST-by-MUST audit now in progress. Recorded so the
-discrepancy is not mistaken for an oversight.
+That collision with `docs/07-clients/parity-matrix.md` is now **resolved**, and
+by a decision rather than an edit. [ADR-0020](../11-adr/0020-v1-must-demotions.md)
+demoted the two sharing rows to *deferred* — `Person` is the entity that design
+operates on, and there is a complete spec with sound primitives underneath it
+and nothing in between — and split the **Notes (rich text)** row, which stays a
+MUST and is met: it means a Task's `body`, not the free-standing `Note`. Both
+tables stay in the frozen baseline schema and stay unwritten, on purpose.
+
+## Reachability gate
+
+`.github/scripts/orphan-crate-gate.py` enforces the criterion this file is
+built on, and it is **clean**: roots `sunrise-cli`, `sunrise-core-bindings` and
+`sunrise-server`; **18 of 21 crates reachable**; the three that are not are the
+permanently exempt harnesses (`sunrise-bench`, `sunrise-e2e`,
+`sunrise-crypto-test-vectors`), whose correct shape is to have no dependents.
+
+**The QUARANTINE list is now empty.** Its only entry was `sunrise-integrations`,
+parked against issue #4; wiring iCal into both clients lifted it out. The gate's
+staleness check is what forced that — an entry cannot outlive its fix, because
+a quarantined crate that becomes reachable fails the run.
+
+A caveat the gate cannot express: it proves a crate is reachable from a
+*binary*, not that each capability inside it is reachable from a *user*. `import_ical`
+is in a crate the gate calls reachable, and has no macOS caller. Crate-level
+reachability is the floor, not the ceiling.
 
 ## What genuinely works end to end
 
@@ -138,13 +164,59 @@ below.
   device holding a valid account token can subscribe as that account
   ([#7](https://github.com/justin13888/Sunrise/issues/7) covers the remaining
   auth work).
-- **No delete-convergence coverage.** The e2e canonical projection filters
-  `deleted = 0`, so no test proves a delete converges.
+- **iCal import/export has no macOS caller.** Not a defect in the code — both
+  seam methods are correct and tested — but a parity **MUST** that no user can
+  reach on the client that requires it. Recorded here because an unreachable
+  correct implementation is precisely the class of gap this file exists to
+  surface, and it is currently the only unmet macOS MUST.
+- **`CoreBridge.startRoutineTimer` has no caller.** The wrapper exists, the seam
+  method exists, and nothing in `apps/macos` invokes it — so the running app
+  never starts periodic routine materialization.
+
+**Removed from this list:** *"No delete-convergence coverage"* — fixed, and it
+was concealing a real bug rather than merely being a gap. See below.
 
 ## Fixed this cycle
 
 Recorded because each presented as something other than what it was:
 
+- **Every Mac claimed to be in UTC.** `SystemClock::timezone()` returned
+  `"UTC"` on **all** of them. `/etc/localtime` on macOS points into a versioned
+  tree — `/var/db/timezone/zoneinfo/America/Toronto`, itself a link under
+  `/var/db/timezone/tz/<tzdb-version>/zoneinfo/…` — which is not one of the
+  directories jiff strips a name from, so `iana_name()` was `None` and the
+  fallback took over. The blast radius is the part worth keeping: the device
+  zone decides which civil day `Query::DayBlocks` covers and which instants a
+  Task's **scheduling constraints** evaluate against, while the client renders
+  civil time in the zone the OS gives *it*. West of Greenwich the two disagree
+  for the last hours of every evening, so the calendar grid silently returned
+  nothing for blocks plainly on it — and every constraint evaluation in the
+  product ran in the wrong zone. It presented as an empty calendar late in the
+  day, which reads as a UI bug. Now resolved by reading the symlink and
+  anchoring on the last `zoneinfo` component, stepping over `posix/` and
+  `right/`, and returning a name only when the tzdb can actually load it.
+- **The change feed had one seat, and four consumers.** `changes()` handed out a
+  single subscription and cancelled the previous one, so the last subscriber to
+  ask won and the other three were permanently dead — silently, because a dead
+  listener looks exactly like a quiet vault. The task list, menu bar, reminder
+  scheduler and sync status were all competing for one slot. Now fanned out, with
+  `on_lagged` reaching every consumer rather than one.
+- **Deletes diverged on four entity kinds, and the test that would have caught
+  it was structurally unable to.** Every convergence test compared through a
+  projection built on `StreamTasks`, which filters `deleted = 0` — correctly,
+  because that is what a UI wants. The side effect is that "both replicas
+  deleted it" and "one replica never heard of it" are indistinguishable, which
+  are precisely the two outcomes a delete test exists to separate. Nothing
+  proved a delete converged at all. Comparing tombstone-inclusive found
+  `TaskDelete`, `StreamDelete`, `ContextDelete` and `RoutineDelete` all
+  diverging: both replicas agree on `deleted` and disagree on the contested
+  scalar forever. The measured rate was 1–2 in 12, which looks like flakiness
+  and is not — divergence only occurs when the delete wins the LWW race, so a
+  low rate is a property of the race, not evidence of a mild bug.
+- **Undo of a create did nothing.** The inverse of a create is a delete, and
+  there wasn't one; undo left the minted entity in place. Redo now re-creates,
+  with a **new id** — documented rather than papered over, because no
+  id-preserving create exists.
 - **The activity feed invented transitions that never happened.** All four
   op-log folds ordered by `(ts_ms, op_id)`, and `op_id` is a ULID whose low
   bits are random — so two ops one device wrote in the same millisecond sorted
@@ -229,14 +301,24 @@ Recorded because each presented as something other than what it was:
   blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
 - **iOS / Android** — the UniFFI seam is built and generates Kotlin from the
   same scaffolding; only macOS slices have been produced and proven.
+- **Stream sharing, Google Calendar, and the standalone `Note`** — the three
+  capabilities [ADR-0020](../11-adr/0020-v1-must-demotions.md) removed from the
+  v1 MUST set. GCal's provider is implemented and tested; what is deferred is
+  the wiring, storage and UI around it ([#4](https://github.com/justin13888/Sunrise/issues/4)).
 - **Apple Focus integration** — not wired.
 - **Focus Mode's platform effects** — the session record, planner, calibration,
   chunking and unblock cascade are live in the core
-  ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)), but nothing
+  ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)) and are now
+  surfaced by the macOS `FocusView` (ranked picks, start/end, interruption
+  logging, cascade). What is still absent is the *platform* half: nothing
   suppresses notifications, registers a Live Activity, dims other windows, or
-  plays a cue, and no client surfaces any of it yet. Per-Stream pomodoro
-  overrides and `timeboxed to my next Block` are unimplemented (the latter needs
-  `Block` to gain a command path).
+  plays a cue. Per-Stream pomodoro overrides remain unimplemented.
+  `timeboxed to my next Block` is now unblocked — `Block` gained its command
+  path — but has not been built.
+- **A detached always-on-top focus window**, Spotlight indexing of task titles,
+  Continuity Camera, and Sparkle updates — all specified in
+  [`../07-clients/desktop.md`](../07-clients/desktop.md) and none implemented.
+  Print / PDF export is a parity **SHOULD** and is also unbuilt.
 - **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level
   LWW, now the decided model per [ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
   which supersedes ADR-0003. `crates/sunrise-crdt` and the `loro` dependency are
@@ -251,13 +333,24 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-`cargo test --workspace --all-targets` passes **1182** tests, 0 failures, 3
-ignored (the `#[ignore]`d child-process bodies the vault-lock crash tests
-spawn). That figure is from the last full run, not from this revision — the
-crate-status corrections above were made by reading the source, and the suite
-was not re-run to produce them. A static count of `#[test]` / `#[tokio::test]`
-attributes currently gives 1104, which is consistent with it once the six
-`proptest!` blocks and the parameterised cases are accounted for.
+All figures below were **measured at commit `55a7562`** on `v1-rewrite`, not
+carried over from an earlier revision.
+
+| Gate | Result |
+|---|---|
+| `just rust-test` | **1282 passed**, 0 failed, 3 ignored |
+| `cargo test --workspace --doc` | 0 doc tests |
+| `just macos-app` | **409 tests in 63 suites passed**; SwiftLint `--strict` clean; exit 0 |
+| `just rust-fmt-check` | clean |
+| `just rust-clippy` | clean (pedantic, `-D warnings`) |
+| `cargo deny check` | clean |
+| `just validate` | clean (no TS tests exist yet) |
+| `just orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
+
+The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
+tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`
+them. The macOS 409 does **not** include the 4 XCUITest cases, which are
+`skipped: true` in the scheme and run only under `just macos-uitest`.
 
 The number is worth more than it used to be. Earlier revisions of this file
 quoted a count that included ~50 tests over orphan crates no product path
@@ -290,11 +383,13 @@ difference is whether anyone reads the assertion.
 Prefer the reachability column above as the signal.
 
 ```
-cargo test --workspace --all-targets                    # full suite
-cargo clippy --workspace --all-targets -- -D warnings   # clean (pedantic)
-cargo fmt --check                                       # clean
-cargo deny check                                        # clean
-bun run validate                                        # no TS tests exist yet
+just rust-test        # cargo test --workspace --all-targets
+just rust-clippy      # pedantic, -D warnings
+just rust-fmt-check   # formatting
+just validate         # Biome CI + typecheck + coverage
+just macos-app        # xcframework + swiftlint --strict + xcodebuild test
+just orphan-crates    # every crate reachable from a shipping binary
+cargo deny check      # advisories, bans, licences, sources
 ```
 
 ## Boots end-to-end
