@@ -169,6 +169,45 @@ struct SessionModelTests {
         #expect(session.phase == .failed("no Application Support directory"))
     }
 
+    /// Locking has to land somewhere the window can get out of.
+    ///
+    /// It used to land on `.starting`, which `RootView` draws as a bare
+    /// `ProgressView` — and the `.task` that calls `start()` is attached above
+    /// the phase switch, so it fires once for the life of the window and would
+    /// never fire again. A "Lock" menu item would have wedged the app on a
+    /// spinner. `.locked(.lockedByUser)` is a screen with a button on it.
+    @Test
+    func lockingLandsOnAScreenWithAWayOut() async {
+        let directory = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let session = model(directory: directory, store: StubRootStore())
+        await session.start()
+        await session.createVault()
+        #expect(session.phase == .unlocked)
+
+        await session.lock()
+        #expect(session.phase == .locked(.lockedByUser))
+        #expect(session.bridge == nil, "the core must have let the vault lock go")
+        #expect(session.phase != .starting, "a phase nothing would move it out of")
+
+        // What the button on that screen does.
+        await session.start()
+        #expect(session.phase == .unlocked, "unlocking needs no key and no ceremony")
+        await session.lock()
+    }
+
+    /// A user-closed vault is not a failure, and the screen must not read like
+    /// one — nor offer the repair for a problem the user does not have.
+    @Test
+    func aUserLockSaysNothingWasLostAndOffersToUnlock() {
+        let reason = SessionModel.LockReason.lockedByUser
+        #expect(reason.repairTitle == "Unlock")
+        #expect(SessionModel.LockReason.keyMissingForExistingVault.repairTitle == "Try again")
+        #expect(reason.summary.contains("Nothing was lost"))
+        #expect(!reason.summary.lowercased().contains("pair"), "there is no key to recover")
+    }
+
     @Test
     func aVaultThatWillNotOpenIsAFailureNotAFirstRun() async {
         let directory = scratchDirectory()

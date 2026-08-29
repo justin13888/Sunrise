@@ -30,6 +30,9 @@ final class SessionModel {
         /// state a restored-from-backup machine lands in. Recovering it means
         /// pairing with a device that still has the key, not making one up.
         case keyMissingForExistingVault
+        /// The user closed the vault. The key is where it was and the data is
+        /// where it was; only this process let go. Reopening is one button.
+        case lockedByUser
 
         var summary: String {
             switch self {
@@ -41,7 +44,17 @@ final class SessionModel {
                 Keychain. Pair with a device that still has it — creating a \
                 new key would leave the existing data unreadable.
                 """
+            case .lockedByUser:
+                """
+                Your vault is closed. Nothing was lost — the key is still in \
+                your Keychain, and unlocking opens it again.
+                """
             }
+        }
+
+        /// What the button that resolves this reason should say.
+        var repairTitle: String {
+            self == .lockedByUser ? "Unlock" : "Try again"
         }
     }
 
@@ -287,11 +300,25 @@ final class SessionModel {
         }
     }
 
-    /// Close the vault and return to the launch decision.
+    /// Close the vault, releasing the core's lock on it.
+    ///
+    /// Lands on ``LockReason/lockedByUser`` rather than `.starting`, and the
+    /// difference is the whole method. `.starting` is a *transient* phase —
+    /// every other route into it (``start()``, ``switchTo(_:)``,
+    /// ``adoptVaultRoot(_:)``) drives itself out again on the same call — and
+    /// `RootView` renders it as a bare `ProgressView` whose
+    /// `.task { await session.start() }` will not re-fire, because it is
+    /// attached above the phase switch and fires once for the life of the
+    /// window. A `lock()` that stopped at `.starting` would therefore leave a
+    /// spinner nothing would ever replace.
+    ///
+    /// Not resolved by calling ``start()`` from here either: that would reopen
+    /// the vault it was just asked to close, which is not a lock and would also
+    /// make this useless as the release path the tests use for cleanup.
     func lock() async {
         await bridge?.shutdown()
         bridge = nil
-        phase = .starting
+        phase = .locked(.lockedByUser)
     }
 }
 

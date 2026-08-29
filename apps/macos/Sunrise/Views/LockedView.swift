@@ -38,8 +38,12 @@ struct LockedView: View {
                 .frame(maxWidth: 460)
 
             HStack(spacing: 12) {
-                Button("Try again") { Task { await retry() } }
+                // "Unlock" when the user closed it themselves, "Try again"
+                // when the vault refused — the same button, but a retry and a
+                // deliberate reopen are not the same request.
+                Button(reason.repairTitle) { Task { await retry() } }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("locked.retry")
                 if case .keychainUnavailable = reason {
                     Button("Open Keychain Access") {
                         NSWorkspace.shared.open(

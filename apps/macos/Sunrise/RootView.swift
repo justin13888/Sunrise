@@ -13,6 +13,13 @@ struct RootView: View {
         Group {
             switch session.phase {
             case .starting:
+                // Transient by construction, and it has to stay that way: the
+                // `.task` below fires once for the life of this window, so
+                // nothing here would ever call `start()` a second time. Every
+                // route into `.starting` — `start`, `switchTo`,
+                // `adoptVaultRoot` — drives itself out again on the same call,
+                // and `lock()` lands on `.locked(.lockedByUser)` rather than
+                // here for exactly this reason.
                 ProgressView("Opening your vault…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .firstRun:
