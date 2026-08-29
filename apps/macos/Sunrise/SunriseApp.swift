@@ -210,6 +210,11 @@ final class AppSurfaces {
     func attach(bridge: CoreBridge) {
         releaseVault()
         vault = bridge
+        // Hand the live vault to the App Intents surface. Without this an
+        // intent fired while Sunrise is open finds the one-vault-per-process
+        // slot taken and refuses — correct, but a refusal where the answer
+        // was available.
+        IntentVault.adopt(bridge)
         menuBar = MenuBarModel(bridge: bridge)
         let panel = QuickCapturePanel(bridge: bridge) { [weak self] draft in
             try await self?.commitCapture(draft)
@@ -358,6 +363,9 @@ final class AppSurfaces {
         menuBar = nil
         reminders = nil
         vault = nil
+        // Drop it in the same breath. An intent holding a bridge past this
+        // point would write into the vault the user just switched away from.
+        IntentVault.adopt(nil)
     }
 
     /// Release the vault surfaces *and* the hotkey.
