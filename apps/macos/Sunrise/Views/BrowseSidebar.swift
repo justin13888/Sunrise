@@ -30,7 +30,20 @@ struct BrowseSidebar: View {
             }
 
             Section {
-                ForEach(model.visibleStreams, id: \.id) { streamRow($0) }
+                // The Inbox sits outside the `ForEach` because it is outside
+                // the *order*: it is synthetic, the core pins it to the top,
+                // and `.onMove` below must not be able to pick it up or drop
+                // anything above it.
+                if let inbox = model.inboxStream { streamRow(inbox) }
+                ForEach(model.orderableStreams, id: \.id) { streamRow($0) }
+                    // **Reorder.** `interaction-patterns.md` §Reorder asks for
+                    // drag-within-a-list, and for streams the answer is a
+                    // vault fact: this writes `Stream.sort_order` through the
+                    // core, so the arrangement syncs. Task lists still keep
+                    // theirs per device — see `ListOrderStore`.
+                    .onMove { source, destination in
+                        Task { await model.moveStreams(from: source, to: destination) }
+                    }
             } header: {
                 header("Streams", add: { newStream = true }, addLabel: "New stream")
             }

@@ -69,23 +69,30 @@ enum ListOrder {
     }
 }
 
-/// A hand-arranged row order, per list, on this device.
+/// A hand-arranged **task** order, per list, on this device.
 ///
-/// **Per device, and not by choice.** `docs/07-clients/interaction-patterns.md`
-/// §Reorder asks for drag-within-a-list on every client, and the domain has no
-/// facet to write it to: `TaskEdit` has no ordering field and neither does
-/// `Task`. `docs/02-domain/streams.md` §Sort order models exactly this — a
-/// fractional index, with a written warning that concurrent reorders do not
-/// merge — but it models it for *Streams*, and `StreamEdit` does not carry
-/// `sort_order` across the seam either. So there is no way from this client to
-/// record an order the vault would keep.
+/// **Per device, and not by choice — but only for tasks.**
+/// `docs/07-clients/interaction-patterns.md` §Reorder asks for
+/// drag-within-a-list on every client, and the two halves of that request now
+/// land in two different places. The split is deliberate, and it is a
+/// difference in the *domain*, not a difference of opinion between two
+/// screens:
+///
+/// * **Streams reorder through the core and sync.** A Stream carries
+///   `sort_order`, a fractional index (`docs/02-domain/streams.md` §Sort
+///   order); `StreamEdit.sortOrder` writes it. ``StreamOrder`` and
+///   ``BrowseModel/moveStreams(from:to:)`` are that path.
+/// * **Tasks cannot.** There is no ordering facet on a Task at all: neither
+///   `Task` nor `TaskEdit` has one, and no CDDL in `docs/02-domain/tasks.md`
+///   describes one. There is nothing to write, so nothing can sync, and an
+///   order kept here is the only order there is.
 ///
 /// `UserDefaults`, then, beside `AppSettings` and `NotificationPreferences`
 /// and for the same reason those are there: it is a fact about this machine,
 /// it does not sync, and a device that loses it loses an arrangement rather
-/// than any of the user's data. When the seam grows an ordering field this
+/// than any of the user's data. If a Task ever grows an ordering field, this
 /// type is what gets pointed at it — `ListOrder` is already the whole of the
-/// logic.
+/// logic, and ``StreamOrder`` is the shape the rest of it takes.
 @MainActor
 @Observable
 final class ListOrderStore {

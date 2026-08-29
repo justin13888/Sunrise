@@ -41,6 +41,22 @@ final class BrowseModel {
         showsArchived ? streams : streams.filter { !$0.archived }
     }
 
+    /// The Inbox row, which the core pins to the top of every listing.
+    var inboxStream: StreamListRow? {
+        visibleStreams.first { $0.id == Self.inboxID }
+    }
+
+    /// The streams below it, in the order the vault holds them.
+    ///
+    /// Split out from ``visibleStreams`` because these are the rows a drag may
+    /// rearrange and the Inbox is not one of them: it is synthetic, there is
+    /// no Stream entity to write a `sort_order` to, and it carries the "no
+    /// position" sentinel rather than a key. Letting it into a reorder would
+    /// produce a command the core rejects.
+    var orderableStreams: [StreamListRow] {
+        visibleStreams.filter { $0.id != Self.inboxID }
+    }
+
     var visibleContexts: [ContextListRow] {
         showsArchived ? contexts : contexts.filter { !$0.archived }
     }
@@ -127,6 +143,34 @@ final class BrowseModel {
 
     func deleteStream(_ row: StreamListRow) async {
         await run(.deleteStream(id: row.id), label: "delete “\(row.name)”")
+    }
+
+    /// **Reorder the sidebar.** Drag a stream, and it moves everywhere.
+    ///
+    /// The order lives on the Stream as `sort_order`, so this is an ordinary
+    /// stream edit: it goes out as an op, it syncs, and it is undoable like a
+    /// rename. It is not a device preference, and it is the one place the
+    /// sidebar's two lists differ from the task lists below them — see
+    /// ``ListOrderStore`` for why *task* order is still per-device.
+    ///
+    /// Two devices that reorder the same list while apart do not merge:
+    /// `sort_order` is one field on an entity-level LWW row (ADR-0014), so one
+    /// device's arrangement wins whole. `docs/02-domain/streams.md` §Merge
+    /// mapping says so, and nothing here softens it.
+    ///
+    /// Returns whether anything was written, so a drop that changed nothing —
+    /// or that was calculated against a list the sync stream has since moved —
+    /// costs no command and no undo entry.
+    @discardableResult
+    func moveStreams(from source: IndexSet, to destination: Int) async -> Bool {
+        let moves = StreamOrder.moves(moving: source, to: destination, in: orderableStreams)
+        guard !moves.isEmpty else { return false }
+        for move in moves {
+            var edit = StreamEdit()
+            edit.sortOrder = move.key
+            await run(.updateStream(id: move.id, edit: edit), label: "reorder streams")
+        }
+        return true
     }
 
     // MARK: - Contexts
