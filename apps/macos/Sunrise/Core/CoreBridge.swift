@@ -120,6 +120,38 @@ actor CoreBridge {
         try core.attachmentIsLocal(attachment: attachment)
     }
 
+    // MARK: - iCalendar
+
+    /// Read an `.ics` document's `VEVENT`s into the vault as time blocks.
+    ///
+    /// The document crosses as **text**, not a path, for the reason
+    /// ``attachFile(to:filename:mimeType:bytes:)`` takes bytes: the file the
+    /// user picked carries a security scope this process holds and the Rust
+    /// side cannot, so reading it is the app's job.
+    ///
+    /// `stream` is where the Blocks are filed — `nil` is the Inbox. `source`
+    /// is *not* a parameter, and that is the load-bearing part: the Block an
+    /// event lands on is BLAKE3 over `(source, UID)`, so the source is half
+    /// the identity that makes a second import of the same file update the
+    /// same Blocks instead of duplicating them. The core's default is the one
+    /// shared `ics` name, and there is no reason for a file picker to want
+    /// anything else.
+    ///
+    /// The returned report's notices name everything the file held that a
+    /// Block cannot. They are the caller's to show.
+    func importIcal(text: String, into stream: EntityRef? = nil) async throws -> IcalImportReport {
+        try await core.importIcal(text: text, streamId: stream, source: nil)
+    }
+
+    /// Render one window of the calendar as an `.ics` document.
+    ///
+    /// `atMs` defaults to the core's own clock, so "today" and "this week" mean
+    /// what the rest of the app means by them rather than what this device's
+    /// `Date()` happens to say.
+    func exportIcal(window: ExportWindow, atMs: UInt64? = nil) async throws -> String {
+        try await core.exportIcal(window: window, atMs: atMs ?? core.nowMs())
+    }
+
     // MARK: - Pairing
 
     /// Seal this vault's root into a confirmed pairing.
