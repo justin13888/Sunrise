@@ -8,7 +8,7 @@ Sunrise must be operable end-to-end with the keyboard alone on every platform th
 
 ## Per-platform default keymaps
 
-Defaults follow platform conventions; user remappable in Settings.
+Defaults follow platform conventions.
 
 > **There is no TUI column.** This table carried one until
 > [ADR-0019](../11-adr/0019-swiftui-macos-client.md) removed the terminal
@@ -17,15 +17,26 @@ Defaults follow platform conventions; user remappable in Settings.
 > `next`, `focus`, `done`, …), so it has no keymap to specify. The Win/Linux
 > and Web columns are unbuilt targets: macOS is the only shipping GUI client.
 
+> **Reading the macOS column.** Every binding below is **implemented and
+> reachable** in `apps/macos`, transcribed as data in
+> `apps/macos/Sunrise/Keyboard/Keymap.swift` and resolved in one of two scopes
+> (`.application`, attached to the window; `.list`, attached to the task list).
+> The Win/Linux and Web columns are specification for unbuilt targets — nothing
+> in them has been implemented, and they should be read as intent.
+
 | Action | macOS | Desktop (Win/Linux) | Web |
 |---|---|---|---|
 | Quick capture (global) | `Cmd+Shift+N` | `Ctrl+Shift+N` | extension shortcut |
 | Quick capture (in-app) | `Cmd+N` | `Ctrl+N` | `n` |
 | Today | `Cmd+1` | `Ctrl+1` | `g t` |
 | Inbox | `Cmd+2` | `Ctrl+2` | `g i` |
-| Search | `Cmd+F` (in view), `Cmd+K` (global) | `Ctrl+F` / `Ctrl+K` | `/` |
+| Search (keeping the query) | `Cmd+F` | `Ctrl+F` | `/` |
+| Search (fresh query) | `Cmd+K` | `Ctrl+K` | `/` |
 | Open command palette | `Cmd+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+P` |
+| Cheat sheet | `?` (in list), `Cmd+/` (menu) | `?` | `?` |
 | New stream | `Cmd+Shift+S` | `Ctrl+Shift+S` | — |
+| Morning summary | `Cmd+Opt+M` | — | — |
+| End-of-day plan | `Cmd+Opt+E` | — | — |
 | Mark done | `X` (when row selected) | same | same |
 | Defer | `D` | same | same |
 | Schedule | `S` | same | same |
@@ -39,38 +50,90 @@ Defaults follow platform conventions; user remappable in Settings.
 | Undo | `Cmd+Z` | `Ctrl+Z` | `Ctrl+Z` |
 | Redo | `Cmd+Shift+Z` | `Ctrl+Y` | `Ctrl+Y` |
 
+Two entries need their exact behaviour stated, because the obvious reading is
+wrong:
+
+- **`Cmd+F` is not a find-in-current-list.** Both `Cmd+F` and `Cmd+K` navigate
+  to the one Search surface; the only difference is that `Cmd+K` clears the
+  standing query first and `Cmd+F` keeps it. There is no in-place list filter.
+- **`?` cannot be a menu key equivalent on macOS**, so the cheat sheet also
+  carries `Cmd+/`, which is what appears in the Help menu. `?` works while the
+  list has focus.
+
+**Remapping is not implemented.** An earlier revision of this file said the
+defaults were "user remappable in Settings". They are not: `Keymap.bindings` is
+a compile-time constant and Settings → Keyboard offers only the vim toggle
+below. Remapping is roadmap, not v1.
+
+### Note editor
+
+The rich-text editor on a Task's body carries its own inline-formatting keymap
+(`apps/macos/Sunrise/Notes/NoteInlineText.swift`), which the list keymap does
+not shadow:
+
+| Action | macOS |
+|---|---|
+| Bold | `Cmd+B` |
+| Italic | `Cmd+I` |
+| Underline | `Cmd+U` |
+| Strikethrough | `Cmd+X` |
+| Code | `Cmd+E` |
+
 ## Vim mode (opt-in)
 
-Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device local pref (not synced). Available on Desktop and Web.
+Settings toggle `editor.vim_mode: bool = false`. Persisted as a per-device
+local pref (not synced) — `UserDefaults`, under the literal key
+`editor.vim_mode`. Reachable from Settings → Keyboard and from the `?` cheat
+sheet, which carries the same toggle so the mode is discoverable from the place
+that documents it. **Available on macOS only.** Web is unbuilt.
 
-### v1 vim-mode keymap (exhaustive)
+### What v1 vim mode is
+
+A **navigational subset**, scoped to the task list, and **additive** rather than
+modal: a key vim does not claim falls through to the ordinary list keymap, so
+`X` `D` `S` `M` `F` keep working with vim on. There is no Insert mode, and
+therefore no Normal mode to return to.
+
+### v1 vim-mode keymap (exhaustive, as shipped)
 
 | Keys | Action |
 |---|---|
-| `h` `j` `k` `l` | Move left / down / up / right |
-| `w` `b` `e` | Forward word / back word / end of word |
-| `gg` | Top of list/document |
-| `G` | Bottom of list/document |
-| `0` | Start of line |
-| `$` | End of line |
-| `i` `a` | Insert before / after cursor |
-| `I` `A` | Insert at start / end of line |
-| `o` `O` | Open new line below / above |
-| `x` | Delete character under cursor |
-| `dd` | Delete current line / row |
-| `yy` | Yank current line / row |
-| `p` `P` | Paste after / before cursor |
+| `j` `k` | Down / up a row |
+| `h` | Close detail (also clears the multi-select set) |
+| `l` | Open detail |
+| `gg` | Top of list |
+| `G` | Bottom of list |
 | `u` | Undo |
 | `Ctrl-r` | Redo |
-| `/` | Search-in-list |
+| `/` | Search |
 | `:` | Command palette |
-| `Esc` | Return to Normal mode |
+| `Esc` | Cancel a pending `g`; otherwise falls through to Close detail |
 
-No regex, no macros, no marks in v1.
+Ten bindings. `gg` is the only prefixed motion. No regex, no macros, no marks.
+
+### Motions deliberately not implemented
+
+An earlier revision of this file specified a full caret-motion set. It is not
+implemented, and it is listed here rather than deleted so a reader can tell a
+scoping decision from an oversight.
+
+| Keys | Why not |
+|---|---|
+| `w` `b` `e` `0` `$` | Caret motions need a caret. SwiftUI's `TextField` / `TextEditor` expose no caret position, so there is nothing to move; implementing them means dropping to `NSTextView`. |
+| `i` `a` `I` `A` `o` `O` | Insert mode, same reason — and with no Insert mode there is no mode to escape from. |
+| `x` `p` `P` | Character-level editing, same reason. |
+| `dd` `yy` | These require `d` and `y` to become pending operators. **`d` is already Defer.** A mode that silently turns a one-key defer into the first half of a two-key delete is a mode that loses somebody a task, so the operator-pending state was not built. |
+
+`h` and `l` are also worth calling out: they are bound, but to **Close detail /
+Open detail**, not to horizontal motion. There is no horizontal motion in a list.
 
 ### Vim-mode conflict mitigation
 
-When vim mode is on, the browser-default `Ctrl+Shift+P` is intercepted only inside the Sunrise web-app surface; outside (DevTools open, browser chrome focused, etc.) the browser keeps the binding. See `Ctrl+Shift+P` conflict notes below.
+`Ctrl+Shift+P` is a browser conflict, and macOS is the only shipping client, so
+nothing here applies today. Kept as specification for the unbuilt web client:
+when vim mode is on, the browser-default `Ctrl+Shift+P` would be intercepted
+only inside the Sunrise web-app surface; outside (DevTools open, browser chrome
+focused) the browser keeps the binding.
 
 ## Discoverability
 
