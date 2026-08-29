@@ -46,6 +46,13 @@ the vault's shape
   sunrise streams | contexts | routines
   sunrise stream <id|name>     list the tasks in one stream
   sunrise context <id|name>    list the tasks carrying one context
+  sunrise streams move <x> before <y> | last
+                               reorder the stream list; syncs, unlike task order
+
+calendar interchange
+  sunrise ical import <path|-> read an .ics into Blocks, idempotently
+  sunrise ical export [today|day|week] [path]
+                               write a window of Blocks as .ics
 
 review and reporting
   sunrise review               this week's review summary
@@ -103,10 +110,10 @@ re-keys the task's storage. **The title is not among them**, and neither is the
 `body`: a bare word is refused rather than read as a new title, so a task
 captured with a typo is re-titled from the macOS editor or not at all. That
 refusal is the deliberate difference from capture, and it goes one step
-further: **one bad token rejects the whole line**. A capture
-line is a title, so unrecognised text belongs in it; an edit line is not, and a
-script that mistyped one token is better served by a non-zero exit than by
-four of its five changes landing.
+further: **one bad token rejects the whole line**. A capture line is a title, so
+unrecognised text belongs in it; an edit line is not, and a script that mistyped
+one token is better served by a non-zero exit than by four of its five changes
+landing.
 
 `defer` is not `edit ^when`. It is `Command::DeferTask`, which also bumps the
 Task's `deferred_count` — the counter `sunrise review` reports as "deferred",

@@ -68,8 +68,9 @@ BlockSource = "sunrise"                       ; created in Sunrise
 ```
 
 `source` and `external_id` are still unmodelled, but the reason has changed:
-there **is** an importer now (`sunrise ical import`, and `import_ical` on the
-seam), and it works without them. Rather than add two columns, it hashes
+there **is** an importer now, reachable from both shipping clients
+(`sunrise ical import`, and `import_ical` on the seam behind the macOS File
+menu), and it works without them. Rather than add two columns, it hashes
 `(source, uid)` into the Block's **own id**, exactly as a materialized routine
 occurrence hashes `(routine, occurrence)` into a Task's. Re-importing the same
 file therefore computes the same id and updates the Block already there, giving

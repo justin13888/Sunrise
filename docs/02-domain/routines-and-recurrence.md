@@ -129,8 +129,9 @@ supported set rather than silently dropping it.
 `EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
 
 > **Both statements describe a Routine importer that does not exist.** The iCal
-> importer is reachable now — `sunrise ical import`, and `import_ical` on the
-> seam — but it imports a `VEVENT` as a **Block**, never as a Routine, so
+> importer is reachable from both shipping clients now — `sunrise ical import`,
+> and the macOS File menu over the seam's `import_ical` — but it imports a
+> `VEVENT` as a **Block**, never as a Routine, so
 > nothing maps `EXDATE` to `Routine.skip_dates`. `EXDATE`, `RDATE` and `RRULE`
 > itself are all reported as unmapped and dropped, which means a recurring
 > event imports as a single occurrence. See
