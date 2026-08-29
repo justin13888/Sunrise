@@ -14,6 +14,10 @@ struct BrowseSidebar: View {
     @State private var newContext = false
     @State private var confirmingStreamDelete: StreamListRow?
     @State private var confirmingContextDelete: ContextListRow?
+    /// Which row a drag is currently over. `interaction-patterns.md`
+    /// §Drag-and-drop UX tokens asks for a visible drop target, and a sidebar
+    /// row that highlighted nothing would be a target you have to guess at.
+    @State private var isTargeted: EntityRef?
 
     var body: some View {
         List(selection: $selection) {
@@ -146,6 +150,14 @@ struct BrowseSidebar: View {
                 .font(.caption2)
         }
         .tag(Destination.list(.stream(id: row.id, name: row.name)))
+        // **Task → Stream.** `interaction-patterns.md` §Promote names this
+        // gesture beside the `m` key, and it runs the same command the `M`
+        // sheet does.
+        .dropDestination(for: String.self) { items, _ in
+            Task { await model.fileTasks(items, intoStream: row.id) }
+            return !DropPayload.taskIDs(items).isEmpty
+        } isTargeted: { isTargeted = $0 ? row.id : (isTargeted == row.id ? nil : isTargeted) }
+        .dropHighlight(isActive: isTargeted == row.id)
         .contextMenu {
             if row.id == BrowseModel.inboxID {
                 // The Inbox is synthetic: there is no stream entity behind it,
@@ -177,6 +189,14 @@ struct BrowseSidebar: View {
             }
         }
         .tag(Destination.list(.context(id: row.id, name: row.name)))
+        // **Task → Context.** Adds rather than replaces: a task has one stream
+        // and any number of contexts, so dropping `@home` on it must not take
+        // `@errands` away.
+        .dropDestination(for: String.self) { items, _ in
+            Task { await model.fileTasks(items, intoContext: row.id) }
+            return !DropPayload.taskIDs(items).isEmpty
+        } isTargeted: { isTargeted = $0 ? row.id : (isTargeted == row.id ? nil : isTargeted) }
+        .dropHighlight(isActive: isTargeted == row.id)
         .contextMenu {
             Button("Edit…") { editingContext = row }
             Button(row.archived ? "Unarchive" : "Archive") {

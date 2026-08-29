@@ -203,7 +203,8 @@ private struct DayColumn: View {
                         conflicted: isConflicted(placed),
                         open: { edit(placed.row) },
                         delete: { Task { await model.delete(placed.row.block.id) } },
-                        resolve: resolveMenu(for: placed)
+                        resolve: resolveMenu(for: placed),
+                        drag: { mode, points in dragBlock(placed, mode: mode, byPoints: points) }
                     )
                 }
                 if let ghost = ghostRect {
@@ -281,6 +282,28 @@ private struct DayColumn: View {
             }
     }
 
+    /// **Moving or resizing a block by dragging it.**
+    ///
+    /// The translation is turned into milliseconds here — points are the
+    /// view's unit and the grid's scale is the view's business — and every
+    /// decision after that is `BlockDrag`'s, so what happens at midnight and
+    /// what happens to a block dragged shorter than a snap step are both
+    /// testable without a window.
+    private func dragBlock(_ placed: PlacedBlock, mode: BlockDragMode, byPoints points: CGFloat) {
+        let deltaMs = Int64(points / CalendarMetrics.hourHeight * 3_600_000)
+        let bounds = BlockDrag.apply(
+            mode: mode,
+            startMs: placed.startMs,
+            endMs: placed.endMs,
+            deltaMs: deltaMs,
+            snapMinutes: model.snapMinutes,
+            dayStartMs: dayStartMs,
+            dayEndMs: dayStartMs + 24 * 3_600_000
+        )
+        guard bounds.startMs != placed.startMs || bounds.endMs != placed.endMs else { return }
+        Task { await model.moveBlock(placed.row, toStartMs: bounds.startMs, toEndMs: bounds.endMs) }
+    }
+
     /// A task dragged from a list onto the grid.
     ///
     /// The payload is the task's `EntityRef`, which is its text form — the same
@@ -340,6 +363,13 @@ private struct BlockChip: View {
     let open: () -> Void
     let delete: () -> Void
     let resolve: [ResolveOption]
+    /// Where a drag on this chip ended up, in points down the column.
+    let drag: (BlockDragMode, CGFloat) -> Void
+
+    /// The live offset while a drag is in flight, so the chip follows the
+    /// pointer instead of jumping when the write lands.
+    @State private var offset: CGFloat = 0
+    @State private var stretch: CGFloat = 0
 
     var body: some View {
         let top = CalendarMetrics.offset(ms: placed.startMs, dayStartMs: dayStartMs)
@@ -359,14 +389,23 @@ private struct BlockChip: View {
             Spacer(minLength: 0)
         }
         .padding(4)
-        .frame(width: laneWidth - 2, height: max(14, bottom - top), alignment: .topLeading)
+        .frame(
+            width: laneWidth - 2,
+            height: max(14, bottom - top + stretch),
+            alignment: .topLeading
+        )
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.accentColor.opacity(0.18))
                 .stroke(conflicted ? Color.orange : Color.accentColor, lineWidth: conflicted ? 2 : 1)
         )
-        .offset(x: laneWidth * CGFloat(placed.lane) + 1, y: top)
+        // The bottom few points resize instead of moving — the same edge every
+        // calendar on this platform puts a resize on.
+        .overlay(alignment: .bottom) { resizeHandle }
+        .offset(x: laneWidth * CGFloat(placed.lane) + 1, y: top + offset)
+        .opacity(offset == 0 && stretch == 0 ? 1 : DropHighlight.ghostOpacity)
         .onTapGesture(perform: open)
+        .gesture(moveGesture)
         .accessibilityIdentifier("calendar-block")
         .contextMenu {
             Button("Edit…", action: open)
@@ -385,4 +424,34 @@ private struct BlockChip: View {
             Button("Delete", role: .destructive, action: delete)
         }
     }
+
+    /// Drag the body: the block keeps its length and changes when it is.
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { offset = $0.translation.height }
+            .onEnded { value in
+                offset = 0
+                drag(.move, value.translation.height)
+            }
+    }
+
+    /// Drag the bottom edge: the block keeps its start and changes how long it
+    /// is. A strip rather than a corner grip, because a block can be eight
+    /// points tall and a grip would not fit on one.
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(height: BlockChip.resizeGrip)
+            .contentShape(.rect)
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { stretch = $0.translation.height }
+                    .onEnded { value in
+                        stretch = 0
+                        drag(.resizeEnd, value.translation.height)
+                    }
+            )
+    }
+
+    /// How tall the resize strip is.
+    private static let resizeGrip: CGFloat = 6
 }

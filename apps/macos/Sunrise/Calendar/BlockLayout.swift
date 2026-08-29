@@ -161,3 +161,60 @@ enum BlockLayout {
         return dayStartMs + snapped
     }
 }
+
+/// Which end of a block a drag is holding.
+enum BlockDragMode: Equatable, Sendable {
+    /// Both ends together — the block keeps its length and changes when it is.
+    case move
+    /// The bottom edge only — the block keeps its start and changes how long
+    /// it is.
+    case resizeEnd
+}
+
+/// Dragging a block that already exists.
+///
+/// `docs/07-clients/parity-matrix.md` names "no drag to move or resize an
+/// existing block" as one of this client's drag-and-drop gaps. This is the
+/// arithmetic behind closing it, pure and separate from the gesture, because
+/// the interesting parts — that a block keeps its length when it is moved, and
+/// that neither end may be dragged out of the day it is drawn on — are
+/// invisible on screen until they are wrong.
+enum BlockDrag {
+    /// Where a block ends up after being dragged `deltaMs` in `mode`.
+    ///
+    /// Both results are snapped, and both are clamped inside
+    /// `[dayStartMs, dayEndMs]`: a block dragged off the bottom of a column
+    /// must stop at midnight rather than silently become tomorrow's, which is
+    /// what a raw translation would do on a grid that only draws one day.
+    ///
+    /// A resize never shortens a block past one snap unit — a zero-length
+    /// block is one the core would refuse and the grid could not draw.
+    static func apply(
+        mode: BlockDragMode,
+        startMs: Int64,
+        endMs: Int64,
+        deltaMs: Int64,
+        snapMinutes: Int,
+        dayStartMs: Int64,
+        dayEndMs: Int64
+    ) -> (startMs: Int64, endMs: Int64) {
+        let step = Int64(max(1, snapMinutes)) * 60_000
+        func snapped(_ ms: Int64) -> Int64 {
+            BlockLayout.snap(ms: ms, toMinutes: snapMinutes, dayStartMs: dayStartMs)
+        }
+        switch mode {
+        case .move:
+            let length = max(step, endMs - startMs)
+            // Clamped by the *start*, with the length preserved: clamping each
+            // end on its own is how a block dragged past midnight arrives
+            // three minutes long.
+            let latest = max(dayStartMs, dayEndMs - length)
+            let start = min(max(snapped(startMs + deltaMs), dayStartMs), latest)
+            return (start, start + length)
+        case .resizeEnd:
+            let lowest = min(startMs + step, dayEndMs)
+            let end = min(max(snapped(endMs + deltaMs), lowest), dayEndMs)
+            return (startMs, end)
+        }
+    }
+}

@@ -36,9 +36,18 @@ final class TaskListModel {
     /// display.
     let bridge: CoreBridge
 
-    init(bridge: CoreBridge, kind: TaskListKind = .todayAll) {
+    /// The hand-arranged row order for this list, on this device. See
+    /// ``ListOrderStore`` for why it is a device fact and not a vault one.
+    private let order: ListOrderStore
+
+    init(
+        bridge: CoreBridge,
+        kind: TaskListKind = .todayAll,
+        order: ListOrderStore = ListOrderStore()
+    ) {
         self.bridge = bridge
         self.kind = kind
+        self.order = order
     }
 
     func show(_ kind: TaskListKind) async {
@@ -63,7 +72,9 @@ final class TaskListModel {
                 groups = []
                 return
             }
-            tasks = rows
+            // The remembered arrangement, laid over the query. A list nobody
+            // has dragged in is returned exactly as the core ordered it.
+            tasks = order.apply(rows, for: kind)
             groups = kind.isToday
                 ? TaskGrouping.today(tasks: rows, nowMs: nowMs, timeZone: timeZone)
                 : []
@@ -162,6 +173,33 @@ final class TaskListModel {
     func move(_ task: TaskItem, toStream stream: EntityRef) async {
         await run(.promoteToStream(id: task.id, stream: stream))
     }
+
+    /// Bind a task to a time block, which is what a drop onto the grid does
+    /// from the other direction.
+    func bind(_ task: EntityRef, to block: EntityRef) async {
+        await run(.bindTask(block: block, task: task))
+    }
+
+    /// **Drag-to-reorder**: put `moved` immediately before `target`.
+    ///
+    /// `false` when this list cannot be arranged by hand — Today is sectioned
+    /// by urgency and Search is ranked by relevance, and in both a dropped row
+    /// would snap back on the next refresh. Returning the refusal rather than
+    /// silently doing nothing is what lets the row decline the drop, so the
+    /// cursor shows "no" instead of promising a move that will not happen.
+    @discardableResult
+    func reorder(_ moved: [EntityRef], before target: EntityRef) -> Bool {
+        guard kind.acceptsReordering else { return false }
+        let changed = order.move(moved, before: target, in: kind, visible: tasks.map(\.id))
+        guard changed else { return false }
+        // Re-read from the store rather than patching `tasks` here, so the one
+        // answer to "what order is this list in" stays `ListOrderStore`'s.
+        tasks = order.apply(tasks, for: kind)
+        return true
+    }
+
+    /// Whether a row in this list can be dragged onto another to move it.
+    var acceptsReordering: Bool { kind.acceptsReordering }
 
     /// Start a focus session on a task, from the list rather than from the
     /// planner. One pomodoro, and the task's own energy facet — the two

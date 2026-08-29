@@ -47,6 +47,8 @@ struct TaskRows: View {
     var focus: FocusState<PaneFocus?>.Binding
 
     @State private var vim = VimNormalMode()
+    /// Which row a drag is over, for the drop-target treatment.
+    @State private var targeted: EntityRef?
     @State private var foldedSections: Set<Int> = [TodaySection.overdue.rank]
 
     /// The rows the keyboard can reach: what is drawn, folded sections
@@ -167,6 +169,24 @@ struct TaskRows: View {
             edit: { sheets.editing = task }
         )
         .tag(task.id)
+        // **Task → Task (reorder).** Dropping a row onto another puts it
+        // immediately above that one; a whole ⇧-selected run moves together
+        // and keeps its internal order.
+        //
+        // A drop target rather than `ForEach.onMove`, because the row is
+        // already `.draggable` — it has to reach the calendar grid and the
+        // sidebar too — and `onMove` would take that drag over for itself.
+        //
+        // Declined outright in Today and in Search: the first is sectioned by
+        // urgency and the second ranked by relevance, so a row dropped there
+        // would snap back on the next refresh. Returning `false` is what makes
+        // the cursor say "no" rather than promising a move that never happens.
+        .dropDestination(for: String.self) { items, _ in
+            let moved = DropPayload.taskIDs(items).filter { $0 != task.id }
+            guard !moved.isEmpty else { return false }
+            return model.reorder(moved, before: task.id)
+        } isTargeted: { targeted = $0 ? task.id : (targeted == task.id ? nil : targeted) }
+        .dropHighlight(isActive: model.acceptsReordering && targeted == task.id)
         .contextMenu { rowMenu(task) }
         .swipeActions(edge: .trailing) {
             Button("Delete", role: .destructive) { Task { await model.delete(task) } }

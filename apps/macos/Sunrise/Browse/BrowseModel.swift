@@ -160,6 +160,65 @@ final class BrowseModel {
 
     func dismissUndoNote() { undoNote = nil }
 
+    // MARK: - Dropping tasks onto the sidebar
+
+    /// **Task → Stream**: re-file dragged tasks into a stream.
+    ///
+    /// `docs/07-clients/interaction-patterns.md` §Promote gives this gesture
+    /// by name — "drag onto a Stream" — beside the `m` key that already did
+    /// it. Same command as the `M` sheet, so a drag and a keystroke cannot
+    /// mean two different things.
+    ///
+    /// The Inbox is a stream like any other here: dragging a task back into it
+    /// is how somebody un-files something they filed by mistake.
+    ///
+    /// Returns whether anything was written, so the drop target can decline a
+    /// payload that carried no tasks rather than swallowing it.
+    @discardableResult
+    func fileTasks(_ items: [String], intoStream stream: EntityRef) async -> Bool {
+        let ids = DropPayload.taskIDs(items)
+        guard !ids.isEmpty else { return false }
+        for id in ids {
+            await run(.promoteToStream(id: id, stream: stream), label: "move to stream")
+        }
+        return true
+    }
+
+    /// **Task → Context**: add a context to dragged tasks.
+    ///
+    /// A context is a set membership rather than a home — a task has one
+    /// stream and any number of contexts — so this *adds* rather than
+    /// replaces. `TaskEdit.contexts` overwrites the whole set, which is why
+    /// each task's current set is read first: writing only the dropped context
+    /// would silently strip every other one the task carried.
+    ///
+    /// A task that already carries the context is left alone rather than
+    /// rewritten, so a stray drop costs nothing and puts nothing on the undo
+    /// stack.
+    @discardableResult
+    func fileTasks(_ items: [String], intoContext context: EntityRef) async -> Bool {
+        let ids = DropPayload.taskIDs(items)
+        guard !ids.isEmpty else { return false }
+        var wrote = false
+        for id in ids {
+            guard let existing = await contexts(of: id), !existing.contains(context) else { continue }
+            var edit = TaskEdit()
+            edit.contexts = existing + [context]
+            await run(.updateTask(id: id, edit: edit), label: "add a context")
+            wrote = true
+        }
+        return wrote
+    }
+
+    /// The contexts a task carries right now, or `nil` when it could not be
+    /// read — a task deleted between the drag starting and the drop landing.
+    private func contexts(of task: EntityRef) async -> [EntityRef]? {
+        guard case let .task(item)? = try? await bridge.query(.entityById(id: task)) else {
+            return nil
+        }
+        return item.contexts
+    }
+
     private func run(_ command: CoreCommand, label: String) async {
         do {
             let outcome = try await bridge.submitUndoable(command, label: label)
