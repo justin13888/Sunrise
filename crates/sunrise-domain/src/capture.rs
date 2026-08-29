@@ -151,12 +151,12 @@ pub fn parse(
         let (tag, rest) = split_tag(w);
         match tag {
             Some('#') if !rest.is_empty() => {
-                resolve_named(rest, streams, &mut unresolved, Kind::Stream)
+                resolve_named(rest, streams, &mut unresolved, NameKind::Stream)
                     .map_or_else(|| title_words.push(w), |id| draft.stream_id = Some(id));
                 i += 1;
             }
             Some('@') if !rest.is_empty() => {
-                resolve_named(rest, contexts, &mut unresolved, Kind::Context)
+                resolve_named(rest, contexts, &mut unresolved, NameKind::Context)
                     .map_or_else(|| title_words.push(w), |id| draft.contexts.push(id));
                 i += 1;
             }
@@ -229,20 +229,32 @@ fn strip_due(w: &str) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
-#[derive(Clone, Copy)]
-enum Kind {
+/// Which sigil a name was typed behind, so an unresolved one names itself
+/// correctly ("no such stream" vs "no such context").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    /// A `#stream` token.
     Stream,
+    /// An `@context` token.
     Context,
 }
 
 /// Case-insensitive resolution. An exact match wins outright; otherwise a
 /// unique prefix match is accepted, and anything else is reported rather than
 /// guessed.
-fn resolve_named(
+///
+/// Public because it is **the** rule for turning a typed name into an id, and
+/// `docs/07-clients/overview.md` §"What clients share" puts that vocabulary in
+/// this crate rather than in each client: a CLI that resolved `#work` by its
+/// own rule would eventually disagree with the capture bar about which Stream
+/// a user meant. Callers that accept a raw name — `sunrise stream <name>`, say
+/// — get the same exact-then-unique-prefix behaviour, and the same
+/// [`Unresolved`] values to report, that every capture line already gets.
+pub fn resolve_named(
     typed: &str,
     candidates: &[NamedRef<'_>],
     unresolved: &mut Vec<Unresolved>,
-    kind: Kind,
+    kind: NameKind,
 ) -> Option<EntityRef> {
     let lower = typed.to_lowercase();
     if let Some(exact) = candidates.iter().find(|c| c.name.to_lowercase() == lower) {
@@ -256,19 +268,19 @@ fn resolve_named(
         1 => Some(prefixed[0].id),
         0 => {
             unresolved.push(match kind {
-                Kind::Stream => Unresolved::UnknownStream(typed.to_string()),
-                Kind::Context => Unresolved::UnknownContext(typed.to_string()),
+                NameKind::Stream => Unresolved::UnknownStream(typed.to_string()),
+                NameKind::Context => Unresolved::UnknownContext(typed.to_string()),
             });
             None
         }
         _ => {
             let names = prefixed.iter().map(|c| c.name.to_string()).collect();
             unresolved.push(match kind {
-                Kind::Stream => Unresolved::AmbiguousStream {
+                NameKind::Stream => Unresolved::AmbiguousStream {
                     typed: typed.to_string(),
                     candidates: names,
                 },
-                Kind::Context => Unresolved::AmbiguousContext {
+                NameKind::Context => Unresolved::AmbiguousContext {
                     typed: typed.to_string(),
                     candidates: names,
                 },

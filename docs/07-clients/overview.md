@@ -40,6 +40,8 @@ capture and triage
 
 the vault's shape
   sunrise streams | contexts | routines
+  sunrise stream <id|name>     list the tasks in one stream
+  sunrise context <id|name>    list the tasks carrying one context
 
 review and reporting
   sunrise review               this week's review summary

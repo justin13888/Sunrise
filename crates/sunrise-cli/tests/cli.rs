@@ -13,6 +13,11 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// The same fixed dev root the binary uses (`main::DEV_ROOT`), so a test can
+/// open a vault the binary made and seed a fixture the binary has no
+/// subcommand for.
+const DEV_ROOT: [u8; 32] = [7u8; 32];
+
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_sunrise")
 }
@@ -103,7 +108,7 @@ fn unresolved_annotation_warns_but_still_commits_the_text() {
     assert!(out.status.success(), "an unknown stream must not fail");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        err.contains("UnknownStream"),
+        err.contains("no stream matches \"nosuchstream\""),
         "the warning must go to stderr so stdout stays parseable: {err:?}"
     );
     assert!(
@@ -254,6 +259,131 @@ fn contexts_and_routines_are_listable_without_a_terminal() {
     // Nothing yet: an empty listing is a successful listing.
     assert!(run(dir.path(), &["contexts"]).status.success());
     assert!(run(dir.path(), &["routines"]).status.success());
+}
+
+// ---------------------------------------------------------------------------
+// Stream and Context views
+//
+// `docs/07-clients/parity-matrix.md` marks "Today / Inbox / Stream views (list
+// form)" a CLI MUST. `today` and `inbox` had it; the Stream half did not exist
+// — `Query::StreamTasks` was never issued from this binary — and neither did
+// its Context counterpart.
+// ---------------------------------------------------------------------------
+
+/// The listing itself, reached by name and by id, against the one Stream every
+/// vault has.
+#[test]
+fn stream_lists_the_tasks_in_one_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    run(dir.path(), &["capture", "Renew passport"]);
+    run(dir.path(), &["capture", "Book the movers"]);
+
+    // By name, resolved the same way `#inbox` is in a capture line.
+    let by_name = stdout(&run(dir.path(), &["stream", "inbox"]));
+    assert!(by_name.contains("Renew passport"), "got {by_name:?}");
+    assert!(by_name.contains("Book the movers"), "got {by_name:?}");
+
+    // ...and by the id `sunrise streams` printed, so a script can pipe one in.
+    let id = stdout(&run(dir.path(), &["streams"]))
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        id.starts_with("str_"),
+        "streams must print an id, got {id:?}"
+    );
+    assert_eq!(stdout(&run(dir.path(), &["stream", &id])), by_name);
+}
+
+/// A name that resolves to nothing must fail loudly and say what to try, not
+/// print an empty listing that reads as "this stream is empty".
+#[test]
+fn stream_refuses_a_name_it_cannot_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["stream", "nosuchstream"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no stream matches"), "got {err:?}");
+
+    // And with no argument at all it is a usage error, not an empty listing.
+    assert!(!run(dir.path(), &["stream"]).status.success());
+    assert!(!run(dir.path(), &["context"]).status.success());
+    let out = run(dir.path(), &["context", "nosuchcontext"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no context matches"));
+}
+
+/// Contexts cut across Streams, so "everything tagged `@errands`" is its own
+/// listing rather than a filter over one Stream (`Query::ContextTasks`).
+///
+/// The Context and the tagged Task are seeded **in-process**, because the CLI
+/// is a read-and-capture surface for Contexts by design — `@name` in a capture
+/// line resolves an existing Context and never mints one — so there is no way
+/// to set this fixture up through the binary. The listing under test still
+/// runs as a separate process against the real vault.
+#[tokio::test]
+async fn context_lists_the_tasks_carrying_it_across_streams() {
+    use sunrise_cli::livesync::{open_with_plan, SyncPlan};
+    use sunrise_core::Command as CoreCommand;
+    use sunrise_domain::{ContextDraft, TaskDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().to_path_buf();
+    {
+        let (core, _) = open_with_plan(vault.clone(), "0.1.0+test", DEV_ROOT, &SyncPlan::default())
+            .await
+            .expect("open the vault");
+        let ctx = core
+            .submit(CoreCommand::CreateContext(ContextDraft {
+                name: "errands".into(),
+                description: None,
+            }))
+            .await
+            .expect("create context")
+            .entity;
+        for title in ["Post the parcel", "Collect the keys"] {
+            core.submit(CoreCommand::CreateTask(TaskDraft {
+                title: title.into(),
+                contexts: vec![ctx],
+                ..Default::default()
+            }))
+            .await
+            .expect("create task");
+        }
+        core.submit(CoreCommand::CreateTask(TaskDraft {
+            title: "Untagged thing".into(),
+            ..Default::default()
+        }))
+        .await
+        .expect("create task");
+        // Releases the vault lock, so the binary below can take it.
+        core.shutdown().await;
+    }
+
+    let listed = stdout(&run(&vault, &["context", "errands"]));
+    assert!(listed.contains("Post the parcel"), "got {listed:?}");
+    assert!(listed.contains("Collect the keys"), "got {listed:?}");
+    assert!(
+        !listed.contains("Untagged thing"),
+        "a Context listing must be the tagged tasks, not every task: {listed:?}"
+    );
+
+    // A `@`-prefixed argument is the same thing typed the way capture spells
+    // it, so muscle memory from the capture line works here too.
+    assert_eq!(stdout(&run(&vault, &["context", "@errands"])), listed);
+}
+
+/// Both must be in `help`, or they do not exist for a user.
+#[test]
+fn the_stream_and_context_views_are_documented_in_the_usage_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let help = stdout(&run(dir.path(), &["help"]));
+    assert!(help.contains("sunrise stream <id|name>"), "got {help}");
+    assert!(help.contains("sunrise context <id|name>"), "got {help}");
 }
 
 /// `sync --once` is for cron. Without a relay configured it must fail fast and

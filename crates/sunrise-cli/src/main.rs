@@ -66,7 +66,9 @@ USAGE:
 
   the vault's shape
     sunrise streams              list streams with open counts
+    sunrise stream <id|name>     list the tasks in one stream
     sunrise contexts             list contexts with task counts
+    sunrise context <id|name>    list the tasks carrying one context
     sunrise routines             list routines with cadence and streak
 
   review and reporting
@@ -259,7 +261,7 @@ async fn dispatch(
                 // screen, so stderr is safe here and only here.
                 #[allow(clippy::print_stderr)]
                 {
-                    eprintln!("note: {u:?}");
+                    eprintln!("note: {}", unresolved_note(u));
                 }
             }
             let title = parsed.draft.title.clone();
@@ -290,6 +292,25 @@ async fn dispatch(
                     );
                 }
             }
+            Ok(())
+        }
+        // Singular lists the tasks *in* one; plural lists the rows. Chosen
+        // over `streams <id>` and over a `--stream` flag: this CLI's other
+        // targeted verbs are bare positionals (`done <id>`, `focus <id>`), and
+        // `streams <id>` would read as "list streams, filtered" rather than
+        // "list that stream's tasks". One subcommand, one shape of output.
+        //
+        // The argument is joined rather than taken as `rest[0]` so an unquoted
+        // multi-word name (`sunrise stream home renovation`) works, exactly as
+        // `capture` and `search` already join theirs.
+        "stream" => {
+            let id = resolve_stream(core, &rest.join(" ")).await?;
+            print_tasks(core.query(Query::StreamTasks(id)).await?);
+            Ok(())
+        }
+        "context" => {
+            let id = resolve_context(core, &rest.join(" ")).await?;
+            print_tasks(core.query(Query::ContextTasks(id)).await?);
             Ok(())
         }
         "search" => {
@@ -348,6 +369,113 @@ async fn dispatch(
         "sync" => sync_once(core, rest).await,
         other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
     }
+}
+
+/// Readable phrasing for an unresolved capture / annotate token.
+///
+/// The parser reports these as data so each surface can word them; this is the
+/// CLI's wording, and it is the *only* one, so `capture`'s note and a failed
+/// `sunrise stream <name>` do not describe the same condition two ways.
+fn unresolved_note(u: &sunrise_domain::capture::Unresolved) -> String {
+    use sunrise_domain::capture::Unresolved as U;
+    match u {
+        U::UnknownStream(t) => format!("no stream matches \"{t}\" (try `sunrise streams`)"),
+        U::UnknownContext(t) => format!("no context matches \"{t}\" (try `sunrise contexts`)"),
+        U::AmbiguousStream { typed, candidates } | U::AmbiguousContext { typed, candidates } => {
+            format!("\"{typed}\" matches {}", candidates.join(", "))
+        }
+        U::UnparseableDate(t) => format!("could not read the date \"{t}\""),
+        U::PriorityOutOfRange(t) => format!("priority \"{t}\" is not 1-5"),
+        U::UnparseableDuration(t) => format!("could not read the duration \"{t}\""),
+    }
+}
+
+/// The live (or, for a listing, every) Stream as capture-parser candidates.
+///
+/// Returned as owned pairs because [`sunrise_domain::NamedRef`] borrows its
+/// name and the query result is a temporary.
+async fn stream_names(core: &Core) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
+    let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
+        return Err("unexpected query result".into());
+    };
+    Ok(rows.into_iter().map(|s| (s.id, s.name)).collect())
+}
+
+/// The Contexts as capture-parser candidates. See [`stream_names`].
+async fn context_names(
+    core: &Core,
+) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
+    let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? else {
+        return Err("unexpected query result".into());
+    };
+    Ok(rows.into_iter().map(|c| (c.id, c.name)).collect())
+}
+
+fn named(rows: &[(EntityRef, String)]) -> Vec<sunrise_domain::NamedRef<'_>> {
+    rows.iter()
+        .map(|(id, name)| sunrise_domain::NamedRef {
+            id: *id,
+            name: name.as_str(),
+        })
+        .collect()
+}
+
+/// Turn `<id|name>` into a Stream id.
+///
+/// An `str_…` id wins outright; anything else is a name, resolved by
+/// [`sunrise_domain::resolve_named`] — the same exact-then-unique-prefix rule
+/// `#stream` obeys in a capture line, because a user who types `#work` in one
+/// place and `sunrise stream work` in another means the same Stream.
+async fn resolve_stream(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std::error::Error>> {
+    let typed = raw.trim().trim_start_matches('#').trim();
+    if typed.is_empty() {
+        return Err("usage: stream <id|name>; `sunrise streams` lists them".into());
+    }
+    if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
+        return Ok(id);
+    }
+    let rows = stream_names(core).await?;
+    let mut unresolved = Vec::new();
+    sunrise_domain::resolve_named(
+        typed,
+        &named(&rows),
+        &mut unresolved,
+        sunrise_domain::NameKind::Stream,
+    )
+    .ok_or_else(|| {
+        unresolved
+            .first()
+            .map_or_else(|| format!("no stream matches \"{typed}\""), unresolved_note)
+            .into()
+    })
+}
+
+/// Turn `<id|name>` into a Context id. See [`resolve_stream`].
+async fn resolve_context(core: &Core, raw: &str) -> Result<EntityRef, Box<dyn std::error::Error>> {
+    let typed = raw.trim().trim_start_matches('@').trim();
+    if typed.is_empty() {
+        return Err("usage: context <id|name>; `sunrise contexts` lists them".into());
+    }
+    if let Ok(id) = EntityRef::parse(typed, EntityKind::Context) {
+        return Ok(id);
+    }
+    let rows = context_names(core).await?;
+    let mut unresolved = Vec::new();
+    sunrise_domain::resolve_named(
+        typed,
+        &named(&rows),
+        &mut unresolved,
+        sunrise_domain::NameKind::Context,
+    )
+    .ok_or_else(|| {
+        unresolved
+            .first()
+            .map_or_else(
+                || format!("no context matches \"{typed}\""),
+                unresolved_note,
+            )
+            .into()
+    })
 }
 
 /// `done <id>...` — complete tasks by id.
