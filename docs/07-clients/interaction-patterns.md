@@ -48,6 +48,30 @@ Parser is a single deterministic function in core (string in, structured task dr
 - Drag within a list (cross-platform).
 - Keyboard: `Alt+↑/↓` to move within parent.
 
+**Streams sync; tasks do not.** The two halves of this gesture land in two
+different places, and the difference is in the domain rather than in any one
+client:
+
+| | Where the order lives | Syncs |
+|---|---|---|
+| Streams | `Stream.sort_order`, a fractional index ([`../02-domain/streams.md` §Sort order](../02-domain/streams.md#sort-order)) | Yes |
+| Tasks | Per device — `UserDefaults` on macOS (`ListOrderStore`) | No |
+
+A Task has **no ordering facet at all**: not on `Task`, not on `TaskEdit`, and
+none in [`../02-domain/tasks.md`](../02-domain/tasks.md). There is nothing to
+write, so there is nothing to sync, and a hand-arranged task list is a fact
+about the machine it was arranged on — kept beside the other device facts, lost
+with the device, and never mistaken for the user's data. Giving Tasks their own
+`sort_order` is a `DOC_SCHEMA_V` bump and is not in v1.
+
+A per-device task order also has to answer a question the synced one does not:
+what happens to a row it has never seen. Rows the order knows come first, in
+the order it remembers; everything else follows in the order the core returned
+it, so a task arriving by sync or capture never looks like somebody rewrote the
+arrangement. Lists the core itself ranks — Today, sectioned by urgency, and
+Search, ranked per keystroke — decline the gesture rather than accepting a drop
+they cannot honour.
+
 ## Schedule
 
 - Drag onto Today / drag onto a calendar block / open detail and edit.

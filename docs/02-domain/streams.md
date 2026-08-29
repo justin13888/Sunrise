@@ -72,7 +72,40 @@ We considered:
 
 ## Sort order
 
-`sort_order` is a fractional-index string (see e.g. `fractional-indexing` algorithm). New streams default between the last and "end." Reorders are constant work; no list-shifting.
+`sort_order` is a fractional-index string. New streams default between the last
+and "end." Reorders are constant work; no list-shifting.
+
+The encoding is `crates/sunrise-domain/src/sort_order.rs`: a base-26 fraction
+over the digits `A`..`Z`, chosen so that **lexicographic order on the strings is
+numeric order on the fractions**. `Query::StreamList` therefore sorts with
+`ORDER BY sort_order` and decodes nothing, and a client compares two keys with
+a plain string comparison.
+
+- **A key never ends in `A`.** `A` is the digit zero, so `AB` and `ABA` are one
+  number spelled two ways, and two rows holding two spellings would be
+  un-orderable by the string comparison everything above rests on. The rule
+  makes each number's spelling unique. Keys arriving from a peer are read
+  leniently; keys this build *writes* are validated.
+- **No jitter.** Fractional-index libraries usually append random digits so two
+  devices inserting at one position get different keys. This one is
+  deterministic, because under [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)
+  two concurrent reorders do not both survive whatever their keys are — see
+  §Merge mapping.
+- **The empty string is not a key.** It is the column default for a Stream that
+  has never been ordered, meaning "no position" rather than "first position".
+  It sorts first, and `''` rows tiebreak by name.
+
+Writing it:
+
+- `StreamPatch.sort_order` / `StreamEdit.sortOrder` carry a new position. A
+  client computes the key from the two rows the dragged one landed between —
+  `sort_order::between(after, before)`, exported across the FFI seam as
+  `stream_sort_key_between` so no client reimplements the arithmetic — and
+  sends it. **One row is rewritten; no sibling is touched.**
+- A key outside `A`..`Z` is rejected at validation rather than repaired: it has
+  no defined place in the list, and one such write is permanent, because
+  nothing over the alphabet sorts after it.
+- `sunrise streams move <id|name> before <id|name>` / `… last` is the CLI verb.
 
 The string is bounded by a defrag rule:
 
@@ -80,12 +113,18 @@ The string is bounded by a defrag rule:
 - Defrag is a single op `stream.list.defrag` carrying the new index for every entry. It is idempotent — concurrent defrag from two devices produces the same output (lex-sort the entries by `(ts_ms, device_id_lex)` and re-assign indexes evenly across `[A, Z]`).
 - The trigger is per-device throttled to once per list per hour to prevent thrash.
 
-> **Not implemented in v1.** The op-kind registry in
+> **Defrag is not implemented in v1.** The op-kind registry in
 > `crates/sunrise-core/src/inner_op.rs` has `stream.create` / `stream.update` /
 > `stream.delete` and no `stream.list.defrag`, so nothing observes the 64-byte
-> bound and nothing defrags. `sort_order` is written and read; it just grows
-> unbounded under pathological reordering. Adding the op is a `DOC_SCHEMA_V`
-> bump, not a breaking change.
+> bound and nothing defrags. The index really does grow unbounded under
+> pathological reordering — repeatedly dropping a row into the same gap adds
+> roughly a digit per 26 insertions, without limit — and
+> `sort_order::DEFRAG_THRESHOLD_BYTES` records the bound that nothing reads
+> yet. Adding the op is a `DOC_SCHEMA_V` bump, not a breaking change.
+>
+> The *write path* is implemented, and that is a change from an earlier
+> revision of this section, which claimed `sort_order` was "written and read"
+> while every construction site hardcoded `"a0"`.
 
 ## Sharing
 
@@ -106,6 +145,14 @@ target state, not the shipped one.
 the same list concurrently produce one survivor rather than an interleave. The
 fractional index still does its job — it keeps a *single* reorder from
 rewriting every sibling — but it does not make concurrent reorders merge.
+
+This is behaviour, not a caveat: `concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge`
+in `crates/sunrise-core/src/engine.rs` has two devices drag the same stream at
+the same instant and asserts that both land on one of the two keys and never on
+a third. Two rows can also end up *sharing* a key that way — a device can only
+lose a reorder wholesale, so it can lose it onto a key a sibling already holds —
+and `Query::StreamList` breaks that tie by name then id, identically on every
+replica.
 
 ## Validation
 
