@@ -170,3 +170,20 @@ enum Destination: Equatable, Hashable, Identifiable {
         }
     }
 }
+
+extension Destination {
+    /// The context names a saved view of this screen should carry.
+    ///
+    /// Only a filtered Today or a context list has any; everything else saves
+    /// no filter rather than one it could not honour on recall. Names rather
+    /// than ids, because `SavedViewsModel` stores names — an `EntityRef` is a
+    /// vault-local ULID and would resolve to nothing on a paired Mac.
+    func contextNames(in names: NameBook) -> [String] {
+        guard case let .list(kind) = self else { return [] }
+        switch kind {
+        case let .today(contexts): return contexts.compactMap { names.contexts[$0] }
+        case let .context(_, name): return [name]
+        case .inbox, .stream, .search: return []
+        }
+    }
+}

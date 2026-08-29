@@ -34,6 +34,13 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     case extendSelectionDown
     case undo
     case redo
+    /// ⌘P. Prints what is on screen, for the views that have a paper shape —
+    /// see `PrintDocument`.
+    case printView
+    /// The same document, written rather than printed. No chord: ⌘⇧P is the
+    /// command palette, and stealing it for an export nobody runs daily would
+    /// be the wrong trade.
+    case exportPDF
     case cheatSheet
 
     /// What the palette, the cheat sheet and the menu all call it.
@@ -63,6 +70,8 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         case .extendSelectionDown: "Extend Selection Down"
         case .undo: "Undo"
         case .redo: "Redo"
+        case .printView: "Print…"
+        case .exportPDF: "Export as PDF…"
         case .cheatSheet: "Keyboard Shortcuts"
         }
     }
@@ -89,6 +98,8 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         case .toggleSelection: "checklist"
         case .undo: "arrow.uturn.backward"
         case .redo: "arrow.uturn.forward"
+        case .printView: "printer"
+        case .exportPDF: "doc.richtext"
         case .cheatSheet: "keyboard"
         }
     }
@@ -101,6 +112,7 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
              .toggleSelection, .extendSelectionUp, .extendSelectionDown: .list
         case .markDone, .deferTask, .schedule, .moveToStream, .focusMode: .task
         case .undo, .redo: .edit
+        case .printView, .exportPDF: .document
         case .cheatSheet: .help
         }
     }
@@ -119,6 +131,7 @@ enum KeySection: String, CaseIterable, Hashable, Sendable {
     case list
     case task
     case edit
+    case document
     case help
 
     var title: String {
@@ -128,6 +141,7 @@ enum KeySection: String, CaseIterable, Hashable, Sendable {
         case .list: "Moving through a list"
         case .task: "Acting on what is selected"
         case .edit: "Undo"
+        case .document: "Printing"
         case .help: "Help"
         }
     }
@@ -171,6 +185,10 @@ enum Keymap {
         app(KeyChord("s", [.command, .shift]), .newStream),
         app(KeyChord("z", [.command]), .undo),
         app(KeyChord("z", [.command, .shift]), .redo),
+        // Not in the spec's table either. `docs/07-clients/parity-matrix.md`
+        // marks Print / PDF export a macOS SHOULD, and ⌘P is the chord every
+        // Mac user already has in their fingers for it.
+        app(KeyChord("p", [.command]), .printView),
         // Not in the spec's table. `?` is, and `?` alone cannot be a menu key
         // equivalent — it would fire while somebody typed a question mark into
         // a title — so the menu carries ⌘/ and the views carry bare `?`. Both
