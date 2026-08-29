@@ -3,15 +3,13 @@
 //! Per `docs/04-storage/migrations.md`. Migration scripts are static, embedded
 //! at build time, and applied in id order.
 //!
-//! There is currently exactly ONE migration: the `0013_baseline.sql` schema
-//! reset (ADR-0018). The list, the runner, and the ordering rule are all still
-//! here and still exercised — a single entry is a state of the list, not a
-//! simplification of the mechanism — because the next schema change appends to
-//! it exactly as before.
+//! The list starts at the `0013_baseline.sql` schema reset (ADR-0018) and
+//! grows by appending, which is what that ADR reinstated: `0014` is the first
+//! migration appended after it, and 0013 was not touched to make room for it.
 //!
-//! Adding a migration after 1.0: bump `STORAGE_V` in `sunrise-cbor::version`,
-//! append a new entry to [`MIGRATIONS`], add a new file `migrations/00NN_*.sql`.
-//! Never edit an existing one.
+//! Adding a migration: bump `STORAGE_V` in `sunrise-cbor::version`, append a
+//! new entry to [`MIGRATIONS`], add a new file `migrations/00NN_*.sql`. Never
+//! edit an existing one.
 
 /// Static migration record.
 #[derive(Debug, Clone, Copy)]
@@ -33,11 +31,18 @@ pub struct Migration {
 pub const BASELINE_STORAGE_V: u32 = 13;
 
 /// All known migrations, in apply order.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    id: BASELINE_STORAGE_V,
-    name: "baseline",
-    sql: include_str!("../migrations/0013_baseline.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        id: BASELINE_STORAGE_V,
+        name: "baseline",
+        sql: include_str!("../migrations/0013_baseline.sql"),
+    },
+    Migration {
+        id: 14,
+        name: "stream_sort_order",
+        sql: include_str!("../migrations/0014_stream_sort_order.sql"),
+    },
+];
 
 /// Current storage version (= last migration id).
 #[must_use]
@@ -68,10 +73,23 @@ mod tests {
     }
 
     #[test]
-    fn baseline_is_the_only_migration() {
-        // Guards the reset itself: if a migration is appended, STORAGE_V moves
-        // with it and the baseline floor stays where it is.
-        assert_eq!(MIGRATIONS.len(), 1);
+    fn the_list_still_starts_at_the_baseline() {
+        // Guards the reset itself. Migrations append after 0013; the floor
+        // stays where ADR-0018 put it, so a pre-baseline vault is still
+        // refused rather than half-upgraded by whatever was appended since.
         assert_eq!(MIGRATIONS[0].id, BASELINE_STORAGE_V);
+        assert!(MIGRATIONS[1..].iter().all(|m| m.id > BASELINE_STORAGE_V));
+    }
+
+    #[test]
+    fn every_migration_file_is_distinct() {
+        // A copy-pasted `include_str!` would apply one file twice and skip
+        // another, which the ascending-id check above cannot see.
+        for (i, a) in MIGRATIONS.iter().enumerate() {
+            for b in &MIGRATIONS[i + 1..] {
+                assert_ne!(a.sql, b.sql, "{} and {} share their SQL", a.name, b.name);
+                assert_ne!(a.name, b.name);
+            }
+        }
     }
 }

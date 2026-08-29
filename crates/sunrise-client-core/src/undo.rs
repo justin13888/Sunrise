@@ -272,6 +272,19 @@ fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Comm
                     name: patch.name.as_ref().map(|_| row.name.clone()),
                     archived: patch.archived.map(|_| row.archived),
                     paused: patch.paused.map(|_| row.paused),
+                    // A reorder inverts by putting the row's old key back,
+                    // which is possible precisely because the fractional
+                    // index moved nothing else: the undo is one write, like
+                    // the drag was. The `is_valid` guard skips a row still
+                    // holding the "never ordered" sentinel — that is a value
+                    // the core would refuse, and refusing the whole undo over
+                    // it would be worse than not restoring a position the row
+                    // never had.
+                    sort_order: patch
+                        .sort_order
+                        .as_ref()
+                        .filter(|_| sunrise_domain::sort_order::is_valid(&row.sort_order))
+                        .map(|_| row.sort_order.clone()),
                     ..Default::default()
                 },
             })
@@ -605,6 +618,7 @@ mod tests {
                 open_task_count: 0,
                 archived: false,
                 paused: false,
+                sort_order: "N".into(),
             }],
             contexts: vec![ContextRow {
                 id: cid(1),
@@ -648,6 +662,25 @@ mod tests {
         assert!(matches!(
             &back[..],
             [Command::UpdateStream { patch, .. }] if patch.name.as_deref() == Some("Travel")
+        ));
+
+        // A reorder is undoable for the same reason it is cheap: the old key
+        // is on the row the client is already holding, and putting it back
+        // touches no sibling.
+        let back = invert(
+            &rows,
+            &[Command::UpdateStream {
+                id: sid(1),
+                patch: StreamPatch {
+                    sort_order: Some("ZN".into()),
+                    ..StreamPatch::default()
+                },
+            }],
+        )
+        .expect("invertible");
+        assert!(matches!(
+            &back[..],
+            [Command::UpdateStream { patch, .. }] if patch.sort_order.as_deref() == Some("N")
         ));
 
         let back = invert(

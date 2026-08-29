@@ -62,6 +62,7 @@ use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
+use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
@@ -965,6 +966,7 @@ impl Engine {
         d.validate()?;
         let now_ms = self.clock.now_ms();
         let stream_id = self.fresh_id(EntityKind::Stream, now_ms);
+        let last_key = last_stream_sort_order(db.conn())?;
         let stream = Stream {
             reminder_lead_s: d.reminder_lead_s,
             id: stream_id,
@@ -975,7 +977,10 @@ impl Engine {
             color: d.color.unwrap_or(StreamColor::Slate),
             icon: None,
             parent_id: d.parent_id,
-            sort_order: String::from("a0"),
+            // "New streams default between the last and 'end'"
+            // (`docs/02-domain/streams.md` §Sort order): one digit's worth of
+            // work, and no sibling is rewritten to make room.
+            sort_order: sort_order::append_after(last_key.as_deref()),
             archived: false,
             paused: false,
             paused_until: None,
@@ -1042,6 +1047,15 @@ impl Engine {
         }
         if let Some(rc) = patch.review_cadence {
             stream.review_cadence = rc;
+        }
+        // A reorder. Validated by `patch.validate()` above, so a key that
+        // could not have come from `sort_order::between` never reaches the
+        // column. Note what this is NOT doing: no sibling is read, and none is
+        // rewritten. That is the fractional index paying for itself, and it is
+        // also why a reorder merges as one entity-level LWW write — see
+        // `Stream::sort_order`.
+        if let Some(k) = patch.sort_order {
+            stream.sort_order = k;
         }
         if let Some(a) = patch.archived {
             stream.archived = a;
@@ -2532,19 +2546,36 @@ impl Engine {
             open_task_count: u64::try_from(inbox_open).unwrap_or(0),
             archived: false,
             paused: false,
+            // The Inbox is not a Stream entity and cannot be reordered: it is
+            // pushed to the front of this list unconditionally, above. The
+            // sentinel says "no position", which is the truth about it.
+            sort_order: String::new(),
         });
 
         // Real streams (exclude deleted and the synthetic inbox row, which
         // `ensure_stream_row` may have materialized with an empty name).
-        // Ordered case-insensitively by name.
+        //
+        // Ordered by the fractional index, which is the user's hand-made
+        // order and the reason `sort_order` exists. Sorting the *strings* is
+        // sorting the numbers they encode — see `sunrise_domain::sort_order`
+        // — so this needs no decoding and no index beyond the column itself.
+        //
+        // Name and id are the tiebreak, not the ordering. They matter in two
+        // cases: a row still holding the `''` sentinel because nothing has
+        // ever ordered it, which sorts first exactly as an empty name did
+        // before this column existed; and two rows that ended up on the same
+        // key, which entity-level LWW permits — a device can only lose a
+        // reorder wholesale, so it can lose it onto a key a sibling already
+        // holds. Ties break the same way on every replica, which is the
+        // property that matters.
         let mut stmt = db.conn().prepare(
-            "SELECT s.stream_id, s.name, s.color, s.archived, s.paused,
+            "SELECT s.stream_id, s.name, s.color, s.archived, s.paused, s.sort_order,
                     (SELECT COUNT(*) FROM tasks t
                      WHERE t.stream_id = s.stream_id AND t.deleted = 0
                        AND t.state IN ('todo', 'in_progress')) AS open_count
              FROM streams s
              WHERE s.deleted = 0 AND s.stream_id != ?
-             ORDER BY s.name COLLATE NOCASE ASC, s.stream_id ASC",
+             ORDER BY s.sort_order ASC, s.name COLLATE NOCASE ASC, s.stream_id ASC",
         )?;
         let mapped = stmt.query_map(params![inbox_blob], |row| {
             let id_blob: Vec<u8> = row.get(0)?;
@@ -2552,7 +2583,8 @@ impl Engine {
             let color_str: String = row.get(2)?;
             let archived: i64 = row.get(3)?;
             let paused: i64 = row.get(4)?;
-            let open_count: i64 = row.get(5)?;
+            let sort_order: String = row.get(5)?;
+            let open_count: i64 = row.get(6)?;
             let mut a = [0u8; 16];
             let take = id_blob.len().min(16);
             a[..take].copy_from_slice(&id_blob[..take]);
@@ -2563,6 +2595,7 @@ impl Engine {
                 open_task_count: u64::try_from(open_count).unwrap_or(0),
                 archived: archived != 0,
                 paused: paused != 0,
+                sort_order,
             })
         })?;
         for r in mapped {
@@ -3488,6 +3521,26 @@ fn ensure_stream_row(
     Ok(())
 }
 
+/// The largest `sort_order` among live streams, or `None` for an empty vault.
+///
+/// Restricted to keys this build can compute against — `A`..=`Z` and nothing
+/// else. Two kinds of row would otherwise poison every subsequent create:
+/// a placeholder from [`ensure_stream_row`], which holds the `''` sentinel,
+/// and a key from a peer running a schema this build does not model. Neither
+/// admits a key after it, so neither is allowed to be the anchor; the new
+/// stream lands after the last key that *is* well-formed instead of failing.
+fn last_stream_sort_order(conn: &rusqlite::Connection) -> Result<Option<String>, EngineError> {
+    let key: Option<String> = conn.query_row(
+        "SELECT MAX(sort_order) FROM streams
+         WHERE deleted = 0
+           AND sort_order GLOB '[A-Z]*'
+           AND sort_order NOT GLOB '*[^A-Z]*'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(key)
+}
+
 fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
@@ -3495,9 +3548,9 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
-          paused, paused_until_ms, review_cadence, reminder_lead_s,
+          paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3513,6 +3566,7 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
             s.reminder_lead_s,
+            s.sort_order,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3529,7 +3583,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
              name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
-             review_cadence = ?, reminder_lead_s = ?,
+             review_cadence = ?, reminder_lead_s = ?, sort_order = ?,
              lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
@@ -3544,6 +3598,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.paused_until.map(|t| t.as_millisecond()),
             cadence_str(s.review_cadence),
             s.reminder_lead_s,
+            s.sort_order,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3559,7 +3614,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     let row = conn
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
-                    paused, paused_until_ms, review_cadence, icon, reminder_lead_s
+                    paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -3576,6 +3631,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, String>(9)?,
                     r.get::<_, Option<String>>(10)?,
                     r.get::<_, Option<u32>>(11)?,
+                    r.get::<_, String>(12)?,
                 ))
             },
         )
@@ -3593,6 +3649,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         cadence_str,
         icon,
         reminder_lead_s,
+        sort_order,
     )) = row
     else {
         return Ok(None);
@@ -3614,7 +3671,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         color: StreamColor::from_str_lossy(&color_str),
         icon,
         parent_id: parent,
-        sort_order: String::from("a0"),
+        sort_order,
         archived: archived != 0,
         paused: paused != 0,
         paused_until: paused_until_ms.map(ms_to_ts),
@@ -7057,6 +7114,109 @@ mod tests {
         assert_eq!(st.color, StreamColor::Emerald);
     }
 
+    /// A new stream lands after the last existing one, and moving one rewrites
+    /// exactly that one row.
+    #[test]
+    fn a_reorder_moves_one_stream_and_touches_no_sibling() {
+        let mut db = db();
+        let e = engine();
+        let mut ids = Vec::new();
+        for name in ["one", "two", "three"] {
+            ids.push(
+                e.apply(
+                    &mut db,
+                    Command::CreateStream(StreamDraft {
+                        name: name.into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity,
+            );
+        }
+        let listed = |e: &Engine, db: &Db| -> Vec<(String, String)> {
+            match e.query(db, Query::StreamList).unwrap() {
+                QueryResult::Streams(rows) => rows[1..]
+                    .iter()
+                    .map(|r| (r.name.clone(), r.sort_order.clone()))
+                    .collect(),
+                other => panic!("expected Streams, got {other:?}"),
+            }
+        };
+        let before = listed(&e, &db);
+        assert_eq!(
+            before.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["one", "two", "three"],
+            "a new stream defaults to the end of the list"
+        );
+
+        // Drag "three" to the front: its new key is the one between the start
+        // of the list and "one".
+        let key = sort_order::between(None, Some(&before[0].1)).unwrap();
+        e.apply(
+            &mut db,
+            Command::UpdateStream {
+                id: ids[2],
+                patch: StreamPatch {
+                    sort_order: Some(key.clone()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        let after = listed(&e, &db);
+        assert_eq!(
+            after.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["three", "one", "two"]
+        );
+        // The whole point of the fractional index: the two rows that did not
+        // move still hold the keys they held before the drag.
+        assert_eq!(after[1].1, before[0].1, "\"one\" was rewritten");
+        assert_eq!(after[2].1, before[1].1, "\"two\" was rewritten");
+        assert_eq!(after[0].1, key);
+    }
+
+    /// A key the core cannot place is refused rather than stored. Without this
+    /// one bad write would be permanent: nothing sorts after `"a0"`, so every
+    /// later append would land above it forever.
+    #[test]
+    fn a_sort_key_outside_the_alphabet_is_rejected() {
+        let mut db = db();
+        let e = engine();
+        let s = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        for bad in ["a0", "", "NA"] {
+            let res = e.apply(
+                &mut db,
+                Command::UpdateStream {
+                    id: s,
+                    patch: StreamPatch {
+                        sort_order: Some(bad.into()),
+                        ..Default::default()
+                    },
+                },
+            );
+            assert!(
+                matches!(res, Err(EngineError::Validation(_))),
+                "{bad:?} was accepted"
+            );
+        }
+        let st = match e.query(&db, Query::EntityById(s)).unwrap() {
+            QueryResult::Stream(s) => *s,
+            other => panic!("expected Stream, got {other:?}"),
+        };
+        assert!(sort_order::is_valid(&st.sort_order));
+    }
+
     #[test]
     fn cannot_delete_inbox_stream() {
         let mut db = db();
@@ -7267,8 +7427,10 @@ mod tests {
         let mut db = db();
         let e = engine();
 
-        // Two real streams. Deliberately create "beta" before "alpha" so we
-        // exercise case-insensitive name ordering rather than insertion order.
+        // Two real streams. "Beta" is created first, and stays first: a new
+        // stream is appended after the last existing key, so an untouched
+        // vault lists streams in the order they were made. Name order was the
+        // rule only while `sort_order` was hardcoded and every row tied.
         let beta = e
             .apply(
                 &mut db,
@@ -7392,11 +7554,21 @@ mod tests {
         assert_eq!(rows[0].name, "Inbox");
         assert_eq!(rows[0].open_task_count, 1);
 
-        // Then real (non-deleted) streams ordered case-insensitively by name:
-        // "alpha" < "Beta". Deleted stream excluded entirely.
+        // Then real (non-deleted) streams in fractional-index order, which for
+        // a vault nobody has reordered is creation order. Deleted stream
+        // excluded entirely.
         let names: Vec<_> = rows.iter().map(|r| r.name.clone()).collect();
-        assert_eq!(names, vec!["Inbox", "alpha", "Beta"]);
+        assert_eq!(names, vec!["Inbox", "Beta", "alpha"]);
         assert!(!names.contains(&"Deleted".to_string()));
+
+        // The keys really are ascending and really are keys — the sidebar
+        // computes new positions from these, so a row arriving without one
+        // would break the very next drag.
+        let keys: Vec<_> = rows[1..].iter().map(|r| r.sort_order.clone()).collect();
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+        assert!(keys.iter().all(|k| sort_order::is_valid(k)));
+        // The Inbox is not a stream and holds no position.
+        assert_eq!(rows[0].sort_order, "");
 
         let alpha_row = rows.iter().find(|r| r.id == alpha).unwrap();
         assert_eq!(alpha_row.open_task_count, 2);
@@ -10038,6 +10210,75 @@ mod tests {
         let name_b = context_rows(&eb, &dbb)[0].name.clone();
         assert_eq!(name_a, name_b, "both replicas picked the same winner");
         assert!(name_a == "from A" || name_a == "from B", "{name_a}");
+    }
+
+    /// Two devices reorder the same list while apart. They converge — and they
+    /// converge on **one device's arrangement**, not on a merge of the two.
+    ///
+    /// This is `docs/02-domain/streams.md` §Merge mapping made executable.
+    /// `sort_order` is one field on an entity-level LWW row (ADR-0014), so the
+    /// losing device's drag is discarded whole. If per-field registers ever
+    /// land, this test is where the change in behaviour shows up first.
+    #[test]
+    fn concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        // One stream, known to both.
+        let s = ea
+            .apply(
+                &mut dba,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, s.bytes(), "stream.create"))
+            .unwrap();
+
+        // Both devices drag it somewhere, at the same instant, in ignorance of
+        // each other. The tie breaks on device id.
+        set_clock(&ca, T0 + 5_000);
+        set_clock(&cb, T0 + 5_000);
+        let move_to = |key: &str| Command::UpdateStream {
+            id: s,
+            patch: StreamPatch {
+                sort_order: Some(key.into()),
+                ..Default::default()
+            },
+        };
+        ea.apply(&mut dba, move_to("B")).unwrap();
+        eb.apply(&mut dbb, move_to("Y")).unwrap();
+
+        let a_env = env_for_kind(&dba, s.bytes(), "stream.update");
+        let b_env = env_for_kind(&dbb, s.bytes(), "stream.update");
+        eb.apply_remote(&mut dbb, &a_env).unwrap();
+        ea.apply_remote(&mut dba, &b_env).unwrap();
+
+        let key_of = |e: &Engine, db: &Db| match e.query(db, Query::StreamList).unwrap() {
+            QueryResult::Streams(rows) => rows
+                .iter()
+                .find(|r| r.id == s)
+                .expect("the stream is still there")
+                .sort_order
+                .clone(),
+            other => panic!("expected Streams, got {other:?}"),
+        };
+        let a = key_of(&ea, &dba);
+        let b = key_of(&eb, &dbb);
+        assert_eq!(a, b, "the two replicas disagree about the order");
+        // Exactly one of the two drags survived. Not something between them:
+        // there is no interleave to land on, which is the warning the spec
+        // carries and the behaviour it describes.
+        assert!(a == "B" || a == "Y", "invented a third position: {a}");
     }
 
     #[test]

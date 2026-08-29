@@ -333,16 +333,17 @@ mod tests {
         assert!(res.is_err(), "wrong vault root must not open the DB");
     }
 
-    /// A fresh vault applies the baseline and nothing else.
+    /// A fresh vault applies the baseline and everything appended after it,
+    /// landing at the binary's `STORAGE_V` rather than at the baseline.
     #[test]
-    fn fresh_vault_applies_the_baseline() {
+    fn fresh_vault_applies_the_baseline_and_everything_after_it() {
         let db = Db::open_memory(&vault_key()).unwrap();
         let v: u32 = db
             .conn()
             .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, BASELINE_STORAGE_V);
         assert_eq!(v, u32::from(STORAGE_V));
+        assert!(v >= BASELINE_STORAGE_V);
 
         // Spot-check that the collapse did not lose a table from the middle of
         // the old sequence: one from 0001, one from 0005, one from 0010, one
@@ -405,6 +406,74 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 0, "`{table}.{column}` was dropped by the reset");
         }
+    }
+
+    /// 0014 adds `streams.sort_order`, defaulting to the "never ordered"
+    /// sentinel rather than to a key.
+    #[test]
+    fn stream_sort_order_column_exists_and_defaults_to_unset() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO streams
+                 (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+                 VALUES (X'01', X'00', 0, 'Work', 0, 0)",
+                [],
+            )
+            .unwrap();
+        let got: String = db
+            .conn()
+            .query_row("SELECT sort_order FROM streams", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            got, "",
+            "an un-keyed row must be distinguishable from a first-position one"
+        );
+    }
+
+    /// 0014's backfill hands every pre-existing row a key, in the order those
+    /// rows were already being displayed — so a vault's sidebar does not
+    /// rearrange itself on upgrade.
+    ///
+    /// Exercised by replaying 0013 and then 0014 by hand, because a fresh
+    /// vault has no rows for the backfill to touch.
+    #[test]
+    fn migration_0014_backfills_existing_streams_in_display_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
+        // Deliberately inserted out of order, and with a case that only a
+        // NOCASE collation gets right.
+        for (id, name) in [(1u8, "zebra"), (2, "Apple"), (3, "mango")] {
+            tx.execute(
+                "INSERT INTO streams
+                 (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+                 VALUES (?, X'00', 0, ?, 0, 0)",
+                rusqlite::params![vec![id], name],
+            )
+            .unwrap();
+        }
+        tx.execute_batch(MIGRATIONS[1].sql).unwrap();
+
+        let mut stmt = tx
+            .prepare("SELECT name, sort_order FROM streams ORDER BY sort_order")
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        drop(stmt);
+        assert_eq!(
+            rows,
+            vec![
+                ("Apple".to_string(), "AAAN".to_string()),
+                ("mango".to_string(), "AABN".to_string()),
+                ("zebra".to_string(), "AACN".to_string()),
+            ],
+            "sorting by the new key must reproduce the old name ordering"
+        );
     }
 
     /// A vault from before the reset is REFUSED, with its own error — not

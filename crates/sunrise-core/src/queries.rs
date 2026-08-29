@@ -391,6 +391,14 @@ pub struct StreamRow {
     /// pause/resume without knowing which one the key means, and reading it
     /// per row through `EntityById` would cost a query per sidebar row.
     pub paused: bool,
+    /// The fractional index this row is sorted on, or `""` for the synthetic
+    /// Inbox and for a row nothing has ever ordered.
+    ///
+    /// Projected because a client that wants to *move* a row needs the keys of
+    /// the two rows it landed between, and reading them one `EntityById` at a
+    /// time would cost two queries per drag. See
+    /// [`sunrise_domain::sort_order::between`].
+    pub sort_order: String,
 }
 
 /// One row of [`Query::Contexts`].

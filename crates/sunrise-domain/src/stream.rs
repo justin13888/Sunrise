@@ -138,7 +138,28 @@ pub struct Stream {
     /// Optional parent Stream — one-level nesting only.
     #[serde(default)]
     pub parent_id: Option<EntityRef>,
-    /// Fractional-index sort key.
+    /// Fractional-index sort key: where this Stream sits among its siblings.
+    ///
+    /// A base-26 string over `A`..=`Z` whose lexicographic order *is* its
+    /// numeric order, so a list sorts with `ORDER BY sort_order` and a single
+    /// reorder rewrites exactly one row. See [`crate::sort_order`] for the
+    /// encoding and [`crate::sort_order::between`] for the arithmetic.
+    ///
+    /// **Concurrent reorders do not merge.** Under
+    /// [ADR-0014](../../../docs/11-adr/0014-entity-level-lww-merge.md) the
+    /// whole Stream is one last-writer-wins unit on `(hlc, device_id, seq)`,
+    /// and `sort_order` is a field on it like any other — so two devices that
+    /// rearrange the same list while apart converge on **one device's whole
+    /// Stream row**, not on an interleave of the two arrangements. The
+    /// fractional index still earns its place: it keeps one reorder from
+    /// rewriting every sibling, which is what makes the losing device's
+    /// *other* rows survive. It does not make the two orderings merge, and
+    /// nothing here pretends otherwise.
+    ///
+    /// The empty string means "never ordered" — the column default for a row
+    /// that predates the write path — and sorts first, which is where those
+    /// rows already were. It is not a valid key: see
+    /// [`crate::sort_order::is_valid`].
     pub sort_order: String,
     /// Archived state.
     #[serde(default)]
@@ -209,6 +230,15 @@ pub struct StreamPatch {
     pub parent_id: Option<Option<EntityRef>>,
     /// New review cadence.
     pub review_cadence: Option<StreamReviewCadence>,
+    /// New position among siblings, as a fractional index.
+    ///
+    /// The whole of the reorder write path: a client computes the key with
+    /// [`crate::sort_order::between`] from the two rows the dragged one landed
+    /// between, and sends it here. Nothing else moves.
+    ///
+    /// A reorder is an ordinary Stream update, so it is one entity-level LWW
+    /// write and merges like one — see [`Stream::sort_order`].
+    pub sort_order: Option<String>,
     /// Archive / unarchive.
     pub archived: Option<bool>,
     /// Pause / unpause.
@@ -225,6 +255,12 @@ impl StreamPatch {
     pub fn validate(&self) -> Result<(), ValidationError> {
         if let Some(n) = &self.name {
             let _ = validate_title(n, "stream.name", MAX_STREAM_NAME_LEN)?;
+        }
+        // Refused here rather than repaired, because there is no honest
+        // repair: a key outside `A`..=`Z` has no defined place in the list,
+        // and picking one for the user would move a row they did not drag.
+        if let Some(k) = &self.sort_order {
+            crate::sort_order::validate(k)?;
         }
         Ok(())
     }
@@ -250,5 +286,34 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(d.validate(), Err(ValidationError::InvalidTitle));
+    }
+
+    #[test]
+    fn patch_accepts_a_well_formed_sort_key() {
+        let p = StreamPatch {
+            sort_order: Some("ABN".into()),
+            ..Default::default()
+        };
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn patch_rejects_a_sort_key_it_could_not_have_produced() {
+        // The literal every build before the write path hardcoded, the unset
+        // sentinel, and a second spelling of a number already in use.
+        for bad in ["a0", "", "NA", "N1"] {
+            let p = StreamPatch {
+                sort_order: Some(bad.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                p.validate(),
+                Err(ValidationError::Field {
+                    field: crate::sort_order::FIELD,
+                    constraint: "sort_order_key",
+                }),
+                "{bad:?} should not be writable"
+            );
+        }
     }
 }

@@ -311,6 +311,29 @@ pub fn inbox_stream_id() -> sunrise_id::EntityRef {
     sunrise_domain::inbox_stream_ref()
 }
 
+/// A `sort_order` key that puts a stream between two of its siblings.
+///
+/// `after` is the key of the row the moved one should follow and `before` the
+/// key of the row it should precede; `None` for either means the end of the
+/// list on that side. Feed it two adjacent rows' `StreamListRow.sort_order`
+/// values and send the result back as `StreamEdit.sort_order`.
+///
+/// Exported rather than reimplemented per client for the same reason
+/// [`inbox_stream_id`] is: base-26 fraction arithmetic with a trailing-zero
+/// rule is small, sharp, and wrong in a way nobody notices until a sidebar
+/// shuffles itself. One implementation, tested in `sunrise_domain::sort_order`,
+/// shared by every client.
+///
+/// `None` when the two bounds admit no key between them — they were equal, out
+/// of order, or not keys at all. That is a caller bug (the rows were not
+/// adjacent, or were read from a stale list), and the honest response is to
+/// decline the drag and re-read, not to invent a position.
+#[uniffi::export]
+#[must_use]
+pub fn stream_sort_key_between(after: Option<String>, before: Option<String>) -> Option<String> {
+    sunrise_domain::sort_order::between(after.as_deref(), before.as_deref()).ok()
+}
+
 /// An IANA zone, or UTC when the name is not one.
 fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
     jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)

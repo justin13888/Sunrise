@@ -727,6 +727,14 @@ pub struct StreamEdit {
     /// New review cadence.
     #[uniffi(default = None)]
     pub review_cadence: Option<StreamReviewCadence>,
+    /// New position among siblings.
+    ///
+    /// Not split-optional like the fields around it, because there is no
+    /// "clear it" for a position: a stream is always *somewhere* in the list.
+    /// Compute the value with [`crate::vocab::stream_sort_key_between`] rather than
+    /// by hand — a key the core does not recognise is rejected, not repaired.
+    #[uniffi(default = None)]
+    pub sort_order: Option<String>,
     /// Archive or unarchive.
     #[uniffi(default = None)]
     pub archived: Option<bool>,
@@ -755,6 +763,7 @@ impl From<StreamEdit> for sunrise_domain::StreamPatch {
             color: e.color,
             parent_id: patch_field(e.set_parent_id, e.clear_parent_id),
             review_cadence: e.review_cadence,
+            sort_order: e.sort_order,
             archived: e.archived,
             paused: e.paused,
             paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
@@ -2312,6 +2321,14 @@ pub struct StreamListRow {
     pub archived: bool,
     /// Paused.
     pub paused: bool,
+    /// The fractional index this row is sorted on; `""` for the Inbox and for
+    /// a stream nothing has ever ordered.
+    ///
+    /// The rows arrive in this order already. It is carried anyway because a
+    /// client that lets somebody *drag* a row needs the keys either side of
+    /// where it landed to compute the new one — see
+    /// [`crate::vocab::stream_sort_key_between`].
+    pub sort_order: String,
 }
 
 impl From<&StreamRow> for StreamListRow {
@@ -2323,6 +2340,7 @@ impl From<&StreamRow> for StreamListRow {
             open_task_count,
             archived,
             paused,
+            sort_order,
         } = s;
         Self {
             id: *id,
@@ -2331,6 +2349,7 @@ impl From<&StreamRow> for StreamListRow {
             open_task_count: *open_task_count,
             archived: *archived,
             paused: *paused,
+            sort_order: sort_order.clone(),
         }
     }
 }
