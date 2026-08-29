@@ -6,10 +6,15 @@ status: accepted
 
 External integrations connect Sunrise to systems we *don't* build. Integrations run **on-device**: tokens live in the encrypted vault; the server never holds third-party credentials.
 
-| Integration | Direction | Spec |
-|---|---|---|
-| Google Calendar | Bidirectional | [`google-calendar.md`](./google-calendar.md) |
-| iCalendar (.ics) | Import / export | [`icalendar.md`](./icalendar.md) |
+| Integration | Direction | v1 status | Spec |
+|---|---|---|---|
+| Google Calendar | Bidirectional *(target)* | **deferred** — the provider is implemented and tested as **read-only import**, with no consumer, no cursor storage and no UI ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
+| iCalendar (.ics) | Import / export | **live in the CLI and on the seam**, a narrow subset; not yet called by the macOS app | [`icalendar.md`](./icalendar.md) |
+
+Neither integration implements the `IntegrationProvider` trait this crate
+declares — including the live iCal path, which is driven directly. The trait has
+no implementor today, so treat it as intended shape rather than as the seam
+integrations actually run through.
 
 v1 ships only these two. CalDAV, outbound webhooks, and inbound email-to-Sunrise are explicit non-goals — see [`../00-product/non-goals.md`](../00-product/non-goals.md).
 

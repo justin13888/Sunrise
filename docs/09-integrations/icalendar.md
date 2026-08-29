@@ -6,6 +6,43 @@ status: accepted
 
 For one-shot data movement, in addition to the live CalDAV/Google integrations.
 
+> **Status: partly implemented. This document is the target; the list below is
+> what ships.** `crates/sunrise-integrations` implements the syntax layer
+> (`ical`), the domain mapping (`ical_map`) and the vault driver
+> (`ical_vault`), reached today by `sunrise ical import` / `sunrise ical export`
+> and by `import_ical` / `export_ical` on the UniFFI seam. The macOS app does
+> not call either yet, which is an open parity gap.
+>
+> Where this document and the build disagree:
+>
+> - **`VTIMEZONE` is not parsed or emitted.** §Time zones below describes the
+>   target. A `TZID` is resolved against the **bundled IANA tzdb** instead; a
+>   `TZID` the tzdb does not know is read as UTC and reported. An inline
+>   `VTIMEZONE` raises an unsupported-component notice.
+> - **`RRULE` does not survive the domain boundary.** It parses, but `Block`
+>   has no field to hold it, so it is reported per event and **a recurring
+>   event imports as a single occurrence**. `DESCRIPTION` and `LOCATION` are
+>   dropped the same way, for the same reason. Nothing is silently lost — every
+>   one raises an `ICalNotice` — but the round-trip fidelity §Mapping rules
+>   promises does not exist yet.
+> - **Export is windowed, not scoped by Stream.** `ExportWindow` is `Day` or
+>   `Week`, because `Query::DayBlocks` / `WeekBlocks` are the only Block windows
+>   the core has. "Export this Stream as .ics" is not implemented.
+> - **An exported file carries `UID`, `SUMMARY`, `DTSTART`, `DTEND` only** —
+>   nothing in the `Block` schema backs the rest, and emitting empty properties
+>   would be inventing content. No `DTSTAMP` is written, which some strict
+>   readers require.
+> - **Dedup is by `(source, uid)` but not via the columns below.** The schema
+>   has no `external_id` or `import_source_id`; the pair is hashed into the
+>   Block's **id**, exactly as a materialized routine occurrence is. That gives
+>   the same idempotence with no side table to keep in step with the vault.
+> - **Imported entities are not marked read-only.** Nothing enforces it.
+>
+> What does hold as written: line unfolding and escapes both directions, CRLF
+> and LF input, the four RFC 5545 time forms preserved distinctly (UTC instant,
+> zoned civil, floating, whole date) all the way into `SunriseTime`, and the
+> rule that lossy imports are surfaced rather than dropped.
+
 ## Import
 
 - File picker → parse `.ics` → create Blocks tagged `source = import:ics`.

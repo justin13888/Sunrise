@@ -212,6 +212,28 @@ type into at once".
   noted that four MUSTs were dead ends for a terminal; none of those four are
   these three. This ADR subtracts from the macOS column, which 0019 did not.
 
+## Addendum — the quarantine mechanism is gone; the decision is not
+
+Recorded after the fact rather than edited into the text above, because an ADR
+is a record of a decision at a moment and rewriting it would destroy the thing
+that makes it worth reading.
+
+Two statements in §(b) and in the consequences — that
+`.github/scripts/orphan-crate-gate.py` quarantines `sunrise-integrations`
+against issue #4, and that the crate has zero reverse dependencies — **are no
+longer true.** iCal import/export was wired into `sunrise-cli` and the UniFFI
+seam after this ADR was accepted, which gave the crate two real consumers and
+lifted it out of quarantine. The gate's own staleness check is what forced the
+entry's removal, exactly as designed: `QUARANTINE` is now empty.
+
+**The decision itself stands unchanged.** Google Calendar is still deferred out
+of v1, still on the grounds recorded in §(b), and `gcal.rs` still has no
+consumer anywhere — no `impl EventSyncer`, no cursor storage, no OAuth UI. What
+changed is only the *mechanism* tracking it: the orphan gate no longer holds the
+reminder, so issue #4 is now the sole record. Note also that the
+`IntegrationProvider` trait §(b) describes has no implementor even for the live
+iCal path, so wiring #4 does not have a working example to follow.
+
 ## What would force revisiting this
 
 1. **Sharing becoming the reason someone cannot adopt Sunrise.** It is the most
