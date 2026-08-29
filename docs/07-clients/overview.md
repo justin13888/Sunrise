@@ -51,10 +51,43 @@ review and reporting
   sunrise review               this week's review summary
   sunrise export <trends|activity|focus|streaks> [json|csv] [path]
 
+account
+  sunrise vaults               list this machine's vaults, marking the open one
+  sunrise login | logout | whoami
+
 plumbing
   sunrise focus <id>           open a focus session on a task
   sunrise sync --once          drain the outbox and exit (cron / CI)
 ```
+
+## Multi-account, on the CLI
+
+`SUNRISE_VAULT` names the vault directory, and each one is a separate
+**account**: the first open of a directory mints a random 32-byte vault root
+for it, and every subsequent open reads that same root back. Two vaults
+therefore share no data, no SQLCipher key, and no Stream keys.
+
+The roots live in a keystore — `SUNRISE_KEYSTORE`, default
+`$XDG_DATA_HOME/sunrise/keys` — one mode-0600 file per vault, keyed by an id
+the vault directory carries in a `vault-id` file. This is the same split the
+macOS app makes between its vault registry and the login Keychain, for the same
+reason: **the key is deliberately not in the vault directory.** A vault
+directory copied on its own has to stay ciphertext, or its encryption is
+decorative. The cost is that a backup must include both; a vault whose key is
+missing says exactly that rather than failing as a corrupt read.
+
+`SUNRISE_VAULT_ROOT` (64 hex characters) supplies a root outright and touches no
+keystore. It is how two vaults are told to be one account until pairing lands —
+the same kind of explicit dev affordance as `SUNRISE_TRUST_CERT_FILE` — and how
+to open a vault created before per-vault keys existed. Such a vault is refused
+with its own typed error rather than opened by guessing the old constant, and
+the error quotes that constant so the data can be read out; the refusal follows
+the precedent of `STORAGE_V = 13` in
+[`../11-adr/0018-storage-baseline-reset.md`](../11-adr/0018-storage-baseline-reset.md).
+
+There is no passphrase, here or on macOS: the root is random, something local
+holds it, and a second device is meant to get it by pairing rather than by the
+user retyping anything.
 
 Capture takes the same grammar every surface does —
 `#stream @context ^when !priority ~duration *due:when*` — because it calls the

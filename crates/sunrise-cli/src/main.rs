@@ -39,18 +39,11 @@
 )]
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
-use sunrise_cli::{livesync, login};
+use sunrise_cli::{livesync, login, vault};
 use sunrise_core::commands::FocusStartDraft;
-use sunrise_core::{Command, Core, Query, QueryResult};
+use sunrise_core::{Command, Core, Query, QueryResult, SystemRng};
 use sunrise_domain::routine_rows;
 use sunrise_id::{EntityKind, EntityRef};
-
-/// Fixed dev / self-host vault root. Every instance derives its per-stream
-/// keys from the **same** root, which is what lets two of them decrypt each
-/// other's op envelopes in the two-terminal sync demo. Device identities still
-/// differ (the keychain seeds a fresh id per vault dir). Production derives
-/// this from a passphrase or a completed pairing flow instead of a constant.
-const DEV_ROOT: [u8; 32] = [7u8; 32];
 
 const USAGE: &str = "\
 sunrise — command-line client for Sunrise
@@ -87,6 +80,7 @@ USAGE:
                                  write .ics to stdout, or to a path
 
   account
+    sunrise vaults               list this machine's vaults, marking the open one
     sunrise login                sign in via OIDC and store the token
     sunrise logout               forget the stored token
     sunrise whoami               report the stored token's state
@@ -112,7 +106,18 @@ EDIT SYNTAX:
     line is rejected if any token is, so nothing is half-applied.
 
 ENVIRONMENT:
-    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault)
+    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
+                              Each one is a separate account: the first open
+                              mints a random 32-byte root for it
+    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one
+                              file per vault (default
+                              $XDG_DATA_HOME/sunrise/keys). Deliberately not
+                              inside the vault: a vault directory copied on
+                              its own must stay ciphertext. Back both up
+    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
+                              keystore — how two vaults share one account
+                              until pairing lands, and how to open a vault
+                              made before per-vault keys
     SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
     SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
                               login. Unset, with no stored login, only works
@@ -124,8 +129,16 @@ ENVIRONMENT:
     SUNRISE_LOG_FILE          override the NDJSON log destination
 ";
 
+/// Returns [`std::process::ExitCode`] rather than a `Result`, because the
+/// `Termination` impl for a `Result` prints the error's **`Debug`** form.
+/// `VaultError` spends most of its length explaining what a user should do
+/// next, and `RootMissing { id: "07a5…", keystore: "/var/…" }` is not that
+/// explanation — it is the struct the explanation was written on. Printing
+/// `Display` ourselves is the whole difference between a typed error and a
+/// typed error a user can act on, and it drops the `Error: "…"` quoting that
+/// the default handler put around every message this binary already had.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
     // First statement in the process. `init_file` is fallible and its failure
     // is deliberately discarded: an unwritable state directory must not stop
     // the command, and the alternative destination — stderr — would put
@@ -148,9 +161,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             print!("{USAGE}");
         }
-        return Ok(());
+        return std::process::ExitCode::SUCCESS;
     };
-    run(sub, &args[1..]).await
+    match run(sub, &args[1..]).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // stderr, because stdout is the contract a script reads.
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("error: {e}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 fn vault_dir() -> std::path::PathBuf {
@@ -161,6 +184,36 @@ fn vault_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(home)
         .join(".sunrise")
         .join("vault")
+}
+
+/// `vaults` — every vault this machine holds a key for, marking the open one.
+///
+/// Multi-account is only a capability if a user can find their accounts. The
+/// macOS app answers this with a picker in Settings; the CLI answers it with a
+/// listing, because a `SUNRISE_VAULT` nobody can enumerate is a feature you
+/// have to already know about to use.
+///
+/// A vault opened only with `SUNRISE_VAULT_ROOT` never touches the keystore
+/// and so is deliberately absent: this lists what is *keyed here*, which is
+/// the question a user asking "what have I got" is really asking.
+fn vaults() {
+    #![allow(clippy::print_stdout)]
+    let keystore = vault::keystore_dir();
+    let current = vault_dir();
+    let rows = vault::registered(&keystore);
+    if rows.is_empty() {
+        // stdout stays empty so `sunrise vaults | wc -l` is honest; the reason
+        // there is nothing to list is a note for the human.
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("no vaults keyed in {}", keystore.display());
+        }
+        return;
+    }
+    for v in rows {
+        let mark = if v.path == current { "  [current]" } else { "" };
+        println!("{}  {}{mark}", v.id, v.path.display());
+    }
 }
 
 /// Dispatch a subcommand. Returns `Ok` on success; the process exit code
@@ -178,19 +231,33 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
             println!("sunrise {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        // Answered without opening anything. It is the subcommand a user
+        // reaches for when a vault will *not* open, so it must not need one to
+        // have opened — the same reason the macOS registry lives in
+        // `UserDefaults` rather than in the vault.
+        "vaults" => {
+            vaults();
+            return Ok(());
+        }
         _ => {}
     }
 
     let dir = vault_dir();
     std::fs::create_dir_all(&dir).ok();
     let dir_for_store = dir.clone();
+    // This vault's own root — see `sunrise_cli::vault`. Minted on the first
+    // open of a directory and kept in the keystore from then on, so two
+    // `SUNRISE_VAULT` values are two accounts and not two folders sharing one
+    // key. `SystemRng` is the injected CSPRNG the workspace requires; nothing
+    // here reaches for `rand` directly.
+    let root = vault::resolve(&dir, &SystemRng)?;
     // Opened offline first, so the vault is available to price a stored
     // token against the core's clock rather than the host's — which the
     // workspace lint bans reading directly.
     let (core, _) = livesync::open_with_plan(
         dir,
         env!("CARGO_PKG_VERSION"),
-        DEV_ROOT,
+        root,
         &livesync::SyncPlan::default(),
     )
     .await?;

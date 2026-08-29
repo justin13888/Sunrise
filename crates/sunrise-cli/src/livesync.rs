@@ -12,7 +12,10 @@
 //! # Device trust is a dev affordance
 //!
 //! Two vaults that share a root still need a [`Command::TrustDevice`] cert
-//! exchange before each accepts the other's op envelopes. Real pairing does
+//! exchange before each accepts the other's op envelopes. Sharing that root is
+//! itself a dev affordance now — [`crate::vault::ENV_VAULT_ROOT`], since every
+//! vault otherwise gets its own — and this is the second half of the same
+//! stand-in. Real pairing does
 //! this over the wire; for the demo we shuttle certs through **files**:
 //! `SUNRISE_EXPORT_CERT_FILE` writes this device's cert on startup and
 //! `SUNRISE_TRUST_CERT_FILE` reads + trusts a peer's. This is intentionally
@@ -298,12 +301,17 @@ pub fn relay_host(url: &str) -> String {
     }
 }
 
-/// Open a core at `vault_dir` keyed by the shared dev `root`, then execute
+/// Open a core at `vault_dir` keyed by `root`, then execute
 /// `plan` (export/trust certs, start sync). Returns the `Arc<Core>` plus the
 /// startup log.
 ///
 /// This is exactly the sequence the binary runs at startup, factored out so the
 /// integration test can drive it against a spawned relay without a TTY.
+///
+/// `root` stays an explicit argument rather than being resolved in here: where
+/// a root comes from is [`crate::vault`]'s question, and a two-replica test
+/// that wants both cores to share one — which is what makes their Stream keys
+/// match, and their envelopes decrypt — has to be able to say so.
 pub async fn open_with_plan(
     vault_dir: PathBuf,
     app: &str,

@@ -18,9 +18,14 @@ use sunrise_server::{build_router, ServerConfig, ServerState};
 use sunrise_sync::SyncState;
 use tokio::task::JoinHandle;
 
-/// Same fixed dev root the binary uses (`main::DEV_ROOT`); both replicas share
-/// it so their per-stream keys match and envelopes decrypt.
-const DEV_ROOT: [u8; 32] = [7u8; 32];
+/// One root, shared by both replicas so their per-stream keys match and their
+/// envelopes decrypt — the "one account, two devices" case.
+///
+/// The binary no longer holds a constant like this: `sunrise_cli::vault` mints
+/// a fresh root per vault directory, and `SUNRISE_VAULT_ROOT` is how two of
+/// them are told to share one until pairing lands. This test passes the root
+/// to `open_with_plan` directly, which is the same thing one layer down.
+const SHARED_ROOT: [u8; 32] = [7u8; 32];
 const POLL: Duration = Duration::from_millis(25);
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -88,10 +93,14 @@ async fn tui_wiring_reaches_live_and_converges() {
         export_cert: Some(cert_b.clone()),
         trust_cert: None,
     };
-    let (core_b, _log_b) =
-        open_with_plan(dir_b.path().to_path_buf(), "0.1.0+test", DEV_ROOT, &plan_b)
-            .await
-            .expect("open B");
+    let (core_b, _log_b) = open_with_plan(
+        dir_b.path().to_path_buf(),
+        "0.1.0+test",
+        SHARED_ROOT,
+        &plan_b,
+    )
+    .await
+    .expect("open B");
     assert!(cert_b.exists(), "B exported its cert on startup");
 
     // A comes up via the same TUI path: trust B's cert (now on disk) and export
@@ -101,10 +110,14 @@ async fn tui_wiring_reaches_live_and_converges() {
         export_cert: Some(cert_a.clone()),
         trust_cert: Some(cert_b.clone()),
     };
-    let (core_a, _log_a) =
-        open_with_plan(dir_a.path().to_path_buf(), "0.1.0+test", DEV_ROOT, &plan_a)
-            .await
-            .expect("open A");
+    let (core_a, _log_a) = open_with_plan(
+        dir_a.path().to_path_buf(),
+        "0.1.0+test",
+        SHARED_ROOT,
+        &plan_a,
+    )
+    .await
+    .expect("open A");
     assert!(cert_a.exists(), "A exported its cert on startup");
 
     // Close the trust loop: B trusts A (the reverse file-exchange direction the
@@ -165,14 +178,21 @@ async fn the_binary_sync_once_actually_reaches_the_relay() {
     let url = format!("ws://{addr}/sync");
     let dir = tempfile::tempdir().expect("tempdir");
     let vault = dir.path().to_path_buf();
+    // The binary mints this vault's root on first open and files it here.
+    // Without an explicit keystore it would file it in the developer's real
+    // one, which is not a thing a test may do.
+    let keystore = vault.join("keystore");
 
     // A local write, so there is something in the outbox to drain.
     let capture = tokio::task::spawn_blocking({
         let vault = vault.clone();
+        let keystore = keystore.clone();
         move || {
             std::process::Command::new(env!("CARGO_BIN_EXE_sunrise"))
                 .args(["capture", "Sent over the wire"])
                 .env("SUNRISE_VAULT", &vault)
+                .env("SUNRISE_KEYSTORE", &keystore)
+                .env_remove("SUNRISE_VAULT_ROOT")
                 .env_remove("SUNRISE_SYNC_URL")
                 .output()
                 .expect("run sunrise")
@@ -186,6 +206,8 @@ async fn the_binary_sync_once_actually_reaches_the_relay() {
         std::process::Command::new(env!("CARGO_BIN_EXE_sunrise"))
             .args(["sync", "--once"])
             .env("SUNRISE_VAULT", &vault)
+            .env("SUNRISE_KEYSTORE", &keystore)
+            .env_remove("SUNRISE_VAULT_ROOT")
             .env("SUNRISE_SYNC_URL", &url)
             .output()
             .expect("run sunrise")

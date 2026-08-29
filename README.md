@@ -161,12 +161,17 @@ cargo test -p sunrise-e2e     # relay convergence, pairing, four chaos scenarios
 
 #### 4. Live sync demo (server + two vaults)
 
-`sunrise` wires live sync through three optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, and `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange (both instances share the fixed dev vault root, so stream keys derive identically). All three unset = fully offline.
+`sunrise` wires live sync through four optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange, and `SUNRISE_VAULT_ROOT` gives both instances the **same vault root**, so their stream keys derive identically and each can decrypt the other's op envelopes. All four unset = fully offline, with each vault on its own key.
+
+That last variable is what makes this a demo of two *devices* rather than two accounts. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders. Sharing a root is what pairing will do over the wire; until then it is spelled out, exactly like the cert exchange beside it.
 
 ```bash
 # Terminal 0 — run the self-host relay:
 cargo run -p sunrise-server
 # → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
+
+# One account, two replicas: any 64 hex characters, the same in both terminals.
+export SUNRISE_VAULT_ROOT=$(head -c32 /dev/urandom | xxd -p -c64)
 
 # Terminal 1 — vault A exports its cert and trusts B's:
 SUNRISE_VAULT=/tmp/vault-a \
@@ -182,6 +187,8 @@ SUNRISE_EXPORT_CERT_FILE=/tmp/b.cert \
 SUNRISE_TRUST_CERT_FILE=/tmp/a.cert \
 cargo run -p sunrise-cli -- today
 ```
+
+> Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
 
 Cert trust is a two-sided file exchange: the **first** run of each vault only exports its cert (the peer's file doesn't exist yet); **run both again** so each picks up the peer cert and submits `TrustDevice`. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
 

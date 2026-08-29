@@ -13,21 +13,39 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// The same fixed dev root the binary uses (`main::DEV_ROOT`), so a test can
-/// open a vault the binary made and seed a fixture the binary has no
-/// subcommand for.
-const DEV_ROOT: [u8; 32] = [7u8; 32];
-
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_sunrise")
+}
+
+/// A keystore of this test's own.
+///
+/// Every vault is now keyed by a root the first open mints and the keystore
+/// keeps, so a test that did not set this would write into the developer's
+/// real `~/.local/share/sunrise/keys` and leak state between runs. It is put
+/// under the vault directory purely because that is the one temp path each
+/// test already has; the property that the key does **not** belong beside the
+/// data is asserted in `sunrise_cli::vault`'s own tests, against separate
+/// directories.
+fn keystore(vault: &Path) -> std::path::PathBuf {
+    vault.join("keystore")
+}
+
+/// The root the binary minted for this vault, so an in-process `Core` can open
+/// the same vault the binary just wrote — the way to build a fixture for
+/// something the CLI reads but does not create.
+fn root_of(vault: &Path) -> [u8; 32] {
+    sunrise_cli::vault::open_or_create(vault, &keystore(vault), &sunrise_core::SystemRng)
+        .expect("resolve this vault's root")
 }
 
 fn run(vault: &Path, args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
         .env("SUNRISE_VAULT", vault)
+        .env("SUNRISE_KEYSTORE", keystore(vault))
         // Keep the relay out of it: subcommands are one-shot and offline.
         .env_remove("SUNRISE_SYNC_URL")
+        .env_remove("SUNRISE_VAULT_ROOT")
         .env_remove("SUNRISE_EXPORT_CERT_FILE")
         .env_remove("SUNRISE_TRUST_CERT_FILE")
         .output()
@@ -272,9 +290,14 @@ async fn edit_moves_a_task_between_streams_and_tags_it() {
     // A second Stream and a Context to aim at. The CLI reads and captures
     // against these but mints neither, so the fixture is built in-process.
     {
-        let (core, _) = open_with_plan(vault.clone(), "0.1.0+test", DEV_ROOT, &SyncPlan::default())
-            .await
-            .expect("open the vault");
+        let (core, _) = open_with_plan(
+            vault.clone(),
+            "0.1.0+test",
+            root_of(&vault),
+            &SyncPlan::default(),
+        )
+        .await
+        .expect("open the vault");
         core.submit(CoreCommand::CreateStream(StreamDraft {
             name: "Work".into(),
             ..Default::default()
@@ -394,6 +417,198 @@ fn edit_defer_and_drop_all_take_several_ids() {
     let out = run(dir.path(), &["drop", &a, &b]);
     assert!(out.status.success(), "bulk drop failed: {out:?}");
     assert!(stdout(&run(dir.path(), &["inbox"])).trim().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Multi-account
+//
+// `SUNRISE_VAULT` has always given each vault its own directory. Until
+// `sunrise_cli::vault` it gave every one of them the same 32-byte root, so the
+// directories were separate and the *accounts* were not: one key opened both,
+// and both derived identical Stream keys. These assert the difference from the
+// binary, which is the only place a user meets it.
+// ---------------------------------------------------------------------------
+
+/// Two `SUNRISE_VAULT` values are two accounts: different keys, no shared
+/// data, and neither openable with the other's key.
+#[test]
+fn two_vaults_are_two_accounts_with_two_keys() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    run(a.path(), &["capture", "Only in A"]);
+    run(b.path(), &["capture", "Only in B"]);
+
+    assert!(stdout(&run(a.path(), &["inbox"])).contains("Only in A"));
+    assert!(
+        !stdout(&run(a.path(), &["inbox"])).contains("Only in B"),
+        "two vaults must not share data"
+    );
+    assert_ne!(
+        root_of(a.path()),
+        root_of(b.path()),
+        "two vaults keyed by one root are one account wearing two hats"
+    );
+}
+
+/// The key is not in the vault directory, so a vault directory copied without
+/// its keystore is ciphertext — and says so, in its own words, instead of
+/// surfacing as a `SQLCipher` failure from three layers down.
+#[test]
+fn a_vault_without_its_key_refuses_and_explains() {
+    let dir = tempfile::tempdir().unwrap();
+    run(dir.path(), &["capture", "Something private"]);
+    std::fs::remove_dir_all(keystore(dir.path())).expect("drop the keystore");
+
+    let out = run(dir.path(), &["inbox"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no key for vault"), "got {err:?}");
+    assert!(
+        err.contains("SUNRISE_VAULT_ROOT"),
+        "the message must name the way back in: {err:?}"
+    );
+}
+
+/// A vault made before per-vault keys — a database with no `vault-id` — is
+/// refused with the old root quoted, and the quoted root really does open it.
+///
+/// ADR-0018's precedent (a vault this build will not open refuses in its own
+/// words) with a way out that ADR did not have: the old root was a constant,
+/// not a deleted migration, so nothing has to be lost. The fixture is a real
+/// pre-multi-account vault, written the way the old binary wrote every
+/// one — under that root, with no marker — not a marker deleted after the
+/// fact, so the recovery below is the genuine article.
+#[test]
+fn a_pre_multi_account_vault_is_refused_but_the_quoted_root_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = |args: &[&str]| {
+        Command::new(bin())
+            .args(args)
+            .env("SUNRISE_VAULT", dir.path())
+            .env(
+                "SUNRISE_VAULT_ROOT",
+                sunrise_cli::vault::LEGACY_DEV_ROOT_HEX,
+            )
+            .env("SUNRISE_KEYSTORE", keystore(dir.path()))
+            .env_remove("SUNRISE_SYNC_URL")
+            .env_remove("SUNRISE_EXPORT_CERT_FILE")
+            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .output()
+            .expect("run sunrise")
+    };
+    assert!(legacy(&["capture", "Written under the old root"])
+        .status
+        .success());
+
+    // This build will not guess that root...
+    let out = run(dir.path(), &["inbox"]);
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("before vaults had their own keys"),
+        "got {err:?}"
+    );
+    assert!(
+        err.contains(sunrise_cli::vault::LEGACY_DEV_ROOT_HEX),
+        "the old root must be quoted, or the data is unreachable: {err:?}"
+    );
+
+    // ...and the root it quotes is the one that gets the data back, so the
+    // break costs a user a command, not their vault.
+    assert!(
+        stdout(&legacy(&["inbox"])).contains("Written under the old root"),
+        "the documented remedy has to actually work"
+    );
+}
+
+/// `SUNRISE_VAULT_ROOT` opens a vault with a root supplied outright and never
+/// touches the keystore — the stand-in for pairing, and the escape hatch the
+/// two refusals above point at.
+#[test]
+fn an_explicit_root_opens_a_vault_with_no_keystore_at_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let hex = "ab".repeat(32);
+    let rooted = |args: &[&str]| {
+        Command::new(bin())
+            .args(args)
+            .env("SUNRISE_VAULT", dir.path())
+            .env("SUNRISE_VAULT_ROOT", &hex)
+            .env("SUNRISE_KEYSTORE", keystore(dir.path()))
+            .env_remove("SUNRISE_SYNC_URL")
+            .env_remove("SUNRISE_EXPORT_CERT_FILE")
+            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .output()
+            .expect("run sunrise")
+    };
+    assert!(rooted(&["capture", "Keyed by hand"]).status.success());
+    assert!(stdout(&rooted(&["inbox"])).contains("Keyed by hand"));
+    assert!(
+        !keystore(dir.path()).exists(),
+        "an explicit root must not file anything in the keystore"
+    );
+    assert!(
+        !dir.path().join("vault-id").exists(),
+        "nor claim the vault for one"
+    );
+
+    // A malformed one fails before it can be mistaken for a key.
+    let out = Command::new(bin())
+        .args(["inbox"])
+        .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_VAULT_ROOT", "nonsense")
+        .env_remove("SUNRISE_SYNC_URL")
+        .output()
+        .expect("run sunrise");
+    assert!(!out.status.success(), "expected a non-zero exit: {out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("hex characters"));
+}
+
+/// Multi-account is only a capability if a user can find their accounts.
+#[test]
+fn vaults_lists_what_this_machine_is_keyed_for() {
+    let shared = tempfile::tempdir().unwrap();
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let store = shared.path().join("keys");
+    let in_vault = |vault: &Path, args: &[&str]| {
+        Command::new(bin())
+            .args(args)
+            .env("SUNRISE_VAULT", vault)
+            .env("SUNRISE_KEYSTORE", &store)
+            .env_remove("SUNRISE_VAULT_ROOT")
+            .env_remove("SUNRISE_SYNC_URL")
+            .output()
+            .expect("run sunrise")
+    };
+    in_vault(a.path(), &["capture", "In A"]);
+    in_vault(b.path(), &["capture", "In B"]);
+
+    let listed = stdout(&in_vault(a.path(), &["vaults"]));
+    assert_eq!(listed.lines().count(), 2, "got {listed:?}");
+    assert!(listed.contains(a.path().to_str().unwrap()), "{listed:?}");
+    assert!(listed.contains(b.path().to_str().unwrap()), "{listed:?}");
+    // The one currently open is marked, so `vaults` answers "where am I" too.
+    let current: Vec<&str> = listed
+        .lines()
+        .filter(|l| l.ends_with("[current]"))
+        .collect();
+    assert_eq!(current.len(), 1, "{listed:?}");
+    assert!(current[0].contains(a.path().to_str().unwrap()));
+
+    // And it answers without opening a vault, because it is what a user
+    // reaches for when a vault will not open.
+    let out = Command::new(bin())
+        .args(["vaults"])
+        .env("SUNRISE_VAULT", "/nonexistent/nowhere")
+        .env("SUNRISE_KEYSTORE", &store)
+        .env_remove("SUNRISE_SYNC_URL")
+        .output()
+        .expect("run sunrise");
+    assert!(
+        out.status.success(),
+        "vaults must not need a vault: {out:?}"
+    );
+    assert_eq!(stdout(&out).lines().count(), 2);
 }
 
 /// Discoverable, or it does not exist for a user.
@@ -531,9 +746,14 @@ async fn context_lists_the_tasks_carrying_it_across_streams() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().to_path_buf();
     {
-        let (core, _) = open_with_plan(vault.clone(), "0.1.0+test", DEV_ROOT, &SyncPlan::default())
-            .await
-            .expect("open the vault");
+        let (core, _) = open_with_plan(
+            vault.clone(),
+            "0.1.0+test",
+            root_of(&vault),
+            &SyncPlan::default(),
+        )
+        .await
+        .expect("open the vault");
         let ctx = core
             .submit(CoreCommand::CreateContext(ContextDraft {
                 name: "errands".into(),
@@ -622,6 +842,8 @@ fn a_subcommand_exports_this_devices_cert_when_asked() {
     let out = Command::new(bin())
         .args(["inbox"])
         .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_KEYSTORE", keystore(dir.path()))
+        .env_remove("SUNRISE_VAULT_ROOT")
         .env("SUNRISE_EXPORT_CERT_FILE", &cert)
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_TRUST_CERT_FILE")
@@ -648,6 +870,8 @@ fn a_subcommand_trusts_a_peer_cert_when_asked() {
     let out = Command::new(bin())
         .args(["inbox"])
         .env("SUNRISE_VAULT", peer.path())
+        .env("SUNRISE_KEYSTORE", keystore(peer.path()))
+        .env_remove("SUNRISE_VAULT_ROOT")
         .env("SUNRISE_EXPORT_CERT_FILE", &peer_cert)
         .env_remove("SUNRISE_SYNC_URL")
         .output()
@@ -658,6 +882,8 @@ fn a_subcommand_trusts_a_peer_cert_when_asked() {
     let out = Command::new(bin())
         .args(["inbox"])
         .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_KEYSTORE", keystore(dir.path()))
+        .env_remove("SUNRISE_VAULT_ROOT")
         .env("SUNRISE_TRUST_CERT_FILE", &peer_cert)
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_EXPORT_CERT_FILE")
@@ -758,6 +984,8 @@ fn ical_import_reads_stdin() {
     let mut child = Command::new(bin())
         .args(["ical", "import", "-"])
         .env("SUNRISE_VAULT", dir.path())
+        .env("SUNRISE_KEYSTORE", keystore(dir.path()))
+        .env_remove("SUNRISE_VAULT_ROOT")
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_EXPORT_CERT_FILE")
         .env_remove("SUNRISE_TRUST_CERT_FILE")
