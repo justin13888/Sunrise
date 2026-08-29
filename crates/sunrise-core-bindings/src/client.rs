@@ -330,6 +330,10 @@ pub enum PrimaryView {
     Routines,
     /// Review: weekly, daily, trends and snapshot history.
     Review,
+    /// The morning summary: what today looks like before it starts.
+    Morning,
+    /// The end-of-day brief: what landed, what did not, what tomorrow holds.
+    Evening,
 }
 
 impl From<View> for PrimaryView {
@@ -343,6 +347,8 @@ impl From<View> for PrimaryView {
             View::Focus => Self::Focus,
             View::Routines => Self::Routines,
             View::Review => Self::Review,
+            View::Morning => Self::Morning,
+            View::Evening => Self::Evening,
         }
     }
 }
@@ -358,6 +364,8 @@ impl From<PrimaryView> for View {
             PrimaryView::Focus => Self::Focus,
             PrimaryView::Routines => Self::Routines,
             PrimaryView::Review => Self::Review,
+            PrimaryView::Morning => Self::Morning,
+            PrimaryView::Evening => Self::Evening,
         }
     }
 }

@@ -47,6 +47,10 @@ pub enum View {
     /// Review: the weekly review flow, the daily glance, the trends and the
     /// saved-snapshot history.
     Review,
+    /// The morning summary: what today looks like before it starts.
+    Morning,
+    /// The end-of-day brief: what landed, what did not, what tomorrow holds.
+    Evening,
 }
 
 /// A named view: where to be, what to search for, what to narrow to.
@@ -220,6 +224,8 @@ const fn view_name(v: View) -> &'static str {
         View::Focus => "focus",
         View::Routines => "routines",
         View::Review => "review",
+        View::Morning => "morning",
+        View::Evening => "evening",
     }
 }
 
@@ -234,6 +240,8 @@ fn parse_view_name(s: &str) -> Option<View> {
         "focus" => View::Focus,
         "routines" | "routine" => View::Routines,
         "review" | "stats" => View::Review,
+        "morning" | "brief" => View::Morning,
+        "evening" | "eod" => View::Evening,
         _ => return None,
     })
 }
@@ -295,6 +303,54 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bad"), "{warnings:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every view the app can be on has a wire name that reads back as
+    /// itself. The two daily briefs are in here because they were the ones
+    /// missing: without them `Destination::primary` had no word for the
+    /// morning-summary and end-of-day screens, and the Save-view menu item
+    /// greyed out on both.
+    #[test]
+    fn every_view_round_trips_through_its_wire_name() {
+        for v in [
+            View::Today,
+            View::Inbox,
+            View::Stream,
+            View::Search,
+            View::Calendar,
+            View::Focus,
+            View::Routines,
+            View::Review,
+            View::Morning,
+            View::Evening,
+        ] {
+            // Exhaustive and wildcard-free on purpose: a variant added
+            // upstream fails this test's build rather than going untested.
+            match v {
+                View::Today
+                | View::Inbox
+                | View::Stream
+                | View::Search
+                | View::Calendar
+                | View::Focus
+                | View::Routines
+                | View::Review
+                | View::Morning
+                | View::Evening => {}
+            }
+            let name = view_name(v);
+            assert_eq!(parse_view_name(name), Some(v), "{name}");
+            assert_eq!(
+                parse_view("x", &format!("view={name}")).map(|s| s.view),
+                Ok(v)
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_briefs_accept_the_words_a_user_would_type() {
+        assert_eq!(parse_view_name("brief"), Some(View::Morning));
+        assert_eq!(parse_view_name("eod"), Some(View::Evening));
     }
 
     #[test]
