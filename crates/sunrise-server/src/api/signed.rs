@@ -86,7 +86,7 @@ pub fn verify<T: serde::Serialize>(
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
         if state.config.require_device_sig {
-            return Err(ApiError::Unauthenticated);
+            return Err(ApiError::unauthenticated());
         }
         // Self-host single-tenant: there are no device rows to bind to, and
         // `ServerConfig::validate` refuses `require_device_sig` in that mode,
@@ -98,17 +98,17 @@ pub fn verify<T: serde::Serialize>(
     // bearer cannot be replayed from a different device.
     if let Some(claimed) = principal.subject.device_id.as_deref() {
         if claimed != device_id {
-            return Err(ApiError::Unauthenticated);
+            return Err(ApiError::unauthenticated());
         }
     }
 
     let device = state
         .store
         .active_device(&principal.account.account_id, device_id)
-        .map_err(|_| ApiError::Unauthenticated)?
-        .ok_or(ApiError::Unauthenticated)?;
+        .map_err(|_| ApiError::unauthenticated())?
+        .ok_or_else(ApiError::unauthenticated)?;
 
-    let date = sig.date.as_deref().ok_or(ApiError::Unauthenticated)?;
+    let date = sig.date.as_deref().ok_or_else(ApiError::unauthenticated)?;
     sunrise_http_sig::verify(
         &device.device_pub_s,
         signature,
@@ -126,7 +126,7 @@ pub fn verify<T: serde::Serialize>(
             reason = %e,
             "device signature rejected"
         );
-        ApiError::Unauthenticated
+        ApiError::unauthenticated()
     })?;
 
     let _ = state

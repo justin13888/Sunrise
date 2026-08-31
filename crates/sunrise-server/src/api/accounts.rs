@@ -106,10 +106,10 @@ pub async fn create(
     }
 
     if body.email.trim().is_empty() {
-        return Err(ApiError::Validation("email required".into()));
+        return Err(ApiError::validation("email required"));
     }
     if body.identity_signing_pub.trim().is_empty() || body.identity_dh_pub.trim().is_empty() {
-        return Err(ApiError::Validation("identity keys required".into()));
+        return Err(ApiError::validation("identity keys required"));
     }
 
     let account = state.store.set_identity(

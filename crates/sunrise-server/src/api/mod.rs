@@ -32,6 +32,8 @@ pub mod error;
 pub mod health;
 pub mod meta;
 pub mod signed;
+#[cfg(test)]
+pub(crate) mod testing;
 
 /// The API description, targeted at OpenAPI 3.2.
 ///

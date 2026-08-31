@@ -9,7 +9,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Push platform tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `kynos::Schema` so the typed surface can take this directly rather than a
+/// free string: the three platforms then appear in the OpenAPI document as an
+/// enum, and an unknown one is rejected by the parse rather than stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, kynos::Schema)]
 #[serde(rename_all = "lowercase")]
 pub enum PushPlatform {
     /// Apple Push Notification service.

@@ -1,0 +1,148 @@
+//! An in-process client for the typed surface.
+//!
+//! `Service::call` is documented as the seam "so that a Kynos service can be
+//! driven directly — by a test, or by an embedding that owns its own accept
+//! loop". Driving it is all a test needs: no port is bound, no runtime task is
+//! spawned, and the request travels the same routing, extraction and
+//! interceptor path a real one does.
+//!
+//! kynos also ships a richer `TestClient` behind its `test-util` feature, and
+//! this is deliberately not that. `test-util` pulls in `jsonschema`, which wants
+//! a newer `regex-automata` than `criterion` pins and brings an `MIT-0`
+//! dependency into a licence allowlist `deny.toml` curates by hand. Neither is
+//! a fair price for assertion sugar.
+
+use crate::metrics::Metrics;
+use crate::state::ServerState;
+use crate::ServerConfig;
+use http_body_util::BodyExt as _;
+use kynos::http::body::Body;
+use kynos::http::{HeaderName, HeaderValue, Method, Request, StatusCode};
+use kynos::router::service::Service;
+
+/// The bearer tests present.
+///
+/// [`ServerState::new`] installs `NullVerifier`, which maps any bearer to one
+/// synthetic self-host account, so the value means no more than "a credential
+/// was presented".
+pub(crate) const BEARER: &str = "Bearer test";
+
+/// A client over a built typed surface.
+pub(crate) struct Client {
+    service: Service<ServerState>,
+    /// The registry the handlers write to. `Metrics` is `Arc` inside, so this
+    /// is that registry rather than a copy of it.
+    pub(crate) metrics: Metrics,
+}
+
+impl Client {
+    /// Build the whole typed surface over a fresh state.
+    ///
+    /// # Panics
+    /// If the router cannot be described, which is the failure `build` exists
+    /// to surface at startup rather than at documentation time.
+    pub(crate) fn new(config: ServerConfig) -> Self {
+        let state = ServerState::new(config);
+        let metrics = state.metrics.clone();
+        let service = state_service(state);
+        Self { service, metrics }
+    }
+
+    /// Send a request carrying [`BEARER`].
+    pub(crate) async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Res {
+        self.send_as(method, path, Some(BEARER), body).await
+    }
+
+    /// Send a request with an explicit credential, or none.
+    pub(crate) async fn send_as(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<&serde_json::Value>,
+    ) -> Res {
+        // Built field by field rather than with `Request::builder`, which the
+        // `http` crate puts on `Request<()>` only — and `kynos::http::Request`
+        // is already `Request<Body>`.
+        let encoded = body.map(|value| serde_json::to_vec(value).expect("a serializable body"));
+        let mut request = Request::new(match &encoded {
+            Some(bytes) => Body::from_bytes(bytes.clone().into()),
+            None => Body::empty(),
+        });
+        *request.method_mut() = method;
+        *request.uri_mut() = path.parse().expect("a well-formed target");
+        if let Some(bearer) = bearer {
+            request.headers_mut().insert(
+                HeaderName::from_static("authorization"),
+                HeaderValue::from_str(bearer).expect("a header-safe credential"),
+            );
+        }
+        if encoded.is_some() {
+            request.headers_mut().insert(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_static("application/json"),
+            );
+        }
+
+        let response = self.service.call(request).await;
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("the response body must collect")
+            .to_bytes()
+            .to_vec();
+        Res { status, bytes }
+    }
+}
+
+/// Build the router over `state`.
+fn state_service(state: ServerState) -> Service<ServerState> {
+    super::router()
+        .build(state)
+        .expect("the typed surface must build")
+}
+
+/// One response, already read.
+pub(crate) struct Res {
+    /// The status line.
+    pub(crate) status: StatusCode,
+    /// The whole body.
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl Res {
+    /// The body as JSON.
+    ///
+    /// # Panics
+    /// If the body is not JSON, which for this surface means the response was
+    /// not the one the test expected — so panicking here reports the real
+    /// failure rather than deferring it to a confusing field access.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.bytes).unwrap_or_else(|e| {
+            panic!(
+                "expected a JSON body, got {e}: {}",
+                String::from_utf8_lossy(&self.bytes)
+            )
+        })
+    }
+
+    /// Assert the status, reporting the body when it does not match — a problem
+    /// document says why, and a bare status comparison throws that away.
+    #[track_caller]
+    pub(crate) fn assert_status(&self, expected: StatusCode) -> &Self {
+        assert_eq!(
+            self.status,
+            expected,
+            "unexpected status; body was: {}",
+            String::from_utf8_lossy(&self.bytes)
+        );
+        self
+    }
+}

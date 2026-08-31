@@ -69,6 +69,14 @@ sunrise-wire-protocol = { workspace = true }
 [dev-dependencies]
 ciborium = { workspace = true }
 futures-util = { workspace = true }
+# Collects a `kynos::http::Body` in tests that drive `Service::call` directly.
+#
+# kynos ships a richer `TestClient` behind its `test-util` feature and this is
+# deliberately not that: `test-util` pulls `jsonschema`, which needs a newer
+# `regex-automata` than criterion pins and brings `MIT-0` into a licence
+# allowlist `deny.toml` curates by hand. `Service::call` is documented as the
+# embedding seam, so the thirty lines below cost less than the policy change.
+http-body-util = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-tungstenite = { workspace = true }

@@ -47,10 +47,23 @@ pub struct AccountToken;
 impl Authenticator<AccountToken, ServerState> for ServerState {
     /// Verify the bearer and resolve it to an account row.
     ///
-    /// Every failure is `unauthenticated`. The server can tell a bad signature
-    /// from an expired token from an unknown issuer, and says so in its own
-    /// logs; a client is told none of it, because the difference is only useful
-    /// to someone probing which tokens exist.
+    /// Every *credential* failure is `unauthenticated`. The server can tell a
+    /// bad signature from an expired token from an unknown issuer, and says so
+    /// in its own logs; a client is told none of it, because the difference is
+    /// only useful to someone probing which tokens exist.
+    ///
+    /// Sign-up being disabled is the one failure that is not a credential
+    /// failure and must not be reported as one. The token is valid and the
+    /// caller is who they say they are; the server is declining to open a new
+    /// account, which is a statement about its own configuration and reveals
+    /// nothing about who exists. Answering 401 tells a legitimate user to go
+    /// and fix a credential that was never wrong.
+    ///
+    /// The stable `AUTH_SIGNUP_DISABLED` code does not ride along on this one
+    /// path: `Authenticator` is required to fail with [`AuthRejection`], whose
+    /// problem document kynos renders itself so that the challenge on the wire
+    /// and the one the operation declares cannot disagree. The status is the
+    /// half of that contract a client acts on, and it is restored here.
     async fn authenticate(
         &self,
         presented: BearerToken,
@@ -68,7 +81,10 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
                 self.config.allow_signup,
                 self.clock.now_ms(),
             )
-            .map_err(|_| AuthRejection::unauthenticated())?;
+            .map_err(|e| match e {
+                crate::store::StoreError::SignupDisabled => AuthRejection::Forbidden,
+                _ => AuthRejection::unauthenticated(),
+            })?;
         Ok(Principal {
             subject: verified.subject,
             account,
