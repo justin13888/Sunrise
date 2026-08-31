@@ -25,8 +25,12 @@
 
 use crate::state::ServerState;
 
+pub mod accounts;
+pub mod auth;
+pub mod error;
 pub mod health;
 pub mod meta;
+pub mod signed;
 
 /// The API description, targeted at OpenAPI 3.2.
 ///
@@ -49,27 +53,100 @@ pub fn router() -> kynos::Router<ServerState> {
     kynos::Router::<ServerState>::new()
         .mount(kynos::routes![health::health])
         .mount(kynos::routes![meta::meta])
+        .mount(kynos::routes![accounts::create, accounts::me])
 }
 
 #[cfg(test)]
 mod tests {
-    /// The document is the contract, so its existence is a test rather than a
-    /// build artefact nobody looks at. `openapi()` runs the structural checks,
-    /// which is what makes "an API that cannot be described correctly fails at
-    /// startup" true rather than aspirational.
+    /// The document is the contract, so its shape is a test rather than a
+    /// build artefact nobody reads.
+    ///
+    /// `openapi_as` runs the structural checks, which is what makes "an API
+    /// that cannot be described correctly fails at startup" true rather than
+    /// aspirational.
     #[test]
     fn the_router_describes_itself() {
-        let doc = super::document().expect("the router must describe");
+        let doc = super::document().expect("the router must describe at 3.2");
         let json = doc.to_json().expect("the description must serialize");
-        assert!(
-            json.contains("/api/v1/health") && json.contains("/api/v1/meta"),
-            "every ported operation must appear in the document: {json}"
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(
+            v["openapi"]
+                .as_str()
+                .unwrap_or_default()
+                .split('.')
+                .take(2)
+                .collect::<Vec<_>>(),
+            vec!["3", "2"],
+            "the document must be emitted AS 3.2 rather than at whatever minimum \
+             expresses today's surface: `itemSchema` is what ADR-0023's event \
+             stream needs, and 3.1 has no way to say it"
+        );
+
+        for path in [
+            "/api/v1/health",
+            "/api/v1/meta",
+            "/api/v1/accounts",
+            "/api/v1/accounts/me",
+        ] {
+            assert!(
+                v["paths"].get(path).is_some(),
+                "{path} must appear in the document"
+            );
+        }
+    }
+
+    /// An authenticated operation must *say* it is authenticated.
+    ///
+    /// Taking `Auth<AccountToken>` adds the scheme to `security`, registers it
+    /// under `components.securitySchemes`, and adds 401 and 403 — there is no
+    /// way to do one without the others, and this asserts the whole bundle
+    /// rather than trusting it.
+    #[test]
+    fn an_authenticated_operation_describes_its_security() {
+        let doc = super::document().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&doc.to_json().unwrap()).unwrap();
+        let op = &v["paths"]["/api/v1/accounts/me"]["get"];
+
+        assert_eq!(op["security"][0]["AccountToken"], serde_json::json!([]));
+        assert!(v["components"]["securitySchemes"]["AccountToken"].is_object());
+        for status in ["200", "401", "403"] {
+            assert!(
+                op["responses"].get(status).is_some(),
+                "{status} must be described on an authenticated operation"
+            );
+        }
+    }
+
+    /// The device-binding headers must be described under the names they
+    /// actually travel as.
+    ///
+    /// `#[derive(HeaderParams)]` falls back to the field identifier verbatim,
+    /// so the first version of `DeviceSig` read a header literally called
+    /// `x_sunrise_device` and told clients that was its name. Nothing else
+    /// caught it: a server and a test that both use the wrong name agree with
+    /// each other. Reading the emitted document is what caught it, so the
+    /// document is what pins it.
+    #[test]
+    fn the_device_binding_headers_are_described_by_their_wire_names() {
+        let doc = super::document().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&doc.to_json().unwrap()).unwrap();
+        let params = v["paths"]["/api/v1/accounts/me"]["get"]["parameters"]
+            .as_array()
+            .expect("the operation declares header parameters");
+        let named: Vec<&str> = params
+            .iter()
+            .map(|p| p["name"].as_str().unwrap_or_default())
+            .collect();
+
+        assert_eq!(
+            named,
+            vec!["X-Sunrise-Device", "X-Sunrise-Device-Sig", "Date"],
+            "header parameters must be described by their wire names"
         );
         assert!(
-            json.contains("\"openapi\": \"3.2"),
-            "the document must be emitted AS 3.2, not at whatever minimum \
-             expresses today's API -- `itemSchema` is what ADR-0023's event \
-             stream needs and 3.1 has no way to say it: {json}"
+            params.iter().all(|p| p["in"] == "header"),
+            "they are header parameters, not query ones"
         );
     }
 }
