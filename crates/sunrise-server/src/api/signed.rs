@@ -70,7 +70,7 @@ use kynos::response::{IntoResponse, Responses};
 use kynos::router::operation::OperationCx;
 use kynos::schema::registry::Registry;
 use kynos::schema::Schema;
-use kynos::security::auth::Auth;
+use kynos::security::auth::{Auth, MaybeAuth};
 
 /// The device-binding headers, declared so they appear in the description.
 #[derive(Debug, Clone, kynos::HeaderParams)]
@@ -307,7 +307,14 @@ async fn caller_of(
     parts: &mut Parts,
     state: &ServerState,
 ) -> Result<(Principal, DeviceSig), SignedRejection> {
-    let Auth(principal) = Auth::<AccountToken>::from_request_parts(parts, state).await?;
+    // `MaybeAuth` rather than `Auth`, so an absent `Authorization` header
+    // reaches the verifier as the empty string rather than being refused at the
+    // carrier -- see `resolve_bearer` for why that distinction is load-bearing.
+    let MaybeAuth(presented) = MaybeAuth::<AccountToken>::from_request_parts(parts, state).await?;
+    let principal = match presented {
+        Some(principal) => principal,
+        None => crate::api::auth::resolve_bearer(state, "").await?,
+    };
     let Headers(sig) = Headers::<DeviceSig>::from_request_parts(parts, state)
         .await
         .map_err(|_| ApiError::unauthenticated())?;

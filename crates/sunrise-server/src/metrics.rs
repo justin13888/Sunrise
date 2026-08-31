@@ -80,17 +80,6 @@ impl Metrics {
     }
 }
 
-/// Mount the `/metrics` route.
-#[must_use]
-pub fn router() -> axum::Router<crate::ServerState> {
-    use axum::extract::State;
-    use axum::routing::get;
-    axum::Router::new().route(
-        "/metrics",
-        get(|State(s): State<crate::ServerState>| async move { s.metrics.render() }),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

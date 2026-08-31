@@ -37,12 +37,11 @@ tempfile = "3"
 
 [dev-dependencies]
 criterion = { workspace = true }
-axum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
-tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 ciborium = { workspace = true }
 sunrise-server = { workspace = true }
+sunrise-sync = { workspace = true, features = ["sse"] }
 sunrise-wire-protocol = { workspace = true }
 
 [[bench]]
@@ -58,5 +57,5 @@ name = "fts"
 harness = false
 
 [[bench]]
-name = "ws_handshake"
+name = "sync_session"
 harness = false

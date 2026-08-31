@@ -36,6 +36,8 @@ pub(crate) struct Client {
     /// The same clock the server checks a `Date` against, so a test signs
     /// inside the replay window rather than near its edge.
     clock: std::sync::Arc<dyn crate::state::Clock>,
+    /// The live sessions, so a test can assert what establishment filed.
+    pub(crate) sessions: crate::sync_session::SessionStore,
 }
 
 impl Client {
@@ -48,12 +50,29 @@ impl Client {
         let state = ServerState::new(config);
         let metrics = state.metrics.clone();
         let clock = state.clock.clone();
+        let sessions = state.sessions.clone();
         let service = state_service(state);
 
         Self {
             service,
             metrics,
             clock,
+            sessions,
+        }
+    }
+
+    /// A client over a state the caller assembled — a custom verifier, a test
+    /// clock, tuned relay bounds.
+    pub(crate) fn from_state(state: ServerState) -> Self {
+        let metrics = state.metrics.clone();
+        let clock = state.clock.clone();
+        let sessions = state.sessions.clone();
+        let service = state_service(state);
+        Self {
+            service,
+            metrics,
+            clock,
+            sessions,
         }
     }
 
@@ -69,6 +88,23 @@ impl Client {
             ..ServerConfig::default()
         };
         (Self::new(config), dir)
+    }
+
+    /// A client with a temp blob root and a verifier that checks bearers.
+    ///
+    /// For the tests that assert a credential is *required*: the default
+    /// `NullVerifier` accepts an absent one on purpose.
+    pub(crate) fn with_blob_root_and_verifier() -> (Self, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let state = ServerState::new(ServerConfig {
+            blob_root: Some(dir.path().to_path_buf()),
+            ..ServerConfig::default()
+        })
+        .with_verifier(std::sync::Arc::new(
+            crate::StaticVerifier::default()
+                .with("test", crate::Subject::new("https://idp.example", "alice")),
+        ));
+        (Self::from_state(state), dir)
     }
 
     /// The server's own notion of now, in milliseconds.

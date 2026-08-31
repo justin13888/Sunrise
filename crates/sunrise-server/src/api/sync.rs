@@ -68,12 +68,6 @@ use sunrise_wire_protocol::{
 /// type and nothing for the client to answer.
 const KEEP_ALIVE_SECS: u64 = 15;
 
-/// How often a live stream re-checks that its device is still active.
-///
-/// Mirrors `config.device_recheck_ms`: revoking a device has to end the session
-/// it already holds, not merely refuse the next one.
-const RECHECK_FLOOR_MS: u64 = 1_000;
-
 /// How many events may queue for a slow reader before the stream is dropped.
 ///
 /// The socket had the same bound implicitly through `broadcast`'s ring; making
@@ -295,6 +289,11 @@ pub async fn subscribe(
         });
     }
     let _ = session;
+    tracing::debug!(
+        ev = "srv.sync.subscribe",
+        n_streams = streams.len() as u64,
+        "stream set replaced"
+    );
     state.sessions.update(&id, now_ms, |s| s.streams = streams);
     Ok(kynos::response::status::NoContent)
 }
@@ -459,16 +458,33 @@ pub async fn refresh(
     let now_ms = state.clock.now_ms();
     let (id, session) = resolve(&state, &header, &caller, now_ms)?;
 
+    let account_h = crate::logging::account_h(&session.account_id);
     let verified = state
         .token_verifier
         .verify(&body.token)
         .await
-        .map_err(|_| ApiError::unauthenticated())?;
-    if verified.subject.principal_key() != session.subject.principal_key() {
-        state.sessions.remove(&id);
-        return Err(ApiError::unauthenticated());
-    }
-    if verified.subject.device_id != session.subject.device_id {
+        .map_err(|e| {
+            // Recoverable: the session keeps the credential it still has.
+            tracing::warn!(
+                ev = "srv.sync.refresh_rejected",
+                err_kind = "user",
+                account_h = %account_h,
+                reason = %e,
+                "refresh token failed verification"
+            );
+            ApiError::unauthenticated()
+        })?;
+    if verified.subject.principal_key() != session.subject.principal_key()
+        || verified.subject.device_id != session.subject.device_id
+    {
+        // A session handed another principal's token is not one to keep
+        // serving: the channel namespace was fixed at establishment.
+        tracing::warn!(
+            ev = "srv.sync.refresh_identity_mismatch",
+            err_kind = "user",
+            account_h = %account_h,
+            "refresh token names a different principal or device; ending the session"
+        );
         state.sessions.remove(&id);
         return Err(ApiError::unauthenticated());
     }
@@ -478,6 +494,11 @@ pub async fn refresh(
         .sessions
         .update(&id, now_ms, |s| s.deadline_ms = deadline);
     state.metrics.incr("sunrise_sync_refresh_total");
+    tracing::debug!(
+        ev = "srv.sync.refreshed",
+        account_h = %account_h,
+        "session deadline extended without a reconnect"
+    );
     Ok(Json(RefreshResponse {
         expires_at_ms: deadline.unwrap_or(0),
     }))
@@ -659,7 +680,9 @@ fn spawn_stream(
             }
         }
 
+        let account_h = crate::logging::account_h(&session.account_id);
         live_loop(state, id, session, receivers, tx).await;
+        tracing::info!(ev = "srv.sync.stream_closed", account_h = %account_h, "event stream ended");
     });
 
     futures_util::stream::unfold(rx, |mut rx| async move {
@@ -676,8 +699,7 @@ async fn live_loop(
     mut receivers: Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
     tx: tokio::sync::mpsc::Sender<Event<SyncEvent>>,
 ) {
-    let recheck =
-        std::time::Duration::from_millis(state.config.device_recheck_ms.max(RECHECK_FLOOR_MS));
+    let recheck = std::time::Duration::from_millis(state.config.device_recheck_ms.max(1));
     let mut ticker = tokio::time::interval(recheck);
     ticker.tick().await;
 
@@ -708,6 +730,13 @@ async fn live_loop(
                 // check exists for: the bearer was presented once, and the
                 // stream is long-lived.
                 if state.sessions.get(&id, now_ms).is_none() {
+                    // Answers "why did a working client drop hourly".
+                    tracing::warn!(
+                        ev = "srv.sync.token_expired",
+                        err_kind = "user",
+                        account_h = %crate::logging::account_h(&session.account_id),
+                        "session bearer passed its exp; ending the stream"
+                    );
                     let _ = tx
                         .send(closed(ErrorCode::AuthTokenExpired, "access token expired"))
                         .await;
@@ -722,6 +751,15 @@ async fn live_loop(
                         .ok()
                         .flatten();
                     if active.is_none() {
+                        // Distinct from `token_expired` on purpose: that one
+                        // means "renew and reconnect", this one means "access
+                        // was withdrawn, ask the user".
+                        tracing::warn!(
+                            ev = "srv.sync.device_revoked",
+                            err_kind = "user",
+                            account_h = %crate::logging::account_h(&session.account_id),
+                            "session device is no longer active; ending the stream"
+                        );
                         state.sessions.remove(&id);
                         let _ = tx
                             .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
@@ -855,31 +893,82 @@ fn gap_reason(gaps: &[CursorGap]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::testing::Client;
-    use crate::ServerConfig;
-    use kynos::http::{Method, StatusCode};
-    use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
+    //! The WebSocket suite, carried over.
+    //!
+    //! Every scenario the five `ws_*` integration files covered lives here,
+    //! against the operations that replaced the frames. They are unit tests now
+    //! rather than integration ones because `Service::call` needs no port: what
+    //! used to require booting a listener and dialling it is an in-process call,
+    //! so the same coverage costs no sockets and no timing.
+    //!
+    //! Three scenarios changed shape rather than moving, and each says so where
+    //! it sits: `Ping` is a keep-alive comment now, a malformed batch is refused
+    //! by the schema rather than nacked, and the handshake round trip is an HTTP
+    //! response rather than a frame exchange.
 
-    /// A stream every test publishes into.
-    const STREAM: &str = "00112233445566778899aabbccddeeff";
+    use crate::api::testing::{Client, BEARER};
+    use crate::relay::RingCaps;
+    use crate::relay_log::DurableCaps;
+    use crate::state::{Clock, ServerState};
+    use crate::{ServerConfig, StaticVerifier, Subject};
+    use kynos::http::{Method, StatusCode};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use sunrise_cbor::magic::{write_prefix, MagicKind, MAGIC_LEN};
+    use sunrise_cbor::version::{ENVELOPE_FORMAT_V, WIRE_PROTO_V};
+    use sunrise_wire_protocol::{Capability, CapabilityBits};
+
+    const STREAM_BYTES: [u8; 16] = [0x11; 16];
+    const ISSUER: &str = "https://idp.example";
+    const T0_MS: u64 = 1_704_067_200_000;
+
+    fn stream_hex() -> String {
+        hex::encode(STREAM_BYTES)
+    }
+
+    /// A clock a test moves by hand, so expiry is a value rather than a wait.
+    #[derive(Debug)]
+    struct TestClock(AtomicU64);
+
+    impl Clock for TestClock {
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl TestClock {
+        fn at(ms: u64) -> Arc<Self> {
+            Arc::new(Self(AtomicU64::new(ms)))
+        }
+        fn set(&self, ms: u64) {
+            self.0.store(ms, Ordering::SeqCst);
+        }
+    }
 
     fn hello() -> serde_json::Value {
         serde_json::json!({
             "client_app_v": "0.1.0",
             "client_platform": "test",
             "wire_proto_supported": [u32::from(WIRE_PROTO_V)],
-            "doc_schema_min": u32::from(DOC_SCHEMA_V),
-            "doc_schema_max": u32::from(DOC_SCHEMA_V),
-            "crypto_suite_supported": [u32::from(CRYPTO_SUITE_V)],
-            "capabilities": sunrise_wire_protocol::REQUIRED_CLIENT_BITS.0,
+            "doc_schema_min": u32::from(sunrise_cbor::version::DOC_SCHEMA_V),
+            "doc_schema_max": u32::from(sunrise_cbor::version::DOC_SCHEMA_V),
+            "crypto_suite_supported": [u32::from(sunrise_cbor::version::CRYPTO_SUITE_V)],
+            // `SrvTokenRefresh` is agreed by AND, so a client that wants a
+            // refresh has to offer it too. A real one does; this mirrors that.
+            "capabilities": sunrise_wire_protocol::REQUIRED_CLIENT_BITS.0
+                | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0,
             "trace": "01J000000000000000000000000",
         })
     }
 
-    /// Establish a session and return its id.
-    async fn establish(client: &Client) -> String {
+    async fn session_as(client: &Client, bearer: &str) -> String {
         let res = client
-            .send(Method::POST, "/api/v1/sync/session", Some(&hello()))
+            .send_as(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(bearer),
+                Some(&hello()),
+            )
             .await;
         res.assert_status(StatusCode::CREATED);
         res.json()["session_id"]
@@ -888,7 +977,223 @@ mod tests {
             .to_owned()
     }
 
-    /// The handshake `Hello`/`HelloAck` used to carry.
+    async fn establish(client: &Client) -> String {
+        session_as(client, BEARER).await
+    }
+
+    async fn subscribe_as(
+        client: &Client,
+        bearer: &str,
+        id: &str,
+        cursor: Option<(String, u64)>,
+    ) -> StatusCode {
+        let cursors = cursor.map_or_else(Vec::new, |(device_id, last_applied_seq)| {
+            vec![serde_json::json!({
+                "device_id": device_id,
+                "last_applied_seq": last_applied_seq,
+            })]
+        });
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/subscribe",
+                Some(bearer),
+                Some(&serde_json::json!({
+                    "streams": [{ "stream_id": stream_hex(), "cursors": cursors }]
+                })),
+                &[("x-sunrise-session", id)],
+            )
+            .await
+            .status
+    }
+
+    async fn subscribe(client: &Client, id: &str, cursor: Option<(String, u64)>) {
+        assert_eq!(
+            subscribe_as(client, BEARER, id, cursor).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    /// One op envelope from `device` at `seq`.
+    ///
+    /// Header-shaped rather than a real sealed envelope: that is exactly the
+    /// surface the relay reads — `stream_id`, `device_id`, `seq`, all cleartext
+    /// — and building real ones would put `sunrise-crypto`, the crate holding
+    /// the keys a relay must not have, into the server's test graph.
+    fn envelope(device: [u8; 16], seq: u64) -> String {
+        use base64::Engine as _;
+        use ciborium::value::Value;
+        let entries: Vec<(Value, Value)> = vec![
+            (Value::Integer(1.into()), Value::Integer(3.into())),
+            (
+                Value::Integer(2.into()),
+                Value::Bytes(STREAM_BYTES.to_vec()),
+            ),
+            (Value::Integer(3.into()), Value::Bytes(device.to_vec())),
+            (Value::Integer(4.into()), Value::Integer(seq.into())),
+            (
+                Value::Integer(10.into()),
+                Value::Bytes(vec![u8::try_from(seq & 0xff).unwrap(); 32]),
+            ),
+        ];
+        let mut out = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+        ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(out)
+    }
+
+    async fn publish_as(
+        client: &Client,
+        bearer: &str,
+        id: &str,
+        ops: Vec<String>,
+        batch_id: u64,
+    ) -> StatusCode {
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/ops",
+                Some(bearer),
+                Some(&serde_json::json!({
+                    "stream_id": stream_hex(),
+                    "batch_id": batch_id,
+                    "ops": ops,
+                })),
+                &[("x-sunrise-session", id)],
+            )
+            .await
+            .status
+    }
+
+    async fn publish(client: &Client, id: &str, ops: Vec<String>, batch_id: u64) -> StatusCode {
+        publish_as(client, BEARER, id, ops, batch_id).await
+    }
+
+    async fn read_as(client: &Client, bearer: &str, id: &str, extra: &[(&str, &str)]) -> String {
+        let mut headers = vec![("x-sunrise-session", id), ("authorization", bearer)];
+        headers.extend_from_slice(extra);
+        client
+            .read_stream(
+                "/api/v1/sync/events",
+                &headers,
+                std::time::Duration::from_millis(250),
+            )
+            .await
+    }
+
+    async fn read(client: &Client, id: &str, extra: &[(&str, &str)]) -> String {
+        read_as(client, BEARER, id, extra).await
+    }
+
+    // -- ws_auth ------------------------------------------------------------
+
+    /// Was `unauthenticated_upgrade_is_refused`.
+    ///
+    /// Against a verifier that actually checks, as the socket test's own relay
+    /// did. `NullVerifier` accepts an absent header by design — that is what
+    /// makes self-host work and what makes enabling authentication purely a
+    /// matter of configuring a verifier.
+    #[tokio::test]
+    async fn an_unauthenticated_session_is_refused() {
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with("good", Subject::new(ISSUER, "alice")),
+        ));
+        let client = Client::from_state(state);
+        client
+            .send_as(Method::POST, "/api/v1/sync/session", None, Some(&hello()))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// Was `unknown_bearer_is_refused`.
+    #[tokio::test]
+    async fn an_unknown_bearer_is_refused() {
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with("good", Subject::new(ISSUER, "alice")),
+        ));
+        let client = Client::from_state(state);
+
+        client
+            .send_as(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some("Bearer nope"),
+                Some(&hello()),
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// Was `valid_bearer_is_accepted`.
+    #[tokio::test]
+    async fn a_valid_bearer_establishes_a_session() {
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with("good", Subject::new(ISSUER, "alice")),
+        ));
+        let client = Client::from_state(state);
+        let _ = session_as(&client, "Bearer good").await;
+    }
+
+    /// Was `one_tenant_never_receives_another_tenants_frames`.
+    ///
+    /// The channel key is `(account_hash, stream_id)` and the account half comes
+    /// from the verified token, never from anything the client sends — so naming
+    /// another tenant's stream id reaches a different channel entirely.
+    #[tokio::test]
+    async fn one_tenant_never_receives_another_tenants_frames() {
+        let verifier = StaticVerifier::default()
+            .with("alice", Subject::new(ISSUER, "alice"))
+            .with("bob", Subject::new(ISSUER, "bob"));
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+
+        let alice = session_as(&client, "Bearer alice").await;
+        let bob = session_as(&client, "Bearer bob").await;
+
+        assert_eq!(
+            subscribe_as(&client, "Bearer bob", &bob, None).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            publish_as(&client, "Bearer alice", &alice, vec![], 1).await,
+            StatusCode::OK
+        );
+
+        let body = read_as(&client, "Bearer bob", &bob, &[]).await;
+        assert!(
+            !body.contains("\"kind\":\"ops\""),
+            "another tenant's frame reached this stream: {body}"
+        );
+        assert!(
+            body.contains("\"kind\":\"caught_up\""),
+            "the stream must still open and report its own emptiness: {body}"
+        );
+    }
+
+    /// Was `two_sessions_of_one_tenant_still_fan_out`: the isolation above is
+    /// per account, not per session.
+    #[tokio::test]
+    async fn two_sessions_of_one_tenant_both_receive() {
+        let client = Client::new(ServerConfig::default());
+        let publisher = establish(&client).await;
+        let reader = establish(&client).await;
+
+        subscribe(&client, &reader, None).await;
+        assert_eq!(
+            publish(&client, &publisher, vec![], 1).await,
+            StatusCode::OK
+        );
+
+        let body = read(&client, &reader, &[]).await;
+        assert!(
+            body.contains("\"kind\":\"ops\""),
+            "a sibling session's batch must fan out: {body}"
+        );
+    }
+
+    // -- ws_handshake -------------------------------------------------------
+
+    /// Was `ws_handshake_round_trip`.
     #[tokio::test]
     async fn a_session_negotiates_the_same_versions_the_handshake_did() {
         let client = Client::new(ServerConfig::default());
@@ -899,7 +1204,10 @@ mod tests {
         let body = res.json();
 
         assert_eq!(body["wire_proto"], u32::from(WIRE_PROTO_V));
-        assert_eq!(body["crypto_suite"], u32::from(CRYPTO_SUITE_V));
+        assert_eq!(
+            body["crypto_suite"],
+            u32::from(sunrise_cbor::version::CRYPTO_SUITE_V)
+        );
         assert!(
             body["session_id"]
                 .as_str()
@@ -908,8 +1216,8 @@ mod tests {
         );
     }
 
-    /// A client the server cannot agree with is refused here for the same
-    /// reason it was refused at the socket.
+    /// A client the server cannot agree with is refused for the same reason it
+    /// was refused at the socket.
     #[tokio::test]
     async fn an_unnegotiable_client_is_refused() {
         let client = Client::new(ServerConfig::default());
@@ -921,6 +1229,435 @@ mod tests {
             .await
             .assert_status(StatusCode::BAD_REQUEST);
     }
+
+    /// Was `ws_subscribe_receives_op_batch_fanout`.
+    #[tokio::test]
+    async fn a_subscribed_stream_receives_a_published_batch() {
+        let client = Client::new(ServerConfig::default());
+        let reader = establish(&client).await;
+        let writer = establish(&client).await;
+        subscribe(&client, &reader, None).await;
+
+        assert_eq!(publish(&client, &writer, vec![], 1).await, StatusCode::OK);
+
+        let body = read(&client, &reader, &[]).await;
+        assert!(body.contains("\"kind\":\"ops\""), "no fan-out in: {body}");
+    }
+
+    /// Was `ws_malformed_op_batch_nacked_no_fanout`.
+    ///
+    /// Shape changed: a `Nack` frame becomes a refusal status, and the body is
+    /// caught before the handler rather than after a decode.
+    #[tokio::test]
+    async fn a_malformed_batch_is_refused_and_never_fans_out() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        let status = publish(&client, &id, vec!["not base64!!".to_owned()], 1).await;
+        assert!(status.is_client_error(), "got {status}");
+
+        let body = read(&client, &id, &[]).await;
+        assert!(
+            !body.contains("\"kind\":\"ops\""),
+            "a refused batch must not fan out: {body}"
+        );
+    }
+
+    // -- ws_cursors ---------------------------------------------------------
+
+    /// Was `no_cursor_still_replays_the_whole_ring`.
+    #[tokio::test]
+    async fn no_cursor_replays_everything_retained() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        for batch_id in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &id, vec![], batch_id).await,
+                StatusCode::OK
+            );
+        }
+
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            3,
+            "every retained frame must replay: {body}"
+        );
+    }
+
+    /// Was `a_cursor_narrows_the_replay_to_what_the_subscriber_missed`.
+    #[tokio::test]
+    async fn a_cursor_narrows_the_replay_to_what_was_missed() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [7u8; 16];
+
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![envelope(device, seq)], seq).await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 2))).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "only what the cursor does not cover may replay: {body}"
+        );
+    }
+
+    /// Was `eviction_of_already_applied_ops_is_not_a_gap`.
+    #[tokio::test]
+    async fn a_cursor_at_the_head_replays_nothing_and_reports_no_gap() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [8u8; 16];
+        assert_eq!(
+            publish(&client, &writer, vec![envelope(device, 1)], 1).await,
+            StatusCode::OK
+        );
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 1))).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert!(
+            !body.contains("\"kind\":\"ops\""),
+            "nothing was missed: {body}"
+        );
+        assert!(
+            !body.contains("\"kind\":\"gap\""),
+            "an applied op falling out of retention is not a loss: {body}"
+        );
+        assert!(body.contains("\"kind\":\"caught_up\""), "{body}");
+    }
+
+    /// Was `a_cursor_past_durable_retention_gets_a_typed_gap_not_silence`.
+    ///
+    /// The load-bearing half is the ordering: the gap precedes the partial
+    /// replay, so a client cannot read `caught_up` as `complete`.
+    #[tokio::test]
+    async fn a_cursor_past_retention_gets_a_typed_gap_before_the_replay() {
+        let state = ServerState::new(ServerConfig::default())
+            .with_ring_caps(RingCaps {
+                max_frames: 1,
+                max_bytes: 1 << 20,
+            })
+            .with_durable_caps(DurableCaps {
+                max_bytes: 1,
+                max_age_ms: u64::MAX,
+            });
+        let client = Client::from_state(state);
+        let writer = establish(&client).await;
+        let device = [9u8; 16];
+
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![envelope(device, seq)], seq).await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 0))).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert!(
+            body.contains("\"kind\":\"gap\""),
+            "eviction past a cursor must be reported, not passed over: {body}"
+        );
+        let gap_at = body.find("\"kind\":\"gap\"").expect("a gap");
+        let caught_at = body.find("\"kind\":\"caught_up\"").expect("a marker");
+        assert!(
+            gap_at < caught_at,
+            "a gap must precede the caught-up it qualifies: {body}"
+        );
+    }
+
+    /// Was `resubscribing_replaces_the_receiver_rather_than_duplicating_it`.
+    #[tokio::test]
+    async fn resubscribing_replaces_the_stream_set() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+
+        subscribe(&client, &id, None).await;
+        subscribe(&client, &id, None).await;
+
+        let session = client
+            .sessions
+            .get(&id, client.clock_now_ms())
+            .expect("a live session");
+        assert_eq!(
+            session.streams.len(),
+            1,
+            "a second subscribe replaces rather than duplicating"
+        );
+    }
+
+    /// Was `a_cursor_past_the_ring_bound_is_served_from_the_durable_log` and
+    /// `ops_survive_a_relay_restart`.
+    ///
+    /// The in-memory ring is bounded to one frame, so anything replayed past
+    /// that came off the disk — which is the property a restart relies on.
+    #[tokio::test]
+    async fn a_replay_past_the_ring_bound_is_served_from_the_durable_log() {
+        let state = ServerState::new(ServerConfig::default()).with_ring_caps(RingCaps {
+            max_frames: 1,
+            max_bytes: 1 << 20,
+        });
+        let client = Client::from_state(state);
+        let writer = establish(&client).await;
+
+        for batch_id in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![], batch_id).await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, None).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            3,
+            "the durable log, not the ring, is the authority for replay: {body}"
+        );
+    }
+
+    // -- ws_device_binding --------------------------------------------------
+
+    /// Was `an_unregistered_device_cannot_open_a_sync_session`.
+    ///
+    /// Also covers `a_revoked_device_cannot_open_a_sync_session`: a revoked
+    /// device is not an active device, so both resolve to nothing through the
+    /// same lookup.
+    #[tokio::test]
+    async fn an_unregistered_device_cannot_open_a_session() {
+        let client = Client::new(ServerConfig::default());
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(BEARER),
+                Some(&hello()),
+                &[
+                    ("x-sunrise-device", "01J8ZQ7X9K3M5N7P9R1T3V5W7Y"),
+                    ("x-sunrise-device-sig", "AAAA"),
+                    ("date", "Mon, 01 Jan 2024 00:00:00 GMT"),
+                ],
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    // -- ws_token_expiry ----------------------------------------------------
+
+    /// Was `the_relay_advertises_the_token_refresh_capability`.
+    #[tokio::test]
+    async fn the_relay_advertises_the_token_refresh_capability() {
+        let client = Client::new(ServerConfig::default());
+        let res = client
+            .send(Method::POST, "/api/v1/sync/session", Some(&hello()))
+            .await;
+        res.assert_status(StatusCode::CREATED);
+
+        let agreed = res.json()["capabilities"].as_u64().expect("a bitfield");
+        assert!(
+            CapabilityBits(agreed).has(Capability::SrvTokenRefresh),
+            "a client only asks for a refresh if it sees this bit come back"
+        );
+    }
+
+    /// Was `an_idle_session_is_closed_when_its_token_expires` and
+    /// `an_inbound_frame_on_an_expired_token_ends_the_session`.
+    ///
+    /// One test now, because the difference between them is gone: every
+    /// operation resolves the session, and an expired one resolves to nothing
+    /// whether or not anything arrived.
+    #[tokio::test]
+    async fn an_expired_token_ends_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let verifier = StaticVerifier::default().with_expiring(
+            "good",
+            Subject::new(ISSUER, "alice"),
+            T0_MS + 60_000,
+        );
+        let state = ServerState::with_clock(ServerConfig::default(), clock.clone())
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer good").await;
+
+        clock.set(T0_MS + 60_001);
+        assert_eq!(
+            subscribe_as(&client, "Bearer good", &id, None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// Was `a_session_with_no_deadline_is_never_closed`.
+    #[tokio::test]
+    async fn a_session_with_no_deadline_is_never_closed() {
+        let clock = TestClock::at(T0_MS);
+        let state = ServerState::with_clock(ServerConfig::default(), clock.clone());
+        let client = Client::from_state(state);
+        let id = establish(&client).await;
+
+        clock.set(T0_MS + 10_000_000);
+        assert_eq!(
+            subscribe_as(&client, BEARER, &id, None).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    /// Was `a_refresh_extends_the_session_without_a_reconnect`.
+    #[tokio::test]
+    async fn a_refresh_extends_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let verifier = StaticVerifier::default()
+            .with_expiring("first", Subject::new(ISSUER, "alice"), T0_MS + 60_000)
+            .with_expiring("second", Subject::new(ISSUER, "alice"), T0_MS + 600_000);
+        let state = ServerState::with_clock(ServerConfig::default(), clock.clone())
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer first").await;
+
+        let refreshed = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer first"),
+                Some(&serde_json::json!({ "token": "second" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        refreshed.assert_status(StatusCode::OK);
+        assert_eq!(refreshed.json()["expires_at_ms"], T0_MS + 600_000);
+
+        // Past the first deadline, the session is still live on the second.
+        clock.set(T0_MS + 60_001);
+        assert_eq!(
+            subscribe_as(&client, "Bearer second", &id, None).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    /// Was `a_refresh_with_an_unverifiable_token_is_refused_but_keeps_the_session`.
+    #[tokio::test]
+    async fn an_unverifiable_refresh_is_refused_but_keeps_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let verifier = StaticVerifier::default().with_expiring(
+            "good",
+            Subject::new(ISSUER, "alice"),
+            T0_MS + 60_000,
+        );
+        let state = ServerState::with_clock(ServerConfig::default(), clock)
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer good").await;
+
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer good"),
+                Some(&serde_json::json!({ "token": "garbage" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        // Still running on the credential it already had.
+        assert_eq!(
+            subscribe_as(&client, "Bearer good", &id, None).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    /// Was `a_refresh_naming_another_principal_ends_the_session`.
+    ///
+    /// The channel namespace was fixed at establishment and is never
+    /// re-derived, so a token naming someone else must not be allowed to keep
+    /// reading this account's stream.
+    #[tokio::test]
+    async fn a_refresh_naming_another_principal_ends_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let verifier = StaticVerifier::default()
+            .with_expiring("alice", Subject::new(ISSUER, "alice"), T0_MS + 60_000)
+            .with_expiring("bob", Subject::new(ISSUER, "bob"), T0_MS + 600_000);
+        let state = ServerState::with_clock(ServerConfig::default(), clock)
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer alice").await;
+
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer alice"),
+                Some(&serde_json::json!({ "token": "bob" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        assert!(
+            client.sessions.get(&id, T0_MS).is_none(),
+            "the session must be gone, not merely refused"
+        );
+    }
+
+    /// Was `an_ack_for_a_token_with_no_expiry_reports_zero`.
+    #[tokio::test]
+    async fn a_refresh_for_a_token_with_no_expiry_reports_zero() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some(BEARER),
+                Some(&serde_json::json!({ "token": "anything" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        res.assert_status(StatusCode::OK);
+        assert_eq!(
+            res.json()["expires_at_ms"],
+            0,
+            "the self-host verifier issues no deadline"
+        );
+    }
+
+    /// Was `a_refresh_with_an_undecodable_payload_is_refused`.
+    #[tokio::test]
+    async fn a_refresh_with_an_undecodable_body_is_refused() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+
+        let status = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some(BEARER),
+                Some(&serde_json::json!({ "not_a_token": 1 })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .status;
+        assert!(status.is_client_error(), "got {status}");
+    }
+
+    // -- the surface's own invariants ---------------------------------------
 
     /// Every operation after establishment needs the session id.
     #[tokio::test]
@@ -938,7 +1675,8 @@ mod tests {
             .assert_status(StatusCode::BAD_REQUEST);
     }
 
-    /// An id nobody issued names no session.
+    /// A session id is a bearer-equivalent, so it is checked against the caller
+    /// rather than merely looked up.
     #[tokio::test]
     async fn an_unknown_session_is_refused() {
         let client = Client::new(ServerConfig::default());
@@ -946,7 +1684,7 @@ mod tests {
             .send_with(
                 Method::POST,
                 "/api/v1/sync/subscribe",
-                Some(crate::api::testing::BEARER),
+                Some(BEARER),
                 Some(&serde_json::json!({ "streams": [] })),
                 &[("x-sunrise-session", "ses_00000000000000000000000000000000")],
             )
@@ -954,35 +1692,20 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
-    /// Subscribing then publishing: the batch is acked with the server's
-    /// first-seen time, which is what the clock-skew clamp reads.
+    /// Durable first, then the ack.
     #[tokio::test]
     async fn a_batch_is_acked_after_it_is_durable() {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
-
-        client
-            .send_with(
-                Method::POST,
-                "/api/v1/sync/subscribe",
-                Some(crate::api::testing::BEARER),
-                Some(&serde_json::json!({
-                    "streams": [{ "stream_id": STREAM, "cursors": [] }]
-                })),
-                &[("x-sunrise-session", &id)],
-            )
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
+        subscribe(&client, &id, None).await;
 
         let res = client
             .send_with(
                 Method::POST,
                 "/api/v1/sync/ops",
-                Some(crate::api::testing::BEARER),
+                Some(BEARER),
                 Some(&serde_json::json!({
-                    "stream_id": STREAM,
-                    "batch_id": 7,
-                    "ops": [],
+                    "stream_id": stream_hex(), "batch_id": 7, "ops": [],
                 })),
                 &[("x-sunrise-session", &id)],
             )
@@ -991,7 +1714,6 @@ mod tests {
         res.assert_status(StatusCode::OK);
         let body = res.json();
         assert_eq!(body["batch_id"], 7);
-        assert_eq!(body["stream_id"], STREAM);
         assert!(body["server_first_seen_ms"].is_u64(), "{body}");
     }
 
@@ -1005,11 +1727,9 @@ mod tests {
             .send_with(
                 Method::POST,
                 "/api/v1/sync/ops",
-                Some(crate::api::testing::BEARER),
+                Some(BEARER),
                 Some(&serde_json::json!({
-                    "stream_id": "not-a-stream",
-                    "batch_id": 1,
-                    "ops": [],
+                    "stream_id": "not-a-stream", "batch_id": 1, "ops": [],
                 })),
                 &[("x-sunrise-session", &id)],
             )
@@ -1017,69 +1737,22 @@ mod tests {
             .assert_status(StatusCode::BAD_REQUEST);
     }
 
-    /// The stream replays what was published, then says it is caught up.
-    ///
-    /// The whole downstream half in one pass: a batch published before the
-    /// stream opens is replayed from the durable log, base64 of the same frame
-    /// the relay stored, and `CaughtUp` follows it.
+    /// The replay, then the marker that completes it, each frame carrying the
+    /// durable id `Last-Event-ID` resumes from.
     #[tokio::test]
     async fn the_event_stream_replays_then_reports_caught_up() {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
 
-        client
-            .send_with(
-                Method::POST,
-                "/api/v1/sync/subscribe",
-                Some(crate::api::testing::BEARER),
-                Some(&serde_json::json!({
-                    "streams": [{ "stream_id": STREAM, "cursors": [] }]
-                })),
-                &[("x-sunrise-session", &id)],
-            )
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
-
-        client
-            .send_with(
-                Method::POST,
-                "/api/v1/sync/ops",
-                Some(crate::api::testing::BEARER),
-                Some(&serde_json::json!({
-                    "stream_id": STREAM,
-                    "batch_id": 1,
-                    "ops": [],
-                })),
-                &[("x-sunrise-session", &id)],
-            )
-            .await
-            .assert_status(StatusCode::OK);
-
-        // Read only the replay: the stream stays open for live frames, so it is
-        // read with a deadline rather than to completion.
-        let body = client
-            .read_stream(
-                "/api/v1/sync/events",
-                &[("x-sunrise-session", &id)],
-                std::time::Duration::from_millis(250),
-            )
-            .await;
-
+        let body = read(&client, &id, &[]).await;
         assert!(body.contains("\"kind\":\"ops\""), "no replay in: {body}");
-        assert!(
-            body.contains("\"kind\":\"caught_up\""),
-            "no caught-up marker in: {body}"
-        );
-        let ops_at = body.find("\"kind\":\"ops\"").unwrap();
-        let caught_at = body.find("\"kind\":\"caught_up\"").unwrap();
-        assert!(
-            ops_at < caught_at,
-            "caught up must not precede the replay it completes: {body}"
-        );
-        assert!(
-            body.contains("id: 1"),
-            "each replayed frame must carry its durable id for Last-Event-ID: {body}"
-        );
+        assert!(body.contains("\"kind\":\"caught_up\""), "{body}");
+        let ops_at = body.find("\"kind\":\"ops\"").expect("a replay");
+        let caught_at = body.find("\"kind\":\"caught_up\"").expect("a marker");
+        assert!(ops_at < caught_at, "{body}");
+        assert!(body.contains("id: 1"), "{body}");
     }
 
     /// `Last-Event-ID` resumes rather than replaying from the start.
@@ -1087,47 +1760,17 @@ mod tests {
     async fn a_resumed_stream_does_not_replay_what_it_already_had() {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
-
-        client
-            .send_with(
-                Method::POST,
-                "/api/v1/sync/subscribe",
-                Some(crate::api::testing::BEARER),
-                Some(&serde_json::json!({
-                    "streams": [{ "stream_id": STREAM, "cursors": [] }]
-                })),
-                &[("x-sunrise-session", &id)],
-            )
-            .await
-            .assert_status(StatusCode::NO_CONTENT);
-
+        subscribe(&client, &id, None).await;
         for batch_id in 1..=3u64 {
-            client
-                .send_with(
-                    Method::POST,
-                    "/api/v1/sync/ops",
-                    Some(crate::api::testing::BEARER),
-                    Some(&serde_json::json!({
-                        "stream_id": STREAM,
-                        "batch_id": batch_id,
-                        "ops": [],
-                    })),
-                    &[("x-sunrise-session", &id)],
-                )
-                .await
-                .assert_status(StatusCode::OK);
+            assert_eq!(
+                publish(&client, &id, vec![], batch_id).await,
+                StatusCode::OK
+            );
         }
 
-        let body = client
-            .read_stream(
-                "/api/v1/sync/events",
-                &[("x-sunrise-session", &id), ("last-event-id", "2")],
-                std::time::Duration::from_millis(250),
-            )
-            .await;
-
-        assert!(!body.contains("id: 1"), "frame 1 was already had: {body}");
-        assert!(!body.contains("id: 2"), "frame 2 was already had: {body}");
-        assert!(body.contains("id: 3"), "frame 3 was not: {body}");
+        let body = read(&client, &id, &[("last-event-id", "2")]).await;
+        assert!(!body.contains("id: 1"), "already had: {body}");
+        assert!(!body.contains("id: 2"), "already had: {body}");
+        assert!(body.contains("id: 3"), "not yet had: {body}");
     }
 }

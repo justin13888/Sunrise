@@ -10,7 +10,7 @@
 //! sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
 //! sunrise today
 //! sunrise next
-//! SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync sunrise sync --once
+//! SUNRISE_SYNC_URL=http://127.0.0.1:8443 sunrise sync --once
 //! ```
 //!
 //! Deliberately hand-rolled rather than pulling in an arg parser: the surface

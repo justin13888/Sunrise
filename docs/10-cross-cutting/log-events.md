@@ -32,26 +32,27 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 |---|---|---|
 | `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
 | `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
-| `srv.start.metrics_withheld` | warn | `/metrics` was not mounted because the listener is not loopback; `bind`. The operator surfaces are loopback-only per [`../06-server/overview.md`](../06-server/overview.md), so a public bind serves `404` there. Answers "why does my scrape 404". |
+| `srv.start.metrics_withheld` | warn | `/metrics` was not mounted because the listener is not loopback; `bind`. The operation is absent from the OpenAPI description too, so the document does not advertise a surface this deployment refuses to serve. The operator surfaces are loopback-only per [`../06-server/overview.md`](../06-server/overview.md), so a public bind serves `404` there. Answers "why does my scrape 404". |
 | `srv.start.refused` | error | Config could not be resolved, read, parsed, or validated; the process is exiting 78 (`EX_CONFIG`) rather than serving. |
 | `srv.start.failed` | error | The listener could not bind; `bind`, `cause`. Distinct from `srv.start.refused`: the config was fine and the address was not available. |
-| `srv.stop` | info | `axum::serve` returned; listener closed. |
-| `srv.stop.failed` | error | `axum::serve` returned an error; `cause`. |
+| `srv.stop` | info | The server returned; listener closed. |
+| `srv.stop.failed` | error | The server returned an error; `cause`. |
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
 | `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
 | `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present and did not check out; `reason` names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
 | `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `reason` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
 | `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
-| `srv.ws.connect` | info | `/sync` session negotiated; `account_h`, negotiated `wire_v`/`crypto_v`. |
-| `srv.ws.rejected` | warn | `/sync` handshake failed negotiation; `err_code`. The client sees a closed socket and cannot diagnose this itself. |
-| `srv.ws.disconnect` | info | `/sync` session ended. |
-| `srv.ws.subscribe` | debug | Subscribe frame processed; `n_streams`. |
-| `srv.ws.device_revoked` | warn | The session's device is no longer an active row on its account; the session is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.ws.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
-| `srv.ws.token_expired` | warn | The session's bearer passed its `exp`; the session is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
-| `srv.ws.refreshed` | debug | A `0x12 RefreshToken` verified; the session's deadline moved out without a reconnect. `account_h`. |
-| `srv.ws.refresh_rejected` | warn | A refresh token failed verification; `err_code`, `account_h`. The session keeps its current credential — this is recoverable. Never the token. |
-| `srv.ws.refresh_identity_mismatch` | warn | A refresh token verified but names a different principal than the session; the session is ended. `account_h`. A session handed another user's token is not a mistake to keep serving. |
+| `srv.sync.session_open` | info | A sync session was established; `account_h`. Replaces `srv.ws.connect`: ADR-0023 split the socket's one negotiation into `POST /sync/session`, so establishing a session and opening a stream are now separate events. |
+| `srv.sync.negotiate_refused` | warn | `POST /sync/session` could not agree a wire version, crypto suite or required capability; `reason`. The client receives a `400` naming the same thing, unlike the socket it replaces, where a closed connection left an operator as the only party who could diagnose it. |
+| `srv.sync.stream_open` | info | `GET /sync/events` opened; `account_h`, `resumed` (whether a `Last-Event-ID` was presented). |
+| `srv.sync.stream_closed` | info | The event stream ended, whether by the client leaving or by the server closing it. `account_h`. |
+| `srv.sync.subscribe` | debug | The session's stream set was replaced; `n_streams`. |
+| `srv.sync.device_revoked` | warn | The session's device is no longer an active row on its account; the stream is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.sync.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
+| `srv.sync.token_expired` | warn | The session's bearer passed its `exp`; the stream is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
+| `srv.sync.refreshed` | debug | A refresh verified; the session's deadline moved out with no reconnect. `account_h`. |
+| `srv.sync.refresh_rejected` | warn | A refresh token failed verification; `account_h`, `reason`. The session keeps its current credential — this is recoverable. Never the token. |
+| `srv.sync.refresh_identity_mismatch` | warn | A refresh token verified but names a different principal or device than the session; the session is ended. `account_h`. A session handed another user's token is not a mistake to keep serving. |
 | `srv.relay.fanout` | debug | `OpBatch` republished to a channel; `stream_h`, `n_bytes`. The relay never decrypts, so shape is all it can report. |
 | `srv.relay.append_failed` | error | The durable op log rejected a write, so the batch is not acked; `stream_h`, `err_code`, `cause`. The client keeps the op and retries — the one failure that must never be answered with an `Ack`. |
 | `srv.relay.replay_failed` | error | The durable op log could not be read, so the session ends without a `CaughtUp`; `stream_h`, `err_code`, `cause`. Never followed by a completeness claim the server cannot back. |

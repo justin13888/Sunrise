@@ -688,9 +688,15 @@ mod tests {
 
     /// Every blob operation is authenticated. This module ran unauthenticated
     /// once, so the check is a test rather than a reading.
+    ///
+    /// Against a verifier that actually checks. `ServerConfig::default()`
+    /// installs `NullVerifier`, for which an absent header verifies the empty
+    /// string and succeeds — deliberately, so that enabling authentication is
+    /// purely a matter of configuring a verifier. Asserting a 401 there would
+    /// be asserting the self-host escape hatch is broken.
     #[tokio::test]
     async fn every_blob_route_requires_a_bearer() {
-        let (client, _guard) = Client::with_blob_root();
+        let (client, _guard) = Client::with_blob_root_and_verifier();
         for (method, path) in [
             (Method::POST, "/api/v1/blobs/init"),
             (Method::POST, "/api/v1/blobs/finalize"),

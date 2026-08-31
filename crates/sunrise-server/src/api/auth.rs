@@ -76,27 +76,7 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
         presented: BearerToken,
         _context: &ServerState,
     ) -> Result<Principal, AuthRejection> {
-        let verified = self
-            .token_verifier
-            .verify(presented.as_str())
-            .await
-            .map_err(|_| AuthRejection::unauthenticated())?;
-        let account = self
-            .store
-            .resolve_account(
-                &verified.subject,
-                self.config.allow_signup,
-                self.clock.now_ms(),
-            )
-            .map_err(|e| match e {
-                crate::store::StoreError::SignupDisabled => AuthRejection::Forbidden,
-                _ => AuthRejection::unauthenticated(),
-            })?;
-        Ok(Principal {
-            subject: verified.subject,
-            account,
-            expires_at_ms: verified.expires_at_ms,
-        })
+        resolve_bearer(self, presented.as_str()).await
     }
 
     /// No scopes are defined on this surface.
@@ -113,6 +93,49 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
     ) -> Result<(), AuthRejection> {
         Ok(())
     }
+}
+
+/// Verify `bearer` and resolve it to an account row.
+///
+/// Split out of [`Authenticator::authenticate`] because there are two ways in.
+/// The other is an **absent** `Authorization` header, which
+/// `docs/06-server/auth.md` gives a specific meaning: it verifies the empty
+/// string. `NullVerifier` — self-host, single-tenant — accepts that; every real
+/// verifier rejects it. The property that follows is the one worth preserving:
+/// *enabling authentication is purely a matter of configuring a verifier*, with
+/// no route, extractor or header check to change alongside it.
+///
+/// kynos's `Auth<S>` refuses an absent header at the carrier, before any
+/// verifier is consulted, so taking it alone would have quietly made self-host
+/// unusable — the CLI presents no bearer — and made "configure a verifier" no
+/// longer sufficient. [`super::signed`] therefore takes `MaybeAuth` and routes
+/// the absent case here.
+///
+/// # Errors
+/// [`AuthRejection::Forbidden`] when sign-up is disabled, and `unauthenticated`
+/// for every credential failure.
+pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Principal, AuthRejection> {
+    let verified = state
+        .token_verifier
+        .verify(bearer)
+        .await
+        .map_err(|_| AuthRejection::unauthenticated())?;
+    let account = state
+        .store
+        .resolve_account(
+            &verified.subject,
+            state.config.allow_signup,
+            state.clock.now_ms(),
+        )
+        .map_err(|e| match e {
+            crate::store::StoreError::SignupDisabled => AuthRejection::Forbidden,
+            _ => AuthRejection::unauthenticated(),
+        })?;
+    Ok(Principal {
+        subject: verified.subject,
+        account,
+        expires_at_ms: verified.expires_at_ms,
+    })
 }
 
 /// The context owns its own authenticator, because the verification a bearer

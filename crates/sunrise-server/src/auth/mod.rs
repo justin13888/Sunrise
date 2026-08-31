@@ -12,15 +12,16 @@
 //!   `iss` / `aud` / `exp` / `nbf` validation.
 //! - [`http`] — the injectable HTTP surface the verifier fetches JWKS over, so
 //!   the verifier is testable without a network.
-//! - [`device_sig`] — `header_sig_v1` request signing (`X-Sunrise-Device-Sig`).
-//! - [`request`] — the per-request pipeline handlers call: bearer → subject →
-//!   account row → device binding.
 //! - [`NullVerifier`] — self-host single-tenant escape hatch.
+//!
+//! Request signing is not here. `header_sig_v1` and the axum-shaped pipeline
+//! that ran it were removed with the router they served: ADR-0022 replaced the
+//! construction, `sunrise-http-sig` owns it so the relay and the generated
+//! client cannot disagree about it, and `api::signed` is where a request meets
+//! it.
 
-pub mod device_sig;
 pub mod http;
 pub mod oidc;
-pub mod request;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -228,14 +229,6 @@ impl TokenVerifier for StaticVerifier {
     }
 }
 
-/// Extract the bearer token from an `Authorization: Bearer <token>` header.
-#[must_use]
-pub fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
-    let h = headers.get(axum::http::header::AUTHORIZATION)?;
-    let s = h.to_str().ok()?;
-    s.strip_prefix("Bearer ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,21 +291,5 @@ mod tests {
         let honest = Subject::new("https://idp.example", "alice");
         let attacker = Subject::new("https://idp.example/alice", "");
         assert_ne!(honest.principal_key(), attacker.principal_key());
-    }
-
-    #[test]
-    fn extract_bearer_works() {
-        let mut h = axum::http::HeaderMap::new();
-        h.insert(
-            axum::http::header::AUTHORIZATION,
-            "Bearer xyz".parse().unwrap(),
-        );
-        assert_eq!(extract_bearer(&h), Some("xyz"));
-        h.clear();
-        h.insert(
-            axum::http::header::AUTHORIZATION,
-            "Basic abc".parse().unwrap(),
-        );
-        assert_eq!(extract_bearer(&h), None);
     }
 }
