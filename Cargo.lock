@@ -1991,6 +1991,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu-js"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2049,6 +2055,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_jcs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3a60f3fda61525e439ef6d67422118f11e986566997d9021c56867ad814a0aa"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2431,6 +2448,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-http-sig"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "ed25519-dalek",
+ "jiff",
+ "rand 0.8.6",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "sunrise-id"
 version = "0.1.0"
 dependencies = [
@@ -2526,6 +2558,7 @@ dependencies = [
  "serde_json",
  "sunrise-cbor",
  "sunrise-error",
+ "sunrise-http-sig",
  "sunrise-id",
  "sunrise-log",
  "sunrise-onboarding",

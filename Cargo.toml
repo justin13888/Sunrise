@@ -98,6 +98,10 @@ ciborium = { version = "0.2", default-features = false }
 ciborium-io = { version = "0.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+# RFC 8785 JSON Canonicalization. ADR-0022 signs the canonical form of the
+# request *value*, so both the relay and the generated client need one
+# implementation of it and must agree byte for byte.
+serde_jcs = { version = "0.2", default-features = false }
 serde_bytes = { version = "0.11", default-features = false, features = ["alloc"] }
 
 # --- compression / encoding ---
@@ -160,6 +164,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 sunrise-log = { path = "crates/sunrise-log", version = "0.1.0" }
 sunrise-id = { path = "crates/sunrise-id", version = "0.1.0" }
 sunrise-error = { path = "crates/sunrise-error", version = "0.1.0" }
+sunrise-http-sig = { path = "crates/sunrise-http-sig", version = "0.1.0" }
 sunrise-auth = { path = "crates/sunrise-auth", version = "0.1.0" }
 sunrise-cbor = { path = "crates/sunrise-cbor", version = "0.1.0" }
 sunrise-crypto = { path = "crates/sunrise-crypto", version = "0.1.0" }

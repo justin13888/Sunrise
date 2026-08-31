@@ -51,6 +51,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-error = { workspace = true }
+sunrise-http-sig = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-log = { workspace = true }
 sunrise-onboarding = { workspace = true }

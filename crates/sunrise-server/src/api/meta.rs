@@ -9,12 +9,9 @@ use sunrise_wire_protocol::capability::REQUIRED_SERVER_BITS;
 
 /// The device-binding mode this build speaks.
 ///
-/// `header_sig_v2` per [ADR-0022](../../../../docs/11-adr/0022-device-signature-canonical-json.md):
-/// the signature covers the RFC 8785 canonical JSON of the request *value*, not
-/// the octets that carried it. v1 signed received bytes, which is why every
-/// authenticated handler used to take `body: Bytes` — a shape kynos has no
-/// extractor for, deliberately.
-pub const DEVICE_BINDING_MODE: &str = "header_sig_v2";
+/// Re-exported from the crate that implements it, so the string a client reads
+/// out of `/meta` cannot drift from the scheme the server actually verifies.
+pub use sunrise_http_sig::BINDING_MODE as DEVICE_BINDING_MODE;
 
 /// Server meta response.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
