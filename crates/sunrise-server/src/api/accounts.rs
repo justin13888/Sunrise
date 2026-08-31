@@ -22,16 +22,13 @@
 //! a signature over something the client did not send. Rejecting the unknown
 //! member turns an inscrutable signature mismatch into a 400 that names it.
 
-use crate::api::auth::AccountToken;
 use crate::api::error::ApiError;
-use crate::api::signed::{self, DeviceSig};
+use crate::api::signed::{SignedBootstrap, SignedParts};
 use crate::state::ServerState;
 use crate::store::Account;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
-use kynos::extract::params::header::Headers;
 use kynos::response::status::Created;
-use kynos::security::auth::Auth;
 use serde::{Deserialize, Serialize};
 
 /// `POST /api/v1/accounts` request body.
@@ -85,25 +82,17 @@ fn info(state: &ServerState, account: &Account) -> Result<AccountInfo, ApiError>
 /// the time this runs — it is minted when the token first resolves.
 #[kynos::post("/api/v1/accounts")]
 pub async fn create(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
-    Headers(sig): Headers<DeviceSig>,
-    Json(body): Json<AccountCreateRequest>,
-) -> Result<Created<Json<AccountInfo>>, ApiError> {
     // Bootstrap exemption: a device cannot sign before it exists, so this route
     // accepts an absent binding even where the server demands one elsewhere. A
     // binding that *is* supplied is verified in full, so this weakens nothing
     // for a client that already has a device.
-    if sig.device.is_some() {
-        signed::verify(
-            &state,
-            &principal,
-            &sig,
-            "POST",
-            "/api/v1/accounts",
-            Some(&body),
-        )?;
-    }
+    SignedBootstrap {
+        caller,
+        value: body,
+    }: SignedBootstrap<AccountCreateRequest>,
+) -> Result<Created<Json<AccountInfo>>, ApiError> {
+    let principal = &caller.principal;
 
     if body.email.trim().is_empty() {
         return Err(ApiError::validation("email required"));
@@ -134,10 +123,8 @@ pub async fn create(
 /// The calling account.
 #[kynos::get("/api/v1/accounts/me")]
 pub async fn me(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
-    Headers(sig): Headers<DeviceSig>,
+    SignedParts(caller): SignedParts,
 ) -> Result<Json<AccountInfo>, ApiError> {
-    signed::verify::<()>(&state, &principal, &sig, "GET", "/api/v1/accounts/me", None)?;
-    Ok(Json(info(&state, &principal.account)?))
+    Ok(Json(info(&state, &caller.principal.account)?))
 }

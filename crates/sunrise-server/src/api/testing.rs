@@ -33,6 +33,9 @@ pub(crate) struct Client {
     /// The registry the handlers write to. `Metrics` is `Arc` inside, so this
     /// is that registry rather than a copy of it.
     pub(crate) metrics: Metrics,
+    /// The same clock the server checks a `Date` against, so a test signs
+    /// inside the replay window rather than near its edge.
+    clock: std::sync::Arc<dyn crate::state::Clock>,
 }
 
 impl Client {
@@ -44,8 +47,18 @@ impl Client {
     pub(crate) fn new(config: ServerConfig) -> Self {
         let state = ServerState::new(config);
         let metrics = state.metrics.clone();
+        let clock = state.clock.clone();
         let service = state_service(state);
-        Self { service, metrics }
+        Self {
+            service,
+            metrics,
+            clock,
+        }
+    }
+
+    /// The server's own notion of now, in milliseconds.
+    pub(crate) fn clock_now_ms(&self) -> u64 {
+        self.clock.now_ms()
     }
 
     /// Send a request carrying [`BEARER`].
@@ -65,6 +78,18 @@ impl Client {
         path: &str,
         bearer: Option<&str>,
         body: Option<&serde_json::Value>,
+    ) -> Res {
+        self.send_with(method, path, bearer, body, &[]).await
+    }
+
+    /// Send a request carrying extra headers — the device binding, chiefly.
+    pub(crate) async fn send_with(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<&serde_json::Value>,
+        headers: &[(&str, &str)],
     ) -> Res {
         // Built field by field rather than with `Request::builder`, which the
         // `http` crate puts on `Request<()>` only — and `kynos::http::Request`
@@ -86,6 +111,12 @@ impl Client {
             request.headers_mut().insert(
                 HeaderName::from_static("content-type"),
                 HeaderValue::from_static("application/json"),
+            );
+        }
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                HeaderValue::from_str(value).expect("a header value"),
             );
         }
 

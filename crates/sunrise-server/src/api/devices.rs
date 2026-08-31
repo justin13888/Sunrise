@@ -5,17 +5,14 @@
 //! the verified token and the SQL carries it, so naming another account's
 //! device resolves to nothing rather than to that device.
 
-use crate::api::auth::AccountToken;
 use crate::api::error::{codes, ApiError};
-use crate::api::signed::{self, DeviceSig};
+use crate::api::signed::{Signed, SignedBootstrap, SignedParts};
 use crate::state::ServerState;
 use crate::store::{Device, NewDevice};
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
-use kynos::extract::params::header::Headers;
 use kynos::extract::params::path::Path;
 use kynos::response::status::{Created, NoContent};
-use kynos::security::auth::Auth;
 use serde::{Deserialize, Serialize};
 
 /// Platforms `DeviceMeta.platform` admits.
@@ -140,12 +137,12 @@ fn is_ed25519_pub(s: &str) -> bool {
 /// Every device on the calling account, revoked ones included.
 #[kynos::get("/api/v1/devices")]
 pub async fn list(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
-    Headers(sig): Headers<DeviceSig>,
+    SignedParts(caller): SignedParts,
 ) -> Result<Json<Vec<DeviceMeta>>, ApiError> {
-    signed::verify::<()>(&state, &principal, &sig, "GET", "/api/v1/devices", None)?;
-    let devices = state.store.list_devices(&principal.account.account_id)?;
+    let devices = state
+        .store
+        .list_devices(&caller.principal.account.account_id)?;
     state.metrics.incr("sunrise_devices_list_total");
     Ok(Json(devices.into_iter().map(DeviceMeta::from).collect()))
 }
@@ -157,22 +154,12 @@ pub async fn list(
 /// *is* supplied is still verified in full.
 #[kynos::post("/api/v1/devices")]
 pub async fn register(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
-    Headers(sig): Headers<DeviceSig>,
-    Json(body): Json<DeviceRegisterRequest>,
+    SignedBootstrap {
+        caller,
+        value: body,
+    }: SignedBootstrap<DeviceRegisterRequest>,
 ) -> Result<Created<Json<DeviceRegisterResponse>>, ApiError> {
-    if sig.device.is_some() {
-        signed::verify(
-            &state,
-            &principal,
-            &sig,
-            "POST",
-            "/api/v1/devices",
-            Some(&body),
-        )?;
-    }
-
     // A signing key that cannot be parsed is a device that could never satisfy
     // `header_sig_v2`; rejecting it here turns a permanent 401 into an
     // immediate, explicable 400.
@@ -191,7 +178,7 @@ pub async fn register(
     }
 
     let device = state.store.register_device(
-        &principal.account.account_id,
+        &caller.principal.account.account_id,
         &NewDevice {
             device_pub_s: body.device_pub_s,
             device_pub_d: body.device_pub_d,
@@ -218,24 +205,16 @@ pub async fn register(
 /// server call.
 #[kynos::delete("/api/v1/devices/{device_id}")]
 pub async fn revoke(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
     Path(path): Path<DeviceIdPath>,
-    Headers(sig): Headers<DeviceSig>,
-) -> Result<NoContent, ApiError> {
     // The signed target is the *concrete* path the client sent, not the route
     // template: a signature over `/api/v1/devices/{device_id}` would verify for
     // every device id, which is the whole thing this binding exists to prevent.
-    let caller_device = signed::verify::<()>(
-        &state,
-        &principal,
-        &sig,
-        "DELETE",
-        &format!("/api/v1/devices/{}", path.device_id),
-        None,
-    )?;
-
-    if caller_device
+    // `SignedParts` reads the target off the request, so that is what it covers.
+    SignedParts(caller): SignedParts,
+) -> Result<NoContent, ApiError> {
+    if caller
+        .device
         .as_ref()
         .is_some_and(|d| d.device_id == path.device_id)
     {
@@ -248,7 +227,7 @@ pub async fn revoke(
     state
         .store
         .revoke_device(
-            &principal.account.account_id,
+            &caller.principal.account.account_id,
             &path.device_id,
             state.clock.now_ms(),
         )
@@ -266,20 +245,12 @@ pub async fn revoke(
 /// File a push token against one of the caller's devices.
 #[kynos::post("/api/v1/devices/push-tokens")]
 pub async fn push_tokens(
-    Auth(principal): Auth<AccountToken>,
     Inject(state): Inject<ServerState>,
-    Headers(sig): Headers<DeviceSig>,
-    Json(body): Json<PushRegistration>,
+    Signed {
+        caller,
+        value: body,
+    }: Signed<PushRegistration>,
 ) -> Result<NoContent, ApiError> {
-    signed::verify(
-        &state,
-        &principal,
-        &sig,
-        "POST",
-        "/api/v1/devices/push-tokens",
-        Some(&body),
-    )?;
-
     if sunrise_id::crockford::decode_str(&body.device_id).is_err() {
         return Err(ApiError::validation(
             "device_id must be 26 Crockford base-32 characters",
@@ -295,7 +266,7 @@ pub async fn push_tokens(
     // an unowned device by naming one.
     state
         .store
-        .active_device(&principal.account.account_id, &body.device_id)?
+        .active_device(&caller.principal.account.account_id, &body.device_id)?
         .ok_or_else(|| {
             ApiError::forbidden(
                 codes::AUTH_DEVICE_NOT_OWNER,
