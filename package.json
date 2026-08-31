@@ -1,11 +1,12 @@
 {
     "name": "sunrise",
     "version": "0.1.0",
+    "private": true,
     "scripts": {
         "test": "vitest",
-        "test:run": "vitest run",
+        "test:run": "vitest run --passWithNoTests",
         "test:ui": "vitest --ui",
-        "test:coverage": "vitest run --coverage",
+        "test:coverage": "vitest run --coverage --passWithNoTests",
         "lint": "biome lint .",
         "lint:fix": "biome lint --write .",
         "format": "biome format .",
@@ -13,8 +14,13 @@
         "check": "biome check .",
         "check:fix": "biome check --write .",
         "ci": "biome ci .",
-        "typecheck": "bun run --filter '*' typecheck",
-        "validate": "bun run ci && bun run typecheck && bun run test:coverage"
+        "typecheck": "bash -c 'if [ -z \"$(ls -A apps 2>/dev/null)$(ls -A packages 2>/dev/null)\" ]; then echo \"No TS workspace members yet — skip\"; else bun run --filter \"*\" typecheck; fi'",
+        "validate": "bun run ci && bun run typecheck && bun run test:coverage",
+        "rust:fmt": "cargo fmt --all",
+        "rust:fmt:check": "cargo fmt --all -- --check",
+        "rust:clippy": "cargo clippy --workspace --all-targets -- -D warnings",
+        "rust:test": "cargo test --workspace --all-targets",
+        "rust:check": "cargo check --workspace --all-targets"
     },
     "devDependencies": {
         "@biomejs/biome": "^2.3.11",

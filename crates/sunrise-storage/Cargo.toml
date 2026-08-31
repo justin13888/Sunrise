@@ -1,0 +1,28 @@
+[package]
+name = "sunrise-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "SQLite + SQLCipher storage layer (op log, materialized state, blob store, FTS5)"
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

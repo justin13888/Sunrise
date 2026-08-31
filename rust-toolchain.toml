@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned for reproducible builds. Bumped from 1.87.0 to 1.88.0 for ratatui
+# 0.28's transitive `instability`/`darling`; ratatui is gone (ADR-0019) but the
+# pin stays — it is a reproducibility floor, not a dependency workaround, and
+# dropping back would be an unforced change. Any further bump requires an ADR
+# and a CI matrix update.
+channel = "1.88.0"
+components = ["rustfmt", "clippy", "rust-src"]
+profile = "default"

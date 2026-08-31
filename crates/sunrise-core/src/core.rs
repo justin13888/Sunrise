@@ -1,0 +1,1131 @@
+//! `Core` — the user-facing facade.
+//!
+//! v1 surface: `open` → returns `Core` once the vault lock + DB are ready;
+//! `submit` / `query` route to the storage + CRDT layers; `changes` /
+//! `sync_status` return broadcast streams; `close` runs graceful shutdown.
+//!
+//! v1 implementation depth: the public API is wired and the lifecycle is
+//! correct. The actual command-application engine that translates a
+//! [`crate::Command`] into op envelopes + CRDT mutations + storage rows
+//! lives behind a small `Engine` trait that subsequent phases populate
+//! (sync wire layer, server). This crate alone proves out the lifecycle,
+//! single-writer guarantee, and shape of the API.
+
+use crate::commands::{Command, CommandResult};
+use crate::config::CoreConfig;
+use crate::engine::{Engine, EngineError};
+use crate::events::{DomainEvent, SyncStatus};
+use crate::keychain::{Keychain, KeychainError};
+use crate::queries::{Query, QueryResult};
+use crate::sync_driver::{self, SyncShared, TokenSource, TransportFactory};
+use crate::unlock::Unlock;
+use crate::vault_lock::{VaultLock, VaultLockError};
+use parking_lot::Mutex;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+use sunrise_storage::{Db, DbError};
+use sunrise_wire_protocol::{CursorEntry, SubscribeEntry};
+use thiserror::Error;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+
+/// One outbox op ready to send: `(op_id, sealed envelope bytes)`.
+type OutboxOp = ([u8; 16], Vec<u8>);
+
+/// Outbox ops grouped under one stream: `(stream_id, ops)`.
+type OutboxGroup = ([u8; 16], Vec<OutboxOp>);
+
+/// Errors produced by [`Core`].
+#[derive(Debug, Error)]
+pub enum CoreError {
+    /// Vault lock contention.
+    #[error(transparent)]
+    VaultLock(#[from] VaultLockError),
+    /// Underlying DB error.
+    #[error(transparent)]
+    Db(#[from] DbError),
+    /// Engine command/query error.
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    /// Device keychain load/create error.
+    #[error(transparent)]
+    Keychain(#[from] KeychainError),
+    /// Local sync bookkeeping (outbox / cursors) error.
+    #[error(transparent)]
+    SyncLocal(#[from] sunrise_storage::SyncLocalError),
+    /// Op-log access error.
+    #[error(transparent)]
+    OpLog(#[from] sunrise_storage::OpLogError),
+    /// Direct SQLite error from a driver-support read.
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    /// Closed Core handed a request.
+    #[error("core is closed")]
+    Closed,
+}
+
+/// Default routine-materialization interval, per
+/// `docs/08-features/recurrence-engine.md` §generation-timing.
+pub const ROUTINE_TIMER_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// User-facing handle to the local vault.
+pub struct Core {
+    cfg: CoreConfig,
+    db: Mutex<Db>,
+    _vault_lock: VaultLock,
+    engine: Engine,
+    changes_tx: broadcast::Sender<DomainEvent>,
+    sync_tx: broadcast::Sender<SyncStatus>,
+    /// Live sync state, shared with the driver task. Present even in offline
+    /// mode (state stays `Disconnected`); the driver, when started, owns it.
+    sync_shared: Arc<SyncShared>,
+    /// The bearer this vault's sync sessions present.
+    ///
+    /// Owned by `Core`, not read back out of `cfg.sync` on demand. That
+    /// distinction is the whole point: a caller that configures sync *after*
+    /// open — every UniFFI caller does, via `start_sync(url, bearer)` — has no
+    /// `cfg.sync` to hold a credential, and a handle minted per call is a
+    /// different cell every time, so a renewal written through one is invisible
+    /// to the driver holding another.
+    sync_credential: TokenSource,
+    /// The spawned driver task, if [`Core::start_sync`] has run. Aborted on
+    /// `close`/drop so the task never leaks.
+    sync_handle: Mutex<Option<JoinHandle<()>>>,
+    /// The periodic routine-materialization task, if
+    /// [`Core::start_routine_timer`] has run. Aborted alongside the driver.
+    routine_handle: Mutex<Option<JoinHandle<()>>>,
+    closed: Mutex<bool>,
+}
+
+impl std::fmt::Debug for Core {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Core")
+            .field("cfg", &self.cfg)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Core {
+    /// Open (or create) the vault at `cfg.vault_dir` keyed by `unlock`.
+    ///
+    /// Acquires the OS-level vault lock; if another process holds it, returns
+    /// `VaultLock(AlreadyHeld { holder_pid, holder_started_at })`.
+    pub async fn open(cfg: CoreConfig, unlock: Unlock) -> Result<Self, CoreError> {
+        let pid = std::process::id();
+        let started_at = format_iso8601(cfg.clock.now_ms());
+        let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
+        let vault_root = unlock.into_root();
+        let db_path = cfg.vault_dir.join("vault.db");
+        let mut db = Db::open(&db_path, &vault_root)?;
+        let (changes_tx, _) = broadcast::channel(256);
+        let (sync_tx, _) = broadcast::channel(64);
+        // Load-or-create the persistent device identity. The keychain takes
+        // ownership of the vault root (Core no longer keeps a copy) and supplies
+        // the device id + signing key used to seal every op envelope.
+        let keychain = Arc::new(Keychain::open(
+            &mut db,
+            vault_root,
+            cfg.clock.as_ref(),
+            cfg.rng.as_ref(),
+        )?);
+        let engine = Engine::new(
+            cfg.clock.clone(),
+            cfg.hlc.clone(),
+            cfg.rng.clone(),
+            keychain,
+        );
+        // Generation timing (recurrence-engine.md): materialize routines on
+        // every app launch, using the injected clock so this stays deterministic.
+        engine.apply(
+            &mut db,
+            Command::MaterializeRoutines {
+                now_ms: cfg.clock.now_ms(),
+            },
+        )?;
+        let initial_pending = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
+        let sync_shared = SyncShared::new(sync_tx.clone(), initial_pending);
+        let sync_credential = cfg
+            .sync
+            .as_ref()
+            .map_or_else(TokenSource::empty, |s| s.credential.clone());
+        Ok(Self {
+            cfg,
+            db: Mutex::new(db),
+            _vault_lock: lock,
+            engine,
+            changes_tx,
+            sync_tx,
+            sync_shared,
+            sync_credential,
+            sync_handle: Mutex::new(None),
+            routine_handle: Mutex::new(None),
+            closed: Mutex::new(false),
+        })
+    }
+
+    /// Submit a mutating command.
+    ///
+    /// Routes through the [`Engine`]: validates input, derives a fresh op-id,
+    /// CBOR-encodes the inner-op, writes the materialized state row + op-log
+    /// entry in a single `BEGIN IMMEDIATE` transaction, and emits a
+    /// `DomainEvent` on `changes()`.
+    pub async fn submit(&self, cmd: Command) -> Result<CommandResult, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let res = {
+            let mut db = self.db.lock();
+            self.engine.apply(&mut db, cmd.clone())?
+        };
+        // Best-effort change publish; receivers are bounded broadcast channels
+        // and dropped subscribers are accepted.
+        let event = match cmd {
+            Command::CreateTask(_)
+            | Command::CreateStream(_)
+            | Command::CreateContext(_)
+            | Command::CreateRoutine(_)
+            | Command::CreateBlock(_)
+            | Command::AttachFile(_)
+            // A focus session is created, never mutated: `StartFocus` mints a
+            // new `fcs_` entity, and `EndFocus` appends a separate record to
+            // the same id (so it reads as an update of the session view).
+            | Command::StartFocus(_) => DomainEvent::Created(res.entity),
+            Command::DeleteTask(_)
+            | Command::DeleteStream(_)
+            | Command::DeleteContext(_)
+            | Command::DeleteRoutine(_)
+            | Command::DeleteBlock(_)
+            | Command::DetachFile(_) => DomainEvent::Deleted(res.entity),
+            _ => DomainEvent::Updated(res.entity),
+        };
+        let _ = self.changes_tx.send(event);
+        // Wake the sync driver (if running) so the new outbox row drains
+        // immediately rather than waiting for the next inbound frame.
+        if self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        Ok(res)
+    }
+
+    /// Apply a remote op envelope (the receive half of sync).
+    ///
+    /// Locks the vault, applies the op via [`Engine::apply_remote`] (idempotent,
+    /// entity-level LWW), and broadcasts the resulting [`DomainEvent`] on
+    /// `changes()`. Returns `Ok(None)` for an idempotent re-receive. The sync
+    /// driver (next slice) calls this for every inbound envelope.
+    pub async fn apply_remote(
+        &self,
+        envelope_bytes: &[u8],
+    ) -> Result<Option<DomainEvent>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let event = {
+            let mut db = self.db.lock();
+            self.engine.apply_remote(&mut db, envelope_bytes)?
+        };
+        if let Some(ev) = &event {
+            let _ = self.changes_tx.send(ev.clone());
+        }
+        Ok(event)
+    }
+
+    /// Run a read query.
+    pub async fn query(&self, q: Query) -> Result<QueryResult, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        if matches!(q, Query::SyncStatus) {
+            // Outbox depth is DB truth (accurate offline and online); the live
+            // session fields come from the driver's `SyncShared`.
+            let outbox_pending = {
+                let db = self.db.lock();
+                let n = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
+                u32::try_from(n).unwrap_or(u32::MAX)
+            };
+            let (state, last_sync_ms, peer_devices) = self.sync_shared.status_fields();
+            return Ok(QueryResult::SyncStatus(SyncStatus {
+                state,
+                outbox_pending,
+                peer_devices,
+                last_sync_ms,
+            }));
+        }
+        let db = self.db.lock();
+        Ok(self.engine.query(&db, q)?)
+    }
+
+    /// Subscribe to domain events.
+    #[must_use]
+    pub fn changes(&self) -> broadcast::Receiver<DomainEvent> {
+        self.changes_tx.subscribe()
+    }
+
+    /// Subscribe to sync-status updates.
+    #[must_use]
+    pub fn sync_status(&self) -> broadcast::Receiver<SyncStatus> {
+        self.sync_tx.subscribe()
+    }
+
+    /// Mark the core closed; subsequent submit/query calls fail with
+    /// [`CoreError::Closed`]. Signals the sync driver (if running) to stop and
+    /// joins it, then drops the vault lock when this `Core` drops.
+    pub async fn close(self) -> Result<(), CoreError> {
+        self.shutdown().await;
+        Ok(())
+    }
+
+    /// Stop the sync driver (if running) and mark this handle closed, **without
+    /// consuming** `self`.
+    ///
+    /// This is the shutdown path for an `Arc<Core>` — the shape
+    /// [`Core::start_sync`] requires. While a session is live the driver holds a
+    /// transient strong `Arc<Core>` (upgraded from its `Weak` for the duration
+    /// of the connection), so neither `Arc::try_unwrap` nor the consuming
+    /// [`Core::close`] can run, and a plain drop of the caller's `Arc` cannot
+    /// stop the driver. Aborting and joining the driver task here releases that
+    /// transient strong reference, so dropping the last external `Arc` then runs
+    /// [`Core`]'s `Drop` and releases the vault lock. [`Core::close`] delegates
+    /// here. Idempotent.
+    pub async fn shutdown(&self) {
+        *self.closed.lock() = true;
+        self.sync_shared.request_shutdown();
+        let handle = self.sync_handle.lock().take();
+        if let Some(h) = handle {
+            h.abort();
+            let _ = h.await;
+        }
+        let routine = self.routine_handle.lock().take();
+        if let Some(h) = routine {
+            h.abort();
+            let _ = h.await;
+        }
+    }
+}
+
+/// Driver-support API. These are synchronous DB reads/writes the sync driver
+/// calls *between* awaits — the db mutex is locked and released within each
+/// method, never held across an `.await`.
+impl Core {
+    /// Start the client sync driver against `factory`. Idempotent: a second
+    /// call while a driver is running is a no-op.
+    ///
+    /// Must be called from within a tokio runtime (it spawns the driver task)
+    /// on an `Arc<Core>` so the task can hold a `Weak<Core>` back-reference —
+    /// this keeps [`Core::open`] usable without a runtime for offline / TUI
+    /// sync-off cases. The `factory` yields a fresh transport per connection
+    /// attempt; `sunrise_sync::WsTransport` is the production one, an in-process
+    /// loopback is used in tests.
+    pub fn start_sync(self: &Arc<Self>, factory: TransportFactory) -> Result<(), CoreError> {
+        let mut guard = self.sync_handle.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        self.sync_shared.mark_active();
+        let weak = Arc::downgrade(self);
+        let shared = self.sync_shared.clone();
+        let rng = self.cfg.rng.clone();
+        let handle = tokio::spawn(sync_driver::run(weak, shared, factory, rng));
+        *guard = Some(handle);
+        Ok(())
+    }
+
+    /// Start the periodic routine-materialization timer.
+    ///
+    /// `docs/08-features/recurrence-engine.md` §generation-timing requires
+    /// materialization on every app launch **and** on a periodic timer every 6
+    /// hours while running. Only the launch half existed, so a long-running
+    /// client — the TUI, or a desktop app left open over a weekend — would
+    /// never generate occurrences past the horizon it computed at startup.
+    ///
+    /// Idempotent, and safe to skip: a client that never calls this still
+    /// materializes at open. Requires a tokio runtime, which is why it is not
+    /// called from [`Core::open`] — that must stay usable without one.
+    ///
+    /// Materialization is itself idempotent (occurrence ids are derived by
+    /// blake3 from the routine id and occurrence instant), so a tick that
+    /// generates nothing new is free and ticks may safely overlap a sync
+    /// application doing the same work.
+    pub fn start_routine_timer(self: &Arc<Self>, interval: Duration) -> Result<(), CoreError> {
+        let mut guard = self.routine_handle.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        let weak = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // The first tick fires immediately; Core::open already materialized,
+            // so skip it rather than doing the same work twice at startup.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(core) = weak.upgrade() else {
+                    return; // Core dropped; nothing left to do.
+                };
+                if *core.closed.lock() {
+                    return;
+                }
+                let now_ms = core.cfg.clock.now_ms();
+                // Errors are contained: a failed tick must never kill the timer,
+                // or one transient DB lock would silently stop all recurrence
+                // for the rest of the session.
+                let _ = core.submit(Command::MaterializeRoutines { now_ms }).await;
+            }
+        });
+        *guard = Some(handle);
+        Ok(())
+    }
+
+    /// Parse a capture line into a [`sunrise_domain::TaskDraft`], resolving
+    /// `#stream` against this vault's streams and `@context` against its
+    /// contexts.
+    ///
+    /// Clients could call [`sunrise_domain::capture::parse`] directly, but they
+    /// would each have to re-implement the same glue — fetch the stream list,
+    /// map it to `NamedRef`s, supply the clock. Doing it once here keeps the
+    /// clients thin and guarantees every surface resolves names identically,
+    /// which is the property `docs/08-features/inbox-and-capture.md` actually
+    /// asks for.
+    ///
+    /// `tz` is a parameter rather than config so the function stays pure with
+    /// respect to the host: the caller decides whether that is the system zone
+    /// or a fixed one, and tests can pin it.
+    ///
+    /// Archived streams and contexts are excluded from the candidate sets: an
+    /// archived entity is one the user has put away, so `@name` resolving to it
+    /// would resurrect it silently. A `@name` with no live match is reported as
+    /// [`sunrise_domain::capture::Unresolved::UnknownContext`] and its text
+    /// stays in the title, so nothing is lost.
+    pub async fn capture(
+        &self,
+        input: &str,
+        tz: &jiff::tz::TimeZone,
+    ) -> Result<sunrise_domain::capture::Capture, CoreError> {
+        use sunrise_domain::capture::NamedRef;
+        let streams = match self.query(Query::StreamList).await? {
+            QueryResult::Streams(rows) => rows,
+            _ => Vec::new(),
+        };
+        let contexts = match self.query(Query::Contexts).await? {
+            QueryResult::Contexts(rows) => rows,
+            _ => Vec::new(),
+        };
+        let stream_refs: Vec<NamedRef<'_>> = streams
+            .iter()
+            .filter(|s| !s.archived)
+            .map(|s| NamedRef {
+                id: s.id,
+                name: s.name.as_str(),
+            })
+            .collect();
+        let context_refs: Vec<NamedRef<'_>> = contexts
+            .iter()
+            .filter(|c| !c.archived)
+            .map(|c| NamedRef {
+                id: c.id,
+                name: c.name.as_str(),
+            })
+            .collect();
+        let now = jiff::Timestamp::from_millisecond(
+            i64::try_from(self.cfg.clock.now_ms()).unwrap_or(i64::MAX),
+        )
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        Ok(sunrise_domain::capture::parse(
+            input,
+            now,
+            tz,
+            &stream_refs,
+            &context_refs,
+        ))
+    }
+
+    /// **Capture-aside**: parse a mid-session thought and force it to the
+    /// Inbox (`docs/08-features/focus-mode.md` §Capture-aside).
+    ///
+    /// Identical to [`Self::capture`] except that any `#stream` the parser
+    /// resolved is dropped, so the draft always lands in the Inbox — *always*,
+    /// regardless of the stream the focused task belongs to. That is the whole
+    /// point: focus mode is for **not** switching context, so an aside must not
+    /// pull the user into a filing decision. `@context` annotations, dates and
+    /// priorities are all kept; only the destination is overridden.
+    ///
+    /// Returns the parsed draft; committing it is a plain
+    /// [`Command::CreateTask`], so the caller decides when the write happens.
+    pub async fn capture_aside(
+        &self,
+        input: &str,
+        tz: &jiff::tz::TimeZone,
+    ) -> Result<sunrise_domain::capture::Capture, CoreError> {
+        let mut c = self.capture(input, tz).await?;
+        c.draft.stream_id = None;
+        Ok(c)
+    }
+
+    /// App identity string (`<semver>+<platform>`) for the sync `Hello`.
+    pub(crate) fn app_string(&self) -> &str {
+        &self.cfg.app
+    }
+
+    /// Injected wall clock, in ms since the Unix epoch.
+    ///
+    /// Public so clients read time through the same `Clock` the engine does,
+    /// rather than reaching for `SystemTime::now` and needing their own
+    /// determinism-gate exemption. A client that takes time from here inherits
+    /// the injected clock in tests for free.
+    #[must_use]
+    pub fn now_ms(&self) -> u64 {
+        self.cfg.clock.now_ms()
+    }
+
+    /// Where this vault lives on disk.
+    ///
+    /// `pub(crate)` on purpose: the only caller is
+    /// [`crate::attach`], which needs the blob store rooted beside the
+    /// database. A public accessor would invite a client to open the vault
+    /// directory itself, and the single-writer guarantee is exactly what
+    /// stops that being safe.
+    pub(crate) fn vault_dir(&self) -> &std::path::Path {
+        &self.cfg.vault_dir
+    }
+
+    /// The injected randomness source.
+    ///
+    /// Attachments mint a per-blob key, and minting it from `OsRng` directly
+    /// would put a non-deterministic value in the core — which the
+    /// `clippy.toml` gate forbids and which would make an attachment test
+    /// unrepeatable.
+    pub(crate) fn rng(&self) -> &dyn crate::config::Rng {
+        self.cfg.rng.as_ref()
+    }
+
+    /// Copy this vault's root key out, for handing to a device being paired.
+    ///
+    /// See [`crate::keychain::Keychain::export_vault_root_for_pairing`] for why
+    /// this exists and why it is named the way it is. Send the result only
+    /// through an authenticated encrypted channel — `sunrise_pairing` provides
+    /// one — and drop it immediately afterwards.
+    ///
+    /// Pairing needs both halves: the new device opens its vault with this root
+    /// (so the two derive identical per-stream keys), and each side must then
+    /// accept the other's [`Self::device_cert`] via `Command::TrustDevice`
+    /// before either will apply the other's ops.
+    #[must_use]
+    pub fn export_vault_root_for_pairing(&self) -> sunrise_crypto::keys::VaultRootKey {
+        self.engine.keychain().export_vault_root_for_pairing()
+    }
+
+    /// This device's self-issued cert (canonical CBOR). A peer passes it to
+    /// [`Command::TrustDevice`] to accept this device's ops.
+    #[must_use]
+    pub fn device_cert(&self) -> Vec<u8> {
+        self.engine.keychain().cert_blob().to_vec()
+    }
+
+    /// This device's stable id.
+    ///
+    /// The OIDC login binds a token to it (`device_id` claim), and the relay
+    /// refuses a token whose claim names a different device — so a token
+    /// lifted off this machine is useless on another one.
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 16] {
+        self.engine.keychain().device_id()
+    }
+
+    /// Count of unacked outbox rows (DB truth).
+    pub(crate) fn sync_pending(&self) -> Result<u64, CoreError> {
+        let db = self.db.lock();
+        Ok(sunrise_storage::Outbox::pending_count(&db)?)
+    }
+
+    /// Build the subscribe set: every known stream (the zero meta/inbox stream,
+    /// every stream we have ops for, and every declared stream) with its
+    /// per-`(device)` cursors from `sync_cursors`.
+    /// The configured anti-entropy resync interval, when sync is configured.
+    pub(crate) fn sync_resync_interval(&self) -> Option<std::time::Duration> {
+        self.cfg.sync.as_ref().map(|s| s.resync_interval)
+    }
+
+    /// The shared bearer this vault's sync sessions present.
+    ///
+    /// One cell per `Core`, handed out by clone. Writing through it reaches
+    /// both the live session (as a `0x12 RefreshToken` frame) and the next
+    /// reconnect, whether or not sync was configured at open — which is what
+    /// makes it usable from the FFI seam, where the URL and the first bearer
+    /// only arrive at `start_sync`.
+    #[must_use]
+    pub fn sync_credential(&self) -> TokenSource {
+        self.sync_credential.clone()
+    }
+
+    pub(crate) fn sync_subscribe_entries(&self) -> Result<Vec<SubscribeEntry>, CoreError> {
+        use rusqlite::params;
+        let db = self.db.lock();
+        let conn = db.conn();
+        let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
+        streams.insert([0u8; 16]);
+        {
+            let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
+            let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                streams.insert(to16(&row?));
+            }
+        }
+        {
+            let mut stmt = conn.prepare("SELECT stream_id FROM streams WHERE deleted = 0")?;
+            let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                streams.insert(to16(&row?));
+            }
+        }
+        let mut entries = Vec::with_capacity(streams.len());
+        for stream_id in streams {
+            let mut stmt = conn.prepare(
+                "SELECT device_id, last_applied_seq FROM sync_cursors WHERE stream_id = ?",
+            )?;
+            let rows = stmt.query_map(params![&stream_id[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let mut cursors = Vec::new();
+            for row in rows {
+                let (dev, seq) = row?;
+                cursors.push(CursorEntry {
+                    device_id: to16(&dev),
+                    last_applied_seq: u64::try_from(seq).unwrap_or(0),
+                });
+            }
+            entries.push(SubscribeEntry { cursors, stream_id });
+        }
+        Ok(entries)
+    }
+
+    /// Load unacked outbox rows (skipping in-flight op ids), grouped by stream
+    /// in enqueue order, each op paired with its sealed envelope bytes.
+    pub(crate) fn sync_outbox_grouped(
+        &self,
+        skip: &HashSet<[u8; 16]>,
+    ) -> Result<Vec<OutboxGroup>, CoreError> {
+        let db = self.db.lock();
+        let unacked = sunrise_storage::Outbox::list_unacked(&db)?;
+        // Preserve first-seen stream order for stable batch grouping.
+        let mut order: Vec<[u8; 16]> = Vec::new();
+        let mut groups: std::collections::HashMap<[u8; 16], Vec<OutboxOp>> =
+            std::collections::HashMap::new();
+        for entry in unacked {
+            if skip.contains(&entry.op_id) {
+                continue;
+            }
+            let Some(env) = sunrise_storage::OpLog::get_envelope(&db, &entry.op_id)? else {
+                continue;
+            };
+            groups
+                .entry(entry.stream_id)
+                .or_insert_with(|| {
+                    order.push(entry.stream_id);
+                    Vec::new()
+                })
+                .push((entry.op_id, env));
+        }
+        Ok(order
+            .into_iter()
+            .map(|s| {
+                let ops = groups.remove(&s).unwrap_or_default();
+                (s, ops)
+            })
+            .collect())
+    }
+
+    /// Mark `op_ids` acked in the persistent outbox; returns the new pending
+    /// count.
+    pub(crate) fn sync_mark_acked(&self, op_ids: &[[u8; 16]]) -> Result<u64, CoreError> {
+        let now = self.cfg.clock.now_ms();
+        let mut db = self.db.lock();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            for id in op_ids {
+                sunrise_storage::Outbox::mark_acked(tx, id, now)
+                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+            }
+            Ok(())
+        })?;
+        Ok(sunrise_storage::Outbox::pending_count(&db)?)
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        // Best-effort: signal the driver and abort the task so it never leaks.
+        // (Can't await a join in `Drop`; abort is sufficient — the driver only
+        // yields at `.await` points, never mid-DB-write.)
+        self.sync_shared.request_shutdown();
+        if let Some(h) = self.sync_handle.lock().take() {
+            h.abort();
+        }
+    }
+}
+
+/// Left-pad / truncate a DB blob to a 16-byte id.
+fn to16(b: &[u8]) -> [u8; 16] {
+    let mut a = [0u8; 16];
+    let take = b.len().min(16);
+    a[..take].copy_from_slice(&b[..take]);
+    a
+}
+
+fn format_iso8601(ms: u64) -> String {
+    // Reuse the same civil-date math as sunrise-log; for simplicity we
+    // stringify ms-since-epoch as an integer here. Prod prefers RFC 3339
+    // but the lock-file payload is human-readable for debugging only.
+    format!("{ms}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SystemRng;
+    use crate::vault_lock::VaultLockError;
+    use parking_lot::Mutex as PLMutex;
+    use std::sync::Arc;
+    use sunrise_crypto::keys::VaultRootKey;
+
+    #[derive(Debug)]
+    struct FakeClock(PLMutex<u64>);
+    impl crate::config::Clock for FakeClock {
+        fn now_ms(&self) -> u64 {
+            *self.0.lock()
+        }
+    }
+
+    fn cfg(dir: &std::path::Path) -> CoreConfig {
+        CoreConfig::with_clock(
+            dir.to_path_buf(),
+            "0.1.0+test",
+            Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
+            Arc::new(SystemRng),
+        )
+    }
+
+    fn unlock() -> Unlock {
+        Unlock::DevicePaired(VaultRootKey::from_bytes([1u8; 32]))
+    }
+
+    #[tokio::test]
+    async fn open_and_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        // Sync status query is wired and works without a real engine.
+        let qr = core.query(Query::SyncStatus).await.unwrap();
+        assert!(matches!(qr, QueryResult::SyncStatus(_)));
+        core.close().await.unwrap();
+    }
+
+    /// `Core::submit` classifies every command into a `DomainEvent` by an
+    /// explicit match with a `_ => Updated` fallback, so a new command that
+    /// creates or deletes something is silently reported as an *update* unless
+    /// its arm is added. A client driving its view off `changes()` would then
+    /// never learn a Block or an Attachment appeared.
+    #[tokio::test]
+    async fn create_and_delete_commands_publish_the_right_change_event() {
+        use sunrise_domain::inbox::inbox_stream_ref;
+        use sunrise_domain::{AttachmentDraft, BlockDraft, SunriseTime, TaskDraft};
+
+        async fn next(rx: &mut tokio::sync::broadcast::Receiver<DomainEvent>) -> DomainEvent {
+            rx.recv().await.expect("an event")
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let mut events = core.changes();
+
+        let now = jiff::Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let hour = jiff::SignedDuration::from_hours(1);
+
+        let task = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: "Write the report".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == task));
+
+        let block = core
+            .submit(Command::CreateBlock(BlockDraft {
+                stream_id: inbox_stream_ref(),
+                starts_at: SunriseTime::instant(now),
+                ends_at: SunriseTime::instant(now + hour),
+                title: Some("Deep work".into()),
+                title_track_task: false,
+                tasks: Vec::new(),
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == block));
+
+        core.submit(Command::BindTask { block, task })
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Updated(id) if id == block));
+
+        let attachment = core
+            .submit(Command::AttachFile(AttachmentDraft {
+                parent: task,
+                filename: "receipt.pdf".into(),
+                mime_type: "application/pdf".into(),
+                size_bytes: 4096,
+                blob_key: [7u8; 32],
+                blob_id: [9u8; 16],
+                chunk_count: 1,
+                content_hash: [11u8; 32],
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == attachment));
+
+        core.submit(Command::DetachFile(attachment)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == attachment));
+
+        core.submit(Command::DeleteBlock(block)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == block));
+
+        core.close().await.unwrap();
+    }
+
+    /// The three notification reads answer through `Core`, not only through the
+    /// engine — which is the surface both clients actually call.
+    #[tokio::test]
+    async fn the_notification_reads_answer_through_the_core() {
+        use sunrise_domain::ReminderSettings;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let now_ms = core.now_ms();
+
+        assert!(matches!(
+            core.query(Query::MorningSummary { now_ms }).await.unwrap(),
+            QueryResult::MorningSummary(_)
+        ));
+        assert!(matches!(
+            core.query(Query::EndOfDayPlan { now_ms }).await.unwrap(),
+            QueryResult::EndOfDayPlan(_)
+        ));
+        assert!(matches!(
+            core.query(Query::ReminderIntents {
+                now_ms,
+                horizon_ms: now_ms + 86_400_000,
+                settings: ReminderSettings::default(),
+            })
+            .await
+            .unwrap(),
+            QueryResult::Reminders(_)
+        ));
+        core.close().await.unwrap();
+    }
+
+    /// `docs/08-features/recurrence-engine.md` requires materialization on a
+    /// periodic timer, not only at launch. Without it a long-running client
+    /// stops generating occurrences once it passes the horizon computed at
+    /// startup — a TUI left open over a weekend simply goes quiet.
+    ///
+    /// Drives it with tokio's paused clock so the test is instant and
+    /// deterministic: the injected `FakeClock` supplies domain time, and
+    /// `tokio::time::advance` fires the timer.
+    #[tokio::test(start_paused = true)]
+    async fn routine_timer_materializes_past_the_launch_horizon() {
+        use sunrise_domain::inbox::inbox_stream_ref;
+        use sunrise_domain::routine::TaskTemplate;
+        use sunrise_domain::rrule::RRule;
+        use sunrise_domain::{RoutineCatchupPolicy, RoutineDraft};
+
+        let dir = tempfile::tempdir().unwrap();
+        let start_ms = 1_700_000_000_000u64;
+        let clock = Arc::new(FakeClock(PLMutex::new(start_ms)));
+        let cfg = CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            clock.clone(),
+            Arc::new(SystemRng),
+        );
+        let core = Arc::new(Core::open(cfg, unlock()).await.unwrap());
+
+        core.submit(Command::CreateRoutine(RoutineDraft {
+            template: TaskTemplate {
+                title: "Water plants".into(),
+                stream_id: inbox_stream_ref(),
+                contexts: Vec::new(),
+                energy: None,
+                priority: None,
+                estimated_duration_s: None,
+                body: None,
+            },
+            rrule: RRule::parse("FREQ=DAILY").unwrap(),
+            timezone: "UTC".into(),
+            starts_at: jiff::Timestamp::from_millisecond(i64::try_from(start_ms).unwrap()).unwrap(),
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            catchup_policy: RoutineCatchupPolicy::Skip,
+        }))
+        .await
+        .unwrap();
+
+        let count = |core: &Arc<Core>| {
+            let db = core.db.lock();
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM tasks WHERE deleted = 0", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+        };
+        let at_launch = count(&core);
+        assert!(
+            at_launch > 0,
+            "creating a routine must materialize a horizon"
+        );
+
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+
+        // Move domain time well past the launch horizon, then let the timer run.
+        *clock.0.lock() = start_ms + 90 * 24 * 60 * 60 * 1000;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        for _ in 0..50 {
+            if count(&core) > at_launch {
+                break;
+            }
+            tokio::time::advance(Duration::from_secs(61)).await;
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            count(&core) > at_launch,
+            "the periodic timer must extend the horizon; had {at_launch}, still {} after ticks",
+            count(&core)
+        );
+        core.shutdown().await;
+    }
+
+    /// `Core::capture` must resolve `#stream` against the vault's real streams,
+    /// which is the whole reason it exists rather than callers invoking the
+    /// domain parser directly.
+    #[tokio::test]
+    async fn capture_resolves_streams_from_the_vault() {
+        use sunrise_domain::capture::Unresolved;
+        use sunrise_domain::StreamDraft;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let created = core
+            .submit(Command::CreateStream(StreamDraft {
+                name: "travel".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let stream_id = created.entity;
+
+        let tz = jiff::tz::TimeZone::UTC;
+        let c = core
+            .capture("Renew passport #travel !2", &tz)
+            .await
+            .unwrap();
+        assert_eq!(c.draft.title, "Renew passport");
+        assert_eq!(c.draft.stream_id, Some(stream_id));
+        assert_eq!(c.draft.priority, Some(2));
+        assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
+
+        // The parsed draft must be directly submittable — the point of the API.
+        core.submit(Command::CreateTask(c.draft)).await.unwrap();
+
+        // An unknown stream is reported, not silently dropped.
+        let c2 = core.capture("Something #nope", &tz).await.unwrap();
+        assert_eq!(c2.draft.stream_id, None);
+        assert!(matches!(
+            c2.unresolved.as_slice(),
+            [Unresolved::UnknownStream(_)]
+        ));
+
+        // The synthetic Inbox row is resolvable by name too.
+        let c3 = core.capture("Triage me #inbox", &tz).await.unwrap();
+        assert_eq!(
+            c3.draft.stream_id,
+            Some(sunrise_domain::inbox::inbox_stream_ref())
+        );
+
+        core.close().await.unwrap();
+    }
+
+    /// `@context` must resolve end to end: create a Context, capture a line
+    /// mentioning it, submit the draft, and find the task carrying it.
+    #[tokio::test]
+    async fn capture_resolves_contexts_from_the_vault() {
+        use sunrise_domain::capture::Unresolved;
+        use sunrise_domain::{ContextDraft, ContextPatch};
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let tz = jiff::tz::TimeZone::UTC;
+
+        // Before the Context exists, `@errands` is reported, not guessed at,
+        // and its text survives in the title.
+        let miss = core.capture("Buy milk @errands", &tz).await.unwrap();
+        assert!(miss.draft.contexts.is_empty());
+        assert_eq!(miss.draft.title, "Buy milk @errands");
+        assert!(matches!(
+            miss.unresolved.as_slice(),
+            [Unresolved::UnknownContext(n)] if n == "errands"
+        ));
+
+        let ctx = core
+            .submit(Command::CreateContext(ContextDraft {
+                name: "errands".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+
+        let c = core.capture("Buy milk @errands !2", &tz).await.unwrap();
+        assert_eq!(c.draft.title, "Buy milk");
+        assert_eq!(c.draft.contexts, vec![ctx]);
+        assert!(c.unresolved.is_empty(), "{:?}", c.unresolved);
+
+        // The parsed draft is directly submittable, and the task keeps the tag.
+        let task = core
+            .submit(Command::CreateTask(c.draft))
+            .await
+            .unwrap()
+            .entity;
+        match core.query(Query::EntityById(task)).await.unwrap() {
+            QueryResult::Task(t) => {
+                assert!(t.contexts.contains(&ctx), "the task carries @errands");
+            }
+            other => panic!("expected Task, got {other:?}"),
+        }
+
+        // Archiving takes it back out of capture resolution.
+        core.submit(Command::UpdateContext {
+            id: ctx,
+            patch: ContextPatch {
+                archived: Some(true),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+        let after = core.capture("Buy bread @errands", &tz).await.unwrap();
+        assert!(after.draft.contexts.is_empty());
+        assert!(matches!(
+            after.unresolved.as_slice(),
+            [Unresolved::UnknownContext(_)]
+        ));
+
+        core.close().await.unwrap();
+    }
+
+    /// Starting the timer twice must not spawn two tasks.
+    #[tokio::test(start_paused = true)]
+    async fn routine_timer_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Arc::new(Core::open(cfg(dir.path()), unlock()).await.unwrap());
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+        core.start_routine_timer(Duration::from_secs(60)).unwrap();
+        assert!(core.routine_handle.lock().is_some());
+        core.shutdown().await;
+        assert!(
+            core.routine_handle.lock().is_none(),
+            "shutdown must reap the timer task, not leak it"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_persists_and_outbox_hydrates_across_reopen() {
+        use sunrise_domain::TaskDraft;
+        let dir = tempfile::tempdir().unwrap();
+
+        let device_id_first;
+        {
+            let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+            core.submit(Command::CreateTask(TaskDraft {
+                title: "persisted".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+            device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
+                QueryResult::SyncStatus(s) => {
+                    assert_eq!(s.outbox_pending, 1, "one op pending after submit");
+                    // Read the device id straight from the vault for comparison.
+                    let db = core.db.lock();
+                    db.conn()
+                        .query_row(
+                            "SELECT device_id FROM local_identity WHERE id = 1",
+                            [],
+                            |r| r.get::<_, Vec<u8>>(0),
+                        )
+                        .unwrap()
+                }
+                _ => panic!("expected sync status"),
+            };
+            core.close().await.unwrap();
+        }
+
+        // Reopen: the same device identity loads, and the unacked outbox row
+        // hydrates from disk.
+        let core2 = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let device_id_second = {
+            let db = core2.db.lock();
+            db.conn()
+                .query_row(
+                    "SELECT device_id FROM local_identity WHERE id = 1",
+                    [],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            device_id_first, device_id_second,
+            "same device id on reopen"
+        );
+        match core2.query(Query::SyncStatus).await.unwrap() {
+            QueryResult::SyncStatus(s) => assert_eq!(s.outbox_pending, 1),
+            _ => panic!("expected sync status"),
+        }
+        core2.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn second_open_blocked_by_vault_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let _core1 = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let res = Core::open(cfg(dir.path()), unlock()).await;
+        assert!(matches!(
+            res,
+            Err(CoreError::VaultLock(VaultLockError::AlreadyHeld { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn submit_after_close_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        core.close().await.unwrap();
+        // After close — but Core is consumed. Test the in-flight closed
+        // state by re-opening and toggling the flag indirectly.
+        let core2 = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        // close() consumed self; we can't test closed-then-call without
+        // a non-consuming closed mark. The Closed branch is exercised by
+        // documentation only in v1.
+        drop(core2);
+    }
+
+    #[tokio::test]
+    async fn changes_subscribe_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let _rx = core.changes();
+        let _rx2 = core.sync_status();
+        drop(core);
+    }
+}

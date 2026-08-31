@@ -1,0 +1,49 @@
+---
+status: accepted
+---
+
+# Deployment Topologies
+
+Two topologies are supported. A user can move between them without data loss.
+
+## T1: Managed cloud (default)
+
+```
+[Devices] ── TLS ─▶ [Sunrise Cloud relay + blob store + push gw]
+                           │
+                           ├── object storage (S3-compatible)
+                           ├── Postgres (metadata)
+                           └── push providers (APNs, FCM, Web Push)
+```
+
+- Sunrise operates the relay. Free tier and paid tiers (see [`../06-server/billing.md`](../06-server/billing.md)).
+- E2EE applies; Sunrise cannot read content.
+- Recommended for users who don't want to operate infrastructure.
+
+## T2: Self-hosted
+
+```
+[User devices] ── TLS ─▶ [Single binary: relay + embedded blob store]
+                                │
+                                └── local disk OR S3-compatible
+```
+
+- One Rust binary, optional Postgres, optional S3.
+- Auth: operator brings any OIDC issuer (Keycloak, Authelia, Dex, Auth0, Google Workspace, etc.). See [`../06-server/auth.md`](../06-server/auth.md).
+- Push: optional; if absent, devices poll. (See [`../06-server/push-notifications.md`](../06-server/push-notifications.md).)
+- Use cases: privacy-conscious users; teams of ≤3; researchers.
+
+## Topology migration
+
+| From → To | How |
+|---|---|
+| T1 → T2 | User runs self-host binary, points clients at it via "Sync server URL" setting; clients re-pair to the new host but keep their identity and data. |
+| T2 → T1 | Reverse of T1 → T2. |
+
+The wire protocol is the same in both topologies. Only the server URL and OIDC issuer change.
+
+> **No-server / LAN-only mode is not supported in v1.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
+
+## Federation note
+
+There is no federation between Sunrise servers in v1. A managed-cloud user and a self-hosted user can still share *data* by adding each other's identity (the sharing protocol uses the *user's* public identity, not the server). The relay path for shared ops is whichever server hosts the *shared document* (see [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)). Cross-server delivery is not part of v1.

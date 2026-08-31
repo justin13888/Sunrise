@@ -5,6 +5,21 @@ export default defineConfig({
         globals: true,
         environment: "node",
         include: ["**/*.test.ts", "**/*.spec.ts"],
+        // legacy/ holds the v0 prototype; preserved for reference, not built or
+        // tested. crates/ is Rust; node_modules is third-party. .claude/ holds
+        // transient agent worktrees (full repo copies). See docs/README.md for
+        // context on why apps/{api,app}, packages/{gcal,models} were moved
+        // under legacy/.
+        exclude: [
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/coverage/**",
+            "legacy/**",
+            "crates/**",
+            "target/**",
+            ".claude/**",
+        ],
         coverage: {
             provider: "v8",
             reporter: ["text", "json", "html"],
@@ -22,8 +37,10 @@ export default defineConfig({
                 "**/*.d.ts",
                 "**/*.config.*",
                 "**/coverage/**",
-                // Legacy demo/CLI code - public API is tested via index.test.ts
-                "packages/gcal/src/index.ts",
+                "legacy/**",
+                "crates/**",
+                "target/**",
+                ".claude/**",
             ],
         },
     },

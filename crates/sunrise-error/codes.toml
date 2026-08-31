@@ -1,0 +1,302 @@
+# Sunrise error code registry — single source of truth.
+#
+# Per docs/10-cross-cutting/error-handling.md §registry, this manifest is
+# authoritative; the Rust enum at crates/sunrise-error/src/codes.rs and the
+# TypeScript enum at packages/sunrise-error-ts/src/codes.ts are GENERATED
+# mirrors of this file. Hand-editing the generated files is a CI failure.
+#
+# Until the codegen build script lands (target: Phase 17), the Rust enum is
+# kept in sync manually; the keep-in-sync test in tests/ catches drift.
+#
+# Rules:
+#  - Codes are stable across versions.
+#  - Codes can be ADDED (at minor-version boundaries); never repurposed,
+#    never renamed.
+#  - Numeric ids are monotonically increasing and never re-used.
+
+[[code]]
+id = 1
+name = "INTERNAL_UNKNOWN_CODE"
+kind = "internal"
+retryable = false
+since = "v1"
+docs = "Reserved for older clients receiving a code they don't recognize."
+
+# --- Validation -----------------------------------------------------------
+
+[[code]]
+id = 100
+name = "VALIDATION_INVALID_TITLE"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 101
+name = "VALIDATION_DUE_BEFORE_SCHEDULED"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 102
+name = "VALIDATION_PAYLOAD_TOO_LARGE"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/02-domain/tasks.md: Task envelope ≤ 1.25 MiB."
+
+[[code]]
+id = 103
+name = "VALIDATION_BLOCKED_BY_CYCLE"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 104
+name = "VALIDATION_FIELD"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Generic validation failure with structured diagnostic."
+
+# --- Auth -----------------------------------------------------------------
+
+[[code]]
+id = 200
+name = "AUTH_TOKEN_INVALID"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 201
+name = "AUTH_TOKEN_EXPIRED"
+kind = "transient"
+retryable = true
+since = "v1"
+
+[[code]]
+id = 202
+name = "AUTH_DEVICE_REVOKED"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 203
+name = "AUTH_QUOTA_EXCEEDED"
+kind = "transient"
+retryable = true
+since = "v1"
+
+# --- Storage --------------------------------------------------------------
+
+[[code]]
+id = 300
+name = "STORAGE_QUOTA_EXCEEDED"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 301
+name = "STORAGE_VAULT_LOCKED"
+kind = "transient"
+retryable = true
+since = "v1"
+docs = "Per docs/01-architecture/shared-core.md: the vault is already open, either by another process holding the OS lock on core.lock or by another Core in this process."
+
+[[code]]
+id = 302
+name = "STORAGE_V_TOO_NEW"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 303
+name = "STORAGE_V_TOO_OLD"
+kind = "user"
+retryable = false
+since = "v1"
+
+# --- Crypto ---------------------------------------------------------------
+
+[[code]]
+id = 400
+name = "CRYPTO_DECRYPT_FAILED"
+kind = "internal"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 401
+name = "CRYPTO_RECOVERY_BLOB_INVALID"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 402
+name = "CRYPTO_AAD_MISMATCH"
+kind = "internal"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 403
+name = "CRYPTO_NON_CANONICAL_CBOR"
+kind = "internal"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 404
+name = "CRYPTO_SIG_VERIFY_FAILED"
+kind = "internal"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 405
+name = "CRYPTO_SUITE_MISMATCH"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+# --- Sync / wire ---------------------------------------------------------
+
+[[code]]
+id = 500
+name = "SYNC_PROTOCOL_VERSION_MISMATCH"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 501
+name = "SYNC_TAMPER_DETECTED"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 502
+name = "SYNC_NETWORK_UNAVAILABLE"
+kind = "transient"
+retryable = true
+since = "v1"
+
+[[code]]
+id = 503
+name = "SYNC_BATCH_TOO_LARGE"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 504
+name = "SYNC_OP_INVALID"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 505
+name = "SYNC_STREAM_NOT_FOUND"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 506
+name = "PROTOCOL_BAD_MAGIC"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 507
+name = "PROTOCOL_FRAME_TOO_LARGE"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 508
+name = "PROTOCOL_DECOMPRESS_BOMB"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 509
+name = "DOC_SCHEMA_TOO_OLD"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 510
+name = "DOC_SCHEMA_TOO_NEW"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 511
+name = "CAPABILITY_REQUIRED_MISSING"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 512
+name = "SYNC_CURSOR_GAP"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "The relay evicted retained frames past the subscriber's cursor, so the gap cannot be served from the ring. Recovery is a resync from a peer, not a retry of the same subscribe."
+
+# --- Relay ----------------------------------------------------------------
+
+[[code]]
+id = 600
+name = "RELAY_GRANT_REVOKED"
+kind = "permanent"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 601
+name = "RELAY_STORAGE_UNAVAILABLE"
+kind = "transient"
+retryable = true
+since = "v1"
+
+# --- Integrations ---------------------------------------------------------
+
+[[code]]
+id = 700
+name = "INTEGRATION_REAUTH_REQUIRED"
+kind = "user"
+retryable = false
+since = "v1"
+
+[[code]]
+id = 701
+name = "INTEGRATION_RATE_LIMITED"
+kind = "transient"
+retryable = true
+since = "v1"
+
+# --- Internal -------------------------------------------------------------
+
+[[code]]
+id = 900
+name = "FATAL_INTERNAL"
+kind = "internal"
+retryable = false
+since = "v1"

@@ -1,0 +1,64 @@
+[package]
+name = "sunrise-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise sync relay server (REST + WebSocket, OIDC, self-host SQLite)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sunrise-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+ed25519-dalek = { workspace = true }
+futures-util = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-rustls = { workspace = true }
+# `client-legacy` is the pooled hyper 1.x client the JWKS fetcher drives.
+hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
+jiff = { workspace = true }
+jsonwebtoken = { workspace = true }
+parking_lot = { workspace = true }
+rusqlite = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Already in the lock via `uniffi_macros`, so wiring it in here adds no new
+# dependency to the tree — see docs/01-architecture/dependencies.md.
+toml = { workspace = true }
+tracing = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-log = { workspace = true }
+sunrise-onboarding = { workspace = true }
+sunrise-storage = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
+
+[dev-dependencies]
+ciborium = { workspace = true }
+futures-util = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-tungstenite = { workspace = true }

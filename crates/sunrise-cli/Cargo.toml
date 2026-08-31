@@ -1,0 +1,41 @@
+[package]
+name = "sunrise-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise command-line client — headless capture, triage, focus, review, export, and sync"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sunrise"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+jiff = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
+sunrise-auth = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-integrations = { workspace = true }
+sunrise-log = { workspace = true }
+sunrise-sync = { workspace = true, features = ["ws"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
+sunrise-server = { workspace = true }
+axum = { workspace = true }
+tempfile = "3"

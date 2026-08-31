@@ -1,0 +1,28 @@
+[package]
+name = "sunrise-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise domain entities, validation, RRULE, and routine generation"
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+thiserror = { workspace = true }
+jiff = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }

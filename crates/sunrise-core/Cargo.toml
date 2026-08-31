@@ -1,0 +1,43 @@
+[package]
+name = "sunrise-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sunrise core API: single-writer vault, command/query, sync state"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+ciborium = { workspace = true }
+fs4 = { workspace = true }
+jiff = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
+sunrise-cbor = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-error = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-storage = { workspace = true }
+sunrise-sync = { workspace = true }
+sunrise-wire-protocol = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# `test-util` gives paused-clock tests (`start_paused`, `time::advance`) so the
+# routine timer can be driven deterministically instead of slept through.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = "3"

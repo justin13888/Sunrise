@@ -1,0 +1,40 @@
+# Clippy deny list enforcing the determinism rules from
+# docs/01-architecture/shared-core.md §determinism-rules.
+# Direct calls to non-deterministic stdlib surfaces are forbidden in core
+# crates; use the injected `Clock`, `Rng`, `Storage` handles instead.
+
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "use CoreConfig::clock" },
+    { path = "std::time::Instant::now", reason = "use CoreConfig::clock" },
+    { path = "std::process::exit", reason = "return Err(CoreError::Fatal) instead" },
+    # These bind only inside the crates that declare `rand` directly (crypto,
+    # core, e2e, bench, onboarding, crypto-test-vectors) — which are the ones
+    # that matter. Elsewhere clippy has no `rand` in scope to resolve the path
+    # against, and without `allow-invalid` it emits
+    #
+    #     warning: `rand::random` does not refer to an existing function
+    #
+    # once per compilation unit, in *every* crate that does not depend on
+    # `rand`. That warning is a config diagnostic, not a lint, so `-D warnings`
+    # never catches it and it simply accumulates as noise — noise that reads
+    # like the rule is dead. It is not: `allow-invalid` silences the
+    # unresolvable case and leaves the rule binding where `rand` is reachable,
+    # which is verifiable by calling `rand::random()` in `sunrise-crypto` and
+    # watching clippy reject it.
+    #
+    # Path-based matching here is immune to turbofish and aliasing; the
+    # `determinism` CI job greps every crate, including the ones clippy cannot
+    # see. Keep both.
+    { path = "rand::thread_rng", reason = "use CoreConfig::rng", allow-invalid = true },
+    { path = "rand::random", reason = "use CoreConfig::rng", allow-invalid = true },
+]
+
+disallowed-types = [
+    # No entries in v1 — types like `std::sync::Mutex` are still permitted.
+]
+
+
+# Cognitive limits — keep submit/query handlers small.
+cognitive-complexity-threshold = 25
+type-complexity-threshold = 250
+too-many-arguments-threshold = 8

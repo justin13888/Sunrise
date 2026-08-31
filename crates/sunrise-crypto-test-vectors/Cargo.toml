@@ -1,0 +1,18 @@
+[package]
+name = "sunrise-crypto-test-vectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Frozen byte-exact test vectors for the v1 crypto suite"
+
+[lints]
+workspace = true
+
+# Intentionally dependency-free. The vectors are frozen literals; if this
+# crate depended on `sunrise-crypto` it could only ever agree with itself.
+# `sunrise-crypto` dev-depends on this crate and asserts the literals.
+[dependencies]

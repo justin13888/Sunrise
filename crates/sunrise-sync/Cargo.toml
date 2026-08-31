@@ -1,0 +1,29 @@
+[package]
+name = "sunrise-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Sync session states, backoff, and the transport trait"
+
+[lints]
+workspace = true
+
+[features]
+# Concrete WebSocket client transport (`WsTransport`). Off by default so the
+# transport surface stays runtime-agnostic; the clients / e2e opt in.
+ws = ["dep:tokio-tungstenite", "dep:futures-util"]
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

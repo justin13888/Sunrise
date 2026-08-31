@@ -1,0 +1,318 @@
+name: Release
+
+# Tag-driven. Pushing an annotated `vX.Y.Z` (or a `-rc.N` / `-beta.N`
+# prerelease) is the whole trigger; nothing here runs on a branch push, and
+# there is no manual dispatch, so a release cannot happen without a tag object
+# in the repository to point at afterwards.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+# Default-deny. Every job re-grants exactly what it needs and nothing else, so
+# a compromised build step in the binaries matrix cannot push a package.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release in flight: a half-published tag (binaries up, image
+  # missing) is worse than a duplicate run.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Refuse early, before anything is built or pushed.
+  # ---------------------------------------------------------------------
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      # Shallow: this job reads Cargo.toml and the ref name, nothing else.
+      - uses: actions/checkout@v4
+      - name: Tag must match the workspace version
+        id: check
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          # `[workspace.package] version` is inherited by every crate, so this
+          # single value is what ends up in `--version` output, in the server's
+          # `server_app_v` handshake field, and in the image tag. A tag that
+          # disagrees with it ships artifacts that misreport themselves, and
+          # the mistake is invisible until someone reads a bug report.
+          manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+                     | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          echo "tag=$tag manifest=$manifest"
+          if [ "${version%%-*}" != "$manifest" ]; then
+            echo "::error::tag $tag implies version ${version%%-*}, but Cargo.toml says $manifest"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Anything with a hyphen after the patch number is a prerelease:
+          # v1.2.3-rc.1, v1.2.3-beta.2. Semver says so and so does GitHub's UI.
+          case "$version" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # ---------------------------------------------------------------------
+  # Release binaries: `sunrise-server` and the `sunrise` CLI.
+  # ---------------------------------------------------------------------
+  binaries:
+    name: Binaries (${{ matrix.target }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          # macos-26 is the arm64 Tahoe image; see the macos-app job in ci.yml.
+          - os: macos-26
+            target: aarch64-apple-darwin
+        # Not built here, and deliberately:
+        #
+        #   aarch64-unknown-linux-gnu — needs `ubuntu-24.04-arm`, which is free
+        #     only for public repositories; this repo is private, so the runner
+        #     class is a billing decision rather than a code one. Cross-
+        #     compiling instead is not a one-liner: rusqlite's bundled SQLCipher
+        #     is C, so it would need a cross gcc plus an arm64 libssl sysroot.
+        #   x86_64-apple-darwin  — no Intel Mac target is claimed by the app.
+        #   *-pc-windows-msvc    — no Windows client exists yet.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      # rusqlite's `bundled-sqlcipher` compiles SQLCipher from source and, on
+      # Linux, links `-lcrypto` against the system OpenSSL. The ubuntu image
+      # already carries libssl-dev; installing it anyway costs nothing and
+      # means the job does not silently depend on that staying true.
+      - name: OpenSSL headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libssl-dev
+      # `--locked` because a release built from a re-resolved dependency set is
+      # not the thing that was tested. `--bins` over both packages picks up
+      # exactly `sunrise-server` and `sunrise` — `sunrise-bench`'s `baseline`
+      # bin is not in the package selection.
+      - name: Build
+        run: |
+          cargo build --locked --release --target ${{ matrix.target }} \
+            -p sunrise-server -p sunrise-cli --bins
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          name="sunrise-${VERSION}-${TARGET}"
+          mkdir -p "dist/${name}"
+          cp "target/${TARGET}/release/sunrise-server" "dist/${name}/"
+          cp "target/${TARGET}/release/sunrise"        "dist/${name}/"
+          cp LICENSE README.md                          "dist/${name}/"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          rm -rf "dist/${name}"
+          # Emitted per-target and concatenated by the release job. Doing it
+          # here means the checksum is computed on the machine that produced
+          # the file, not after an artifact round-trip.
+          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          cat "dist/${name}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # Container image → GHCR.
+  #
+  # No stored registry credentials anywhere in this job. Two ephemeral
+  # identities do the work:
+  #
+  #   * `GITHUB_TOKEN` with `packages: write` authenticates the registry push.
+  #     It is minted for this run, scoped to this repository, and expires when
+  #     the job ends. GHCR has no separate OIDC "trusted publishing" exchange
+  #     the way PyPI and crates.io do — the workflow token *is* the ephemeral
+  #     credential, which is why there is no `secrets.GHCR_PAT` here and must
+  #     never be one.
+  #   * The Actions OIDC token (`id-token: write`) signs a build-provenance
+  #     attestation through Sigstore, keylessly. That is the part a consumer
+  #     can verify: `gh attestation verify oci://… --repo justin13888/Sunrise`
+  #     proves this image came from this workflow at this commit.
+  # ---------------------------------------------------------------------
+  image:
+    name: Image (linux/amd64)
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Lowercases the owner for us — GHCR rejects an uppercase path segment
+      # and `github.repository_owner` preserves the account's display casing.
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/sunrise-server
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.prerelease == 'false' }}
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # linux/amd64 only. Adding linux/arm64 means either QEMU emulation —
+          # which for a workspace that compiles SQLCipher, ring and zstd from C
+          # would run 30-60 minutes and is the kind of slow-and-flaky a release
+          # path should not have — or a native `ubuntu-24.04-arm` leg
+          # pushing by digest with a `buildx imagetools create` merge job. The
+          # second is the right answer; it is a billing decision (see the
+          # binaries matrix), not a technical one, so it is left as a note
+          # rather than a job that cannot get a runner.
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.verify.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/sunrise-server
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # ---------------------------------------------------------------------
+  # The GitHub Release itself, last: it is the thing humans see, so it should
+  # not exist until the artifacts it advertises do.
+  # ---------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: [verify, binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # Previous release tag, by tag topology rather than by date: `git
+          # describe` walks the parent chain, so a tag pushed out of order does
+          # not produce a changelog spanning the wrong range.
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          {
+            if [ -n "$prev" ]; then
+              echo "Changes since [\`${prev}\`](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${prev})."
+            else
+              echo "First tagged release."
+            fi
+            echo
+            .github/scripts/changelog.sh "$prev" "$TAG"
+            echo '## Artifacts'
+            echo
+            echo '### Container image'
+            echo
+            echo '```'
+            echo "docker pull ghcr.io/${OWNER,,}/sunrise-server:${VERSION}"
+            echo '```'
+            echo
+            echo 'Built by this workflow with no stored registry credentials. Verify its provenance:'
+            echo
+            echo '```'
+            echo "gh attestation verify oci://ghcr.io/${OWNER,,}/sunrise-server:${VERSION} --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+            echo
+            echo 'See [docs/06-server/self-hosting.md](https://github.com/'"${GITHUB_REPOSITORY}"'/blob/'"${TAG}"'/docs/06-server/self-hosting.md) for configuration.'
+            echo
+            echo '### Checksums'
+            echo
+            echo '```'
+            cat dist/*.sha256
+            echo '```'
+          } > NOTES.md
+          cat NOTES.md
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # `generate_release_notes` appends GitHub's own PR/contributor list
+          # underneath the body above, which is where the links this workflow
+          # cannot derive from a commit log come from. `.github/release.yml`
+          # controls how it groups them.
+          gh api "repos/${GITHUB_REPOSITORY}/releases" \
+            -f tag_name="$TAG" \
+            -f name="$TAG" \
+            -f "body=$(cat NOTES.md)" \
+            -F generate_release_notes=true \
+            -F prerelease="$PRERELEASE" \
+            -F draft=false
+          gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+
+# ---------------------------------------------------------------------------
+# Publish targets deliberately absent
+#
+# Issue #17 names crates.io, npm and Google Play as targets "as they come
+# online". None is online:
+#
+#   crates.io  — every crate sets `publish = false` in [workspace.package].
+#                When that changes, crates.io Trusted Publishing is a real
+#                OIDC exchange (`id-token: write` → short-lived token), so it
+#                should be wired that way and not with a stored API token.
+#   npm        — the root package.json is `private: true` and no workspace
+#                package is published.
+#   Google Play — there is no Android app.
+#
+# Adding a stub job for any of them would be a job that fails on the first tag,
+# so they are recorded here instead.
+# ---------------------------------------------------------------------------

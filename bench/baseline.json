@@ -1,0 +1,20 @@
+{
+    "_comment": "Per-platform performance baselines. PR check fails if a metric regresses by >5%. Nightly job auto-updates this file. Per docs/10-cross-cutting/testing.md §release-gates.",
+    "platforms": {
+        "darwin-aarch64": {
+            "fts_query_10k_p99_ms": null,
+            "query_today_10k_tasks_p99_ms": null,
+            "submit_create_task_p50_us": null,
+            "submit_create_task_p99_us": null,
+            "ws_handshake_p99_ms": null
+        },
+        "linux-x86_64": {
+            "fts_query_10k_p99_ms": 1.25,
+            "query_today_10k_tasks_p99_ms": 40.1,
+            "submit_create_task_p50_us": 1532.03,
+            "submit_create_task_p99_us": 2259.87,
+            "ws_handshake_p99_ms": 0.1
+        }
+    },
+    "schema_version": 1
+}

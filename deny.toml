@@ -1,0 +1,70 @@
+# cargo-deny configuration.
+# Run with: cargo deny check
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+ignore = [
+    # The `im` / `bitmaps` / `sized-chunks` / `atomic-polyfill` suppressions that
+    # used to live here reached us only through `loro`. `sunrise-crdt` and the
+    # `loro` dependency were deleted by ADR-0014, `cargo deny check advisories`
+    # stopped reporting all four, and the entries were removed rather than left
+    # behind as stale suppressions.
+    #
+    # RUSTSEC-2024-0436 (`paste`) was the same shape and left with `ratatui`
+    # when ADR-0019 replaced the terminal client. There are no advisory
+    # suppressions in this workspace.
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[licenses]
+version = 2
+# Sunrise's own crates are AGPL-3.0-only and `publish = false`. Skipping
+# workspace-private crates is deliberate: adding "AGPL-3.0-only" to `allow`
+# below would also silently permit a *third-party* AGPL dependency, which is
+# not something we want to accept without a decision.
+private = { ignore = true }
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    # Mozilla's CA bundle, reached through tokio-tungstenite (ADR-0005).
+    # A data licence, permissive, and AGPL-compatible. Permanent.
+    "CDLA-Permissive-2.0",
+    # --- currently unmatched, kept deliberately ---
+    #
+    # These five are *policy statements* about licences we accept, not
+    # suppressions of a problem: nothing in the tree carries them today, so
+    # cargo-deny reports each as a `license-not-encountered` warning and still
+    # exits 0. Removing them would only mean the next dependency that carries
+    # one reds the build instead of being accepted, which is the wrong default
+    # for five permissive, AGPL-compatible licences.
+    #
+    # `MPL-2.0` left with `loro` (ADR-0014, via `im`). `Zlib` and `BSL-1.0`
+    # left with `ratatui`/`image` (ADR-0019). `OpenSSL` and `Unicode-DFS-2016`
+    # have been unmatched since before either.
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

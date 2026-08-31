@@ -1,17 +1,27 @@
+# Git hooks via lefthook. All command logic lives in the justfile;
+# these hooks only call `just <recipe>`. Run `just --list` to see them.
 pre-commit:
   parallel: true
   commands:
-    check:
-      run: bun run check:fix
-    typecheck:
-      run: bun run typecheck
+    biome-check:
+      run: just fix
+    bun-typecheck:
+      run: just typecheck
+    rust-fmt:
+      glob: "*.rs"
+      run: just rust-fmt-check
+    rust-clippy:
+      glob: "*.rs"
+      run: just rust-clippy
 
 pre-push:
   parallel: true
   commands:
     biome-ci:
-      run: bun run ci
-    typecheck:
-      run: bun run typecheck
-    test:
-      run: bun run test:run
+      run: just ci
+    bun-typecheck:
+      run: just typecheck
+    bun-test:
+      run: just test
+    rust-test:
+      run: just rust-test

@@ -1,0 +1,43 @@
+[package]
+name = "sunrise-core-bindings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "UniFFI seam over sunrise-core; consumed by the macOS app (Swift) and, later, Android (Kotlin)."
+
+[lib]
+# `staticlib` is what the xcframework links; `cdylib` is what
+# `uniffi-bindgen generate --library` reads the metadata out of; `rlib` is what
+# this crate's own tests link. All three are load-bearing.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# `default-features = false` is not optional. The default features pull
+# `uniffi_bindgen -> cargo_metadata -> cargo-platform 0.3.3`, which requires
+# rustc 1.91 and hard-fails this workspace's 1.88 pin. The generator lives in
+# the workspace-excluded `tools/uniffi-bindgen` instead.
+uniffi = { version = "0.32.0", default-features = false, features = ["tokio"] }
+base64 = { workspace = true }
+jiff = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
+sunrise-auth = { workspace = true }
+sunrise-client-core = { workspace = true }
+sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-integrations = { workspace = true }
+sunrise-pairing = { workspace = true }
+sunrise-sync = { workspace = true, features = ["ws"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

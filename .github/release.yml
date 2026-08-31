@@ -1,0 +1,28 @@
+# Grouping for GitHub's auto-generated release notes, which `release.yml`
+# appends beneath the Conventional-Commit changelog that
+# `.github/scripts/changelog.sh` renders.
+#
+# The two are complementary, not redundant: the changelog above covers every
+# commit including direct pushes to a branch, while this section covers merged
+# pull requests and credits their authors. Categories are keyed on the labels
+# this repository actually uses — `enhancement`, `documentation` — rather than
+# on a label taxonomy nobody applies.
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+  categories:
+    - title: Enhancements
+      labels:
+        - enhancement
+        - epic
+    - title: Documentation
+      labels:
+        - documentation
+    # Catch-all. Without it, a PR carrying none of the labels above is dropped
+    # from the notes entirely.
+    - title: Other changes
+      labels:
+        - "*"

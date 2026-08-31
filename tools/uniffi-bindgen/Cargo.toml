@@ -1,0 +1,28 @@
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Quarantined UniFFI binding generator. Build tool only; never shipped."
+
+# NOT a member of the root workspace, and that is the whole point.
+#
+# `uniffi`'s default features pull `uniffi_bindgen -> cargo_metadata ->
+# cargo-platform`, and cargo-platform 0.3.3 requires rustc 1.91. The workspace
+# is pinned to 1.88 (`rust-toolchain.toml`), so a plain `uniffi = "0.32"`
+# anywhere inside it is a hard build failure:
+#
+#     error: rustc 1.88.0 is not supported by the following package:
+#       cargo-platform@0.3.3 requires rustc 1.91
+#
+# Two independent fixes, both applied: `sunrise-core-bindings` takes uniffi
+# with `default-features = false` (no bindgen, no cargo_metadata at all), and
+# the generator itself lives here, out of the workspace, with its own lockfile
+# pinning cargo-platform to 0.3.2 — whose MSRV is exactly 1.88.
+#
+# That pin is load-bearing. `cargo update` in this directory will re-break it;
+# use `cargo build --locked`, which is what `just macos-xcframework` does.
+[workspace]
+
+[dependencies]
+uniffi = { version = "0.32.0", features = ["cli"] }
