@@ -571,7 +571,61 @@ async fn handle_inbound(
         }
         MsgKind::RefreshToken => handle_refresh(&payload, sink, auth, state).await,
         MsgKind::Close => false,
-        _ => true, // ignore anything else in v1 self-host
+
+        // Everything below is a kind the protocol DEFINES and this server does
+        // not implement. The arm used to be `_ => true`, which dropped them in
+        // silence: a client could send a well-formed `SnapshotReq` and get
+        // nothing back at all, not even an error, and no amount of reading the
+        // protocol document would tell it why. Refusing with a typed code is
+        // the difference between "not supported here" and "your frame vanished".
+        //
+        // Listed explicitly rather than behind a wildcard so that adding a kind
+        // to `MsgKind` fails to compile until someone decides which side of this
+        // line it belongs on. That is the whole point of the exhaustive match.
+        MsgKind::SnapshotReq
+        | MsgKind::SnapshotResp
+        | MsgKind::PresenceBeacon
+        | MsgKind::PresenceUpdate => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "this relay does not implement snapshot or presence frames",
+            )
+            .await;
+            true
+        }
+
+        // A second Hello mid-session. Negotiation happens once, before the
+        // loop; re-negotiating would mean re-deriving the channel namespace on
+        // a live session, which is exactly the account-takeover shape
+        // `SessionAuth::is_same_identity` exists to refuse on the refresh path.
+        MsgKind::Hello => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "Hello is only valid once, before the session begins",
+            )
+            .await;
+            false
+        }
+
+        // Server-to-client kinds. A client sending one is confused about which
+        // end it is, and the session is not worth continuing on that basis.
+        MsgKind::HelloAck
+        | MsgKind::Ack
+        | MsgKind::Nack
+        | MsgKind::StreamUpdate
+        | MsgKind::Pong
+        | MsgKind::Error
+        | MsgKind::RefreshTokenAck => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "server-to-client frame kind received from a client",
+            )
+            .await;
+            false
+        }
     }
 }
 

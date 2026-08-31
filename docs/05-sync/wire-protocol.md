@@ -46,9 +46,21 @@ The rule covers **all** payloads including the handshake. `Hello` and
 `HelloAck` are the exception in the tree, not in the contract: the server reads
 `Hello` with `ciborium::de::from_reader` and writes `HelloAck` with
 `ciborium::ser::into_writer` (`crates/sunrise-server/src/ws.rs`), bypassing the
-canonicality check every other payload gets. That is a defect ADR-0023 names
-explicitly, and it is fixed in place regardless of the transport move; nothing
-in this document should be read as licensing it.
+canonicality check every other payload gets.
+
+**Closing it is a wire-format change, and it is deliberately deferred to
+[ADR-0023](../11-adr/0023-sse-sync-transport.md)'s transport move.** `Hello`'s
+field declaration order is not canonical order — `trace` (5 bytes) and
+`capabilities` (12) both sort ahead of `client_app_v` — so routing it through
+`encode_canonical` produces *different bytes* for the same value, which would
+invalidate the frozen `tests/fixtures/hello/*.cbor` vectors and desynchronise
+any client still encoding in declaration order. Since ADR-0023 moves the
+handshake off the frame protocol and into a typed `POST /sync/session`, paying
+for a format break on a frame that is being retired buys nothing. The nine
+payloads that *do* use the canonical codec are now guarded by
+`declaration_order_is_canonical_order`, which asserts declaration order already
+equals canonical order — and which fails when pointed at `Hello`, which is how
+the claim above was checked rather than assumed.
 
 ### Frame size limit
 
@@ -141,11 +153,11 @@ load-bearing for anyone reading the code:
 |---|---|
 | `Hello`, `HelloAck`, `OpBatch`, `Ack`, `Subscribe`, `Ping`, `Pong`, `Error`, `Close`, `RefreshToken`, `RefreshTokenAck` | Handled end to end. |
 | `StreamUpdate` (`0x07`) | Carries `CaughtUpPayload`, **not** an `OpBatch`. The relay forwards live op frames **verbatim**, so they keep `msg_kind = OpBatch`; `StreamUpdate` is otherwise unused, which is why `CaughtUp` reuses it rather than claiming a fresh discriminator in a fully-allocated kind space. |
-| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection today goes out as `Error`. |
-| `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | Defined and **silently dropped**. `handle_inbound` in `crates/sunrise-server/src/ws.rs` ends in `_ => true`, so a client sending one gets no answer, no error, and no log line — indistinguishable from a lost frame. |
+| `Nack` (`0x05`) | Defined, typed (`NackPayload`), and **never sent by the server**. Every server-side rejection goes out as `Error`. Switching is blocked on the *client*, not the server: `sync_driver` treats `Nack` as non-fatal and ignores it, so emitting one today would convert a rejection the client currently surfaces into one it silently discards. The client half lands with ADR-0023's transport move. |
+| `SnapshotReq` / `SnapshotResp` (`0x08`/`0x09`), `PresenceBeacon` / `PresenceUpdate` (`0x0A`/`0x0B`) | Defined, unimplemented, and now **refused with a typed `Error`** rather than dropped. Dispatch is exhaustive over `MsgKind`: a client-sent server-to-client kind ends the session, and a defined-but-unserved kind is answered with `SYNC_OP_INVALID`. Adding a kind to `MsgKind` no longer compiles until it is placed on one side of that line. |
 
-**The contract, which the catch-all does not implement.** Dispatch MUST be
-exhaustive over `MsgKind`. A kind the server has decided not to serve MUST be
+**The contract, now implemented.** Dispatch MUST be exhaustive over
+`MsgKind`. A kind the server has decided not to serve MUST be
 refused with a typed `Error` naming it — silence is the one response a client
 cannot act on, because it is also what a dropped frame, an overloaded relay and
 a hung task look like. ADR-0023 lists the `_ => true` arm among the five
