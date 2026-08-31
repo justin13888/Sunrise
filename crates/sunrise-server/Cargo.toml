@@ -11,6 +11,14 @@ description = "Sunrise sync relay server (REST + WebSocket, OIDC, self-host SQLi
 
 [lib]
 path = "src/lib.rs"
+# Upstream workaround, not a policy change. kynos 0.1.0's route macros emit a
+# `relative_uri` doc comment whose second paragraph is indented eight spaces
+# (kynos-macros/src/route/uri.rs), which rustdoc reads as an indented CODE
+# block and then tries to compile as Rust -- so every handler carrying a
+# `#[kynos::get]`/`post`/`delete` attribute produces a failing doc test full of
+# prose. This crate has no doc tests of its own (the workspace reports zero),
+# so nothing is lost by opting out until the macro fences that paragraph.
+doctest = false
 
 [[bin]]
 name = "sunrise-server"

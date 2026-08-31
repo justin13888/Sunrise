@@ -27,6 +27,7 @@ use crate::state::ServerState;
 
 pub mod accounts;
 pub mod auth;
+pub mod devices;
 pub mod error;
 pub mod health;
 pub mod meta;
@@ -54,6 +55,12 @@ pub fn router() -> kynos::Router<ServerState> {
         .mount(kynos::routes![health::health])
         .mount(kynos::routes![meta::meta])
         .mount(kynos::routes![accounts::create, accounts::me])
+        .mount(kynos::routes![
+            devices::list,
+            devices::register,
+            devices::revoke,
+            devices::push_tokens
+        ])
 }
 
 #[cfg(test)]
@@ -88,6 +95,9 @@ mod tests {
             "/api/v1/meta",
             "/api/v1/accounts",
             "/api/v1/accounts/me",
+            "/api/v1/devices",
+            "/api/v1/devices/{device_id}",
+            "/api/v1/devices/push-tokens",
         ] {
             assert!(
                 v["paths"].get(path).is_some(),
