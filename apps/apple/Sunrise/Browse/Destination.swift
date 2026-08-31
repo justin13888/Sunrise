@@ -92,12 +92,19 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
 
     /// Whether a new capture lands somewhere this list would show it.
     ///
-    /// A context list is the one place it does not: capture writes to a
-    /// stream, and there is no way to say "give this the context I am looking
-    /// at" without inventing an annotation the shared parser does not have.
+    /// A context list is where it does not: capture writes to a stream, and
+    /// there is no way to say "give this the context I am looking at" without
+    /// inventing an annotation the shared parser does not have.
+    ///
+    /// A *filtered* Today is the same list under a different name — the filter
+    /// is a set of contexts, and a captured line carries none of them, so the
+    /// row would be written and then filtered straight back out. Unfiltered
+    /// Today does accept capture, because ``TaskListModel/create(_:)`` gives
+    /// the line the date that list selects on.
     var acceptsCapture: Bool {
         switch self {
-        case .today, .inbox, .stream: true
+        case let .today(contexts): contexts.isEmpty
+        case .inbox, .stream: true
         case .context, .search: false
         }
     }

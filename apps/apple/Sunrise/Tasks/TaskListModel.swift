@@ -252,10 +252,23 @@ final class TaskListModel {
     /// An explicit `#stream` in the line still wins: the user said where it
     /// goes, and the list they happened to be looking at does not override
     /// what they typed.
+    ///
+    /// Today gets the same treatment for the field *it* filters on. A draft
+    /// carries no stream, so it is written to the Inbox; `Query::Today` returns
+    /// only tasks that carry a date. Without a date supplied here, a line typed
+    /// into the bar at the top of Today was written correctly and then vanished
+    /// off the screen it was typed on — no row, no error, nothing to say where
+    /// it had gone. A list that offers capture has to show what it captured.
     func create(_ draft: TaskDraftIn) async {
         var draft = draft
         if case let .stream(id, _) = kind, draft.streamId == nil {
             draft.streamId = id
+        }
+        // The clock is read here rather than taken from `nowMs`, which is only
+        // refreshed by a query: in a session left open overnight the cached
+        // value would date this capture into yesterday and file it as overdue.
+        if case .today = kind, draft.scheduledAt == nil, draft.dueAt == nil {
+            draft.scheduledAt = .instant(at: Int64(await bridge.nowMs()))
         }
         await run(.createTask(draft: draft))
     }

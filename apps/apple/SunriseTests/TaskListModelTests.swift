@@ -156,6 +156,64 @@ struct TaskListModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// A bare line captured on Today is *on* Today.
+    ///
+    /// It used to not be. A draft carries no stream, so the core files it in
+    /// the Inbox, and `Query::Today` only returns tasks carrying a date — so
+    /// the row was written correctly and then was not on the screen that had
+    /// just accepted it. Nothing said so: no error, no empty-state change,
+    /// no confirmation. The list now supplies the date it selects on.
+    @Test
+    func capturingOnTodayLeavesTheRowOnToday() async throws {
+        let vault = try await TestVault()
+        let model = TaskListModel(bridge: vault.bridge, kind: .todayAll)
+
+        await model.create(draft("Renew passport"))
+
+        #expect(model.tasks.map(\.title) == ["Renew passport"])
+        #expect(model.tasks.first?.scheduledAt != nil, "Today supplied the date")
+        await vault.bridge.shutdown()
+    }
+
+    /// What the user typed still wins. `^next saturday` means next Saturday
+    /// even when it is typed into Today's own bar — the same rule that lets an
+    /// explicit `#stream` override the stream list it was typed into.
+    @Test
+    func capturingOnTodayDoesNotOverrideADateTheLineCarried() async throws {
+        let vault = try await TestVault()
+        let model = TaskListModel(bridge: vault.bridge, kind: .todayAll)
+        let when = Int64(await vault.bridge.nowMs()) + 6 * 24 * 60 * 60 * 1000
+
+        var dated = draft("Book the ferry")
+        dated.scheduledAt = .instant(at: when)
+        await model.create(dated)
+
+        // A week out, so it is not on Today at all — which is the proof the
+        // date was left alone rather than replaced with now.
+        #expect(model.tasks.isEmpty)
+
+        let inbox = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await inbox.refresh()
+        #expect(inbox.tasks.map(\.title) == ["Book the ferry"])
+        await vault.bridge.shutdown()
+    }
+
+    /// Only Today does this. An Inbox capture stays undated, because the Inbox
+    /// shows a task whether or not it carries a date and inventing one would
+    /// put a thought on a day the user never chose.
+    @Test
+    func capturingIntoTheInboxLeavesTheLineUndated() async throws {
+        let vault = try await TestVault()
+        let model = TaskListModel(bridge: vault.bridge, kind: .inbox)
+
+        await model.create(draft("Renew passport"))
+
+        let task = try #require(model.tasks.first)
+        #expect(task.scheduledAt == nil)
+        #expect(task.dueAt == nil)
+        await vault.bridge.shutdown()
+    }
+
     // MARK: - Helpers
 
     private func draft(

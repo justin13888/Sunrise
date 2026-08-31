@@ -213,6 +213,16 @@ struct BrowseModelTests {
         #expect(!TaskListKind.context(id: "ctx_x", name: "errands").acceptsCapture)
     }
 
+    /// A filtered Today is a context list wearing Today's name, and it is
+    /// refused for the same reason: the captured line carries none of the
+    /// contexts the filter names, so the row would be written and filtered
+    /// straight back out — written correctly, and invisible.
+    @Test
+    func aFilteredTodayDoesNotOfferCaptureEither() {
+        #expect(!TaskListKind.today(contexts: ["ctx_errands"]).acceptsCapture)
+        #expect(TaskListKind.today(contexts: []).acceptsCapture)
+    }
+
     private func draft(_ title: String) -> TaskDraftIn {
         TaskDraftIn(
             title: title,
