@@ -216,6 +216,7 @@ targets:
     platform: macOS
     sources:
       - path: SunriseUITests
+      - path: UITestSupport
     dependencies:
       - target: Sunrise
     settings:
@@ -248,6 +249,7 @@ targets:
     platform: iOS
     sources:
       - path: SunriseiOSUITests
+      - path: UITestSupport
     dependencies:
       - target: SunriseiOS
     settings:

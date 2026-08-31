@@ -8,50 +8,22 @@ import XCTest
 /// found a correct-but-unreachable seam four separate times. These tests drive
 /// the real window.
 ///
-/// The app is launched against a scratch vault directory and an in-memory key
-/// store, so nothing here touches the developer's vault or their Keychain.
+/// The launch, the scratch vault and the polling live in
+/// ``SunriseUITestCase``, which the iOS suite shares.
 @MainActor
-final class AppNavigationUITests: XCTestCase {
-    private let app = XCUIApplication()
-    private let scratch = FileManager.default.temporaryDirectory
-        .appending(path: "sunrise-uitests-\(UUID().uuidString)")
-
-    override func setUp() async throws {
-        continueAfterFailure = false
-        app.launchArguments = [
-            "-sunrise-ui-test-vault", scratch.path(percentEncoded: false)
-        ]
-        app.launch()
-    }
-
-    override func tearDown() async throws {
-        app.terminate()
-        try? FileManager.default.removeItem(at: scratch)
-    }
-
+final class AppNavigationUITests: SunriseUITestCase {
     /// First run, then capture, then the row exists. This is the shortest path
     /// that touches the whole stack from a click: SwiftUI → view model →
     /// UniFFI → the Rust core → SQLite → back.
+    ///
+    /// The window opens on Today, and until `TaskListModel.create` began
+    /// giving a bare capture the date Today selects on, this assertion could
+    /// not have held: the row was written to the Inbox and was not on screen.
+    /// Nothing noticed, because this target is skipped in the scheme.
     func testCapturingATaskFromTheWindowPutsItInTheList() throws {
         createVault()
 
-        let field = app.textFields["capture.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the capture field is on screen")
-        field.click()
-        field.typeText("Renew passport !1")
-        // The Add button is disabled until the debounced preview lands, which
-        // is itself a round trip through the core.
-        let add = app.buttons["capture.add"]
-        XCTAssertTrue(
-            waitUntil(timeout: 10) { add.isEnabled },
-            "the capture preview enables Add"
-        )
-        add.click()
-
-        XCTAssertTrue(
-            app.staticTexts["Renew passport"].waitForExistence(timeout: 10),
-            "the captured task appears in the list"
-        )
+        capture("Renew passport !1", landingAs: "Renew passport")
     }
 
     /// Every primary view opens from the sidebar and renders something. Four
@@ -63,7 +35,7 @@ final class AppNavigationUITests: XCTestCase {
         for name in ["inbox", "search", "focus", "routines", "review"] {
             let row = app.descendants(matching: .any)["sidebar.\(name)"]
             XCTAssertTrue(row.waitForExistence(timeout: 10), "\(name) is in the sidebar")
-            row.click()
+            activate(row)
             XCTAssertTrue(
                 waitUntil(timeout: 10) { self.app.windows.firstMatch.exists },
                 "\(name) rendered without taking the window down"
@@ -77,10 +49,10 @@ final class AppNavigationUITests: XCTestCase {
         capture("Renew passport")
         capture("Book the ferry")
 
-        app.descendants(matching: .any)["sidebar.search"].click()
+        activate(app.descendants(matching: .any)["sidebar.search"])
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
-        field.click()
+        activate(field)
         field.typeText("ferry")
 
         XCTAssertTrue(
@@ -100,48 +72,17 @@ final class AppNavigationUITests: XCTestCase {
 
         let add = app.buttons["New stream"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Streams header offers +")
-        add.click()
+        activate(add)
 
         let name = app.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 10))
-        name.click()
+        activate(name)
         name.typeText("Travel")
-        app.buttons["Create"].click()
+        activate(app.buttons["Create"])
 
         XCTAssertTrue(
             app.staticTexts["Travel"].waitForExistence(timeout: 10),
             "the new stream is in the sidebar"
         )
-    }
-
-    // MARK: - Helpers
-
-    private func createVault() {
-        let create = app.buttons["onboarding.create"]
-        if create.waitForExistence(timeout: 15) {
-            create.click()
-        }
-    }
-
-    private func capture(_ title: String) {
-        let field = app.textFields["capture.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
-        field.click()
-        field.typeText(title)
-        let add = app.buttons["capture.add"]
-        XCTAssertTrue(waitUntil(timeout: 10) { add.isEnabled })
-        add.click()
-        XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10))
-    }
-
-    /// Poll rather than sleep: everything here waits on a round trip through
-    /// the core, and a fixed sleep would be either flaky or slow.
-    private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            usleep(100_000)
-        }
-        return condition()
     }
 }

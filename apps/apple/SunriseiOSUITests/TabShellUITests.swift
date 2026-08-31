@@ -13,27 +13,10 @@ import XCTest
 /// refuses until `DevToolsSecurity` is enabled; a simulator runner does not,
 /// so there is nothing to opt into and no reason not to run them.
 ///
-/// The app is launched against a scratch vault directory and an in-memory key
-/// store, so nothing here touches a real vault or Keychain item.
+/// The launch, the scratch vault and the polling live in
+/// ``SunriseUITestCase``, which the macOS suite shares.
 @MainActor
-final class TabShellUITests: XCTestCase {
-    private let app = XCUIApplication()
-    private let scratch = FileManager.default.temporaryDirectory
-        .appending(path: "sunrise-ios-uitests-\(UUID().uuidString)")
-
-    override func setUp() async throws {
-        continueAfterFailure = false
-        app.launchArguments = [
-            "-sunrise-ui-test-vault", scratch.path(percentEncoded: false)
-        ]
-        app.launch()
-    }
-
-    override func tearDown() async throws {
-        app.terminate()
-        try? FileManager.default.removeItem(at: scratch)
-    }
-
+final class TabShellUITests: SunriseUITestCase {
     /// Every tab opens and renders. The macOS twin asserts the same thing
     /// about the sidebar; here the failure it guards against is a `Tab` whose
     /// content was never wired, which looks identical to a working one until
@@ -79,25 +62,5 @@ final class TabShellUITests: XCTestCase {
                 "back returned to Browse"
             )
         }
-    }
-
-    // MARK: - Helpers
-
-    private func createVault() {
-        let create = app.buttons["onboarding.create"]
-        if create.waitForExistence(timeout: 20) {
-            create.tap()
-        }
-    }
-
-    /// Poll rather than sleep: everything here waits on a round trip through
-    /// the core, and a fixed sleep would be either flaky or slow.
-    private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            usleep(100_000)
-        }
-        return condition()
     }
 }
