@@ -29,7 +29,7 @@ struct OnboardingView: View {
                 .font(.largeTitle.weight(.semibold))
             Text(
                 """
-                Your tasks are encrypted on this Mac with a key only you hold. \
+                Your tasks are encrypted on this \(Platform.deviceName) with a key only you hold. \
                 Sunrise stores it in your Keychain — it never leaves the device, \
                 and no server can read your data with or without it.
                 """
@@ -58,7 +58,7 @@ struct OnboardingView: View {
             Divider().frame(maxWidth: 320)
 
             VStack(spacing: 6) {
-                Text("Already using Sunrise on another Mac?")
+                Text("Already using Sunrise on another device?")
                     .font(.callout)
                 Button("Pair with that device") { pairing = makePairing() }
                     .controlSize(.large)
@@ -79,8 +79,17 @@ struct OnboardingView: View {
             // `docs/08-features/keyboard.md` §Discoverability. Last on the
             // screen and under a divider: it is an offer, not a step, and a
             // first run must not read as a form to fill in.
+            //
+            // macOS only. It advertises `?` for the cheat sheet and ⌘⇧N for
+            // the global hotkey; a first-run iPhone has neither a keyboard to
+            // press the first with nor a hotkey to register the second, so on
+            // iOS this would be a coachmark for two things that are not there.
+            // The keyboard preferences themselves stay reachable in Settings,
+            // which is right for an iPad with a keyboard attached.
+            #if os(macOS)
             Divider().frame(maxWidth: 320)
             KeyboardTipsCoachmark(tips: tips)
+            #endif
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

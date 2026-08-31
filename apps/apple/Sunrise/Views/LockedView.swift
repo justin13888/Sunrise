@@ -69,7 +69,7 @@ struct LockedView: View {
                 Text(
                     """
                     Pairing brings the key back from a device that still has it. \
-                    The data already on this Mac stays where it is — the key is \
+                    The data already on this \(Platform.deviceName) stays where it is — the key is \
                     the only thing that was missing.
                     """
                 )

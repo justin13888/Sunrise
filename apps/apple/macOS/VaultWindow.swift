@@ -8,21 +8,30 @@ struct VaultWindow: View {
     let session: SessionModel
     let surfaces: AppSurfaces
 
-    @State private var settings = AppSettings()
-    @State private var account = AccountModel()
-    @State private var sync = SyncStatusModel()
-    @State private var browse: BrowseModel
-    @State private var list: TaskListModel
-    @State private var capture: CaptureModel
-    @State private var search: SearchModel
-    @State private var calendar: CalendarModel
-    @State private var focus: FocusModel
-    @State private var routines: RoutineModel
-    @State private var review: ReviewModel
-    @State private var morning: MorningSummaryModel
-    @State private var evening: EndOfDayPlanModel
-    @State private var undo: UndoModel
-    @State private var savedViews = SavedViewsModel()
+    /// Every model this window draws, built once from the bridge.
+    ///
+    /// Shared with the iOS shell — see ``VaultModels``. The fifteen names
+    /// below are unwrapped from it rather than declared here so that the two
+    /// shells cannot drift: adding a model means adding it in one place, and
+    /// both get it.
+    @State private var models: VaultModels
+
+    private var settings: AppSettings { models.settings }
+    private var account: AccountModel { models.account }
+    private var sync: SyncStatusModel { models.sync }
+    private var browse: BrowseModel { models.browse }
+    private var list: TaskListModel { models.list }
+    private var capture: CaptureModel { models.capture }
+    private var search: SearchModel { models.search }
+    private var calendar: CalendarModel { models.calendar }
+    private var focus: FocusModel { models.focus }
+    private var routines: RoutineModel { models.routines }
+    private var review: ReviewModel { models.review }
+    private var morning: MorningSummaryModel { models.morning }
+    private var evening: EndOfDayPlanModel { models.evening }
+    private var undo: UndoModel { models.undo }
+    private var savedViews: SavedViewsModel { models.savedViews }
+
     @State private var savingView = false
     @State private var newViewName = ""
     @State private var selection: Destination? = .list(.todayAll)
@@ -47,17 +56,7 @@ struct VaultWindow: View {
         self.bridge = bridge
         self.session = session
         self.surfaces = surfaces
-        _browse = State(initialValue: BrowseModel(bridge: bridge))
-        _list = State(initialValue: TaskListModel(bridge: bridge))
-        _capture = State(initialValue: CaptureModel(bridge: bridge))
-        _search = State(initialValue: SearchModel(bridge: bridge))
-        _calendar = State(initialValue: CalendarModel(bridge: bridge))
-        _focus = State(initialValue: FocusModel(bridge: bridge))
-        _routines = State(initialValue: RoutineModel(bridge: bridge))
-        _review = State(initialValue: ReviewModel(bridge: bridge))
-        _morning = State(initialValue: MorningSummaryModel(bridge: bridge))
-        _evening = State(initialValue: EndOfDayPlanModel(bridge: bridge))
-        _undo = State(initialValue: UndoModel(bridge: bridge))
+        _models = State(initialValue: VaultModels(bridge: bridge))
     }
 
     var body: some View {

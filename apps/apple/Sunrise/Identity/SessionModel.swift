@@ -40,7 +40,7 @@ final class SessionModel {
                 "Sunrise could not read its key from the Keychain. \(detail)"
             case .keyMissingForExistingVault:
                 """
-                There is a vault on this Mac, but its key is not in this \
+                There is a vault on this device, but its key is not in this \
                 Keychain. Pair with a device that still has it — creating a \
                 new key would leave the existing data unreadable.
                 """

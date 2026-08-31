@@ -78,7 +78,22 @@ struct QuickCaptureView: View {
             return .handled
         }
         #endif
-        .onAppear { focused = true }
+        .task {
+            #if !os(macOS)
+            // A sheet's content appears *before* its presentation finishes,
+            // and a first-responder request made in that window is dropped on
+            // the floor. The symptom is not subtle: you tap Capture, the field
+            // is on screen, and there is no keyboard — so the first thing you
+            // do is tap the field you already asked for. One runloop turn is
+            // enough for the presentation to settle.
+            //
+            // macOS does not need it. There the field lives in an `NSPanel`
+            // that `present()` has already made key, so `onAppear` was always
+            // late enough.
+            try? await Task.sleep(for: .milliseconds(120))
+            #endif
+            focused = true
+        }
     }
 
     /// Commit and stay open, so a burst of three thoughts is three lines rather

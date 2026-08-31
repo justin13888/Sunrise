@@ -6,6 +6,7 @@ included:
   - iOS
   - SunriseTests
   - SunriseUITests
+  - SunriseiOSUITests
 
 excluded:
   - ../../out

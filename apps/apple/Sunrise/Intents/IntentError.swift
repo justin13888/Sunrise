@@ -46,8 +46,8 @@ enum IntentError: Swift.Error, CustomLocalizedStringResourceConvertible, Equatab
             "Sunrise reported an open vault with nothing behind it. Reopen Sunrise and try again."
         case .noVault:
             """
-            Sunrise has no vault on this Mac yet. Open Sunrise once to create or pair one — \
-            an automation will not create it for you.
+            Sunrise has no vault on this device yet. Open Sunrise once to create or pair \
+            one — an automation will not create it for you.
             """
         case let .vaultLocked(summary):
             "Sunrise could not open its vault. \(summary)"

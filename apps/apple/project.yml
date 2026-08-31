@@ -236,6 +236,26 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseTests
         GENERATE_INFOPLIST_FILE: YES
 
+  # The iOS twin of `SunriseUITests`, and — unlike it — actually run.
+  #
+  # A macOS XCUITest drives another process on the developer's machine, which
+  # the system refuses until `DevToolsSecurity` is enabled, so that target is
+  # `skipped: true` in its scheme. A simulator runner has no such requirement:
+  # these run on every `just ios-app`, which means iOS is the platform where a
+  # tap is actually proved to reach the core on every build.
+  SunriseiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: SunriseiOSUITests
+    dependencies:
+      - target: SunriseiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOSUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: SunriseiOS
+
   # The same `SunriseTests/` sources, compiled against the iOS app.
   #
   # One suite, built twice, rather than an iOS suite of its own. What these
@@ -303,3 +323,7 @@ schemes:
       gatherCoverageData: true
       targets:
         - SunriseiOSTests
+        # Not skipped, unlike the macOS UI tests: a simulator runner needs no
+        # change to the machine's security posture, so there is nothing to opt
+        # into.
+        - SunriseiOSUITests

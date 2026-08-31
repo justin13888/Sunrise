@@ -443,9 +443,9 @@ enum PairingUIError: Error, Equatable, LocalizedError {
         case .noSession:
             "This pairing is over. Start it again from the beginning."
         case .noPayload:
-            "Sunrise could not produce a pairing code for this Mac."
+            "Sunrise could not produce a pairing code for this device."
         case .noOpenVault:
-            "There is no open vault on this Mac to share."
+            "There is no open vault on this device to share."
         }
     }
 }

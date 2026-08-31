@@ -128,6 +128,60 @@ extension Platform {
     }
 }
 
+// MARK: - Selectable list rows
+
+extension View {
+    /// Make a tagged `List(selection:)` row respond to a **tap**.
+    ///
+    /// A no-op on macOS, where clicking a tagged row already selects it. On
+    /// iOS it does not: outside edit mode a tagged row is not an activatable
+    /// control, so a sidebar built from `.tag(_:)` draws correctly, highlights
+    /// nothing, and navigates nowhere. Every entry in `BrowseSidebar` — Today,
+    /// the Inbox, every stream and every context — was inert on the phone for
+    /// exactly this reason.
+    ///
+    /// A tap gesture rather than wrapping each row in a `NavigationLink`,
+    /// because those rows carry drop destinations, context menus and
+    /// `onMove`; a link around them changes what the drag system sees, and
+    /// this changes nothing but what a tap does.
+    @ViewBuilder
+    func selectableOnTouch<Value: Hashable>(
+        _ value: Value,
+        selection: Binding<Value?>
+    ) -> some View {
+        #if os(macOS)
+        self
+        #else
+        contentShape(.rect)
+            .onTapGesture { selection.wrappedValue = value }
+        #endif
+    }
+}
+
+// MARK: - Naming the device
+
+extension Platform {
+    /// What to call the device the user is holding, in a sentence.
+    ///
+    /// The vault, the pairing flow and the lock screen all explain themselves
+    /// in terms of *this device* — "there is a vault on this Mac, but its key
+    /// is not in this Keychain". Those sentences were written when there was
+    /// one client, and read as a bug on a phone.
+    ///
+    /// `UIDevice.model` rather than a hardcoded "iPhone": the same binary runs
+    /// on iPad, and a pairing screen that calls an iPad an iPhone is the kind
+    /// of small wrongness that makes someone distrust the much larger claim
+    /// the sentence is making about their keys.
+    @MainActor
+    static var deviceName: String {
+        #if os(macOS)
+        "Mac"
+        #else
+        UIDevice.current.model
+        #endif
+    }
+}
+
 // MARK: - Checklist toggles
 
 #if os(iOS)

@@ -26,6 +26,7 @@ struct BrowseSidebar: View {
                     Label(destination.title, systemImage: destination.symbol)
                         .tag(destination)
                         .accessibilityIdentifier("sidebar.\(destination.title.lowercased())")
+                        .selectableOnTouch(destination, selection: $selection)
                 }
             }
 
@@ -163,6 +164,10 @@ struct BrowseSidebar: View {
                 .font(.caption2)
         }
         .tag(Destination.list(.stream(id: row.id, name: row.name)))
+        .selectableOnTouch(
+            Destination.list(.stream(id: row.id, name: row.name)),
+            selection: $selection
+        )
         // **Task → Stream.** `interaction-patterns.md` §Promote names this
         // gesture beside the `m` key, and it runs the same command the `M`
         // sheet does.
@@ -202,6 +207,10 @@ struct BrowseSidebar: View {
             }
         }
         .tag(Destination.list(.context(id: row.id, name: row.name)))
+        .selectableOnTouch(
+            Destination.list(.context(id: row.id, name: row.name)),
+            selection: $selection
+        )
         // **Task → Context.** Adds rather than replaces: a task has one stream
         // and any number of contexts, so dropping `@home` on it must not take
         // `@errands` away.
