@@ -240,9 +240,13 @@ just macos-uitest         # the XCUITest target, which macos-app does not run
 ```
 
 `just macos-app` is exactly what CI runs on `macos-26`. Note that the UI test
-target is `skipped: true` in the scheme — macOS XCUITest needs
-`sudo DevToolsSecurity -enable` — so `just macos-uitest` is the only thing that
-drives the real window, and it runs on a developer machine only.
+target is `skipped: true` in the `Sunrise` scheme, so `just macos-uitest` — which
+has a scheme of its own, because `-only-testing` cannot select a skipped
+testable — is the only thing that drives the real window, and it runs on a
+developer machine only. It needs **two** one-time grants, not one:
+`sudo DevToolsSecurity -enable`, and then accepting the automation prompt the
+runner raises the first time. Without the second it fails with "Timed out while
+enabling automation mode".
 
 `apple-xcframework` builds the release slices, generates the Swift bindings from
 the built library, and packages the framework the app links. The bindings generator lives

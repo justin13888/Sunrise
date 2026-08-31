@@ -102,10 +102,14 @@ step on every push and PR to `master` and `v1-rewrite`, plus nightly. So a
 Swift-side break is caught.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
-the scheme, because macOS XCUITest needs `sudo DevToolsSecurity -enable`; it is
-compiled but only executed by `just macos-uitest` on a developer machine. That
-target is the one that proves a click reaches the core through the real window,
-so the automated coverage is view-model-level. Worth knowing when reading a
+the `Sunrise` scheme, because a macOS XCUITest takes control of another process
+and the machine has to be told that is allowed; it is compiled on every build
+but only executed by `just macos-uitest`, which has a scheme of its own so that
+the skip can be bypassed, on a developer machine. Two separate grants are
+needed: `sudo DevToolsSecurity -enable`, and accepting the automation prompt the
+runner raises the first time it launches. That target is the one that proves a
+click reaches the core through the real window, so the automated coverage is
+view-model-level. Worth knowing when reading a
 green CI run: it proves the app builds, lints and its models behave — not that
 every screen is still reachable.
 
