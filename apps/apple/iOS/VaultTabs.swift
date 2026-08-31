@@ -62,14 +62,27 @@ struct VaultTabs: View {
             Tab(AppTab.today.title, systemImage: AppTab.today.symbol, value: AppTab.today) {
                 NavigationStack(path: $todayPath) { todayRoot }
             }
+            // Capture belongs on these two for the same reason it is on Today
+            // and Browse, and `openCapture` has always assumed it was there:
+            // a screen with no inline bar is precisely where it opens the
+            // sheet instead. Without the button, that branch — and the whole
+            // sheet with it — was reachable only from a `sunrise://` link.
             Tab(AppTab.calendar.title, systemImage: AppTab.calendar.symbol, value: AppTab.calendar) {
-                NavigationStack { CalendarView(model: models.calendar).navigationTitle("Calendar") }
+                NavigationStack {
+                    CalendarView(model: models.calendar)
+                        .navigationTitle("Calendar")
+                        .toolbar { captureButton }
+                }
             }
             Tab(AppTab.browse.title, systemImage: AppTab.browse.symbol, value: AppTab.browse) {
                 NavigationStack(path: $browsePath) { browseRoot }
             }
             Tab(AppTab.focus.title, systemImage: AppTab.focus.symbol, value: AppTab.focus) {
-                NavigationStack { FocusView(model: models.focus).navigationTitle("Focus") }
+                NavigationStack {
+                    FocusView(model: models.focus)
+                        .navigationTitle("Focus")
+                        .toolbar { captureButton }
+                }
             }
             // The search tab counts toward the bar's capacity even though the
             // system positions it, so there are four tabs above and not five.
@@ -145,6 +158,7 @@ struct VaultTabs: View {
             focus: $pane
         )
         .navigationTitle("Search")
+        .toolbar { captureButton }
     }
 
     /// What a phone's tab bar cannot hold.
