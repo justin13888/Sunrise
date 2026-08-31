@@ -70,6 +70,17 @@ The canonical string is specified in [`docs/06-server/auth.md`](../06-server/aut
 as a byte layout rather than left to the implementation, correcting the gap
 `device_sig.rs` recorded against v1.
 
+### Bodies that are not JSON
+
+A chunk upload is raw ciphertext and has no JSON value to canonicalize. The
+rule generalises rather than needing a second scheme: what is hashed is the
+body's **canonical form**, and for a binary body the bytes already are it —
+there is no key order, whitespace or escaping to normalise away. JSON bodies
+reach the same hash through JCS first.
+
+So a chunk's signature covers those exact bytes, which is the property the blob
+store's own content hashing already asserts from the other direction.
+
 ## Alternatives considered
 
 | Option | Why not |

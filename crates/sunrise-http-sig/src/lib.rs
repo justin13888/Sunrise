@@ -37,6 +37,21 @@
 //! Absence is not a special case, which is what stops a body-stripping attacker
 //! turning a signed `POST` into a signed `GET`.
 //!
+//! # Bodies that are not JSON
+//!
+//! A chunk upload is raw ciphertext, and there is no JSON value to canonicalize.
+//! The rule generalises rather than needing a second scheme: what is hashed is
+//! the body's **canonical form**, and for a binary body the bytes already are
+//! it — there is no ordering, whitespace or escaping to normalise away. So
+//! [`verify_canonical`] takes the bytes directly and JSON bodies reach it
+//! through [`canonical_json`] first.
+//!
+//! This matters for what it does *not* let through. A signature made over a
+//! chunk's bytes covers those exact bytes, so a relay that swapped ciphertext
+//! between two uploads would produce a chunk whose signature no longer checks —
+//! which is the property the blob store's hash verification and this signature
+//! are asserting from two different directions.
+//!
 //! # The rule that makes re-serialisation safe to sign
 //!
 //! A signature over a re-serialisation verifies only if the parse is lossless,
