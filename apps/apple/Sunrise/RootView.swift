@@ -31,7 +31,7 @@ struct RootView: View {
                 LockedView(reason: reason, retry: session.start, session: session)
             case .unlocked:
                 if let bridge = session.bridge {
-                    VaultView(bridge: bridge, session: session, surfaces: surfaces)
+                    VaultShell(bridge: bridge, session: session, surfaces: surfaces)
                         // The menu bar item, the capture panel and the
                         // reminder schedule need the same open vault this
                         // window is using, and this is the first moment there

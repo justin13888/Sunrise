@@ -200,6 +200,47 @@ macos-app: apple-xcframework
       -quiet \
       CODE_SIGNING_ALLOWED=NO
 
+# The simulator this project tests against. Any booted iPhone would do; naming
+# one keeps `just ios-app` reproducible and keeps CI and a laptop on the same
+# device.
+ios_sim := "iPhone 17 Pro"
+
+# Generate the Xcode project, build the iOS app, and run its tests.
+#
+# The tests are `SunriseTests/` — the *same* sources the macOS bundle compiles,
+# built a second time against the iOS app. That is the whole claim this recipe
+# makes: not that the iOS app builds, but that it behaves the way the Mac does
+# everywhere the two share a model.
+[group('ios')]
+ios-app: apple-xcframework
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd apps/apple
+    xcodegen generate --quiet
+    swiftlint lint --strict --quiet --config .swiftlint.yml
+    # Signed, unlike the macOS build, and it has to be. iOS gates the Keychain
+    # on an application-identifier entitlement, which only exists on a signed
+    # binary — with `CODE_SIGNING_ALLOWED=NO` every `SecItemAdd` returns
+    # `errSecMissingEntitlement` and the vault cannot store its root, so the
+    # five Keychain and vault-root tests fail for a reason that has nothing to
+    # do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
+    # enough for the simulator and needs no developer account.
+    xcodebuild test \
+      -project Sunrise.xcodeproj \
+      -scheme SunriseiOS \
+      -destination 'platform=iOS Simulator,name={{ios_sim}}' \
+      -quiet \
+      CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+
+# Both Apple apps, back to back. What CI runs across its two jobs.
+[group('apple')]
+apple-app: macos-app ios-app
+
+# Generate the Xcode project and open it, with the iOS scheme selected
+[group('ios')]
+ios-open: apple-xcframework
+    cd apps/apple && xcodegen generate --quiet && open Sunrise.xcodeproj
+
 # Drive the real window (XCUITest); needs `sudo DevToolsSecurity -enable` once
 [group('macos')]
 macos-uitest: apple-xcframework

@@ -3,6 +3,7 @@
 included:
   - Sunrise
   - macOS
+  - iOS
   - SunriseTests
   - SunriseUITests
 

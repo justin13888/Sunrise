@@ -202,7 +202,11 @@ struct AppSurfacesTests {
         #expect(surfaces.menuBar == nil)
         #expect(surfaces.reminders == nil)
         #expect(surfaces.ical == nil)
+        #if os(macOS)
+        // The hotkey is the one thing `detach` gives back that `attach` does
+        // not rebuild. iOS registers none, so there is nothing to assert.
         #expect(surfaces.hotkeyStatus == .idle)
+        #endif
         await clean(fixture, surfaces)
     }
 

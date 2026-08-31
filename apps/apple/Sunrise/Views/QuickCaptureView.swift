@@ -63,9 +63,21 @@ struct QuickCaptureView: View {
             }
         }
         .padding(16)
+        #if os(macOS)
+        // The panel's own width. On iOS the sheet takes the screen's, and a
+        // fixed 560 would be wider than an iPhone.
         .frame(width: 560)
         .background(.regularMaterial, in: .rect(cornerRadius: 14))
+        // Escape. macOS-only as a *command* — `onExitCommand` does not exist on
+        // iOS — but the key itself still reaches an iPad with a hardware
+        // keyboard, so the binding is kept below rather than dropped.
         .onExitCommand(perform: dismiss)
+        #else
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+        #endif
         .onAppear { focused = true }
     }
 

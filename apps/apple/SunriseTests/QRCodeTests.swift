@@ -58,6 +58,6 @@ struct QRCodeTests {
         let second = try #require(QRCode.image(for: text))
 
         #expect(first.size == second.size)
-        #expect(first.tiffRepresentation == second.tiffRepresentation)
+        #expect(first.pngBytes() == second.pngBytes())
     }
 }

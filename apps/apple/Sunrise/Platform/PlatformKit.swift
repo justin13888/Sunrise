@@ -127,3 +127,56 @@ extension Platform {
         #endif
     }
 }
+
+// MARK: - Checklist toggles
+
+#if os(iOS)
+/// A checklist item's tick, drawn the way iOS draws one.
+///
+/// macOS has `.checkbox` and iOS does not. The default iOS style is a switch,
+/// which is the wrong affordance entirely inside a note: a switch says "this
+/// setting is on", and a checklist item says "this thing is done". Reminders
+/// and Notes both draw a circle that fills, so this does too.
+struct ChecklistToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Image(systemName: configuration.isOn ? "checkmark.circle.fill" : "circle")
+                .imageScale(.large)
+                .foregroundStyle(configuration.isOn ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        // The label is hidden at the call site, so the tick carries the name.
+        .accessibilityLabel(configuration.isOn ? "Done" : "Not done")
+    }
+}
+
+extension ToggleStyle where Self == ChecklistToggleStyle {
+    static var checklist: ChecklistToggleStyle { ChecklistToggleStyle() }
+}
+#endif
+
+// MARK: - Image bytes
+
+extension PlatformImage {
+    /// The image as PNG bytes, or `nil` if it cannot be encoded.
+    ///
+    /// Exists because the two platforms have no common accessor: `UIImage` has
+    /// `pngData()`, and `NSImage` goes the long way round through
+    /// `tiffRepresentation` and an `NSBitmapImageRep`.
+    ///
+    /// Used to assert that the QR renderer is deterministic — the same payload
+    /// must draw the same symbol every call, or the pairing screen repaints
+    /// under a camera mid-scan. That claim matters more on iOS than on macOS,
+    /// since iOS is the side holding the camera.
+    func pngBytes() -> Data? {
+        #if os(macOS)
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+        #else
+        return pngData()
+        #endif
+    }
+}

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Everything the keyboard can put on screen, attached to the window once.
 ///
-/// A modifier rather than five `.sheet`s written into `VaultView`'s body: they
+/// A modifier rather than five `.sheet`s written into the shell's body: they
 /// are one feature, they all read the same selection, and a sheet that lived
 /// inside the list would be a sheet the command palette could not open — the
 /// palette is not inside the list.

@@ -60,8 +60,15 @@ struct PrintDocumentTests {
 
         let document = PrintDocument.taskList(list)
         #expect(document.isEmpty)
+        #if os(macOS)
+        // `PrintCommand` drives `NSPrintOperation` and an `NSSavePanel`, so it
+        // is macOS-only. What it *decides* — that a blank sheet is refused —
+        // is `PrintDocument.isEmpty` above, which is shared and asserted on
+        // both platforms. iOS's own print path is `UIPrintInteractionController`
+        // and is exercised separately.
         #expect(!PrintCommand.run(.printView, document: document), "a blank sheet costs paper")
         #expect(!PrintCommand.run(.printView, document: nil))
+        #endif
 
         await vault.bridge.shutdown()
     }

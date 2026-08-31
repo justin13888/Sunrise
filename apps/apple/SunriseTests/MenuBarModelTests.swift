@@ -126,7 +126,14 @@ struct MenuBarModelTests {
     }
 }
 
+#if os(macOS)
 /// The hotkey's failure states, which are the ones a headless run can reach.
+///
+/// The whole suite is macOS-only, rather than guarded line by line: a global
+/// hotkey is a registration with the window server, and iOS has neither. The
+/// capture surfaces that stand in for it there — the sheet, the Control Center
+/// control, the widget, the App Shortcut — cannot fail to register, so there
+/// is no equivalent failure state to name.
 struct HotkeyStatusTests {
     /// The ordinary failure — another app got ⌘⇧N first — is not the same as
     /// the app being broken, and the two need different sentences.
@@ -149,3 +156,4 @@ struct HotkeyStatusTests {
         #expect(HotkeyStatus.active.explanation.contains("⌘⇧N"))
     }
 }
+#endif

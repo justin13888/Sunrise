@@ -88,6 +88,17 @@ enum NotificationAuthorization: Equatable, Sendable {
         case .denied: self = .denied
         case .authorized: self = .authorized
         case .provisional: self = .provisional
+        #if os(iOS)
+        // iOS-only, and unreachable here: `.ephemeral` is what an App Clip
+        // gets, and Sunrise ships none. Mapped to ``provisional`` rather than
+        // left to `@unknown default` because it is a real case this SDK
+        // declares — the compiler is right to demand it — and because the two
+        // mean nearly the same thing: notifications are allowed without the
+        // user having been asked, and the grant does not last. Reading it as
+        // ``denied`` would be the safe-looking answer and the wrong one; it
+        // would silently stop scheduling for a session that is permitted.
+        case .ephemeral: self = .provisional
+        #endif
         @unknown default: self = .denied
         }
     }

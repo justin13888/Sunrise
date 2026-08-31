@@ -269,12 +269,11 @@ struct SessionInjectionTests {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let model = session()
-        let view = AccountView(
+        let view = AccountViewFixture.make(
             settings: AppSettings(defaults: defaults),
             account: AccountModel(),
             notifications: NotificationPreferences(defaults: defaults),
             deviceID: "device",
-            hotkey: .active,
             authorization: .authorized,
             scheduledCount: 0,
             signIn: {},

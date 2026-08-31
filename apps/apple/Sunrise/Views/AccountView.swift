@@ -10,7 +10,14 @@ struct AccountView: View {
     let account: AccountModel
     @Bindable var notifications: NotificationPreferences
     let deviceID: String
+    #if os(macOS)
+    /// Whether ⌘⇧N reached the window server. macOS only: iOS has no global
+    /// hotkey to report on, and its capture surfaces — the sheet, the Control
+    /// Center control, the widget, the App Shortcut — cannot fail to register
+    /// the way a contested key combination can, so there is nothing for a
+    /// settings row to say about them.
     let hotkey: HotkeyStatus
+    #endif
     /// The system's real answer, re-read rather than remembered.
     let authorization: NotificationAuthorization
     /// How many reminders the OS is holding for this Mac right now.
@@ -24,7 +31,7 @@ struct AccountView: View {
     /// points to one setting is a convenience, two copies of it is a bug.
     @Bindable var keyboard: KeyboardPreferences
     /// The open session, for the vault switcher and for sealing a root to a
-    /// new device. Passed in by ``VaultView``, which is handed it by
+    /// new device. Passed in by the shell, which is handed it by
     /// ``RootView``; optional only so a preview can stand this screen up
     /// without one, which is what hides the Vaults section.
     let session: SessionModel?
@@ -54,6 +61,7 @@ struct AccountView: View {
                 accountRow
             }
 
+            #if os(macOS)
             Section("Quick capture") {
                 LabeledContent("Shortcut") {
                     HStack(spacing: 8) {
@@ -83,6 +91,7 @@ struct AccountView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            #endif
 
             keyboardSection
 

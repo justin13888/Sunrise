@@ -80,7 +80,7 @@ final class AppSurfaces {
     /// Why File → Print… / Export as PDF… is unavailable for the screen the
     /// window is showing, or `nil` when it is available.
     ///
-    /// Pushed here by `VaultView` rather than read from it, and for the same
+    /// Pushed here by the shell rather than read from it, and for the same
     /// reason ``pendingDestination`` travels the other way: the File menu is a
     /// *scene* command that exists with every window closed, and the selection
     /// it depends on is the window's own `@State`, which nothing outside that
@@ -98,7 +98,7 @@ final class AppSurfaces {
 
     /// Where a deep link, a notification tap or ⌘⌥M wants the window to be.
     ///
-    /// Set here and consumed by `VaultView`, because the window's selection is
+    /// Set here and consumed by the shell, because its selection is
     /// the window's state: this object exists in scenes that have no sidebar
     /// at all, and reaching into one from here would be reaching into a view
     /// that may not be on screen.

@@ -16,8 +16,17 @@ name: Sunrise
 options:
   bundleIdPrefix: dev.sunrise
   createIntermediateGroups: true
+  # Both must equal the matching `*_target` in the justfile, which is what the
+  # xcframework's slices are built against.
+  #
+  # iOS 26.0 rather than the 17+ that `docs/07-clients/mobile-ios.md` used to
+  # specify, and for one reason: the macOS app is pinned to macOS 26.0, and a
+  # shared source file cannot use an API that only one of its two targets can
+  # reach. Matching the majors means the shared tree needs no `@available`
+  # forks at all — which is the whole point of sharing it.
   deploymentTarget:
     macOS: "26.0"
+    iOS: "26.0"
   minimumXcodeGenVersion: "2.38.0"
 
 settings:
@@ -86,6 +95,13 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise
         PRODUCT_NAME: Sunrise
+        # Pinned rather than derived from the target name, and it is what makes
+        # one test bundle serve both apps. Xcode would otherwise name the
+        # module after the target, so the iOS app would be module `SunriseiOS`
+        # and every `@testable import Sunrise` in `SunriseTests/` would have to
+        # be conditional. Two targets may share a module name: they are
+        # separate products, each with its own binary.
+        PRODUCT_MODULE_NAME: Sunrise
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
@@ -129,6 +145,69 @@ targets:
             echo "warning: swiftlint not installed; skipping"
           fi
 
+  # The iOS / iPadOS app. Same `Sunrise/` sources as the Mac, plus `iOS/`
+  # instead of `macOS/`.
+  #
+  # No `MenuBarExtra`, no hotkey and no `NSPanel` — those are the three
+  # surfaces that do not cross, and they are whole files under `macOS/` rather
+  # than conditionals precisely so this target simply does not see them.
+  SunriseiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sunrise
+      - path: iOS
+      - path: ../../out/swift/sunrise_core_bindings.swift
+        group: Generated
+    dependencies:
+      - target: SunriseFFI
+      - framework: ../../out/SunriseCore.xcframework
+        embed: false
+      # The same argument as the macOS target: naming it is what makes Xcode
+      # run `appintentsmetadataprocessor`, and without that bundle the intents
+      # link but are never offered by Shortcuts or Siri. `Sunrise/Intents/` is
+      # shared, so this surface is the Mac's, unchanged.
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS
+        PRODUCT_NAME: Sunrise
+        # See the macOS target: pinned so `SunriseTests/` needs no conditional
+        # imports.
+        PRODUCT_MODULE_NAME: Sunrise
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Portrait plus both landscapes on iPad, portrait-first on iPhone. The
+        # calendar grid and the split shell are the two screens that earn
+        # landscape, and both are better for it.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
+          UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad:
+          UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
+          UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Generated/Info-iOS.plist
+      properties:
+        # The same registration the Mac carries, and for the same reason:
+        # notification bodies and the widget's tap target are `sunrise://`
+        # links, so without this a tapped reminder opens nothing.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.sunrise.SunriseiOS
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [sunrise]
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    postCompileScripts:
+      - name: SwiftLint
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -x /opt/homebrew/bin/swiftlint ]; then
+            /opt/homebrew/bin/swiftlint lint --quiet --config "$SRCROOT/.swiftlint.yml" "$SRCROOT/Sunrise" "$SRCROOT/iOS"
+          else
+            echo "warning: swiftlint not installed; skipping"
+          fi
+
   # Drives the real window. This is the only target that proves a click
   # reaches the core: `SunriseTests` exercises the view *models*, which is a
   # different claim.
@@ -157,6 +236,34 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseTests
         GENERATE_INFOPLIST_FILE: YES
 
+  # The same `SunriseTests/` sources, compiled against the iOS app.
+  #
+  # One suite, built twice, rather than an iOS suite of its own. What these
+  # tests assert is view-*model* behaviour against a real vault over the real
+  # seam — none of it is macOS-specific, and none of it should be allowed to
+  # become iOS-specific either. Running the identical file on both platforms is
+  # what turns "the iOS app compiles" into "the iOS app behaves the same", and
+  # it is the reason `PRODUCT_MODULE_NAME` is pinned on both app targets: with
+  # it, `@testable import Sunrise` resolves in either bundle unchanged.
+  SunriseiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: SunriseTests
+    dependencies:
+      - target: SunriseiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOSTests
+        GENERATE_INFOPLIST_FILE: YES
+        # Spelled out because the target is `SunriseiOS` and its product is
+        # `Sunrise.app` — the app a user installs is called Sunrise on both
+        # platforms, and only the *target* carries the suffix. XcodeGen's
+        # default derives both halves from the target name, which looks for a
+        # `SunriseiOS.app/SunriseiOS` that is never built.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Sunrise.app/Sunrise
+        BUNDLE_LOADER: $(TEST_HOST)
+
 schemes:
   Sunrise:
     build:
@@ -184,3 +291,15 @@ schemes:
         # — while keeping `just macos-app` honest about what it ran.
         - name: SunriseUITests
           skipped: true
+
+  SunriseiOS:
+    build:
+      targets:
+        SunriseiOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - SunriseiOSTests

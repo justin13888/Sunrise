@@ -62,12 +62,11 @@ struct KeyboardTipsTests {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let preferences = KeyboardPreferences(defaults: defaults)
-        let settings = AccountView(
+        let settings = AccountViewFixture.make(
             settings: AppSettings(defaults: defaults),
             account: AccountModel(),
             notifications: NotificationPreferences(defaults: defaults),
             deviceID: "device",
-            hotkey: .active,
             authorization: .authorized,
             scheduledCount: 0,
             signIn: {},

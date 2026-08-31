@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The unlocked app.
-struct VaultView: View {
+struct VaultWindow: View {
     let bridge: CoreBridge
     /// Carried through to Settings, which is where a vault is switched and
     /// where a second Mac is handed this vault's key.
@@ -410,3 +410,12 @@ struct VaultView: View {
         )
     }
 }
+
+/// What ``RootView`` builds once the vault is open.
+///
+/// The one name the shared root knows. macOS resolves it to the split-view
+/// window above; iOS resolves it to the tab shell in `iOS/VaultTabs.swift`.
+/// Both take the same three collaborators and own the same models — the
+/// difference is entirely navigation, which is the one thing
+/// `docs/07-clients/shared-ui-system.md` says each platform owns outright.
+typealias VaultShell = VaultWindow

@@ -296,7 +296,14 @@ private struct NoteRowLine: View {
         case .checklist:
             Toggle("Done", isOn: $row.checked)
                 .labelsHidden()
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #else
+                // iOS has no `.checkbox`, and its default is a switch — see
+                // ``ChecklistToggleStyle`` for why that is the wrong thing to
+                // put next to a line of a note.
+                .toggleStyle(.checklist)
+                #endif
                 .disabled(model.isReadOnly)
         case .numbered:
             Text("\(ordinal).")
