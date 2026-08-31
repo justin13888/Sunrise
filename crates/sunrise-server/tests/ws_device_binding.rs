@@ -8,12 +8,15 @@
 //! socket, and kept receiving the account's fan-out, until its bearer happened
 //! to expire — which for a long-lived token is indistinguishable from never.
 //!
-//! Three properties, and the third is the one revocation exists for:
+//! Four properties, and the last two are the ones revocation exists for:
 //!
 //! 1. an unregistered device cannot open a session;
 //! 2. a revoked device cannot open a new one;
 //! 3. a session **already open** ends when the device is revoked, including a
-//!    session that is only receiving and never sends another frame.
+//!    session that is only receiving and never sends another frame;
+//! 4. and it ends on a **busy** session too. A revoked device must not be able
+//!    to hold its socket open by generating traffic, which is the one thing a
+//!    device whose access was just withdrawn has every reason to do.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -210,5 +213,84 @@ async fn revoking_a_device_ends_the_session_it_already_holds() {
     assert!(
         saw_error,
         "the session must be ended with a typed AUTH_DEVICE_REVOKED, not dropped silently"
+    );
+}
+
+/// The same property as above, on a session that is not idle.
+///
+/// The re-check arm is one branch of a `select!`, and a `select!` restarts its
+/// arms every time any one of them completes. A timer built from
+/// `sleep(interval)` *inside* the loop therefore restarts from zero on every
+/// pass, so a session with traffic more often than `device_recheck_ms` can
+/// postpone it forever -- and a WebSocket Ping is enough, because it completes
+/// the inbound arm without reaching the `Binary` branch that re-checks.
+///
+/// That is exactly the hazard `SessionAuth::deadline` documents and avoids by
+/// storing an absolute instant. This test is what stops the revocation arm
+/// drifting back to the relative form: it pings ten times faster than the
+/// re-check interval and still requires the session to end.
+#[tokio::test]
+async fn a_revoked_device_cannot_outlast_the_recheck_by_pinging() {
+    let (addr, state) = boot(200).await;
+    let (account_id, device_id) = register(&state);
+    let mut ws = connect(addr, Some(&device_id))
+        .await
+        .expect("an active device connects");
+    handshake(&mut ws).await;
+
+    state
+        .store
+        .revoke_device(&account_id, &device_id, state.clock.now_ms())
+        .expect("revoke");
+
+    // Ping every 50ms against a 200ms re-check. Under the relative timer this
+    // loop runs to its deadline without the server ever saying anything.
+    let mut saw_error = false;
+    let mut ended = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if ws.send(Message::Ping(vec![1])).await.is_err() {
+            ended = true;
+            break;
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(50), ws.next()).await {
+            Ok(Some(Ok(Message::Binary(buf)))) => {
+                let (header, payload) = decode_frame(&buf).expect("a decodable frame");
+                match header.msg_kind {
+                    MsgKind::Error => {
+                        let payload =
+                            ErrorPayload::decode(&payload).expect("decodable error payload");
+                        assert_eq!(
+                            payload.code,
+                            sunrise_error::ErrorCode::AuthDeviceRevoked,
+                            "a revoked device must be told why, on a busy session too"
+                        );
+                        saw_error = true;
+                    }
+                    MsgKind::Close => {
+                        ended = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Err(_)) | None) => {
+                ended = true;
+                break;
+            }
+            // A non-binary frame, or simply nothing within the poll window.
+            // Neither says anything about revocation; keep pinging.
+            Ok(Some(Ok(_))) | Err(_) => {}
+        }
+    }
+
+    assert!(
+        saw_error,
+        "a revoked device kept its session while pinging: the re-check timer is \
+         being rebuilt per loop pass, so traffic postpones it indefinitely"
+    );
+    assert!(
+        ended,
+        "the session must actually be closed, not merely warned"
     );
 }

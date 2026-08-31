@@ -89,6 +89,17 @@ struct SessionAuth {
     /// `None` only on a server running without device binding -- the
     /// single-tenant self-host path, which has no `devices` rows to bind to.
     bound_device: Option<String>,
+    /// The instant at which this session next re-checks that its device is
+    /// still registered.
+    ///
+    /// Absolute, and advanced only when the check actually runs, for exactly
+    /// the reason `deadline` above is: a timer rebuilt from `now + interval` on
+    /// every loop pass is a timer a busy session can postpone forever. The
+    /// select arm it drives restarts whenever *any* arm completes, so a
+    /// relative `sleep` there would let a revoked device hold its socket open
+    /// simply by generating traffic -- a Ping is enough, since it completes the
+    /// inbound arm without reaching the `Binary` branch that re-checks.
+    next_recheck: tokio::time::Instant,
 }
 
 impl SessionAuth {
@@ -98,6 +109,7 @@ impl SessionAuth {
         bound_device: Option<String>,
         verified: &Verified,
         now_ms: u64,
+        recheck_ms: u64,
     ) -> Self {
         Self {
             account,
@@ -109,6 +121,8 @@ impl SessionAuth {
                 .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms)),
             account_id,
             bound_device,
+            next_recheck: tokio::time::Instant::now()
+                + std::time::Duration::from_millis(recheck_ms),
         }
     }
 
@@ -176,6 +190,7 @@ async fn handler(
         bound_device,
         &verified,
         state.clock.now_ms(),
+        state.config.device_recheck_ms,
     );
     ws.on_upgrade(move |socket| async move { run_session(socket, state, auth).await })
 }
@@ -331,9 +346,10 @@ async fn sync_loop(
         let next_msg = stream.next();
         let next_relay = recv_first(&mut subs);
         let deadline = expired(auth.deadline);
-        let recheck = tokio::time::sleep(std::time::Duration::from_millis(
-            state.config.device_recheck_ms,
-        ));
+        // Copied out before the `select!`, the same way `deadline` is, so this
+        // immutable read does not collide with `handle_inbound`'s `&mut auth`.
+        // `sleep_until` and not `sleep`: see `SessionAuth::next_recheck`.
+        let recheck = tokio::time::sleep_until(auth.next_recheck);
 
         tokio::select! {
             biased;
@@ -397,6 +413,10 @@ async fn sync_loop(
             // taking the account's fan-out for as long as it stayed quiet. That
             // is the case revocation exists for.
             () = recheck => {
+                // Advanced here, when the check actually runs, rather than per
+                // loop pass -- that is the whole point of the absolute instant.
+                auth.next_recheck = tokio::time::Instant::now()
+                    + std::time::Duration::from_millis(state.config.device_recheck_ms);
                 if !device_active(&state, &auth) {
                     end_revoked(&mut sink, &state, &auth).await;
                     break;
