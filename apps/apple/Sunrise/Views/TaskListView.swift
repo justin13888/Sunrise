@@ -102,6 +102,12 @@ struct TaskRows: View {
             }
         }
         .listStyle(.inset)
+        // The second way out of the capture keyboard, beside the Done button
+        // the bar puts above it. Reaching for the list is what someone does
+        // when they have finished typing and want to see what they wrote, so
+        // the drag that gets them there is allowed to mean it. Inert on macOS,
+        // which has no software keyboard to dismiss.
+        .scrollDismissesKeyboard(.interactively)
         .focused(focus, equals: .rows)
         // Every row-scoped binding in `docs/08-features/keyboard.md` arrives
         // here, and only here: a focused capture field consumes its own

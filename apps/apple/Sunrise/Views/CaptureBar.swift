@@ -56,6 +56,30 @@ struct CaptureBar: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
+        #if os(iOS)
+        // The touch analogue of the Escape binding above, and not a nicety.
+        // `submit` puts focus straight back in the field so a burst of three
+        // thoughts is three lines — right on a Mac, where the panel is the
+        // only thing on screen that moves. On a phone the software keyboard
+        // then covers the tab bar and most of the list, and until this there
+        // was no affordance anywhere to put it away: no Done, no tap-outside,
+        // and a hardware Escape key an iPhone does not have.
+        //
+        // `nil` rather than `.rows`, which is what the Escape binding above
+        // uses. Escape is handing the *keyboard* to the list so that `j`, `k`
+        // and `x` start meaning something, and the list has to be focused for
+        // that. Here there is no cursor to hand anywhere and the whole request
+        // is "put this away" — and moving focus onto a `List` does not resign
+        // the field's first responder, so `.rows` left the keyboard exactly
+        // where it was.
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focus.wrappedValue = nil }
+                    .accessibilityIdentifier("capture.done")
+            }
+        }
+        #endif
     }
 
     private func submit() {
