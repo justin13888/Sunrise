@@ -256,14 +256,22 @@ macos-uitest: apple-xcframework
       echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
       exit 1
     fi
+    # Developer mode is the first of two grants and not the last. The runner
+    # also has to take automation control of the app, which is a separate TCC
+    # decision: the first attempt raises a system prompt, and a run nobody is
+    # watching fails with "Timed out while enabling automation mode" instead.
+    # Accept it, or add Xcode Helper under Privacy & Security → Accessibility.
+    # Both are one-time changes to the machine, which is why neither is done
+    # here.
     cd apps/apple
     xcodegen generate --quiet
+    # Its own scheme, not `-only-testing` on `Sunrise`: that flag cannot select
+    # a testable the scheme has skipped, and asking it to made this recipe fail
+    # before it built anything.
     xcodebuild test \
       -project Sunrise.xcodeproj \
-      -scheme Sunrise \
+      -scheme SunriseUITests \
       -destination 'platform=macOS,arch=arm64' \
-      -only-testing:SunriseUITests \
-      -skip-testing:SunriseTests \
       -quiet
 
 # Generate the Xcode project and open it. Everyday development entry point.

@@ -306,11 +306,27 @@ schemes:
         #
         #     sudo DevToolsSecurity -enable
         #
-        # Then: `just macos-uitest`. Leaving it in the scheme keeps it
-        # compiled on every build — an uncompiled test target rots in a week
-        # — while keeping `just macos-app` honest about what it ran.
+        # Then: `just macos-uitest`, which runs the scheme below. Leaving it in
+        # this scheme keeps it compiled on every build — an uncompiled test
+        # target rots in a week — while keeping `just macos-app` honest about
+        # what it ran.
         - name: SunriseUITests
           skipped: true
+
+  # The UI tests on their own, and a scheme rather than a flag because
+  # `-only-testing` cannot select a testable the scheme has skipped:
+  # `xcodebuild` refuses with "isn't a member of the specified test plan or
+  # scheme". `just macos-uitest` asked for exactly that and so had never run
+  # once — which is how a UI test that captured on Today and asserted the row
+  # appeared stayed red without anybody hearing about it.
+  SunriseUITests:
+    build:
+      targets:
+        Sunrise: all
+    test:
+      config: Debug
+      targets:
+        - SunriseUITests
 
   SunriseiOS:
     build:
