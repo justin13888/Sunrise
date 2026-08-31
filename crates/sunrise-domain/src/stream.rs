@@ -207,6 +207,14 @@ pub struct StreamDraft {
     pub review_cadence: Option<StreamReviewCadence>,
     /// Optional default reminder lead time for this Stream's Tasks, seconds.
     pub reminder_lead_s: Option<u32>,
+    /// Optional icon name.
+    ///
+    /// The column and the round-trip have always existed; this field is what
+    /// gives them a caller. Without it no command could set an icon, and the
+    /// only writer in the tree was a test issuing direct SQL.
+    pub icon: Option<String>,
+    /// Optional Context applied to Tasks captured into this Stream.
+    pub default_context: Option<EntityRef>,
 }
 
 impl StreamDraft {
@@ -248,6 +256,10 @@ pub struct StreamPatch {
     /// New default reminder lead time; `Some(None)` falls back to the device
     /// default.
     pub reminder_lead_s: Option<Option<u32>>,
+    /// New icon; `Some(None)` clears it.
+    pub icon: Option<Option<String>>,
+    /// New default Context; `Some(None)` clears it.
+    pub default_context: Option<Option<EntityRef>>,
 }
 
 impl StreamPatch {

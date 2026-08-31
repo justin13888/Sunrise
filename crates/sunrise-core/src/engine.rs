@@ -975,7 +975,7 @@ impl Engine {
             name: d.name.trim().to_string(),
             description: d.description.clone(),
             color: d.color.unwrap_or(StreamColor::Slate),
-            icon: None,
+            icon: d.icon.clone(),
             parent_id: d.parent_id,
             // "New streams default between the last and 'end'"
             // (`docs/02-domain/streams.md` §Sort order): one digit's worth of
@@ -985,7 +985,7 @@ impl Engine {
             paused: false,
             paused_until: None,
             review_cadence: d.review_cadence.unwrap_or(StreamReviewCadence::Weekly),
-            default_context: None,
+            default_context: d.default_context,
             deleted: false,
             unknown: Unknowns::new(),
         };
@@ -1047,6 +1047,12 @@ impl Engine {
         }
         if let Some(rc) = patch.review_cadence {
             stream.review_cadence = rc;
+        }
+        if let Some(icon) = patch.icon {
+            stream.icon = icon;
+        }
+        if let Some(ctx) = patch.default_context {
+            stream.default_context = ctx;
         }
         // A reorder. Validated by `patch.validate()` above, so a key that
         // could not have come from `sort_order::between` never reaches the
@@ -3552,13 +3558,16 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     let extra_blob = encode_unknowns(&s.unknown)?;
+    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
+    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
           paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order, extra,
+          description, default_context,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3576,6 +3585,8 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.reminder_lead_s,
             s.sort_order,
             extra_blob,
+            description_blob,
+            default_ctx_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3589,11 +3600,14 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
     let extra_blob = encode_unknowns(&s.unknown)?;
+    let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
+    let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
     tx.execute(
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
              name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
              review_cadence = ?, reminder_lead_s = ?, sort_order = ?, extra = ?,
+             description = ?, default_context = ?,
              lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
@@ -3610,6 +3624,8 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             s.reminder_lead_s,
             s.sort_order,
             extra_blob,
+            description_blob,
+            default_ctx_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3626,7 +3642,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
                     paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order,
-                    extra
+                    extra, description, default_context
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -3645,6 +3661,8 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, Option<u32>>(11)?,
                     r.get::<_, String>(12)?,
                     r.get::<_, Option<Vec<u8>>>(13)?,
+                    r.get::<_, Option<Vec<u8>>>(14)?,
+                    r.get::<_, Option<Vec<u8>>>(15)?,
                 ))
             },
         )
@@ -3664,6 +3682,8 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         reminder_lead_s,
         sort_order,
         extra,
+        description_raw,
+        default_ctx_raw,
     )) = row
     else {
         return Ok(None);
@@ -3680,7 +3700,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         created_at: ms_to_ts(created_ms.max(0)),
         updated_at: ms_to_ts(updated_ms.max(0)),
         name,
-        description: None,
+        description: description_raw.map(sunrise_domain::NoteBody),
         // Unknown/forward-compatible color strings fall back to Slate.
         color: StreamColor::from_str_lossy(&color_str),
         icon,
@@ -3690,7 +3710,12 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         paused: paused != 0,
         paused_until: paused_until_ms.map(ms_to_ts),
         review_cadence: parse_cadence(&cadence_str),
-        default_context: None,
+        default_context: default_ctx_raw.map(|b| {
+            let mut a = [0u8; 16];
+            let take = b.len().min(16);
+            a[..take].copy_from_slice(&b[..take]);
+            EntityRef::new(EntityKind::Context, a)
+        }),
         deleted: deleted != 0,
         unknown: decode_unknowns(extra),
     };
@@ -10673,6 +10698,8 @@ mod tests {
                     parent_id: None,
                     review_cadence: None,
                     reminder_lead_s: None,
+                    icon: None,
+                    default_context: None,
                 }),
             )
             .unwrap();
@@ -10758,6 +10785,111 @@ mod tests {
         assert_eq!(decoded.unknown, future_fields());
     }
 
+    /// `Stream.description` was accepted, carried in the op, and never stored.
+    ///
+    /// `create_stream` copied it onto the entity and `update_stream` applied
+    /// the patch, so it reached every peer — and `read_stream` hardcoded
+    /// `description: None`, so no replica could materialize it. The second
+    /// half is what made it destructive rather than merely absent: the next
+    /// `UpdateStream` read `None` and re-emitted `description: null`, and
+    /// under entity-level LWW that erased the value on every replica that
+    /// still had it. The seam exposed the field the whole time, so a client
+    /// could set it, watch it vanish, and be right.
+    ///
+    /// `default_context` had no column, no patch field and no draft field.
+    /// `icon` had a column that round-tripped and no way to reach it: the only
+    /// writer in the tree was a test issuing direct SQL, which is why the gap
+    /// outlived the test that was supposed to cover it. This one goes through
+    /// the command surface for exactly that reason.
+    #[test]
+    fn stream_description_icon_and_default_context_survive_the_command_surface() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let ctx = e
+            .apply(
+                &mut db,
+                Command::CreateContext(ContextDraft {
+                    name: "deep-work".into(),
+                    description: None,
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    description: Some(sunrise_domain::NoteBody(b"the big rewrite".to_vec())),
+                    color: None,
+                    parent_id: None,
+                    review_cadence: None,
+                    reminder_lead_s: None,
+                    icon: Some("briefcase".into()),
+                    default_context: Some(ctx),
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        let got = read_stream(db.conn(), created.bytes()).unwrap().unwrap();
+        assert_eq!(
+            got.description.as_ref().map(|b| b.0.clone()),
+            Some(b"the big rewrite".to_vec()),
+            "a description set at create must reach the projection"
+        );
+        assert_eq!(got.icon.as_deref(), Some("briefcase"));
+        assert_eq!(got.default_context, Some(ctx));
+
+        // The erasure. An unrelated edit re-emits the whole entity, so if the
+        // projection had forgotten the description this update would carry
+        // `null` and win on every replica.
+        e.apply(
+            &mut db,
+            Command::UpdateStream {
+                id: created,
+                patch: StreamPatch {
+                    name: Some("Work (2026)".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        let after = read_stream(db.conn(), created.bytes()).unwrap().unwrap();
+        assert_eq!(after.name, "Work (2026)");
+        assert_eq!(
+            after.description.as_ref().map(|b| b.0.clone()),
+            Some(b"the big rewrite".to_vec()),
+            "an unrelated edit must not erase the description"
+        );
+        assert_eq!(after.icon.as_deref(), Some("briefcase"));
+        assert_eq!(after.default_context, Some(ctx));
+
+        // And each is settable and clearable through the patch.
+        e.apply(
+            &mut db,
+            Command::UpdateStream {
+                id: created,
+                patch: StreamPatch {
+                    icon: Some(Some("rocket".into())),
+                    default_context: Some(None),
+                    description: Some(None),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        let cleared = read_stream(db.conn(), created.bytes()).unwrap().unwrap();
+        assert_eq!(cleared.icon.as_deref(), Some("rocket"));
+        assert_eq!(cleared.default_context, None);
+        assert_eq!(cleared.description, None);
+    }
+
     /// The same guarantee, for the five entities that did NOT have it.
     ///
     /// `tasks.extra`, `blocks.extra` and `attachments.extra` were the whole of
@@ -10788,6 +10920,8 @@ mod tests {
                     parent_id: None,
                     review_cadence: None,
                     reminder_lead_s: None,
+                    icon: None,
+                    default_context: None,
                 }),
             )
             .unwrap();
@@ -10859,6 +10993,8 @@ mod tests {
                     parent_id: None,
                     review_cadence: None,
                     reminder_lead_s: None,
+                    icon: None,
+                    default_context: None,
                 }),
             )
             .unwrap()
