@@ -470,7 +470,7 @@ private struct CaptureSheet: ViewModifier {
                     commit: { try await surfaces.commitCapture($0) },
                     dismiss: { surfaces.captureDismissed() }
                 )
-                .presentationDetents([.height(220)])
+                .presentationDetents([.height(280)])
                 .presentationDragIndicator(.visible)
             }
         }

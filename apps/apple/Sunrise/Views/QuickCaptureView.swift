@@ -51,6 +51,7 @@ struct QuickCaptureView: View {
                 Label(confirmation, systemImage: "checkmark.circle")
                     .font(.caption)
                     .foregroundStyle(.green)
+                    .accessibilityIdentifier("quick-capture.confirmation")
             }
             // Not dismissed on a timer, unlike the confirmation above: this
             // one asks the user to do something — the line it names is back in
@@ -61,6 +62,27 @@ struct QuickCaptureView: View {
                     .foregroundStyle(.red)
                     .accessibilityIdentifier("quick-capture.failure")
             }
+
+            #if !os(macOS)
+            // The controls a touch device needs and the Mac does not.
+            //
+            // On macOS this view is a borderless `NSPanel` driven by a hardware
+            // keyboard: Return commits, Escape closes, and a pair of buttons
+            // would be furniture in a surface whose whole point is that it has
+            // none. On a phone neither key exists. Until this the only Add was
+            // the software keyboard's Return — an affordance nothing on screen
+            // named — and the only way out was a swipe.
+            HStack {
+                Button("Cancel", action: dismiss)
+                    .accessibilityIdentifier("quick-capture.cancel")
+                Spacer()
+                Button("Add", action: submit)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canCommit)
+                    .accessibilityIdentifier("quick-capture.add")
+            }
+            .padding(.top, 4)
+            #endif
         }
         .padding(16)
         #if os(macOS)
