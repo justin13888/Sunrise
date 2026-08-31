@@ -54,6 +54,14 @@ pub fn document() -> kynos::Result<kynos::openapi::Document> {
 /// whose operations conflict, or a handler whose types do not resolve.
 pub fn router() -> kynos::Router<ServerState> {
     kynos::Router::<ServerState>::new()
+        // Named, because the description is about to become a published
+        // artefact that `spargen` reads: kynos's default `Info` is
+        // `"API" 0.0.0`, and a client generated from that is a client called
+        // `API` claiming to speak version zero of it.
+        .info(kynos::openapi::Info::new(
+            "Sunrise relay",
+            env!("CARGO_PKG_VERSION"),
+        ))
         .mount(kynos::routes![health::health])
         .mount(kynos::routes![meta::meta])
         .mount(kynos::routes![accounts::create, accounts::me])
@@ -67,6 +75,29 @@ pub fn router() -> kynos::Router<ServerState> {
 
 #[cfg(test)]
 mod tests {
+    /// The committed description is the one the handlers produce.
+    ///
+    /// `spargen` generates the client from a *file*, so that file is an input to
+    /// something rather than a report about it: a stale one produces a client
+    /// that disagrees with the server and compiles perfectly while doing so.
+    /// This is the check that makes regenerating it non-optional.
+    #[test]
+    fn the_committed_description_is_current() {
+        let committed = include_str!("../../../../schemas/openapi.v1.json");
+        let generated = format!(
+            "{}\n",
+            super::document()
+                .expect("the router must describe at 3.2")
+                .to_json()
+                .expect("the description must serialize")
+        );
+        assert_eq!(
+            committed, generated,
+            "schemas/openapi.v1.json is stale; regenerate it with \
+             `just openapi` (cargo run -p sunrise-server --bin openapi)"
+        );
+    }
+
     /// The document is the contract, so its shape is a test rather than a
     /// build artefact nobody reads.
     ///
