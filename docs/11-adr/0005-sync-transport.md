@@ -1,6 +1,6 @@
 # 0005 — WebSocket as default sync transport
 
-**Status:** accepted
+**Status:** superseded by [0023](./0023-sse-sync-transport.md)
 
 ## Context
 
@@ -29,3 +29,26 @@ Devices must exchange ops promptly when both online. Mobile must work behind cel
 - Restricted networks are handled via fallback without a separate codepath for the *protocol* — only the transport adapter changes.
 - Same-network sync is fast enough through a relay; we don't ship a separate LAN code path.
 - Future P2P is structurally compatible — the wire protocol is transport-agnostic.
+
+## Superseded
+
+[ADR-0023](./0023-sse-sync-transport.md) replaces the WebSocket with an SSE
+stream downstream and typed POST operations upstream, so that the sync surface
+is described by the same OpenAPI 3.2 document as the rest of the relay
+([ADR-0021](./0021-kynos-openapi-server.md)).
+
+Two things above were already untrue before that decision, and are recorded here
+so the history reads correctly:
+
+- **The HTTP/2 long-poll fallback was withdrawn, not implemented.**
+  [`docs/05-sync/transports.md`](../05-sync/transports.md) narrowed v1 to
+  "WebSocket only" and deferred HTTP fallbacks to v2. This ADR was never amended
+  to match, so the two documents contradicted each other on the record.
+- **The QUIC / HTTP-3 row's reasoning has aged.** It was rejected for uneven
+  browser support and warming Rust libraries. ADR-0023 re-examines WebTransport
+  on current evidence and still declines it, for an entirely different reason:
+  it is not describable in OpenAPI, so it would leave sync outside the document.
+
+What holds unchanged is the last consequence: the wire protocol is
+transport-agnostic, and `sunrise-sync`'s `Transport` trait is where a future
+WebTransport or P2P path re-enters.
