@@ -3,7 +3,7 @@
 #
 # Two things here are load-bearing:
 #
-# 1. `SunriseFFI` is an aggregate target that runs `just macos-xcframework`,
+# 1. `SunriseFFI` is an aggregate target that runs `just apple-xcframework`,
 #    and the app *depends* on it. The Rust build cannot be a script phase on
 #    the app target: Xcode resolves and processes an `.xcframework` while it
 #    plans that target's build, before any of its phases run, so a phase that
@@ -48,7 +48,7 @@ aggregateTargets:
           cd "$SRCROOT/../.."
           # Xcode's PATH carries neither Homebrew nor rustup.
           export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
-          just macos-xcframework
+          just apple-xcframework
 
 targets:
   Sunrise:

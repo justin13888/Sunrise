@@ -85,7 +85,7 @@ something neither client needs.
 ### Build
 
 ```
-just macos-xcframework    # cargo build → uniffi-bindgen → lipo → xcframework
+just apple-xcframework    # cargo build → uniffi-bindgen → lipo → xcframework
 just macos-app            # + xcodegen generate, swiftlint --strict, xcodebuild test
 just macos-uitest         # the XCUITest target, which macos-app does not run
 just macos-open           # open the generated project in Xcode

@@ -19,9 +19,9 @@ Per-platform UI consumes the core; nothing else does.
 
 | Platform | Form | Status |
 |---|---|---|
-| macOS | `SunriseCore.xcframework` via UniFFI bindings (`just macos-xcframework`) | v1 |
+| macOS | `SunriseCore.xcframework` via UniFFI bindings (`just apple-xcframework`) | v1 |
 | CLI | Linked directly into the `sunrise` binary | v1 |
-| iOS | `xcframework` via UniFFI bindings — same seam, unproven slices | deferred |
+| iOS | `xcframework` via UniFFI bindings — same seam, and `just apple-xcframework` now builds the device and simulator slices beside the macOS one | deferred |
 | Android | `.aar` via UniFFI bindings (JNI) — same seam | deferred |
 | Web | `wasm-bindgen` build, loaded as ES module | deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
 

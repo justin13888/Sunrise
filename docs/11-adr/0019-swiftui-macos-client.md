@@ -158,7 +158,7 @@ any of them wrong produces a crash rather than a compile error:
 * **The rustc 1.88 pin stays.** It was raised for ratatui, but it is a
   reproducibility floor, not a workaround, and dropping back would be an
   unforced change.
-* **`just macos-xcframework`** builds the slices, generates the Swift bindings
+* **`just apple-xcframework`** builds the slices, generates the Swift bindings
   in `--library` mode, and **rewrites** the generated module map — UniFFI's own
   is named `<lib>FFI.modulemap` and emits `use Darwin` / `use _Builtin_*` lines
   that do not resolve inside an xcframework.

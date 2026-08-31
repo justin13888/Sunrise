@@ -65,7 +65,16 @@ docs/          Design source of truth: product, architecture, domain, crypto, sy
 - [just](https://github.com/casey/just) — command runner; all project tasks live in the `justfile`
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
 
-Building the macOS client additionally needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Building the Apple clients additionally needs Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen),
+and the Rust target for every slice the xcframework carries:
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+```
+
+The host triple (`aarch64-apple-darwin`) is already installed; the two iOS ones
+are not installed by default. Nothing else is needed — the core builds for iOS
+with no manifest change.
 
 ### Getting started
 
@@ -224,7 +233,7 @@ cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback red
 #### 5. macOS client
 
 ```bash
-just macos-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
+just apple-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
 just macos-app            # + xcodegen, swiftlint --strict, xcodebuild test
 just macos-open           # open the generated project in Xcode
 just macos-uitest         # the XCUITest target, which macos-app does not run
@@ -235,7 +244,7 @@ target is `skipped: true` in the scheme — macOS XCUITest needs
 `sudo DevToolsSecurity -enable` — so `just macos-uitest` is the only thing that
 drives the real window, and it runs on a developer machine only.
 
-`macos-xcframework` builds the release slices, generates the Swift bindings from
+`apple-xcframework` builds the release slices, generates the Swift bindings from
 the built library, and packages the framework the app links. The bindings generator lives
 in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
 lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features pull a
@@ -288,7 +297,7 @@ All project commands are centralized in the [`justfile`](justfile). Run `just` (
 | `just rust-check`        | Type-check the Rust workspace                          |
 | `just rust-test`         | Run the Rust test suite                                |
 | `just orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
-| `just macos-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
+| `just apple-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
 | `just macos-app`         | Build, SwiftLint `--strict` and test the macOS app     |
 | `just validate`          | Full local validation: Biome CI + typecheck + coverage |
 

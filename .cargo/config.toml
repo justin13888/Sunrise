@@ -6,10 +6,18 @@
 # Use the host target by default; CI overrides via --target.
 
 [target.aarch64-apple-darwin]
-# Apple Silicon: the macOS app's xcframework slice (`just macos-xcframework`).
+# Apple Silicon: the macOS app's xcframework slice (`just apple-xcframework`).
 
 [target.aarch64-apple-ios]
-# iOS device target (UniFFI bindings). Deferred; the slice is unproven.
+# iOS device: the iOS app's device slice (`just apple-xcframework`). Builds
+# with no manifest change — `bundled-sqlcipher` takes libsqlite3-sys's
+# `is_apple` branch (CommonCrypto + `framework=Security`) for any `*-apple-*`
+# target, and the TLS stack is `ring` rather than `aws-lc`.
+
+[target.aarch64-apple-ios-sim]
+# iOS Simulator on Apple Silicon: the slice `just ios-app` tests against. A
+# separate triple from the device even though both are arm64 — see the note in
+# the justfile about `LC_BUILD_VERSION`.
 
 [target.aarch64-linux-android]
 # Android arm64 target (UniFFI bindings). Deferred.

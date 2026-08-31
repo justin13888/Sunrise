@@ -70,9 +70,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The toolchain file pins 1.88.0, which rustup installs on first use.
-      # aarch64-apple-darwin is the host triple on this runner, so the slice
-      # `just macos-xcframework` builds needs no `rustup target add`.
+      # aarch64-apple-darwin is the host triple on this runner, but the
+      # xcframework carries three slices and the other two are not installed by
+      # default — `just apple-xcframework` fails without them.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
       # None of the three are in the runner image.
       - name: Install just, XcodeGen and SwiftLint

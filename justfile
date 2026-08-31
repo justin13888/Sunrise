@@ -87,43 +87,67 @@ bench-baseline:
     cargo bench -p sunrise-bench
     cargo run -p sunrise-bench --bin baseline
 
-# --- macOS client (Swift / UniFFI) ---
+# --- Apple clients (Swift / UniFFI) ---
 
-# The UniFFI-exported crate, its underscored cargo lib name, the framework, and
-# the slices to build. Add `x86_64-apple-darwin` here (and `rustup target add`
-# it) for a universal binary; `lipo` below already handles more than one.
+# The UniFFI-exported crate, its underscored cargo lib name, and the framework.
 ffi_crate  := "sunrise-core-bindings"
 ffi_lib    := "sunrise_core_bindings"
 ffi_fw     := "SunriseCore"
-ffi_slices := "aarch64-apple-darwin"
 
-# Deployment target. Must equal `options.deploymentTarget.macOS` in
-# apps/macos/project.yml; see the note in `macos-xcframework`.
+# Slices, grouped by *platform*. Each group becomes one `-library` in the
+# xcframework; several triples inside a group are `lipo`d into one fat archive
+# first (add `x86_64-apple-darwin` to `macos_slices` — and `rustup target add`
+# it — for a universal Mac binary).
+#
+# The three groups cannot be collapsed into one list. An xcframework is keyed
+# by platform, and `aarch64-apple-ios` and `aarch64-apple-ios-sim` are both
+# arm64: what tells them apart is the `LC_BUILD_VERSION` platform recorded in
+# every object file, which is the whole reason the `-sim` triple exists.
+macos_slices   := "aarch64-apple-darwin"
+ios_slices     := "aarch64-apple-ios"
+ios_sim_slices := "aarch64-apple-ios-sim"
+
+# Deployment targets. Each must equal the matching `options.deploymentTarget`
+# entry in apps/macos/project.yml; see the note in `apple-xcframework`.
 macos_target := "26.0"
+ios_target   := "26.0"
 
-# Build the Swift bindings + SunriseCore.xcframework the macOS app links
-[group('macos')]
-macos-xcframework:
+# Build the Swift bindings + SunriseCore.xcframework both Apple apps link
+[group('apple')]
+apple-xcframework:
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf build out/{{ffi_fw}}.xcframework
-    mkdir -p build/headers build/macos out/swift
+    mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 
     # 1. One static + dynamic lib per slice. `--library` binding generation
     #    reads the .dylib, so both crate-types are load-bearing.
     #
-    #    `MACOSX_DEPLOYMENT_TARGET` must match the app's, or every object file
-    #    in the archive draws an `ld` warning about being built for a newer
-    #    macOS than it is linked against — hundreds of them, from the C
-    #    dependencies (sqlite, zstd, aws-lc), drowning every real diagnostic.
+    #    The deployment targets must match the apps', or every object file in
+    #    the archive draws an `ld` warning about being built for a newer OS
+    #    than it is linked against — hundreds of them, from the C dependencies
+    #    (sqlite, zstd, ring), drowning every real diagnostic. Both variables
+    #    are exported for every slice: cc-rs reads whichever one matches the
+    #    target it is building for and ignores the other.
+    #
+    #    Serially, on purpose. A release build of the C dependencies for three
+    #    triples is the largest thing this repo does to the disk, and three of
+    #    them at once is how it fills.
     export MACOSX_DEPLOYMENT_TARGET="{{macos_target}}"
-    for t in {{ffi_slices}}; do cargo build -p {{ffi_crate}} --release --target "$t"; done
+    export IPHONEOS_DEPLOYMENT_TARGET="{{ios_target}}"
+    for t in {{macos_slices}} {{ios_slices}} {{ios_sim_slices}}; do
+      cargo build -p {{ffi_crate}} --release --target "$t"
+    done
 
     # 2. Bindings, generated from the built library — no .udl, no build.rs.
+    #    Generated once, from the macOS slice, and used by both apps: this
+    #    reads UniFFI *metadata* out of the library rather than compiling
+    #    anything, and the Swift it emits names no platform.
+    #
     #    `--locked` is not optional: the generator lives outside the workspace
     #    precisely so its cargo-platform pin survives, and `cargo build` without
     #    it would re-resolve to a version that needs rustc 1.91.
-    first=$(echo {{ffi_slices}} | awk '{print $1}')
+    first=$(echo {{macos_slices}} | awk '{print $1}')
     cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
     tools/uniffi-bindgen/target/release/uniffi-bindgen generate \
       --library "target/$first/release/lib{{ffi_lib}}.dylib" \
@@ -133,20 +157,28 @@ macos-xcframework:
     #    named <lib>FFI.modulemap, which Xcode does not look for, and it emits
     #    `use Darwin` / `use _Builtin_stdbool` / `use _Builtin_stdint` lines
     #    that fail to resolve there. Rewriting it is the fix; the module name
-    #    must stay <lib>FFI to match the generated `import`.
+    #    must stay <lib>FFI to match the generated `import`. One set of headers
+    #    serves all three platforms — the C API does not vary by target.
     cp "out/swift/{{ffi_lib}}FFI.h" build/headers/
     printf 'module %sFFI {\n    header "%sFFI.h"\n    export *\n}\n' \
       {{ffi_lib}} {{ffi_lib}} > build/headers/module.modulemap
 
-    # 4. One fat static lib, then package it.
-    libs=""
-    for t in {{ffi_slices}}; do libs="$libs target/$t/release/lib{{ffi_lib}}.a"; done
-    lipo -create $libs -output "build/macos/lib{{ffi_lib}}.a"
+    # 4. One fat static lib per platform, then package the three together.
+    fatten() {
+      local out="$1"; shift
+      local libs=()
+      for t in "$@"; do libs+=("target/$t/release/lib{{ffi_lib}}.a"); done
+      lipo -create "${libs[@]}" -output "build/$out/lib{{ffi_lib}}.a"
+    }
+    fatten macos {{macos_slices}}
+    fatten ios {{ios_slices}}
+    fatten ios-sim {{ios_sim_slices}}
     xcodebuild -create-xcframework \
-      -library "build/macos/lib{{ffi_lib}}.a" \
-      -headers build/headers \
+      -library "build/macos/lib{{ffi_lib}}.a" -headers build/headers \
+      -library "build/ios/lib{{ffi_lib}}.a" -headers build/headers \
+      -library "build/ios-sim/lib{{ffi_lib}}.a" -headers build/headers \
       -output "out/{{ffi_fw}}.xcframework"
-    echo "out/{{ffi_fw}}.xcframework + out/swift/{{ffi_lib}}.swift"
+    echo "out/{{ffi_fw}}.xcframework (macOS + iOS + iOS Simulator) + out/swift/{{ffi_lib}}.swift"
 
 # Generate the Xcode project, build the macOS app, and run its tests.
 #
@@ -155,7 +187,7 @@ macos-xcframework:
 # own `SunriseFFI` target would rebuild it. `.xcodeproj` is gitignored: this
 # recipe is the only supported way to get one.
 [group('macos')]
-macos-app: macos-xcframework
+macos-app: apple-xcframework
     #!/usr/bin/env bash
     set -euo pipefail
     cd apps/macos
@@ -170,7 +202,7 @@ macos-app: macos-xcframework
 
 # Drive the real window (XCUITest); needs `sudo DevToolsSecurity -enable` once
 [group('macos')]
-macos-uitest: macos-xcframework
+macos-uitest: apple-xcframework
     #!/usr/bin/env bash
     set -euo pipefail
     # Separate from `macos-app` because it needs one thing a build must not do
@@ -195,7 +227,7 @@ macos-uitest: macos-xcframework
 
 # Generate the Xcode project and open it. Everyday development entry point.
 [group('macos')]
-macos-open: macos-xcframework
+macos-open: apple-xcframework
     cd apps/macos && xcodegen generate --quiet && open Sunrise.xcodeproj
 
 # --- Release artifacts ---

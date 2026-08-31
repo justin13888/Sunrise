@@ -21,7 +21,7 @@ description = "Quarantined UniFFI binding generator. Build tool only; never ship
 # pinning cargo-platform to 0.3.2 — whose MSRV is exactly 1.88.
 #
 # That pin is load-bearing. `cargo update` in this directory will re-break it;
-# use `cargo build --locked`, which is what `just macos-xcframework` does.
+# use `cargo build --locked`, which is what `just apple-xcframework` does.
 [workspace]
 
 [dependencies]
