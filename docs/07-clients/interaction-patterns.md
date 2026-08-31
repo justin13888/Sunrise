@@ -123,7 +123,7 @@ would perform exists and is tested — `TaskListModel.bind(_:to:)`, the same
 list beside the grid makes the cell reachable without new core work. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-Every other cell is live in `apps/macos`: `TaskRowView` is `.draggable`, and the
+Every other cell is live in `apps/apple`: `TaskRowView` is `.draggable`, and the
 drop targets are the sidebar's stream and context rows (`BrowseSidebar`), the
 task rows themselves (`TaskListView`, which declines the drop in Today and in
 Search because the core ranks those lists), the calendar grid and its block

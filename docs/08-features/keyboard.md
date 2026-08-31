@@ -19,8 +19,8 @@ Defaults follow platform conventions.
 > targets: macOS is the only shipping GUI client.
 
 > **Reading the macOS column.** Every binding below is **implemented and
-> reachable** in `apps/macos`, transcribed as data in
-> `apps/macos/Sunrise/Keyboard/Keymap.swift` and resolved in one of two scopes
+> reachable** in `apps/apple`, transcribed as data in
+> `apps/apple/Sunrise/Keyboard/Keymap.swift` and resolved in one of two scopes
 > (`.application`, attached to the window; `.list`, attached to the task list).
 > The Win/Linux and Web columns are specification for unbuilt targets — nothing
 > in them has been implemented, and they should be read as intent.
@@ -83,7 +83,7 @@ below. Remapping is roadmap, not v1.
 ### Note editor
 
 The rich-text editor on a Task's body carries its own inline-formatting keymap
-(`apps/macos/Sunrise/Notes/NoteInlineText.swift`), which the list keymap does
+(`apps/apple/Sunrise/Notes/NoteInlineText.swift`), which the list keymap does
 not shadow:
 
 | Action | macOS |

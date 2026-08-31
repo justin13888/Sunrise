@@ -45,7 +45,7 @@ jobs:
     name: macOS app (xcframework + SwiftLint + XCTest)
     # `macos-26` is the arm64 Tahoe image; `macos-latest` points at the same
     # one today, but this pin is load-bearing rather than cosmetic:
-    # apps/macos/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
+    # apps/apple/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
     # earlier image can build. macOS 26 ships Xcode 26.6 by default (Xcode 26.0
     # through 26.6 are all present), matching the SDK the app is developed
     # against, so nothing here is approximated — the deployment target is met
@@ -55,7 +55,7 @@ jobs:
     #
     # Cost note: macOS minutes bill at 10x Linux, and this job builds a release
     # xcframework and runs XCTest. If minutes become the constraint, the lever
-    # is a path filter on `apps/macos/**` + `crates/sunrise-core-bindings/**`,
+    # is a path filter on `apps/apple/**` + `crates/sunrise-core-bindings/**`,
     # not deleting the job — nothing else in CI compiles a line of Swift.
     runs-on: macos-26
     timeout-minutes: 60

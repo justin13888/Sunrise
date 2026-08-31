@@ -24,7 +24,7 @@ enum DeepLink: Equatable, Sendable {
     /// `sunrise://task/<id>?action=…` — act on one task.
     case task(EntityRef, TaskLinkAction)
 
-    /// The scheme, lowercase. Registered in `apps/macos/project.yml`.
+    /// The scheme, lowercase. Registered in `apps/apple/project.yml`.
     static let scheme = "sunrise"
 
     /// Parse a URL, or refuse it.

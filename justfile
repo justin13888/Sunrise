@@ -108,7 +108,7 @@ ios_slices     := "aarch64-apple-ios"
 ios_sim_slices := "aarch64-apple-ios-sim"
 
 # Deployment targets. Each must equal the matching `options.deploymentTarget`
-# entry in apps/macos/project.yml; see the note in `apple-xcframework`.
+# entry in apps/apple/project.yml; see the note in `apple-xcframework`.
 macos_target := "26.0"
 ios_target   := "26.0"
 
@@ -190,7 +190,7 @@ apple-xcframework:
 macos-app: apple-xcframework
     #!/usr/bin/env bash
     set -euo pipefail
-    cd apps/macos
+    cd apps/apple
     xcodegen generate --quiet
     swiftlint lint --strict --quiet --config .swiftlint.yml
     xcodebuild test \
@@ -215,7 +215,7 @@ macos-uitest: apple-xcframework
       echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
       exit 1
     fi
-    cd apps/macos
+    cd apps/apple
     xcodegen generate --quiet
     xcodebuild test \
       -project Sunrise.xcodeproj \
@@ -228,7 +228,7 @@ macos-uitest: apple-xcframework
 # Generate the Xcode project and open it. Everyday development entry point.
 [group('macos')]
 macos-open: apple-xcframework
-    cd apps/macos && xcodegen generate --quiet && open Sunrise.xcodeproj
+    cd apps/apple && xcodegen generate --quiet && open Sunrise.xcodeproj
 
 # --- Release artifacts ---
 

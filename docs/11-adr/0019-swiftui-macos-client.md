@@ -50,7 +50,7 @@ was observed, not reasoned about.
 
 ## Decision
 
-**The v1 graphical client is a native SwiftUI app for macOS**, in `apps/macos/`,
+**The v1 graphical client is a native SwiftUI app for macOS**, in `apps/apple/`,
 talking to `sunrise-core` through a **UniFFI seam** in
 `crates/sunrise-core-bindings`. Every other client — iOS, Android, Web, and the
 TUI — is **deferred**, with no date.

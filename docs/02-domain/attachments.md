@@ -111,7 +111,7 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 
 - `sunrise-cli` has no attachment surface at all — no subcommand reaches
   `AttachFile`, `DetachFile` or `TaskAttachments`. Attachments are macOS-only
-  in v1 (`apps/macos/Sunrise/Tasks/AttachmentsModel.swift`).
+  in v1 (`apps/apple/Sunrise/Tasks/AttachmentsModel.swift`).
 - Web in private-browsing mode cannot persist large attachment caches; falls back to per-session memory cache.
 
 ## Deletion

@@ -24,7 +24,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
 - **Rust core** (`crates/`): a Cargo workspace of 21 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
-- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/macos`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
+- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/apple`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
 
 ### Project structure
 
@@ -48,7 +48,7 @@ crates/        Rust workspace — the shared core, the server, the clients' core
 tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/
-  macos/       Native SwiftUI client over the UniFFI seam — see ADR-0019
+  apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
   sunrise-ui/  Shared UI tokens, consumed only by the deferred web app

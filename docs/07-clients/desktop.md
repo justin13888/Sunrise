@@ -4,7 +4,7 @@ status: accepted
 
 # macOS Client
 
-A native **SwiftUI** application in `apps/macos/`. The Sunrise core is a Rust
+A native **SwiftUI** application in `apps/apple/`. The Sunrise core is a Rust
 static library, reached through a UniFFI seam
 ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)).
 
@@ -19,7 +19,7 @@ and one entry in the justfile's `ffi_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 18k lines of Swift under `apps/macos/Sunrise/`, covered by 471 Swift
+Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 471 Swift
 Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
