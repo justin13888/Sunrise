@@ -49,6 +49,7 @@ impl Client {
         let metrics = state.metrics.clone();
         let clock = state.clock.clone();
         let service = state_service(state);
+
         Self {
             service,
             metrics,
@@ -188,7 +189,8 @@ impl Client {
 
 /// Build the router over `state`.
 fn state_service(state: ServerState) -> Service<ServerState> {
-    super::router()
+    let config = ServerConfig::clone(&state.config);
+    super::router(&config)
         .build(state)
         .expect("the typed surface must build")
 }

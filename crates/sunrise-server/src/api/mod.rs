@@ -32,6 +32,8 @@ pub mod devices;
 pub mod error;
 pub mod health;
 pub mod meta;
+pub mod metrics;
+pub mod observe;
 pub mod signed;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -45,15 +47,34 @@ pub(crate) mod testing;
 /// # Errors
 /// Returns kynos's error when the router cannot be described at 3.2.
 pub fn document() -> kynos::Result<kynos::openapi::Document> {
-    router().openapi_as(kynos::openapi::SpecVersion::V3_2)
+    // The defaults, because the *shape* of the description does not vary with
+    // them: `BodySize` contributes 413 to every operation whatever the limit
+    // is, and an undocumented `Cors` contributes nothing either way. What would
+    // vary is the numbers, and no number appears in the document.
+    router(&crate::ServerConfig::default()).openapi_as(kynos::openapi::SpecVersion::V3_2)
 }
+
+/// The router's type, interceptor stack included.
+///
+/// kynos carries the mounted interceptors in the router's type so that two of
+/// them claiming the same status is a compile error rather than a surprise at
+/// build time. The cost is that the stack has to be named here; the benefit is
+/// that adding a second body limit would not compile.
+pub type ApiRouter = kynos::Router<
+    ServerState,
+    kynos::middleware::catch_panic::Propagate,
+    kynos::middleware::stack::Cons<
+        kynos::middleware::cors::Cors,
+        kynos::middleware::stack::Cons<kynos::middleware::limits::BodySize, ()>,
+    >,
+>;
 
 /// Build the typed router for every ported operation.
 ///
 /// # Errors
 /// Returns kynos's build error when the router cannot be described — a route
 /// whose operations conflict, or a handler whose types do not resolve.
-pub fn router() -> kynos::Router<ServerState> {
+pub fn router(config: &crate::ServerConfig) -> ApiRouter {
     kynos::Router::<ServerState>::new()
         // Named, because the description is about to become a published
         // artefact that `spargen` reads: kynos's default `Info` is
@@ -78,10 +99,115 @@ pub fn router() -> kynos::Router<ServerState> {
             blobs::put_chunk,
             blobs::fetch
         ])
+        .merge(operator_surface(config))
+        // Configuring the limit and documenting that a limit exists are one
+        // action here: `BodySize` contributes 413 to every operation it covers,
+        // so an API cannot quietly reject payloads it claims to accept.
+        .intercept(kynos::middleware::limits::BodySize::new(
+            config.max_body_bytes as u64,
+        ))
+        .intercept(cors(config))
+        .observe(observe::RequestLog)
+}
+
+/// `/metrics`, mounted only where the documented contract allows serving it.
+///
+/// An empty router on a non-loopback bind, so the operation is absent from the
+/// description as well as from the router: the document does not advertise a
+/// surface this deployment refuses to serve.
+fn operator_surface(config: &crate::ServerConfig) -> kynos::Router<ServerState> {
+    if crate::config::binds_loopback(&config.bind) {
+        kynos::Router::<ServerState>::new().mount(kynos::routes![metrics::metrics])
+    } else {
+        tracing::warn!(
+            ev = "srv.start.metrics_withheld",
+            bind = %config.bind,
+            "/metrics is not mounted: the listener is not loopback"
+        );
+        kynos::Router::<ServerState>::new()
+    }
+}
+
+/// The CORS policy, as an exact-match allowlist.
+///
+/// Origins are never reflected back, and `*` is rejected at config validation:
+/// a wildcard origin paired with credentials is what made the v0 API reachable
+/// from any page. kynos refuses that combination at build time as well, so the
+/// rule is now enforced twice by two components that cannot disagree about it.
+fn cors(config: &crate::ServerConfig) -> kynos::middleware::cors::Cors {
+    let mut policy = kynos::middleware::cors::Cors::new()
+        .allow_methods([kynos::openapi::Method::Get, kynos::openapi::Method::Post])
+        .allow_headers(["authorization", "content-type"]);
+    if !config.allowed_origins.is_empty() {
+        policy = policy.allow_origins(config.allowed_origins.clone());
+    }
+    policy
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::api::testing::Client;
+    use crate::ServerConfig;
+    use kynos::http::{Method, StatusCode};
+
+    /// A body over the limit is refused, and the description says so.
+    ///
+    /// Both halves matter: `tower-http`'s `RequestBodyLimitLayer` enforced a cap
+    /// no document mentioned, so the API rejected payloads it claimed to
+    /// accept. `BodySize` contributes the 413 it enforces.
+    #[tokio::test]
+    async fn a_body_over_the_limit_is_refused_and_described() {
+        let client = Client::new(ServerConfig {
+            max_body_bytes: 128,
+            ..ServerConfig::default()
+        });
+
+        let res = client
+            .send(
+                Method::POST,
+                "/api/v1/devices",
+                Some(&serde_json::json!({
+                    "device_pub_s": "x",
+                    "nickname": "y".repeat(4096),
+                    "platform": "linux",
+                })),
+            )
+            .await;
+        res.assert_status(StatusCode::PAYLOAD_TOO_LARGE);
+
+        let doc = super::document().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&doc.to_json().unwrap()).unwrap();
+        assert!(
+            v["paths"]["/api/v1/devices"]["post"]["responses"]
+                .get("413")
+                .is_some(),
+            "the limit must be described where it is enforced"
+        );
+    }
+
+    /// The default is to deny every cross-origin request rather than to reflect
+    /// whatever asked. A wildcard origin paired with credentials is what made
+    /// the v0 API reachable from any page.
+    #[tokio::test]
+    async fn no_configured_origin_means_no_cross_origin_access() {
+        let client = Client::new(ServerConfig::default());
+        let res = client
+            .send_with(
+                Method::GET,
+                "/api/v1/health",
+                None,
+                None,
+                &[("origin", "https://evil.example")],
+            )
+            .await;
+
+        assert!(
+            !String::from_utf8_lossy(&res.bytes).contains("evil.example"),
+            "an origin must never be reflected into the body"
+        );
+        res.assert_status(StatusCode::OK);
+    }
+
     /// The committed description is the one the handlers produce.
     ///
     /// `spargen` generates the client from a *file*, so that file is an input to

@@ -20,6 +20,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         }
       }
@@ -39,6 +42,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         }
       }
@@ -205,6 +211,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -356,6 +365,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -510,6 +522,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -679,6 +694,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -833,6 +851,9 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -987,6 +1008,9 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -1148,6 +1172,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -1309,6 +1336,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -1482,6 +1512,9 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -1641,6 +1674,9 @@
                 "itemSchema": {}
               }
             }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
           }
         },
         "security": [
@@ -1648,6 +1684,88 @@
             "AccountToken": []
           }
         ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "The counter registry, in the Prometheus text exposition format.",
+        "description": "Unauthenticated, and mounted only on a loopback listener — see the module\ndocs for why those two facts belong together.",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        }
       }
     }
   },
