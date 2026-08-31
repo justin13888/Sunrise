@@ -42,6 +42,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_sort_order",
         sql: include_str!("../migrations/0014_stream_sort_order.sql"),
     },
+    Migration {
+        id: 15,
+        name: "entity_extra_columns",
+        sql: include_str!("../migrations/0015_entity_extra_columns.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

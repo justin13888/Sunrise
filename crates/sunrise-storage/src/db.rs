@@ -390,11 +390,15 @@ mod tests {
             "merge_journal is a per-field journal for an entity-level merge model"
         );
 
+        // `routines.extra` is deliberately NOT in this list any more. The
+        // baseline dropped it because it had no reader — 0004 recorded it as
+        // "left NULL" and it still was — and `0015_entity_extra_columns.sql`
+        // reinstates it with one, which is the exact condition its removal was
+        // predicated on. A column that is written and read is not dead schema.
         for (table, column) in [
             ("streams", "doc_blob"),
             ("streams", "doc_blob_v"),
             ("routines", "rrule"),
-            ("routines", "extra"),
         ] {
             let n: i64 = db
                 .conn()
@@ -405,6 +409,50 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(n, 0, "`{table}.{column}` was dropped by the reset");
+        }
+    }
+
+    /// 0015 gives every column-projected entity an `extra` blob, so forward-
+    /// compat unknowns survive materialization rather than only `tasks`,
+    /// `blocks` and `attachments` doing so.
+    ///
+    /// The two exclusions are asserted too, because both are decisions rather
+    /// than omissions: `focus_interruptions` holds the one entity with no
+    /// `unknown` map (its whole value is its key), and `review_snapshots`
+    /// already round-trips through its whole-record CBOR `body` blob, so a
+    /// column there would be a second home for the same data.
+    #[test]
+    fn every_column_projected_entity_has_an_extra_blob() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        let has_extra = |table: &str| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = 'extra'",
+                    rusqlite::params![table],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+
+        for table in [
+            "tasks",
+            "blocks",
+            "attachments",
+            "streams",
+            "contexts",
+            "routines",
+            "focus_sessions",
+            "focus_session_ends",
+        ] {
+            assert_eq!(has_extra(table), 1, "`{table}.extra` must exist");
+        }
+
+        for table in ["focus_interruptions", "review_snapshots"] {
+            assert_eq!(
+                has_extra(table),
+                0,
+                "`{table}` is deliberately exempt; see 0015's header"
+            );
         }
     }
 

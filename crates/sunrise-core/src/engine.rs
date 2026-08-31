@@ -3184,11 +3184,12 @@ fn insert_focus_start_row(
     f: &FocusStart,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    let extra_blob = encode_unknowns(&f.unknown)?;
     tx.execute(
         "INSERT OR IGNORE INTO focus_sessions
          (id, task_id, stream_id, started_at_ms, planned_ms, energy, kind,
-          chunk_index, chunk_total, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          chunk_index, chunk_total, extra, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.id.bytes()[..],
             &f.task_id.bytes()[..],
@@ -3199,6 +3200,7 @@ fn insert_focus_start_row(
             f.kind.as_str(),
             f.chunk.map(|c| i64::from(c.index)),
             f.chunk.map(|c| i64::from(c.total)),
+            extra_blob,
             lww.hlc.physical_ms as i64,
             lww.hlc.logical,
             lww.seq as i64,
@@ -3216,15 +3218,18 @@ fn insert_focus_end_row(
     f: &FocusEnd,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    let extra_blob = encode_unknowns(&f.unknown)?;
     tx.execute(
         "INSERT OR IGNORE INTO focus_session_ends
-         (session_id, ended_at_ms, actual_focused_ms, completed_task, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (session_id, ended_at_ms, actual_focused_ms, completed_task, extra,
+          lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &f.session_id.bytes()[..],
             f.ended_at_ms() as i64,
             f.actual_focused_ms as i64,
             i64::from(f.completed_task),
+            extra_blob,
             lww.hlc.physical_ms as i64,
             lww.hlc.logical,
             lww.seq as i64,
@@ -3341,8 +3346,8 @@ fn read_focus_sessions(
 ) -> Result<Vec<FocusSession>, EngineError> {
     let sql = format!(
         "SELECT s.id, s.task_id, s.stream_id, s.started_at_ms, s.planned_ms, s.energy, s.kind,
-                s.chunk_index, s.chunk_total,
-                e.ended_at_ms, e.actual_focused_ms, e.completed_task
+                s.chunk_index, s.chunk_total, s.extra,
+                e.ended_at_ms, e.actual_focused_ms, e.completed_task, e.extra
          FROM focus_sessions s
            LEFT JOIN focus_session_ends e ON e.session_id = s.id
          {tail_sql}"
@@ -3360,9 +3365,11 @@ fn read_focus_sessions(
                 r.get::<_, String>(6)?,
                 r.get::<_, Option<i64>>(7)?,
                 r.get::<_, Option<i64>>(8)?,
-                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<Vec<u8>>>(9)?,
                 r.get::<_, Option<i64>>(10)?,
                 r.get::<_, Option<i64>>(11)?,
+                r.get::<_, Option<i64>>(12)?,
+                r.get::<_, Option<Vec<u8>>>(13)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3386,16 +3393,16 @@ fn read_focus_sessions(
             energy: v.5.as_deref().and_then(parse_energy),
             kind: FocusKind::from_str_opt(&v.6).unwrap_or(FocusKind::Work),
             chunk,
-            unknown: Unknowns::new(),
+            unknown: decode_unknowns(v.9),
         };
         let mine = interruptions.get(&id).cloned().unwrap_or_default();
-        let end = v.9.map(|ended| FocusEnd {
+        let end = v.10.map(|ended| FocusEnd {
             session_id: id,
             ended_at: sunrise_domain::epoch_ms::from_u64(u64::try_from(ended.max(0)).unwrap_or(0)),
-            actual_focused_ms: v.10.and_then(|m| u64::try_from(m.max(0)).ok()).unwrap_or(0),
+            actual_focused_ms: v.11.and_then(|m| u64::try_from(m.max(0)).ok()).unwrap_or(0),
             interruptions: mine.clone(),
-            completed_task: v.11.unwrap_or(0) != 0,
-            unknown: Unknowns::new(),
+            completed_task: v.12.unwrap_or(0) != 0,
+            unknown: decode_unknowns(v.13),
         });
         out.push(FocusSession {
             start,
@@ -3544,13 +3551,14 @@ fn last_stream_sort_order(conn: &rusqlite::Connection) -> Result<Option<String>,
 fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
+    let extra_blob = encode_unknowns(&s.unknown)?;
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
           parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color, icon,
-          paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order,
+          paused, paused_until_ms, review_cadence, reminder_lead_s, sort_order, extra,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             vec![0u8; 32],
@@ -3567,6 +3575,7 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             cadence_str(s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3579,11 +3588,12 @@ fn insert_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
 fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
+    let extra_blob = encode_unknowns(&s.unknown)?;
     tx.execute(
         "UPDATE streams
          SET parent_id = ?, archived = ?, deleted = ?, updated_at_ms = ?,
              name = ?, color = ?, icon = ?, paused = ?, paused_until_ms = ?,
-             review_cadence = ?, reminder_lead_s = ?, sort_order = ?,
+             review_cadence = ?, reminder_lead_s = ?, sort_order = ?, extra = ?,
              lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE stream_id = ?",
         params![
@@ -3599,6 +3609,7 @@ fn update_stream_row(tx: &Transaction<'_>, s: &Stream, lww: &LwwStamp) -> rusqli
             cadence_str(s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3614,7 +3625,8 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
     let row = conn
         .query_row(
             "SELECT parent_id, archived, deleted, created_at_ms, updated_at_ms, name, color,
-                    paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order
+                    paused, paused_until_ms, review_cadence, icon, reminder_lead_s, sort_order,
+                    extra
              FROM streams WHERE stream_id = ?",
             params![id_blob],
             |r| {
@@ -3632,6 +3644,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
                     r.get::<_, Option<String>>(10)?,
                     r.get::<_, Option<u32>>(11)?,
                     r.get::<_, String>(12)?,
+                    r.get::<_, Option<Vec<u8>>>(13)?,
                 ))
             },
         )
@@ -3650,6 +3663,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         icon,
         reminder_lead_s,
         sort_order,
+        extra,
     )) = row
     else {
         return Ok(None);
@@ -3678,7 +3692,7 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
         review_cadence: parse_cadence(&cadence_str),
         default_context: None,
         deleted: deleted != 0,
-        unknown: Unknowns::new(),
+        unknown: decode_unknowns(extra),
     };
     Ok(Some(stream))
 }
@@ -3686,11 +3700,12 @@ fn read_stream(conn: &rusqlite::Connection, id: &[u8; 16]) -> Result<Option<Stre
 // ---- context table operations ----
 
 fn insert_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusqlite::Result<()> {
+    let extra_blob = encode_unknowns(&c.unknown)?;
     tx.execute(
         "INSERT INTO contexts
-         (id, name, description, archived, deleted, created_at_ms, updated_at_ms,
+         (id, name, description, archived, deleted, created_at_ms, updated_at_ms, extra,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             c.id.bytes().to_vec(),
             c.name,
@@ -3699,6 +3714,7 @@ fn insert_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusq
             c.deleted as i64,
             c.created_at.as_millisecond(),
             c.updated_at.as_millisecond(),
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3709,9 +3725,11 @@ fn insert_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusq
 }
 
 fn update_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusqlite::Result<()> {
+    let extra_blob = encode_unknowns(&c.unknown)?;
     tx.execute(
         "UPDATE contexts
          SET name = ?, description = ?, archived = ?, deleted = ?, updated_at_ms = ?,
+             extra = ?,
              lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
@@ -3720,6 +3738,7 @@ fn update_context_row(tx: &Transaction<'_>, c: &Context, lww: &LwwStamp) -> rusq
             c.archived as i64,
             c.deleted as i64,
             c.updated_at.as_millisecond(),
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -3780,7 +3799,7 @@ fn read_context(
 ) -> Result<Option<Context>, EngineError> {
     let row = conn
         .query_row(
-            "SELECT name, description, archived, deleted, created_at_ms, updated_at_ms
+            "SELECT name, description, archived, deleted, created_at_ms, updated_at_ms, extra
              FROM contexts WHERE id = ?",
             params![&id[..]],
             |r| {
@@ -3791,11 +3810,12 @@ fn read_context(
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, Option<Vec<u8>>>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((name, description, archived, deleted, created_ms, updated_ms)) = row else {
+    let Some((name, description, archived, deleted, created_ms, updated_ms, extra)) = row else {
         return Ok(None);
     };
     Ok(Some(Context {
@@ -3806,7 +3826,7 @@ fn read_context(
         description,
         archived: archived != 0,
         deleted: deleted != 0,
-        unknown: Unknowns::new(),
+        unknown: decode_unknowns(extra),
     }))
 }
 
@@ -4491,14 +4511,15 @@ fn insert_routine_row(
     let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
     let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
     let streak_blob = encode_streak_state(r)?;
+    let extra_blob = encode_unknowns(&r.unknown)?;
     tx.execute(
         "INSERT INTO routines
          (id, stream_id, rrule_text, timezone, starts_at_ms, ends_at_ms,
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
           last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
-          streak_state, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          streak_state, extra, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
@@ -4520,6 +4541,7 @@ fn insert_routine_row(
             now_ms,
             now_ms,
             streak_blob,
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -4539,6 +4561,7 @@ fn update_routine_row(tx: &Transaction<'_>, r: &Routine, lww: &LwwStamp) -> rusq
     let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
     let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
     let streak_blob = encode_streak_state(r)?;
+    let extra_blob = encode_unknowns(&r.unknown)?;
     tx.execute(
         "UPDATE routines SET
             stream_id = ?, rrule_text = ?, timezone = ?,
@@ -4546,7 +4569,8 @@ fn update_routine_row(tx: &Transaction<'_>, r: &Routine, lww: &LwwStamp) -> rusq
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
             last_completed_at_ms = ?, paused_until_ms = ?, updated_at_ms = ?,
-            streak_state = ?, lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
+            streak_state = ?, extra = ?,
+            lww_hlc_ms = ?, lww_hlc_logical = ?, lww_seq = ?, lww_device = ?
          WHERE id = ?",
         params![
             stream_blob,
@@ -4567,6 +4591,7 @@ fn update_routine_row(tx: &Transaction<'_>, r: &Routine, lww: &LwwStamp) -> rusq
             r.paused_until.map(|d| d.as_millisecond()),
             r.updated_at.as_millisecond(),
             streak_blob,
+            extra_blob,
             lww.hlc.physical_ms,
             lww.hlc.logical,
             lww.seq,
@@ -4618,6 +4643,7 @@ fn routine_from_row(
     created_ms: i64,
     updated_ms: i64,
     streak_state: Option<Vec<u8>>,
+    extra: Option<Vec<u8>>,
 ) -> Result<Routine, EngineError> {
     let rrule = sunrise_domain::RRule::parse(rrule_text)
         .map_err(|e| EngineError::Invalid(format!("stored rrule: {e}")))?;
@@ -4654,14 +4680,14 @@ fn routine_from_row(
         paused_until: paused_until_ms.map(|m| ms_to_ts(m.max(0))),
         archived: archived != 0,
         deleted: deleted != 0,
-        unknown: Unknowns::new(),
+        unknown: decode_unknowns(extra),
     })
 }
 
 const ROUTINE_COLUMNS: &str = "rrule_text, timezone, starts_at_ms, ends_at_ms,
      streak_counter, paused, archived, deleted, scheduling_constraints,
      template, skip_dates, skipped_keys, catchup_policy, last_completed_at_ms,
-     paused_until_ms, created_at_ms, updated_at_ms, streak_state";
+     paused_until_ms, created_at_ms, updated_at_ms, streak_state, extra";
 
 fn read_routine(
     conn: &rusqlite::Connection,
@@ -4692,6 +4718,7 @@ fn read_routine(
                 r.get::<_, i64>(15)?,
                 r.get::<_, i64>(16)?,
                 r.get::<_, Option<Vec<u8>>>(17)?,
+                r.get::<_, Option<Vec<u8>>>(18)?,
             ))
         })
         .optional()?;
@@ -4700,7 +4727,7 @@ fn read_routine(
     };
     let routine = routine_from_row(
         id, &v.0, v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, &v.12, v.13, v.14, v.15,
-        v.16, v.17,
+        v.16, v.17, v.18,
     )?;
     Ok(Some(routine))
 }
@@ -4732,6 +4759,7 @@ fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>, EngineErro
                 r.get::<_, i64>(16)?,
                 r.get::<_, i64>(17)?,
                 r.get::<_, Option<Vec<u8>>>(18)?,
+                r.get::<_, Option<Vec<u8>>>(19)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -4742,7 +4770,7 @@ fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>, EngineErro
         id[..take].copy_from_slice(&v.0[..take]);
         out.push(routine_from_row(
             &id, &v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, v.12, &v.13, v.14, v.15,
-            v.16, v.17, v.18,
+            v.16, v.17, v.18, v.19,
         )?);
     }
     Ok(out)
@@ -10728,6 +10756,201 @@ mod tests {
         let re = sunrise_cbor::encode_canonical(&back).unwrap();
         let decoded: sunrise_domain::Task = sunrise_cbor::decode_canonical(&re).unwrap();
         assert_eq!(decoded.unknown, future_fields());
+    }
+
+    /// The same guarantee, for the five entities that did NOT have it.
+    ///
+    /// `tasks.extra`, `blocks.extra` and `attachments.extra` were the whole of
+    /// the implementation. `streams`, `contexts`, `routines`, `focus_sessions`
+    /// and `focus_session_ends` had no column at all, and their readers
+    /// hardcoded `Unknowns::new()` — so an older build that merely read and
+    /// re-saved one of them emitted a truncated full-state op, and entity-level
+    /// LWW (ADR-0014) carried the truncation to every replica. The client
+    /// advertises capability bit 34 `CLI_FORWARD_COMPAT` as a REQUIRED v1 bit
+    /// while doing this, which is what made it a contract violation rather
+    /// than a missing feature.
+    ///
+    /// Each case asserts both halves: the projection remembers, and the
+    /// entity's canonical CBOR carries the fields back out to peers.
+    #[test]
+    fn unknown_stream_fields_survive_the_materialized_row() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Work".into(),
+                    description: None,
+                    color: None,
+                    parent_id: None,
+                    review_cadence: None,
+                    reminder_lead_s: None,
+                }),
+            )
+            .unwrap();
+
+        let mut stream = read_stream(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("stream exists");
+        stream.unknown = future_fields();
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| update_stream_row(tx, &stream, &lww))
+            .unwrap();
+
+        let back = read_stream(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("stream exists");
+        assert_eq!(back.unknown, future_fields());
+
+        let re = sunrise_cbor::encode_canonical(&back).unwrap();
+        let decoded: sunrise_domain::Stream = sunrise_cbor::decode_canonical(&re).unwrap();
+        assert_eq!(decoded.unknown, future_fields());
+    }
+
+    #[test]
+    fn unknown_context_fields_survive_the_materialized_row() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let created = e
+            .apply(
+                &mut db,
+                Command::CreateContext(ContextDraft {
+                    name: "errands".into(),
+                    description: None,
+                }),
+            )
+            .unwrap();
+
+        let mut ctx = read_context(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("context exists");
+        ctx.unknown = future_fields();
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| update_context_row(tx, &ctx, &lww)).unwrap();
+
+        let back = read_context(db.conn(), created.entity.bytes())
+            .unwrap()
+            .expect("context exists");
+        assert_eq!(back.unknown, future_fields());
+
+        let re = sunrise_cbor::encode_canonical(&back).unwrap();
+        let decoded: sunrise_domain::Context = sunrise_cbor::decode_canonical(&re).unwrap();
+        assert_eq!(decoded.unknown, future_fields());
+    }
+
+    #[test]
+    fn unknown_routine_fields_survive_the_materialized_row() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let stream = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Home".into(),
+                    description: None,
+                    color: None,
+                    parent_id: None,
+                    review_cadence: None,
+                    reminder_lead_s: None,
+                }),
+            )
+            .unwrap()
+            .entity;
+        let draft = routine_draft(
+            stream,
+            "FREQ=DAILY",
+            T0 as i64,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let rid = e
+            .apply(&mut db, Command::CreateRoutine(draft))
+            .unwrap()
+            .entity;
+
+        let mut routine = read_routine(db.conn(), rid.bytes())
+            .unwrap()
+            .expect("routine exists");
+        routine.unknown = future_fields();
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| update_routine_row(tx, &routine, &lww))
+            .unwrap();
+
+        let back = read_routine(db.conn(), rid.bytes())
+            .unwrap()
+            .expect("routine exists");
+        assert_eq!(back.unknown, future_fields());
+
+        let re = sunrise_cbor::encode_canonical(&back).unwrap();
+        let decoded: sunrise_domain::Routine = sunrise_cbor::decode_canonical(&re).unwrap();
+        assert_eq!(decoded.unknown, future_fields());
+    }
+
+    /// The focus family is append-only (ADR-0013), so the unknown fields have
+    /// to arrive with the insert rather than a later update — which is exactly
+    /// how a newer peer's `focus.start` / `focus.end` op reaches this build.
+    #[test]
+    fn unknown_focus_fields_survive_the_materialized_row() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let e = engine_seeded(ROOT, [1u8; 32], clock);
+        let mut db = db_root(ROOT);
+
+        let task = e
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "focus target".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let stream = read_task_t(&e, &db, task).stream_id;
+
+        let session = EntityRef::new(EntityKind::FocusSession, [9u8; 16]);
+        let start = FocusStart {
+            id: session,
+            task_id: task,
+            stream_id: stream,
+            started_at: sunrise_domain::epoch_ms::from_u64(T0),
+            planned_ms: None,
+            energy: None,
+            kind: FocusKind::Work,
+            chunk: None,
+            unknown: future_fields(),
+        };
+        let end = FocusEnd {
+            session_id: session,
+            ended_at: sunrise_domain::epoch_ms::from_u64(T0 + 1_000),
+            actual_focused_ms: 1_000,
+            interruptions: Vec::new(),
+            completed_task: false,
+            unknown: future_fields(),
+        };
+        let lww = e.lww_stamp(2);
+        db.with_tx(|tx| {
+            insert_focus_start_row(tx, &start, &lww)?;
+            insert_focus_end_row(tx, &end, &lww)
+        })
+        .unwrap();
+
+        let sessions = read_focus_sessions(db.conn(), "", &[]).unwrap();
+        let got = sessions
+            .iter()
+            .find(|s| s.start.id == session)
+            .expect("session exists");
+        assert_eq!(got.start.unknown, future_fields());
+        assert_eq!(
+            got.end.as_ref().expect("end exists").unknown,
+            future_fields()
+        );
     }
 
     /// An enum value from a newer schema must degrade, not reject: rejecting
