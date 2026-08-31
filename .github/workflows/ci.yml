@@ -98,6 +98,44 @@ jobs:
       - name: just macos-app
         run: just macos-app
 
+  ios-app:
+    name: iOS app (xcframework + SwiftLint + XCTest + XCUITest)
+    # Same image and same pin as `macos-app`, for the same reason:
+    # apps/apple/project.yml sets `deploymentTarget.iOS: "26.0"`, and the iOS
+    # 26 SDK and simulators ship with the Xcode on `macos-26`.
+    #
+    # A separate job rather than a step on `macos-app`. The two share only the
+    # xcframework, they fail for different reasons, and a red iOS test run
+    # should not hide a green macOS one — nor cost the macOS build its result
+    # when the simulator is the thing that broke.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      # As in `macos-app`: this job builds `tools/uniffi-bindgen`, whose
+      # third-party tree is not ours to keep warning-free.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - name: Install just, XcodeGen and SwiftLint
+        run: brew install --quiet just xcodegen swiftlint
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
+          xcrun simctl list devices available | grep -i iphone
+      # One recipe, as with macOS. `just ios-app` builds the three-slice
+      # xcframework, runs `xcodegen generate`, `swiftlint --strict`, and
+      # `xcodebuild test` against the iPhone 17 Pro simulator — which runs both
+      # the shared `SunriseTests` bundle and, unlike the macOS job, the UI
+      # tests: a simulator runner needs no change to the machine's security
+      # posture, so there is nothing to opt into.
+      - name: just ios-app
+        run: just ios-app
+
   rust-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
