@@ -83,6 +83,11 @@ tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "ti
 # `Router::nest` rewrites `Uri` to the path *inside* the nest, and the device
 # signature covers the target the client actually sent.
 axum = { version = "0.7", default-features = false, features = ["json", "ws", "http1", "http2", "original-uri", "tokio", "tracing"] }
+# The REST surface's framework and its OpenAPI 3.2 document (ADR-0021).
+# `openapi32` is what makes an event stream describable at all -- 3.1 has no
+# `itemSchema`, so `response::stream` is a 3.2-only subtree, and ADR-0023's sync
+# transport needs it.
+kynos = { version = "0.1", default-features = false, features = ["openapi32", "macros", "server", "http1", "http2", "json", "trace"] }
 hyper = { version = "1.5", default-features = false, features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }

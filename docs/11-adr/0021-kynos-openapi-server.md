@@ -86,9 +86,8 @@ the wire, not just the code:
   audit found cannot recur by the mechanism that produced it.
 * `spargen` output replaces no hand-written code, because none existed. It gives
   the account/device bootstrap its first caller.
-* `axum` leaves the workspace once ADR-0023 lands and the WebSocket goes with it.
-  Until then the relay runs kynos for REST and bare hyper for `/sync`; this is a
-  migration state, not a fallback, and it ends in the same epic.
+* `axum` leaves the workspace **in this ADR's own migration**, not with
+  ADR-0023. See the addendum below.
 * `tower-http`'s `TraceLayer`, `CorsLayer` and `RequestBodyLimitLayer` need
   kynos equivalents. The query-string scrubbing in `logging/mod.rs` is not
   optional decoration — it exists because a bearer token reached the log once
@@ -102,3 +101,48 @@ the wire, not just the code:
   layer able to observe a request before dispatch, and that its SSE support can
   serve a long-lived stream fed by the relay's broadcast hub with mid-stream
   auth expiry.
+
+## Addendum — `upgrade_unchecked`, and no second stack
+
+Written against the crate's README and feature list. Both open questions above
+were then checked against the API before any route was ported, and one of them
+changed this decision.
+
+**The two questions, answered.**
+
+* *Does kynos compose with a layer that can observe a request before dispatch?*
+  Yes, as an `Interceptor`, which runs after routing and declares what it reads
+  and adds. Mounting kynos *outward* into an existing stack is free; tower layers
+  placed *inward* need a declaration or a waiver.
+* *Can its SSE serve a broadcast-fed stream with mid-stream auth expiry?* Yes.
+  `Sse<S>` wraps any `futures_core::Stream<Item = Result<Event<T>, E>>`, pulls
+  one event at a time with no buffering ahead, drops `S` when the client goes
+  away, and keeps the connection alive on a configurable interval.
+  `extract::sse::LastEventId` is the receive half, which is what
+  [ADR-0023](./0023-sse-sync-transport.md) maps the relay's durable cursor onto.
+
+**What changed.** This ADR assumed `/sync` would need bare hyper beside kynos
+for the length of the migration, because kynos cannot describe a WebSocket.
+`Router::upgrade_unchecked` exists for exactly that case — "protocol upgrades
+away from HTTP, primarily WebSockets", served only on `GET` and recorded as
+`OpaqueReason::ProtocolUpgrade`. So `/sync` is one operation carrying one named,
+auditable waiver, rather than a second HTTP stack running beside the first.
+
+That is materially better than both alternatives considered:
+
+* it is **not** `into_tower_unchecked`, which flags *every* operation as
+  `OpaqueReason::UntypedLayer` — the reason this ADR rejected wrapping in the
+  first place, applied to the whole surface instead of one route;
+* it removes the two-stack migration state entirely, so `axum` and
+  `tokio-tungstenite` leave with this change rather than with ADR-0023.
+
+`unchecked_reasons()` returns the waivers taken, deduplicated, so CI can assert
+that `ProtocolUpgrade` on `/sync` is the *only* one — a much stronger gate than
+"no waivers", which a project with a legitimate upgrade route cannot hold.
+
+**One correction to the decision text.** `openapi()` emits the lowest version
+that expresses the surface — `3.1.2` for a document with no 3.2-only construct
+in it — so "the emitted OpenAPI 3.2 document" is only true if 3.2 is *asked*
+for. `openapi_as(SpecVersion::V3_2)` targets rather than downgrades: it fails
+and names what blocks it instead of quietly emitting an older version. That is
+what the build calls, and what `the_router_describes_itself` asserts.

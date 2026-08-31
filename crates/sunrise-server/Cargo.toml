@@ -35,6 +35,7 @@ hyper-rustls = { workspace = true }
 # `client-legacy` is the pooled hyper 1.x client the JWKS fetcher drives.
 hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
 jiff = { workspace = true }
+kynos = { workspace = true }
 jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 rusqlite = { workspace = true }
