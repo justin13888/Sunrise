@@ -167,6 +167,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -317,6 +327,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -450,6 +470,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -603,6 +633,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -771,6 +811,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -915,6 +965,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -927,6 +987,660 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/init": {
+      "post": {
+        "summary": "Reserve an upload id and hand back one URL per chunk.",
+        "operationId": "init",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/finalize": {
+      "post": {
+        "summary": "Check every stored chunk and commit the blob under its content address.",
+        "operationId": "finalize",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizeResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/{upload_id}/{chunk_idx}": {
+      "put": {
+        "summary": "Store one chunk of opaque ciphertext.",
+        "operationId": "put_chunk",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "description": "The upload this chunk belongs to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chunk_idx",
+            "in": "path",
+            "description": "Zero-based index within the upload.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/{blob_id}": {
+      "get": {
+        "summary": "Stream a committed blob's ciphertext back.",
+        "description": "One chunk is read from disk at a time rather than the whole blob being\nassembled first. The surface this replaces built a single `Vec<u8>` of up to\n`MAX_BLOB_BYTES` before writing a byte, so one fetch of a large attachment\npinned 100 MB of the relay's memory for as long as the client took to read\nit — and a handful of concurrent fetches was an availability problem rather\nthan a slow response.",
+        "operationId": "fetch",
+        "parameters": [
+          {
+            "name": "blob_id",
+            "in": "path",
+            "description": "The blob being read.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "itemSchema": {}
+              }
+            }
           }
         },
         "security": [
@@ -1275,6 +1989,109 @@
           "token"
         ],
         "description": "`POST /api/v1/devices/push-tokens` request body."
+      },
+      "InitRequest": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "description": "Stream id this blob belongs to."
+          },
+          "chunk_count": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Total chunk count."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Total ciphertext size in bytes. Advisory: the server enforces the\nper-attachment ceiling here and the real size at finalize."
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "chunk_count",
+          "size_bytes"
+        ],
+        "description": "`POST /api/v1/blobs/init` request body."
+      },
+      "InitResponse": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`."
+          },
+          "chunk_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "Per-chunk upload URLs. Self-host returns relative paths under\n`/api/v1/blobs/<upload_id>/<idx>`, which the PUT operation serves."
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "chunk_urls"
+        ],
+        "description": "`POST /api/v1/blobs/init` response body."
+      },
+      "FinalizeRequest": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "description": "Upload id from `init`."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "BLAKE3 of the concatenated chunk ciphertext, 64 lowercase hex."
+          },
+          "chunk_hashes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is\nthe chunk count: `init`'s advisory count is not trusted here."
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "content_hash",
+          "chunk_hashes"
+        ],
+        "description": "`POST /api/v1/blobs/finalize` request body."
+      },
+      "FinalizeResponse": {
+        "properties": {
+          "blob_id": {
+            "type": "string",
+            "description": "Canonical blob id: `blb_` + the first 16 bytes of `content_hash` in\nlowercase hex. Content-addressed, so re-uploading identical ciphertext\nconverges on the same id."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Committed size in bytes."
+          },
+          "chunk_count": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Committed chunk count."
+          }
+        },
+        "type": "object",
+        "required": [
+          "blob_id",
+          "size_bytes",
+          "chunk_count"
+        ],
+        "description": "`POST /api/v1/blobs/finalize` response body."
       }
     },
     "securitySchemes": {

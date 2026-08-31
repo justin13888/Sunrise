@@ -27,6 +27,7 @@ use crate::state::ServerState;
 
 pub mod accounts;
 pub mod auth;
+pub mod blobs;
 pub mod devices;
 pub mod error;
 pub mod health;
@@ -70,6 +71,12 @@ pub fn router() -> kynos::Router<ServerState> {
             devices::register,
             devices::revoke,
             devices::push_tokens
+        ])
+        .mount(kynos::routes![
+            blobs::init,
+            blobs::finalize,
+            blobs::put_chunk,
+            blobs::fetch
         ])
 }
 

@@ -2540,6 +2540,7 @@ dependencies = [
  "axum",
  "base64",
  "blake3",
+ "bytes",
  "ciborium",
  "ed25519-dalek",
  "futures-util",

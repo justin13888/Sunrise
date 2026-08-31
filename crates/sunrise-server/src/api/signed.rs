@@ -59,8 +59,10 @@ use crate::api::error::ApiError;
 use crate::state::ServerState;
 use crate::store::Device;
 use kynos::error::rejection::{AuthRejection, BodyRejection};
+use kynos::extract::body::binary::Binary;
 use kynos::extract::body::json::Json;
 use kynos::extract::describe::{Describe, RequestContent};
+use kynos::extract::media::OctetStream;
 use kynos::extract::params::header::Headers;
 use kynos::extract::{FromRequest, FromRequestParts};
 use kynos::http::{Parts, Request};
@@ -114,6 +116,32 @@ pub fn verify<T: serde::Serialize>(
     path: &str,
     value: Option<&T>,
 ) -> Result<Option<Device>, ApiError> {
+    let canonical = match value {
+        Some(v) => sunrise_http_sig::canonical_json(v).map_err(|_| ApiError::unauthenticated())?,
+        None => Vec::new(),
+    };
+    verify_bytes(state, principal, sig, method, path, &canonical)
+}
+
+/// [`verify`], against a body that is already in its canonical form.
+///
+/// ADR-0022 defines the rule over the body's **canonical form**, and JSON
+/// reaches that through RFC 8785 first. A chunk of ciphertext has no key order,
+/// whitespace or escaping to normalise away, so the bytes already are it and
+/// this is the entry point a binary body uses. There is no second scheme —
+/// `header_sig_v2` covers both, which is what lets the blob store's own content
+/// hashing assert the same property from the other direction.
+///
+/// # Errors
+/// As [`verify`].
+pub fn verify_bytes(
+    state: &ServerState,
+    principal: &Principal,
+    sig: &DeviceSig,
+    method: &str,
+    path: &str,
+    canonical_body: &[u8],
+) -> Result<Option<Device>, ApiError> {
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
         if state.config.require_device_sig {
@@ -140,13 +168,13 @@ pub fn verify<T: serde::Serialize>(
         .ok_or_else(ApiError::unauthenticated)?;
 
     let date = sig.date.as_deref().ok_or_else(ApiError::unauthenticated)?;
-    sunrise_http_sig::verify(
+    sunrise_http_sig::verify_canonical(
         &device.device_pub_s,
         signature,
         method,
         path,
         date,
-        value,
+        canonical_body,
         state.clock.now_ms(),
     )
     .map_err(|e| {
@@ -411,6 +439,59 @@ impl<T: Schema> RequestContent for SignedBootstrap<T> {
 
     fn request_body(registry: &mut Registry) -> kynos::openapi::RequestBody {
         <Json<T> as RequestContent>::request_body(registry)
+    }
+}
+
+/// A verified body of raw bytes, with the caller that sent it.
+///
+/// The chunk upload's body is opaque ciphertext, so there is no JSON value to
+/// canonicalize and none is invented: [`verify_bytes`] signs the bytes as they
+/// arrived, which ADR-0022 records as the same rule rather than a second one.
+#[derive(Debug, Clone)]
+pub struct SignedBinary {
+    /// Who sent it.
+    pub caller: Caller,
+    /// The body, exactly as received.
+    pub bytes: Vec<u8>,
+}
+
+impl FromRequest<ServerState> for SignedBinary {
+    type Rejection = SignedRejection;
+
+    async fn from_request(
+        request: Request,
+        context: &ServerState,
+    ) -> Result<Self, Self::Rejection> {
+        let (mut parts, body) = request.into_parts();
+        let (principal, sig) = caller_of(&mut parts, context).await?;
+        let (method, target) = target_of(&parts);
+
+        let binary =
+            Binary::<OctetStream>::from_request(Request::from_parts(parts, body), context).await?;
+        let bytes = binary.bytes.to_vec();
+        let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes)?;
+        Ok(Self {
+            caller: Caller { principal, device },
+            bytes,
+        })
+    }
+}
+
+impl Describe for SignedBinary {
+    fn describe(operation: &mut OperationCx<'_>) {
+        <Auth<AccountToken> as Describe>::describe(operation);
+        <Headers<DeviceSig> as Describe>::describe(operation);
+        <Binary<OctetStream> as Describe>::describe(operation);
+    }
+}
+
+impl RequestContent for SignedBinary {
+    fn media_types() -> Vec<&'static str> {
+        <Binary<OctetStream> as RequestContent>::media_types()
+    }
+
+    fn request_body(registry: &mut Registry) -> kynos::openapi::RequestBody {
+        <Binary<OctetStream> as RequestContent>::request_body(registry)
     }
 }
 

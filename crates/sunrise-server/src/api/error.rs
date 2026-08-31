@@ -122,6 +122,18 @@ pub enum ApiError {
         message: String,
     },
 
+    /// The request is well-formed but the resource is not in a state that
+    /// admits it — a `finalize` naming a chunk that never arrived.
+    #[error("{message}")]
+    #[problem(status = 409, title = "Conflict")]
+    Conflict {
+        /// The stable client-facing code.
+        #[problem(extension)]
+        code: &'static str,
+        /// Safe-for-logs summary.
+        message: String,
+    },
+
     /// Storage failed. Never carries the underlying message: a SQLite error
     /// string can name columns and constraints, which is the shape of an
     /// internal detail a client should not receive.
@@ -184,6 +196,15 @@ impl ApiError {
     #[must_use]
     pub fn not_found(code: &'static str, message: impl Into<String>) -> Self {
         Self::NotFound {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// `409` with a stable code.
+    #[must_use]
+    pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Conflict {
             code,
             message: message.into(),
         }

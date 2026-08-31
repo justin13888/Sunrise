@@ -56,9 +56,62 @@ impl Client {
         }
     }
 
+    /// A client whose blob root is a fresh temp directory.
+    ///
+    /// The guard comes back with it: dropping the `TempDir` deletes the tree,
+    /// so a test that let it go out of scope would be writing chunks into a
+    /// directory that no longer exists.
+    pub(crate) fn with_blob_root() -> (Self, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let config = ServerConfig {
+            blob_root: Some(dir.path().to_path_buf()),
+            ..ServerConfig::default()
+        };
+        (Self::new(config), dir)
+    }
+
     /// The server's own notion of now, in milliseconds.
     pub(crate) fn clock_now_ms(&self) -> u64 {
         self.clock.now_ms()
+    }
+
+    /// Send a raw body under an explicit media type.
+    pub(crate) async fn send_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        media_type: &str,
+        body: &[u8],
+        headers: &[(&str, &str)],
+    ) -> Res {
+        let mut request = Request::new(Body::from_bytes(body.to_vec().into()));
+        *request.method_mut() = method;
+        *request.uri_mut() = path.parse().expect("a well-formed target");
+        request.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static(BEARER),
+        );
+        request.headers_mut().insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_str(media_type).expect("a media type"),
+        );
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                HeaderValue::from_str(value).expect("a header value"),
+            );
+        }
+
+        let response = self.service.call(request).await;
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("the response body must collect")
+            .to_bytes()
+            .to_vec();
+        Res { status, bytes }
     }
 
     /// Send a request carrying [`BEARER`].
