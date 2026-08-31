@@ -376,7 +376,24 @@ async fn sync_loop(
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
-                    _ => {} // ignore Ping/Pong/Text
+                    // Ping, Pong and Text carry nothing this protocol acts on,
+                    // but they are still inbound frames from a client whose
+                    // standing can have changed since the last one -- and the
+                    // periodic arm is a bound on how long that goes unnoticed,
+                    // not a reason to skip a check already in hand. Waving them
+                    // through let a chatty revoked device keep its socket for
+                    // the rest of the interval while the server handled its
+                    // frames.
+                    _ => {
+                        if auth.is_expired(state.clock.now_ms()) {
+                            end_expired(&mut sink, &state, &auth).await;
+                            break;
+                        }
+                        if !device_active(&state, &auth) {
+                            end_revoked(&mut sink, &state, &auth).await;
+                            break;
+                        }
+                    }
                 }
             }
             relay = next_relay => {

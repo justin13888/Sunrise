@@ -294,3 +294,62 @@ async fn a_revoked_device_cannot_outlast_the_recheck_by_pinging() {
         "the session must actually be closed, not merely warned"
     );
 }
+
+/// Revocation should not have to wait for the timer when the device is talking.
+///
+/// The periodic arm bounds the exposure at `device_recheck_ms`, but a frame the
+/// server is already handling is a free opportunity to notice. The `Binary`
+/// branch takes it; Ping, Pong and Text fell through `_ => {}` and did not, so
+/// a chatty revoked device stayed connected for the rest of the interval while
+/// the server processed its frames.
+///
+/// The re-check interval here is a minute -- far longer than this test will
+/// wait -- so nothing but the inbound check can end this session. That is what
+/// separates this from `a_revoked_device_cannot_outlast_the_recheck_by_pinging`,
+/// which the periodic arm alone is enough to satisfy.
+#[tokio::test]
+async fn a_ping_from_a_revoked_device_ends_the_session_without_waiting_for_the_timer() {
+    let (addr, state) = boot(60_000).await;
+    let (account_id, device_id) = register(&state);
+    let mut ws = connect(addr, Some(&device_id))
+        .await
+        .expect("an active device connects");
+    handshake(&mut ws).await;
+
+    state
+        .store
+        .revoke_device(&account_id, &device_id, state.clock.now_ms())
+        .expect("revoke");
+
+    let mut saw_error = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        if ws.send(Message::Ping(vec![1])).await.is_err() {
+            break;
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(100), ws.next()).await {
+            Ok(Some(Ok(Message::Binary(buf)))) => {
+                let (header, payload) = decode_frame(&buf).expect("a decodable frame");
+                if header.msg_kind == MsgKind::Error {
+                    let payload = ErrorPayload::decode(&payload).expect("decodable error payload");
+                    assert_eq!(
+                        payload.code,
+                        sunrise_error::ErrorCode::AuthDeviceRevoked,
+                        "an inbound frame from a revoked device must be refused with \
+                         the code that means 'stop and ask the user'"
+                    );
+                    saw_error = true;
+                    break;
+                }
+            }
+            Ok(Some(Err(_)) | None) => break,
+            Ok(Some(Ok(_))) | Err(_) => {}
+        }
+    }
+
+    assert!(
+        saw_error,
+        "a Ping from a revoked device must be checked like any other inbound \
+         frame, not waved through to wait out `device_recheck_ms`"
+    );
+}
