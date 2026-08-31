@@ -1,13 +1,26 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 
-/// Cross-surface state: the menu bar's snapshot, the hotkey, and the quick
-/// capture panel.
+/// Cross-surface state: the vault every surface writes to, the menu bar's
+/// snapshot, the reminder schedule, and whatever this platform uses to put a
+/// capture field in front of someone.
 ///
-/// One object rather than a model per surface. `MenuBarExtra` and the main
-/// window are separate scenes with separate view hierarchies, and two
+/// One object rather than a model per surface. On macOS `MenuBarExtra` and the
+/// main window are separate scenes with separate view hierarchies, and two
 /// `MenuBarModel`s would mean two change subscriptions and two sets of counts
-/// that could disagree on screen at the same time.
+/// that could disagree on screen at the same time. The same argument holds on
+/// iOS between the app, the widget snapshot and a background refresh.
+///
+/// **Shared, with the platform differences named inline rather than split into
+/// two classes.** Almost everything here — the vault, the snapshot, reminders,
+/// iCal, the routine timer, deep-link routing, `commitCapture` — is identical
+/// on both platforms, and a second class would have meant re-declaring all of
+/// it to vary the four things that actually differ. Those four are marked
+/// `#if os(macOS)` below, and each says what the other platform does instead.
+/// The surfaces with no counterpart at all (the menu bar scene, the hotkey,
+/// the borderless panel) are whole files under `macOS/`, not conditionals.
 @MainActor
 @Observable
 final class AppSurfaces {
@@ -23,7 +36,14 @@ final class AppSurfaces {
     static let routineIntervalMs: UInt64 = 15 * 60 * 1000
 
     private(set) var menuBar: MenuBarModel?
+
+    #if os(macOS)
+    /// Whether ⌘⇧N is registered with the window server. iOS has no global
+    /// hotkey — the capture surfaces that replace it are the Control Center
+    /// control, the widget and the App Shortcut, none of which can fail to
+    /// register the way a contested hotkey can.
     private(set) var hotkeyStatus: HotkeyStatus = .idle
+    #endif
 
     /// The vault these surfaces are bound to, or `nil` between one being
     /// closed and the next being opened.
@@ -97,10 +117,26 @@ final class AppSurfaces {
     /// is open, which is why this is not created in `attach`.
     let notifications = NotificationPreferences()
 
+    /// The capture field's model, shared by whichever surface is presenting
+    /// it. Held here rather than by that surface so a `sunrise://capture?text=`
+    /// link can seed the field after the surface has cleared it.
+    private(set) var capture: CaptureModel?
+
+    #if os(macOS)
     private let hotkey = HotkeyCenter()
     private var panel: QuickCapturePanel?
-    private var capture: CaptureModel?
     private var hotkeyWatcher: _Concurrency.Task<Void, Never>?
+    #else
+    /// Whether the capture sheet should be on screen.
+    ///
+    /// iOS's answer to the borderless panel. A panel is a window owned by the
+    /// object that owns the hotkey, which is what lets ⌘⇧N work with every
+    /// window closed; a phone has neither a hotkey nor a second window, so
+    /// capture is a sheet over the app and the request to show it travels the
+    /// same way ``pendingDestination`` does — set here, taken by the view that
+    /// can actually present it.
+    private(set) var isCapturing = false
+    #endif
 
     /// Bind to an open vault. Called when the session unlocks, and again on
     /// every vault it opens after that.
@@ -126,11 +162,19 @@ final class AppSurfaces {
         IntentVault.adopt(bridge)
         menuBar = MenuBarModel(bridge: bridge)
         ical = IcalModel(bridge: bridge)
+        #if os(macOS)
+        // The panel owns the field on macOS because it owns the window the
+        // field lives in — see `macOS/QuickCapturePanel.swift`.
         let panel = QuickCapturePanel(bridge: bridge) { [weak self] draft in
             try await self?.commitCapture(draft)
         }
         self.panel = panel
         capture = panel.capture
+        #else
+        // iOS presents the field in a sheet owned by the view hierarchy, so
+        // the model is built here and handed to whichever view is showing it.
+        capture = CaptureModel(bridge: bridge)
+        #endif
         reminders = ReminderScheduler(
             bridge: bridge,
             preferences: notifications
@@ -139,6 +183,7 @@ final class AppSurfaces {
             // one route that may have no window to land in.
             self?.open(link, raisingAWindow: true)
         }
+        #if os(macOS)
         hotkey.register()
         hotkeyStatus = hotkey.status
         // Registration can fail — another app may already hold ⌘⇧N — and when
@@ -150,6 +195,7 @@ final class AppSurfaces {
                 self?.openQuickCapture()
             }
         }
+        #endif
     }
 
     /// Start the core's periodic routine materialization against the vault
@@ -183,44 +229,6 @@ final class AppSurfaces {
         }
     }
 
-    /// **File → Import Calendar…**: pick an `.ics` and read it in.
-    ///
-    /// The picking and the reading are the app's; the parsing is the core's.
-    /// A read that fails lands on the same `errorMessage` a refused parse does,
-    /// because from where the user is standing "that file could not be read"
-    /// is one outcome however far down it failed.
-    func importIcal() async {
-        guard let ical else {
-            NSSound.beep()
-            return
-        }
-        guard let url = IcalFiles.pickDocument() else { return }
-        do {
-            await ical.importDocument(text: try IcalFiles.read(url))
-        } catch {
-            ical.summary = nil
-            ical.errorMessage = error.localizedDescription
-        }
-    }
-
-    /// **File → Export Calendar ▸ …**: render a window and write it out.
-    ///
-    /// Destination first, then render, which is the order every macOS save
-    /// takes — and it means a cancelled panel costs nothing.
-    func exportIcal(_ window: ExportWindow) async {
-        guard let ical else {
-            NSSound.beep()
-            return
-        }
-        guard let url = IcalFiles.pickDestination(named: window.suggestedFilename) else { return }
-        guard let text = await ical.exportDocument(window: window) else { return }
-        do {
-            try IcalFiles.write(text, to: url)
-        } catch {
-            ical.errorMessage = error.localizedDescription
-        }
-    }
-
     /// Whether materialization is running against `bridge` specifically.
     ///
     /// The vault identity is the whole question: a timer running against the
@@ -230,19 +238,44 @@ final class AppSurfaces {
         routineTimer == .running(vault: ObjectIdentifier(bridge))
     }
 
-    /// Show the capture panel, over whatever the user was doing.
+    /// Put a capture field in front of the user, over whatever they were doing.
+    ///
+    /// One entry point on both platforms, so that a hotkey, a menu item, a
+    /// Control Center control, a widget tap and a `sunrise://capture` link all
+    /// reach capture the same way. What appears differs — a borderless panel
+    /// on macOS, a sheet on iOS — and that is the only part that is guarded.
     ///
     /// A no-op with an explanation rather than a crash when the vault is not
     /// open: capture writes, and a field that silently discarded what someone
     /// typed into it is worse than one that never appeared.
     func openQuickCapture(prefill: String = "") {
+        #if os(macOS)
         guard let panel else {
-            NSSound.beep()
+            Platform.refusalFeedback()
             return
         }
         panel.present()
+        #else
+        guard capture != nil else {
+            Platform.refusalFeedback()
+            return
+        }
+        // Cleared here rather than by the sheet, because the panel's
+        // `present()` does the same on macOS: a field still holding last
+        // night's half-typed line commits the wrong thing the first time
+        // someone taps Add without reading it.
+        capture?.clear()
+        isCapturing = true
+        #endif
         if !prefill.isEmpty { capture?.text = prefill }
     }
+
+    #if !os(macOS)
+    /// The capture sheet has been dismissed.
+    func captureDismissed() {
+        isCapturing = false
+    }
+    #endif
 
     /// Write one captured line into the vault that is open *now*.
     ///
@@ -293,13 +326,20 @@ final class AppSurfaces {
     /// this flag, and the check below short-circuits once a window exists
     /// anyway.
     private func raiseWindow(for link: DeepLink) {
+        #if os(macOS)
         let app = NSApplication.shared
         app.activate(ignoringOtherApps: true)
         // Panels do not count: the capture field and the menu bar's own window
         // cannot show a screen.
         let hasWindow = app.windows.contains { $0.isVisible && $0.canBecomeMain }
         guard !hasWindow, let url = link.url else { return }
-        NSWorkspace.shared.open(url)
+        Platform.openExternal(url)
+        #endif
+        // Nothing to do on iOS. There is exactly one scene and the system has
+        // already brought it forward — a notification tap *is* the app being
+        // launched or resumed, so by the time this runs there is always
+        // somewhere for ``pendingDestination`` to land. The macOS problem this
+        // solves (a tap arriving with every window closed) cannot occur.
     }
 
     /// The window has taken the pending destination; stop offering it.
@@ -326,7 +366,7 @@ final class AppSurfaces {
 
     private func perform(_ action: ReminderAction, on entity: EntityRef) {
         guard let reminders else {
-            NSSound.beep()
+            Platform.refusalFeedback()
             return
         }
         _Concurrency.Task { await reminders.perform(action, on: entity) }
@@ -343,10 +383,18 @@ final class AppSurfaces {
     /// panel left on screen over the new vault would take a line and write it
     /// nowhere.
     private func releaseVault() {
+        #if os(macOS)
         hotkeyWatcher?.cancel()
         hotkeyWatcher = nil
         panel?.close()
         panel = nil
+        #else
+        // The sheet is dismissed rather than merely forgotten, for the reason
+        // the panel is closed: it holds the old vault's `CaptureModel`, and a
+        // sheet left up over the new vault would take a line and write it
+        // nowhere.
+        isCapturing = false
+        #endif
         capture = nil
         menuBar = nil
         reminders = nil
@@ -368,8 +416,10 @@ final class AppSurfaces {
     /// giving it back belongs here and not in ``releaseVault()``.
     func detach() {
         releaseVault()
+        #if os(macOS)
         hotkey.unregister()
         hotkeyStatus = hotkey.status
+        #endif
     }
 }
 
@@ -407,64 +457,5 @@ enum CaptureError: Error, Equatable, LocalizedError {
         case .noOpenVault:
             "No vault is open. Open Sunrise and try again."
         }
-    }
-}
-
-/// The borderless capture window.
-///
-/// An `NSPanel` rather than a SwiftUI `Window` scene, and the reason is the
-/// hotkey. A SwiftUI window is opened through `@Environment(\.openWindow)`,
-/// which only exists inside a view — so the hotkey could only reach it while
-/// some other window happened to be on screen. A panel is owned by the object
-/// that owns the hotkey, and works with every window closed, which is exactly
-/// when someone reaches for a capture shortcut.
-///
-/// `.nonactivatingPanel` matters too: capture must not pull the whole app
-/// forward and push aside what the user was reading when they had the thought.
-@MainActor
-private final class QuickCapturePanel {
-    private let panel: NSPanel
-    /// Exposed so a `sunrise://capture?text=…` link can seed the field after
-    /// `present()` has cleared it.
-    let capture: CaptureModel
-
-    init(bridge: CoreBridge, commit: @escaping (TaskDraftIn) async throws -> Void) {
-        capture = CaptureModel(bridge: bridge)
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 120),
-            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        let model = capture
-        let dismiss: () -> Void = { [weak panel] in panel?.orderOut(nil) }
-        panel.contentView = NSHostingView(
-            rootView: QuickCaptureView(model: model, commit: commit, dismiss: dismiss)
-        )
-        FloatingPanel.configure(panel)
-        panel.isReleasedWhenClosed = false
-    }
-
-    /// Bring it forward, cleared, and give it the keyboard.
-    ///
-    /// Cleared on purpose: a capture field still holding last night's
-    /// half-typed line is a field that commits the wrong thing the first time
-    /// someone hits return without reading it.
-    func present() {
-        capture.clear()
-        panel.center()
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    /// Take it off screen and drop what it was hosting.
-    ///
-    /// `isReleasedWhenClosed` is false, so `close()` is not a deallocation —
-    /// clearing `contentView` is what actually lets go of the `CaptureModel`
-    /// and the bridge behind it.
-    func close() {
-        panel.orderOut(nil)
-        panel.contentView = nil
-        panel.close()
     }
 }

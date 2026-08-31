@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Connection and account settings.
@@ -311,7 +310,7 @@ struct AccountView: View {
         guard let url = URL(
             string: "x-apple.systempreferences:com.apple.preference.notifications"
         ) else { return }
-        NSWorkspace.shared.open(url)
+        Platform.openExternal(url)
     }
 
     @ViewBuilder

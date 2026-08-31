@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// A vault that exists and cannot be opened.
@@ -44,13 +43,21 @@ struct LockedView: View {
                 Button(reason.repairTitle) { Task { await retry() } }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("locked.retry")
+                #if os(macOS)
+                // macOS only, and not for want of an iOS equivalent: iOS has
+                // no Keychain Access app and no user-facing keychain at all.
+                // An unavailable keychain there is repaired by unlocking the
+                // device or reinstalling, neither of which an app can offer a
+                // button for — so iOS shows the explanation and the retry
+                // above, and stops there rather than pointing at nothing.
                 if case .keychainUnavailable = reason {
                     Button("Open Keychain Access") {
-                        NSWorkspace.shared.open(
+                        Platform.openExternal(
                             URL(filePath: "/System/Applications/Utilities/Keychain Access.app")
                         )
                     }
                 }
+                #endif
                 if reason == .keyMissingForExistingVault {
                     Button("Pair with a device…") { pairing = makePairing() }
                         .accessibilityIdentifier("locked.pair")

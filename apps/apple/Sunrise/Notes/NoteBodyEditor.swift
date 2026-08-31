@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// A task's note body: read it, or edit it a block at a time.
@@ -86,8 +85,7 @@ struct NoteBodyEditor: View {
             Spacer()
 
             Button("Copy as Markdown", systemImage: "doc.on.doc") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(model.markdown, forType: .string)
+                PlatformPasteboard.set(model.markdown)
             }
             .buttonStyle(.borderless)
             .labelStyle(.iconOnly)

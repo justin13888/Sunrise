@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The pairing sheet, from either side.
@@ -191,7 +190,7 @@ struct PairingView: View {
 
             if handOff.drawsCode {
                 if let code = QRCode.image(for: handOff.text) {
-                    Image(nsImage: code)
+                    Image(platformImage: code)
                         .interpolation(.none)
                         .frame(width: code.size.width, height: code.size.height)
                         .padding(12)
@@ -238,7 +237,7 @@ struct PairingView: View {
                 .accessibilityIdentifier("pairing.paste")
             HStack {
                 Button("Paste", systemImage: "doc.on.clipboard") {
-                    model.pasted = NSPasteboard.general.string(forType: .string) ?? model.pasted
+                    model.pasted = PlatformPasteboard.string ?? model.pasted
                 }
                 Spacer()
             }
@@ -370,8 +369,7 @@ private struct CopyableBlock: View {
 
             HStack(spacing: 8) {
                 Button(copied ? "Copied" : "Copy", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
+                    PlatformPasteboard.set(text)
                     copied = true
                 }
                 .accessibilityIdentifier("\(identifier).copy")

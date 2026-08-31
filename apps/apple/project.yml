@@ -55,7 +55,13 @@ targets:
     type: application
     platform: macOS
     sources:
+      # `Sunrise/` compiles into both apps; `macOS/` into this one only. The
+      # split is the point: everything a phone and a Mac agree on lives in the
+      # first, and the second holds the surfaces a Mac has and a phone does not
+      # — the menu bar, the global hotkey, the borderless capture panel, the
+      # modal file panels and `NSPrintOperation`.
       - path: Sunrise
+      - path: macOS
       # Generated from the Rust crate on every build; never edited, and
       # excluded from SwiftLint for the same reason.
       - path: ../../out/swift/sunrise_core_bindings.swift
@@ -118,7 +124,7 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           if [ -x /opt/homebrew/bin/swiftlint ]; then
-            /opt/homebrew/bin/swiftlint lint --quiet --config "$SRCROOT/.swiftlint.yml" "$SRCROOT/Sunrise"
+            /opt/homebrew/bin/swiftlint lint --quiet --config "$SRCROOT/.swiftlint.yml" "$SRCROOT/Sunrise" "$SRCROOT/macOS"
           else
             echo "warning: swiftlint not installed; skipping"
           fi

@@ -1,4 +1,4 @@
-import AppKit
+import CoreGraphics
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
@@ -26,7 +26,7 @@ enum QRCode {
     /// payload past its capacity, and a screen that drew nothing rather than
     /// saying so would be a pairing screen that silently cannot be paired
     /// with. Callers must show the payload as text instead.
-    static func image(for text: String, side: CGFloat = 240) -> NSImage? {
+    static func image(for text: String, side: CGFloat = 240) -> PlatformImage? {
         guard !text.isEmpty, side > 0 else { return nil }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(text.utf8)
@@ -43,7 +43,7 @@ enum QRCode {
         // constraint for an invisible saving.
         let context = CIContext()
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        let size = NSSize(width: scaled.extent.width, height: scaled.extent.height)
-        return NSImage(cgImage: cgImage, size: size)
+        let size = CGSize(width: scaled.extent.width, height: scaled.extent.height)
+        return PlatformImage.fromCGImage(cgImage, size: size)
     }
 }

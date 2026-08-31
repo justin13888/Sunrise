@@ -1,4 +1,3 @@
-import AppKit
 import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -70,7 +69,7 @@ struct AttachmentsView: View {
                     Button("Open", systemImage: "arrow.up.forward.app") {
                         Task {
                             if let url = await model.exportToTemporary(row) {
-                                NSWorkspace.shared.open(url)
+                                Platform.openExternal(url)
                             }
                         }
                     }
@@ -99,8 +98,8 @@ struct AttachmentsView: View {
            let row = model.rows.first(where: { $0.id == previewing.id }) {
             switch row.previewKind {
             case .image:
-                if let image = NSImage(data: previewing.data) {
-                    Image(nsImage: image)
+                if let image = PlatformImage(data: previewing.data) {
+                    Image(platformImage: image)
                         .resizable()
                         .scaledToFit()
                         .frame(maxHeight: 260)
@@ -134,16 +133,38 @@ struct AttachmentsView: View {
 }
 
 /// A PDF, drawn by the system's own viewer.
-private struct PdfPreview: NSViewRepresentable {
+///
+/// `PDFView` itself is the same class on both platforms — PDFKit ships on iOS
+/// too — so only the representable wrapper differs, and it differs in nothing
+/// but the two method names. Configuring the view is therefore written once,
+/// below, and each conformance forwards to it.
+private struct PdfPreview {
     let data: Data
 
-    func makeNSView(context: Context) -> PDFView {
+    // `@MainActor` because `PDFView` is, and because the representable methods
+    // these stand in for carry that isolation themselves — factoring them out
+    // is what dropped it.
+    @MainActor
+    fileprivate func makeView() -> PDFView {
         let view = PDFView()
         view.autoScales = true
         return view
     }
 
-    func updateNSView(_ view: PDFView, context: Context) {
+    @MainActor
+    fileprivate func update(_ view: PDFView) {
         view.document = PDFDocument(data: data)
     }
 }
+
+#if os(macOS)
+extension PdfPreview: NSViewRepresentable {
+    func makeNSView(context: Context) -> PDFView { makeView() }
+    func updateNSView(_ view: PDFView, context: Context) { update(view) }
+}
+#else
+extension PdfPreview: UIViewRepresentable {
+    func makeUIView(context: Context) -> PDFView { makeView() }
+    func updateUIView(_ view: PDFView, context: Context) { update(view) }
+}
+#endif

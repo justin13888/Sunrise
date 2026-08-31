@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The borderless quick-capture window.
@@ -108,39 +107,5 @@ struct QuickCaptureView: View {
         let tags = preview.draft.contexts.count + (preview.draft.streamId == nil ? 0 : 1)
         if tags > 0 { parts.append("\(tags) tags") }
         return parts.joined(separator: " · ")
-    }
-}
-
-/// Turns the SwiftUI quick-capture window into a floating borderless panel.
-///
-/// SwiftUI has no scene modifier for "no title bar, floats over full-screen
-/// apps, and does not steal the whole app's activation". `NSWindow` does, and
-/// this reaches it once, when the window appears.
-struct FloatingPanel: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { Self.configure(view.window) }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {}
-
-    static func configure(_ window: NSWindow?) {
-        guard let window else { return }
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = true
-        window.level = .floating
-        // Follows the user to whichever Space they are on, and appears over a
-        // full-screen app — which is the only way a capture window is any use
-        // to someone who was in the middle of something.
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.center()
     }
 }

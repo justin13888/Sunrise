@@ -2,6 +2,7 @@
 # generated from the Rust crate on every build and is not ours to style.
 included:
   - Sunrise
+  - macOS
   - SunriseTests
   - SunriseUITests
 

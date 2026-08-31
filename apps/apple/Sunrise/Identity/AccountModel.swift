@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 /// One OIDC login, as the app drives it.
@@ -86,7 +85,13 @@ final class AccountModel {
         makeDriver: @escaping @Sendable (String, String) -> any LoginDriver = {
             OIDCLoginDriver(issuer: $0, clientID: $1)
         },
-        openURL: @escaping @Sendable (URL) -> Void = { NSWorkspace.shared.open($0) }
+        // Hops to the main actor rather than calling straight through.
+        // `NSWorkspace.open` is nonisolated, but `UIApplication.open` is not,
+        // so the shared spelling has to be `@MainActor` — and this closure is
+        // called from wherever the login driver happens to be.
+        openURL: @escaping @Sendable (URL) -> Void = { url in
+            _Concurrency.Task { @MainActor in Platform.openExternal(url) }
+        }
     ) {
         self.store = store
         self.makeDriver = makeDriver
