@@ -40,6 +40,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
 | `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
+| `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present and did not check out; `reason` names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
+| `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `reason` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
 | `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
 | `srv.ws.connect` | info | `/sync` session negotiated; `account_h`, negotiated `wire_v`/`crypto_v`. |
 | `srv.ws.rejected` | warn | `/sync` handshake failed negotiation; `err_code`. The client sees a closed socket and cannot diagnose this itself. |
