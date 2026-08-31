@@ -46,6 +46,8 @@ pub mod codes {
     pub const BLOB_CHUNK_MISSING: &str = "BLOB_CHUNK_MISSING";
     /// No committed blob under that id for this account.
     pub const BLOB_NOT_FOUND: &str = "BLOB_NOT_FOUND";
+    /// The relay could not read or write its durable op log.
+    pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
 }
@@ -134,6 +136,21 @@ pub enum ApiError {
         message: String,
     },
 
+    /// A dependency the request needs is temporarily unavailable.
+    ///
+    /// Distinct from [`ApiError::Internal`] because it is *retryable*: an op
+    /// batch the relay could not durably store must stay in the client's
+    /// outbox, and a 500 tells it the opposite.
+    #[error("{message}")]
+    #[problem(status = 503, title = "Temporarily unavailable")]
+    Unavailable {
+        /// The stable client-facing code.
+        #[problem(extension)]
+        code: &'static str,
+        /// Safe-for-logs summary.
+        message: String,
+    },
+
     /// Storage failed. Never carries the underlying message: a SQLite error
     /// string can name columns and constraints, which is the shape of an
     /// internal detail a client should not receive.
@@ -206,6 +223,15 @@ impl ApiError {
     pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
         Self::Conflict {
             code,
+            message: message.into(),
+        }
+    }
+
+    /// `503`, retryable, carrying the relay-storage code.
+    #[must_use]
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::Unavailable {
+            code: codes::RELAY_STORAGE_UNAVAILABLE,
             message: message.into(),
         }
     }

@@ -33,6 +33,13 @@ pub struct Principal {
     pub subject: crate::auth::Subject,
     /// The account `(iss, sub)` resolves to.
     pub account: Account,
+    /// The bearer's `exp`, carried because a sync session outlives the request
+    /// that opened it and has to end when the credential does.
+    ///
+    /// `None` only for the self-host verifier, which has no IdP and therefore
+    /// no token to age out. Read it as "not applicable" rather than "expired
+    /// now" — the latter would break self-host entirely.
+    pub expires_at_ms: Option<u64>,
 }
 
 /// The account bearer token.
@@ -88,6 +95,7 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
         Ok(Principal {
             subject: verified.subject,
             account,
+            expires_at_ms: verified.expires_at_ms,
         })
     }
 

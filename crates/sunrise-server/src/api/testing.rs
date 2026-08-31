@@ -76,6 +76,53 @@ impl Client {
         self.clock.now_ms()
     }
 
+    /// Read an event stream for `window`, then stop.
+    ///
+    /// A live SSE body never ends, so reading it to completion would hang. This
+    /// collects whatever arrived inside the window, which is what a test of the
+    /// replay half needs: the frames and markers the stream emits before it
+    /// settles into waiting for live traffic.
+    pub(crate) async fn read_stream(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+        window: std::time::Duration,
+    ) -> String {
+        use http_body_util::BodyExt as _;
+
+        let mut request = Request::new(Body::empty());
+        *request.uri_mut() = path.parse().expect("a well-formed target");
+        request.headers_mut().insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static(BEARER),
+        );
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                HeaderValue::from_str(value).expect("a header value"),
+            );
+        }
+
+        let mut body = self.service.call(request).await.into_body();
+        let mut out = Vec::new();
+        let deadline = tokio::time::Instant::now() + window;
+        loop {
+            let frame = tokio::time::timeout_at(deadline, body.frame()).await;
+            match frame {
+                // The window closed: whatever has arrived is the answer.
+                Err(_) => break,
+                Ok(None) => break,
+                Ok(Some(Err(_))) => break,
+                Ok(Some(Ok(frame))) => {
+                    if let Some(data) = frame.data_ref() {
+                        out.extend_from_slice(data);
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
     /// Send a raw body under an explicit media type.
     pub(crate) async fn send_bytes(
         &self,

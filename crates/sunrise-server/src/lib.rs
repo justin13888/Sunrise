@@ -42,6 +42,7 @@ pub mod relay_log;
 pub mod routes;
 pub mod state;
 pub mod store;
+pub mod sync_session;
 pub mod ws;
 
 pub use auth::oidc::{OidcConfig, OidcVerifier};
@@ -54,6 +55,7 @@ pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushRegi
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};
+pub use sync_session::{Session, SessionStore};
 
 use axum::Router;
 

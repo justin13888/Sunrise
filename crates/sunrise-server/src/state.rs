@@ -46,6 +46,8 @@ pub struct ServerState {
     pub blob_root: Arc<std::path::PathBuf>,
     /// Retention bounds for the durable relay op log.
     pub durable_caps: crate::relay_log::DurableCaps,
+    /// Live sync sessions. Empty until `POST /sync/session` files one.
+    pub sessions: crate::sync_session::SessionStore,
 }
 
 impl ServerState {
@@ -86,6 +88,7 @@ impl ServerState {
             metrics: Metrics::new(),
             blob_root: Arc::new(blob_root),
             durable_caps: crate::relay_log::DurableCaps::default(),
+            sessions: crate::sync_session::SessionStore::new(),
         }
     }
 

@@ -35,6 +35,7 @@ pub mod meta;
 pub mod metrics;
 pub mod observe;
 pub mod signed;
+pub mod sync;
 #[cfg(test)]
 pub(crate) mod testing;
 
@@ -98,6 +99,13 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
             blobs::finalize,
             blobs::put_chunk,
             blobs::fetch
+        ])
+        .mount(kynos::routes![
+            sync::session,
+            sync::subscribe,
+            sync::ops,
+            sync::refresh,
+            sync::events
         ])
         .merge(operator_surface(config))
         // Configuring the limit and documenting that a limit exists are one
