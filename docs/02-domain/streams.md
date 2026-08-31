@@ -45,8 +45,29 @@ ReviewCadence = "weekly" / "biweekly" / "monthly" / "none"
   [`../08-features/notifications.md`](../08-features/notifications.md).
 - **There is no `integrations` map**, and no `IntegrationKey` /
   `IntegrationConfig` type. Earlier revisions declared one; nothing has ever
-  serialized it. Calendar integration is not wired to a Stream field in v1 —
-  see [`../09-integrations/overview.md`](../09-integrations/overview.md).
+  serialized it, and the field was deleted rather than deferred. Integration
+  credentials are **account-scoped**, not Stream-scoped: they belong to
+  [ADR-0025](../11-adr/0025-integration-account-entity.md)'s
+  `IntegrationAccount` entity, because one Google authorization backs many
+  Streams and rotating one Stream's key must not orphan an unrelated calendar.
+  See [`../09-integrations/overview.md`](../09-integrations/overview.md).
+
+### `description`, `default_context` and `icon` — the write and persist contract
+
+These three fields are the ones whose plumbing is shortest, so the contract is
+stated explicitly rather than left to be inferred from the CDDL:
+
+- **`description` and `default_context` are persisted.** They are columns on
+  the `streams` table and `read_stream` in `crates/sunrise-core/src/engine.rs`
+  reads them back. Anything less is data loss under
+  [ADR-0014](../11-adr/0014-entity-level-lww-merge.md): a Stream op is
+  full-state, so a device that reads a Stream and re-emits it without a field
+  it did not materialize erases that field on every replica at the next
+  update.
+- **All three are writable.** `StreamDraft` sets them at create and
+  `StreamPatch` changes them at update, which is what makes `icon` — a field
+  that already round-trips through storage and the wire — reachable from a
+  command rather than only from a test writing the row directly.
 
 Built-in pseudo-stream:
 
@@ -113,7 +134,7 @@ Writing it:
   be dropped above it.
 - The column is `streams.sort_order`, added by
   `crates/sunrise-storage/migrations/0014_stream_sort_order.sql` at
-  `STORAGE_V = 14`. `DOC_SCHEMA_V` did **not** move for it: `sort_order` was
+  `STORAGE_V = 14`, since superseded by 0015 and 0016. `DOC_SCHEMA_V` did **not** move for it: `sort_order` was
   already a required `tstr` on the wire, carrying `"a0"`, so a real value went
   into a field that already existed rather than a field being added.
 

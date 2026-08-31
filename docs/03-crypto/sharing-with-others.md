@@ -6,6 +6,17 @@ status: accepted
 
 A user shares a **Stream** (and all its descendant entities) with one or more other identities. The Stream is the unit; there is no per-Task ACL.
 
+## Implementation status: documented only, and demoted from v1
+
+**Nothing in this document is implemented, and it is no longer in the v1 MUST set.** [ADR-0020](../11-adr/0020-v1-must-demotions.md) deferred the "accept invite" and "view shared stream as editor" parity rows for exactly this reason; [ADR-0024](../11-adr/0024-key-hierarchy.md) explains the cryptographic blocker underneath it.
+
+* `share_grant`, `share_revoke` and `share_decline` appear in no Rust or Swift file. They are not among the 21 `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`.
+* `ShareGrantPayload` field 6 is an HPKE single-shot seal. `hpke = "0.13"` is declared in `[workspace.dependencies]` and **no member crate depends on it**; it is not in `Cargo.lock`.
+* `crates/sunrise-domain/src/person.rs` defines `struct Person` and `0013_baseline.sql` creates a `persons` table that nothing reads or writes.
+* The deeper blocker is the key hierarchy, not the missing ops. Every Stream key today derives from one account-wide vault root, so there is no unit smaller than "the whole vault" to grant. ADR-0024 decision 4 — independently random per-`(stream_id, epoch)` keys distributed by HPKE `key_envelope` ops — is what makes selective sharing expressible at all.
+
+The primitives this spec composes *are* real and frozen: Ed25519 identity signatures, X25519, XChaCha20-Poly1305, `wrap_stream_key`/`unwrap_stream_key`, the `OpEnvelope` codec and `DeviceCert`, all in `sunrise-crypto` with frozen vectors. The sharing-specific layer above them is not.
+
 ## Roles
 
 | Role | Read | Propose ops | Notes |

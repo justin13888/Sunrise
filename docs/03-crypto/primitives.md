@@ -26,6 +26,14 @@ The complete and frozen set of algorithms used in Sunrise v1. Any change require
 
 HKDF-SHA-256 is used **only** as the HPKE-internal KDF; it is not exposed at the spec layer. SHA-256 is used **only** by the pairing Noise pattern.
 
+### Which of these are actually reachable
+
+Every algorithm above is frozen for v1, and most are live. Two rows describe capability that no code exercises, and one is narrower in practice than the row implies:
+
+* **HPKE has no consumer.** `hpke = "0.13"` is declared in `[workspace.dependencies]` and **no member `Cargo.toml` depends on it**, so it is not in `Cargo.lock`. Every role listed in its row — key envelopes, share grants, recovery upload, pairing transport — is unimplemented. [ADR-0024](../11-adr/0024-key-hierarchy.md) gives it its first dependent.
+* **Argon2id runs on one path, not two.** It is used only to stretch the recovery code in `crates/sunrise-crypto/src/recovery.rs`. There is no passphrase unlock: the vault root is 32 random bytes from a keystore, never derived (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)).
+* **Noise XX is implemented** in `crates/sunrise-pairing`, with the exact pattern string in `handshake.rs::NOISE_PARAMS`. Its relay transport is not; see [`pairing-and-onboarding.md`](./pairing-and-onboarding.md).
+
 ## Usage rules
 
 ### When to use which AEAD
@@ -60,7 +68,9 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
 ## Library hygiene
 
 - All crypto goes through the leaf crate `sunrise-crypto`. App code MUST NOT call `chacha20poly1305`, `ed25519-dalek`, `hpke`, `snow`, `blake3`, `argon2`, etc., directly.
-- `sunrise-crypto` exposes typed wrappers (`StreamKey`, `OpEnvelope`, `IdentityPrivKey`, `DevicePrivKey`, `RecoveryKey`, …). Type confusion at the API level is impossible (e.g. an `IdentityPrivKey` cannot be passed where a `DevicePrivKey` is expected).
+- `sunrise-crypto` exposes typed wrappers (`StreamKey`, `OpEnvelope`, `VaultRootKey`, `RecoveryKey`, …). Identity and device key types MUST be distinct, so that an identity private key cannot be passed where a device private key is expected.
+
+  **Not true in code today.** `crates/sunrise-crypto/src/keys.rs` declares `pub type DeviceSigningKeyPair = IdentitySigningKeyPair;` and `pub type DeviceDhKeyPair = IdentityDhKeyPair;` — type *aliases*, not newtypes, so the two are the same type and the compiler enforces nothing. `crates/sunrise-core/src/keychain.rs` consequently stores the device signing key as an `IdentitySigningKeyPair`. [ADR-0024](../11-adr/0024-key-hierarchy.md) decision 1 makes them distinct types, which is what turns this bullet from an aspiration into a guarantee.
 - All key types implement zeroize-on-drop.
 - Versions are pinned in `Cargo.lock` and vendored at release.
 - `cargo-deny` and `cargo-audit` run in CI; new versions of crypto deps require explicit review by a designated reviewer (see `CODEOWNERS`).
@@ -77,30 +87,33 @@ All signature-verify, AEAD-tag-verify, and HPKE-decrypt code paths MUST be const
 | `subtle` | tag/MAC/hash equality | `ConstantTimeEq` |
 | `argon2` | passphrase / recovery KDF | does not require CT (it's a deliberate-cost KDF over a passphrase, not a comparison primitive) |
 
-A clippy lint **`sunrise::ct_compare`** rejects `==` between any types whose names match `*Mac`, `*Tag`, `*Sig`, or `*Hash` outside `sunrise-crypto`'s own constant-time helpers. Crypto-typed equality MUST go through `subtle::ConstantTimeEq`.
+Crypto-typed equality MUST go through `subtle::ConstantTimeEq`. An earlier revision of this spec claimed a clippy lint **`sunrise::ct_compare`** enforced that mechanically; **no such lint exists** — `grep` finds `ct_compare` nowhere in the tree, and the workspace `[workspace.lints.clippy]` block in the root `Cargo.toml` carries no custom lint. The rule is real and currently rests on review, not on the compiler.
 
 ## Reproducible builds
 
-Tagged releases are reproducible:
+Tagged releases are to be reproducible:
 
-- `rustc` pinned via `rust-toolchain.toml`.
-- `Cargo.lock` committed.
-- `RUSTFLAGS="-C codegen-units=1 -C link-arg=-Wl,--build-id=none"`.
-- `SOURCE_DATE_EPOCH` set to the release-commit timestamp.
+- `rustc` pinned via `rust-toolchain.toml`. **Implemented** — the file exists and pins 1.88.0, matching `rust-version` in the root `Cargo.toml`.
+- `Cargo.lock` committed. **Implemented.**
+- `RUSTFLAGS="-C codegen-units=1 -C link-arg=-Wl,--build-id=none"`. **Not implemented.** `[profile.release]` sets `codegen-units = 1`, but no workflow sets `RUSTFLAGS`.
+- `SOURCE_DATE_EPOCH` set to the release-commit timestamp. **Not implemented** — the string appears in neither `.github/workflows/ci.yml` nor `release.yml`.
 
-Two builds from the same commit with the same toolchain produce bit-identical artifacts. A CI check rebuilds the previous tag and diffs; any drift fails CI.
+The goal stands: two builds from the same commit with the same toolchain should produce bit-identical artifacts. **The CI check that rebuilds the previous tag and diffs does not exist yet**, so nothing currently fails on drift.
 
 ## Test vectors
 
 `sunrise-crypto`'s test suite includes:
 
 - Upstream library test vectors (re-tested per build).
-- Sunrise-specific frozen vectors:
-  - A canonical identity → device → Stream key derivation tree.
-  - A canonical op envelope (encode + decode round-trip, AAD construction, signature).
-  - A canonical HPKE single-shot ciphertext for each role (key envelope, share grant, recovery upload).
-  - A canonical blob chunk sequence (chunked nonce derivation).
-  - A canonical Argon2id derivation from a fixed recovery code.
+- Sunrise-specific frozen vectors, in `crates/sunrise-crypto-test-vectors` and asserted by `crates/sunrise-crypto/tests/frozen_vectors.rs`:
+  - `identity_id_from_pub`, cross-checked against the longhand `derive_key("sunrise.identity_id.v1", …)` formula so a context-string change is caught even if the vector is regenerated. **Implemented.**
+  - BLAKE3-KDF vectors, per context string. **Implemented.**
+  - Both whole op envelopes — signed-only and sealed — byte-exact, plus a round-trip-and-verify. **Implemented.**
+  - Blob-chunk nonce/AAD vectors and one byte-exact sealed chunk. **Implemented.**
+  - Per-Stream Merkle root init/step. **Implemented** — and these tests are the only callers of `merkle.rs`; see [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md).
+  - A canonical identity → device → Stream key derivation tree. **Not implemented**, and it cannot be until [ADR-0024](../11-adr/0024-key-hierarchy.md) makes identity and device keys distinct.
+  - A canonical HPKE single-shot ciphertext for each role. **Not implemented** — `hpke` has no consumer.
+  - A canonical Argon2id derivation from a fixed recovery code. **Not implemented**; `recovery.rs` has round-trip tests but no frozen vector.
 - Tampering tests: every byte of a known envelope is flipped and the result must fail decode/verify.
 
 Any change that perturbs a frozen vector blocks merge and requires a wire-format version bump.

@@ -6,6 +6,21 @@ status: accepted
 
 Three key types rotate, each with a different cost and cascade. Throughout this spec, "the rotating device" is the device the user initiated rotation from; it MUST be a paired, currently-authorized device.
 
+## Implementation status: none of this is built
+
+**Every procedure in this document is a target, not a description.** [ADR-0024](../11-adr/0024-key-hierarchy.md) is the governing decision and explains why: rotation is not implementable on the key hierarchy the tree actually has.
+
+The evidence, so this is checkable rather than asserted:
+
+* **No rotation entry points exist.** There is no `device_rotate`, `device_revoke`, `identity_transition`, re-wrap, or epoch bump anywhere in `crates/`.
+* **No control ops exist.** The op kinds this spec depends on — `key_envelope`, `device_cert`, `device_revoke`, `share_grant`, `share_revoke`, `snapshot`, `checkpoint`, `identity_transition` — have no implementation. All 21 variants of `InnerOp` in `crates/sunrise-core/src/inner_op.rs` are domain CRUD (task, stream, context, routine, block, attachment, focus, review).
+* **Epochs do not move.** `crates/sunrise-core/src/keychain.rs` pins `pub const EPOCH: u32 = 1` and derives every Stream key as `BLAKE3.derive_key("sunrise.stream_key.v1", vault_root || stream_id || u32_be(epoch))`. Bumping that constant re-derives a key anyone holding the vault root can also compute — it rotates ciphertext, not the secret. ADR-0024 §Alternatives rejects exactly that as "rotation that looks like rotation and is not".
+* **Stream-key rotation would be vault-root rotation.** Because every Stream key derives from the one account-wide root, there is no per-Stream unit to rotate. Rotating one rotates all.
+* **Revocation is not expressible.** A paired device holds the vault root, and the root *is* the whole key schedule. Nothing a still-authorized device emits can take that back.
+* **HPKE, which steps 2 and 3 of Stream-key rotation require, has no consumer.** `hpke = "0.13"` sits in `[workspace.dependencies]` and no member `Cargo.toml` references it.
+
+ADR-0024 makes Stream keys independently random per `(stream_id, epoch)`, wrapped under the vault root, distributed by `key_envelope` ops and read from the `stream_keys` table — which is what the procedures below assume. Until that slice lands, treat this document as the specification it is.
+
 ## Device key rotation (cheap)
 
 **Triggers.**

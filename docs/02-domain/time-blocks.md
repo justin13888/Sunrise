@@ -16,7 +16,7 @@ the other.
 Shared types are defined in
 [`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
 
-This is the **v1 shape** — what a device actually writes and signs today:
+This is the **v1 shape** — the whole of what a device writes and signs; there is no second, richer Block on the wire:
 
 ```cddl
 Block = {
@@ -29,10 +29,28 @@ Block = {
     title?:       text<256>,                  ; defaults to the bound task's title
     title_track_task: bool,                   ; default false; recompute title from the one bound Task
     tasks:        [* entity-ref],             ; tsk_ refs bound to this Block
+    rrule?:       RRule,                      ; recurring blocks; see routines-and-recurrence.md
+    location?:    text<128>,
+    notes?:       NoteBody,
+    source?:      BlockSource,
+    external_id?: tstr,                       ; the FOREIGN id, for round-tripping outward
     deleted:      bool,
     unknown-fields,                           ; see overview.md
 }
+
+BlockSource = "sunrise"                       ; created in Sunrise
+            / "import:gcal"                   ; imported from Google Calendar
+            / "import:ics"                    ; imported from a one-shot .ics file
 ```
+
+The last five are what
+[ADR-0025](../11-adr/0025-integration-account-entity.md) adds, and each answers
+a concrete loss: without `rrule` a recurring calendar event has nowhere to put
+its rule, without `location` and `notes` an imported event's `LOCATION` and
+`DESCRIPTION` have nowhere to land, and without `source` / `external_id` a
+foreign id cannot be round-tripped back out. They are additive fields, so a
+build that predates them preserves them through `unknown-fields` rather than
+dropping them, and `DOC_SCHEMA_FLOOR` does not move.
 
 Two corrections against earlier revisions of this spec:
 
@@ -45,39 +63,45 @@ Two corrections against earlier revisions of this spec:
   answer to a question the bounds already answer, and the three could
   disagree.
 
+### `external_id` is not the dedup key
+
+**Import dedup is by the Block's own id, and adding `external_id` does not
+change that.** The importer hashes `(source, uid)` into the Block id, exactly
+as a materialized routine occurrence hashes `(routine, occurrence)` into a
+Task's. Re-importing the same file therefore computes the same id and updates
+the Block already there, which is what makes re-import idempotent **with no
+side table to keep in step with the vault** — see
+[`../09-integrations/icalendar.md`](../09-integrations/icalendar.md).
+
+`external_id` exists for the opposite direction: to carry a *foreign* id back
+out on export, and to name the Google event a pushed Block corresponds to.
+Wiring dedup to it would replace an id-derivation that cannot drift with a
+lookup that can, and would need an index the schema does not have.
+ADR-0025 records this as a consequence precisely so that a later reader does
+not "simplify" the importer onto the new field.
+
 ### Specified but not modelled
 
-These are the calendar-integration slice. They are **not** on the wire today,
-and a build that adds them round-trips through this one without loss, because
-the forward-compat `unknown-fields` map preserves them verbatim:
+The remaining calendar fields. They are **not** on the wire, and a build that
+adds them round-trips through this one without loss, because the forward-compat
+`unknown-fields` map preserves them verbatim:
 
 ```cddl
 ; Not yet modelled. Landing these is a DOC_SCHEMA_V bump, not a break.
-color?:              BlockColor    ; defaults to stream color
-location?:           text<128>
-notes?:              NoteBody
+color?:                BlockColor  ; defaults to stream color
 travel_time_before_s?: uint        ; seconds, matching the rest of the domain
 travel_time_after_s?:  uint
-source?:             BlockSource
-external_id?:        tstr          ; for round-tripping with Google Calendar
-rrule?:              RRule         ; recurring blocks (rare; usually use a Routine)
-
-BlockSource = "sunrise"                       ; created in Sunrise
-            / "import:gcal"                   ; imported from Google Calendar
-            / "import:ics"                    ; imported from a one-shot .ics file
 ```
 
-`source` and `external_id` are still unmodelled, but the reason has changed:
-there **is** an importer now, reachable from both shipping clients
-(`sunrise ical import`, and `import_ical` on the seam behind the macOS File
-menu), and it works without them. Rather than add two columns, it hashes
-`(source, uid)` into the Block's **own id**, exactly as a materialized routine
-occurrence hashes `(routine, occurrence)` into a Task's. Re-importing the same
-file therefore computes the same id and updates the Block already there, giving
-the dedup rule in [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)
-with no side table to keep in step with the vault. The fields would still be
-needed to round-trip a *foreign* id back out, which is why they stay listed
-here.
+### Importer status
+
+The model landing is not the importer landing. Today `crates/sunrise-integrations`
+parses `RRULE`, `DESCRIPTION` and `LOCATION` out of a `VEVENT` and then reports
+each one at the domain boundary as an `ICalNotice`, because `ical_map` has
+nowhere to put them — so **a recurring event imports as a single occurrence**.
+The fields above remove that limitation; **teaching the importer to use them is
+a later PR**, and until it lands the notices are still what a user sees. Nothing
+is silently dropped in either state.
 
 ## Block title
 

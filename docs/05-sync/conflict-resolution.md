@@ -81,18 +81,28 @@ A and B both transition a task on the same op-window:
 
 ### Concurrent due_at edits
 
-Both set `due_at`. LWW. We log to a "merge journal" (see below) so the user can review if needed.
+Both set `due_at`. LWW, on the whole entity. Nothing is logged: the merge journal that would have recorded it was removed (see below).
 
 ### Concurrent task moves across streams
 
-Move = delete-source + create-destination. Ordering matters:
+**In v1 a move is not delete-plus-create — it is one op.** `Task.stream_id`
+(`crates/sunrise-domain/src/task.rs`) is a field on the entity, and moving a
+task emits a single `InnerOp::TaskUpdate` carrying the whole task with its new
+`stream_id`. There is no `TaskMove` variant and no delete/create pair in
+`crates/sunrise-core/src/inner_op.rs`.
 
-- A moves task T from S1 to S2.
-- B moves task T from S1 to S3.
+So two concurrent moves are just two concurrent writes to one entity, and
+entity-level LWW settles them with the comparison key above: the later
+`(hlc, device_id, seq)` wins, the task ends up in exactly one stream, and every
+replica picks the same one. **No duplicate is ever created, so nothing needs
+tombstoning.**
 
-Result after both apply: T has been deleted from S1 (idempotent), and exists in *both* S2 and S3 — both as legitimate creations. **One is a duplicate.**
-
-Resolution: deterministic — sort copies by `(create_op.hlc, create_op.device_id_lex, create_op.seq)` and keep the **last** entry; all earlier entries are auto-tombstoned. The same rule extends to N-way concurrent moves. Total ordering guarantees determinism. The merge journal records this.
+*Target state.* Duplicate-and-tombstone is what would be needed
+if a move ever becomes a delete-source + create-destination pair — sort copies
+by `(create_op.hlc, create_op.device_id_lex, create_op.seq)`, keep the last,
+auto-tombstone the rest, extending to N-way. It is **not implemented**, because
+the situation it resolves cannot arise. (A "moved" relation was also considered
+and rejected as an explosion in scope.)
 
 `device_id_lex` is the lex byte order of the raw 16-byte `device_id` (memcmp). No base-encoding is involved.
 
@@ -102,8 +112,6 @@ per-`(stream, device)` `seq`, which is why `seq` is the third term of the
 comparison key. Applying the memcmp to a device's own ops would make its later
 op lose to its own earlier one (`dev > dev` is false), silently discarding it on
 every remote replica while the originating replica kept it.
-
-(We considered a "moved" relation, but it explodes in scope. The duplicate-and-tombstone path is simple and correct.)
 
 ### Concurrent same-routine completion
 
@@ -120,36 +128,46 @@ Two devices complete occurrence O of a routine R at nearly the same time:
 
 A grants share to peer P; B revokes the same share concurrently. We treat share grants and revokes as ordered by the same `(hlc, device_id, seq)` key; the later wins. Edge case: if grant wins after revoke, peer P briefly has access until A's revoke arrives — minimal exposure.
 
-## Merge journal
+## Merge journal — removed
 
-For the small set of fields where LWW silently picks a winner over a non-trivial concurrent edit, we write a row to `merge_journal`:
+**There is no merge journal.** `merge_journal` was dropped by
+[ADR-0018](../11-adr/0018-storage-baseline-reset.md) and is absent from
+`0013_baseline.sql`, which records why: it was "a per-**FIELD** conflict journal
+for a merge model that is entity-level … Zero writers, zero readers, one index."
+Under [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) there is no losing
+*field* to record — the losing write is the whole entity — so the table had
+nothing to say.
 
-```sql
-CREATE TABLE merge_journal (
-    journal_id   BLOB PRIMARY KEY,
-    created_at   INTEGER NOT NULL,
-    entity_ref   TEXT NOT NULL,
-    field        TEXT NOT NULL,
-    losing_op_id BLOB NOT NULL,
-    winning_op_id BLOB NOT NULL,
-    summary      TEXT
-);
-```
+Its absence is asserted, not merely current: `baseline_omits_the_dead_schema`
+in `crates/sunrise-storage/src/db.rs` fails if `merge_journal` reappears, so a
+future migration cannot reintroduce it by copy-paste.
 
-UI surfaces "X edits merged automatically this week" in the weekly review. Power users can drill in. We do **not** show every merge in real time — that's a worse UX than letting the merge layer do its job.
-
-Cardinality: one row per `(entity_id, field, op_id_at_merge)` triple. Same field merged again creates a new row. The journal is capped at **5 000 rows** per device (FIFO eviction); it is diagnostic-only.
+The consequence for the product: **an automatic merge is currently invisible.**
+Nothing records that a concurrent edit lost, so the "X edits merged
+automatically this week" review surface has no data behind it. Reinstating that
+UI means designing a journal for an entity-level model — one row per losing
+*entity version*, not per field — and an ADR superseding 0018's removal, not
+restoring the schema above.
 
 ## Atomic batches
 
-`OpBatch` (see [`wire-protocol.md`](./wire-protocol.md)) carries multiple ops as one transactional unit. Receiver behavior:
+> **Target state.** The receiver applies **one envelope at a time**. The sync
+> driver decodes an inbound `OpBatchPayload` and calls `Core::apply_remote`
+> per envelope, each in its own vault transaction
+> (`crates/sunrise-core/src/sync_driver.rs`), so a batch **can** be half-applied
+> if the process dies mid-loop. `OpBatchPayload` itself is only exercised
+> end-to-end by the server's own tests. Convergence survives — every apply is
+> idempotent and entity-level LWW — but the all-or-nothing guarantee below is
+> not one v1 provides.
+
+`OpBatch` (see [`wire-protocol.md`](./wire-protocol.md)) carries multiple ops as one transactional unit. Intended receiver behavior:
 
 1. Verify and decrypt every envelope in the batch before applying any.
 2. If every op's `deps` are present and applied, apply all ops in the batch in a single SQL transaction; set `applied_at` for all.
 3. If any op has unsatisfied `deps`, persist the entire batch with `applied_at = NULL` and defer; reattempt on each subsequent dep arrival.
 4. If any envelope fails verification (signature or AEAD), reject the entire batch; emit a sync warning.
 
-A batch is never partially applied.
+A batch MUST never be partially applied. Today one can be.
 
 ## What we never do
 

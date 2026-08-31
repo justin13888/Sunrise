@@ -26,16 +26,30 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 
 ## What the server *can* see (metadata)
 
-This is honest disclosure to users, not a defect:
+This is honest disclosure to users, not a defect. The list is the relay's actual schema (`crates/sunrise-server/src/store.rs`), not a summary of it:
 
-- **Account email** (for login).
-- **Device IDs** (random per-install) and last-seen timestamps.
-- **Op counts and sizes per device.**
+- **Account email** — `accounts.email`, plaintext, plus the OIDC subject that identifies the user to the issuer: `accounts.oidc_iss` and `accounts.oidc_sub`.
+- **Per device:** its id, its **public keys** (`device_pub_s`, `device_pub_d`), its **nickname** — a free-form human-readable device name — its **platform**, its reported **app version**, and created/last-seen timestamps. The `device_cert` is stored too, as opaque `TEXT` the server never parses or verifies.
+- **Push tokens per device**, in plaintext (`push_tokens`).
+- **Per frame of ciphertext:** its size and arrival timestamp, plus the routing ids the relay parses out of each envelope header — `(stream_id, device_id, seq)` — which is what makes op counts and per-device sizes derivable.
 - **IP and approximate geo per request** (kept ≤14 days).
-- **Push token mapping per device.**
-- **Sharing graph:** identity X has shared *something* with identity Y, including counts of ops in shared documents.
+- **Sharing graph:** identity X has shared *something* with identity Y, including counts of ops in shared documents. (Not yet reachable — sharing is unimplemented; see [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md).)
+
+`nickname`, `platform` and `app_version` were absent from earlier revisions of this list. A nickname is the most user-legible item on it — it names a machine the way its owner does — so it is disclosed explicitly rather than folded into "device IDs".
 
 Reducing what's in this list is a design pressure. Specifically, mixnet-style request hiding and oblivious access patterns are tracked in [`../11-adr/`](../11-adr/) as future considerations.
+
+## Why the boundary holds structurally
+
+The rule "the server never sees plaintext" is enforced by the type system, not by discipline:
+
+- **`sunrise-server` has no `sunrise-crypto` dependency.** Its `Cargo.toml` does not list it, so no server code path can reach a key type, an AEAD, or the envelope opener — a relay that wanted to decrypt could not call the code to do it without a manifest change a reviewer would see.
+- **The only envelope type it can reach is `EnvelopeHeader`** (`crates/sunrise-cbor/src/envelope_header.rs`), which carries `{stream_id, device_id, seq}` and **no payload field**. Its own doc comment states the intent: "Intentionally not a subset-of-`OpEnvelope` struct: there is no payload, no signature and no nonce here, because a consumer of this type is one that must not have them." Frames are stored verbatim as `relay_frames.bytes` and forwarded unopened.
+
+Two limits on that, stated rather than left to be discovered:
+
+- **The relay's own SQLite database is not encrypted.** The client vault is SQLCipher-keyed by `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`; the server calls plain `Connection::open` with no `PRAGMA key`. Everything in the metadata list above sits in a file an operator or a backup can read directly. What that file does *not* contain is anything openable — the frames in it are ciphertext the server has no key for.
+- **The blob store content-addresses over ciphertext.** `blob_id` is `blb_` plus a BLAKE3 hash of the *uploaded bytes* (`crates/sunrise-server/src/routes/blobs.rs`), so the server can tell that two uploads are byte-identical. That is deliberate and harmless in practice: each attachment gets a fresh random per-blob key, so two identical plaintexts encrypt to different ciphertext and do not collide. The server learns "these two uploads are the same ciphertext", never "these two attachments are the same file".
 
 ## Self-hosted vs managed distinction
 

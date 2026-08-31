@@ -34,7 +34,34 @@ exists.
 ## Compatibility windows
 
 - **Wire protocol:** N and N-1 must interoperate. N-2 is rejected with a clear "please update your client" error.
-- **Doc schema:** forward compat down to `DOC_SCHEMA_FLOOR`. Newer fields on older clients are *preserved* but ignored, and re-emitted verbatim. This is implemented, not aspirational: every entity carries `#[serde(flatten)] unknown: Unknowns`, `tasks.extra` persists it, and `encode_canonical` sorts map keys so the preserved field is re-emitted in the position its author put it in — without which byte-exact re-emission is impossible. See [`../10-cross-cutting/protocol-versioning.md` §7](../10-cross-cutting/protocol-versioning.md#7-document-schema-forward-compat) for the precise rules and the `forward-compat/v1-reads-v2.cbor` fixture.
+- **Doc schema:** forward compat down to `DOC_SCHEMA_FLOOR`. Newer fields on older clients are *preserved* but ignored, and re-emitted verbatim. See [`../10-cross-cutting/protocol-versioning.md` §7](../10-cross-cutting/protocol-versioning.md#7-document-schema-forward-compat) for the precise rules and the `forward-compat/v1-reads-v2.cbor` fixture.
+
+  The rule has three halves and **all three are required**, because two of them
+  hold on their own and still lose the field:
+
+  1. **Every entity carries `#[serde(flatten)] unknown: Unknowns`**, so an
+     unmodelled key survives decode. The sole exception is `Interruption`,
+     whose whole value is its primary key.
+  2. **Every entity persists that map**, so the key survives the projection as
+     well as the decode. On an entity-level LWW model
+     ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) this is not
+     cosmetic: every op is full-state, so a device that merely reads and
+     re-saves an entity emits the truncated version, and that op wins on every
+     peer. A struct field with no column is a field that survives exactly one
+     transaction.
+  3. **`encode_canonical` sorts map keys**, so the preserved field is
+     re-emitted in the position its author put it in — without which
+     byte-exact re-emission, and therefore the signature, is impossible.
+
+  Persistence is per-entity storage, not one mechanism: `tasks.extra`,
+  `blocks.extra` and `attachments.extra` are dedicated `BLOB` columns;
+  `review_snapshots.body` holds the whole entity's canonical CBOR and so
+  carries its unknowns without a column of its own. The remaining five
+  column-projected entities — `Stream`, `Context`, `Routine`, `FocusStart`
+  and `FocusEnd` — get their `extra BLOB` from
+  `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`. Naming
+  `tasks.extra` alone, as an earlier revision of this line did, describes one
+  column and implies a mechanism that was not universal.
 - **DB schema:** local-only; runs migrations in-place on first launch of a new version.
 
 ## Adding a field
@@ -42,7 +69,10 @@ exists.
 1. Add to the CDDL spec in `02-domain/`.
 2. Add a Rust struct field with `#[serde(default)]` and an `Option`/sensible default.
 3. Append a migration under `crates/sunrise-storage/migrations/` (for materialized indexes if needed).
-4. Nothing to do for round-tripping: the `unknown` map already preserves the field on every older client.
+4. Nothing to do for round-tripping — provided the entity's `unknown` map has a
+   column behind it. That is the universal rule, not a per-entity favour: an
+   entity whose reader hardcodes `Unknowns::new()` silently destroys the field
+   on the next full-state op it emits. See §Compatibility windows.
 5. Bump `DOC_SCHEMA_V`. Leave `DOC_SCHEMA_FLOOR` alone — the older shape is still readable.
 
 ## Removing a field

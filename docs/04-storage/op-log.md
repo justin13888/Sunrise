@@ -6,6 +6,26 @@ status: accepted
 
 The op log is the canonical history. Materialized state is derivable from the log. The log is append-only (in v1; compaction is a controlled rewrite, see [`compaction.md`](./compaction.md)).
 
+> **`deps` are specified, not implemented — and every section below that rests
+> on them describes the target.** `OpLog::insert` in
+> `crates/sunrise-storage/src/oplog.rs` takes a `deps: &[[u8; 16]]` and writes
+> each entry into `op_dep`, and **every caller in the workspace passes `&[]`** —
+> the twenty-seven `self.ops_insert` sites in `crates/sunrise-core/src/engine.rs`,
+> the remote-apply path in the same file, and the storage crate's own tests. The
+> loop therefore never runs and `op_dep` has **zero rows and zero readers**.
+>
+> Downstream: causal apply ordering (§Op application order) reduces to "apply on
+> arrival", because "all deps present" is vacuously true; there are no orphans
+> to hold, so §Orphan ops describes a state nothing can reach; and the
+> `op_orphan_archive` table and the `db.dep.orphan` event **do not exist** —
+> neither name appears anywhere in `crates/`.
+>
+> Convergence does not depend on any of it. Under
+> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) every op is full-state
+> and merges by `(hlc, device_id, seq)`, so out-of-order arrival converges
+> regardless; what deps would buy is *intermediate* states a user would
+> recognize, not a different final state.
+
 ## Schema
 
 ```sql
@@ -26,7 +46,7 @@ CREATE TABLE ops (
 );
 ```
 
-`deps` are stored in a separate `op_dep` table with an index for fast satisfaction queries; see [`local-database.md`](./local-database.md).
+`deps` are stored in a separate `op_dep` table with an index for fast satisfaction queries; see [`local-database.md`](./local-database.md). The table and its `op_dep_reverse` index exist in `0013_baseline.sql`; nothing writes them — see the banner above.
 
 `received_from` is the `device_id` of the immediate sender (the relay's own device id if forwarded from server, or the originating device id if directly synced). It is set once at first arrival on this device and never overwritten by intermediate hops. It is used only for diagnostics and to detect "this op came from a non-paired peer" anomalies.
 
@@ -96,6 +116,26 @@ ULID, generated client-side. Carries a millisecond-precision timestamp prefix fo
 Ops belong to exactly one Stream — they live in that Stream's op log. Operations that *appear* cross-stream (moving a task) are modeled as a delete in the source Stream + a create in the destination Stream, both ops emitted atomically by the same device.
 
 A move emits two ops: `delete_in(src_stream)` and `create_in(dst_stream)`. Both are submitted in one OpBatch; the destination op's `deps` includes the source op's id. A receiver that gets the destination op without the source op holds it as orphan (above) until the source arrives. The relay forwards both atomically; partial fan-out is a relay bug, not a normal condition.
+
+> **A move is one op today, not two.** `Command::PromoteToStream` lowers to a
+> `TaskPatch { stream_id: Some(dst), .. }` and goes through `update_task`, which
+> emits a **single `task.update`** carrying the whole moved Task. Its `seq` is
+> taken from the **destination** Stream (`self.next_seq(db, task.stream_id)`,
+> read after the patch applied), so **the source Stream's log never records the
+> departure** — there is no `delete_in(src)`, no `OpBatch`, and no dep to
+> satisfy.
+>
+> What that costs is not convergence: the Task's `stream_id` is a field on a
+> full-state entity, so a replica that applies the update moves the Task
+> whatever order the ops arrive in. What it costs is **the source Stream's
+> history**, which matters for two things this document already promises —
+> §Read snapshots' "the log is for sync, audit, undo", and a per-Stream fetch,
+> which now returns a log with no trace that a Task ever left. A peer subscribed
+> to the source Stream and not the destination sees the Task simply stop being
+> updated.
+>
+> The two-op form above is the target and needs `deps` first, since it is the
+> whole reason a receiver must not apply the create before the delete.
 
 ## Compaction interaction
 

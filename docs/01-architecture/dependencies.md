@@ -23,7 +23,7 @@ superseding decision named in the **Governing decision** column.
 | Public-key encryption (key envelopes, share grants) | `hpke` | *declared 0.13; not in lock* | [ADR-0004](../11-adr/0004-crypto-primitives.md), [primitives.md](../03-crypto/primitives.md) | Declared in `[workspace.dependencies]` but unconsumed — pending the sharing key-envelope implementation. Not yet resolved into `Cargo.lock` because no crate references it. See Reconciliations §b. |
 | Handshake (Noise) | `snow` | 0.9.6 | [ADR-0004](../11-adr/0004-crypto-primitives.md), [pairing-and-onboarding.md](../03-crypto/pairing-and-onboarding.md) | `sunrise-pairing` only. |
 | Hashing / KDF context | `blake3` | 1.8.5 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Content hashing + SQLCipher key derivation. |
-| Password hashing | `argon2` | 0.5.3 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | Argon2id at unlock; `sunrise-crypto` only. |
+| Password hashing | `argon2` | 0.5.3 | [ADR-0004](../11-adr/0004-crypto-primitives.md) | `sunrise-crypto` only, and on **one** path: stretching the recovery code in `recovery.rs`. Not used at unlock — there is no passphrase unlock; the vault root is 32 random bytes from a keystore. See [`../03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md). |
 | Local database | `rusqlite` | 0.31.0 | [local-database.md](../04-storage/local-database.md) | `bundled-sqlcipher` feature — statically links SQLCipher v4 (encrypted SQLite); no system SQLite dependency. |
 | CBOR serialization | `ciborium` | 0.2.2 | [wire-protocol.md](../05-sync/wire-protocol.md), [data-encryption-format.md](../03-crypto/data-encryption-format.md) | Canonical op / envelope encoding. |
 | HTTP + WebSocket server | `axum` | 0.7.9 | [ADR-0005](../11-adr/0005-sync-transport.md) | Relay REST + `/sync` WS; `sunrise-server`. |
@@ -37,7 +37,7 @@ superseding decision named in the **Governing decision** column.
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
 | Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. Disabling defaults is **load-bearing**: they pull `uniffi_bindgen -> cargo_metadata -> cargo-platform 0.3.3`, which requires rustc 1.91 and hard-fails the 1.88 pin in `rust-toolchain.toml`. The generator therefore lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile pinning `cargo-platform` to 0.3.2 (MSRV exactly 1.88). `cargo update` in that directory will re-break it; `just macos-xcframework` builds it `--locked`. |
-| Snapshot testing | `insta` | 1.48.0 | [testing.md](../10-cross-cutting/testing.md) | Declared `1.40`, resolved to `1.48.0` in `Cargo.lock`; `yaml` feature. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the entry stays because snapshot testing is still the right tool for the next renderer that needs it. See Reconciliations §e. |
+| Snapshot testing | `insta` | *declared 1.40; not in lock* | [testing.md](../10-cross-cutting/testing.md) | Declared `1.40` with the `yaml` feature. It resolved to `1.48.0` while it had a consumer; with that consumer gone it is unconsumed again and **no longer appears in `Cargo.lock`**, like `hpke`. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the entry stays because snapshot testing is still the right tool for the next renderer that needs it. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / ws-handshake benches that feed `bench/baseline.json`. |
 | Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
 | Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
@@ -70,7 +70,7 @@ Majors only; exact ranges live in the per-package `package.json` files.
 
 ## Reconciliations
 
-Five places where doc prose had drifted from the real manifest / lockfile.
+Seven places where doc prose had drifted from the real manifest / lockfile.
 Each is now reconciled to reality.
 
 ### a. `loro` — removed; there is no CRDT library
@@ -118,7 +118,12 @@ datetime library. The migration **landed**:
 
 - `jiff` is declared in `[workspace.dependencies]` (`0.2`, resolving to
   `0.2.32` in `Cargo.lock`) with `default-features = false` plus `std`,
-  `serde`, and `tzdb-bundle-platform`.
+  `serde`, and **`tzdb-bundle-always`** — not `tzdb-bundle-platform`, which an
+  earlier revision of this section named. The distinction is the point of the
+  choice: `-always` embeds a fixed tzdb in the binary so every device resolves
+  IANA zones identically, which is what makes routine expansion deterministic
+  across platforms. `default-features = false` also disables `tzdb-zoneinfo`,
+  so without an explicit bundle no named zone would resolve at all.
 - `chrono` was **removed** — no `chrono::` usage remains anywhere in the
   workspace. It reappeared in `Cargo.lock` later as a transitive dependency of
   `oauth2`; that is a lock-file fact, not a datetime decision, and §f explains

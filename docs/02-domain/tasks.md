@@ -66,6 +66,33 @@ Field-level rationale:
   [`../08-features/notifications.md`](../08-features/notifications.md).
 - `scheduling_constraints` is an optional list (max 16) of requirement windows restricting when the Task should be scheduled or executed; the whole list is one LWW register. Full semantics in [`scheduling-constraints.md`](./scheduling-constraints.md).
 
+### What a command can and cannot set
+
+The CDDL is the *wire* shape. Several fields on it are system-derived or
+write-once, and a reader who assumes "field on the entity" implies "field on
+the patch" will look for a command that does not exist. `TaskDraft` and
+`TaskPatch` in `crates/sunrise-domain/src/task.rs` are the whole user-facing
+write surface:
+
+| Field | How it is written | The gap this leaves |
+|---|---|---|
+| `completed_at` | Derived from `state` in `update_task`: the transition to `done` stamps *now*, any other transition clears it. | It cannot be set to a specific past instant, so a task completed offline and recorded later is stamped when it was recorded. `TaskPatch` has no `completed_at`. |
+| `deferred_count` | Incremented by `Command::DeferTask`, saturating. | Increment-only: no command resets it, and no patch field sets it. A user who deferred a task ten times and then re-planned it carries the ten forever. |
+| `blocks` | Derived read-only from the `block_tasks` index — see [`time-blocks.md`](./time-blocks.md) §Symmetry. | Deliberate, not a gap: binding is one op on the Block, and the derivation is what makes the two sides unable to disagree. |
+| `routine_id` / `routine_occurrence` | Set only by routine materialization. | **No patch field either way.** A hand-made Task can never be attached to a Routine, and a routine-generated Task can never be detached from one. |
+| `deleted` | `Command::DeleteTask` sets it. | **One-way, and this holds for every entity.** There is no un-delete op anywhere in `Command`; `ImportBlock` re-materializing a locally-deleted Block is the sole tombstone resurrection in the system, and it is a Block-only rule stated in `import_block`. |
+
+### `Command::DeferTask` collapses the four `stime` kinds
+
+`DeferTask { id, to_ms: u64 }` takes epoch milliseconds and writes
+`scheduled_at` as a `SunriseTime::Instant`. Every other write path preserves
+which of the four kinds the user meant — `TaskPatch.scheduled_at` carries a
+whole `SunriseTime` — so deferring a task scheduled "sometime Tuesday morning"
+or "my birthday, the 4th" converts it to a fixed instant and the distinction
+§`stime` exists to protect is gone. The value is not wrong, but its *kind* is,
+and nothing restores it. Widening `to_ms` to a `SunriseTime` is the fix; it is
+a command-shape change, not a schema change.
+
 ### Deadline semantics
 
 ### `stime` — the four kinds of time

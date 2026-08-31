@@ -6,17 +6,64 @@ status: accepted
 
 Bidirectional integration. Per-Stream toggle.
 
+> **Status: deferred from the v1 MUST set, and wired to nothing.**
+> `crates/sunrise-integrations/src/gcal.rs` is implemented and tested — the PKCE
+> authorization-code exchange and refresh with the durable-refresh-token rule,
+> change detection that suppresses phantom deletes, all against an injected
+> transport so the tests need no network — and it has **zero consumers**.
+> Nothing has ever run it against the live Google API, there is **no
+> `impl EventSyncer`**, and `IntegrationProvider` has no implementor.
+> [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(b) deferred Google Calendar
+> from the v1 MUST set against
+> [issue #4](https://github.com/justin13888/Sunrise/issues/4); this is a
+> wiring-and-storage gap, not a protocol gap. Everything below the Auth section
+> is the target.
+
 ## Auth
 
-- OAuth 2.0 with PKCE; authorization-code flow is mediated server-side, so the client never sees `client_secret`.
+**On-device PKCE with a public client. The server is never in the token path.**
+
+- OAuth 2.0 authorization code + PKCE (`code_challenge_method=S256`), run
+  entirely on the user's device against
+  `https://accounts.google.com/o/oauth2/v2/auth` and
+  `https://oauth2.googleapis.com/token`, with a loopback `redirect_uri`. This is
+  what `gcal.rs`'s `OAuthFlow::{auth_url, code_exchange_request,
+  refresh_request}` already implement, and a test asserts the request body
+  contains no `client_secret`.
+- **There is no `client_secret`.** An installed app is a *public* client: a
+  secret shipped in a binary is not a secret, which is the whole reason PKCE
+  exists. `client_id` is a public string and can live in the binary.
 - Scopes: `https://www.googleapis.com/auth/calendar.events` (no contacts, no drive).
-- Tokens stored in the Stream's `integrations.gcal` config (encrypted at rest in vault).
-- Refresh tokens rotate per Google's flow.
+- Credentials are stored in the `IntegrationAccount` entity, per
+  [ADR-0025](../11-adr/0025-integration-account-entity.md) and
+  [`overview.md`](./overview.md) §Token storage — **not** in a Stream field,
+  which does not exist. The durable refresh token syncs; the short-lived access
+  token stays device-local.
+- Refresh tokens rotate per Google's flow, and an omitted `refresh_token` on a
+  refresh response MUST NOT erase the stored one (`Credentials::apply_refresh`).
+
+An earlier revision of this document specified the exchange as "mediated
+server-side, so the client never sees `client_secret`", with the managed server
+holding `client_id` and `client_secret` in its secret store. **ADR-0025 deletes
+that flow rather than softening it.** It contradicted this directory's own
+"The server is not a credentialed proxy" and "Tokens never leave the device",
+and it would have put the relay in possession of every user's calendar tokens —
+the precise property the architecture exists to avoid. Its premise does not hold
+either: a public PKCE client has no secret to protect.
 
 ### `client_id` provisioning
 
-- **Managed cloud:** a single Google OAuth app is registered to Sunrise; `client_id` and `client_secret` are stored in the managed server's secret store.
-- **Self-host:** the operator MUST register their own Google OAuth app and put the credentials under `[integrations.google_calendar]` in `sunrise.toml`. If unconfigured, the integration shows a setup wizard pointing at `https://console.cloud.google.com`.
+A `client_id` is public, so provisioning it is a configuration question, not a
+secrets question:
+
+- **Managed cloud:** a single Google OAuth app is registered to Sunrise and its
+  `client_id` ships with the client. No `client_secret` is registered, stored or
+  used. No such app exists yet — it is one of the reasons ADR-0020 deferred this
+  integration.
+- **Self-host:** the operator MAY register their own Google OAuth app (as an
+  installed/public client) and configure its `client_id` under
+  `[integrations.google_calendar]`. If unconfigured, the integration shows a
+  setup wizard pointing at `https://console.cloud.google.com`.
 
 ## Inbound (Google → Sunrise Blocks)
 
@@ -66,7 +113,10 @@ Lossy export of a recurrence rule (the Sunrise rule cannot be expressed exactly 
 ## Privacy
 
 - We push *only* the Stream the user has opted in. We don't read Google calendars unless the user also opted in to import.
-- Tokens never leave the device.
+- **Tokens never reach the server.** The refresh token syncs between the user's
+  own devices as ciphertext inside an ordinary op, which the relay cannot open;
+  the access token never leaves the device that minted it. See
+  [`overview.md`](./overview.md) §Token storage.
 - Aggregate sync metrics are *not* sent to Google or our server beyond the third-party API itself.
 
 ## Error model

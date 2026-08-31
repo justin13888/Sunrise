@@ -190,6 +190,8 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 `identity_sig` on `share_grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
+**None of the control kinds in that table is implemented.** The container above — the envelope, its AAD-by-exclusion rule, the signature, the canonical-CBOR enforcement, the verification order and the blob chunking — is implemented byte-exactly and covered by frozen vectors. The *payloads* are not: all 21 variants of `InnerOp` in `crates/sunrise-core/src/inner_op.rs` are domain CRUD, and `key_envelope`, `device_cert`, `device_revoke`, `share_grant`, `share_revoke`, `snapshot`, `checkpoint` and `identity_transition` have no encoder, decoder or emitter. The `hpke` crate that §HPKE single-shot depends on has no consumer. [ADR-0024](../11-adr/0024-key-hierarchy.md) adds `key_envelope` and `device_revoke` as the first two, and records that a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses it — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+
 ## HPKE single-shot
 
 Used wherever a sender encrypts to a single recipient identified by an X25519 public key (`key_envelope`, `share_grant`, recovery upload, pairing transport).
