@@ -63,4 +63,115 @@ final class TabShellUITests: SunriseUITestCase {
             )
         }
     }
+
+    // MARK: - Capture
+
+    /// A tap reaches the core. The iOS twin of the Mac's capture test and the
+    /// claim this suite was missing: SwiftUI → view model → UniFFI → the Rust
+    /// core → SQLite → back, driven by real taps and real keystrokes.
+    ///
+    /// The app opens on Today, so this also pins the behaviour that makes the
+    /// assertion possible at all — a bare line captured on Today gets the date
+    /// Today selects on, rather than being written to the Inbox and vanishing
+    /// off the screen that accepted it.
+    func testCapturingFromTodayPutsTheTaskInTheList() throws {
+        createVault()
+
+        capture("Renew passport !1", landingAs: "Renew passport")
+    }
+
+    /// Capture, then leave.
+    ///
+    /// This is the test that could not be made to pass before: the software
+    /// keyboard stays up after Add so a burst of thoughts is a burst of lines,
+    /// and it covers the tab bar — so the tap that switches tabs went to the
+    /// keyboard instead. `capture.done` is the way out, and this asserts that
+    /// taking it actually frees the bar rather than merely existing.
+    ///
+    /// The Done button is a keyboard accessory and so is only drawn beside a
+    /// software keyboard; a simulator with a hardware keyboard attached shows
+    /// neither. The dismissal is therefore conditional and the navigation is
+    /// not — the tab has to be reachable either way, which is the claim.
+    func testTheTabBarIsReachableAfterCapturing() throws {
+        createVault()
+        capture("Renew passport !1", landingAs: "Renew passport")
+
+        let done = app.buttons["capture.done"]
+        if done.waitForExistence(timeout: 3) {
+            done.tap()
+        }
+
+        let browse = app.tabBars.buttons["Browse"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { browse.isHittable },
+            "the keyboard is no longer covering the tab bar"
+        )
+        browse.tap()
+        XCTAssertTrue(
+            app.navigationBars["Browse"].waitForExistence(timeout: 10),
+            "the tab switched"
+        )
+    }
+
+    /// The other capture seam.
+    ///
+    /// Calendar has no inline bar, so `openCapture` presents the sheet instead
+    /// of focusing a field — a different path with a different commit
+    /// (`AppSurfaces.commitCapture`, which has no local refresh and repaints
+    /// through the change stream). The confirmation is set strictly after that
+    /// commit returns, so it is proof the write landed rather than proof a
+    /// button was tapped; the Inbox row afterwards is proof it is still there.
+    func testTheCaptureSheetCommitsFromAScreenWithNoBar() throws {
+        createVault()
+
+        app.tabBars.buttons["Calendar"].tap()
+        let open = app.buttons["capture"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10), "Calendar offers Capture")
+        open.tap()
+
+        let field = app.textFields["quick-capture.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "the sheet presented its field")
+        field.tap()
+        field.typeText("Book the ferry")
+
+        let add = app.buttons["quick-capture.add"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { add.isEnabled },
+            "the capture preview enables Add"
+        )
+        add.tap()
+
+        // Matched as any descendant rather than as a `staticText`: the label is
+        // a `Label`, and which element type SwiftUI folds that into is not a
+        // promise worth resting a test on.
+        let confirmation = app.descendants(matching: .any)["quick-capture.confirmation"]
+        XCTAssertTrue(
+            confirmation.waitForExistence(timeout: 10),
+            "the sheet confirms the commit the core accepted"
+        )
+
+        // Cancel takes the sheet and its keyboard away together, which is what
+        // makes the tab bar tappable again.
+        app.buttons["quick-capture.cancel"].tap()
+
+        let browse = app.tabBars.buttons["Browse"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { browse.isHittable },
+            "dismissing the sheet freed the tab bar"
+        )
+        browse.tap()
+        // The cell, not the identifier's own element. The row is a `Label`,
+        // and on iOS SwiftUI splits that into an image and a static text which
+        // both inherit the identifier — so the query is ambiguous, and the
+        // image it resolves to first is not hittable on its own. The thing a
+        // finger lands on is the row.
+        let inbox = app.cells.containing(.staticText, identifier: "sidebar.inbox").firstMatch
+        XCTAssertTrue(inbox.waitForExistence(timeout: 10), "the Inbox is in Browse")
+        inbox.tap()
+
+        XCTAssertTrue(
+            app.staticTexts["Book the ferry"].waitForExistence(timeout: 10),
+            "what the sheet captured is in the Inbox"
+        )
+    }
 }
