@@ -6,6 +6,23 @@ status: accepted
 
 Three flows: account creation, adding a new device, recovering identity. Recovery is in [`recovery.md`](./recovery.md); this spec covers account creation and the pair-from-existing-device flow.
 
+## Implementation status
+
+**The handshake is real; the transport under it is not, and what crosses is not yet the `PairingPayload` below.**
+
+Implemented, in `crates/sunrise-pairing`:
+
+* The full **Noise XX** transcript, `Noise_XX_25519_ChaChaPoly_SHA256` (`handshake.rs::NOISE_PARAMS`), with a throwaway X25519 static per handshake as §Handshake specifies.
+* The **QR payload** codec — lex-ordered UTF-8 JSON, base64url no-pad, magic prefix (`qr.rs`).
+* The **6-digit SAS**, `BLAKE3("sunrise.pair_sas.v1" || h, 3)` (`sas.rs`), with the SAS gate enforced by the session type rather than by a caller remembering to check it.
+
+Not implemented:
+
+* **The relay rendezvous does not exist.** There is no pairing route on `sunrise-server` — the router exposes `/accounts`, `/devices`, `/blobs`, `/meta`, `/health` and the `/sync` WebSocket, and nothing that routes by `pair_id`. §Relay framing for Noise, the three-message-per-role buffer and the 60 s window describe nothing. `crates/sunrise-core-bindings/src/pairing.rs` states the consequence outright: "the *transport* for them **is currently the user**" — the three handshake messages and the sealed root cross as base64url strings a person copies between the two machines by hand. The crypto is unaffected by that: the SAS binds the transcript either way.
+* **The rate limits are constants, not a limiter.** `RATE_LIMIT_HOURLY = 10` and `RATE_LIMIT_DAILY = 30` are declared in `rate_limit.rs` and read by nothing. No counter, no `429`, no `Retry-After`.
+* **What crosses is the 32-byte vault root, not `PairingPayload`.** Today the existing device sends `Core::export_vault_root_for_pairing`'s output through the Noise channel and the receiving device derives the same key schedule from it, because every Stream key derives from the root (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)). The identity private keys are **not** sent, so the new device signs with its own device key and each side must still accept the other's self-signed cert via `Command::TrustDevice`. Under [ADR-0024](../11-adr/0024-key-hierarchy.md) pairing transfers the root *and* the identity private keys, and the new device receives its `key_envelope` ops through normal sync.
+* **Account creation (§Account creation) has no client.** `AccountCreateRequest` is consumed by the server and produced by nothing; no client mints an identity keypair, a recovery blob, or an unlock method.
+
 ## Account creation
 
 1. User opens Sunrise, picks "Create new identity."

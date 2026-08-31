@@ -8,6 +8,8 @@ Sunrise is end-to-end encrypted: the server holds ciphertext and metadata; only 
 
 This document is the index. Each linked spec is normative for its area; **all crypto specs in this directory are accepted (frozen) for v1**.
 
+**Accepted is not the same as implemented.** [ADR-0024](../11-adr/0024-key-hierarchy.md) records that the documented cryptosystem and the one in `crates/` are different systems sharing a vocabulary, and adopts the documented hierarchy — the one drawn below — as the target. Each spec in this directory now opens with an implementation-status section naming what the tree does today. The short version: the **op envelope, blob chunking, recovery-blob seal, Noise XX handshake and SAS are implemented and byte-exact**; the **key hierarchy above the Stream key is not**.
+
 ## Goals (in priority order)
 
 1. **Confidentiality.** Plaintext content is unreadable to the server, network attackers, or anyone without an authorized device.
@@ -57,6 +59,10 @@ This document is the index. Each linked spec is normative for its area; **all cr
             ops          ops             …
 ```
 
+**That diagram is the target, per [ADR-0024](../11-adr/0024-key-hierarchy.md).** Today the tree has no identity keypair at all: the vault root is 32 random bytes **per account** (not derived per device), device certs are self-signed by the device's own key with no identity to anchor to, and each Stream key is *derived* from the root as `BLAKE3.derive_key("sunrise.stream_key.v1", vault_root || stream_id || u32_be(epoch))` at a pinned `EPOCH = 1` rather than generated and wrapped. So the arrows above run the other way in practice: the root is the top of the live hierarchy, and everything hangs off it. See [`identity-and-device-keys.md`](./identity-and-device-keys.md) §What is specified here vs. what is implemented.
+
+Four of the six goals depend on that gap. **Revocability** and **Selective sharing** are not achievable while every device holds a root that *is* the key schedule; **Recoverability** restores identity keys that currently decrypt nothing. **Confidentiality**, **Integrity** and **Authenticity** are delivered today by the op envelope.
+
 ## Specs in this section
 
 | Spec | Covers |
@@ -83,3 +89,5 @@ This document is the index. Each linked spec is normative for its area; **all cr
 | Wrapped Stream keys for shared peers | In Stream op log as `share_grant` ops (HPKE to recipient identity's `ID_D_pub`) | HPKE |
 | Recovery blob (wraps `ID_S_priv`, `ID_D_priv`) | Server | AEAD under Argon2id-stretched recovery code |
 | Recovery code | User-held (paper / password manager) | User's discretion; **not recoverable if lost** |
+
+Where the tree differs from that table today: there are **no identity private keys** to store; the device signing secret lives in the vault's own `local_identity` row, AEAD-wrapped under the vault root; the **vault root is persisted**, not rebuilt — macOS keeps it in the login Keychain, the CLI in a mode-0600 keystore file — because there is no unlock secret to rebuild it from; and `stream_keys` is written but never read.

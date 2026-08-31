@@ -32,6 +32,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 |---|---|---|
 | `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
 | `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
+| `srv.start.metrics_withheld` | warn | `/metrics` was not mounted because the listener is not loopback; `bind`. The operator surfaces are loopback-only per [`../06-server/overview.md`](../06-server/overview.md), so a public bind serves `404` there. Answers "why does my scrape 404". |
 | `srv.start.refused` | error | Config could not be resolved, read, parsed, or validated; the process is exiting 78 (`EX_CONFIG`) rather than serving. |
 | `srv.start.failed` | error | The listener could not bind; `bind`, `cause`. Distinct from `srv.start.refused`: the config was fine and the address was not available. |
 | `srv.stop` | info | `axum::serve` returned; listener closed. |
@@ -44,6 +45,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.ws.rejected` | warn | `/sync` handshake failed negotiation; `err_code`. The client sees a closed socket and cannot diagnose this itself. |
 | `srv.ws.disconnect` | info | `/sync` session ended. |
 | `srv.ws.subscribe` | debug | Subscribe frame processed; `n_streams`. |
+| `srv.ws.device_revoked` | warn | The session's device is no longer an active row on its account; the session is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.ws.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
 | `srv.ws.token_expired` | warn | The session's bearer passed its `exp`; the session is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
 | `srv.ws.refreshed` | debug | A `0x12 RefreshToken` verified; the session's deadline moved out without a reconnect. `account_h`. |
 | `srv.ws.refresh_rejected` | warn | A refresh token failed verification; `err_code`, `account_h`. The session keeps its current credential — this is recoverable. Never the token. |

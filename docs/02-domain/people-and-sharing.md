@@ -10,12 +10,16 @@ A Person represents either a Sunrise identity (someone the user shares with) or 
 
 > **Status: the `Person` entity is unreachable in v1.**
 > `crates/sunrise-domain/src/person.rs` defines the struct and
-> `0013_baseline.sql` creates a `persons` table; there is no `Command`, no op
-> kind, no `Query`, no UniFFI surface, and nothing writes the table.
+> `0013_baseline.sql` creates a `persons` table; there are **zero ops, zero
+> commands, zero queries, zero writers** — no `InnerOp` variant, no `Command`,
+> no `Query`, no UniFFI surface, and nothing that writes the table.
 > `Query::EntityById` refuses `EntityKind::Person`. The only live use of a
 > `prs_` reference is `Task.assignee`, which the core carries as an opaque
-> label. Everything below the field list describes the sharing model as
-> designed, not as shipped — see
+> label. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a) deferred stream
+> sharing out of the v1 MUST set, which is why the rows below have no
+> implementation to describe, and kept `Person` and `persons` rather than
+> deleting them. Everything below the field list is the sharing model as
+> designed, not as shipped — see also
 > [`../implementation/overview.md`](../implementation/overview.md).
 
 Shared types are defined in

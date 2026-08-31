@@ -4,6 +4,21 @@ status: accepted
 
 # Identity and Device Keys
 
+## What is specified here vs. what is implemented
+
+**This document specifies the hierarchy [ADR-0024](../11-adr/0024-key-hierarchy.md) adopts as the target. Most of it is not what `crates/` does today.** ADR-0024 is the governing decision; the table below records the gap so no reader mistakes a specification for a description. Everything outside the table stands as written and is the target.
+
+| This spec says | The tree today |
+|---|---|
+| `device_id = ULID()`, rendered `"dev_" \|\| crockford_base32(…)` | `device_id = BLAKE3.derive_key("sunrise.device_id.v1", D_S_pub)[..16]` — `device_id_from_pub` in `crates/sunrise-core/src/keychain.rs`. No ULID, no timestamp prefix, no `dev_` prefix. The relay mints a *separate* id for its own `devices` row (`Store::register_device` → `mint_id`, bare Crockford base-32, no prefix). |
+| The DeviceCert `sig` is `Ed25519_sign(ID_S_priv, …)` and verifies under the identity's `ID_S_pub` | The cert is **self-signed** by the device's own `D_S_priv`, and its `identity_id` field is `identity_id_from_pub(D_S_pub)` of that same device key (`Keychain::open`). There is no identity anchor to verify against. A peer device is admitted by `Command::TrustDevice`, which accepts a cert delivered out-of-band; **trust rests entirely on that channel**. The relay stores `device_cert` as opaque `TEXT` and never verifies it. |
+| `vault_root = BLAKE3.derive_key("sunrise.vault_root.v1", unlock_secret \|\| device_salt)`, one per device | The vault root is **32 random bytes per account**, minted once and stored: `apps/macos/Sunrise/Identity/VaultRootStore.swift` writes it to the login Keychain; the CLI writes `<keystore>/<id>.key` at mode 0600 (`crates/sunrise-cli/src/vault.rs`). There is no `device.toml`, no `device_salt`, and **no Argon2id anywhere on the unlock path** — `argon2` is a dependency of `sunrise-crypto` for the recovery blob alone. The `Unlock::{Passphrase, DevicePaired, RecoveryCode}` variants in `crates/sunrise-core/src/unlock.rs` all carry an already-materialized `VaultRootKey`; no caller derives one. |
+| `stream_key_<epoch>` is 32 bytes from `os.csprng()` at create or rotate, wrapped under `vault_root` in `stream_keys` | Stream keys are **derived, not generated**: `derive_stream_key` = `BLAKE3.derive_key("sunrise.stream_key.v1", vault_root \|\| stream_id \|\| u32_be(epoch))`, with `pub const EPOCH: u32 = 1` pinned (`keychain.rs`). `wrap_stream_key` exists (`crates/sunrise-crypto/src/stream_key.rs`) and `Keychain::persist_stream_key` writes wrapped keys into `stream_keys`, but **nothing reads that table**; its own comment says *"Reads still derive; this table write only lets a later slice make rotation table-driven."* |
+| Path switch (keystore ⇄ passphrase) re-wraps every Stream key | Not implemented. There is no second unlock path to switch to, and no `path_switch_in_progress` marker. |
+| Public-key publication and the identity fingerprint | `POST /api/v1/accounts` accepts and stores `identity_signing_pub` / `identity_dh_pub` (`crates/sunrise-server/src/routes/accounts.rs`), but **no client sends them**: `AccountCreateRequest` has no producer in the tree, and `IdentitySigningKeyPair::generate` / `IdentityDhKeyPair::generate` are called only from `sunrise-crypto`'s own tests. There is no identity-key-bundle lookup and no fingerprint UI. |
+
+Two consequences follow from the derived model and are stated in full in [ADR-0024](../11-adr/0024-key-hierarchy.md) §Context: rotating one Stream key requires rotating the vault root, which rotates every Stream key at once; and a paired device holds the root, which *is* the key schedule, so device revocation is not expressible. The identity keys the recovery blob carries therefore decrypt nothing — see [`recovery.md`](./recovery.md).
+
 ## Identity
 
 A user has **exactly one** Identity. The identity is the cryptographic anchor: long-lived, restored from recovery if all devices are lost.

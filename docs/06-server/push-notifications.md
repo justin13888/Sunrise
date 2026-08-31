@@ -4,6 +4,22 @@ status: accepted
 
 # Push Notifications
 
+> **Implementation status: nothing in this document is built except token
+> storage.** `crates/sunrise-server/src/push.rs` declares a `PushProvider`
+> trait, a `PushIntent`, a `PushRegistration` and one implementation,
+> `LoggingProvider`, whose `send` increments a counter and returns `Ok(())`.
+> `LoggingProvider` is never constructed outside its own unit test, and it is
+> not held by `ServerState`. **The relay never builds a `PushIntent` at all** —
+> the only `PushIntent { .. }` literal in the workspace is in that test — so no
+> code path leads from an arriving op to a wake-up. No APNs, FCM or Web Push
+> client is in the dependency tree (`apns2`, `fcm` and `web-push` appear in no
+> `Cargo.toml`). What *is* live: `POST /api/v1/devices/push-tokens` stores a
+> token, and revoking a device deletes its tokens.
+>
+> Everything below — fanout, priority tiers, coalescing, payload formats,
+> `push_key.bin` — is a design target. Read it as a specification, not as a
+> description.
+
 Push is **only** a wake-up signal. The server never sends content in pushes; the client wakes, connects, syncs, and decides whether and what to display.
 
 ## Why content-less pushes
@@ -29,13 +45,38 @@ So:
 
 Desktop apps are usually running, so they don't need server push for sync wakeups.
 
-## Token registration
+## Token registration (implemented)
 
-Clients register their push tokens via `POST /api/v1/devices/<dev_id>/push_token`.
+Clients register their push tokens via `POST /api/v1/devices/push-tokens` with a
+`PushRegistration` body — `{ device_id, platform, token }` — not via a
+device-scoped path. The `device_id` is validated against the caller's own
+account (`Store::active_device`), so a token cannot be filed under a device the
+caller does not actively own; a revoked device's registration is a
+`403 AUTH_DEVICE_NOT_OWNER`. See [`api.md`](./api.md) §devices.
 
-Server-side push-token encryption uses **ChaCha20-Poly1305 with a 32-byte key** generated at server initialization and written to `<data_dir>/push_key.bin` (mode 0600). Operators **MUST** exclude this file from backups (the README states this); a backup leak does not leak push tokens. There is no key rotation in v1 — key loss invalidates all stored push tokens, and clients re-register on next sync. Already-simple; we do not add complexity here.
+Tokens live in the `push_tokens` table keyed `(device_id, platform)`, upserted
+on re-registration, and deleted in the same transaction that revokes the device
+— a revoked device silently stops being wakeable.
 
-## Push fanout flow
+**Tokens are stored in plaintext.** `push_tokens.token` is a `TEXT` column
+written verbatim by `Store::upsert_push_token`; there is no encryption at rest.
+The ChaCha20-Poly1305 scheme below is **not implemented**: no `push_key.bin` is
+generated or read anywhere, and the relay's SQLite database is not SQLCipher-keyed
+(see [`relay-and-blob-storage.md`](./relay-and-blob-storage.md)). An operator's
+backup of the data dir therefore *does* carry push tokens today.
+
+The target, unchanged: server-side push-token encryption using
+**ChaCha20-Poly1305 with a 32-byte key** generated at server initialization and
+written to `<data_dir>/push_key.bin` (mode 0600). Operators **MUST** exclude
+this file from backups; a backup leak then does not leak push tokens. There is
+no key rotation in v1 — key loss invalidates all stored push tokens, and clients
+re-register on next sync.
+
+## Push fanout flow (not implemented)
+
+No step below runs. `ws.rs` appends an arriving batch to the durable relay log
+and fans it out to connected sessions; an offline receiver is simply not
+delivered to, and nothing consults `push_tokens`.
 
 1. Op arrives at server for receiving device R.
 2. R is offline (no active WS).
@@ -43,7 +84,7 @@ Server-side push-token encryption uses **ChaCha20-Poly1305 with a 32-byte key** 
 4. Push provider delivers; OS wakes the app briefly.
 5. App connects WS, drains, may emit a *local* notification if the new state warrants one.
 
-## Priority tiers
+## Priority tiers (not implemented)
 
 There are exactly **two** tiers:
 
@@ -54,11 +95,16 @@ There are exactly **two** tiers:
 
 Any low-priority re-sync a previous draft split into a third tier is now folded into `silent`. There is no third tier.
 
-## Coalescing
+## Coalescing (not implemented)
 
 To avoid push storms, the server coalesces per `(device_id, stream_id, push_kind)` tuple, where `push_kind ∈ {sync, reminder, mention}`. The coalescing window is **30 s**: multiple ops in the same window collapse to one push, and the payload reflects the latest event. Time-zone-agnostic — based purely on `(device, stream, kind)` tuples, never on wall-clock windows. A per-device rate cap (e.g. 10 pushes/minute) prevents pathological storms.
 
-## Push payload format
+## Push payload format (not implemented)
+
+Note that `account_id_salt` below does not exist: there is no salt column on
+`accounts`, and the server's live hashing (`logging::account_h` / `id_h`) is a
+deliberately unsalted BLAKE3 truncation — see
+[`observability.md`](./observability.md) for why.
 
 `stream_h` is the per-account stream hash:
 
@@ -126,7 +172,11 @@ FCM data-only messages CAN wake the app on most devices, rate-limited by Android
 - Enforcement is **client-side**: the client decides whether to surface a notification; the server always sends the push.
 - "Server-side coalescing" above is time-zone-agnostic — based purely on `(device, stream, kind)` tuples.
 
-## Reminder target device
+## Reminder target device (not implemented)
+
+`devices.last_seen_at_ms` is maintained (`Store::touch_device` stamps it on
+every authenticated request), so the input exists; the selection below does not.
+There is no `device_state` heartbeat frame in the wire protocol.
 
 "Most-recently-active device" = the device whose `last_seen_at_ms` is highest among devices that:
 

@@ -6,7 +6,18 @@ status: accepted
 
 Sunrise piggybacks **OpenID Connect (OIDC)** for everything user-facing — account login, session management, account recovery, sign-up, MFA, password resets, email verification. We do not implement password storage, OTP delivery, magic links, JWT signing, refresh-token rotation, or hCaptcha integration ourselves. An OIDC issuer does all of that.
 
-Cryptographic E2EE identity (identity + device keypairs) is **separate** from server auth. Device keys sign ops and pairing handshakes for end-to-end integrity; they are not used as a per-request server credential.
+Cryptographic E2EE identity (identity + device keypairs) is **separate** from server auth. Device keys sign ops and pairing handshakes for end-to-end integrity; the device signing key is *additionally* used as a per-request binding (see "Device binding" below), which is not the same thing as being the credential: the bearer proves the account, the signature proves the device.
+
+> **Implementation status.** Token verification, the account model, `allow_signup`,
+> device binding and the sync session's expiry handling are built
+> (`crates/sunrise-server/src/auth/`, `store.rs`, `ws.rs`). The **recovery** and
+> **account-deletion** flows below are not: no route serves them, and the
+> sections say so in place.
+> [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) replaces
+> `header_sig_v1` with `header_sig_v2` (RFC 8785 canonical JSON over the request
+> *value*), and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaces the
+> `/sync` WebSocket described here with SSE plus typed `POST`; the credential
+> rules are unchanged by either.
 
 ## Components
 
@@ -37,7 +48,17 @@ The Sunrise server validates the token by:
 1. Fetching the issuer's JWKS (cached per the discovery doc's `Cache-Control`).
 2. Verifying signature, `iss`, `aud` (must equal the server's configured client ID), `exp`, `nbf`.
 3. Looking up the account row by `(iss, sub)`.
-4. Optionally verifying a `device_id` claim (set by the client on token request via OIDC `acr_values` / a custom claim — see "Device binding" below).
+4. Optionally verifying a `device_id` claim — the URI-namespaced
+   `https://sunrise.app/device_id` (`auth::oidc::DEVICE_ID_CLAIM`), requested by
+   the client through the authorization request's `claims` parameter. When the
+   token carries it, it MUST equal `X-Sunrise-Device`; when it does not, the
+   header stands alone. See "Device binding" below.
+
+Configuration gates which verifier runs. `[auth] oidc_issuer` **and**
+`oidc_client_id` together install `OidcVerifier`; with either missing the server
+stays in single-tenant mode behind `NullVerifier`, where every caller maps to
+one account — which is why `ServerConfig::validate` refuses to bind that mode to
+anything but loopback. `allow_signup` defaults to `true`.
 
 There are **no Sunrise-issued tokens and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer. Token TTL is **1 hour**; clients renew at 75% of TTL pre-emptively without disconnecting (using the out-of-band token-refresh frame `0x12 RefreshToken { token: tstr }`, accepted at any time on the sync WebSocket).
 
@@ -49,11 +70,20 @@ The server's whole part in a refresh is to re-verify the token the device obtain
 | Token verifies but names a different `(iss, sub)`, or a different `device_id` | `Error AUTH_TOKEN_INVALID`, **session ends** | The relay channel namespace was derived from the upgrade's token and is never re-derived. Continuing would relay one account's traffic under another's authority. |
 | Session's current token has already expired | `Error` + `Close AUTH_TOKEN_EXPIRED` | The per-frame expiry check runs before dispatch, so this never reaches the refresh handler at all. A dead session is not resurrectable by presenting a live token; the client reconnects, which re-runs the whole upgrade pipeline including `allow_signup` and the account lookup. |
 
-There is no acknowledgement frame. A refresh that is accepted is silent, and the client's evidence that it worked is that the session is still open past the old deadline.
+An accepted refresh **is acknowledged**. The server replies with
+`0x13 RefreshTokenAck { expires_at_ms: uint }`, carrying the new deadline it
+just installed, so the client learns the server's view of the expiry rather than
+inferring success from the absence of a disconnect. The frame is gated on the
+optional `SrvTokenRefresh` capability bit, which the server ORs into its
+`HelloAck` set — a client only sends `0x12` after seeing that bit agreed, so a
+refresh cannot be silently swallowed by a server that predates the frame.
+Implemented in `ws.rs` (`handle_refresh`), specified in
+[`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by
+`crates/sunrise-server/tests/ws_token_expiry.rs`.
 
-A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. See [`api.md`](./api.md) for the exact mechanics.
+A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified. See [`api.md`](./api.md) for the exact mechanics, and [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) for the v2 construction that replaces it.
 
-For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request (browsers without header support use the `?access_token=…` query param, scrubbed from logs). The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:
+For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request. `auth::extract_bearer` reads the `Authorization` header and nothing else, so **the `?access_token=…` query-string fallback earlier revisions promised browsers does not exist** — a browser that cannot set the header cannot authenticate. What *does* exist is the defence for it: `logging/mod.rs` assembles the trace layer by hand so the span records a templated path with the query dropped, precisely because `tower-http`'s stock `MakeSpan` records the full URI, and `crates/sunrise-server/tests/logging.rs` regression-tests that `access_token` never reaches the log. That is a mitigation standing guard over a feature that was never built; it MUST survive any port (ADR-0021 says the same), because the day the query fallback *is* added is the day it starts mattering. The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:
 
 - **On every inbound frame**, against the server clock. This is the cheap check and the one a busy session hits first.
 - **On a deadline timer** in the session loop. An idle session sends nothing, so the per-frame check never runs; without the timer a client could connect, go quiet, and hold an authenticated socket open indefinitely on a dead credential.
@@ -68,13 +98,49 @@ A device must be associated with an account so the server can route ops correctl
 
 1. After OIDC login, the client calls `POST /api/v1/devices` with `{ device_pub_s, device_pub_d, device_cert, nickname, platform }`. The server records the device under the account.
 2. The client's OIDC token implicitly identifies the *account*. The `device_id` is conveyed in two places (defense in depth): a custom URI-namespaced claim `https://sunrise.app/device_id` on the OIDC token (each device runs its own OIDC client and requests this claim via the authorization-request `claims` parameter — RFC 7519 §4.2; if the IdP refuses, it returns `invalid_claims`) and the `X-Sunrise-Device` header. The server requires both to match.
-3. Revocation: `DELETE /api/v1/devices/<dev_id>` from any other paired device removes the device row in the request's transaction. Subsequent requests carrying a token with that `device_id` are rejected at the server even if the OIDC token is still valid; in-flight requests may still succeed for up to 5 s as connection-affinity caches expire. Token revocation at the IdP is also supported but not required.
+3. Revocation: `DELETE /api/v1/devices/<dev_id>` from **another** paired device
+   marks the row `revoked = 1, revoked_at_ms = <now>` and deletes that device's
+   push tokens, in one SQLite transaction. It is a soft delete — the row stays
+   so `DeviceMeta.revoked` can be reported — and a device attempting to revoke
+   *itself* is refused with `403 AUTH_DEVICE_NOT_OWNER`. Token revocation at the
+   IdP is also supported but not required.
 
-## Recovery
+   **The revoked device's requests MUST be rejected at the server even while its
+   OIDC token is still valid, and that MUST hold for the `/sync` session as well
+   as for REST.** For REST it already does: `bind_device` resolves the caller
+   through `Store::active_device`, whose `WHERE` clause carries `revoked = 0`, so
+   the next request after the revoking transaction commits fails with
+   `403 AUTH_DEVICE_NOT_OWNER`. One connection behind a mutex makes that
+   immediate — there is no propagation window and no cache to expire.
+
+   For `/sync` it holds in two places. The upgrade runs `authenticate_sync`,
+   which resolves the device from `X-Sunrise-Device` — falling back to the
+   token's `device_id` claim, and requiring the two to agree when both are
+   present — and refuses anything that is not an active row on that account. A
+   session already open is re-checked on every inbound frame and on a timer
+   bounded by `device_recheck_ms` (30 s by default), because the socket a
+   revoked device is *already holding* is the case revocation exists for: a
+   session that only receives never presents a frame to check against. It ends
+   with `AUTH_DEVICE_REVOKED`, not `AUTH_TOKEN_EXPIRED` — the two ask the client
+   for opposite behaviour.
+
+   Until this landed, the upgrade resolved the account and stopped there, and
+   the `devices` table was never read on the sync path at all, so a revoked
+   device kept relaying until its bearer expired.
+
+## Recovery — NOT IMPLEMENTED
 
 Recovery is a *cryptographic* operation, not an auth operation. Losing all devices means losing access to the local `recovery_blob` ciphertext, which the server holds opaquely.
 
-Flow:
+**The flow below cannot be executed.** `accounts.recovery_blob` is written once
+by `POST /api/v1/accounts` and read back by nothing: no `SELECT` in `store.rs`
+names the column, `row_to_account` does not project it, and neither
+`GET /api/v1/accounts/me/recovery_blob` nor its `PUT` is mounted. Step 2 has no
+route to call. Fixing it is a precondition for
+[ADR-0024](../11-adr/0024-key-hierarchy.md), whose recovery path unseals
+identity-addressed `key_envelope` ops with the `ID_D_priv` this blob carries.
+
+Flow (target):
 
 1. User logs in via OIDC on a fresh device (the IdP handles email verification, MFA, etc. — none of our problem).
 2. Authenticated client calls `GET /api/v1/accounts/me/recovery_blob` and receives the ciphertext.
@@ -82,7 +148,20 @@ Flow:
 
 OIDC alone cannot recover the vault — the recovery code is required to decrypt. This is the double-gate property: even if the IdP is fully compromised, an attacker still cannot read the user's data without the offline recovery code.
 
-The server stores recovery blobs **opaquely** — it does not validate internal format or version. It only enforces the size cap (10 MiB; see [`api.md`](./api.md)) and that the upload is signed by an active device. Account deletion uses a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) issued by `POST /api/v1/accounts/me/delete/initiate`; the OIDC issuer relays the token to the user's verified email, after which `DELETE /api/v1/accounts/me { confirm_phrase: "<token>" }` consumes it. A wrong or expired phrase returns `403 ACCOUNT_DELETE_PHRASE_INVALID`.
+The server stores recovery blobs **opaquely** — it does not validate internal format or version. The 10 MiB cap and the active-device signature belong to the unbuilt `PUT` route; the live `POST /accounts` path takes the blob under the bootstrap exemption, bounded only by `[server] max_body_bytes`.
+
+**Account deletion is also not implemented**: neither
+`POST /api/v1/accounts/me/delete/initiate` nor `DELETE /api/v1/accounts/me` is
+mounted, no confirmation token is minted or stored, and
+`ACCOUNT_DELETE_PHRASE_INVALID` is not among `error.rs`'s codes. The target
+flow: a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL
+15 minutes) issued by `POST /api/v1/accounts/me/delete/initiate`; the OIDC
+issuer relays the token to the user's verified email, after which
+`DELETE /api/v1/accounts/me { confirm_phrase: "<token>" }` consumes it. A wrong
+or expired phrase returns `403 ACCOUNT_DELETE_PHRASE_INVALID`. Note that
+`devices.account_id` carries `ON DELETE CASCADE` with `PRAGMA foreign_keys = ON`,
+so the row-level machinery for an account delete exists even though no route
+triggers it.
 
 The user's only "Sunrise password" is the recovery code, and the server never sees it. Everything else (login factors, MFA, account deletion confirmations) is the IdP's responsibility.
 
@@ -90,7 +169,7 @@ The user's only "Sunrise password" is the recovery code, and the server never se
 
 | Compromise | Action |
 |---|---|
-| Device key stolen | Revoke device from another device → server stops accepting that `device_id`. The thief still cannot decrypt anything without the device's vault unlock. |
+| Device key stolen | Revoke device from another device → server stops accepting that `device_id` on REST at once, and ends its live `/sync` session within `device_recheck_ms`. The thief still cannot decrypt anything without the device's vault unlock. Note that revocation is a *server-side* stop only: under the implemented derived-key model a paired device holds the vault root, so it can still read anything it already has. [ADR-0024](../11-adr/0024-key-hierarchy.md) is what makes revocation cryptographically meaningful, by minting a new epoch and re-sealing only to the surviving devices. |
 | Recovery code stolen | Rotate recovery code (re-encrypt blob with new code) and re-upload. |
 | Identity key stolen | Initiate identity rotation (heavyweight). |
 | OIDC account compromised | User resolves at the IdP (password reset, MFA reset). E2EE data still requires recovery code or a surviving device. |
@@ -98,7 +177,7 @@ The user's only "Sunrise password" is the recovery code, and the server never se
 
 ## Anti-abuse
 
-Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The Sunrise server keeps only standard rate limits on its REST/sync endpoints (per [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md)).
+Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The Sunrise server is *specified* to keep standard rate limits on its REST/sync endpoints (per [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md)); **none are implemented** — there is no rate-limiting middleware in the relay at all. See [`api.md`](./api.md) §rate-limits.
 
 ## What we explicitly do not build
 
@@ -107,7 +186,7 @@ Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling).
 - MFA enrollment UX, TOTP secrets, WebAuthn ceremonies.
 - Refresh-token rotation, opaque-token introspection endpoints, custom token-revocation lists.
 - hCaptcha, Cloudflare Turnstile, or in-house bot mitigation.
-- Per-request HMAC/signature schemes.
+- Per-request HMAC schemes over a shared secret. (`header_sig_v1` is a *device* signature under a public key the account registered — asymmetric, no shared secret, and it exists to bind a request to a device rather than to authenticate the account.)
 - A custom session cookie format.
 
 Each item above is a standard OIDC issuer feature; reimplementing it would add weeks of build time and a permanent surface for subtle security bugs.

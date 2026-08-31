@@ -6,6 +6,19 @@ status: accepted
 
 The relay is untrusted but is in the message path. We need to detect: dropped ops, replayed ops, reordered ops, and fork attacks (different views of history served to different devices).
 
+## Implementation status: two hash functions, and nothing else
+
+**Everything in this document is a target.** What exists in `crates/` is `sunrise-crypto/src/merkle.rs`: `stream_root_init` and `stream_root_step`, byte-exact to the formulas under §Per-Stream Merkle root and covered by frozen vectors in `crates/sunrise-crypto/tests/frozen_vectors.rs`. **Those tests are their only callers.** Nothing in the engine, the sync layer, or either client folds an applied op into a root.
+
+Concretely, none of the following exists:
+
+* **No root is persisted.** There is no column, no table, and no "highest-seen root per Stream", so §Rollback detection has nothing to compare against on reconnect.
+* **No checkpoint op.** All 21 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`) are domain CRUD; `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
+* **No `server_first_seen_ms` annotation.** The relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)` and parses only `EnvelopeHeader` — `{stream_id, device_id, seq}` — for routing. It emits no unsigned addendum, so the `hlc_clamped` ordering rule has no input.
+* **No fork or rollback detection, and no integrity indicator.** §Verifying checkpoints from peers, §Fork detection and §Per-vault Integrity indicator describe no code and no UI.
+
+What *is* enforced today is the replay invariant in §Identity and replay invariants: `0013_baseline.sql` declares `UNIQUE (stream_id, device_id, seq)` on `ops`, so `Engine::apply_remote` drops a re-delivered op idempotently, and `sync_cursors.last_applied_seq` is the per-`(stream_id, device_id)` high-water mark. Tampering with any single stored op is caught by the `OpEnvelope` AEAD. Detecting *omission and reordering across* ops — which is what the rest of this document is for — is not built.
+
 ## Identity and replay invariants
 
 The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. The inner-Op `op_id` (a ULID) is the canonical merge identity used for idempotent application — duplicate `op_id` arrivals are dropped silently.

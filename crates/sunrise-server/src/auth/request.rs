@@ -122,6 +122,76 @@ pub async fn authenticate_token(
     Ok((verified, account))
 }
 
+/// Authenticate a `/sync` upgrade and bind it to a registered device.
+///
+/// The upgrade carries no body, so there is nothing for `X-Sunrise-Device-Sig`
+/// to cover and no signature is demanded. What this adds over
+/// [`authenticate_token`] is the half that was missing entirely: the device is
+/// looked up in the account's `devices` table, so an unregistered or **revoked**
+/// device cannot open a sync session.
+///
+/// `docs/06-server/auth.md` promises that revoking a device stops it
+/// authenticating "even if the OIDC token is still valid". That held for REST,
+/// which runs `bind_device` on every request, and did not hold here: `/sync`
+/// resolved the account and never consulted `devices`, so a revoked device kept
+/// an authenticated socket -- and kept receiving the account's fan-out -- until
+/// its token happened to expire.
+///
+/// The device id comes from the `X-Sunrise-Device` header, falling back to the
+/// token's own `device_id` claim. When both are present they must agree, by the
+/// same argument [`bind_device`] makes: a stolen token must not be replayable
+/// from another device. When neither is present the session is refused unless
+/// the server runs without device binding, which is what keeps the self-host
+/// single-tenant path usable before any device is registered.
+pub async fn authenticate_sync(
+    state: &ServerState,
+    headers: &HeaderMap,
+) -> Result<(Verified, Account, Option<Device>), ApiError> {
+    let (verified, account) = authenticate_token(state, headers).await?;
+
+    let claimed = verified.subject.device_id.clone();
+    let supplied = header(headers, DEVICE_HEADER).map(ToOwned::to_owned);
+    if let (Some(h), Some(c)) = (supplied.as_deref(), claimed.as_deref()) {
+        if h != c {
+            return Err(device_not_owner(
+                "token device_id claim does not match X-Sunrise-Device",
+            ));
+        }
+    }
+
+    let Some(device_id) = supplied.or(claimed) else {
+        if state.config.require_device_sig {
+            return Err(device_not_owner(
+                "this server requires an X-Sunrise-Device header on /sync",
+            ));
+        }
+        return Ok((verified, account, None));
+    };
+
+    let device = state
+        .store
+        .active_device(&account.account_id, &device_id)?
+        .ok_or_else(|| device_not_owner("device is not an active device of this account"))?;
+    let _ = state
+        .store
+        .touch_device(&device.device_id, state.clock.now_ms());
+    Ok((verified, account, Some(device)))
+}
+
+/// Whether `device_id` is still an active, unrevoked device of `account_id`.
+///
+/// The live-session counterpart to the lookup [`authenticate_sync`] does at the
+/// upgrade. A revocation that only took effect at the *next* connection would
+/// leave untouched the socket that matters most: the one the revoked device is
+/// holding open right now.
+pub fn device_still_active(
+    state: &ServerState,
+    account_id: &str,
+    device_id: &str,
+) -> Result<bool, ApiError> {
+    Ok(state.store.active_device(account_id, device_id)?.is_some())
+}
+
 /// Run the full pipeline for a REST request.
 pub async fn authenticate(
     state: &ServerState,

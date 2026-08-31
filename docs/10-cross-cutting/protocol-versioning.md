@@ -4,7 +4,7 @@ status: accepted
 
 # Protocol versioning
 
-Sunrise has four independent versioned surfaces. Each evolves on its own schedule. A single client release pins exact versions of all four. The wire-protocol exchange negotiates the highest version both peers understand at session start; mismatch is a hard failure with a known error code.
+Sunrise has five independent versioned surfaces. Each evolves on its own schedule. A single client release pins exact versions of all five. The wire-protocol exchange negotiates the highest version both peers understand at session start; mismatch is a hard failure with a known error code.
 
 This document is the authoritative table of version numbers and the rules for changing them. Any change to any version constant requires a superseding ADR in [`11-adr/`](../11-adr/).
 
@@ -12,14 +12,23 @@ This document is the authoritative table of version numbers and the rules for ch
 
 ## 1. Versioned surfaces
 
-| Surface | Constant | Defined in | What it covers |
-|---|---|---|---|
-| **Wire protocol** | `WIRE_PROTO_V` | `sunrise-sync/src/proto.rs` | Frame layout, message kinds, error codes, compression rules — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). |
-| **Document schema** | `DOC_SCHEMA_V` | `sunrise-domain/src/schema.rs` | Per-entity field shapes — see [02-domain/schema-versioning.md](../02-domain/schema-versioning.md). |
-| **Crypto suite** | `CRYPTO_SUITE_V` | `sunrise-crypto/src/suite.rs` | AEAD, signature, KDF, HPKE choices and parameters — see [03-crypto/primitives.md](../03-crypto/primitives.md). |
-| **Storage schema** | `STORAGE_V` | `sunrise-storage/src/migrations.rs` | SQLite/SQLCipher schema — see [04-storage/migrations.md](../04-storage/migrations.md). |
+| Surface | Constant | What it covers |
+|---|---|---|
+| **Wire protocol** | `WIRE_PROTO_V` | Frame layout, message kinds, error codes, compression rules — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). |
+| **Envelope container** | `ENVELOPE_FORMAT_V` | `OpEnvelope` field layout, canonical ordering, AAD, signature input — see [ADR-0015](../11-adr/0015-envelope-doc-schema-split.md). |
+| **Document schema** | `DOC_SCHEMA_V`, `DOC_SCHEMA_FLOOR` | Per-entity field shapes — see [02-domain/schema-versioning.md](../02-domain/schema-versioning.md). |
+| **Crypto suite** | `CRYPTO_SUITE_V` | AEAD, signature, KDF, HPKE choices and parameters — see [03-crypto/primitives.md](../03-crypto/primitives.md). |
+| **Storage schema** | `STORAGE_V` | SQLite/SQLCipher schema — see [04-storage/migrations.md](../04-storage/migrations.md). |
 
-`STORAGE_V` is purely local; it never appears on the wire. The other three are negotiated.
+**Every one of these constants is defined in exactly one file:
+`crates/sunrise-cbor/src/version.rs`.** There is no per-surface constant in
+`sunrise-sync`, `sunrise-domain`, `sunrise-crypto` or `sunrise-storage`, and a
+second definition MUST NOT be introduced: the magic prefix, the `Hello`
+exchange, the envelope header and the migration runner all read the same `u16`,
+and two of them disagreeing is a wire break no test would catch. Consumers
+import from `sunrise_cbor::version`.
+
+`STORAGE_V` is purely local; it never appears on the wire. The other four are negotiated or carried in the structure they version.
 
 ---
 
@@ -31,7 +40,7 @@ ENVELOPE_FORMAT_V = 3
 DOC_SCHEMA_V      = 4
 DOC_SCHEMA_FLOOR  = 1
 CRYPTO_SUITE_V    = 1
-STORAGE_V         = 14
+STORAGE_V         = 16
 ```
 
 Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants.
@@ -124,7 +133,7 @@ HelloAck = {
 ```
 
 Negotiation rules:
-- Empty wire-proto intersection → server sends `Error { code: PROTOCOL_VERSION_MISMATCH, server_min: …, server_max: … }` and closes. Client MUST surface a "please update" UX with a link to the upgrade page.
+- Empty wire-proto intersection → server sends `Error { code: SYNC_PROTOCOL_VERSION_MISMATCH }` and closes. (`ErrorPayload` carries `code` and a diagnostic `reason` only; there are no `server_min` / `server_max` fields on the wire.) Client MUST surface a "please update" UX with a link to the upgrade page.
 - Empty crypto-suite intersection → same as above with `CRYPTO_SUITE_MISMATCH`. **Crypto suite is not optional — there is no fallback path.**
 - `doc_schema_floor > client.doc_schema_max` → `DOC_SCHEMA_TOO_OLD`; client MUST update.
 - `client.doc_schema_min > server's max known` → server accepts the connection but tags inbound ops `forward-from-newer` and treats unknown fields per [§7](#7-document-schema-forward-compat).
@@ -164,7 +173,9 @@ Client bits:
 | 36 | `CLI_PRESENCE_BEACONS` | Client emits presence beacons. |
 | 37 | `CLI_DIAGNOSTIC_MODE` | Client supports diagnostic-mode log uploads. |
 
-**Required in v1.** Client MUST set 32, 33, 34, 35. Server MUST set 3. Missing required bit → session refused with `CAPABILITY_REQUIRED_MISSING`. Any other bit unset is a clean degrade.
+**Required in v1.** Client MUST set 32, 33, 34, 35. Server MUST set 3. Missing required bit → session refused with `CAPABILITY_REQUIRED_MISSING`. Any other bit unset is a clean degrade. This is enforced, not aspirational: `REQUIRED_CLIENT_BITS` and `REQUIRED_SERVER_BITS` in `crates/sunrise-wire-protocol/src/capability.rs` hold exactly those bits, `Hello::negotiate` refuses a peer missing any of them, and `the_redefined_client_bits_keep_their_positions` pins 32–35 so the redefinition below cannot become a silent renumbering.
+
+Bit 34 is the one to read alongside [§7](#7-document-schema-forward-compat). A client that asserts `CLI_FORWARD_COMPAT` has promised to re-emit unknown map keys byte-for-byte, and an entity whose table cannot persist them breaks that promise on the first restart — which is why §7's `extra` column is a MUST and not a nicety. A build that cannot keep the promise MUST NOT set the bit, and a build that does not set it is refused.
 
 > **Bits 32–34 were redefined.** They originally asserted three Loro CRDT
 > capabilities — `CLI_LORO_LWW_REGISTER`, `CLI_LORO_OR_SET`,
@@ -197,11 +208,11 @@ For `WIRE_PROTO_V`:
 1. **Minor change** (no version bump) — adding a new optional field to an existing message, adding a new error code, adding a new capability bit. Old peers ignore unknown fields/codes/bits.
 2. **Major change** (version bump) — anything that changes how an existing field is interpreted, removes a field, changes frame layout, changes compression scheme, changes error semantics. A version bump requires:
    - A superseding ADR.
-   - Server keeps the previous version listed in `server.wire_proto_supported` for at least **two minor server releases AND ≥ 90 days** after the new version goes live in production. Telemetry `wire_proto_v` gauge tracks how many sessions still negotiate down; deprecation cannot complete while > 0.5% of daily active devices are still on the old version.
+   - Server keeps the previous version listed in `server.wire_proto_supported` for at least **two minor server releases AND ≥ 90 days** after the new version goes live in production. Deprecation cannot complete while > 0.5% of daily active devices are still on the old version. The telemetry that would measure this does not exist yet — see [§11](#11-logging-and-metrics) — so today the window is enforced by the calendar alone.
    - Client release notes call out the protocol bump.
 3. Frame headers and the magic prefix are immutable. A new wire-protocol generation that needs to change them gets a new magic and is treated as a separate transport (clients dial both, server listens on both).
 
-The negotiated `wire_proto` is logged on every session in field `proto.wire`. A server-side metric `sunrise_sync_session_total{wire_proto="…"}` records the distribution.
+The negotiated `wire_proto` is logged on every session in field `proto.wire` — `srv.ws.connect` in `crates/sunrise-server/src/ws.rs` emits it as `wire_v` alongside `crypto_v`. The per-version metric that would let an operator read the distribution without parsing logs is target state ([§11](#11-logging-and-metrics)).
 
 ---
 
@@ -214,14 +225,16 @@ Codec rule: **unknown CBOR map keys round-trip unchanged.** A v1 client receivin
 This is implemented in three places, and it needs all three:
 
 1. Every entity carries `#[serde(flatten)] unknown: Unknowns` (`sunrise_domain::unknown`), so an unfamiliar field is kept rather than discarded by serde's default behaviour. The one exception is `Interruption`, whose whole value is its primary key.
-2. `tasks.extra` persists that map, so the field survives materialization rather than living for one transaction.
+2. **Every synced entity's table persists that map in its own `extra BLOB` column**, so the field survives materialization rather than living for one transaction. This is a contract, not a per-table convenience: an entity whose table drops `extra` re-emits a truncated map on its next outbound merge, and — because the envelope signature covers every field the sender wrote — the re-emitted envelope no longer verifies. A table added to `0013_baseline.sql` for a synced entity MUST carry `extra`.
 3. `encode_canonical` sorts map keys by their encoded bytes, so the preserved field is re-emitted in the position its author put it in. Without sorting, byte-exact re-emission is impossible: the writer put its new field where it declared it, and a reader can only append.
 
 Every enum that rides the wire also degrades rather than rejecting: an unrecognised variant reads as a named fallback chosen to be the SAFE reading (an unknown task state is `todo`, never `done`; an unknown constraint severity is `soft`, never `hard`). Rejecting one field's value would reject the whole op, and two replicas would then diverge permanently over one string. `RRule`'s `Frequency` and `Weekday` are deliberately NOT lossy: silently recurring on the wrong schedule is worse than failing the routine.
 
 This means:
 - v2-only fields persist on v1-only devices.
-- v1-only constraints (e.g., "title must be non-empty") are validated on **inbound user edits only**, not on inbound merged ops. A v1 client merging an op that produces an empty title silently accepts it and surfaces a `db.merge.invariant_violated` `warn` log; the UI shows the field as `<untitled>` rather than refusing the merge.
+- v1-only constraints (e.g., "title must be non-empty") are validated on **inbound user edits only**, not on inbound merged ops. A v1 client merging an op that produces an empty title accepts it and shows the field as `<untitled>` rather than refusing the merge.
+
+  It accepts it **silently**: `Engine::apply_remote` emits no diagnostic when a merged entity violates a local invariant, and no `db.merge.invariant_violated` event exists anywhere in the tree. That is a gap, not a design: the acceptance is correct — refusing would diverge two replicas permanently over one string — but an operator currently cannot distinguish "no invariant was ever violated" from "every one was swallowed". The event SHOULD be added at `warn` on the `apply_remote` path and registered in [log-events.md](./log-events.md).
 
 The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
 - Server's `doc_schema_floor` is the lowest schema the server is willing to relay. Server raises this only when telemetry shows < 0.1% of inbound ops use schemas below the proposed new floor.
@@ -260,7 +273,7 @@ Defined in [error-handling.md](./error-handling.md). v1 codes related to version
 | Code | When |
 |---|---|
 | `PROTOCOL_BAD_MAGIC` | Magic prefix mismatch on parse. |
-| `PROTOCOL_VERSION_MISMATCH` | Wire-proto intersection empty. |
+| `SYNC_PROTOCOL_VERSION_MISMATCH` | Wire-proto intersection empty. Spelled with the `SYNC_` prefix in `crates/sunrise-error/src/codes.rs`; there is no `PROTOCOL_VERSION_MISMATCH`. |
 | `CRYPTO_SUITE_MISMATCH` | Crypto-suite intersection empty. |
 | `DOC_SCHEMA_TOO_OLD` | Server's `doc_schema_floor` exceeds client's `doc_schema_max`. |
 | `DOC_SCHEMA_TOO_NEW` | Client opens a vault written by a binary with `doc_schema_v > local`. |
@@ -274,7 +287,27 @@ All version-mismatch errors are **permanent** in the sense of [error-handling](.
 
 ## 11. Logging and metrics
 
-Every log record includes `proto: { wire, doc, crypto }` (see [logging.md](./logging.md) §3). Server-side metrics:
+Every log record includes `proto: { wire, doc, crypto }` (see [logging.md](./logging.md) §3).
+
+**Server-side metrics as implemented.** `crates/sunrise-server/src/metrics.rs`
+is an in-process `BTreeMap<String, AtomicU64>` behind a mutex, rendered as
+Prometheus text at `/metrics`. It has one operation — increment a counter by
+name — and therefore **no labels, no histograms and no gauges**. Every series it
+emits is a bare counter name:
+
+```
+sunrise_sync_token_expired_total       sunrise_sync_token_refreshed_total
+sunrise_sync_unauthenticated_total     sunrise_relay_append_failed_total
+sunrise_relay_cursor_gap_total         sunrise_device_sig_rejected_total
+sunrise_account_create_total           sunrise_devices_{list,register,revoke}_total
+sunrise_blob_{init,chunk,finalize,fetch}_total
+sunrise_blob_hash_mismatch_total       sunrise_push_{apns,fcm,web}_total
+```
+
+The registry's `render` passes a name containing `{` through verbatim, so a
+labelled series is *expressible* as a string, but nothing constructs one.
+
+**Target state**, and what a deprecation decision actually needs:
 
 ```
 sunrise_sync_session_total{wire_proto, crypto_suite, result}
@@ -283,7 +316,7 @@ sunrise_op_envelope_total{aead_alg, sig_alg}
 sunrise_storage_migration_total{from_v, to_v, result}
 ```
 
-These are the data the operator uses to decide when a deprecation window can close.
+None of these four exist. Until they do, no version deprecation under [§6](#6-wire-protocol-evolution-rules) can be justified by the "> 0.5% of daily active devices" or "< 0.1% of inbound ops" thresholds this document sets — the numerator is not measured. `metrics.rs`'s own header says production swaps in a real client (`prometheus`, `metrics`) without changing the exposition contract; that is where labelled series arrive.
 
 ---
 

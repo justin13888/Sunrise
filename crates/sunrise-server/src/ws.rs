@@ -78,10 +78,39 @@ struct SessionAuth {
     /// rebuilt from `now + remaining` on every loop pass is a deadline a busy
     /// session can postpone forever.
     deadline: Option<tokio::time::Instant>,
+    /// The account id this session resolved to, kept in its unhashed form.
+    ///
+    /// `account` above is the channel-namespace hash and is deliberately
+    /// one-way, so it cannot be used to look a row back up. The revocation
+    /// re-check needs the real id.
+    account_id: String,
+    /// The registered device this session is bound to, when it is bound.
+    ///
+    /// `None` only on a server running without device binding -- the
+    /// single-tenant self-host path, which has no `devices` rows to bind to.
+    bound_device: Option<String>,
+    /// The instant at which this session next re-checks that its device is
+    /// still registered.
+    ///
+    /// Absolute, and advanced only when the check actually runs, for exactly
+    /// the reason `deadline` above is: a timer rebuilt from `now + interval` on
+    /// every loop pass is a timer a busy session can postpone forever. The
+    /// select arm it drives restarts whenever *any* arm completes, so a
+    /// relative `sleep` there would let a revoked device hold its socket open
+    /// simply by generating traffic -- a Ping is enough, since it completes the
+    /// inbound arm without reaching the `Binary` branch that re-checks.
+    next_recheck: tokio::time::Instant,
 }
 
 impl SessionAuth {
-    fn new(account: [u8; 16], verified: &Verified, now_ms: u64) -> Self {
+    fn new(
+        account: [u8; 16],
+        account_id: String,
+        bound_device: Option<String>,
+        verified: &Verified,
+        now_ms: u64,
+        recheck_ms: u64,
+    ) -> Self {
         Self {
             account,
             principal: verified.subject.principal_key(),
@@ -90,6 +119,10 @@ impl SessionAuth {
             deadline: verified
                 .expires_at_ms
                 .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms)),
+            account_id,
+            bound_device,
+            next_recheck: tokio::time::Instant::now()
+                + std::time::Duration::from_millis(recheck_ms),
         }
     }
 
@@ -134,13 +167,15 @@ async fn handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     // Authenticate at the *upgrade*, before a single frame is exchanged. The
-    // same pipeline the REST routes run, minus device binding: an upgrade
-    // carries no body to sign. Resolving the account here is also what applies
-    // `allow_signup` to sync — a server with sign-up off must not relay for an
-    // account it never provisioned.
-    let (verified, account_id) =
-        match crate::auth::request::authenticate_token(&state, &headers).await {
-            Ok((v, account)) => (v, account.account_id),
+    // same pipeline the REST routes run, minus the signature: an upgrade
+    // carries no body to sign. It is NOT minus the device lookup — see
+    // `authenticate_sync`, which is what stops a revoked device opening a
+    // session. Resolving the account here is also what applies `allow_signup`
+    // to sync — a server with sign-up off must not relay for an account it
+    // never provisioned.
+    let (verified, account_id, bound_device) =
+        match crate::auth::request::authenticate_sync(&state, &headers).await {
+            Ok((v, account, device)) => (v, account.account_id, device.map(|d| d.device_id)),
             Err(e) => {
                 state.metrics.incr("sunrise_sync_unauthenticated_total");
                 return e.into_response();
@@ -149,7 +184,14 @@ async fn handler(
     // The channel namespace comes from the verified account, never from the
     // client. See `account_hash`.
     let account = account_hash(&account_id);
-    let auth = SessionAuth::new(account, &verified, state.clock.now_ms());
+    let auth = SessionAuth::new(
+        account,
+        account_id,
+        bound_device,
+        &verified,
+        state.clock.now_ms(),
+        state.config.device_recheck_ms,
+    );
     ws.on_upgrade(move |socket| async move { run_session(socket, state, auth).await })
 }
 
@@ -304,6 +346,10 @@ async fn sync_loop(
         let next_msg = stream.next();
         let next_relay = recv_first(&mut subs);
         let deadline = expired(auth.deadline);
+        // Copied out before the `select!`, the same way `deadline` is, so this
+        // immutable read does not collide with `handle_inbound`'s `&mut auth`.
+        // `sleep_until` and not `sleep`: see `SessionAuth::next_recheck`.
+        let recheck = tokio::time::sleep_until(auth.next_recheck);
 
         tokio::select! {
             biased;
@@ -320,13 +366,34 @@ async fn sync_loop(
                             end_expired(&mut sink, &state, &auth).await;
                             break;
                         }
+                        if !device_active(&state, &auth) {
+                            end_revoked(&mut sink, &state, &auth).await;
+                            break;
+                        }
                         if !handle_inbound(conn_id, &buf, &mut sink, &mut subs, &mut auth, &state).await {
                             break;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
-                    _ => {} // ignore Ping/Pong/Text
+                    // Ping, Pong and Text carry nothing this protocol acts on,
+                    // but they are still inbound frames from a client whose
+                    // standing can have changed since the last one -- and the
+                    // periodic arm is a bound on how long that goes unnoticed,
+                    // not a reason to skip a check already in hand. Waving them
+                    // through let a chatty revoked device keep its socket for
+                    // the rest of the interval while the server handled its
+                    // frames.
+                    _ => {
+                        if auth.is_expired(state.clock.now_ms()) {
+                            end_expired(&mut sink, &state, &auth).await;
+                            break;
+                        }
+                        if !device_active(&state, &auth) {
+                            end_revoked(&mut sink, &state, &auth).await;
+                            break;
+                        }
+                    }
                 }
             }
             relay = next_relay => {
@@ -358,6 +425,20 @@ async fn sync_loop(
                 end_expired(&mut sink, &state, &auth).await;
                 break;
             }
+            // A session that only *receives* never presents an inbound frame to
+            // check against, so without this arm a revoked device would keep
+            // taking the account's fan-out for as long as it stayed quiet. That
+            // is the case revocation exists for.
+            () = recheck => {
+                // Advanced here, when the check actually runs, rather than per
+                // loop pass -- that is the whole point of the absolute instant.
+                auth.next_recheck = tokio::time::Instant::now()
+                    + std::time::Duration::from_millis(state.config.device_recheck_ms);
+                if !device_active(&state, &auth) {
+                    end_revoked(&mut sink, &state, &auth).await;
+                    break;
+                }
+            }
         }
     }
 
@@ -381,6 +462,49 @@ async fn sync_loop(
 
 /// How long a closing session keeps reading before giving up on the peer.
 const TEARDOWN_DRAIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether this session's device is still active.
+///
+/// A session with no bound device is one on a server running without device
+/// binding, and has nothing to re-check. A storage error answers "still
+/// active": dropping every live session because SQLite blipped would turn a
+/// transient fault into an outage, and the next tick re-checks anyway.
+fn device_active(state: &ServerState, auth: &SessionAuth) -> bool {
+    let Some(device_id) = auth.bound_device.as_deref() else {
+        return true;
+    };
+    crate::auth::request::device_still_active(state, &auth.account_id, device_id).unwrap_or(true)
+}
+
+/// End a session whose device has been revoked.
+///
+/// `Error` then `Close`, in that order, exactly as [`end_expired`] does, and
+/// carrying [`ErrorCode::AuthDeviceRevoked`] rather than `AuthTokenExpired`
+/// because the two call for opposite client behaviour: an expired token means
+/// "renew and reconnect", a revoked device means "stop, and ask the user".
+async fn end_revoked(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &ServerState,
+    auth: &SessionAuth,
+) {
+    state.metrics.incr("sunrise_sync_device_revoked_total");
+    tracing::warn!(
+        ev = "srv.ws.device_revoked",
+        account_h = %crate::logging::id_h(&auth.account),
+        "sync session ended: device revoked"
+    );
+    let reason = "device revoked; this device's access was withdrawn";
+    let _ = send_error_frame(sink, ErrorCode::AuthDeviceRevoked, reason).await;
+    let close = ClosePayload {
+        code: ErrorCode::AuthDeviceRevoked,
+        reason: reason.to_string(),
+    };
+    if let Ok(payload) = close.encode() {
+        if let Ok(bytes) = encode_frame(MsgKind::Close, FrameFlags::EMPTY, &payload) {
+            let _ = sink.send(Message::Binary(bytes)).await;
+        }
+    }
+}
 
 /// End a session whose bearer has expired.
 ///
@@ -484,7 +608,61 @@ async fn handle_inbound(
         }
         MsgKind::RefreshToken => handle_refresh(&payload, sink, auth, state).await,
         MsgKind::Close => false,
-        _ => true, // ignore anything else in v1 self-host
+
+        // Everything below is a kind the protocol DEFINES and this server does
+        // not implement. The arm used to be `_ => true`, which dropped them in
+        // silence: a client could send a well-formed `SnapshotReq` and get
+        // nothing back at all, not even an error, and no amount of reading the
+        // protocol document would tell it why. Refusing with a typed code is
+        // the difference between "not supported here" and "your frame vanished".
+        //
+        // Listed explicitly rather than behind a wildcard so that adding a kind
+        // to `MsgKind` fails to compile until someone decides which side of this
+        // line it belongs on. That is the whole point of the exhaustive match.
+        MsgKind::SnapshotReq
+        | MsgKind::SnapshotResp
+        | MsgKind::PresenceBeacon
+        | MsgKind::PresenceUpdate => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "this relay does not implement snapshot or presence frames",
+            )
+            .await;
+            true
+        }
+
+        // A second Hello mid-session. Negotiation happens once, before the
+        // loop; re-negotiating would mean re-deriving the channel namespace on
+        // a live session, which is exactly the account-takeover shape
+        // `SessionAuth::is_same_identity` exists to refuse on the refresh path.
+        MsgKind::Hello => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "Hello is only valid once, before the session begins",
+            )
+            .await;
+            false
+        }
+
+        // Server-to-client kinds. A client sending one is confused about which
+        // end it is, and the session is not worth continuing on that basis.
+        MsgKind::HelloAck
+        | MsgKind::Ack
+        | MsgKind::Nack
+        | MsgKind::StreamUpdate
+        | MsgKind::Pong
+        | MsgKind::Error
+        | MsgKind::RefreshTokenAck => {
+            let _ = send_error_frame(
+                sink,
+                ErrorCode::SyncOpInvalid,
+                "server-to-client frame kind received from a client",
+            )
+            .await;
+            false
+        }
     }
 }
 

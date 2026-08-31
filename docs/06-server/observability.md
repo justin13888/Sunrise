@@ -6,13 +6,31 @@ status: accepted
 
 Operate the server without violating the E2EE guarantee.
 
+> **Implementation status.** What is built is the identifier-hashing surface
+> (`logging::account_h` / `id_h`), the hand-assembled request trace layer
+> (`logging::trace_layer`) with its redaction regression test
+> (`crates/sunrise-server/tests/logging.rs`), and an in-process counter registry
+> exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
+> kind, histograms, OTel tracing and sampling, the deep health check, alerting,
+> and the per-account audit log. Each section says which it is.
+
 ## What we log
+
+Target set:
 
 - Aggregate request rates (per endpoint, per status).
 - Aggregate WS connection counts.
 - Aggregate per-account-bucket op rates, keyed by **`account_h`** — a hashed account ID, never the raw account ID.
 - Slow query logs (with no payload bodies).
 - Error frequencies by error code.
+
+**Built today:** a request span per HTTP request carrying the method and a
+*templated* target only, plus event lines that already use `account_h` / `id_h`
+(`srv.auth.ok`, `srv.auth.rejected`, `srv.ws.refreshed`,
+`srv.ws.refresh_rejected`, `srv.ws.refresh_identity_mismatch`,
+`srv.start.refused`). Per-endpoint/status rates, connection counts, per-account
+op rates and slow-query logs have no implementation; error frequency is
+recoverable from the `err_code` field on rejection lines, not from a metric.
 
 `account_h` is defined as:
 
@@ -51,7 +69,7 @@ exists** at any point.
 
 - Op envelopes or any subset thereof.
 - **Account emails — anywhere, ever.** No buffer, no transient store, no rotating log carries email.
-- Push tokens.
+- Push tokens. (They are *logged* nowhere; they are *stored* in plaintext — see [`relay-and-blob-storage.md`](./relay-and-blob-storage.md).)
 - Any plaintext, anywhere.
 - Raw `account_id`, `device_id`, `stream_id`, `op_id`, `entity_id` — only their hashed forms (`account_h`, `stream_h`, etc.).
 - IPs joined to user IDs (beyond 24h).
@@ -60,7 +78,40 @@ exists** at any point.
 
 Naming convention: `sunrise_<area>_<measure>`.
 
-Examples:
+`metrics.rs` is an in-process `BTreeMap<String, AtomicU64>` rendered as
+Prometheus text at `/metrics`. It supports **counters only** — no gauges, no
+histograms — and every call site increments a bare, unlabelled name. The
+complete set the server emits today:
+
+```
+sunrise_account_create_total
+sunrise_blob_chunk_total
+sunrise_blob_fetch_total
+sunrise_blob_finalize_total
+sunrise_blob_hash_mismatch_total
+sunrise_blob_init_total
+sunrise_device_sig_rejected_total
+sunrise_devices_list_total
+sunrise_devices_register_total
+sunrise_devices_revoke_total
+sunrise_push_register_total
+sunrise_relay_append_failed_total
+sunrise_relay_cursor_gap_total
+sunrise_sync_token_expired_total
+sunrise_sync_token_refresh_rejected_total
+sunrise_sync_token_refreshed_total
+sunrise_sync_unauthenticated_total
+sunrise_push_apns_total / _fcm_total / _web_total   (LoggingProvider; never reached)
+```
+
+`/metrics` is mounted at the router root, and **only when the listener binds
+loopback** — a non-loopback bind withholds the route and logs
+`srv.start.metrics_withheld`. See [`overview.md`](./overview.md)
+§operational-requirements and [`self-hosting.md`](./self-hosting.md)
+§operator-surfaces. It was previously mounted unconditionally with no
+authentication and no bind check.
+
+Target examples, none of which exist:
 
 ```
 sunrise_sync_connections_active
@@ -73,7 +124,13 @@ sunrise_quota_exceeded_total{kind="storage"}
 sunrise_db_query_seconds{op="…"}
 ```
 
-### Label allowlist
+### Label allowlist — NOT ENFORCED
+
+No metric carries a label today — `Metrics::add` takes a name and nothing else,
+and `render` merely passes a `{…}` in a name through verbatim — so the allowlist
+is vacuously satisfied rather than checked. **The CI test named below does not
+exist**: there is no `crates/sunrise-server/tests/metric-label-safety.rs`. The
+allowlist is still the contract for the first metric that takes a label.
 
 Only the following label names may appear on any Prometheus metric:
 
@@ -89,20 +146,42 @@ wire_proto   (1)
 crypto_suite (1)
 ```
 
-Forbidden labels include `account_id`, `stream_id`, `device_id`, `email`, `email_hash`, `ip`, `path` (raw with id), `op_id`, `entity_id`. CI test `tests/metric-label-safety.rs` parses Prometheus exposition output and asserts that only allowlisted label names appear.
+Forbidden labels include `account_id`, `stream_id`, `device_id`, `email`, `email_hash`, `ip`, `path` (raw with id), `op_id`, `entity_id`. A CI test parsing the exposition output and asserting only allowlisted label names appear is the intended gate; it is **not written**.
 
 ## Tracing
 
-OTel-compatible tracing with a sampling rate (1% prod, 100% staging) and span attributes scrubbed of user identifiers. Spans cover: connection lifecycle, op-batch ingress/egress, push dispatch.
+**Not implemented as specified.** There is no `sunrise-telemetry` crate, no
+`span_redactor`, no OTel exporter, no sampling rate, and no
+`tests/span-redaction.rs`.
 
-Span attributes pass through `tracing::Subscriber` → `sunrise_telemetry::span_redactor` → exporter. The redactor is the only allowed exporter shim; it strips `account_id`, `device_id`, `email`, `op_id`, and raw path segments matching id patterns. Unit test `tests/span-redaction.rs` asserts redaction on every `tracing::span!` call site (the test scans the codebase for span macros and dry-runs them).
+What exists is the redaction *at the source*, which is the stronger placement:
+`logging::trace_layer` assembles `tower_http`'s `TraceLayer` by hand so the span
+records the HTTP method and a **templated** target from
+`sunrise_log::templatize_path` — query dropped, opaque id segments replaced —
+and nothing else from the request ever reaches a field. That is deliberate
+rather than incidental: the stock `MakeSpan` records `http.uri`, which is where
+a bearer would sit if the `?access_token=` fallback existed. The regression test
+is `crates/sunrise-server/tests/logging.rs`, and
+`docs/10-cross-cutting/logging.md` §6.3 bans `Plain::expose` in this module with
+a `log-redaction` CI gate over the path.
+
+The target — OTel-compatible tracing with a sampling rate (1% prod, 100%
+staging), span attributes scrubbed of user identifiers, spans covering
+connection lifecycle, op-batch ingress/egress and push dispatch — is unchanged
+and unbuilt.
 
 ## Health
 
-- `GET /api/v1/health` returns 200 + minimal JSON.
-- A deeper readiness check at `/api/v1/health?deep=1` verifies DB, object store, and disk free ratio. See [`api.md`](./api.md) for the exact contract.
+- `GET /api/v1/health` returns 200 + `{"status":"ok"}`, unconditionally: the
+  handler reads no state, so it is liveness only.
+- A deeper readiness check at `/api/v1/health?deep=1` verifies DB, object store,
+  and disk free ratio. **Not implemented** — the query parameter is ignored, so
+  wiring `?deep=1` as a readiness probe today yields an unconditional 200. See
+  [`api.md`](./api.md) for the contract it will have.
 
-## Alerts (managed)
+## Alerts (managed) — NOT IMPLEMENTED
+
+No alerting exists, and several triggers below have no metric to fire from.
 
 | Alert | Trigger |
 |---|---|
@@ -113,7 +192,13 @@ Span attributes pass through `tracing::Subscriber` → `sunrise_telemetry::span_
 | Storage growth anomaly | >2x weekly trendline |
 | Auth failure rate | >5x baseline over 10m |
 
-## Audit trail (per-account, retained briefly)
+## Audit trail (per-account, retained briefly) — NOT IMPLEMENTED
+
+There is no audit table in `store.rs`'s schema, no writer, no "Security" page,
+and no retention job. `[observability]` is rejected outright by the config
+parser (see [`self-hosting.md`](./self-hosting.md) §"Not yet wired"), so
+`audit_retention_days` cannot be set. Two of the five actions below could not be
+recorded anyway: "recovery blob fetched" and "account deleted" have no route.
 
 For account-management actions only (not content):
 

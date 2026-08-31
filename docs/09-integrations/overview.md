@@ -11,10 +11,13 @@ External integrations connect Sunrise to systems we *don't* build. Integrations 
 | Google Calendar | Bidirectional *(target)* | **deferred** — the provider is implemented and tested as **read-only import**, with no consumer, no cursor storage and no UI ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | [`google-calendar.md`](./google-calendar.md) |
 | iCalendar (.ics) | Import / export | **live on both shipping clients**, a narrow subset — `sunrise ical import` / `export`, and the macOS File menu over the seam's `import_ical` / `export_ical` | [`icalendar.md`](./icalendar.md) |
 
-Neither integration implements the `IntegrationProvider` trait this crate
-declares — including the live iCal path, which is driven directly. The trait has
-no implementor today, so treat it as intended shape rather than as the seam
-integrations actually run through.
+**`IntegrationProvider` has no implementor.** Neither integration implements
+the trait `crates/sunrise-integrations/src/lib.rs` declares — not the deferred
+GCal path, and not the live iCal one, which is driven directly by
+`ical_vault::{import, export}` from the CLI and the UniFFI seam. The crate's own
+module docs say "each integration runs through the [`IntegrationProvider`]
+trait so the core can drive runs uniformly"; nothing does. Treat it as intended
+shape, not as a seam anything runs through.
 
 v1 ships only these two. CalDAV, outbound webhooks, and inbound email-to-Sunrise are explicit non-goals — see [`../00-product/non-goals.md`](../00-product/non-goals.md).
 
@@ -28,11 +31,51 @@ v1 ships only these two. CalDAV, outbound webhooks, and inbound email-to-Sunrise
 
 ## Multi-device coordination
 
+> **Not implemented, and deliberately deferred.** There is no election, no
+> control op carrying a heartbeat, and no runner to elect between:
+> [ADR-0025](../11-adr/0025-integration-account-entity.md) explicitly excludes
+> "the primary-runner election that `overview.md` specifies for deciding which
+> device does the fetching", on the grounds that a runner election with nothing
+> to elect over is premature. The section below is the target.
+
 Multiple devices running the same integration would call the API multiple times. We elect a **primary integration runner** per integration using the same rule as the compactor election (see [`../04-storage/compaction.md`](../04-storage/compaction.md)): the smallest `device_id` among devices with a heartbeat in the last 24 h. Election re-runs per-integration per-day. Other devices defer via a periodic heartbeat in a control op.
 
 ## Token storage
 
-Tokens stored as fields in the integration config inside the Stream entity (synced and encrypted like any other entity field), reachable only after vault unlock. They are never in plaintext in logs or in transit beyond the third-party's TLS endpoint.
+**Credentials live in an `IntegrationAccount` entity, not in a Stream field.**
+[ADR-0025](../11-adr/0025-integration-account-entity.md) is the decision, and it
+replaces the claim an earlier revision of this section made — that tokens are
+"stored as fields in the integration config inside the Stream entity". That
+field does not exist: the `integrations` map was deleted, nothing ever
+serialized it, and [`../02-domain/streams.md`](../02-domain/streams.md) says so.
+
+Three rules follow, and each is load-bearing:
+
+1. **Account-scoped, not Stream-scoped.** One Google authorization backs many
+   Streams, so hanging it off `Stream` gives the wrong granularity for
+   revocation — rotating one Stream's key would orphan an unrelated calendar
+   authorization.
+2. **Only the durable half is synced.** The refresh token and the account's
+   identity go in the entity; **the short-lived access token stays
+   device-local and is never written to an op.** That is not only a secrecy
+   argument — it is a write-amplification one. Ops are full-state under
+   entity-level LWW ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), so
+   syncing a value that changes every hour would rewrite the whole entity every
+   hour, on every device, forever. `gcal.rs`'s `apply_refresh` already
+   implements the matching rule that an omitted `refresh_token` must not erase
+   the durable one.
+3. **The secret rides as an ordinary entity field**, which is sufficient only
+   because ops are sealed under per-Stream keys *and* because
+   [ADR-0024](../11-adr/0024-key-hierarchy.md) makes epoch rotation real: a
+   revoked device stops being able to read credentials written afterwards.
+   Under the derived-key model it could read everything forever, which is why
+   ADR-0025 depends on ADR-0024 rather than shipping beside it.
+
+"Log in once" is what the entity buys: authorizing on one device writes the
+durable credential into the vault, and every paired device receives it through
+normal sync with no second authorization. The relay sees ciphertext, as it does
+for every other op. Credentials are reachable only after vault unlock, and are
+never in plaintext in logs or in transit beyond the third party's TLS endpoint.
 
 ### External revocation detection
 
@@ -48,27 +91,23 @@ Disabling an integration shows a modal containing a checkbox **"Also delete enti
 
 ## Building new integrations
 
-The integration interface is a Rust trait inside the core:
+The integration interface is a Rust trait, and it lives in
+`crates/sunrise-integrations/src/lib.rs` rather than in the core. What is
+declared today is narrower than earlier revisions of this section described:
 
 ```rust
-trait Integration: Send + Sync {
-    fn id(&self) -> IntegrationKind;
-    async fn sync(&self, ctx: &IntegrationCtx) -> Result<()>;
-    async fn handle_event(&self, evt: DomainEvent) -> Result<()>;
-    async fn revoke(&self) -> Result<()>;
-}
-
-pub struct IntegrationCtx<'a> {
-    pub stream_id:  StreamId,
-    pub device_id:  DeviceId,
-    pub keys:       &'a StreamKeyAccess,    // encrypt/decrypt for this stream
-    pub config:     &'a IntegrationConfig,  // { tokens, settings }
-    pub error_sink: &'a dyn ErrorSink,      // banner alerts to UI
-    pub log:        &'a tracing::Span,
-    pub clock:      &'a dyn Clock,
+#[async_trait]
+pub trait IntegrationProvider: Send + Sync + std::fmt::Debug {
+    fn kind(&self) -> IntegrationKind;
+    async fn run(&self) -> Result<RunSummary, IntegrationError>;
 }
 ```
 
-`Clock` and `ErrorSink` are concrete traits — passing them as `&dyn` enables deterministic testing (a fake clock and a captured error stream).
+There is no `IntegrationCtx`, no `IntegrationConfig` and no registry: an earlier
+revision specified a context struct carrying `{ tokens, settings }` off the
+Stream, and that is the same deleted field §Token storage corrects. A provider
+that needs credentials reads them from the `IntegrationAccount` entity; a
+provider that needs a transport takes one by injection, which is what `gcal.rs`
+already does and what keeps it testable with no network.
 
-New integrations are added by implementing this trait and registering with the core's integration registry. The UI layer adds a settings panel.
+New integrations implement this trait. The UI layer adds a settings panel.

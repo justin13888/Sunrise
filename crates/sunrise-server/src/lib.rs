@@ -96,10 +96,29 @@ pub fn build_router(state: ServerState) -> Router {
     };
     let max_body = state.config.max_body_bytes;
 
+    // `docs/06-server/overview.md` says the operator surfaces are loopback
+    // only. `/metrics` was mounted at the root with no auth layer and no bind
+    // check, so on any non-loopback deployment it served the relay's counters
+    // -- session counts, per-account activity shape -- to anyone who asked.
+    // Mounting it only on a loopback listener is the narrowest reading of the
+    // documented contract that is also enforceable without connect-info
+    // plumbing: an operator who wants it remotely puts a proxy in front, which
+    // is what the doc already tells them to do.
+    let metrics = if config::binds_loopback(&state.config.bind) {
+        metrics::router()
+    } else {
+        tracing::warn!(
+            ev = "srv.start.metrics_withheld",
+            bind = %state.config.bind,
+            "/metrics is not mounted: the listener is not loopback"
+        );
+        Router::new()
+    };
+
     Router::new()
         .nest("/api/v1", routes::api_v1())
         .merge(ws::router())
-        .merge(metrics::router())
+        .merge(metrics)
         .layer(cors)
         .layer(tower_http::limit::RequestBodyLimitLayer::new(max_body))
         .layer(logging::trace_layer())
