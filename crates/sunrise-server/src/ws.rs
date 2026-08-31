@@ -78,10 +78,27 @@ struct SessionAuth {
     /// rebuilt from `now + remaining` on every loop pass is a deadline a busy
     /// session can postpone forever.
     deadline: Option<tokio::time::Instant>,
+    /// The account id this session resolved to, kept in its unhashed form.
+    ///
+    /// `account` above is the channel-namespace hash and is deliberately
+    /// one-way, so it cannot be used to look a row back up. The revocation
+    /// re-check needs the real id.
+    account_id: String,
+    /// The registered device this session is bound to, when it is bound.
+    ///
+    /// `None` only on a server running without device binding -- the
+    /// single-tenant self-host path, which has no `devices` rows to bind to.
+    bound_device: Option<String>,
 }
 
 impl SessionAuth {
-    fn new(account: [u8; 16], verified: &Verified, now_ms: u64) -> Self {
+    fn new(
+        account: [u8; 16],
+        account_id: String,
+        bound_device: Option<String>,
+        verified: &Verified,
+        now_ms: u64,
+    ) -> Self {
         Self {
             account,
             principal: verified.subject.principal_key(),
@@ -90,6 +107,8 @@ impl SessionAuth {
             deadline: verified
                 .expires_at_ms
                 .map(|at| tokio::time::Instant::now() + expires_in(at, now_ms)),
+            account_id,
+            bound_device,
         }
     }
 
@@ -134,13 +153,15 @@ async fn handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     // Authenticate at the *upgrade*, before a single frame is exchanged. The
-    // same pipeline the REST routes run, minus device binding: an upgrade
-    // carries no body to sign. Resolving the account here is also what applies
-    // `allow_signup` to sync — a server with sign-up off must not relay for an
-    // account it never provisioned.
-    let (verified, account_id) =
-        match crate::auth::request::authenticate_token(&state, &headers).await {
-            Ok((v, account)) => (v, account.account_id),
+    // same pipeline the REST routes run, minus the signature: an upgrade
+    // carries no body to sign. It is NOT minus the device lookup — see
+    // `authenticate_sync`, which is what stops a revoked device opening a
+    // session. Resolving the account here is also what applies `allow_signup`
+    // to sync — a server with sign-up off must not relay for an account it
+    // never provisioned.
+    let (verified, account_id, bound_device) =
+        match crate::auth::request::authenticate_sync(&state, &headers).await {
+            Ok((v, account, device)) => (v, account.account_id, device.map(|d| d.device_id)),
             Err(e) => {
                 state.metrics.incr("sunrise_sync_unauthenticated_total");
                 return e.into_response();
@@ -149,7 +170,13 @@ async fn handler(
     // The channel namespace comes from the verified account, never from the
     // client. See `account_hash`.
     let account = account_hash(&account_id);
-    let auth = SessionAuth::new(account, &verified, state.clock.now_ms());
+    let auth = SessionAuth::new(
+        account,
+        account_id,
+        bound_device,
+        &verified,
+        state.clock.now_ms(),
+    );
     ws.on_upgrade(move |socket| async move { run_session(socket, state, auth).await })
 }
 
@@ -304,6 +331,9 @@ async fn sync_loop(
         let next_msg = stream.next();
         let next_relay = recv_first(&mut subs);
         let deadline = expired(auth.deadline);
+        let recheck = tokio::time::sleep(std::time::Duration::from_millis(
+            state.config.device_recheck_ms,
+        ));
 
         tokio::select! {
             biased;
@@ -318,6 +348,10 @@ async fn sync_loop(
                         // decides.
                         if auth.is_expired(state.clock.now_ms()) {
                             end_expired(&mut sink, &state, &auth).await;
+                            break;
+                        }
+                        if !device_active(&state, &auth) {
+                            end_revoked(&mut sink, &state, &auth).await;
                             break;
                         }
                         if !handle_inbound(conn_id, &buf, &mut sink, &mut subs, &mut auth, &state).await {
@@ -358,6 +392,16 @@ async fn sync_loop(
                 end_expired(&mut sink, &state, &auth).await;
                 break;
             }
+            // A session that only *receives* never presents an inbound frame to
+            // check against, so without this arm a revoked device would keep
+            // taking the account's fan-out for as long as it stayed quiet. That
+            // is the case revocation exists for.
+            () = recheck => {
+                if !device_active(&state, &auth) {
+                    end_revoked(&mut sink, &state, &auth).await;
+                    break;
+                }
+            }
         }
     }
 
@@ -381,6 +425,49 @@ async fn sync_loop(
 
 /// How long a closing session keeps reading before giving up on the peer.
 const TEARDOWN_DRAIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether this session's device is still active.
+///
+/// A session with no bound device is one on a server running without device
+/// binding, and has nothing to re-check. A storage error answers "still
+/// active": dropping every live session because SQLite blipped would turn a
+/// transient fault into an outage, and the next tick re-checks anyway.
+fn device_active(state: &ServerState, auth: &SessionAuth) -> bool {
+    let Some(device_id) = auth.bound_device.as_deref() else {
+        return true;
+    };
+    crate::auth::request::device_still_active(state, &auth.account_id, device_id).unwrap_or(true)
+}
+
+/// End a session whose device has been revoked.
+///
+/// `Error` then `Close`, in that order, exactly as [`end_expired`] does, and
+/// carrying [`ErrorCode::AuthDeviceRevoked`] rather than `AuthTokenExpired`
+/// because the two call for opposite client behaviour: an expired token means
+/// "renew and reconnect", a revoked device means "stop, and ask the user".
+async fn end_revoked(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &ServerState,
+    auth: &SessionAuth,
+) {
+    state.metrics.incr("sunrise_sync_device_revoked_total");
+    tracing::warn!(
+        ev = "srv.ws.device_revoked",
+        account_h = %crate::logging::id_h(&auth.account),
+        "sync session ended: device revoked"
+    );
+    let reason = "device revoked; this device's access was withdrawn";
+    let _ = send_error_frame(sink, ErrorCode::AuthDeviceRevoked, reason).await;
+    let close = ClosePayload {
+        code: ErrorCode::AuthDeviceRevoked,
+        reason: reason.to_string(),
+    };
+    if let Ok(payload) = close.encode() {
+        if let Ok(bytes) = encode_frame(MsgKind::Close, FrameFlags::EMPTY, &payload) {
+            let _ = sink.send(Message::Binary(bytes)).await;
+        }
+    }
+}
 
 /// End a session whose bearer has expired.
 ///
