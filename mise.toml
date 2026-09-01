@@ -294,6 +294,88 @@ depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
 
+# --- Running the apps ---
+#
+# The three tasks above build and *test*; none of them puts an app on screen,
+# which is the gap these two close. `-open` hands the project to Xcode and stops
+# there, which is right for development and wrong for "does it work".
+#
+# `-derivedDataPath ../../out/dd` rather than Xcode's default, and that is the
+# load-bearing part: the default lives under a hashed
+# `~/Library/Developer/Xcode/DerivedData/Sunrise-<gibberish>` path that nothing
+# can name without asking `xcodebuild -showBuildSettings` first. `out/` is
+# gitignored and — unlike `build/` — is not `rm -rf`'d by `apple-xcframework`,
+# so the product survives its own dependency.
+
+[tasks.macos-run]
+description = "Build the macOS app and launch it. The 'is it actually working' command"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+# An optional scratch vault. With no argument the app opens the real vault in
+# the standard location, which is what a demo should do; with one it opens a
+# throwaway directory and an in-memory key store instead, so a run can be
+# repeated from first-run without touching the developer's data or Keychain.
+usage = 'arg "<vault>" default=""'
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+xcodebuild build \\
+  -project Sunrise.xcodeproj \\
+  -scheme Sunrise \\
+  -destination 'platform=macOS,arch=arm64' \\
+  -derivedDataPath ../../out/dd \\
+  -quiet \\
+  CODE_SIGNING_ALLOWED=NO
+app="../../out/dd/Build/Products/Debug/Sunrise.app"
+# `open`, never `"$app/Contents/MacOS/Sunrise"`. Executing the binary directly
+# starts the process without registering it with the window server as a
+# foreground app: it runs, it opens no window, and it looks exactly like a hang.
+# That is the single most likely way to conclude this app does not work.
+if [ -n "$usage_vault" ]; then
+  mkdir -p "$usage_vault"
+  vault="$(cd "$usage_vault" && pwd)"
+  echo "scratch vault: $vault"
+  # `-n`, so a second scratch run is a second instance rather than a no-op
+  # against the one already open. Two `Core::open`s on one directory are
+  # refused by the vault lock, which is why each run wants its own directory.
+  open -n "$app" --args -sunrise-ui-test-vault "$vault"
+else
+  open "$app"
+fi
+"""
+
+[tasks.ios-run]
+description = "Build the iOS app and launch it on the simulator"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+# Signed ad-hoc, like `ios-app` and for the same reason: iOS gates the Keychain
+# on an application-identifier entitlement that only a signed binary carries,
+# and the vault stores its root there.
+xcodebuild build \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseiOS \\
+  -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -derivedDataPath ../../out/dd \\
+  -quiet \\
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+app="../../out/dd/Build/Products/Debug-iphonesimulator/Sunrise.app"
+# Already-booted is not an error here; `bootstatus -b` then waits for the boot
+# to actually finish, because `simctl install` against a half-booted device
+# fails with a device-not-ready error that reads like a build problem.
+xcrun simctl boot "$ios_sim" 2>/dev/null || true
+open -a Simulator
+xcrun simctl bootstatus "$ios_sim" -b
+xcrun simctl install "$ios_sim" "$app"
+xcrun simctl launch "$ios_sim" dev.sunrise.SunriseiOS
+echo
+echo "To start again from first run:  xcrun simctl uninstall '$ios_sim' dev.sunrise.SunriseiOS"
+"""
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
