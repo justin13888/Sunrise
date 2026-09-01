@@ -38,8 +38,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --all-targets
+      # `--exclude sunrise-server` is what actually enforces the `doctest =
+      # false` that crate's manifest already declares: cargo honours that key
+      # for `cargo test` and `cargo test -p`, but an explicit `--doc` selects
+      # the doc target regardless of it (reproduced on 1.88.0, 1.91.1 and
+      # stable). Without the exclusion this step is red on prose, not on code
+      # -- see crates/sunrise-server/Cargo.toml for the upstream bug and the
+      # one-line fix that retires both halves of this workaround.
       - name: cargo doc-test
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc --exclude sunrise-server
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
