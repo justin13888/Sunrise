@@ -42,7 +42,10 @@ fn cfg(dir: &std::path::Path) -> CoreConfig {
 }
 
 fn unlock() -> Unlock {
-    Unlock::DevicePaired(VaultRootKey::from_bytes([1u8; 32]))
+    Unlock::DevicePaired {
+        root: VaultRootKey::from_bytes([1u8; 32]),
+        paired: None,
+    }
 }
 
 #[tokio::test]

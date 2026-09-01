@@ -115,7 +115,7 @@ impl Core {
         let pid = std::process::id();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
-        let vault_root = unlock.into_root();
+        let (vault_root, paired) = unlock.into_parts();
         let db_path = cfg.vault_dir.join("vault.db");
         let mut db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
@@ -128,6 +128,7 @@ impl Core {
             vault_root,
             cfg.clock.as_ref(),
             cfg.rng.as_ref(),
+            paired.as_deref(),
         )?);
         let engine = Engine::new(
             cfg.clock.clone(),
@@ -135,6 +136,13 @@ impl Core {
             cfg.rng.clone(),
             keychain,
         );
+        // Announce this device to the account, once per vault. Before ADR-0024
+        // each side had to be handed the other's cert by hand
+        // (`Command::TrustDevice`), which accepted any self-signed cert and so
+        // could not distinguish a sibling from a stranger. The cert is now
+        // identity-signed and published as an op, so a device that pairs is
+        // known to every replica the moment its first ops arrive.
+        engine.publish_device_cert(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
         engine.apply(
@@ -506,20 +514,42 @@ impl Core {
     /// through an authenticated encrypted channel — `sunrise_pairing` provides
     /// one — and drop it immediately afterwards.
     ///
-    /// Pairing needs both halves: the new device opens its vault with this root
-    /// (so the two derive identical per-stream keys), and each side must then
-    /// accept the other's [`Self::device_cert`] via `Command::TrustDevice`
-    /// before either will apply the other's ops.
+    /// It is no longer sufficient on its own. Since ADR-0024 the root keys the
+    /// database and wraps secrets at rest, but it does not imply a single
+    /// Stream key: those are random and travel in
+    /// [`Self::export_pairing_payload`]. A device handed only this opens a
+    /// vault it cannot read.
     #[must_use]
     pub fn export_vault_root_for_pairing(&self) -> sunrise_crypto::keys::VaultRootKey {
         self.engine.keychain().export_vault_root_for_pairing()
     }
 
-    /// This device's self-issued cert (canonical CBOR). A peer passes it to
-    /// [`Command::TrustDevice`] to accept this device's ops.
+    /// Everything a device being paired needs: the account identity, every
+    /// Stream key this device holds, and the vault root.
+    ///
+    /// # Errors
+    /// Storage failures reading this device's labels.
+    pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+        let db = self.db.lock();
+        Ok(self.engine.keychain().export_pairing_payload(&db)?)
+    }
+
+    /// This device's identity-signed cert (canonical CBOR).
+    ///
+    /// Published automatically as a `device_cert` op at open, so peers learn it
+    /// through sync rather than through a manual trust command.
     #[must_use]
     pub fn device_cert(&self) -> Vec<u8> {
         self.engine.keychain().cert_blob().to_vec()
+    }
+
+    /// The account identity this vault belongs to.
+    ///
+    /// Anchored to `ID_S_pub` rather than to whichever device created the
+    /// vault, which is what makes a device cert something the *account* issued.
+    #[must_use]
+    pub fn identity_id(&self) -> [u8; 16] {
+        self.engine.keychain().identity_id()
     }
 
     /// This device's stable id.
@@ -713,7 +743,10 @@ mod tests {
     }
 
     fn unlock() -> Unlock {
-        Unlock::DevicePaired(VaultRootKey::from_bytes([1u8; 32]))
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes([1u8; 32]),
+            paired: None,
+        }
     }
 
     #[tokio::test]

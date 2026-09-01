@@ -1,5 +1,6 @@
 //! Command type submitted via [`crate::Core::submit`].
 
+use crate::control_op::RevokeReason;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
@@ -189,16 +190,35 @@ pub enum Command {
         /// Wall clock (ms since epoch) from the injected clock.
         now_ms: u64,
     },
-    /// Trust a peer device by its self-issued [`DeviceCert`] (canonical CBOR).
+    /// Revoke a device and rotate every Stream key it could read.
     ///
-    /// Verifies the cert (self-signed, per v1 issuance), then upserts the
-    /// device's id + signing pubkey + cert blob into the local `devices` table
-    /// so that [`crate::Engine::apply_remote`] can verify envelopes signed by
-    /// that device. Emits **no op**: device trust is local state in v1 (device
-    /// pairing/attestation is a later slice).
-    TrustDevice {
-        /// Canonical-CBOR `DeviceCert` bytes for the peer device.
-        cert_cbor: Vec<u8>,
+    /// Replaces `TrustDevice`, which had no inverse: trust was a local upsert
+    /// of any self-signed cert, so there was nothing to withdraw and nothing
+    /// that would converge if you did. A device now becomes known by
+    /// publishing an identity-signed cert as an op, and stops being known the
+    /// same way.
+    ///
+    /// Emits a `device_revoke` op into the vault-meta stream and, in the same
+    /// transaction, a fresh epoch plus `key_envelope` ops for every stream in
+    /// the rotation set — the vault-meta stream and the Inbox included. The
+    /// revoked device keeps what it already had; it reads nothing written
+    /// afterwards.
+    RevokeDevice {
+        /// The device to revoke.
+        device_id: EntityRef,
+        /// Why, for the device list to show later.
+        reason: RevokeReason,
+        /// From when. `None` means now. Ops the device signed before this
+        /// stand; ops at or after it are refused by every replica.
+        effective_at_ms: Option<u64>,
+    },
+    /// Mint a new epoch for one Stream and seal it to every current device.
+    ///
+    /// The narrow form of a revocation's rotation, for a key believed exposed
+    /// with no device at fault.
+    RotateStreamKey {
+        /// The Stream to rotate.
+        stream: EntityRef,
     },
     /// Open a focus session on a Task (ADR-0013's `start` op).
     ///

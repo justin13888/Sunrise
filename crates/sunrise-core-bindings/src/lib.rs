@@ -244,11 +244,26 @@ impl SunriseCore {
     ///
     /// The root comes from the platform keychain or a completed pairing; this
     /// seam does not derive it.
-    #[uniffi::constructor]
+    ///
+    /// `paired_bundle` is the sealed payload
+    /// [`DevicePairing::open_pairing_payload`](pairing::DevicePairing::open_pairing_payload)
+    /// returned, and is passed **once**, on the first open of a device that was
+    /// just added. It carries the account identity and the Stream keys, which
+    /// since ADR-0024 the vault root no longer implies: keys are random, not
+    /// derived, so a device handed only a root would open an empty-looking
+    /// vault full of ciphertext it could never read.
+    ///
+    /// It defaults to `None`, so every existing Swift call site keeps
+    /// compiling and keeps meaning what it meant.
+    // `default(paired_bundle = None)` is what keeps every existing Swift call
+    // site compiling and meaning what it meant: the generated signature gains
+    // an argument the foreign side may omit, rather than a fourth required one.
+    #[uniffi::constructor(default(paired_bundle = None))]
     pub async fn open(
         vault_dir: String,
         vault_root: Vec<u8>,
         app_version: String,
+        paired_bundle: Option<Vec<u8>>,
     ) -> Result<Arc<Self>, BindingError> {
         let root: [u8; 32] =
             vault_root
@@ -257,8 +272,22 @@ impl SunriseCore {
                 .map_err(|_| BindingError::BadVaultRoot {
                     len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
                 })?;
+        let paired = match paired_bundle {
+            Some(bytes) => Some(Box::new(
+                sunrise_pairing::decode_pairing_payload(&bytes)
+                    .map_err(|e| BindingError::Pairing(e.to_string()))?,
+            )),
+            None => None,
+        };
         let cfg = CoreConfig::production(PathBuf::from(vault_dir), app_version);
-        let core = Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(root))).await?;
+        let core = Core::open(
+            cfg,
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes(root),
+                paired,
+            },
+        )
+        .await?;
         Ok(Arc::new(Self {
             inner: Arc::new(core),
             // Inside an async exported method, so a runtime is definitely
@@ -556,30 +585,33 @@ impl SunriseCore {
         Ok(self.inner.attachment_is_local(&attachment.to_domain()?)?)
     }
 
-    /// Seal this vault's root into a confirmed pairing, on the existing
-    /// device.
+    /// Seal this vault's pairing payload into a confirmed pairing, on the
+    /// existing device.
     ///
-    /// The root never crosses the seam. A `vault_root()` getter would be the
-    /// obvious shape and the wrong one: it would put the key that decrypts
-    /// everything into a Swift `Data`, where it outlives the call, lands in
-    /// whatever the app logs, and is one autocomplete away from a file. The
-    /// only thing the app needs is the *ciphertext*, so that is the only thing
-    /// it gets.
+    /// The payload never crosses the seam in the clear. A `vault_root()` getter
+    /// would be the obvious shape and the wrong one: it would put the key that
+    /// decrypts everything into a Swift `Data`, where it outlives the call,
+    /// lands in whatever the app logs, and is one autocomplete away from a
+    /// file. That argument is stronger now than it was — the payload carries
+    /// the account identity's private keys and every Stream key as well as the
+    /// root — so the only thing the app gets is the *ciphertext*.
     ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] when the SAS has not been confirmed on this
-    /// device, or when this device is the one being added.
-    pub fn send_vault_root(
+    /// device, when this device is the one being added, or when the payload is
+    /// too large for one Noise transport message.
+    pub fn send_pairing_payload(
         &self,
         pairing: Arc<pairing::DevicePairing>,
     ) -> Result<String, BindingError> {
-        pairing.seal_vault_root(
-            self.inner
-                .export_vault_root_for_pairing()
-                .as_bytes()
-                .to_vec(),
-        )
+        let payload = self
+            .inner
+            .export_pairing_payload()
+            .map_err(|e| BindingError::Core(e.to_string()))?;
+        let encoded = sunrise_pairing::encode_pairing_payload(&payload)
+            .map_err(|e| BindingError::Pairing(e.to_string()))?;
+        pairing.seal_pairing_payload(encoded)
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.

@@ -252,7 +252,10 @@ mod tests {
         );
         Core::open(
             cfg,
-            Unlock::DevicePaired(VaultRootKey::from_bytes([7u8; 32])),
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes([7u8; 32]),
+                paired: None,
+            },
         )
         .await
         .expect("open")

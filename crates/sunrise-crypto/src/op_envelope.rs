@@ -522,6 +522,40 @@ pub fn open_envelope(
     }
 }
 
+/// Decrypt an envelope's payload **without checking the sender's signature**.
+///
+/// There is exactly one legitimate caller, and it exists because of a genuine
+/// ordering problem rather than a convenience: a device publishing its own
+/// certificate for the first time is not yet in the receiver's device table, so
+/// the receiver has no `D_S_pub` to verify against until it has read the cert
+/// out of the payload. Every other caller must use [`open_envelope`].
+///
+/// What this still guarantees is not nothing. The payload is authenticated by
+/// the AEAD tag over an AAD that covers every envelope field, so a caller
+/// reaching this function knows the bytes were sealed under a Stream key it
+/// holds and have not been altered — it just does not yet know *which member*
+/// of the account sealed them. The caller must call [`verify_envelope`] with
+/// the key it recovers before acting on the contents; the doc comment on
+/// `Engine::self_authenticating_signer` states both checks and why neither
+/// alone is enough.
+///
+/// # Errors
+/// AEAD auth failure, or [`OpEnvelopeError::InconsistentAead`] for a
+/// signed-only envelope, which has no ciphertext and so no reason to be here.
+pub fn open_envelope_unverified(
+    env: &OpEnvelope,
+    stream_key: &StreamKey,
+) -> Result<Vec<u8>, OpEnvelopeError> {
+    match env.aead_alg {
+        AeadAlgId::None => Err(OpEnvelopeError::InconsistentAead),
+        AeadAlgId::XChaCha20Poly1305 => {
+            let aad = encode_aad(env)?;
+            aead_open_xchacha(stream_key.as_bytes(), &env.nonce, &env.payload, &aad)
+                .map_err(|_| OpEnvelopeError::AeadAuth)
+        }
+    }
+}
+
 /// Canonical Sunrise CBOR has no floats anywhere, so a float in an unknown
 /// envelope field is malformed rather than merely unfamiliar.
 fn contains_float_value(v: &ciborium::value::Value) -> bool {

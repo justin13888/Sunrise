@@ -32,7 +32,7 @@ use std::time::Duration;
 use sunrise_core::{Clock, Command, Core, SystemClock};
 use sunrise_domain::{TaskDraft, TaskPatch};
 use sunrise_e2e::{
-    assert_task_converged, canonical_task_by_id, open_synced_core, spawn_relay, trust_each_other,
+    assert_task_converged, canonical_task_by_id, open_paired_core, open_synced_core, spawn_relay,
     wait_live, wait_pending_zero, wait_task_converges, wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
@@ -78,8 +78,7 @@ async fn a_delete_replicates_as_a_tombstone() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -154,8 +153,7 @@ async fn concurrent_delete_and_update_converge() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 

@@ -21,6 +21,7 @@ rand = { workspace = true }
 rand_core = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
 tracing = { workspace = true }
@@ -29,6 +30,7 @@ sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-error = { workspace = true }
 sunrise-id = { workspace = true }
+sunrise-pairing = { workspace = true }
 sunrise-storage = { workspace = true }
 sunrise-sync = { workspace = true }
 sunrise-wire-protocol = { workspace = true }

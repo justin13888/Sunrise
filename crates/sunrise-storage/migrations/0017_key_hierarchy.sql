@@ -23,6 +23,13 @@ CREATE TABLE identity (
     created_at_ms       INTEGER NOT NULL
 );
 
+-- The device X25519 key was generated at first open and immediately dropped:
+-- only its public half survived, inside the cert. `key_envelope` ops seal to
+-- exactly that key, so the private half now has to persist.
+-- Nullable because a pre-0017 row has no such key; `adopt_legacy_vault` mints
+-- one on the next open and re-issues the cert around it.
+ALTER TABLE local_identity ADD COLUMN dh_secret_wrapped BLOB;
+
 -- --- per-Stream wrapped key store, re-keyed ---
 -- key_id = BLAKE3.derive_key("sunrise.stream_key_id.v1", stream_key, 8).
 -- Two devices minting an epoch concurrently produce two rows at the same

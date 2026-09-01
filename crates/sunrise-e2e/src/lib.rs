@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use crate::chaos::{FaultHandle, Toxic, ToxicConfig};
 use sunrise_core::{
-    BoxTransport, Clock, Command, Core, CoreConfig, Query, QueryResult, SyncConfig, SystemRng,
+    BoxTransport, Clock, Core, CoreConfig, Query, QueryResult, SyncConfig, SystemRng,
     TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
@@ -157,36 +157,84 @@ pub async fn open_core_with_factory(
     clock: Arc<dyn Clock>,
     factory: TransportFactory,
 ) -> Arc<Core> {
+    // Chaos scenarios have to observe autonomous recovery inside a test run, so
+    // the anti-entropy backstop is clocked in hundreds of milliseconds rather
+    // than the production 30 s. The mechanism is the same one; only its period
+    // is tuned, exactly like a backoff constant.
+    open_core_paired(vault_dir, root, addr, clock, factory, None).await
+}
+
+/// Open a **second device on the same account** as `existing`.
+///
+/// This is what replaced `trust_each_other`. Two vaults that merely share a
+/// vault root are two separate accounts under ADR-0024: each mints its own
+/// identity, and Stream keys are random rather than derived from the root, so
+/// neither could read the other's ops however many certs they exchanged.
+/// Joining an account means being handed its `PairingPayload` — the identity
+/// keys and every Stream key — which can only happen at `Core::open`, because
+/// the identity a vault belongs to is decided when it is created.
+///
+/// The payload travels in-process here rather than through the Noise channel,
+/// which `paired_devices_converge` exercises separately. What this harness
+/// reproduces is the *state* a completed pairing leaves behind.
+pub async fn open_paired_core(
+    vault_dir: &Path,
+    existing: &Core,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+) -> Arc<Core> {
+    open_paired_core_with_factory(vault_dir, existing, addr, clock, ws_factory(addr)).await
+}
+
+/// [`open_paired_core`] against a caller-supplied transport factory.
+pub async fn open_paired_core_with_factory(
+    vault_dir: &Path,
+    existing: &Core,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: TransportFactory,
+) -> Arc<Core> {
+    let payload = existing
+        .export_pairing_payload()
+        .expect("export pairing payload");
+    let root = payload.vault_root;
+    open_core_paired(
+        vault_dir,
+        root,
+        addr,
+        clock,
+        factory,
+        Some(Box::new(payload)),
+    )
+    .await
+}
+
+async fn open_core_paired(
+    vault_dir: &Path,
+    root: [u8; 32],
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: TransportFactory,
+    paired: Option<Box<sunrise_pairing::PairingPayload>>,
+) -> Arc<Core> {
     let cfg = CoreConfig {
-        // Chaos scenarios have to observe autonomous recovery inside a test
-        // run, so the anti-entropy backstop is clocked in hundreds of
-        // milliseconds rather than the production 30 s. The mechanism is the
-        // same one; only its period is tuned, exactly like a backoff constant.
         sync: Some(
             SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
         ),
         ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };
-    let core = Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(root)))
-        .await
-        .expect("open core");
+    let core = Core::open(
+        cfg,
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes(root),
+            paired,
+        },
+    )
+    .await
+    .expect("open core");
     let core = Arc::new(core);
     core.start_sync(factory).expect("start sync");
     core
-}
-
-/// Exchange device certs both ways via [`Command::TrustDevice`] so each core
-/// accepts the other's signed op envelopes. Trust is persistent local state, so
-/// it survives a `close`/reopen.
-pub async fn trust_each_other(a: &Core, b: &Core) {
-    let cert_a = a.device_cert();
-    let cert_b = b.device_cert();
-    a.submit(Command::TrustDevice { cert_cbor: cert_b })
-        .await
-        .expect("a trusts b");
-    b.submit(Command::TrustDevice { cert_cbor: cert_a })
-        .await
-        .expect("b trusts a");
 }
 
 // ---------------------------------------------------------------------------

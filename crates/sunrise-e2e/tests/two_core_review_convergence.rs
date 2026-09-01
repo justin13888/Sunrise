@@ -225,8 +225,7 @@ async fn two_core_review_convergence() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let a = sunrise_e2e::open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = sunrise_e2e::open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    sunrise_e2e::trust_each_other(&a, &b).await;
+    let b = sunrise_e2e::open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     sunrise_e2e::wait_live(&a, TIMEOUT).await;
     sunrise_e2e::wait_live(&b, TIMEOUT).await;
 

@@ -49,9 +49,10 @@
 
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::{Clock, HlcClock, Rng};
+use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
-use crate::keychain::Keychain;
+use crate::keychain::{EnvelopeRecipient, KeySource, Keychain};
 use crate::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
     QueryResult, StreamRow,
@@ -61,7 +62,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
-use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
+use sunrise_crypto::{
+    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope, DeviceCert,
+    StreamKey,
+};
 use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
@@ -151,12 +155,27 @@ pub enum EngineError {
     #[error("remote op invalid: {0}")]
     RemoteOpInvalid(String),
     /// A remote op envelope names a `device_id` that is not present in the
-    /// local `devices` table (never trusted via [`Command::TrustDevice`]).
+    /// local `devices` table.
+    ///
+    /// Since ADR-0024 a device becomes known by publishing its identity-signed
+    /// cert as a `DeviceCertPublish` op, not by a local `TrustDevice` command.
     ///
     /// Maps to [`sunrise_error::ErrorCode::SyncOpInvalid`] at the public API:
     /// the op decoded but failed a semantic (trust) check.
     #[error("remote op from unknown device")]
     UnknownDevice,
+    /// A remote op was signed by a device this vault has revoked, with an HLC
+    /// at or after the revocation's `effective_at_ms`.
+    ///
+    /// Distinct from [`Self::UnknownDevice`] on purpose: "I have never heard of
+    /// you" and "I cut you off on Tuesday" are different facts, and the second
+    /// one is permanent. Maps to
+    /// [`sunrise_error::ErrorCode::AuthDeviceRevoked`].
+    #[error("remote op from revoked device")]
+    DeviceRevoked,
+    /// Keychain failure while resolving or absorbing a Stream key.
+    #[error("keychain: {0}")]
+    Keychain(String),
 }
 
 /// One command-application pipeline. Stateless; holds references to the
@@ -265,7 +284,12 @@ impl Engine {
             Command::AttachFile(d) => self.attach_file(db, d),
             Command::DetachFile(id) => self.detach_file(db, id),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
-            Command::TrustDevice { cert_cbor } => self.trust_device(db, &cert_cbor),
+            Command::RevokeDevice {
+                device_id,
+                reason,
+                effective_at_ms,
+            } => self.revoke_device(db, device_id, reason, effective_at_ms),
+            Command::RotateStreamKey { stream } => self.rotate_stream_key(db, stream),
             Command::StartFocus(d) => self.start_focus(db, d),
             Command::EndFocus {
                 session,
@@ -345,53 +369,176 @@ impl Engine {
         }
     }
 
-    // ---- device trust + remote apply (receive half of sync) ----
+    // ---- device lifecycle + remote apply (receive half of sync) ----
 
-    /// Trust a peer device from its self-issued [`DeviceCert`] (canonical CBOR).
+    /// Revoke a device: mint a new epoch for every stream it could read, seal
+    /// the new keys to the devices that remain, and record the revocation as an
+    /// op so every replica makes the same cut.
     ///
-    /// Verifies the cert is well-formed and self-signed (v1: the issuing
-    /// identity key is the device signing key), then upserts `device_id`,
-    /// `cert_blob` (which carries `D_S_pub`), nickname, and platform into the
-    /// `devices` table. Emits **no op** — device trust is local state in v1.
-    fn trust_device(&self, db: &mut Db, cert_cbor: &[u8]) -> Result<CommandResult, EngineError> {
-        let cert = DeviceCert::from_cbor(cert_cbor)
-            .map_err(|e| EngineError::Invalid(format!("device cert decode: {e}")))?;
-        // Self-signed check: verify the cert against its own embedded signing
-        // pubkey, matching keychain issuance (`DeviceCert::issue(body, &signing)`
-        // where `signing` is the device key). Rejects tampered/foreign certs.
-        cert.verify(&cert.body.d_s_pub)
-            .map_err(|e| EngineError::Invalid(format!("device cert verify: {e}")))?;
-        let device_id = cert.body.device_id;
-        let cert_owned = cert_cbor.to_vec();
-        let nickname = cert.body.nickname.clone();
-        let platform = cert.body.platform.clone();
-        let created_at_ms = cert.body.created_at_ms;
+    /// Three things happen in one transaction, and the order is the design:
+    ///
+    /// 1. The `DeviceRevoke` op is emitted and the local `devices` row is
+    ///    marked, so nothing after this point treats the device as a recipient.
+    /// 2. Every stream in the rotation set — the vault-meta stream and the
+    ///    Inbox included, not only user Streams — mints a fresh epoch.
+    /// 3. The `key_envelope` ops carrying those keys are sealed under the
+    ///    **pre-rotation** vault-meta epoch, because a device that has not yet
+    ///    received the new meta key cannot read an op sealed under it.
+    ///
+    /// The vault-meta stream being in the set is what makes this more than
+    /// theatre. Leaving it on a fixed epoch would let a revoked device keep
+    /// reading every Stream, Context and Routine created afterwards — the
+    /// *shape* of the account, indefinitely — while only its task content went
+    /// dark.
+    ///
+    /// What revocation cannot do, and does not pretend to: the revoked device
+    /// keeps every key it already held, so it keeps everything it could already
+    /// read. Rotation bounds forward exposure, never backward.
+    fn revoke_device(
+        &self,
+        db: &mut Db,
+        device_id: EntityRef,
+        reason: RevokeReason,
+        effective_at_ms: Option<u64>,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let revoked = *device_id.bytes();
+        if revoked == self.keychain.device_id() {
+            return Err(EngineError::Invalid(
+                "a device cannot revoke itself: it would rotate every key away from the only \
+                 device holding them"
+                    .into(),
+            ));
+        }
+        let effective_at_ms = effective_at_ms.unwrap_or(now_ms);
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.next_seq(db, &META_STREAM)?;
+        let hlc = self.lww_stamp(seq).hlc;
+        let inner = encode_inner_op(&InnerOp::DeviceRevoke(DeviceRevokePayload {
+            revoked_device_id: revoked,
+            reason_code: reason,
+            effective_at_ms,
+        }))?;
+
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            // Upsert: re-trusting a known device refreshes its cert blob.
+            let known: i64 = tx.query_row(
+                "SELECT count(*) FROM devices WHERE device_id = ?",
+                params![&revoked[..]],
+                |r| r.get(0),
+            )?;
+            if known == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            // The epoch every rotation op is sealed under: read before
+            // anything is minted, so it is the epoch the departing devices and
+            // the remaining ones all still share.
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+
+            // 1. The revocation itself, sealed under the old meta epoch like
+            //    every other op in this transaction.
+            self.ops_insert_at(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                hlc,
+                &inner,
+                "device.revoke",
+                "device",
+                Some(&revoked),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+                seal_under.0,
+                &seal_under.1,
+            )?;
             tx.execute(
-                "INSERT INTO devices
-                 (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms)
-                 VALUES (?, ?, ?, ?, ?, NULL)
-                 ON CONFLICT(device_id) DO UPDATE SET
-                    cert_blob = excluded.cert_blob,
-                    nickname = excluded.nickname,
-                    platform = excluded.platform",
+                "UPDATE devices
+                 SET revoked_at_ms = ?, revoked_by = ?, revoke_reason = ?
+                 WHERE device_id = ?",
                 params![
-                    &device_id[..],
-                    cert_owned,
-                    nickname,
-                    platform,
-                    created_at_ms
+                    i64::try_from(effective_at_ms).unwrap_or(i64::MAX),
+                    &self.keychain.device_id()[..],
+                    reason.as_str(),
+                    &revoked[..],
                 ],
             )?;
+
+            // 2 + 3. Rotate everything, telling only the devices that remain.
+            for stream_id in self.keychain.rotation_set(tx)? {
+                let (epoch, key) =
+                    self.keychain
+                        .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+                self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))?;
+            }
             Ok(())
+        })
+        .map_err(|e| match e {
+            sunrise_storage::DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows) => {
+                EngineError::NotFound(format!("device {}", hex_short(&revoked)))
+            }
+            other => EngineError::Storage(other),
+        })?;
+
+        Ok(CommandResult::new(device_id, None, op_id, seq))
+    }
+
+    /// Mint a new epoch for one Stream and distribute it.
+    ///
+    /// The narrow form of what [`Self::revoke_device`] does to everything: used
+    /// when a Stream key is believed exposed without a device being at fault,
+    /// and as the seam a share-revocation will hang off.
+    fn rotate_stream_key(
+        &self,
+        db: &mut Db,
+        stream: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let stream_id = *stream.bytes();
+        let seq = self.next_seq(db, &META_STREAM)?;
+        let mut minted = 0u32;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            let (epoch, key) =
+                self.keychain
+                    .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+            minted = epoch;
+            self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))
         })?;
         Ok(CommandResult::new(
-            EntityRef::new(EntityKind::Device, device_id),
+            stream,
             None,
             [0u8; 16],
-            0,
+            u64::from(minted).max(seq),
         ))
+    }
+
+    /// Publish this device's identity-signed cert so every replica can verify
+    /// its envelopes.
+    ///
+    /// Emitted by `Core::open` once per vault. It replaces the manual
+    /// `Command::TrustDevice` exchange, which accepted a cert from a caller if
+    /// it was self-signed — a check every cert passes, including a stranger's.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn publish_device_cert(&self, db: &mut Db) -> Result<(), EngineError> {
+        let now_ms = self.clock.now_ms();
+        let cert = self.keychain.cert_blob().to_vec();
+        let device_id = self.keychain.device_id();
+        let already: i64 = db.conn().query_row(
+            "SELECT count(*) FROM ops WHERE inner_kind = 'device.cert' AND device_id = ?",
+            params![&device_id[..]],
+            |r| r.get(0),
+        )?;
+        if already > 0 {
+            return Ok(());
+        }
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            self.emit_control_op(tx, &InnerOp::DeviceCertPublish(cert), now_ms, None)
+        })?;
+        Ok(())
     }
 
     /// Apply a remote op envelope: idempotent, entity-level last-writer-wins.
@@ -441,22 +588,57 @@ impl Engine {
         let env = decode_envelope(envelope_bytes)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;
 
-        // b. Sender must be a trusted, non-revoked device.
-        let cert_blob = self
-            .lookup_device_cert(db, &env.device_id)?
-            .ok_or(EngineError::UnknownDevice)?;
-        let cert = DeviceCert::from_cbor(&cert_blob)
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
-        let d_s_pub = cert.body.d_s_pub;
+        // b. Sender must be a known, non-revoked device.
+        //
+        //    One family bypasses the lookup, because it is what *creates* the
+        //    row the lookup reads: a `DeviceCertPublish` op carries the
+        //    sender's own identity-signed cert, and is self-authenticating —
+        //    the envelope signature is checked against the cert's own
+        //    `d_s_pub`, and the cert against this vault's account identity. A
+        //    stranger's cert fails the second check however it is delivered,
+        //    which is exactly what `Command::TrustDevice` could not do.
+        let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
+            Some(cert_blob) => {
+                let cert = DeviceCert::from_cbor(&cert_blob)
+                    .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
+                cert.body.d_s_pub
+            }
+            None => self.self_authenticating_signer(db, envelope_bytes, &env)?,
+        };
 
         // c. Verify the signature before doing anything else.
         verify_envelope(&env, &d_s_pub)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("verify: {e}")))?;
 
-        // d. Decrypt under the shared Stream key and decode the inner op.
-        let stream_key = self.keychain.stream_key(&env.stream_id);
-        let inner_cbor = open_envelope(&env, &d_s_pub, Some(&stream_key))
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("open: {e}")))?;
+        // c2. A revoked device's past ops still stand; its later ones do not.
+        if self.is_revoked_at(db, &env.device_id, env.hlc.physical_ms)? {
+            return Err(EngineError::DeviceRevoked);
+        }
+
+        // d. Decrypt under whichever key at `(stream_id, epoch)` opens it. Two
+        //    devices can have minted that epoch concurrently, so this is a
+        //    short list rather than a single key, and the AEAD tag is what
+        //    picks — not a stored discriminator that could be lied about.
+        //
+        //    No key at all is NOT an error: the `key_envelope` op that carries
+        //    it may simply not have arrived yet, and the two have no ordering
+        //    guarantee across streams. Refusing would lose the op (the relay
+        //    does not redeliver), and a cursor barrier would stall the whole
+        //    stream. It is parked in `deferred_ops` and retried after every
+        //    absorbed key.
+        let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
+        if keys.is_empty() {
+            self.defer_op(db, envelope_bytes, &env)?;
+            return Ok(None);
+        }
+        let inner_cbor = keys
+            .iter()
+            .find_map(|k| open_envelope(&env, &d_s_pub, Some(k)).ok())
+            .ok_or_else(|| {
+                EngineError::RemoteOpInvalid(
+                    "no key at this (stream, epoch) opens the envelope".into(),
+                )
+            })?;
         let inner = decode_inner_op(&inner_cbor)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
 
@@ -486,6 +668,7 @@ impl Engine {
         let target_kind = inner.target_kind();
 
         let mut applied = false;
+        let mut absorbed: Vec<([u8; 16], u32)> = Vec::new();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             // e. Idempotence gate.
             OpLog::insert(
@@ -513,8 +696,16 @@ impl Engine {
                 return Ok(());
             }
             applied = true;
-            // f. LWW materialization.
-            materialize_remote(tx, &inner, &lww)?;
+            if inner.is_control() {
+                // f'. Control ops carry key material and trust, not entity
+                //     state. They have no row and no LWW contest; routing one
+                //     into `materialize_remote` would file it under `tasks`,
+                //     because that function's kind table ends in a `_ =>` arm.
+                absorbed = self.apply_control_op(tx, &inner, &env.device_id, now_ms)?;
+            } else {
+                // f. LWW materialization.
+                materialize_remote(tx, &inner, &lww)?;
+            }
             // g. Advance the sync cursor to the end of the contiguous prefix.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
             Ok(())
@@ -523,11 +714,269 @@ impl Engine {
         if !applied {
             return Ok(None);
         }
-        Ok(Some(match effect {
-            OpEffect::Create => DomainEvent::Created(target),
-            OpEffect::Update => DomainEvent::Updated(target),
-            OpEffect::Delete => DomainEvent::Deleted(target),
-        }))
+        // A newly absorbed key may be the one a parked op was waiting for.
+        for (stream_id, epoch) in absorbed {
+            self.drain_deferred(db, &stream_id, epoch)?;
+        }
+        Ok(match effect {
+            OpEffect::Create => Some(DomainEvent::Created(target)),
+            OpEffect::Update => Some(DomainEvent::Updated(target)),
+            OpEffect::Delete => Some(DomainEvent::Deleted(target)),
+            // Nothing on screen changed, so there is nothing to broadcast.
+            OpEffect::Control => None,
+        })
+    }
+
+    /// Recover the signing key for an op from a device this vault has never
+    /// seen, when — and only when — the op is that device publishing its own
+    /// identity-signed cert.
+    ///
+    /// Both checks matter. The envelope must be signed by the key the cert
+    /// names, which proves the sender holds `D_S_priv`; and the cert must
+    /// verify under *this vault's* `ID_S_pub` with an `identity_id` recomputed
+    /// from it, which proves the account admitted that device. Either one alone
+    /// is bypassable: without the first, anyone can replay someone else's cert;
+    /// without the second, any self-signed cert is accepted, which is precisely
+    /// the hole `Command::TrustDevice` had.
+    fn self_authenticating_signer(
+        &self,
+        db: &Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+    ) -> Result<[u8; 32], EngineError> {
+        let _ = envelope_bytes;
+        // The payload is only readable once we have a key for the stream, and
+        // we only have one if the sender is inside the account already. That is
+        // the point: the cert travels in the vault-meta stream, sealed under a
+        // key only members hold, so a stranger cannot even present one.
+        let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
+        for key in &keys {
+            // Verification is deferred to the caller, so open without checking
+            // the signature first — the payload is authenticated by the AEAD
+            // tag regardless, and the signature check follows immediately.
+            let Ok(inner_cbor) = open_envelope_unverified(env, key) else {
+                continue;
+            };
+            let Ok(InnerOp::DeviceCertPublish(cert_cbor)) = decode_inner_op(&inner_cbor) else {
+                continue;
+            };
+            let cert = DeviceCert::from_cbor(&cert_cbor)
+                .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
+            if cert.body.device_id != env.device_id {
+                return Err(EngineError::RemoteOpInvalid(
+                    "published cert names another device".into(),
+                ));
+            }
+            cert.verify_binding(
+                &self.keychain.identity_signing_pub(),
+                &self.keychain.identity_id(),
+            )
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
+            let _ = db;
+            return Ok(cert.body.d_s_pub);
+        }
+        Err(EngineError::UnknownDevice)
+    }
+
+    /// Whether `device_id` was revoked with an effect time at or before
+    /// `at_ms`.
+    fn is_revoked_at(
+        &self,
+        db: &Db,
+        device_id: &[u8; 16],
+        at_ms: u64,
+    ) -> Result<bool, EngineError> {
+        let revoked: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(revoked.is_some_and(|effective| u64::try_from(effective).unwrap_or(0) <= at_ms))
+    }
+
+    /// Park an op whose Stream key has not arrived yet.
+    fn defer_op(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+    ) -> Result<(), EngineError> {
+        let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
+        let now_ms = self.clock.now_ms();
+        db.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO deferred_ops
+                 (op_id, stream_id, epoch, envelope, received_at_ms)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &op_id[..],
+                    &env.stream_id[..],
+                    env.epoch,
+                    envelope_bytes,
+                    now_ms
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Re-apply every op parked against `(stream_id, epoch)`.
+    ///
+    /// Called after every absorbed key. A drained op takes the ordinary
+    /// `apply_remote` path, so it goes through the same trust, clock and LWW
+    /// gates it would have on first delivery; it is only its *arrival order*
+    /// that was wrong. The row is deleted before the retry so a permanently
+    /// unopenable op cannot make every subsequent absorb replay it forever.
+    fn drain_deferred(
+        &self,
+        db: &mut Db,
+        stream_id: &[u8; 16],
+        epoch: u32,
+    ) -> Result<(), EngineError> {
+        let parked: Vec<Vec<u8>> = {
+            let mut stmt = db.conn().prepare(
+                "SELECT envelope FROM deferred_ops
+                 WHERE stream_id = ? AND epoch = ? ORDER BY received_at_ms",
+            )?;
+            let rows = stmt
+                .query_map(params![&stream_id[..], epoch], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        if parked.is_empty() {
+            return Ok(());
+        }
+        db.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM deferred_ops WHERE stream_id = ? AND epoch = ?",
+                params![&stream_id[..], epoch],
+            )?;
+            Ok(())
+        })?;
+        for envelope in parked {
+            // A drained op that still cannot be applied is dropped rather than
+            // failing the absorb that released it: the key arrived correctly,
+            // and one bad op must not undo that.
+            let _ = self.apply_remote(db, &envelope);
+        }
+        Ok(())
+    }
+
+    /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys
+    /// this device newly learned, so the caller can drain their parked ops.
+    fn apply_control_op(
+        &self,
+        tx: &Transaction<'_>,
+        inner: &InnerOp,
+        sender: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
+        match inner {
+            InnerOp::KeyEnvelope(p) => {
+                let recipient = match p.recipient {
+                    Recipient::Device(id) if id == self.keychain.device_id() => {
+                        EnvelopeRecipient::Device
+                    }
+                    // The identity copy is opened too. A device that already
+                    // holds the key learns nothing; one that was paired from a
+                    // recovery blob learns everything, and the alternative is a
+                    // second op family that says the same thing.
+                    Recipient::Identity(_) => EnvelopeRecipient::Identity,
+                    // Somebody else's copy. Retained in the log — the relay
+                    // fans out to every device — and simply not opened.
+                    Recipient::Device(_) => return Ok(Vec::new()),
+                };
+                let Ok(key) = self.keychain.open_key_envelope(
+                    recipient,
+                    &p.stream_id,
+                    p.epoch,
+                    &p.hpke_ciphertext,
+                ) else {
+                    return Ok(Vec::new());
+                };
+                // The `key_id` is a routing hint, so it is re-derived from the
+                // opened key rather than trusted. A mismatch means the sender
+                // is confused or hostile; either way the key itself is what
+                // opens ops, and it is filed under its real id.
+                if stream_key_id(&key) != p.key_id {
+                    return Ok(Vec::new());
+                }
+                let learned = self.keychain.absorb_stream_key(
+                    tx,
+                    &p.stream_id,
+                    p.epoch,
+                    &key,
+                    KeySource::Envelope,
+                    self.rng.as_ref(),
+                    now_ms,
+                )?;
+                Ok(if learned {
+                    vec![(p.stream_id, p.epoch)]
+                } else {
+                    Vec::new()
+                })
+            }
+            InnerOp::DeviceRevoke(p) => {
+                tx.execute(
+                    "UPDATE devices
+                     SET revoked_at_ms = ?, revoked_by = ?, revoke_reason = ?
+                     WHERE device_id = ? AND revoked_at_ms IS NULL",
+                    params![
+                        i64::try_from(p.effective_at_ms).unwrap_or(i64::MAX),
+                        &sender[..],
+                        p.reason_code.as_str(),
+                        &p.revoked_device_id[..],
+                    ],
+                )?;
+                Ok(Vec::new())
+            }
+            InnerOp::DeviceCertPublish(cert_cbor) => {
+                // Verified in `self_authenticating_signer` before we ever got
+                // here for an unknown sender; re-verified here because a known
+                // sender's op takes the ordinary path and could otherwise
+                // publish an unchecked cert for a third device.
+                let Ok(cert) = DeviceCert::from_cbor(cert_cbor) else {
+                    return Ok(Vec::new());
+                };
+                if cert
+                    .verify_binding(
+                        &self.keychain.identity_signing_pub(),
+                        &self.keychain.identity_id(),
+                    )
+                    .is_err()
+                {
+                    return Ok(Vec::new());
+                }
+                tx.execute(
+                    "INSERT INTO devices
+                     (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms,
+                      identity_id, d_d_pub)
+                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                     ON CONFLICT(device_id) DO UPDATE SET
+                        cert_blob = excluded.cert_blob,
+                        nickname = excluded.nickname,
+                        platform = excluded.platform,
+                        identity_id = excluded.identity_id,
+                        d_d_pub = excluded.d_d_pub",
+                    params![
+                        &cert.body.device_id[..],
+                        cert_cbor,
+                        cert.body.nickname,
+                        cert.body.platform,
+                        i64::try_from(cert.body.created_at_ms).unwrap_or(i64::MAX),
+                        &cert.body.identity_id[..],
+                        &cert.body.d_d_pub[..],
+                    ],
+                )?;
+                Ok(Vec::new())
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// Trusted device cert lookup (non-revoked). `None` = untrusted sender.
@@ -2703,14 +3152,20 @@ impl Engine {
 // ---- table operations ----
 
 impl Engine {
-    /// Seal `inner_op` into a real [`OpEnvelope`] and append it to the op log,
-    /// enqueue it in the outbox, and (forward-compat) persist the wrapped Stream
-    /// key — all inside the caller's transaction.
+    /// Seal `inner_op` into a real [`OpEnvelope`] under the routing stream's
+    /// **live** epoch and append it to the op log, enqueueing it in the outbox
+    /// — all inside the caller's transaction.
     ///
     /// `stream_id` is the op's *routing* stream (the meta stream for
-    /// Stream/routine ops; the owning Stream for task ops); it is bound into the
-    /// envelope and the outbox row. The signing device id is taken from the
-    /// keychain, so envelope `seq` is per `(stream_id, device_id)`.
+    /// Stream/routine/control ops; the owning Stream for task ops); it is bound
+    /// into the envelope and the outbox row. The signing device id is taken
+    /// from the keychain, so envelope `seq` is per `(stream_id, device_id)`.
+    ///
+    /// If the stream has no key yet this mints epoch 1 and emits the
+    /// `key_envelope` ops that give every other member of the account a copy —
+    /// see [`Self::ensure_stream_epoch`]. That is the whole reason a key can
+    /// never be minted silently: an epoch nobody was told about is an epoch
+    /// whose ops nobody else can read.
     #[allow(clippy::too_many_arguments)]
     fn ops_insert(
         &self,
@@ -2728,11 +3183,70 @@ impl Engine {
         received_at_ms: u64,
         deps: &[[u8; 16]],
     ) -> rusqlite::Result<()> {
+        let (epoch, key) = self.ensure_stream_epoch(tx, stream_id, hlc.physical_ms)?;
+        self.ops_insert_at(
+            tx,
+            op_id,
+            stream_id,
+            seq,
+            hlc,
+            inner_op,
+            inner_kind,
+            target_kind,
+            target_id,
+            applied_at_ms,
+            received_from,
+            received_at_ms,
+            deps,
+            epoch,
+            &key,
+        )
+    }
+
+    /// [`Self::ops_insert`] with the seal epoch chosen by the caller.
+    ///
+    /// A rotation needs this. The ops that *carry* the new keys have to be
+    /// sealed under the **old** epoch: a device that does not yet hold the new
+    /// key could not otherwise read the op that gives it one. Sealing them
+    /// under the new epoch would be a deadlock — and one that only shows up on
+    /// the second device, weeks later.
+    ///
+    /// A revoked device can read those rotation ops, because it still holds the
+    /// old epoch. It learns that a rotation happened and learns nothing else:
+    /// each envelope's payload is HPKE-sealed to a recipient's `D_D_pub`, and
+    /// the revoked device is not among them.
+    #[allow(clippy::too_many_arguments)]
+    fn ops_insert_at(
+        &self,
+        tx: &Transaction<'_>,
+        op_id: &[u8; 16],
+        stream_id: &[u8; 16],
+        seq: u64,
+        hlc: Hlc,
+        inner_op: &[u8],
+        inner_kind: &str,
+        target_kind: &str,
+        target_id: Option<&[u8; 16]>,
+        applied_at_ms: Option<u64>,
+        received_from: Option<&[u8; 16]>,
+        received_at_ms: u64,
+        deps: &[[u8; 16]],
+        epoch: u32,
+        stream_key: &StreamKey,
+    ) -> rusqlite::Result<()> {
         let device_id = self.keychain.device_id();
         let ts_ms = hlc.physical_ms;
         let envelope = self
             .keychain
-            .seal_op(*stream_id, seq, hlc, inner_op, self.rng.as_ref())
+            .seal_op_at(
+                *stream_id,
+                seq,
+                hlc,
+                inner_op,
+                self.rng.as_ref(),
+                epoch,
+                stream_key,
+            )
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
         if let Err(e) = OpLog::insert(
             tx,
@@ -2764,10 +3278,156 @@ impl Engine {
         // replay by those cursors — hands the device its entire own history
         // back on every reconnect for it to re-dedupe.
         upsert_sync_cursor(tx, stream_id, &device_id)?;
-        // Forward-compat: record the wrapped Stream key (idempotent).
-        self.keychain
-            .persist_stream_key(tx, stream_id, self.rng.as_ref(), ts_ms)?;
         Ok(())
+    }
+
+    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
+    /// every other member about it if the stream has none.
+    ///
+    /// The order inside the mint branch matters and is not incidental: the key
+    /// row is written **before** the `key_envelope` ops are emitted, because
+    /// emitting one is itself an `ops_insert` into the vault-meta stream, which
+    /// re-enters here. With the row already present the re-entry terminates
+    /// immediately; without it, minting the meta stream's own first key would
+    /// recurse forever.
+    fn ensure_stream_epoch(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<(u32, StreamKey)> {
+        if let Some(found) = self.keychain.current_stream_key_tx(tx, stream_id)? {
+            return Ok(found);
+        }
+        let (epoch, key) = self
+            .keychain
+            .mint_epoch(tx, stream_id, self.rng.as_ref(), now_ms)?;
+        self.emit_key_envelopes(tx, stream_id, epoch, &key, now_ms, None)?;
+        Ok((epoch, key))
+    }
+
+    /// Emit one `key_envelope` op per recipient for `(stream_id, epoch)`.
+    ///
+    /// Recipients are every non-revoked device other than this one — which
+    /// already holds the key — plus the account identity, whose copy is what
+    /// makes a recovery with no surviving device restore readable content
+    /// rather than an empty vault.
+    ///
+    /// `seal_under` chooses the epoch these ops are themselves sealed at; see
+    /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
+    /// epoch is", which is right for a first mint and wrong for a rotation.
+    fn emit_key_envelopes(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        epoch: u32,
+        key: &StreamKey,
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+    ) -> rusqlite::Result<()> {
+        let key_id = stream_key_id(key);
+        let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT device_id, d_d_pub FROM devices
+                 WHERE revoked_at_ms IS NULL AND d_d_pub IS NOT NULL",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, pubkey) in rows {
+                let id = to16(&id);
+                if id == self.keychain.device_id() {
+                    continue;
+                }
+                if pubkey.len() != 32 {
+                    continue;
+                }
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&pubkey);
+                recipients.push((Recipient::Device(id), pk));
+            }
+        }
+        recipients.push((
+            Recipient::Identity(self.keychain.identity_id()),
+            self.keychain.identity_dh_pub(),
+        ));
+
+        for (recipient, recipient_pub) in recipients {
+            let Ok(hpke_ciphertext) = self.keychain.seal_key_envelope(
+                &recipient_pub,
+                stream_id,
+                epoch,
+                key,
+                self.rng.as_ref(),
+            ) else {
+                // A device whose stored `d_d_pub` is not a usable X25519 point
+                // is skipped rather than failing the whole command: one corrupt
+                // row must not make the vault unwritable.
+                continue;
+            };
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id: *stream_id,
+                epoch,
+                recipient,
+                key_id,
+                hpke_ciphertext,
+            });
+            self.emit_control_op(tx, &inner, now_ms, seal_under)?;
+        }
+        Ok(())
+    }
+
+    /// Log one control op into the vault-meta stream.
+    fn emit_control_op(
+        &self,
+        tx: &Transaction<'_>,
+        inner: &InnerOp,
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+    ) -> rusqlite::Result<()> {
+        let blob = encode_inner_op(inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.next_seq_tx(tx, &META_STREAM)?;
+        let hlc = self.hlc.send();
+        let inner_kind = inner.inner_kind();
+        let target_kind = inner.target_kind();
+        match seal_under {
+            Some((epoch, key)) => self.ops_insert_at(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                hlc,
+                &blob,
+                inner_kind,
+                target_kind,
+                None,
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+                *epoch,
+                key,
+            ),
+            None => self.ops_insert(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                hlc,
+                &blob,
+                inner_kind,
+                target_kind,
+                None,
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+            ),
+        }
     }
 
     /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
@@ -2993,6 +3653,16 @@ fn materialize_remote(
     inner: &InnerOp,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    // A control op has no entity and must never reach the kind table below,
+    // whose `_ =>` arm would file anything it does not recognise under
+    // `tasks`. `apply_remote` routes them away before this is called; this is
+    // the belt to that braces, and it is a `debug_assert` rather than a silent
+    // return so a routing mistake surfaces in a test run instead of as a
+    // mysterious task row in production.
+    if inner.is_control() {
+        debug_assert!(false, "a control op reached the entity materializer");
+        return Ok(());
+    }
     let ts_ms = lww.hlc.physical_ms;
     // Focus ops never enter the LWW contest. Each writes one immutable record
     // keyed by the session's own id (start, end, and interruption in three
@@ -3156,6 +3826,10 @@ fn materialize_remote(
         | InnerOp::FocusEnd(_)
         | InnerOp::FocusInterrupt(_)
         | InnerOp::ReviewSnapshotCreate(_) => {}
+        // Unreachable: the guard at the top of this function returns before
+        // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
+        // fourth control family cannot be added without being considered here.
+        InnerOp::KeyEnvelope(_) | InnerOp::DeviceRevoke(_) | InnerOp::DeviceCertPublish(_) => {}
     }
     Ok(())
 }
@@ -4887,6 +5561,14 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
+/// Widen a stored blob back to a 16-byte id.
+fn to16(raw: &[u8]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    let take = raw.len().min(16);
+    out[..take].copy_from_slice(&raw[..take]);
+    out
+}
+
 fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
@@ -5024,8 +5706,11 @@ impl Engine {
     ) -> Option<InnerOp> {
         let env = decode_envelope(envelope).ok()?;
         let d_s_pub = keys.get(&env.device_id)?;
-        let stream_key = self.keychain.stream_key(&env.stream_id);
-        let inner = open_envelope(&env, d_s_pub, Some(&stream_key)).ok()?;
+        let inner = self
+            .keychain
+            .stream_keys_at(&env.stream_id, env.epoch)
+            .iter()
+            .find_map(|k| open_envelope(&env, d_s_pub, Some(k)).ok())?;
         decode_inner_op(&inner).ok()
     }
 
@@ -5422,6 +6107,11 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::AttachmentCreate(_)
         | InnerOp::AttachmentDelete(_)
         | InnerOp::FocusInterrupt(_)
+        // Control ops carry key material and trust, not work. A rotation is
+        // not something that happened to a Task.
+        | InnerOp::KeyEnvelope(_)
+        | InnerOp::DeviceRevoke(_)
+        | InnerOp::DeviceCertPublish(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }
@@ -10068,15 +10758,27 @@ mod tests {
         }
     }
 
+    /// Put `sender` in `receiver`'s device list, through the same code path a
+    /// `device_cert` op takes when it arrives over sync.
+    ///
+    /// Replaces the old `Command::TrustDevice` submit. Trust is no longer
+    /// something a caller hands the engine — a device publishes its
+    /// identity-signed cert as an op — so a unit test with no relay applies
+    /// that op's effect directly.
+    ///
+    /// It carries no Stream keys, and does not need to: engine unit tests run
+    /// on [`Keychain::for_test_seeded`], whose keys are derived from the shared
+    /// vault root precisely so two in-memory engines can read each other with
+    /// no relay to carry `key_envelope` ops. See that constructor's docs.
     fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
-        receiver
-            .apply(
-                db,
-                Command::TrustDevice {
-                    cert_cbor: sender.keychain.cert_blob().to_vec(),
-                },
-            )
-            .unwrap();
+        let cert = sender.keychain.cert_blob().to_vec();
+        let sender_id = sender.keychain.device_id();
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(tx, &InnerOp::DeviceCertPublish(cert), &sender_id, 0)
+                .map(|_| ())
+        })
+        .unwrap();
     }
 
     const ROOT: [u8; 32] = [0x5a; 32];
@@ -13440,20 +14142,8 @@ mod tests {
         let mut da = db_root([0x77; 32]);
         let mut dbb = db_root([0x77; 32]);
         // Mutual trust so envelopes verify.
-        ea.apply(
-            &mut da,
-            Command::TrustDevice {
-                cert_cbor: eb.keychain().cert_blob().to_vec(),
-            },
-        )
-        .unwrap();
-        eb.apply(
-            &mut dbb,
-            Command::TrustDevice {
-                cert_cbor: ea.keychain().cert_blob().to_vec(),
-            },
-        )
-        .unwrap();
+        trust(&ea, &mut da, &eb);
+        trust(&eb, &mut dbb, &ea);
 
         let task = task_with(&ea, &mut da, "cross-device", TaskDraft::default());
         let task_env = create_env_for(&da, task.bytes());

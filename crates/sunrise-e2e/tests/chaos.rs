@@ -44,8 +44,8 @@ use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{TaskDraft, TaskPatch};
 use sunrise_e2e::chaos::{seed_from_env, ToxicConfig, DEFAULT_FUZZ_SEED};
 use sunrise_e2e::{
-    canonical_tasks, open_core_with_factory, spawn_relay, toxic_ws_factory, trust_each_other,
-    wait_live, wait_pending_zero, wait_tasks_converge, ws_factory,
+    canonical_tasks, open_core_with_factory, open_paired_core_with_factory, spawn_relay,
+    toxic_ws_factory, wait_live, wait_pending_zero, wait_tasks_converge, ws_factory,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -153,8 +153,7 @@ async fn drop_heavy_converges() {
     let (fa, ha) = toxic_ws_factory(addr, ToxicConfig::passthrough(), base_seed(0xA));
     let (fb, hb) = toxic_ws_factory(addr, ToxicConfig::passthrough(), base_seed(0xB));
     let a = open_core_with_factory(dir_a.path(), ROOT, addr, clock.clone(), fa).await;
-    let b = open_core_with_factory(dir_b.path(), ROOT, addr, clock.clone(), fb).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, clock.clone(), fb).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -217,8 +216,7 @@ async fn corruption_never_applies() {
     let fa = ws_factory(addr); // A stays clean → the relay ring stays clean.
     let (fb, hb) = toxic_ws_factory(addr, ToxicConfig::passthrough(), base_seed(0xC));
     let a = open_core_with_factory(dir_a.path(), ROOT, addr, clock.clone(), fa).await;
-    let b = open_core_with_factory(dir_b.path(), ROOT, addr, clock.clone(), fb).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, clock.clone(), fb).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -277,8 +275,7 @@ async fn delay_preserves_convergence() {
     let (fa, _ha) = toxic_ws_factory(addr, cfg, base_seed(0xD));
     let (fb, _hb) = toxic_ws_factory(addr, cfg, base_seed(0xE));
     let a = open_core_with_factory(dir_a.path(), ROOT, addr, clock.clone(), fa).await;
-    let b = open_core_with_factory(dir_b.path(), ROOT, addr, clock.clone(), fb).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, clock.clone(), fb).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -324,8 +321,7 @@ async fn partition_then_heal() {
     let fa = ws_factory(addr);
     let (fb, hb) = toxic_ws_factory(addr, ToxicConfig::passthrough(), base_seed(0xF));
     let a = open_core_with_factory(dir_a.path(), ROOT, addr, clock.clone(), fa).await;
-    let b = open_core_with_factory(dir_b.path(), ROOT, addr, clock.clone(), fb).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core_with_factory(dir_b.path(), &a, addr, clock.clone(), fb).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 

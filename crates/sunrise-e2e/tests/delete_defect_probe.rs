@@ -83,7 +83,7 @@ use sunrise_domain::{
     RoutineCatchupPolicy, RoutineDraft, RoutinePatch, StreamDraft, StreamPatch, SunriseTime,
     TaskTemplate,
 };
-use sunrise_e2e::{open_synced_core, spawn_relay, trust_each_other, wait_live, wait_pending_zero};
+use sunrise_e2e::{open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero};
 use sunrise_id::EntityRef;
 
 const ROOT: [u8; 32] = [0x42; 32];
@@ -97,8 +97,7 @@ async fn pair(
 ) -> (Arc<Core>, Arc<Core>) {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let a = open_synced_core(dir_a, ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b, ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b, &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
     (a, b)
