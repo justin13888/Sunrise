@@ -20,7 +20,10 @@ hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+ciborium = { workspace = true }
+zeroize = { workspace = true }
 sunrise-cbor = { workspace = true }
+sunrise-crypto = { workspace = true }
 sunrise-error = { workspace = true }
 
 [dev-dependencies]

@@ -2953,13 +2953,16 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "ciborium",
  "hex",
  "serde",
  "serde_json",
  "snow",
  "sunrise-cbor",
+ "sunrise-crypto",
  "sunrise-error",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
