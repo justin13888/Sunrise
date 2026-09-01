@@ -44,6 +44,10 @@ target/
 fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
+# `mise run mutants` writes under out/, but a bare `cargo mutants` with no
+# --output drops its copied trees and logs here, at the repo root.
+mutants.out/
+mutants.out.old/
 
 # Local vault data (dev/test)
 .sunrise-vault/
