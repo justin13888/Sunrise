@@ -19,7 +19,7 @@ and one entry in `mise.toml`'s `macos_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 471 Swift
+Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 477 Swift
 Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
@@ -82,6 +82,28 @@ as it runs, which is also why the CLI is one-shot: two long-lived writers
 against one vault would need a daemon, and a daemon is a whole subsystem to buy
 something neither client needs.
 
+### Run
+
+```
+mise run macos-run                      # build and open the app
+mise run macos-run /tmp/sunrise-demo    # …against a throwaway vault and key store
+```
+
+This is the only task that puts the app on screen. Everything under
+[Build](#build) either tests or hands the project to Xcode.
+
+Launch the product with `open`, never by executing
+`Sunrise.app/Contents/MacOS/Sunrise`. Executing the binary starts the process
+without registering it as a foreground app: it runs, opens no window, and is
+indistinguishable from a hang. `macos-run` uses `open` for exactly this reason.
+
+The optional argument is a scratch vault directory. It forwards
+`-sunrise-ui-test-vault` — the `#if DEBUG` hook in
+`Sunrise/Identity/UITestHarness.swift` that the UI tests already use — which
+redirects both the vault and the key store, so a demo or a walk through first-run
+touches neither the developer's data nor their Keychain. The key store is
+in-memory and dies with the process, so every scratch run is a first run.
+
 ### Build
 
 ```
@@ -90,6 +112,9 @@ mise run macos-app            # + xcodegen generate, swiftlint --strict, xcodebu
 mise run macos-uitest         # the XCUITest target, which macos-app does not run
 mise run macos-open           # open the generated project in Xcode
 ```
+
+None of these four launches the app; `macos-app` builds and *tests*, and
+`macos-open` stops at Xcode. See [Run](#run) above.
 
 `project.yml` (XcodeGen) is committed; the generated `.xcodeproj` is not.
 `out/` and `build/` are gitignored — the Swift bindings are generated from the
