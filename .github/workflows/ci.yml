@@ -70,13 +70,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The toolchain file pins 1.88.0, which rustup installs on first use.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       # aarch64-apple-darwin is the host triple on this runner, but the
       # xcframework carries three slices and the other two are not installed by
       # default — `mise run apple-xcframework` fails without them.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
-      - uses: Swatinem/rust-cache@v2
+      #
+      # This is a step rather than the action's `targets:` input, and the
+      # difference is the whole bug it fixes: `targets:` is passed to
+      # `rustup toolchain install stable`, so the slices land on *stable*, while
+      # rust-toolchain.toml overrides the working directory to 1.88.0 — which
+      # then has no iOS std and fails with `E0463: can't find crate for core`.
+      # Run bare and in the repo, `rustup target add` obeys that same override,
+      # so the slices land on the toolchain that actually does the build.
+      - name: Add the iOS slices to the pinned toolchain
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       # None of the three are in the runner image.
       - name: Install mise, XcodeGen and SwiftLint
         run: brew install --quiet mise xcodegen swiftlint
@@ -122,9 +130,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
+      # As in `macos-app`, and for the reason spelled out there: a step rather
+      # than the action's `targets:` input, so the slices land on the pinned
+      # 1.88.0 that rust-toolchain.toml selects rather than on stable.
+      - name: Add the iOS slices to the pinned toolchain
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: Install mise, XcodeGen and SwiftLint
         run: brew install --quiet mise xcodegen swiftlint
       # mise refuses to run tasks from a config it has not been told to trust,
