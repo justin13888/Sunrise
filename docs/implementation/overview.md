@@ -35,7 +35,7 @@ and a crate can be reachable while a capability inside it is not.
 
 | Crate / Component | Status | Notes |
 |---|---|---|
-| Workspace + CI | ✅ live | Cargo + Bun workspace, 21 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
+| Workspace + CI | ✅ live | Cargo + Bun workspace, 23 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
@@ -118,10 +118,13 @@ The sync path is the strongest thing in the repository, and none of it is faked:
 
 Also solid: the RRULE DST golden vectors (including Lord Howe's 30-minute
 offset), the pre-baseline migration *refusal* tests, and the FTS5 hostile-input
-proptest. The migration list is two files deep now — `0013_baseline.sql` and the
-appended `0014_stream_sort_order.sql` — so there is a one-step upgrade chain to
-test as well as a refusal, and `current_storage_v()` is asserted equal to
-`STORAGE_V` so the constant and the list cannot drift apart.
+proptest. The migration list is four files deep now — `0013_baseline.sql`
+and three appends, `0014_stream_sort_order.sql`,
+`0015_entity_extra_columns.sql` and
+`0016_stream_description_and_default_context.sql` — so there is a three-step
+upgrade chain to test as well as a refusal, and `current_storage_v()` is
+asserted equal to `STORAGE_V`, now **16**, so the constant and the list cannot
+drift apart.
 
 ## Known defects
 
@@ -401,7 +404,7 @@ carried over from an earlier revision.
 | `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
 | `cargo deny check` | clean |
 | `mise run validate` | clean (no TS tests exist yet) |
-| `mise run orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
+| `mise run orphan-crates` | clean — 20/23 reachable, QUARANTINE empty |
 
 The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
 tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`
