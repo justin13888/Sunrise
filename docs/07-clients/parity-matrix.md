@@ -129,7 +129,7 @@ around it is recorded in the cells below and in
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
 | Attachments — view image/PDF | met | task editor → Attachments pane; `PDFKit` inline, images inline |
 | Attachments — upload | met | `Attach…` file importer **and** a drop target on the pane |
-| Search (FTS) | met | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce |
+| Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
 | Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet |
 | Drag-and-drop | met | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built — the window is a sidebar plus one detail pane, so a grid and a task list are never both on screen and the gesture has no two surfaces to connect |
@@ -179,7 +179,7 @@ menu item flickering as tasks come and go would explain less.
 | Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
 | Today / Inbox / Stream views (list form) | met | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
-| Search (FTS) | met | `sunrise search <query>…` |
+| Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
 | Multi-account (`SUNRISE_VAULT`) | met | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
 | iCal import / export | met | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
@@ -210,7 +210,9 @@ over:
 - **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
   or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
   block → Task gesture, which the shipped layout cannot express. Print covers
-  four surfaces and skips two by decision.
+  four surfaces and skips two by decision. Search reaches FTS5 on tasks only,
+  as a literal AND of quoted terms: every operator `search.md` specifies is
+  currently matched as a literal word, and the by-kind grouping does not exist.
 - **CLI.** A Task's `body` is unreachable — Notes is a CLI **MAY**, and what
   plain stdin should become as structured `NoteBlock`s is a design question
   rather than a gap. Streams, Contexts and Routines can be listed and (for
@@ -218,6 +220,9 @@ over:
   the row asks for *read + capture*, and that is what it has.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
+  Search reaches FTS5 on tasks only, as a literal AND of quoted terms: every
+  operator `search.md` specifies is currently matched as a literal word, and
+  the by-kind grouping does not exist.
 
 Every one of these is inside a row graded **met**, because each row asks for a
 capability and each capability is reachable. They are written down so that "met"
