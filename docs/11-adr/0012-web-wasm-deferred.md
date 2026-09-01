@@ -2,6 +2,12 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0026](./0026-msrv-bump.md) — the revisit trigger below has
+fired (the workspace MSRV is now 1.91.1), so the MSRV half of this deferral no
+longer holds; what remains is the `rusqlite` 0.31 → 0.40 swap under this ADR's
+unchanged native-SQLCipher gate, tracked as
+[#52](https://github.com/justin13888/Sunrise/issues/52).
+
 ## Context
 
 The target web architecture ([`../07-clients/web.md`](../07-clients/web.md)) runs the Rust

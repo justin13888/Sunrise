@@ -4,6 +4,11 @@
 
 **Supersedes:** [ADR-0006](./0006-tui-framework.md) (Ratatui TUI).
 
+**Amended by:** [ADR-0026](./0026-msrv-bump.md) — the rustc pin is now 1.91.1,
+so the 1.88 sentence in Consequences and the `cargo-platform` reason given for
+the bindgen quarantine are both superseded; the quarantine itself stays, on
+feature-unification grounds.
+
 **Replaces:** the Tauri 2 + React desktop specification formerly in
 [`docs/07-clients/desktop.md`](../07-clients/desktop.md).
 
