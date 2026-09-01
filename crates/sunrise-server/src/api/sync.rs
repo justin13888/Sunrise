@@ -179,7 +179,7 @@ pub async fn session(
             tracing::warn!(
                 ev = "srv.sync.negotiate_refused",
                 err_kind = "user",
-                reason = %e,
+                cause = %e,
                 "session refused"
             );
             ApiError::validation_coded(codes::VALIDATION_INVALID, e.to_string())
@@ -531,7 +531,7 @@ pub async fn refresh(
                 ev = "srv.sync.refresh_rejected",
                 err_kind = "user",
                 account_h = %account_h,
-                reason = %e,
+                cause = %e,
                 "refresh token failed verification"
             );
             ApiError::unauthenticated()

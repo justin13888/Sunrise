@@ -307,7 +307,7 @@ impl From<crate::store::StoreError> for ApiError {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",
-                    reason = %e,
+                    cause = %e,
                     "storage error"
                 );
                 Self::internal()

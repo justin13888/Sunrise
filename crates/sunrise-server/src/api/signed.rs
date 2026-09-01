@@ -196,7 +196,7 @@ pub fn verify_bytes(
             ev = "srv.auth.device_sig_rejected",
             err_code = %sunrise_error::ErrorCode::AuthDeviceSigInvalid,
             err_kind = "user",
-            reason = %e,
+            cause = %e,
             "device signature rejected"
         );
         ApiError::device_sig_invalid()
