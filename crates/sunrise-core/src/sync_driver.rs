@@ -26,8 +26,9 @@
 //!
 //! The driver is transport-agnostic: it takes a [`TransportFactory`] closure
 //! that yields a fresh [`Box<dyn Transport>`] per connection attempt. The
-//! production WebSocket factory (built on `sunrise_sync::WsTransport`) and the
-//! in-process loopback used by the tests are both just factories.
+//! production SSE factory (built on `sunrise_sync::SseTransport`,
+//! `crates/sunrise-sync/src/sse.rs`) and the in-process loopback used by the
+//! tests are both just factories.
 //!
 //! # Recovering inside a session
 //!

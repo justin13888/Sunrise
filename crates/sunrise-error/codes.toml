@@ -84,21 +84,12 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
-[[code]]
-id = 203
-name = "AUTH_QUOTA_EXCEEDED"
-kind = "transient"
-retryable = true
-since = "v1"
+# 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed
+# here: ADR-0027 takes per-account quotas out of v1 and nothing ever emitted
+# either. Both ids are burned by the rule above — never re-used, never
+# repurposed — so the next auth code is 204 and the next storage code is 304.
 
 # --- Storage --------------------------------------------------------------
-
-[[code]]
-id = 300
-name = "STORAGE_QUOTA_EXCEEDED"
-kind = "user"
-retryable = false
-since = "v1"
 
 [[code]]
 id = 301

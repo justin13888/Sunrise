@@ -26,7 +26,9 @@
 //! A session is bounded by its token, not by its own lifetime. `deadline_ms`
 //! is the bearer's `exp`, carried here because a long-lived event stream would
 //! otherwise outlive the credential that opened it — the exact defect
-//! `ws_token_expiry.rs` was written for.
+//! `api/sync.rs`'s `an_expired_token_ends_the_session` covers — the socket
+//! suite that first pinned it moved inline beside the operations that replaced
+//! the frames when ADR-0023 retired the socket.
 
 use crate::auth::Subject;
 use crate::relay::ConnId;
