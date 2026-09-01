@@ -44,10 +44,20 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:551-570`, `ev = "sync.backoff"`).
-Exhausting the policy here does *not* give up: the delay pins at 30 s and the
-client keeps retrying, on the reasoning that a long-lived client should never
-stop trying to reach its own relay.
+(`crates/sunrise-core/src/sync_driver.rs:547-571`, `ev = "sync.backoff"`).
+Exhausting the policy here does *not* give up — it **cycles**. Five jittered
+delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
+`None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
+(`sync_driver.rs:553-559`); the attempt counter is then back at zero and the
+sequence starts again at 100 ms. A client that cannot reach its relay for an hour
+therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
+that a long-lived client should never stop trying.
+
+One consequence worth naming because it looks like a bug and is not: the
+`min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52`)
+is **unreachable on this policy**. With `max_retries = 5` the largest base is
+1600 ms, so the cap never binds; the only 30 s that ever elapses is the flat
+sleep on the exhausted branch.
 
 **Per-batch retransmit.** Each in-flight `OpBatch` carries its own timer and
 `Backoff`; when the deadline passes the batch frame is sent again

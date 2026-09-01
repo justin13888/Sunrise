@@ -61,8 +61,6 @@ Two limits on that, stated rather than left to be discovered:
 | Self-hosted (v1) | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Optional, operator's own certs | Wherever the operator runs |
 | Managed (post-v1) | Sunrise-operated OIDC issuer | APNs/FCM via shared cert | Global |
 
-A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
-
 ### Cross-server delivery
 
 This is the single answer; other specs point here rather than restating it.
@@ -72,11 +70,17 @@ This is the single answer; other specs point here rather than restating it.
 [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5), so there is no
 cross-server case to answer yet.
 
-When sharing lands, the rule is that **the owner's relay is authoritative**:
-`ShareGrantPayload` carries `relay_url`, the recipient's client adds an outbound
-connection to it alongside its own relay connection, and there is no federation
-between independent relays. If the owner's relay is unreachable the shared Stream
-is unavailable; there is no peer-to-peer fallback.
+When sharing lands, the rule is that **the owner's relay is authoritative**: the
+recipient's client adds an outbound connection to it alongside its own relay
+connection, and there is no federation between independent relays. If the owner's
+relay is unreachable the shared Stream is unavailable; there is no peer-to-peer
+fallback.
+
+The grant will have to carry the owner's relay URL — **not yet a field of
+`ShareGrantPayload`**, whose seven fields
+([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)`:35-46`)
+are `stream_id`, `epoch`, `recipient_identity_id`, `role`, `expires_at`,
+`hpke_ct` and `identity_sig` — when sharing is designed.
 
 What the credentials for that outbound connection are is **not decided**, and
 cannot be until the grant model exists. Earlier revisions specified a

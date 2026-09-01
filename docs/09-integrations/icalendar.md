@@ -114,7 +114,7 @@ Two deliberate carve-outs:
 - **Attached files (`ATTACH`):** dropped on import. The UI shows `"This event had attachments which were not imported."` once per event. Documented in user-facing help. Not produced on export (attachments are heavy and require separate handling).
 - **Time zones:**
   - *Target state:* `VTIMEZONE` blocks emitted on export. The exporter does not emit them; zoned times go out as TZID references without an accompanying definition.
-  - On import, `VTIMEZONE` is parsed if present and used to resolve VEVENT TZID values.
+  - *Target state:* parsing an inline `VTIMEZONE` on import and using it to resolve VEVENT TZID values. The parser skips `VTIMEZONE` bodies entirely (`crates/sunrise-integrations/src/ical.rs:37-39,259-264`); a `TZID` is resolved against the **bundled IANA tzdb** instead, and the skipped component is reported as an `ICalNotice` rather than dropped silently.
   - A TZID that is not in `VTIMEZONE` and not in the IANA TZDB falls back to UTC and logs `int.import.tz_unknown`.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 

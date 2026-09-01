@@ -200,7 +200,9 @@ records the HTTP method and a **templated** target from
 `sunrise_log::templatize_path` — query dropped, opaque id segments replaced —
 and nothing else from the request ever reaches a field. That is deliberate
 rather than incidental: the stock `MakeSpan` records `http.uri`, which is where
-a bearer would sit if the `?access_token=` fallback existed. > **`crates/sunrise-server/tests/logging.rs` no longer exists.** It did not
+a bearer would sit if the `?access_token=` fallback existed.
+
+> **`crates/sunrise-server/tests/logging.rs` no longer exists.** It did not
 > survive [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port, despite
 > [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3
 > declaring it MUST. `crates/sunrise-server/tests/` holds `oidc_verifier.rs` and
