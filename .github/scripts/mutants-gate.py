@@ -60,8 +60,13 @@ how the first baseline is recorded and how an intentional improvement is
 banked; it is deliberately a separate, explicit invocation rather than
 something the gate does on its own when the number goes up.
 
-Exit 0 clean, 1 on a regression, 2 if the gate could not run at all (which is a
-failure, not a pass).
+Every crate that appears in a run must carry a floor. A measured crate with no
+recorded floor is a crate this gate is not protecting, so it fails rather than
+noting it in passing — an unenforced crate that reads as a warning is how most
+of a workspace's mutants end up scored and then ignored.
+
+Exit 0 clean, 1 on a regression or on a crate with no recorded floor, 2 if the
+gate could not run at all (which is a failure, not a pass).
 """
 
 from __future__ import annotations
@@ -170,20 +175,25 @@ def main() -> int:
         return 0
 
     failures = []
+    unfloored = []
     for crate, bucket in sorted(counts.items()):
         measured = caught_pct(bucket)
         if measured is None:
             continue
+        counted = (
+            f"({bucket[CAUGHT]} caught, {bucket[MISSED]} missed, "
+            f"{bucket[TIMEOUT]} timeout, {bucket[UNVIABLE]} unviable)"
+        )
         floor = (recorded.get(crate) or {}).get("caught_pct")
         if floor is None:
-            print(f"  {crate}: {measured}% (no floor recorded — run with --update)")
+            # Deliberately not a note. This crate was mutated, scored, and is
+            # compared against nothing; treating that as informational is how a
+            # gate reports on thousands of mutants while enforcing none of them.
+            print(f"  {crate}: {measured}% {counted} — NO FLOOR RECORDED")
+            unfloored.append((crate, measured))
             continue
         verdict = "ok" if measured >= floor - args.tolerance else "REGRESSED"
-        print(
-            f"  {crate}: {measured}% vs floor {floor}% "
-            f"({bucket[CAUGHT]} caught, {bucket[MISSED]} missed, "
-            f"{bucket[TIMEOUT]} timeout, {bucket[UNVIABLE]} unviable) — {verdict}"
-        )
+        print(f"  {crate}: {measured}% vs floor {floor}% {counted} — {verdict}")
         if verdict == "REGRESSED":
             failures.append((crate, measured, floor))
 
@@ -197,6 +207,27 @@ def main() -> int:
             "lower it deliberately in a commit that says why.",
             file=sys.stderr,
         )
+
+    if unfloored:
+        print("\nno floor recorded for:", file=sys.stderr)
+        for crate, measured in unfloored:
+            print(f"  {crate}: measured {measured}%", file=sys.stderr)
+        print(
+            "\nEvery crate in scope carries a floor or it is not enforced. "
+            "Record one from this run:\n"
+            "\n"
+            "  locally, from out/:\n"
+            "    mise run mutants-baseline\n"
+            "\n"
+            "  from a nightly run's artifacts:\n"
+            "    gh run download <run-id> --pattern 'mutants-*' --dir outcomes\n"
+            "    .github/scripts/mutants-gate.py outcomes/*/outcomes.json --update\n"
+            "\n"
+            "and commit mutants/baseline.json saying what the number is.",
+            file=sys.stderr,
+        )
+
+    if failures or unfloored:
         return 1
 
     target = baseline.get("target_caught_pct")
