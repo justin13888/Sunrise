@@ -39,6 +39,7 @@ pub mod aead;
 pub mod blake3_kdf;
 pub mod blob_chunk;
 pub mod device_cert;
+pub mod hpke_seal;
 pub mod identity;
 pub mod keys;
 pub mod merkle;
@@ -56,6 +57,10 @@ pub use blob_chunk::{
     BlobChunkError, CHUNK_PLAINTEXT_LEN,
 };
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner};
+pub use hpke_seal::{
+    hpke_open, hpke_open_identity, hpke_seal, key_envelope_info, HpkeError, HPKE_ENC_LEN,
+    HPKE_TAG_LEN,
+};
 pub use identity::{identity_id_from_pub, IdentityId};
 pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,
@@ -69,5 +74,7 @@ pub use op_envelope::{
 pub use recovery::{
     seal_recovery_blob, unseal_recovery_blob, RecoveryError, RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN,
 };
-pub use stream_key::{unwrap_stream_key, wrap_stream_key, StreamKeyWrapError};
+pub use stream_key::{
+    stream_key_id, unwrap_stream_key, wrap_stream_key, StreamKeyWrapError, STREAM_KEY_ID_LEN,
+};
 pub use suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId, SUITE_ID};

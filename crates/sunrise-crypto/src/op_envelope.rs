@@ -49,7 +49,7 @@
 //! — i.e. over `{1..10, 12}`.
 
 use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
-use crate::keys::{verify_ed25519, IdentitySigningKeyPair, StreamKey};
+use crate::keys::{verify_ed25519, DeviceSigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -267,7 +267,7 @@ fn sig_input_bytes(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
 /// CBOR encode failure (essentially impossible for v1 fields).
 pub fn sign_envelope(
     env: &mut OpEnvelope,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<(), OpEnvelopeError> {
     let input = sig_input_bytes(env)?;
     env.sig = device_signing.sign(&input);
@@ -297,7 +297,7 @@ pub fn encode_envelope(
     epoch: u32,
     nonce: [u8; AEAD_NONCE_LEN],
     stream_key: Option<&StreamKey>,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
     let env = OpEnvelope {
         v: u32::from(ENVELOPE_FORMAT_V),
@@ -329,7 +329,7 @@ pub fn encode_envelope(
 pub fn seal_envelope(
     mut env: OpEnvelope,
     stream_key: Option<&StreamKey>,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
     if env.aead_alg == AeadAlgId::None && env.epoch != 0 {
         return Err(OpEnvelopeError::InconsistentAead);
@@ -613,13 +613,13 @@ struct _ReservedForFutureUse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::IdentitySigningKeyPair;
+    use crate::keys::DeviceSigningKeyPair;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
-    fn fixed_signing() -> IdentitySigningKeyPair {
+    fn fixed_signing() -> DeviceSigningKeyPair {
         let mut rng = ChaCha20Rng::seed_from_u64(7);
-        IdentitySigningKeyPair::generate(&mut rng)
+        DeviceSigningKeyPair::generate(&mut rng)
     }
 
     fn fixed_stream_key() -> StreamKey {
@@ -795,7 +795,7 @@ mod tests {
 
     /// Build an envelope carrying an arbitrary `doc_schema_v`, the way a
     /// future build would.
-    fn envelope_at_doc_schema(doc_schema_v: u32, signing: &IdentitySigningKeyPair) -> Vec<u8> {
+    fn envelope_at_doc_schema(doc_schema_v: u32, signing: &DeviceSigningKeyPair) -> Vec<u8> {
         seal_envelope(
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),

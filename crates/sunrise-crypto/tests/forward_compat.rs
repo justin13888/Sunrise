@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::CborValue;
-use sunrise_crypto::keys::IdentitySigningKeyPair;
+use sunrise_crypto::keys::DeviceSigningKeyPair;
 use sunrise_crypto::{decode_envelope, seal_envelope, verify_envelope, AeadAlgId, OpEnvelope};
 use sunrise_crypto_test_vectors as vectors;
 
@@ -50,7 +50,7 @@ fn synthetic_v2_envelope() -> Vec<u8> {
         ])),
     );
 
-    let kp = IdentitySigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
+    let kp = DeviceSigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
     seal_envelope(
         OpEnvelope {
             v: u32::from(sunrise_cbor::ENVELOPE_FORMAT_V),
@@ -110,7 +110,7 @@ fn unknown_envelope_fields_round_trip_byte_for_byte() {
     verify_envelope(&env, &vectors::DEVICE_SIGNING_PUBLIC).expect("signature still verifies");
 
     // Re-emit. Byte-for-byte, per §12.
-    let kp = IdentitySigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
+    let kp = DeviceSigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
     let mut round_tripped = env.clone();
     round_tripped.payload = vectors::ENVELOPE_INNER.to_vec();
     let re = seal_envelope(round_tripped, None, &kp).expect("re-seal");
