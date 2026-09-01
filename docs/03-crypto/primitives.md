@@ -93,7 +93,7 @@ Crypto-typed equality MUST go through `subtle::ConstantTimeEq`. An earlier revis
 
 Tagged releases are to be reproducible:
 
-- `rustc` pinned via `rust-toolchain.toml`. **Implemented** — the file exists and pins 1.88.0, matching `rust-version` in the root `Cargo.toml`.
+- `rustc` pinned via `rust-toolchain.toml`. **Implemented** — the file exists and pins 1.91.1 ([ADR-0026](../11-adr/0026-msrv-bump.md)), byte-identical to `rust-version` in the root `Cargo.toml`. CI's `msrv` job asserts the two literals against each other and against the `rustc` a checkout actually resolves, so the match is enforced rather than observed.
 - `Cargo.lock` committed. **Implemented.**
 - `RUSTFLAGS="-C codegen-units=1 -C link-arg=-Wl,--build-id=none"`. **Not implemented.** `[profile.release]` sets `codegen-units = 1`, but no workflow sets `RUSTFLAGS`.
 - `SOURCE_DATE_EPOCH` set to the release-commit timestamp. **Not implemented** — the string appears in neither `.github/workflows/ci.yml` nor `release.yml`.

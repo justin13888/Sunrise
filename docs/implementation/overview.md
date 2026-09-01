@@ -328,8 +328,13 @@ Recorded because each presented as something other than what it was:
 
 ## Deferred by decision
 
-- **Web WASM core** — [ADR-0012](../11-adr/0012-web-wasm-deferred.md); MSRV
-  blocker. `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
+- **Web WASM core** — [ADR-0012](../11-adr/0012-web-wasm-deferred.md). The MSRV
+  blocker is **cleared**: [ADR-0026](../11-adr/0026-msrv-bump.md) moved the pin
+  to 1.91.1, which is ADR-0012's stated revisit trigger. What is still deferred
+  is the work that trigger unblocks — the `rusqlite` 0.31 → 0.40 swap across
+  `sunrise-storage` and `sunrise-core`, under ADR-0012's unchanged native
+  SQLCipher gate ([#52](https://github.com/justin13888/Sunrise/issues/52)).
+  `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
 - **iOS / Android** — the UniFFI seam is built and generates Kotlin from the
   same scaffolding; only macOS slices have been produced and proven.
 - **Stream sharing, Google Calendar, and the standalone `Note`** — the three

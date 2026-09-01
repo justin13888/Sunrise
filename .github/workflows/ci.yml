@@ -59,7 +59,7 @@ jobs:
         # reads as the floor. Drift is silent in both directions — clippy
         # linting for a compiler nobody runs, or a floor the build already left
         # behind — and it is exactly the state this repository was in before
-        # ADR-0026, where four files disagreed about why 1.88 was pinned.
+        # ADR-0026, where five files disagreed about why 1.88 was pinned.
         # ADR-0026 requires the two literals byte-identical, so equality is the
         # whole check; there is nothing to parse loosely.
         run: |

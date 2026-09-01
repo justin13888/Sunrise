@@ -284,7 +284,7 @@ bun run --filter @sunrise/web build   # production build
 bun run --filter @sunrise/web preview # serve the production build
 ```
 
-> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is deferred on an MSRV blocker. Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is still deferred, but no longer on MSRV — [ADR-0026](docs/11-adr/0026-msrv-bump.md) moved the pin to 1.91.1 and fired ADR-0012's revisit trigger; what remains is the `rusqlite` 0.31 → 0.40 swap ([#52](https://github.com/justin13888/Sunrise/issues/52)). Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
 
 ### Common tasks
 
