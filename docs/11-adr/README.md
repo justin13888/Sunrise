@@ -38,12 +38,12 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
 | 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec; amended by 0026: the bindgen quarantine survives, but on feature unification rather than MSRV) |
 | 0020 | [Three capabilities leave the v1 MUST set](./0020-v1-must-demotions.md) | accepted (amends the client parity matrix) |
-| 0021 | [`kynos` + an authoritative OpenAPI 3.2 document replace hand-written axum routing](./0021-kynos-openapi-server.md) | accepted |
+| 0021 | [`kynos` + an authoritative OpenAPI 3.2 document replace hand-written axum routing](./0021-kynos-openapi-server.md) | accepted (amended by 0026: its "the workspace pins 1.88.0" is now historical; `spargen`'s floor still clears the pin) |
 | 0022 | [`header_sig_v2` signs canonical JSON (RFC 8785)](./0022-device-signature-canonical-json.md) | accepted (forced by 0021) |
 | 0023 | [Sync moves to SSE downstream and typed POST upstream](./0023-sse-sync-transport.md) | accepted (supersedes 0005) |
 | 0024 | [Stream keys are random and wrapped, not derived from the vault root](./0024-key-hierarchy.md) | accepted |
 | 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024) |
-| 0026 | [The rustc pin moves to 1.91.1](./0026-msrv-bump.md) | accepted (amends 0012 and 0019) |
+| 0026 | [The rustc pin moves to 1.91.1](./0026-msrv-bump.md) | accepted (amends 0012, 0019 and 0021) |
 
 ## When to write a new ADR
 

@@ -4,7 +4,8 @@
 
 **Amends:** [ADR-0012](./0012-web-wasm-deferred.md) (its revisit trigger has
 fired), [ADR-0019](./0019-swiftui-macos-client.md) (the stated reason for the
-`uniffi-bindgen` quarantine).
+`uniffi-bindgen` quarantine), [ADR-0021](./0021-kynos-openapi-server.md) (one
+present-tense statement of the old pin).
 
 ## Context
 
@@ -156,8 +157,9 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
   moment; editing them to agree with today is how a ledger stops being worth
   reading (see [ADR-0020](./0020-v1-must-demotions.md)'s addendum). ADR-0021's
   "MSRV is unaffected: the workspace pins 1.88.0 and `spargen` needs 1.88" is
-  such a record; `spargen`'s floor is below the new pin, so nothing it asserted
-  has broken.
+  such a record, and the only one phrased in the present tense, so it gets the
+  same one-line `Amended by` header as 0012 and 0019 rather than a body edit.
+  `spargen`'s floor is below the new pin, so nothing it asserted has broken.
 
 ## What would force revisiting this
 
