@@ -175,13 +175,14 @@ any of them wrong produces a crash rather than a compile error:
 
 ## What would force revisiting this
 
-1. **iOS shipping.** ~~The spike proved macOS only. An iOS slice needs its own
-   spike before it is planned, not after.~~ **This happened.** `apps/apple` now
-   builds a second product, `SunriseiOS`, from the same `Sunrise/` sources plus
-   an `iOS/` directory for the surfaces a phone has and a Mac does not; CI runs
-   it as its own `ios-app` job, compiling the shared `SunriseTests/` suite
-   against the iOS product a second time and running `SunriseiOSUITests` on the
-   simulator. The seam held — the iOS app links the same
+1. **iOS shipping.** The spike proved macOS only. An iOS slice needs its own
+   spike before it is planned, not after.
+
+   **Amended:** this happened. `apps/apple` now builds a second product,
+   `SunriseiOS`, from the same `Sunrise/` sources plus an `iOS/` directory for
+   the surfaces a phone has and a Mac does not; CI runs it as its own `ios-app`
+   job, compiling the shared `SunriseTests/` suite against the iOS product a
+   second time and running `SunriseiOSUITests` on the simulator. The seam held — the iOS app links the same
    `sunrise-core-bindings` xcframework — which is the thing the spike existed to
    establish. **It does not make iOS a v1 client:** the parity MUSTs are still
    macOS's, and no MUST has been transferred. What is settled is that a second

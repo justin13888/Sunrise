@@ -34,10 +34,15 @@ We could implement mobile and desktop UI once with a cross-platform framework (R
 
 ## Consequences
 
-- Three UI codebases (plus web, plus TUI).
+- Three UI codebases (plus web, plus TUI). **Amended:** two, sharing most of
+  their source — the macOS and iOS SwiftUI products built from `apps/apple`.
+  Tauri desktop and the Ratatui TUI were deleted, web is deferred, Android has
+  no client. See the Amendment below.
 - The shared core is the de-duplication mechanism — domain logic and crypto and CRDT are *not* duplicated.
 - We get the best UX per platform.
-- We invest in a UniFFI binding pipeline for iOS/Android.
+- We invest in a UniFFI binding pipeline for iOS/Android. **Amended:** the
+  pipeline was built and is what macOS and iOS both run on; Android is not a
+  consumer of it.
 - Per-platform engineers can move fast within their platform.
 - New features touch multiple UIs; we keep features tightly scoped per release.
 
