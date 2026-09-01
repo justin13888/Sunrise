@@ -71,24 +71,42 @@ class SunriseUITestCase: XCTestCase {
     /// `line` is what gets typed and `title` is what the parser will make of
     /// it — they differ whenever the line carries annotations, which is most
     /// of the time worth testing.
-    func capture(_ line: String, landingAs title: String? = nil) {
+    ///
+    /// `file` and `line` are forwarded so a failure points at the test that
+    /// asked for the capture rather than at this file, which four call sites
+    /// across two products now share.
+    func capture(
+        _ text: String,
+        landingAs title: String? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         let field = app.textFields["capture.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the capture field is on screen")
+        XCTAssertTrue(
+            field.waitForExistence(timeout: 10),
+            "the capture field is on screen",
+            file: file,
+            line: line
+        )
         activate(field)
-        field.typeText(line)
+        field.typeText(text)
         // Add is disabled until the debounced preview lands, which is itself a
         // round trip through the core.
         let add = app.buttons["capture.add"]
         XCTAssertTrue(
             waitUntil(timeout: 10) { add.isEnabled },
-            "the capture preview enables Add"
+            "the capture preview enables Add",
+            file: file,
+            line: line
         )
         activate(add)
 
-        let expected = title ?? line
+        let expected = title ?? text
         XCTAssertTrue(
             app.staticTexts[expected].waitForExistence(timeout: 10),
-            "the captured task appears in the list it was typed into"
+            "the captured task appears in the list it was typed into",
+            file: file,
+            line: line
         )
     }
 

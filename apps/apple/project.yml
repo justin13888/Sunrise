@@ -327,6 +327,7 @@ schemes:
         Sunrise: all
     test:
       config: Debug
+      gatherCoverageData: true
       targets:
         - SunriseUITests
 

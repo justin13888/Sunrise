@@ -74,15 +74,22 @@ final class AppNavigationUITests: SunriseUITestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Streams header offers +")
         activate(add)
 
-        let name = app.textFields.firstMatch
+        // The sheet's own field, not `textFields.firstMatch`. The list behind
+        // this sheet is Today, which has a capture bar — so the first text
+        // field was as likely to be `capture.field`, and typing there left the
+        // Create button disabled, wrote nothing, and still satisfied a
+        // `staticTexts["Travel"]` assertion off the capture preview. Green
+        // test, empty vault.
+        let name = app.textFields["stream.name"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
         activate(name)
         name.typeText("Travel")
         activate(app.buttons["Create"])
 
         XCTAssertTrue(
-            app.staticTexts["Travel"].waitForExistence(timeout: 10),
-            "the new stream is in the sidebar"
+            app.descendants(matching: .any)["sidebar.stream.travel"]
+                .firstMatch.waitForExistence(timeout: 10),
+            "the new stream is a row in the sidebar"
         )
     }
 }

@@ -89,17 +89,26 @@ final class TabShellUITests: SunriseUITestCase {
     /// taking it actually frees the bar rather than merely existing.
     ///
     /// The Done button is a keyboard accessory and so is only drawn beside a
-    /// software keyboard; a simulator with a hardware keyboard attached shows
-    /// neither. The dismissal is therefore conditional and the navigation is
-    /// not — the tab has to be reachable either way, which is the claim.
+    /// software keyboard, which a simulator with a hardware keyboard attached
+    /// does not raise. That is the one condition under which this test has
+    /// nothing to say, so it says so and skips rather than passing: with no
+    /// keyboard there is nothing covering the tab bar, and asserting that an
+    /// uncovered tab bar is reachable would be green whatever the app did —
+    /// including with the Done button deleted outright.
     func testTheTabBarIsReachableAfterCapturing() throws {
         createVault()
         capture("Renew passport !1", landingAs: "Renew passport")
 
+        try XCTSkipUnless(
+            app.keyboards.element.waitForExistence(timeout: 3),
+            "no software keyboard on this simulator, so nothing covers the tab bar"
+        )
+
+        // Unconditional from here. Past the skip the keyboard is up, so the
+        // way out has to exist and has to work.
         let done = app.buttons["capture.done"]
-        if done.waitForExistence(timeout: 3) {
-            done.tap()
-        }
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "the keyboard offers Done")
+        done.tap()
 
         let browse = app.tabBars.buttons["Browse"]
         XCTAssertTrue(

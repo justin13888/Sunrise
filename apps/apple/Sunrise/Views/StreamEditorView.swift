@@ -33,7 +33,12 @@ struct StreamEditorView: View {
 
     var body: some View {
         Form {
+            // Identified because it is not the only text field on screen when
+            // this sheet opens: the list behind it has a capture bar, and a UI
+            // test reaching for "the first text field" was as likely to type
+            // the stream's name into a task.
             TextField("Name", text: $name)
+                .accessibilityIdentifier("stream.name")
 
             Picker("Colour", selection: $color) {
                 ForEach(StreamColor.all, id: \.self) { option in

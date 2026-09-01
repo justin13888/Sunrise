@@ -164,6 +164,7 @@ struct BrowseSidebar: View {
                 .font(.caption2)
         }
         .tag(Destination.list(.stream(id: row.id, name: row.name)))
+        .accessibilityIdentifier("sidebar.stream.\(row.name.lowercased())")
         .selectableOnTouch(
             Destination.list(.stream(id: row.id, name: row.name)),
             selection: $selection
