@@ -70,7 +70,13 @@ final class AppNavigationUITests: SunriseUITestCase {
     func testCreatingAStreamFromTheSidebar() throws {
         createVault()
 
-        let add = app.buttons["New stream"]
+        // By identifier, not by display string. The label is user-facing text
+        // that i18n will translate; the identifier is the contract. This
+        // assertion was red for a different reason though, and it is worth
+        // recording: the button was merged out of the accessibility tree by
+        // the section header it lives in, so it existed on screen and nowhere
+        // else. See `BrowseSidebar.header(_:add:addLabel:identifier:)`.
+        let add = app.buttons["sidebar.stream.new"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Streams header offers +")
         activate(add)
 

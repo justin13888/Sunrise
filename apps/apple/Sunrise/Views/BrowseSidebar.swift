@@ -46,16 +46,57 @@ struct BrowseSidebar: View {
                         Task { await model.moveStreams(from: source, to: destination) }
                     }
             } header: {
-                header("Streams", add: { newStream = true }, addLabel: "New stream")
+                header("Streams")
             }
 
             Section {
                 ForEach(model.visibleContexts, id: \.id) { contextRow($0) }
             } header: {
-                header("Contexts", add: { newContext = true }, addLabel: "New context")
+                header("Contexts")
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
+        // The add controls. Under the list rather than in the section
+        // headers, because a header cannot hold one that accessibility can
+        // see — see `header(_:)`.
+        //
+        // The add controls, placed where each platform puts them.
+        //
+        // On the Mac this is a bottom bar under the sidebar, which is where
+        // Mail, Reminders and Finder's tags all keep their `+`. On iPhone that
+        // space belongs to the tab bar — a bar of its own there overlaps both
+        // the tab bar and the last rows of the list — so the same two actions
+        // become a toolbar menu, which is where iOS puts them.
+        //
+        // Neither can live in the section headers they used to. See
+        // `header(_:)`.
+        #if os(macOS)
+        .safeAreaInset(edge: .bottom) {
+            HStack(spacing: 4) {
+                addButton("New stream", systemImage: "plus",
+                          identifier: "sidebar.stream.new") { newStream = true }
+                addButton("New context", systemImage: "at",
+                          identifier: "sidebar.context.new") { newContext = true }
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        #else
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("Add", systemImage: "plus") {
+                    Button("New stream", systemImage: "plus") { newStream = true }
+                        .accessibilityIdentifier("sidebar.stream.new")
+                    Button("New context", systemImage: "at") { newContext = true }
+                        .accessibilityIdentifier("sidebar.context.new")
+                }
+                .accessibilityLabel("Add")
+                .accessibilityIdentifier("sidebar.add")
+            }
+        }
+        #endif
         .contextMenu {
             Toggle("Show archived", isOn: Binding(
                 get: { model.showsArchived },
@@ -128,19 +169,52 @@ struct BrowseSidebar: View {
         }
     }
 
-    private func header(
+    /// One of the two add buttons under the sidebar.
+    ///
+    /// `.labelStyle(.iconOnly)` sits *inside* `.accessibilityLabel` rather
+    /// than on the enclosing `HStack`, which is the natural place to put it.
+    /// An icon-only label leaves nothing on screen to read, so the label has
+    /// to be stated for accessibility explicitly, and stating it outside the
+    /// style is the order that survives.
+    ///
+    /// `SidebarAddButtonTests` asserts the labels reach the accessibility tree
+    /// by looking them up by name rather than by identifier — the two are
+    /// separate attributes, and a control findable only by identifier is
+    /// findable by a test and silent to VoiceOver.
+    private func addButton(
         _ title: String,
-        add: @escaping () -> Void,
-        addLabel: String
+        systemImage: String,
+        identifier: String,
+        action: @escaping () -> Void
     ) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Button(addLabel, systemImage: "plus", action: add)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .accessibilityLabel(addLabel)
-        }
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly)
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(identifier)
+    }
+
+    /// A section title.
+    ///
+    /// It holds no button, and that is the fix rather than a simplification.
+    /// A `Button` inside a `List` section header on macOS 26 is **absent from
+    /// the accessibility tree entirely** — measured against the running app,
+    /// not assumed. The `+` rendered and worked under a mouse, and the row it
+    /// lived in exposed exactly one element: an `AXHeading`. No `AXButton`,
+    /// at any button style, with or without
+    /// `.accessibilityElement(children: .contain)`. Both were tried and both
+    /// changed nothing. That is why `testCreatingAStreamFromTheSidebar` was
+    /// red: there was no button to find.
+    ///
+    /// The add controls moved to the bottom bar, which is where macOS puts
+    /// them anyway — Mail, Reminders and Finder's tags all carry a `+` under
+    /// the sidebar rather than in it.
+    ///
+    /// The heading the row does expose carries no name of its own. That is a
+    /// smaller problem than an unreachable control — a heading with no name is
+    /// skipped, not mis-actioned — and it is recorded in #38 rather than
+    /// worked around with a fake row.
+    private func header(_ title: String) -> some View {
+        Text(title)
     }
 
     private func streamRow(_ row: StreamListRow) -> some View {
