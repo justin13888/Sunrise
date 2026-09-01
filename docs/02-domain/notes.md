@@ -11,9 +11,12 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > nothing in between exists: **zero ops, zero commands, zero queries, zero
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
-> `EntityKind::Note` explicitly. What *is* live is the `body` **field** on
-> Task, Stream and Routine — which is a `NoteBody`, a different thing from a
-> `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
+> `EntityKind::Note` explicitly. What *is* live is `NoteBody` as a **field** on
+> three entities — `Task.body` (`task.rs:97`), `Routine.body`
+> (`routine.rs:87`) and `Stream.description` (`stream.rs:124`, given a column by
+> migration `0016_stream_description_and_default_context.sql`). On Stream the
+> field is named `description`, not `body`. A `NoteBody` field is a different
+> thing from a `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
 > free-standing entity while keeping notes-as-a-field a v1 MUST, and kept the
 > struct and the table deliberately rather than deleting them. See also
 > [`../implementation/overview.md`](../implementation/overview.md).
@@ -124,8 +127,8 @@ navigates. References are **scrubbed at egress** when sharing the parent Stream
 with someone who does not have access to the referenced entity.
 
 This file is the single definition of both shapes, and **these are shipped
-bytes, not a proposal.** `NoteBody` is live on Task, Stream and Routine `body`
-(banner above), and the codec in `crates/sunrise-domain/src/note_body.rs`
+bytes, not a proposal.** `NoteBody` is live on Task and Routine `body` and on
+Stream `description` (banner above), and the codec in `crates/sunrise-domain/src/note_body.rs`
 encodes these exact map keys (`:470,:474-481`) and decodes them (`:670-679`).
 Every other spec that shows a reference or a redaction —
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)

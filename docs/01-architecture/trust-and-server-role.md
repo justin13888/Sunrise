@@ -79,7 +79,7 @@ fallback.
 The grant will have to carry the owner's relay URL — **not yet a field of
 `ShareGrantPayload`**, whose seven fields
 ([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)`:35-46`)
-are `stream_id`, `epoch`, `recipient_identity_id`, `role`, `expires_at`,
+are `stream_id`, `epoch`, `recipient_identity_id_bytes`, `role`, `expires_at`,
 `hpke_ct` and `identity_sig` — when sharing is designed.
 
 What the credentials for that outbound connection are is **not decided**, and
