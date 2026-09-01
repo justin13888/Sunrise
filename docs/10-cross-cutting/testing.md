@@ -174,12 +174,13 @@ gh workflow run ci.yml --ref <branch>
 
 ```bash
 mise run mutants sunrise-sync                 # one crate
-mise run mutants sunrise-domain --shard 1/6   # one slice of a big one
+mise run mutants sunrise-domain --shard 0/6   # one slice of a big one
 mise run mutants-baseline                     # record a new floor
 ```
 
-Each invocation writes its own directory — `out/mutants/sunrise-domain-1-6/`
-and so on — because `cargo mutants` always puts `mutants.out` directly under
+Shards are zero-based: a crate split six ways is `0/6` through `5/6`, and
+`cargo mutants` rejects `6/6`. Each invocation writes its own directory —
+`out/mutants/sunrise-domain-0-6/` and so on — because `cargo mutants` always puts `mutants.out` directly under
 the directory it is given, so a shared one means every shard overwrites the
 last. Surviving mutants land in that run's `mutants.out/missed.txt`;
 `mise run mutants-baseline` scores every run under `out/mutants/` together, so

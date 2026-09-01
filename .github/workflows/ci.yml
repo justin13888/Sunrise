@@ -273,20 +273,24 @@ jobs:
         # crates makes a partial denominator. Shard counts are proportional to
         # mutant count: sunrise-domain 1352, sunrise-core 740,
         # sunrise-crypto 296, sunrise-sync 94.
+        #
+        # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
+        # n/n outright ("shard k must be less than n"). So a crate split n ways
+        # is 0/n through (n-1)/n, and a crate run whole is 0/1.
         include:
+          - { crate: sunrise-domain, shard: 0/6 }
           - { crate: sunrise-domain, shard: 1/6 }
           - { crate: sunrise-domain, shard: 2/6 }
           - { crate: sunrise-domain, shard: 3/6 }
           - { crate: sunrise-domain, shard: 4/6 }
           - { crate: sunrise-domain, shard: 5/6 }
-          - { crate: sunrise-domain, shard: 6/6 }
+          - { crate: sunrise-core, shard: 0/4 }
           - { crate: sunrise-core, shard: 1/4 }
           - { crate: sunrise-core, shard: 2/4 }
           - { crate: sunrise-core, shard: 3/4 }
-          - { crate: sunrise-core, shard: 4/4 }
+          - { crate: sunrise-crypto, shard: 0/2 }
           - { crate: sunrise-crypto, shard: 1/2 }
-          - { crate: sunrise-crypto, shard: 2/2 }
-          - { crate: sunrise-sync, shard: 1/1 }
+          - { crate: sunrise-sync, shard: 0/1 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
