@@ -27,10 +27,10 @@ status: proposed
 > (`crates/sunrise-server/src/api/sync.rs`) are typed one per purpose, so a
 > beacon has no route that would accept it. It is now unreachable rather than
 > silently dropped, which is a smaller gap than it sounds: neither state has a
-> handler behind it. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined only in
-> [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)`:173`
-> — the registry is prose; no constant for it exists in `crates/`, so it is not
-> in `REQUIRED_CLIENT_BITS` because there is no bit to be in it. There is no
+> handler behind it. Capability bit 36 is defined as
+> `Capability::CliPresenceBeacons`
+> (`crates/sunrise-wire-protocol/src/capability.rs:86,109`) and is deliberately
+> absent from `REQUIRED_CLIENT_BITS` (`:121-125`); nothing sets it. There is no
 > presence channel, no ACL check on one, and no "last activity" tracking.
 >
 > *Architectural — it would be the relay's first look at user data.*
