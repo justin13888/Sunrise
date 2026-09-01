@@ -98,7 +98,7 @@ Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no te
 | Trigger Stream-key rotation | — | — (owner only) |
 | Archive or delete the Stream | — | — (owner only) |
 
-Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, the relay enforces the same boundary by dropping ops whose signing identity does not have `editor` role on the target Stream.
+Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, every honest peer drops them on receipt, because the grant record is in the receiver's own vault and the op carries an identity signature to check against it. There is no relay-side role check and there cannot be one: the relay reaches only `EnvelopeHeader` and holds no grant ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`).
 
 ### Permission elevation (viewer → editor)
 

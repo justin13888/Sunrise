@@ -279,10 +279,18 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock`. This is **not** part of the signed envelope, and it rides on the
-`Ack` — **once per batch**, not once per op. Receivers persist it; it is the
-value used for clock-skew clamping in
-[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md).
+relay_clock` (`crates/sunrise-server/src/api/sync.rs:419`). This is **not** part
+of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
+per op.
+
+It is **advisory only**: a per-batch timestamp a client may use for a clock-skew
+UI hint. It MUST NOT influence merge order, Merkle fold order, or whether an op
+is accepted — the fold order lost its clamp under
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) precisely because a relay input
+into it was a hole (see
+[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
+§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse.rs:435`
+parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
 

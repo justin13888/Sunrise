@@ -21,6 +21,7 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 - It does not see plaintext content. Ever.
 - It does not see derived data (search indexes, summaries, embeddings) — those are computed on devices.
 - It does not enforce business rules on content. It treats ops as opaque, signed, ordered ciphertext.
+- It does not evaluate a role, a grant, a revocation or an expiry. Every such check is a signature check performed by a *receiving client* against a record in that client's own vault. Where a spec says "the server also checks", it is wrong; the relay cannot reach the grant, the cert or the payload. (The one revocation the relay does act on is its own `devices.revoked` flag, which gates authentication — account metadata it already holds, not a content decision.)
 - It does not generate notifications based on content. Push payloads are wake-ups only — content is fetched and decrypted on device.
 - It does not run integrations on the user's behalf with their cleartext credentials. Integration tokens for third-party APIs (Google Calendar, etc.) live in the encrypted vault and run *on device*, with the server never holding them. (Exception: optional server-side cron for stable-rotated integrations is **out of scope for v1**.)
 

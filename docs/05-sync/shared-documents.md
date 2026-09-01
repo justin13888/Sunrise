@@ -24,7 +24,7 @@ A grant carries a role (`viewer` / `editor`):
 - Viewer: their device's outbox refuses to emit ops on this Stream.
 - Editor: ops are produced freely.
 
-This is enforced **client-side** (their core checks role before emitting). The server *also* checks: it rejects ops on shared Streams from devices whose identity isn't a grantee with editor role. Defense in depth.
+This is enforced **client-side** and only client-side: the emitting core checks role before emitting, and every honest peer re-checks on receipt against the grant record in its own vault. The relay performs no such check and cannot — it reaches only `EnvelopeHeader` and holds no grant ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`).
 
 ## Grant state machine
 
@@ -52,12 +52,12 @@ State is on the grant record (`grant.state`). Concurrent transitions resolve by 
 
 - Owner emits `stream_key_rotate` immediately on revoke; new ops use the new epoch.
 - Existing recipients receive the new epoch's key in a `share_key_distribute` op (one per remaining recipient, encrypted to their identity).
-- The revoked recipient does not receive the new key (server enforces).
+- The revoked recipient does not receive the new key, because no `key_envelope` is sealed to it. Nothing is withheld by the relay; the key is simply never encrypted for that recipient.
 - Latency target: rotation completes within 5 s on a healthy connection. Until distribute completes, the owner's device queues new ops locally and emits them once all remaining recipients have a fresh key.
 
 ## Read-only attestation
 
-Because the server *can* see device IDs and op metadata, it enforces editor-role checks. But it cannot read content. So a malicious grantee viewer running a modified client could in principle emit ops; the server rejects them. Other devices also reject them on signature check (no valid editor cert).
+A malicious grantee viewer running a modified client can emit ops, and the relay will forward them — it cannot tell an editor from a viewer. Other devices reject them on signature check (no valid editor cert). That client-side check is the whole attestation; there is no server-side one behind it.
 
 ## Egress scrubbing
 

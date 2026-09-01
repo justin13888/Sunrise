@@ -64,7 +64,7 @@ Owner triggers revoke. This is implemented as:
    }
    ```
 2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient.
-3. The relay, on seeing `share_revoke`, stops forwarding the Stream's ops to the revoked recipient's devices at `effective_at_ms`. A recipient device offline at the cutoff discovers revocation on next reconnect via a `RELAY_GRANT_REVOKED` error frame; the client discards any buffered post-cutoff ops.
+3. Nothing is asked of the relay. A revoked recipient stops receiving *readable* content because the epoch has rotated and no envelope is sealed to it under the new key; there is no relay-side grant check and no revocation error frame. The relay keeps forwarding whatever it is given, so a revoked recipient may still receive post-cutoff ciphertext it cannot open, and discards it locally on applying the `share_revoke`.
 
 The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (this is the same property as for revoked sibling devices). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.
 
@@ -72,7 +72,7 @@ The revoked recipient retains historical decryption ability for ops that were cr
 
 `expires_at` (the optional field on `ShareGrantPayload`) is enforced **client-side** by recipients: a recipient with `now >= expires_at` MUST stop applying ops from that grant. Already-applied ops remain in the local vault (same as revoke).
 
-Server-side enforcement is best-effort: the relay refuses to forward ops to a recipient whose grant has expired, but does not delete already-buffered ops. This prevents new data flow once the relay processes the expiry; combined with the client-side gate, expired ops do not reach an honest client even via a hostile relay (the client checks before applying).
+There is no server-side expiry enforcement, and the guarantee does not need one: a hostile relay that keeps forwarding post-expiry ops changes nothing, because the recipient checks `expires_at` before applying. What the client-side-only gate does not buy is bandwidth — an expired recipient may still be sent ops it will discard.
 
 ## What is shared
 
