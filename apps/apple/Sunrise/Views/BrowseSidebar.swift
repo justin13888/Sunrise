@@ -65,6 +65,25 @@ struct BrowseSidebar: View {
         // space belongs to the tab bar — a bar of its own there overlaps both
         // the tab bar and the last rows of the list — so the same two actions
         // become a toolbar menu, which is where iOS puts them.
+        //
+        // Only the iOS half of this is proved in CI. `SidebarAddButtonTests`
+        // runs on the simulator on every `mise run ios-app`; the macOS suite is
+        // `skipped: true` in the `Sunrise` scheme, because a macOS XCUITest
+        // needs two one-time grants to the machine — developer mode, and an
+        // automation grant keyed to the app bundle's path — that a CI runner
+        // cannot give. See `macos-uitest` in `mise.toml`.
+        //
+        // The gap is narrower than it sounds. The two branches differ in
+        // placement only, and what the simulator proves — both actions in the
+        // accessibility tree under their own names, and not merely under their
+        // identifiers — is the claim that was broken. The Mac's bottom bar is
+        // covered for layout by `mise run apple-shots` on a developer machine,
+        // which is where those grants live.
+        //
+        // A cheaper macOS test hosting this view in an `NSHostingView` would
+        // not close the gap: that materialises a different accessibility tree
+        // from the windowed app the bug lived in, and would have been green
+        // against the original defect.
         #if os(macOS)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 4) {
