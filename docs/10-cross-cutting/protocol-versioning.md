@@ -212,7 +212,22 @@ For `WIRE_PROTO_V`:
    - Client release notes call out the protocol bump.
 3. Frame headers and the magic prefix are immutable. A new wire-protocol generation that needs to change them gets a new magic and is treated as a separate transport (clients dial both, server listens on both).
 
-The negotiated `wire_proto` is logged on every session in field `proto.wire` — `srv.ws.connect` in `crates/sunrise-server/src/ws.rs` emits it as `wire_v` alongside `crypto_v`. The per-version metric that would let an operator read the distribution without parsing logs is target state ([§11](#11-logging-and-metrics)).
+The negotiated `wire_proto` is **not** logged per session, and no per-session
+record carries it. `wire_v` / `doc_v` / `crypto_v` appear once per process, on
+the `srv.start` line, which is the trade `crates/sunrise-log/src/proto.rs`
+records: restating three constants that cannot change while the process lives
+would cost roughly 50 bytes on every record to say what one line already says.
+`srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries
+`account_h` and nothing about the protocol.
+
+For today's server that loses nothing, because the server offers exactly one
+wire version — `Hello::negotiate` is called with `&[WIRE_PROTO_V]` — so the
+negotiated value is the compiled one and the startup line already reports it.
+It stops being sufficient the day the server lists two, which is the same day
+§6's deprecation window needs measuring. The per-version metric that would let
+an operator read the distribution without parsing logs is target state
+([§11](#11-logging-and-metrics)), and it is what should land with the second
+version rather than after it.
 
 ---
 

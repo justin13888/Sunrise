@@ -49,7 +49,7 @@ The rule "the server never sees plaintext" is enforced by the type system, not b
 Two limits on that, stated rather than left to be discovered:
 
 - **The relay's own SQLite database is not encrypted.** The client vault is SQLCipher-keyed by `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`; the server calls plain `Connection::open` with no `PRAGMA key`. Everything in the metadata list above sits in a file an operator or a backup can read directly. What that file does *not* contain is anything openable — the frames in it are ciphertext the server has no key for.
-- **The blob store content-addresses over ciphertext.** `blob_id` is `blb_` plus a BLAKE3 hash of the *uploaded bytes* (`crates/sunrise-server/src/routes/blobs.rs`), so the server can tell that two uploads are byte-identical. That is deliberate and harmless in practice: each attachment gets a fresh random per-blob key, so two identical plaintexts encrypt to different ciphertext and do not collide. The server learns "these two uploads are the same ciphertext", never "these two attachments are the same file".
+- **The blob store content-addresses over ciphertext.** `blob_id` is `blb_` plus the first 16 bytes of a BLAKE3 hash of the *uploaded bytes*, which `finalize` recomputes from disk rather than trusting the client's claim (`crates/sunrise-server/src/api/blobs.rs`), so the server can tell that two uploads are byte-identical. That is deliberate and harmless in practice: each attachment gets a fresh random per-blob key, so two identical plaintexts encrypt to different ciphertext and do not collide. The server learns "these two uploads are the same ciphertext", never "these two attachments are the same file".
 
 ## Self-hosted vs managed distinction
 
