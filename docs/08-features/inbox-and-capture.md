@@ -40,6 +40,7 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 
 - **Single field.** No labels, no required form fields beyond the title.
 - **Stream default.** Capture always lands in Inbox **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, CLI subcommand) **always** lands in Inbox. There is no per-device "respect current stream" preference.
+- **Today default.** The same rule for the field Today selects on. Capturing into the bar at the top of an unfiltered Today gives an otherwise-undated line `scheduled_at = now`, so the row appears where it was typed. An explicit `^` in the line still wins, exactly as an explicit `#stream` overrides the Stream default above. Without this the line is filed in Inbox — correct, and invisible on the screen that just accepted it, with nothing on screen to say where it went. This is the *only* other implicit target; a Today narrowed by contexts offers no capture bar at all, because a captured line carries none of the contexts the filter names and would be written and filtered straight back out.
 - **Voice capture** on supporting platforms (iOS Siri, Android voice, watchOS). Voice goes through the same parser.
 - **Batch capture.**
   - Web/Desktop: paste of multi-line text auto-detects line-separated batch; a modal preview shows parsed items with checkboxes; user confirms.

@@ -14,7 +14,9 @@ struct TaskListView: View {
         VStack(spacing: 0) {
             // A context or search list is where capture has nowhere to land: a
             // capture writes to a stream, and there is no annotation for
-            // "give this the context I am looking at".
+            // "give this the context I am looking at". A Today narrowed by
+            // contexts is the same list under a different name, and refused
+            // for the same reason — see ``TaskListKind/acceptsCapture``.
             if model.kind.acceptsCapture {
                 CaptureBar(model: capture, focus: focus) { draft in await model.create(draft) }
             }

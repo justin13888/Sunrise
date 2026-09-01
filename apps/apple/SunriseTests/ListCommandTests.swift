@@ -274,7 +274,7 @@ struct ListCommandTests {
     func theOrderTheCursorWalksIsTheOrderOnScreen() async throws {
         let vault = try await TestVault()
         let today = TaskListModel(bridge: vault.bridge, kind: .todayAll)
-        await today.create(draft("Nothing scheduled"))
+        await today.create(draft("Renew passport"))
         await today.refresh()
 
         #expect(today.ordered.map(\.id) == today.groups.flatMap(\.tasks).map(\.id))

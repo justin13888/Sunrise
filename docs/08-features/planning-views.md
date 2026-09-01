@@ -18,7 +18,12 @@ Composition:
 4. **Promoted from Inbox** (manually pulled into Today via drag/keyboard).
 5. **Overdue** (folded section by default; opens with a count badge).
 
-Today is **computed**, not edited directly except via promote/demote.
+Today is **computed**, not edited directly except via promote/demote — and via
+capture into Today's own bar, which schedules an otherwise-undated line for now
+rather than filing it out of sight in Inbox. That is a promotion in everything
+but name: the core has no promote-into-Today command, so `scheduled_at` is the
+only lever, and the field it writes is the one this view already selects on.
+See `inbox-and-capture.md` §Capture UX patterns, *Today default*.
 
 ### Overdue boundary
 
