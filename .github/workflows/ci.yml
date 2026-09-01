@@ -253,6 +253,80 @@ jobs:
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
 
+  mutants:
+    name: Mutation coverage
+    runs-on: ubuntu-latest
+    # Nightly and on demand, never on a pull request. The four scoped crates
+    # generate ~2,500 mutants and each one is an incremental rebuild plus a
+    # test run; a full pass is hours, which is exactly why
+    # docs/10-cross-cutting/testing.md scopes this to release candidates rather
+    # than to every commit.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      # Not fail-fast: a regression in one crate should not hide the scores of
+      # the other three, and the gate below needs every shard's outcomes to
+      # compute a crate's rate correctly.
+      fail-fast: false
+      matrix:
+        # Sharded by crate rather than one shard-space across the workspace,
+        # because the gate scores per crate and a shard that straddles two
+        # crates makes a partial denominator. Shard counts are proportional to
+        # mutant count: sunrise-domain 1352, sunrise-core 740,
+        # sunrise-crypto 296, sunrise-sync 94.
+        include:
+          - { crate: sunrise-domain, shard: 1/6 }
+          - { crate: sunrise-domain, shard: 2/6 }
+          - { crate: sunrise-domain, shard: 3/6 }
+          - { crate: sunrise-domain, shard: 4/6 }
+          - { crate: sunrise-domain, shard: 5/6 }
+          - { crate: sunrise-domain, shard: 6/6 }
+          - { crate: sunrise-core, shard: 1/4 }
+          - { crate: sunrise-core, shard: 2/4 }
+          - { crate: sunrise-core, shard: 3/4 }
+          - { crate: sunrise-core, shard: 4/4 }
+          - { crate: sunrise-crypto, shard: 1/2 }
+          - { crate: sunrise-crypto, shard: 2/2 }
+          - { crate: sunrise-sync, shard: 1/1 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Mutate ${{ matrix.crate }} (shard ${{ matrix.shard }})
+        # `--jobs 1` here for the same reason the mise task pins it: each job
+        # is a full copy of the tree plus a resident rustc, and a hosted runner
+        # has less headroom than the laptop the figure was measured on.
+        run: |
+          cargo mutants -p ${{ matrix.crate }} \
+            --jobs 1 --shard ${{ matrix.shard }} \
+            --output out/mutants
+      - name: Upload outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-${{ matrix.crate }}-${{ strategy.job-index }}
+          path: out/mutants/mutants.out/outcomes.json
+
+  mutants-gate:
+    name: Mutation coverage gate
+    runs-on: ubuntu-latest
+    needs: mutants
+    # `always()` so the gate still scores the shards that finished when one
+    # fails to run. A missing shard lowers a crate's measured rate and the gate
+    # will say so, which is the honest outcome — silence would not be.
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-*
+          path: outcomes
+      - name: Compare against mutants/baseline.json
+        run: .github/scripts/mutants-gate.py outcomes/*/outcomes.json
+
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest
