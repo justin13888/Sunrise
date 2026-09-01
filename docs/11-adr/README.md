@@ -36,7 +36,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0016 | [Hybrid logical clocks order writes](./0016-hlc-timestamps.md) | accepted |
 | 0017 | [Scheduled times are a tagged `SunriseTime`](./0017-sunrise-time-representation.md) | accepted |
 | 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
-| 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec) |
+| 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec; revisit trigger 1 fired — see 0028) |
 | 0020 | [Three capabilities leave the v1 MUST set](./0020-v1-must-demotions.md) | accepted (amends the client parity matrix) |
 | 0021 | [`kynos` + an authoritative OpenAPI 3.2 document replace hand-written axum routing](./0021-kynos-openapi-server.md) | accepted |
 | 0022 | [`header_sig_v2` signs canonical JSON (RFC 8785)](./0022-device-signature-canonical-json.md) | accepted (forced by 0021) |
@@ -44,6 +44,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0024 | [Stream keys are random and wrapped, not derived from the vault root](./0024-key-hierarchy.md) | accepted |
 | 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024) |
 | 0027 | [v1 is self-host-first: managed cloud, billing, quotas, presence, Android and sharing are post-v1](./0027-v1-self-host-first.md) | accepted |
+| 0028 | [iOS is a v1 client with its own parity column, at SHOULD level](./0028-ios-is-a-v1-client.md) | accepted (amends the client parity matrix; closes 0019's revisit trigger 1) |
 
 ## When to write a new ADR
 

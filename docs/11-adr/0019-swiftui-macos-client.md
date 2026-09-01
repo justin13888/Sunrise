@@ -194,6 +194,11 @@ any of them wrong produces a crash rather than a compile error:
    transferred. What is settled is that a second Apple platform costs UI work
    and not a second core, which is what would have forced revisiting this ADR
    had it gone the other way.
+
+   **Superseded on this point by [ADR-0028](./0028-ios-is-a-v1-client.md)**,
+   which gives iOS its own parity column at SHOULD level. The rest of the
+   sentence still holds: no MUST was transferred, and none is until an iOS
+   release ships.
 2. **A second desktop platform becoming a requirement.** SwiftUI does not go
    there, and that is the point at which a cross-platform toolkit is worth
    re-costing — with the shared core intact either way.
