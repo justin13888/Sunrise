@@ -41,7 +41,7 @@ So:
 | iOS | APNs |
 | Android | FCM |
 | Web (PWA) | Web Push (VAPID) |
-| Desktop | OS-native local notifications + WebSocket maintained by the running app |
+| Desktop | OS-native local notifications + the event stream the running app holds open |
 
 Desktop apps are usually running, so they don't need server push for sync wakeups.
 
@@ -74,15 +74,18 @@ re-register on next sync.
 
 ## Push fanout flow (not implemented)
 
-No step below runs. `ws.rs` appends an arriving batch to the durable relay log
-and fans it out to connected sessions; an offline receiver is simply not
-delivered to, and nothing consults `push_tokens`.
+No step below runs. `ops` in `crates/sunrise-server/src/api/sync.rs` appends an
+arriving batch to the durable relay log and publishes it to whatever event
+streams are open; an offline receiver is simply not delivered to, and nothing
+consults `push_tokens`. It catches up by cursor replay on its next
+`GET /sync/events`, which is what makes this a latency gap rather than a
+correctness one.
 
 1. Op arrives at server for receiving device R.
-2. R is offline (no active WS).
+2. R is offline (no open event stream).
 3. Server enqueues a wake-up push to R's registered tokens.
 4. Push provider delivers; OS wakes the app briefly.
-5. App connects WS, drains, may emit a *local* notification if the new state warrants one.
+5. App establishes a session, drains the stream, may emit a *local* notification if the new state warrants one.
 
 ## Priority tiers (not implemented)
 

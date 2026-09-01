@@ -4,7 +4,7 @@ status: accepted
 
 # Server API
 
-Two surfaces: the **sync protocol** (over WebSocket; spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
+Two surfaces: the **sync protocol** (an SSE stream downstream and typed `POST`s upstream, per [ADR-0023](../11-adr/0023-sse-sync-transport.md); payloads spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
 
 > **This document is no longer authoritative about shapes.**
 > [`schemas/openapi.v1.json`](../../schemas/openapi.v1.json) is, per
@@ -117,14 +117,21 @@ routes that would emit them do not exist. The codes `codes` actually defines are
 `AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
 `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`, `VALIDATION_INVALID`,
 `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`, `BLOB_NOT_FOUND` and
-`FATAL_INTERNAL`, plus `AUTH_DEVICE_SIG_INVALID` in `auth/request.rs`. An
-oversized body is rejected by `tower_http`'s `RequestBodyLimitLayer` at
-`[server] max_body_bytes` (default 2 MiB) with a bare `413` and no Sunrise error
-envelope — well below the 10 MiB cap this section assumes.
+`RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. There is no
+`AUTH_DEVICE_SIG_INVALID`: **every device-binding failure collapses to
+`401 AUTH_TOKEN_INVALID`**, which `api/signed.rs` states as the intent — an
+absent binding where one is required, a device that is not an active row on the
+account, a missing or stale `Date`, and a signature that does not verify are one
+rejection on the wire and four distinguishable lines in the server's log. An
+oversized body is rejected by kynos's own `middleware::limits::BodySize`, mounted
+at `[server] max_body_bytes` (default 2 MiB), which answers `413` — and, unlike
+the layer it replaces, contributes that response to every operation it covers in
+the OpenAPI description, so the API no longer rejects payloads it claims to
+accept. The limit is still well below the 10 MiB cap this section assumes.
 
 ### Identity discovery (for sharing) — NOT IMPLEMENTED
 
-Neither route below is mounted; there is no `routes/identities.rs`. Sharing
+Neither route below is mounted; there is no `api/identities.rs`. Sharing
 depends on discovery, and [`../11-adr/0024-key-hierarchy.md`](../11-adr/0024-key-hierarchy.md)
 makes the point in the other direction: under the derived-key model there is no
 unit smaller than "everything" to grant, so discovery would have had nothing to
@@ -171,7 +178,7 @@ as revoked rather than as absent.
 
 Three consequences are observable and tested:
 
-- **A device cannot revoke itself.** `routes/devices.rs` refuses a `DELETE`
+- **A device cannot revoke itself.** `api/devices.rs` refuses a `DELETE`
   whose target is the caller's own bound device with `403 AUTH_DEVICE_NOT_OWNER`.
   A device that can revoke itself is a device a thief can use to erase the
   evidence; signing out locally is a key wipe, not a server call.
@@ -208,7 +215,7 @@ DeviceMeta = {
 | 400 | `VALIDATION_*` | Bad CBOR, wrong field type, invalid `device_pub_*`. | No. |
 | 401 | `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` | See Account errors. | See Account errors. |
 | 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
-| 403 | `AUTH_DEVICE_SIG_INVALID` | `X-Sunrise-Device-Sig` present but unverifiable, no `Date` header alongside it, or `Date` outside ±300 s. Also returned when `require_device_sig` is set and the header is absent. | No (re-sign with a correct clock). |
+| 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device-Sig` present but unverifiable, no `Date` header alongside it, or `Date` outside `MAX_CLOCK_SKEW_SECS` (±300 s). Also returned when `require_device_sig` is set and the header is absent, and when the named device is not an active row on the account. Deliberately indistinguishable from a bad bearer: the difference is useful to the server's log and to nobody else. | No (re-sign with a correct clock). |
 | 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. | No. |
 
 ### Blobs
@@ -224,7 +231,7 @@ it is the **content address** of bytes the server has not seen yet.
 | GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
 
 Every route is authenticated and device-bound like the rest of the REST API —
-`routes/blobs.rs` runs the full `authenticate` pipeline on all four. `init`
+`api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
 answers `200`, a chunk `PUT` answers `204`, and `finalize` answers `200`.
 Alongside the hash checks, `init` and `finalize` enforce
 `1 <= chunk_count <= 4096`, `1 <= chunk_bytes <= 1 MiB`, and a
@@ -285,7 +292,7 @@ period — so it lands with the GC slice rather than as a bare unlink.
 
 ### Sharing — NOT IMPLEMENTED
 
-No `routes/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
+No `api/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
 `/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
 [ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
 derived-key model there is no key unit smaller than the whole vault to grant,
@@ -312,7 +319,7 @@ The `share_envelope` is opaque to the server.
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
 | GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise | **NOT IMPLEMENTED** |
 
-`MetaResponse` (`routes/meta.rs`) is:
+`MetaResponse` (`api/meta.rs`) is:
 
 ```
 { server_app_v, wire_proto_supported: [uint], crypto_suite_supported: [uint],
@@ -373,9 +380,9 @@ No handler counts storage, ops, or devices against a plan.
 ## Rate limits — NOT IMPLEMENTED
 
 There is no rate-limiting middleware anywhere in `crates/sunrise-server`. The
-only `tower-http` layers `build_router` mounts are `CorsLayer`,
-`RequestBodyLimitLayer` and the hand-assembled trace layer; nothing counts
-requests per IP, per account, or per token. An unauthenticated caller can hit
+only middleware `api/mod.rs` mounts is kynos's `Cors` and `BodySize`, plus the
+`RequestLog` observer in `api/observe.rs`; nothing counts requests per IP, per
+account, or per token. An unauthenticated caller can hit
 `/api/v1/meta`, `/api/v1/health` and `/metrics` at whatever rate the socket
 allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
 `401`s.
@@ -387,7 +394,7 @@ Per-account: see [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressu
 
 ## Why so few endpoints?
 
-Most "API" calls in a typical app — CRUD on tasks — are *not* server API calls in Sunrise. They're local commands that produce ops, which sync via the WebSocket transport as opaque envelopes. The REST surface is intentionally minimal.
+Most "API" calls in a typical app — CRUD on tasks — are *not* server API calls in Sunrise. They're local commands that produce ops, which sync as opaque envelopes over `POST /sync/ops` and back down the event stream. The REST surface is intentionally minimal.
 
 ## Endpoint availability by deployment
 

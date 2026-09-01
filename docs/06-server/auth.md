@@ -10,14 +10,14 @@ Cryptographic E2EE identity (identity + device keypairs) is **separate** from se
 
 > **Implementation status.** Token verification, the account model, `allow_signup`,
 > device binding and the sync session's expiry handling are built
-> (`crates/sunrise-server/src/auth/`, `store.rs`, `ws.rs`). The **recovery** and
-> **account-deletion** flows below are not: no route serves them, and the
-> sections say so in place.
+> (`crates/sunrise-server/src/auth/`, `store.rs`, `api/sync.rs`,
+> `sync_session.rs`). The **recovery** and **account-deletion** flows below are
+> not: no route serves them, and the sections say so in place.
 > [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) replaces
 > `header_sig_v1` with `header_sig_v2` (RFC 8785 canonical JSON over the request
-> *value*), and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaces the
-> `/sync` WebSocket described here with SSE plus typed `POST`; the credential
-> rules are unchanged by either.
+> *value*), and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the
+> `/sync` WebSocket with SSE plus typed `POST`. Both have landed; the credential
+> rules were unchanged by either, which is why this page still holds.
 
 ## Components
 
@@ -41,7 +41,7 @@ A first OIDC login with no matching `account_id` either auto-provisions the acco
 
 ## Per-request auth
 
-Every authenticated request — REST and the sync WebSocket — carries a standard OIDC **access token** in `Authorization: Bearer <jwt>`.
+Every authenticated request — REST and every sync operation — carries a standard OIDC **access token** in `Authorization: Bearer <jwt>`.
 
 The Sunrise server validates the token by:
 
@@ -60,37 +60,71 @@ stays in single-tenant mode behind `NullVerifier`, where every caller maps to
 one account — which is why `ServerConfig::validate` refuses to bind that mode to
 anything but loopback. `allow_signup` defaults to `true`.
 
-There are **no Sunrise-issued tokens and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer. Token TTL is **1 hour**; clients renew at 75% of TTL pre-emptively without disconnecting (using the out-of-band token-refresh frame `0x12 RefreshToken { token: tstr }`, accepted at any time on the sync WebSocket).
+There are **no Sunrise-issued tokens and no refresh-token logic on the server side**. The OIDC client library on the device handles token refresh against the issuer. Token TTL is **1 hour**; clients renew at 75% of TTL pre-emptively without dropping the event stream, through `POST /api/v1/sync/session/refresh` carrying the replacement bearer. The sync driver still emits a `0x12 RefreshToken { token: tstr }` frame for this; `SseTransport` turns it into that request and turns the reply back into a `0x13 RefreshTokenAck` frame, so the driver's contract is the one the socket had and only the adapter under it changed.
 
 The server's whole part in a refresh is to re-verify the token the device obtained and move the session's deadline out. It refuses in three distinguishable ways, and they are deliberately not alike:
 
 | Case | Result | Why |
 |---|---|---|
 | Token does not verify | `Error AUTH_TOKEN_INVALID`, **session continues** | The credential it already holds is still valid and its own deadline still governs. Tearing down would turn a recoverable client bug into a dropped session. |
-| Token verifies but names a different `(iss, sub)`, or a different `device_id` | `Error AUTH_TOKEN_INVALID`, **session ends** | The relay channel namespace was derived from the upgrade's token and is never re-derived. Continuing would relay one account's traffic under another's authority. |
-| Session's current token has already expired | `Error` + `Close AUTH_TOKEN_EXPIRED` | The per-frame expiry check runs before dispatch, so this never reaches the refresh handler at all. A dead session is not resurrectable by presenting a live token; the client reconnects, which re-runs the whole upgrade pipeline including `allow_signup` and the account lookup. |
+| Token verifies but names a different `(iss, sub)`, or a different `device_id` | `Error AUTH_TOKEN_INVALID`, **session ends** | The relay channel namespace was derived from the establishing token and is never re-derived. Continuing would relay one account's traffic under another's authority. |
+| Session's current token has already expired | `401 AUTH_TOKEN_INVALID`, and the open stream is closed with `AUTH_TOKEN_EXPIRED` | `resolve` looks the session up before the handler body runs, and `SessionStore::get` collects an expired row rather than returning it, so this never reaches the refresh handler at all. A dead session is not resurrectable by presenting a live token; the client re-establishes, which re-runs the whole `POST /sync/session` pipeline including `allow_signup` and the account lookup. |
 
 An accepted refresh **is acknowledged**. The server replies with
-`0x13 RefreshTokenAck { expires_at_ms: uint }`, carrying the new deadline it
-just installed, so the client learns the server's view of the expiry rather than
-inferring success from the absence of a disconnect. The frame is gated on the
-optional `SrvTokenRefresh` capability bit, which the server ORs into its
-`HelloAck` set — a client only sends `0x12` after seeing that bit agreed, so a
-refresh cannot be silently swallowed by a server that predates the frame.
-Implemented in `ws.rs` (`handle_refresh`), specified in
-[`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by
-`crates/sunrise-server/tests/ws_token_expiry.rs`.
+`{ expires_at_ms }`, carrying the new deadline it just installed, so the client
+learns the server's view of the expiry rather than inferring success from the
+absence of a disconnect. The operation is gated on the optional
+`SrvTokenRefresh` capability bit, which the server ORs into its negotiated set
+at `POST /sync/session` — a client only refreshes after seeing that bit agreed,
+so a refresh cannot be silently swallowed by a server that predates it.
+Implemented as `refresh` in `crates/sunrise-server/src/api/sync.rs`, specified in
+[`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by that
+module's own tests — `a_refresh_extends_the_session`,
+`an_unverifiable_refresh_is_refused_but_keeps_the_session`,
+`a_refresh_naming_another_principal_ends_the_session` and
+`a_refresh_for_a_token_with_no_expiry_reports_zero` are the four cases the table
+above describes.
 
 A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified.
 
-For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request. `auth::extract_bearer` reads the `Authorization` header and nothing else, so **the `?access_token=…` query-string fallback earlier revisions promised browsers does not exist** — a browser that cannot set the header cannot authenticate. What *does* exist is the defence for it: `logging/mod.rs` assembles the trace layer by hand so the span records a templated path with the query dropped, precisely because `tower-http`'s stock `MakeSpan` records the full URI, and `crates/sunrise-server/tests/logging.rs` regression-tests that `access_token` never reaches the log. That is a mitigation standing guard over a feature that was never built; it MUST survive any port (ADR-0021 says the same), because the day the query fallback *is* added is the day it starts mattering. The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:
+For sync: every operation carries `Authorization: Bearer <token>`, and kynos's
+`BearerToken` carrier reads the `Authorization` header and nothing else
+(`api/auth.rs`), so **the `?access_token=…` query-string fallback earlier
+revisions promised browsers does not exist** — a browser that cannot set the
+header cannot authenticate. The defence for it survived the port, as ADR-0021
+required, and it got stronger in the process. `templatize_path` in
+`crates/sunrise-log/src/field.rs` still drops a query string from any logged
+target and still has the test that pins it, and the request log itself
+(`crates/sunrise-server/src/api/observe.rs`) is now handed the *matched route*
+rather than the request's URI, so the concrete path with its query is not
+reachable from the logging path at all. The hazard `tower-http`'s stock
+`MakeSpan` created is gone by construction rather than mitigated by a
+hand-assembled span — which is the outcome to preserve on the day the query
+fallback *is* added.
 
-- **On every inbound frame**, against the server clock. This is the cheap check and the one a busy session hits first.
-- **On a deadline timer** in the session loop. An idle session sends nothing, so the per-frame check never runs; without the timer a client could connect, go quiet, and hold an authenticated socket open indefinitely on a dead credential.
+Establishing a session authenticates once, but the *session* carries the token's
+`exp` for its whole life (`Session::deadline_ms` in `sync_session.rs`), and
+expiry is enforced two ways:
 
-On expiry the server sends `Error { code: "AUTH_TOKEN_EXPIRED" }` followed by `Close { code: "AUTH_TOKEN_EXPIRED", reason: … }`, and the client renews via OIDC and reconnects. Both codes are the canonical `ErrorCode`, not a bespoke string — a client has to be able to tell an aged-out credential (renew silently) from a withdrawn one (stop and ask the user), and an untyped close makes those indistinguishable.
+- **On every operation.** `resolve` looks the session up first, and
+  `SessionStore::get` collects an expired row instead of returning it, so an
+  aged-out session answers `401` to anything it is asked to do.
+- **On a timer inside the open event stream.** A subscriber that only reads
+  issues no further operations, so the check above never runs for it; without
+  the timer a client could establish a session, go quiet, and hold a fan-out
+  open indefinitely on a dead credential. The same tick re-reads the device row,
+  so a revocation also reaches a stream already open.
 
-A session closed by the server keeps reading its socket briefly before dropping it. This is not politeness: closing a socket that still holds unread inbound bytes makes the kernel send RST rather than FIN, and an RST discards whatever the peer had not yet read — which is precisely the `Close` frame just written to explain the disconnect.
+On expiry the stream emits a typed `Closed` event carrying
+`AUTH_TOKEN_EXPIRED` and then ends, and the client renews via OIDC and
+re-establishes. A revoked device gets `AUTH_DEVICE_REVOKED` on the same shape.
+Both are the canonical `ErrorCode`, not a bespoke string — a client has to be
+able to tell an aged-out credential (renew silently) from a withdrawn one (stop
+and ask the user), and an untyped close makes those indistinguishable.
+
+The close reaches the client because it is an event on the body, not a control
+frame racing a socket teardown: the stream sends `Closed` and *then* ends, so
+there is no unread-bytes hazard for the reason to be lost to.
 
 ## Device binding
 
@@ -164,26 +198,23 @@ cannot disagree about it. `sign` is the client half and `verify` the server's.
 
    **The revoked device's requests MUST be rejected at the server even while its
    OIDC token is still valid, and that MUST hold for the `/sync` session as well
-   as for REST.** For REST it already does: `bind_device` resolves the caller
-   through `Store::active_device`, whose `WHERE` clause carries `revoked = 0`, so
-   the next request after the revoking transaction commits fails with
-   `403 AUTH_DEVICE_NOT_OWNER`. One connection behind a mutex makes that
-   immediate — there is no propagation window and no cache to expire.
+   as for REST.** Every route on the surface, sync included, resolves a binding
+   through one path — `api::signed::verify_bytes`, which looks the device up
+   with `Store::active_device`, whose `WHERE` clause carries `revoked = 0`. Where
+   a binding is presented, the next request after the revoking transaction
+   commits therefore fails. One connection behind a mutex makes that immediate:
+   there is no propagation window and no cache to expire.
 
-   For `/sync` it holds in two places. The upgrade runs `authenticate_sync`,
-   which resolves the device from `X-Sunrise-Device` — falling back to the
-   token's `device_id` claim, and requiring the two to agree when both are
-   present — and refuses anything that is not an active row on that account. A
-   session already open is re-checked on every inbound frame and on a timer
-   bounded by `device_recheck_ms` (30 s by default), because the socket a
-   revoked device is *already holding* is the case revocation exists for: a
-   session that only receives never presents a frame to check against. It ends
-   with `AUTH_DEVICE_REVOKED`, not `AUTH_TOKEN_EXPIRED` — the two ask the client
-   for opposite behaviour.
+   The case that needs more than a per-request check is the **event stream a
+   revoked device is already holding**, because a subscriber that only reads
+   issues no further requests to be checked. `live_loop` re-reads the device row
+   on a timer bounded by `device_recheck_ms` (30 s by default) and ends the
+   stream with `AUTH_DEVICE_REVOKED`, not `AUTH_TOKEN_EXPIRED` — the two ask the
+   client for opposite behaviour.
 
-   Until this landed, the upgrade resolved the account and stopped there, and
-   the `devices` table was never read on the sync path at all, so a revoked
-   device kept relaying until its bearer expired.
+   Until this landed, the sync path resolved the account and stopped there and
+   the `devices` table was never read on it at all, so a revoked device kept
+   relaying until its bearer expired.
 
 ## Recovery — NOT IMPLEMENTED
 
