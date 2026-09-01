@@ -38,15 +38,18 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --all-targets
-      # `--exclude sunrise-server` is what actually enforces the `doctest =
-      # false` that crate's manifest already declares: cargo honours that key
-      # for `cargo test` and `cargo test -p`, but an explicit `--doc` selects
-      # the doc target regardless of it (reproduced on 1.88.0, 1.91.1 and
-      # stable). Without the exclusion this step is red on prose, not on code
-      # -- see crates/sunrise-server/Cargo.toml for the upstream bug and the
-      # one-line fix that retires both halves of this workaround.
+      # `--skip relative_uri` drops the 18 `relative_uri` constructors kynos
+      # 0.1.0's route macros generate, whose doc comment rustdoc reads as an
+      # indented code block and then compiles as English -- see
+      # crates/sunrise-server/Cargo.toml for the mechanism and #60 for the
+      # one-line upstream fix that retires this. libtest filters by name
+      # before rustdoc compiles a snippet, so the prose never reaches a
+      # compiler, and unlike excluding the crate this leaves every other doc
+      # test in sunrise-server watched, including any added later. The filter
+      # is a substring match over the whole workspace, so do not name a real
+      # doc test `relative_uri`.
       - name: cargo doc-test
-        run: cargo test --workspace --doc --exclude sunrise-server
+        run: cargo test --workspace --doc -- --skip relative_uri
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
