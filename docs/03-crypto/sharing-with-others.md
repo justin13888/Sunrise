@@ -85,12 +85,12 @@ When sharing a Stream, the recipient gets:
 
 ## Egress scrubbing
 
-A Note in a shared Stream may contain `{kind: "ref", target: EntityRef}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**: editors only see entity ids for entities inside the shared Stream, so an editor's UI cannot construct a ref to an entity in one of the owner's private Streams. Cross-stream refs in shared content therefore always come from the owner.
+A Note in a shared Stream may contain `{kind: "ref", ref: entity-ref}` pointing to a Task or Note in a Stream the recipient does not have. The **owner is the only origin of cross-stream references in shared content**: editors only see entity ids for entities inside the shared Stream, so an editor's UI cannot construct a ref to an entity in one of the owner's private Streams. Cross-stream refs in shared content therefore always come from the owner.
 
 On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
 1. Walk the Note's outbound payload before encryption.
-2. For every `{kind: "ref", target}` whose `target` is in a Stream this cohort does not share, replace with `{kind: "redacted", reason: "private_ref", placeholder: "—"}` ([`../02-domain/notes.md`](../02-domain/notes.md) §In-app references defines the shape). The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
+2. For every `{kind: "ref", ref}` whose `ref` is in a Stream this cohort does not share, replace with `{kind: "redacted", reason: "private_ref", placeholder_text: "—"}` ([`../02-domain/notes.md`](../02-domain/notes.md) §In-app references defines the shape). The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
 3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
 
 A scrubbed envelope is detectable to the **owner** (they retain the original). Recipients cannot tell whether their envelope was scrubbed; this is by design (no leak of the existence of private references).

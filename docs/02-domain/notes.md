@@ -68,7 +68,7 @@ Divider   = {kind: "hr"}
 Inline =
       {text: text, marks?: [* Mark]}
     / {kind: "link", href: text, label: text}
-    / {kind: "ref", target: entity-ref}   ; in-app entity link
+    / {kind: "ref", ref: entity-ref}      ; in-app entity link
     / {kind: "mention", person: tstr}
 
 Mark = "bold" / "italic" / "underline" / "strike" / "code"
@@ -119,30 +119,40 @@ All editors emit and consume the same `NoteBody` bytes.
 
 ## In-app references
 
-`{kind: "ref", target: "tsk_…"}` renders as the target entity's title; clicking
+`{kind: "ref", ref: "tsk_…"}` renders as the target entity's title; clicking
 navigates. References are **scrubbed at egress** when sharing the parent Stream
 with someone who does not have access to the referenced entity.
 
-This file is the single definition of both shapes. Every other spec that shows a
-reference or a redaction — [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
+This file is the single definition of both shapes, and **these are shipped
+bytes, not a proposal.** `NoteBody` is live on Task, Stream and Routine `body`
+(banner above), and the codec in `crates/sunrise-domain/src/note_body.rs`
+encodes these exact map keys (`:470,:474-481`) and decodes them (`:670-679`).
+Every other spec that shows a reference or a redaction —
+[`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 §Egress scrubbing, [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)
 §Scrubbing implementation, [`../01-architecture/threat-model.md`](../01-architecture/threat-model.md)
-§A5 — points here rather than restating it. Three earlier variants
-(`ref:` instead of `target:`, `placeholder_text:` instead of `placeholder:`, and
-a `sr://` URI form that existed in exactly one file) are retired.
+§A5 — points here rather than restating it. What is retired is the `sr://` URI
+form, which existed in exactly one file and matched no encoder.
 
 ```cddl
-Ref      = {kind: "ref", target: entity-ref}
+Ref      = {kind: "ref", ref: entity-ref}
 Redacted = {
-    kind:        "redacted",
-    reason:      "private_ref" / "external_account" / "deleted_entity",
-    placeholder: tstr,          ; visible token for editors that need one
+    kind:             "redacted",
+    reason:           "private_ref" / "external_account" / "deleted_entity",
+    placeholder_text: tstr,     ; visible token for editors that need one
 }
 ```
 
+**The map key is `ref`, not `target`.** The Rust *field* is named `target`
+(`Inline::Ref { target }`), which is why the two spellings circulate; the byte on
+the wire is `"ref"`. Likewise the key is `placeholder_text`, not `placeholder`.
+`reason` is carried as text rather than a closed enum, so a decoder that meets a
+reason it does not know still renders the placeholder rather than dropping the
+node.
+
 The original target id is **not** preserved in the redacted form sent to a recipient who shouldn't see it.
 
-A reference whose target is soft-deleted renders as `{kind: "redacted", reason: "deleted_entity", placeholder: "(removed)"}` for the local user as well. The original reference id is preserved in the local state so a user-initiated undelete restores the link automatically.
+A reference whose target is soft-deleted renders as `{kind: "redacted", reason: "deleted_entity", placeholder_text: "(removed)"}` for the local user as well. The original reference id is preserved in the local state so a user-initiated undelete restores the link automatically.
 
 ## Length
 
