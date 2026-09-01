@@ -185,14 +185,15 @@ any of them wrong produces a crash rather than a compile error:
 
    **Amended:** this happened. `apps/apple` now builds a second product,
    `SunriseiOS`, from the same `Sunrise/` sources plus an `iOS/` directory for
-   the surfaces a phone has and a Mac does not; CI runs it as its own `ios-app`
-   job, compiling the shared `SunriseTests/` suite against the iOS product a
-   second time and running `SunriseiOSUITests` on the simulator. The seam held — the iOS app links the same
-   `sunrise-core-bindings` xcframework — which is the thing the spike existed to
-   establish. **It does not make iOS a v1 client:** the parity MUSTs are still
-   macOS's, and no MUST has been transferred. What is settled is that a second
-   Apple platform costs UI work and not a second core, which is what would have
-   forced revisiting this ADR had it gone the other way.
+   the surfaces a phone has and a Mac does not; CI runs it as its own
+   `ios-app` job, compiling the shared `SunriseTests/` suite against the iOS
+   product a second time and running `SunriseiOSUITests` on the simulator. The
+   seam held — the iOS app links the same `sunrise-core-bindings` xcframework
+   — which is the thing the spike existed to establish. **It does not make iOS
+   a v1 client:** the parity MUSTs are still macOS's, and no MUST has been
+   transferred. What is settled is that a second Apple platform costs UI work
+   and not a second core, which is what would have forced revisiting this ADR
+   had it gone the other way.
 2. **A second desktop platform becoming a requirement.** SwiftUI does not go
    there, and that is the point at which a cross-platform toolkit is worth
    re-costing — with the shared core intact either way.
@@ -202,8 +203,9 @@ any of them wrong produces a crash rather than a compile error:
 
 ## Amendment (2026-09): iOS shipped, and the seam held
 
-Trigger 1 under [What would force revisiting this](#what-would-force-revisiting-this)
-fired: `apps/apple` now builds `SunriseiOS` alongside the macOS product, from
+Trigger 1 under
+[What would force revisiting this](#what-would-force-revisiting-this) fired:
+`apps/apple` now builds `SunriseiOS` alongside the macOS product, from
 the same `Sunrise/` sources over the same `sunrise-core-bindings` xcframework,
 with its own CI job. That trigger is recorded in place rather than restated
 here — it carries the detail.
