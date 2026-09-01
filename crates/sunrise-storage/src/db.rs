@@ -524,6 +524,108 @@ mod tests {
         );
     }
 
+    /// A 0016 vault upgrades to 0017: the identity, `deferred_ops` and
+    /// revocation columns arrive, and `stream_keys` is re-keyed on
+    /// `(stream_id, epoch, key_id)`.
+    ///
+    /// The pre-0017 rows are dropped on purpose and this asserts it: every one
+    /// of them wrapped a key *derived* from the vault root, so
+    /// `Keychain::open`'s legacy adoption recomputes the identical key on the
+    /// next open. Carrying them forward would mean inventing a `key_id` for a
+    /// row during a migration that has no access to the vault root, and so no
+    /// way to unwrap the key the id is computed from.
+    #[test]
+    fn migration_0017_rekeys_stream_keys_and_adds_the_hierarchy_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        // Everything up to and including 0016.
+        for m in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            tx.execute_batch(m.sql).unwrap();
+        }
+        tx.execute(
+            "INSERT INTO stream_keys (stream_id, epoch, wrapped, created_at_ms)
+             VALUES (?, 1, X'00', 0)",
+            rusqlite::params![vec![7u8; 16]],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO devices
+             (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms)
+             VALUES (?, X'00', 'old', 'test', 0, NULL)",
+            rusqlite::params![vec![9u8; 16]],
+        )
+        .unwrap();
+
+        tx.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1].sql)
+            .unwrap();
+
+        for table in ["identity", "stream_keys", "deferred_ops"] {
+            let n: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = ?",
+                    rusqlite::params![table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "0017 must create `{table}`");
+        }
+        let leftover: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'stream_keys_old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leftover, 0,
+            "the renamed table must not survive the upgrade"
+        );
+
+        // The re-keyed table is empty and takes a `key_id` + `source`.
+        let rows: i64 = tx
+            .query_row("SELECT count(*) FROM stream_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            rows, 0,
+            "derived pre-0017 keys are re-derived on open, not migrated"
+        );
+        tx.execute(
+            "INSERT INTO stream_keys (stream_id, epoch, key_id, wrapped, source, created_at_ms)
+             VALUES (?, 1, X'0102030405060708', X'00', 'legacy', 0)",
+            rusqlite::params![vec![7u8; 16]],
+        )
+        .unwrap();
+        // Same (stream_id, epoch), different key_id: both concurrent mints live.
+        tx.execute(
+            "INSERT INTO stream_keys (stream_id, epoch, key_id, wrapped, source, created_at_ms)
+             VALUES (?, 1, X'0807060504030201', X'00', 'envelope', 0)",
+            rusqlite::params![vec![7u8; 16]],
+        )
+        .unwrap();
+        let rows: i64 = tx
+            .query_row("SELECT count(*) FROM stream_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            rows, 2,
+            "(stream_id, epoch, key_id) must admit two keys per epoch"
+        );
+
+        // The devices row survived and grew its revocation columns.
+        let (nickname, identity_id, reason): (String, Option<Vec<u8>>, Option<String>) = tx
+            .query_row(
+                "SELECT nickname, identity_id, revoke_reason FROM devices",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(nickname, "old");
+        assert!(identity_id.is_none());
+        assert!(reason.is_none());
+    }
+
     /// A vault from before the reset is REFUSED, with its own error — not
     /// silently upgraded, and not confused with a too-new one.
     #[test]

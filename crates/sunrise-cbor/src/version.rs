@@ -47,7 +47,13 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// applying it wrongly. That is acceptable pre-1.0, where no build older than
 /// this one exists (ADR-0018), and it is why the op vocabulary is documented
 /// as a wire contract in `sunrise_core::inner_op`.
-pub const DOC_SCHEMA_V: u16 = 4;
+///
+/// `5` added the three control op families — `KeyEnvelope`, `DeviceRevoke` and
+/// `DeviceCertPublish` (ADR-0024). Like `blk_` and `att_` before them these are
+/// new *variants*, so an older build refuses one rather than misreading it, and
+/// the floor still does not move: every v1..v4 payload shape is unchanged and
+/// still decodes here.
+pub const DOC_SCHEMA_V: u16 = 5;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///
@@ -61,7 +67,19 @@ pub const DOC_SCHEMA_V: u16 = 4;
 pub const DOC_SCHEMA_FLOOR: u16 = 1;
 
 /// Crypto suite version constant (AEAD, signature, KDF, HPKE choices).
-pub const CRYPTO_SUITE_V: u16 = 1;
+///
+/// `2` is ADR-0024: Stream keys stopped being derived from the vault root and
+/// became independently random per `(stream_id, epoch)`, distributed by RFC
+/// 9180 HPKE Base envelopes (DHKEM(X25519,HKDF-SHA256) / HKDF-SHA256 /
+/// ChaCha20-Poly1305), and device certs became identity-signed rather than
+/// self-signed. None of the *primitives* changed — which is why
+/// [`ENVELOPE_FORMAT_V`] does not move — but the key schedule they are applied
+/// to did, and that is what this constant names.
+pub const CRYPTO_SUITE_V: u16 = 2;
 
 /// Local storage schema version. Per-device; never appears on the wire.
-pub const STORAGE_V: u16 = 16;
+///
+/// `17` is migration `0017_key_hierarchy.sql`: the `identity` table, the
+/// re-keyed `stream_keys`, `deferred_ops`, and the device/revocation columns
+/// ADR-0024 needs.
+pub const STORAGE_V: u16 = 17;

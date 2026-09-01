@@ -1,0 +1,72 @@
+-- 0017_key_hierarchy.sql — ADR-0024. STORAGE_V = 17.
+--
+-- Stream keys stop being derived from the vault root and become independently
+-- random per (stream_id, epoch), wrapped under the vault root at rest and
+-- distributed between devices by HPKE `key_envelope` ops. That needs four
+-- things this schema did not have: a persisted account identity, a stream-key
+-- table keyed tightly enough to hold two concurrently minted keys for one
+-- epoch, somewhere to park an op that arrived before the key that opens it,
+-- and revocation columns on `devices`.
+
+-- --- the account identity (ID_S / ID_D), one row ---
+-- Independent of every device key: `identity_id` anchors to ID_S_pub, so the
+-- device that happened to create the vault is no longer the identity.
+CREATE TABLE identity (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    identity_id         BLOB NOT NULL,
+    id_s_pub            BLOB NOT NULL,
+    id_d_pub            BLOB NOT NULL,
+    -- nonce(24) || ct(32) || tag(16), AAD
+    -- "sunrise.local_identity.identity.v1" || identity_id
+    id_s_priv_wrapped   BLOB NOT NULL,
+    id_d_priv_wrapped   BLOB NOT NULL,
+    created_at_ms       INTEGER NOT NULL
+);
+
+-- --- per-Stream wrapped key store, re-keyed ---
+-- key_id = BLAKE3.derive_key("sunrise.stream_key_id.v1", stream_key, 8).
+-- Two devices minting an epoch concurrently produce two rows at the same
+-- (stream_id, epoch); both are retained and both are distributed, and the AEAD
+-- tag picks the right one at decrypt time. A last-writer-wins on the minting
+-- op would instead lose every op sealed under the losing key.
+ALTER TABLE stream_keys RENAME TO stream_keys_old;
+CREATE TABLE stream_keys (
+    stream_id       BLOB NOT NULL,
+    epoch           INTEGER NOT NULL,
+    key_id          BLOB NOT NULL,
+    wrapped         BLOB NOT NULL,
+    -- 'local' | 'envelope' | 'pairing' | 'legacy'
+    source          TEXT NOT NULL,
+    created_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY (stream_id, epoch, key_id)
+);
+CREATE INDEX stream_keys_by_stream ON stream_keys (stream_id, epoch DESC);
+-- Pre-0017 rows carry keys *derived* from the vault root, and the wrapped blob
+-- is a wrap of exactly that derived key. Nothing is lost by dropping them:
+-- `Keychain::open` re-derives every one of them on the next open and
+-- re-inserts it with source 'legacy' (adopt_legacy_vault), which is also where
+-- the identity that should have wrapped them gets minted.
+DROP TABLE stream_keys_old;
+
+-- --- ops that arrived before the key that opens them ---
+-- A `key_envelope` op and the ops sealed under the epoch it carries have no
+-- ordering guarantee across streams, so an op can legitimately land first.
+-- Refusing it would lose it (the relay does not redeliver); a cursor barrier
+-- would stall the whole stream. It is parked here and drained after every
+-- absorbed key.
+CREATE TABLE deferred_ops (
+    op_id           BLOB PRIMARY KEY,
+    stream_id       BLOB NOT NULL,
+    epoch           INTEGER NOT NULL,
+    envelope        BLOB NOT NULL,
+    received_at_ms  INTEGER NOT NULL
+);
+CREATE INDEX deferred_ops_by_key ON deferred_ops (stream_id, epoch);
+
+-- --- device identity binding + revocation ---
+-- `revoked_at_ms` already exists (0013) and becomes the revocation's
+-- effective_at; these say who revoked it and why.
+ALTER TABLE devices ADD COLUMN identity_id BLOB;
+ALTER TABLE devices ADD COLUMN d_d_pub BLOB;
+ALTER TABLE devices ADD COLUMN revoked_by BLOB;
+ALTER TABLE devices ADD COLUMN revoke_reason TEXT;
