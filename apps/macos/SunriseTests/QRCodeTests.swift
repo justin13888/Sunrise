@@ -15,7 +15,7 @@ struct QRCodeTests {
     /// same JSON shape, so this is what the screen actually has to encode.
     private func payload() throws -> String {
         let pairing = try DevicePairing.offer(
-            relayUrl: "wss://relay.example/sync",
+            relayUrl: "https://relay.example",
             accountEmail: "someone@example.com"
         )
         return try #require(pairing.qrPayload())
