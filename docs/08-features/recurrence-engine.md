@@ -83,11 +83,12 @@ The op-log idempotence still applies: a device that *previously* emitted an op f
 - **DST transitions.** Occurrence is computed in the routine's tz. If a 9am routine falls in a "spring forward" gap, we use the same wall-clock 9am after the gap (skip the missing hour); for "fall back," we keep the first occurrence.
 - **Tz changes.** If the routine's tz is changed, future occurrences shift. Past-generated occurrences are not retroactively moved.
 - **Routine deletion.** Stops generation. Existing occurrences remain unless explicitly deleted by the user.
-- **Adaptive cadence (`every X days since last completion`).** Stores `(last_completed_at, X)` as an LWW Register. Concurrent completions: the most recent `last_completed_at` wins, ties broken by lex `device_id`. The "next due" is `last_completed_at + X days`, recomputed on every read. See [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
+- **Adaptive cadence (`every X days since last completion`).** Stores `(last_completed_at, X)` on the Routine row, which merges as one entity-level LWW unit keyed `(hlc, device_id, seq)` — not as a per-field CRDT register ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) §The comparison key). Concurrent completions resolve to one surviving Routine row whole. The "next due" is `last_completed_at + X days`, recomputed on every read.
 
 ## Streak counter
 
-- Maintained on the Routine entity as a PN-counter.
+- Maintained on the Routine entity as an ordinary field, merged with the rest of the row under entity-level LWW keyed `(hlc, device_id, seq)`. It is **not** a PN-counter; the workspace ships no CRDT library ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). Two devices completing concurrently therefore produce one surviving count, not a sum.
+- *Related, and open:* the per-key growth this implies is the same unbounded-growth question A-14 raises for `streak_keys`; nothing prunes them.
 - `complete(occurrence)` on or before the occurrence's scheduled day + grace = +1.
 - `skip(occurrence)` or missed = -1 or reset to 0 (configurable).
 - Re-completing a previously-skipped occurrence does not retroactively repair the streak.
@@ -95,7 +96,7 @@ The op-log idempotence still applies: a device that *previously* emitted an op f
 ## Generation timing
 
 - On every app launch.
-- On a periodic core timer (every 6 hours when running).
+- *Target state:* on a periodic core timer (every 6 hours when running). No such timer exists in `crates/sunrise-core`; generation is driven by launch, edit and post-sync only.
 - On a Routine edit.
 - After bulk sync application (since new ops may have come from another device that already generated some occurrences).
 

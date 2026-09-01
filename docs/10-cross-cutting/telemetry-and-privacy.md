@@ -41,7 +41,7 @@ TelemetryEvent = {
 }
 ```
 
-No PII fields are permitted; in particular, **email is never logged or telemetered, and there is no rotating auth-buffer keyed on email or any other identifier**. Cross-log identification, when needed, uses the per-salt BLAKE3 short hashes defined in [`logging.md`](./logging.md).
+No PII fields are permitted; in particular, **email is never logged or telemetered, and there is no rotating auth-buffer keyed on email or any other identifier**. Cross-log identification, when needed, uses the BLAKE3 short hashes defined in [`logging.md`](./logging.md). They are not salted: `account_h` is `BLAKE3(account_id)[..4]`, plain.
 
 ### Crash reports (opt-in, two-step consent)
 
@@ -77,7 +77,9 @@ In Rust core code, plaintext content fields are wrapped in `Plain<T>`:
 struct Plain<T>(T);
 ```
 
-`Plain<T>` does not implement `Display`, `Debug`, or `Serialize`. To use, code must explicitly call `.expose()`. The CI lint that enforces this is canonical and is specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); a forbidden-module call to `Plain<T>::expose()` fails the build with: `"Plain<T>::expose() called from a forbidden module: redaction may be bypassed. See docs/10-cross-cutting/logging.md."`
+`Plain<T>` deliberately implements **neither `Display`, nor `serde::Serialize`, nor `tracing::Value`** — each would make a different way of logging the payload compile (`crates/sunrise-log/src/plain.rs:89-93`). It *does* implement `Debug`, which prints the fixed marker `Plain<…>` and never the value (`plain.rs:83-87`); a `Debug` that refused to exist would only make the wrapper unusable in ordinary derives.
+
+To reach the value, code must call `.expose()` explicitly. What enforces that is not a clippy lint but a grep gate: `.github/scripts/grep-gate.sh` run as `log-redaction`, matching `\bplain[a-z_]*\.expose\s*\(` across a fixed list of source directories, and failing the build on any hit. The gate and its directory list are specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); the message is the gate's own.
 
 This is the structural enforcement that prevents accidental telemetry of content.
 

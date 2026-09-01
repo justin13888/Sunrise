@@ -55,8 +55,6 @@ pub enum Command {
     // … (one variant per user-visible action)
     PromoteToStream { id: TaskId, stream: StreamId },
     AttachNote { target: EntityRef, body: NoteBody },
-    PairDevice(PairingChallenge),
-    RevokeDevice(DeviceId),
     // …
 }
 
@@ -77,7 +75,7 @@ impl Core {
     pub async fn query(&self, q: Query) -> Result<QueryResult>;
     pub fn changes(&self) -> impl Stream<Item = DomainEvent> + Send;
     pub fn sync_status(&self) -> impl Stream<Item = SyncStatus> + Send;
-    pub async fn export(&self, opts: ExportOptions) -> Result<ExportArchive>;
+    pub async fn export(&self, opts: ExportOptions) -> Result<ExportArchive>;  // target state
     pub async fn close(self) -> Result<()>;
 }
 ```

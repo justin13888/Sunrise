@@ -18,7 +18,8 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 | Component | Spec |
 |---|---|
-| Merge engine (entity LWW; `crdt-design.md` is the deferred per-field design) | [`crdt-design.md`](./crdt-design.md) |
+| Merge engine (entity LWW) | [`conflict-resolution.md`](./conflict-resolution.md), [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) |
+| Per-field merge (deferred design) | [`crdt-design.md`](./crdt-design.md) *(proposed)* |
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
 | Transport (SSE + typed POST per [ADR-0023](../11-adr/0023-sse-sync-transport.md); WebSocket is the implementation being replaced) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |

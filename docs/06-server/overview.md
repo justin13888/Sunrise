@@ -126,4 +126,4 @@ Persisted server-side structures (recovery blobs at rest; snapshot blobs the ser
 
 - **Managed cloud, plan tiers and billing** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). v1 ships one server shape and has no tiers.
 - Cross-server federation.
-- Foreground-service "always-on" sync on Android (per-device opt-in; v1 accepts occasional Doze-induced latency).
+- Foreground-service "always-on" sync on Android — moot for v1, which ships no Android client at all ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4).

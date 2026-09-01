@@ -1,4 +1,4 @@
-# ADR 0010 — Explicit protocol versioning spec
+# 0009 — Explicit protocol versioning spec
 
 **Status:** accepted
 
@@ -12,7 +12,7 @@ These were three local treatments of versioning. The audit revealed that no docu
 
 Add `docs/10-cross-cutting/protocol-versioning.md` as the authoritative versioning spec. It:
 
-1. Names the four versioned surfaces (wire, doc-schema, crypto-suite, storage).
+1. Names the versioned surfaces. Four at the time of writing; five since [ADR-0015](./0015-envelope-doc-schema-split.md) split the envelope container from the document schema — wire, envelope container, document schema, crypto suite, storage ([`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)`:7`).
 2. Pins v1 constants for each.
 3. Specifies the `Hello` / `HelloAck` negotiation handshake including CDDL.
 4. Defines a 64-bit capability bitfield with a v1 registry.

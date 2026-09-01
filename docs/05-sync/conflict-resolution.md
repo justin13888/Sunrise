@@ -118,7 +118,7 @@ every remote replica while the originating replica kept it.
 Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
-- Receivers see both; idempotent; PN-counter for streak increments by 1 (using op_id dedup), not by 2.
+- Receivers see both, and application is idempotent on `op_id`, so the streak advances once rather than twice. *Target state:* the PN-counter this rule was written for; the streak is an ordinary field on the Routine row today and merges with it under entity-level LWW (banner above).
 
 ### Concurrent list reorders
 

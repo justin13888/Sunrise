@@ -30,7 +30,7 @@ Sunrise commits to the seven principles described in Kleppmann et al.'s "Local-f
 
 **Implication.**
 - Data format is fully documented (CDDL-described).
-- Export emits human-readable JSON + Markdown notes + ICS for blocks, encrypted with a user-held key only.
+- *Target state:* export emits human-readable JSON + Markdown notes + ICS for blocks, encrypted with a user-held key only. What exists is narrower — the `sunrise` CLI's `export` subcommand and the iCalendar export in `sunrise-integrations`; there is no `Core::export` and no whole-vault archive.
 - Open-source client and server, AGPL-licensed.
 
 ## 5. Privacy and security by default
@@ -43,7 +43,7 @@ Sunrise commits to the seven principles described in Kleppmann et al.'s "Local-f
 
 **Definition.** The user can leave Sunrise at any time with a complete, decrypted, structured copy of their data.
 
-**Implication.** Export is a first-class feature, not a hidden setting. Account deletion wipes server-side blobs and metadata.
+**Implication.** *Target state.* Export is a first-class feature, not a hidden setting, and account deletion wipes server-side blobs and metadata. Neither is met yet: export covers datasets rather than the vault (above), and account deletion has no route at all ([`../06-server/api.md`](../06-server/api.md)).
 
 ## 7. Multi-device collaboration without coordination
 
@@ -58,6 +58,6 @@ Sunrise commits to the seven principles described in Kleppmann et al.'s "Local-f
 - **Tenet 1:** automated perf budget on every release; flame chart attached to PRs that touch hot paths.
 - **Tenets 2/7:** integration tests with simulated multi-device divergence (3-way splits, week-long offline windows).
 - **Tenet 3:** "airplane mode setup" smoke test for every release.
-- **Tenet 4:** export round-trip test — export, then re-import into a fresh install, must produce equivalent state.
+- **Tenet 4:** export round-trip test — export, then re-import into a fresh install, must produce equivalent state. Partially in place: `exporting_and_re_importing_is_the_identity` covers the iCalendar path across the vault and the seam, not a whole-vault archive.
 - **Tenet 5:** a CI check rejects any code path that logs or transmits anything from the `Plain<T>` typed wrapper outside the local process.
 - **Tenet 6:** tested via tenet 4.

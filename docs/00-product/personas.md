@@ -23,7 +23,7 @@ Sunrise targets one core persona with two adjacent variants. We refuse to dilute
 
 ## Variant A: The Solo Founder / Operator
 
-Same profile, but everything is more concentrated. One company, many functions (sales, product, finance, ops). Streams are *functions* not *jobs*. They share one or two views with a co-founder or assistant. **Sharing must work without the recipient creating an account is a stretch goal — see [`03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md).**
+Same profile, but everything is more concentrated. One company, many functions (sales, product, finance, ops). Streams are *functions* not *jobs*. They would share one or two views with a co-founder or assistant. **Sharing a view with a co-founder or assistant is post-v1** ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a), [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5), **and sharing without the recipient holding a Sunrise identity is not designed at all** — every mechanism in [`03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md) seals to a recipient identity key.
 
 ## Variant B: The Researcher / Grad Student
 

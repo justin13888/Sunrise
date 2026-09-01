@@ -60,7 +60,6 @@ non-goal, so this is the only calendar path a v1 user can actually take.
 ## Import
 
 - File picker → parse `.ics` → create Blocks tagged `source = import:ics`.
-- Imported entities are read-only.
 - **Re-importing the same file is idempotent**, because the Block's id *is* the
   hash of `(source, uid)`: the same UID from the same source computes the same
   id and updates the Block already there, and the same UID from two different
@@ -70,8 +69,11 @@ non-goal, so this is the only calendar path a v1 user can actually take.
 
 ## Export
 
-- "Export this Stream as .ics" → produces a file containing all Blocks (with their RRULE for recurring).
-- "Export Today" → minimal one-day .ics.
+- Export covers exactly two windows, **Today** and **This Week**:
+  `ExportWindow::{Day, Week}` (`crates/sunrise-integrations/src/ical_vault.rs:137-145`),
+  surfaced as `sunrise ical export [today|week] [path]`
+  (`crates/sunrise-cli/src/main.rs:84`). A whole-Stream export is target state,
+  not a shipped option.
 - Useful for: sharing a calendar slice with someone outside Sunrise; importing into Outlook etc.
 
 ## Mapping rules
@@ -111,7 +113,7 @@ Two deliberate carve-outs:
 - **Long descriptions:** no client-side truncation. Round-trip preserves DESCRIPTION verbatim. The Block's description field is plain text; iCalendar HTML in `X-ALT-DESC` is dropped on import (logged) and not regenerated on export.
 - **Attached files (`ATTACH`):** dropped on import. The UI shows `"This event had attachments which were not imported."` once per event. Documented in user-facing help. Not produced on export (attachments are heavy and require separate handling).
 - **Time zones:**
-  - `VTIMEZONE` blocks are emitted on export.
+  - *Target state:* `VTIMEZONE` blocks emitted on export. The exporter does not emit them; zoned times go out as TZID references without an accompanying definition.
   - On import, `VTIMEZONE` is parsed if present and used to resolve VEVENT TZID values.
   - A TZID that is not in `VTIMEZONE` and not in the IANA TZDB falls back to UTC and logs `int.import.tz_unknown`.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.

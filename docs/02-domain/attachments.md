@@ -81,7 +81,7 @@ the entity.
 - Each attachment has a per-blob symmetric key, generated client-side.
 - Plaintext is encrypted with that key (AEAD; chunked so streaming partial reads work).
 - The key is carried on the Attachment itself (`blob_key`) alongside the blob id and chunk count, sealed inside the op envelope.
-- The encrypted blob is uploaded to the server (or kept LAN-local in T3 topologies).
+- The encrypted blob is uploaded to the server. There is no LAN-local option: [`../01-architecture/deployment-topologies.md`](../01-architecture/deployment-topologies.md) defines two topologies, neither of which is LAN-only.
 
 ## Size policy
 

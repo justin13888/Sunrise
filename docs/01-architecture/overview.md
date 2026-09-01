@@ -23,7 +23,8 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
                                 ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Sync Protocol                                                   │
-│  Encrypted op transport over WebSocket (HTTP/2 long-poll fallback).│
+│  Encrypted op transport: SSE downstream + typed POST             │
+│  upstream (ADR-0023).                                            │
 │  Server is a relay + blob store. Cannot read content.            │
 └──────────────────────────────────────────────────────────────────┘
                                 │

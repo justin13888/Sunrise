@@ -1,32 +1,35 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # CRDT Design
 
-> **This document describes target state, not v1.**
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003:
-> Sunrise v1 merges at **entity granularity with last-writer-wins in SQLite**
-> (`sunrise-core::engine::lww_wins`; the `lww_*` columns arrive in
-> `0013_baseline.sql`, the collapse of the numbered migrations per
-> [ADR-0018](../11-adr/0018-storage-baseline-reset.md), which later migrations
-> append to rather than replace) and
-> ships **no CRDT library**. The per-field types below — OR-Sets, PN-counters,
-> RichText, fractional-index lists — are the design we would adopt when
-> collaborative note bodies or per-field merge become real requirements. See
-> [`../implementation/overview.md`](../implementation/overview.md) for what is
-> actually live.
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003 and
+> makes v1's merge model entity-level last-writer-wins; this document is the
+> design of record for the per-field design that was deferred, not a description
+> of anything that ships. It is demoted alongside the six specs in
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) §Consequences, on its own
+> ground: it is a per-field type catalogue for a merge model the tree does not
+> have.
 >
-> **Read every section below in the conditional, whatever tense it is written
-> in.** Nothing in this document is implemented. `loro` appears in no
+> **What exists in the tree:** nothing from this document. `loro` appears in no
 > `Cargo.toml` in the workspace; there is no `StreamCore`, no
 > `StreamCore::mutate`, and no `CROSS_STREAM_REF` error anywhere in `crates/`;
 > no snapshot op exists; the "CRDT properties tested" at the end are tested for
-> the LWW engine, not for a CRDT. What v1 actually ships is
-> `sunrise-core::engine` merging whole entities by
-> `(hlc, device_id, seq)` — see
-> [`conflict-resolution.md`](./conflict-resolution.md) for the rules in force
-> and [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) for why.
+> the LWW engine, not for a CRDT.
+>
+> **Why it is not v1:** ADR-0014 removed the CRDT layer and gives the reasoning.
+> What v1 ships instead is `sunrise-core::engine` merging whole entities by
+> `(hlc, device_id, seq)`, with the `lww_*` columns arriving in
+> `0013_baseline.sql` ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)'s
+> collapse, which later migrations append to rather than replace). The rules in
+> force are [`conflict-resolution.md`](./conflict-resolution.md).
+>
+> **What holds regardless:** the *shape* of the per-field question — which
+> entities would want which merge type — is what a future per-field design
+> starts from, and ADR-0014 §What would force revisiting this names the triggers.
+> **Read every section below in the conditional, whatever tense it is written in.**
 
 ## Choice of CRDT library
 
@@ -43,7 +46,11 @@ Automerge was the alternative; rejected for v1 due to slower mobile performance 
 
 ### Version pinning
 
-**No `loro` pin exists any more** — the dependency was removed by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) and `Cargo.toml` declares no CRDT library; the paragraph below records the pinning policy that would apply if one is reintroduced. Previously `loro = "1.12"` (major+minor pin in `Cargo.toml`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)); upgrading requires a superseding ADR. The `1.0 → 1.12` move is ratified as accepting upstream fixes on the pre-`2.0` line. `loro::Doc::export_snapshot()` and `import_snapshot()` are the canonical persistence formats. Format compatibility within `loro = "1.x"` is guaranteed by the library; a major-version bump requires re-encoding all snapshots in a migration ADR.
+**No `loro` pin exists.** The dependency was removed by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) and no `Cargo.toml` in the workspace declares a CRDT library. What follows is the pinning policy that *would* apply if one were reintroduced, stated in the conditional throughout:
+
+- The pin would be major+minor (it was `loro = "1.12"`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)), and moving it would require a superseding ADR.
+- `loro::Doc::export_snapshot()` / `import_snapshot()` would be the canonical persistence formats — which is exactly the assumption [`../04-storage/compaction.md`](../04-storage/compaction.md) is blocked on, since it specified `doc_state` as those bytes.
+- Format compatibility within a `1.x` line would be the library's guarantee; a major bump would require re-encoding every snapshot under a migration ADR.
 
 ## Document layout
 
