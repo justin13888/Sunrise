@@ -491,17 +491,44 @@ pub(crate) async fn run(
             }
             Err(e) => {
                 // "The client isn't syncing" is the single most common
-                // support question, and this is the line that answers it:
-                // the relay is unreachable, here is what the socket said.
-                tracing::warn!(
-                    ev = "sync.session.error",
-                    err_code = "SYNC_CONNECT_FAILED",
-                    err_kind = "transient",
-                    retryable = true,
-                    result = "failed",
-                    cause = %e,
-                    "relay connect failed"
-                );
+                // support question, and these are the lines that answer it:
+                // the relay is unreachable, here is what it said.
+                //
+                // `err_code` describes the *error*, not what the driver does
+                // next. A device-signature refusal is permanent — reconnecting
+                // re-presents the same wrong clock or the same wrong key — and
+                // the driver still backs off and retries, because the only
+                // alternative is a new `SyncState` variant and the Swift
+                // presentation switches on that set exhaustively. Naming the
+                // code here is what lets an operator tell "the relay is down"
+                // from "this device will never connect" without that change.
+                match &e {
+                    TransportError::Server { code, .. }
+                        if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
+                    {
+                        tracing::warn!(
+                            ev = "sync.session.error",
+                            err_code = %ErrorCode::AuthDeviceSigInvalid,
+                            err_kind = "permanent",
+                            retryable = false,
+                            result = "failed",
+                            cause = %e,
+                            "relay refused this device's signature; check the clock, not the token"
+                        );
+                    }
+                    // `SYNC_CONNECT_FAILED` used to sit here and is in no
+                    // catalogue: nothing could map it, and a client switching
+                    // on codes saw a string that does not exist.
+                    _ => tracing::warn!(
+                        ev = "sync.session.error",
+                        err_code = %ErrorCode::SyncNetworkUnavailable,
+                        err_kind = "transient",
+                        retryable = true,
+                        result = "failed",
+                        cause = %e,
+                        "relay connect failed"
+                    ),
+                }
                 if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
                     break;
                 }
