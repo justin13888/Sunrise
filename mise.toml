@@ -294,6 +294,55 @@ depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
 
+# --- Mutation testing ---
+
+[tasks.mutants]
+description = "Mutation-test one core crate (cargo-mutants). Slow by nature; see mutants/baseline.json"
+shell = "bash -c"
+# `--shard k/n` splits one crate across runs. CI uses it to fan out; locally it
+# is how you get a signal from `sunrise-domain` without giving up an afternoon.
+usage = '''
+arg "<crate>" default="sunrise-sync"
+flag "--shard <shard>" default=""
+'''
+run = """
+set -euo pipefail
+# `--jobs 1`, and this is the line to read before changing it.
+#
+# cargo-mutants copies the source tree per job and runs a full cargo build and
+# test inside each copy. Measured at `-j1` on this workspace: **604 MB peak
+# RSS**, about one `cargo build`, and roughly 1.8 s per mutant on
+# `sunrise-sync`. Every extra job is another tree on disk and another rustc
+# resident — which on a laptop with an Xcode DerivedData directory beside it is
+# how the machine falls over rather than how the run gets faster.
+#
+# If you have the headroom, raise it deliberately and watch the memory. The
+# default is chosen to be safe on the machine most likely to run this, not fast
+# on the biggest one.
+shard_arg=""
+if [ -n "$usage_shard" ]; then
+  shard_arg="--shard $usage_shard"
+fi
+# cargo-mutants creates its own `mutants.out` but not the parent it was told
+# to put it in, and `out/` is gitignored so a fresh clone has none.
+mkdir -p out/mutants
+cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output out/mutants
+echo
+echo "surviving mutants: out/mutants/mutants.out/missed.txt"
+echo "score this run:    .github/scripts/mutants-gate.py out/mutants/mutants.out/outcomes.json"
+"""
+
+[tasks.mutants-baseline]
+description = "Record the current mutation-coverage floors into mutants/baseline.json"
+shell = "bash -c"
+run = """
+set -euo pipefail
+# Deliberately separate from `mutants`, and deliberately not something the gate
+# does on its own when the number goes up. Moving a floor is a claim that the
+# tests got better, and a claim belongs in a commit message.
+.github/scripts/mutants-gate.py out/mutants/mutants.out/outcomes.json --update
+"""
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
