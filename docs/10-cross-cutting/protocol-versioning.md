@@ -72,7 +72,7 @@ redefinition. The change itself is required for correctness — an id-only delet
 cannot converge under entity-level LWW
 ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
 
-`STORAGE_V` is per-device and never appears on the wire. It is `14`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. `0014_stream_sort_order.sql` is the first migration appended after the reset, so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
+`STORAGE_V` is per-device and never appears on the wire. It is `16`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. Three migrations have been appended since the reset — `0014_stream_sort_order.sql`, `0015_entity_extra_columns.sql` and `0016_stream_description_and_default_context.sql` — so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
 
 ---
 
@@ -267,7 +267,7 @@ The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
   - All Streams the user owns have rotated past the old suite (client surfaces the list).
   - At least 12 months since the new suite shipped to all client platforms.
   - A superseding ADR.
-- The negotiated suite is logged as `proto.crypto`.
+- The negotiated suite is reported once per process as `crypto_v` on the startup event — not per record and not per session; see [§6](#6-wire-protocol-evolution-rules) and [§11](#11-logging-and-metrics). The per-session distribution a deprecation decision actually needs is `sunrise_sync_session_total{crypto_suite}`, which does not exist yet.
 
 There is no per-session crypto-suite mixing. A session uses exactly one suite for transport-level handshake; ops within the session may carry envelopes encrypted under any suite the recipient supports.
 
@@ -302,7 +302,14 @@ All version-mismatch errors are **permanent** in the sense of [error-handling](.
 
 ## 11. Logging and metrics
 
-Every log record includes `proto: { wire, doc, crypto }` (see [logging.md](./logging.md) §3).
+`proto` is **not** on every log record. `wire_v` / `doc_v` / `crypto_v` are
+emitted once per process on the binary's startup event (`srv.start` /
+`ui.start`) — [logging.md](./logging.md) §3 records the change under *Dropped
+from the original schema*, and [§6](#6-wire-protocol-evolution-rules) above
+gives the trade: restating three constants that cannot change while the process
+lives would cost roughly 50 bytes on every line to say what one line already
+says. Correlating a later record with them is a join on the process, not a
+field read.
 
 **Server-side metrics as implemented.** `crates/sunrise-server/src/metrics.rs`
 is an in-process `BTreeMap<String, AtomicU64>` behind a mutex, rendered as
