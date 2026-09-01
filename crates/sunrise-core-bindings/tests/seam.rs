@@ -310,6 +310,23 @@ impl Gate {
     }
 }
 
+/// Opens a [`Gate`] when it leaves scope, by *any* path including an unwind.
+///
+/// Not tidiness — liveness. A parked pump sits in synchronous code on a tokio
+/// worker, and dropping a multi-threaded runtime joins its workers; a worker
+/// blocked on a condvar never observes shutdown, so the drop never returns. If
+/// a `submit` in the burst below panicked with the gate still shut, the test
+/// future would unwind, the runtime would be dropped, and the process would
+/// hang forever instead of failing — in CI, until the job's own ceiling. The
+/// guard makes the release unconditional, so a panic reports itself.
+struct GateGuard(Arc<Gate>);
+
+impl Drop for GateGuard {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
 /// Holds the pump on its first event until the test opens the gate, then
 /// forwards everything to `rec` as fast as it arrives.
 struct Gated {
@@ -409,13 +426,23 @@ async fn a_slow_listener_is_told_it_fell_behind() {
     // channel, which never blocks on a slow receiver, it drops for it). Two
     // worker threads are pinned rather than left to `num_cpus` so that the
     // parked pump cannot be the runtime's only worker on a single-core runner.
+    //
+    // The rule, for any test written after this one: a test that parks a
+    // runtime worker pins `worker_threads` to at least 2, and must release the
+    // park on every exit path, including unwind. Releasing it only on the happy
+    // path turns an ordinary assertion failure into a hung job, because
+    // dropping a multi-threaded runtime joins workers that are blocked in
+    // synchronous code and can never notice they were asked to stop. Here that
+    // is `GateGuard`, whose `Drop` opens the gate whatever happens.
     let (_dir, core) = open_core().await;
 
     let rec = Arc::new(Recorder::default());
     let gate = Arc::new(Gate::default());
+    // Armed before the pump can possibly park, and covering everything below.
+    let release = GateGuard(gate.clone());
     let sub = core.subscribe_changes(Arc::new(Gated {
         rec: rec.clone(),
-        gate: gate.clone(),
+        gate,
     }));
 
     for i in 0..400 {
@@ -425,8 +452,10 @@ async fn a_slow_listener_is_told_it_fell_behind() {
         .await
         .expect("create");
     }
-    // Everything is published; let the pump discover what it missed.
-    gate.open();
+    // Everything is published; let the pump discover what it missed. Explicit,
+    // so the happy path opens the gate here rather than wherever the guard
+    // would otherwise fall out of scope.
+    drop(release);
 
     assert!(
         until(|| rec.lagged.load(Ordering::SeqCst) > 0).await,
