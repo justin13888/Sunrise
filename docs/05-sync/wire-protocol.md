@@ -224,7 +224,11 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 The server **buffers** each inbound OpBatch until the full frame is received and CBOR-validates. A disconnect mid-frame discards the partial buffer; nothing is persisted. The relay never *applies* anything — it decodes the payload only far enough to read `stream_id` and the cleartext per-device heads, appends the frame bytes verbatim to the durable relay log, and only then acks (`handle_op_batch` in `crates/sunrise-server/src/ws.rs`). Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
-Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent; `batch_id` is the idempotency key the server dedups on. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
+Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
+
+`batch_id` is an **ack correlator, not an idempotency key**. The client's counter is per session — `sync_driver.rs` initialises it inside `session()` — so every reconnect restarts it at 1, and two different batches from two sessions share a number routinely. A server keyed on `(account, device, batch_id)` would therefore drop the second session's first batch *while acking it*, and an acked batch is deleted from the outbox: the op would be gone from both sides at once.
+
+The relay dedups on the **content** of a batch's ops instead: a domain-separated BLAKE3 over the op count and each op's length and bytes, scoped to `(account, stream)` and remembered exactly as long as the frame it named survives retention. A batch already in that window is not stored and not fanned out again, and is answered with a `200` carrying the **original** `server_first_seen_ms` — the field says "first seen", and a re-send is the only thing a client that lost an ack can do. An empty batch is exempt: it carries no content to be the same as, so three empty batches are three events.
 
 ### OpBatch and Ack payloads
 

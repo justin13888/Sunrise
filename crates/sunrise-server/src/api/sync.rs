@@ -43,6 +43,7 @@
 use crate::api::error::{codes, ApiError};
 use crate::api::signed::{Signed, SignedParts};
 use crate::relay::{CursorGap, FrameHead, RelayFrame};
+use crate::relay_log::Appended;
 use crate::state::ServerState;
 use crate::sync_session::Session;
 use base64::Engine as _;
@@ -336,6 +337,17 @@ pub struct OpsResponse {
 /// drops an acked op from its outbox, so the op would be gone from both sides
 /// at once. A storage failure is reported as a 503 with nothing acked, which
 /// leaves the batch in the outbox to retry.
+//
+// A batch the channel already holds is acked without being stored or fanned out
+// a second time, and the ack carries the timestamp the *first* copy got. The
+// client cannot avoid re-sending: a session that dies between the append and
+// the ack leaves the batch in the outbox, and every reconnect re-drains it. See
+// `batch_ops_hash` for why the key is the content rather than the `batch_id`.
+//
+// Deliberately a `//` comment rather than a `///` one: kynos publishes a
+// handler's doc comment as the operation `description`, and
+// `schemas/openapi.v1.json` is a committed artefact this change has no business
+// touching — the request and response shapes are identical either way.
 #[kynos::post("/api/v1/sync/ops", operation_id = "publishOps")]
 pub async fn ops(
     Inject(state): Inject<ServerState>,
@@ -374,50 +386,100 @@ pub async fn ops(
         .map_err(|_| ApiError::validation("batch could not be framed"))?;
 
     let heads = frame_heads(&batch);
-    tracing::debug!(
-        ev = "srv.relay.fanout",
-        stream_h = %crate::logging::id_h(&stream_id),
-        n_bytes = frame.len() as u64,
-        "op batch republished"
-    );
+    let ops_h = batch_ops_hash(&batch.ops);
 
-    if let Err(e) = state.store.relay_append(
-        (session.account, stream_id),
-        &frame,
-        &heads,
-        now_ms,
-        state.durable_caps,
-    ) {
-        tracing::error!(
-            ev = "srv.relay.append_failed",
-            err_code = %ErrorCode::RelayStorageUnavailable,
-            err_kind = "transient",
-            retryable = true,
-            result = "failed",
-            stream_h = %crate::logging::id_h(&stream_id),
-            cause = %e,
-            "could not persist an op batch; refusing to ack it"
-        );
-        state.metrics.incr("sunrise_relay_append_failed_total");
-        return Err(ApiError::unavailable(
-            "relay could not durably store the batch",
-        ));
-    }
+    let appended = state
+        .store
+        .relay_append(
+            (session.account, stream_id),
+            &frame,
+            &heads,
+            ops_h.as_ref(),
+            body.batch_id,
+            now_ms,
+            state.durable_caps,
+        )
+        .map_err(|e| {
+            tracing::error!(
+                ev = "srv.relay.append_failed",
+                err_code = %ErrorCode::RelayStorageUnavailable,
+                err_kind = "transient",
+                retryable = true,
+                result = "failed",
+                stream_h = %crate::logging::id_h(&stream_id),
+                cause = %e,
+                "could not persist an op batch; refusing to ack it"
+            );
+            state.metrics.incr("sunrise_relay_append_failed_total");
+            ApiError::unavailable("relay could not durably store the batch")
+        })?;
 
-    state.relay.publish(
-        (session.account, stream_id),
-        RelayFrame {
-            from: session.conn,
-            bytes: frame,
-            heads,
-        },
-    );
+    let first_seen_ms = match appended {
+        Appended::Fresh { first_seen_ms } => {
+            tracing::debug!(
+                ev = "srv.relay.fanout",
+                stream_h = %crate::logging::id_h(&stream_id),
+                n_bytes = frame.len() as u64,
+                "op batch republished"
+            );
+            state.relay.publish(
+                (session.account, stream_id),
+                RelayFrame {
+                    from: session.conn,
+                    bytes: frame,
+                    heads,
+                },
+            );
+            first_seen_ms
+        }
+        // No publish: a second fan-out would hand every live subscriber an op
+        // it already applied. Idempotent, but it is bandwidth and log noise
+        // proportional to how flaky the *sender's* link is.
+        Appended::Duplicate { first_seen_ms } => {
+            state.metrics.incr("sunrise_relay_batch_duplicate_total");
+            tracing::debug!(
+                ev = "srv.relay.batch_duplicate",
+                stream_h = %crate::logging::id_h(&stream_id),
+                batch_id = body.batch_id,
+                first_seen_ms,
+                "op batch already stored; re-acking the first copy"
+            );
+            first_seen_ms
+        }
+    };
 
     Ok(Json(OpsResponse {
         batch_id: body.batch_id,
         stream_id: body.stream_id,
-        server_first_seen_ms: now_ms,
+        server_first_seen_ms: first_seen_ms,
     }))
+}
+
+/// Domain-separated content hash of a batch's ops, or `None` for an empty one.
+///
+/// The relay dedups on this rather than on the request's `batch_id` because the
+/// `batch_id` is not durable: `sync_driver.rs` initialises the counter inside
+/// `session()`, so it restarts at 1 on every reconnect and a key containing it
+/// would read session 2's first batch as session 1's — dropping it while acking
+/// it, which is how an acked batch disappears from the client's outbox and the
+/// server at once.
+///
+/// The hash covers the op count and each op's length before its bytes, so no
+/// re-partitioning of the same concatenated ops collides with another batch.
+/// `None` for an empty batch: there is no content to be the same as, and three
+/// empty batches are three events.
+fn batch_ops_hash(ops: &[Vec<u8>]) -> Option<[u8; 32]> {
+    if ops.is_empty() {
+        return None;
+    }
+    let mut h = blake3::Hasher::new();
+    h.update(b"sunrise.relay.batch.v1");
+    h.update(&(ops.len() as u64).to_le_bytes());
+    for op in ops {
+        h.update(&(op.len() as u64).to_le_bytes());
+        h.update(op);
+    }
+    Some(*h.finalize().as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,6 +1129,31 @@ mod tests {
 
     async fn publish(client: &Client, id: &str, ops: Vec<String>, batch_id: u64) -> StatusCode {
         publish_as(client, BEARER, id, ops, batch_id).await
+    }
+
+    /// [`publish`], keeping the `Ack` body — the dedup tests assert on
+    /// `server_first_seen_ms`, which a status code cannot carry.
+    async fn publish_acked(
+        client: &Client,
+        id: &str,
+        ops: Vec<String>,
+        batch_id: u64,
+    ) -> serde_json::Value {
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/ops",
+                Some(BEARER),
+                Some(&serde_json::json!({
+                    "stream_id": stream_hex(),
+                    "batch_id": batch_id,
+                    "ops": ops,
+                })),
+                &[("x-sunrise-session", id)],
+            )
+            .await;
+        res.assert_status(StatusCode::OK);
+        res.json()
     }
 
     async fn read_as(client: &Client, bearer: &str, id: &str, extra: &[(&str, &str)]) -> String {
@@ -1772,5 +1859,126 @@ mod tests {
         assert!(!body.contains("id: 1"), "already had: {body}");
         assert!(!body.contains("id: 2"), "already had: {body}");
         assert!(body.contains("id: 3"), "not yet had: {body}");
+    }
+
+    // -- ws_batch_dedup -----------------------------------------------------
+
+    /// The defect: a client that re-sends a batch it never saw acked — every
+    /// reconnect re-drains the outbox — had the relay store and fan out a
+    /// second copy of ops it already held.
+    #[tokio::test]
+    async fn a_resent_batch_is_appended_once_and_acked_once() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        let ops = vec![envelope([3u8; 16], 1)];
+
+        let first = publish_acked(&client, &id, ops.clone(), 1).await;
+        let second = publish_acked(&client, &id, ops, 1).await;
+
+        assert_eq!(
+            first["server_first_seen_ms"], second["server_first_seen_ms"],
+            "a re-send is acked with the timestamp the first copy got"
+        );
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "the batch must be retained once, not twice: {body}"
+        );
+    }
+
+    /// Why the key cannot be the `batch_id`.
+    ///
+    /// `sync_driver.rs` initialises its counter inside `session()`, so a
+    /// reconnect re-sends the very same ops under a *different* number — and,
+    /// worse, later ops under a number an earlier session already used. Only a
+    /// content key catches the first and spares the second.
+    #[tokio::test]
+    async fn a_resent_batch_reacked_after_a_reconnect_carries_the_first_timestamp() {
+        let clock = TestClock::at(T0_MS);
+        let state = ServerState::with_clock(ServerConfig::default(), clock.clone());
+        let client = Client::from_state(state);
+        let ops = vec![envelope([4u8; 16], 9)];
+
+        let first = publish_acked(&client, &establish(&client).await, ops.clone(), 7).await;
+        assert_eq!(first["server_first_seen_ms"], T0_MS);
+
+        // A new session, a counter that restarted, and a later clock.
+        clock.set(T0_MS + 60_000);
+        let second = publish_acked(&client, &establish(&client).await, ops, 1).await;
+
+        assert_eq!(
+            second["server_first_seen_ms"], T0_MS,
+            "'first seen' is when the relay first saw it, not when the copy arrived"
+        );
+    }
+
+    /// The other half of the same rule: the same `batch_id` over different ops
+    /// is two batches, and reading them as one would be the data loss the
+    /// `batch_id` key was rejected for.
+    #[tokio::test]
+    async fn a_batch_with_different_ops_is_never_deduped() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        publish_acked(&client, &id, vec![envelope([5u8; 16], 1)], 1).await;
+        publish_acked(&client, &id, vec![envelope([5u8; 16], 2)], 1).await;
+
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 0);
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            2,
+            "two distinct batches must both be retained: {body}"
+        );
+    }
+
+    /// An empty batch has no content to be the same as. Collapsing them would
+    /// silently drop the three-event expectation the cursor tests hold.
+    #[tokio::test]
+    async fn an_empty_batch_is_never_deduped() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        for batch_id in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &id, vec![], batch_id).await,
+                StatusCode::OK
+            );
+        }
+
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 0);
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(body.matches("\"kind\":\"ops\"").count(), 3, "{body}");
+    }
+
+    /// A duplicate must not reach the ring either. Storing it once and fanning
+    /// it out twice would leave every live subscriber re-applying ops in
+    /// proportion to how flaky the *sender's* link is.
+    #[tokio::test]
+    async fn a_duplicate_is_not_fanned_out_to_a_live_subscriber() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        let ops = vec![envelope([6u8; 16], 1)];
+
+        publish_acked(&client, &id, ops.clone(), 1).await;
+        let body = read(&client, &id, &[]).await;
+        assert!(body.contains("id: 1"), "the first copy is frame 1: {body}");
+
+        publish_acked(&client, &id, ops, 2).await;
+
+        // Resuming past frame 1 is how a live subscriber that already had the
+        // first copy sees the stream: a second frame would show up here.
+        let after = read(&client, &id, &[("last-event-id", "1")]).await;
+        assert!(
+            !after.contains("\"kind\":\"ops\""),
+            "a duplicate produced a second frame: {after}"
+        );
     }
 }

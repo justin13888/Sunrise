@@ -94,23 +94,87 @@ pub type ReplayFrame = (u64, Vec<u8>);
 /// unrecoverable.
 pub type Replay = (Vec<ReplayFrame>, Vec<CursorGap>);
 
+/// What [`Store::relay_append`] did with a batch.
+///
+/// Both arms carry `first_seen_ms`, and both are acked: the field's contract is
+/// "when the server *first* saw this batch", so a re-send is answered with the
+/// original timestamp rather than with now. A refusal would be worse than
+/// useless — the client deletes an acked batch from its outbox and keeps an
+/// un-acked one forever, so the only safe answer to "I already have this" is
+/// the same ack the first copy got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appended {
+    /// The batch was not in the window; it is now stored and must be fanned out.
+    Fresh {
+        /// Server wall-clock at which this batch was stored.
+        first_seen_ms: u64,
+    },
+    /// The batch is already stored. Nothing was written and nothing must be
+    /// republished: the subscribers that were live for the first copy already
+    /// received it, and the ones that were not will get it from the durable
+    /// replay.
+    Duplicate {
+        /// Server wall-clock at which the *first* copy was stored.
+        first_seen_ms: u64,
+    },
+}
+
 impl Store {
-    /// Append one relayed frame and enforce retention for its channel.
+    /// Append one relayed frame and enforce retention for its channel, unless
+    /// the batch is one this channel already holds.
     ///
     /// Called before the `Ack`, never after: acking an op the server has not
     /// durably stored would promise the client a durability that does not
     /// exist, and the client would then drop it from its outbox.
+    ///
+    /// `ops_h` is the content hash of the batch's ops, and passing it is what
+    /// opts a batch into deduplication. `None` skips the check entirely, which
+    /// is the right answer for a batch with no ops: an empty batch carries no
+    /// content to be the same *as*, and collapsing several of them into one
+    /// would silently drop keep-alive-shaped traffic the fan-out tests rely on.
+    ///
+    /// `batch_id` is recorded beside the hash for diagnostics only. It is
+    /// deliberately not part of the key — see the `relay_batches` comment in
+    /// [`crate::store`] for why keying on it loses data.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] if the transaction cannot be committed, in which
+    /// case nothing was written and the caller must refuse to ack.
     pub fn relay_append(
         &self,
         key: ChannelKey,
         bytes: &[u8],
         heads: &[FrameHead],
+        ops_h: Option<&[u8; 32]>,
+        batch_id: u64,
         now_ms: u64,
         caps: DurableCaps,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Appended, StoreError> {
         let (account_h, stream_id) = key;
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
+
+        // Inside the transaction, so the lookup and the insert cannot be
+        // interleaved with another append of the same batch.
+        if let Some(h) = ops_h {
+            let seen: Option<i64> = tx
+                .query_row(
+                    "SELECT first_seen_ms FROM relay_batches
+                     WHERE account_h = ?1 AND stream_id = ?2 AND ops_h = ?3",
+                    params![&account_h[..], &stream_id[..], &h[..]],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(first_seen_ms) = seen {
+                // Nothing to commit: the frame is already on disk from the
+                // first copy, and rolling back leaves it exactly as it was.
+                drop(tx);
+                return Ok(Appended::Duplicate {
+                    first_seen_ms: u64::try_from(first_seen_ms).unwrap_or(0),
+                });
+            }
+        }
+
         tx.execute(
             "INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -134,9 +198,30 @@ impl Store {
                 ],
             )?;
         }
+        if let Some(h) = ops_h {
+            tx.execute(
+                "INSERT INTO relay_batches
+                   (account_h, stream_id, ops_h, frame_id, batch_id, first_seen_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    &account_h[..],
+                    &stream_id[..],
+                    &h[..],
+                    frame_id,
+                    i64::try_from(batch_id).unwrap_or(i64::MAX),
+                    i64::try_from(now_ms).unwrap_or(i64::MAX),
+                ],
+            )?;
+        }
+        // After the insert, so the frame this call just stored is inside the
+        // budget the eviction enforces. The cascade takes the batch rows of
+        // whatever it deletes, which is what keeps the dedup window and the
+        // retention window the same window.
         evict(&tx, account_h, stream_id, now_ms, caps)?;
         tx.commit()?;
-        Ok(())
+        Ok(Appended::Fresh {
+            first_seen_ms: now_ms,
+        })
     }
 
     /// Every retained frame this subscriber's cursors do not already cover, in
@@ -399,6 +484,8 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                None,
+                0,
                 1000,
                 big(),
             )
@@ -417,6 +504,8 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                None,
+                0,
                 1000,
                 big(),
             )
@@ -430,9 +519,10 @@ mod tests {
     #[test]
     fn channels_do_not_bleed_into_each_other() {
         let s = store();
-        s.relay_append(KEY, b"mine", &head(1), 1000, big()).unwrap();
+        s.relay_append(KEY, b"mine", &head(1), None, 0, 1000, big())
+            .unwrap();
         let other = (ACC, [0x99; 16]);
-        s.relay_append(other, b"theirs", &head(1), 1000, big())
+        s.relay_append(other, b"theirs", &head(1), None, 0, 1000, big())
             .unwrap();
         let (frames, _) = s.relay_replay(KEY, &HashMap::new()).unwrap();
         assert_eq!(frames, vec![b"mine".to_vec()]);
@@ -451,6 +541,8 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                None,
+                0,
                 1000,
                 caps,
             )
@@ -478,6 +570,8 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                None,
+                0,
                 1000,
                 caps,
             )
@@ -497,9 +591,11 @@ mod tests {
             max_bytes: u64::MAX,
             max_age_ms: 1000,
         };
-        s.relay_append(KEY, b"old", &head(1), 1_000, caps).unwrap();
+        s.relay_append(KEY, b"old", &head(1), None, 0, 1_000, caps)
+            .unwrap();
         // Far enough past the bound that the first frame is out of window.
-        s.relay_append(KEY, b"new", &head(2), 10_000, caps).unwrap();
+        s.relay_append(KEY, b"new", &head(2), None, 0, 10_000, caps)
+            .unwrap();
         assert_eq!(s.relay_len(KEY).unwrap(), 1);
         let (_, gaps) = s.relay_replay(KEY, &HashMap::new()).unwrap();
         assert_eq!(gaps.len(), 1);
@@ -510,7 +606,8 @@ mod tests {
     fn an_unparseable_frame_is_never_filtered_out() {
         let s = store();
         // No heads: the relay could not read the routing header.
-        s.relay_append(KEY, b"opaque", &[], 1000, big()).unwrap();
+        s.relay_append(KEY, b"opaque", &[], None, 0, 1000, big())
+            .unwrap();
         let (frames, _) = s.relay_replay(KEY, &cursors(u64::MAX)).unwrap();
         assert_eq!(
             frames.len(),
@@ -526,8 +623,10 @@ mod tests {
             max_bytes: 8,
             max_age_ms: u64::MAX,
         };
-        s.relay_append(KEY, b"opaque12", &[], 1000, caps).unwrap();
-        s.relay_append(KEY, b"opaque34", &[], 1000, caps).unwrap();
+        s.relay_append(KEY, b"opaque12", &[], None, 0, 1000, caps)
+            .unwrap();
+        s.relay_append(KEY, b"opaque34", &[], None, 0, 1000, caps)
+            .unwrap();
         let (_, gaps) = s.relay_replay(KEY, &HashMap::new()).unwrap();
         assert!(
             gaps.is_empty(),
@@ -542,8 +641,95 @@ mod tests {
             max_bytes: 1,
             max_age_ms: u64::MAX,
         };
-        s.relay_append(KEY, &[7u8; 64], &head(1), 1000, caps)
+        s.relay_append(KEY, &[7u8; 64], &head(1), None, 0, 1000, caps)
             .unwrap();
         assert_eq!(s.relay_len(KEY).unwrap(), 1);
+    }
+
+    /// The dedup window is the retention window, and nothing wires them
+    /// together but the cascade — so this is the test that proves the cascade
+    /// fires. A batch remembered past the frame it named would refuse to
+    /// re-store ops the relay no longer holds, and the client would delete
+    /// them from its outbox on the strength of that ack.
+    #[test]
+    fn eviction_forgets_the_batch_it_deduped_on() {
+        let s = store();
+        let caps = DurableCaps {
+            max_bytes: 20,
+            max_age_ms: u64::MAX,
+        };
+        let a: [u8; 32] = [0xaa; 32];
+        let b: [u8; 32] = [0xbb; 32];
+
+        assert!(matches!(
+            s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 1000, caps)
+                .unwrap(),
+            Appended::Fresh { .. }
+        ));
+        assert!(matches!(
+            s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 1000, caps)
+                .unwrap(),
+            Appended::Duplicate { .. }
+        ));
+
+        // 16-byte frames under a 20-byte budget: appending B evicts A.
+        assert!(matches!(
+            s.relay_append(KEY, &[3u8; 16], &head(3), Some(&b), 2, 2000, caps)
+                .unwrap(),
+            Appended::Fresh { .. }
+        ));
+        assert_eq!(s.relay_len(KEY).unwrap(), 1, "the budget holds one frame");
+
+        assert!(
+            matches!(
+                s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 3000, caps)
+                    .unwrap(),
+                Appended::Fresh { .. }
+            ),
+            "a batch whose frame retention deleted must be storable again"
+        );
+    }
+
+    /// The stored timestamp, not the one on the wire when the copy arrived.
+    #[test]
+    fn a_duplicate_reports_when_the_first_copy_landed() {
+        let s = store();
+        let h: [u8; 32] = [0xcc; 32];
+        let first = s
+            .relay_append(KEY, b"batch", &head(1), Some(&h), 1, 1_000, big())
+            .unwrap();
+        assert_eq!(
+            first,
+            Appended::Fresh {
+                first_seen_ms: 1_000
+            }
+        );
+
+        // A reconnect re-drains the outbox under a fresh counter, so the same
+        // ops arrive again as batch 1 of a new session.
+        let again = s
+            .relay_append(KEY, b"batch", &head(1), Some(&h), 1, 9_000, big())
+            .unwrap();
+        assert_eq!(
+            again,
+            Appended::Duplicate {
+                first_seen_ms: 1_000
+            }
+        );
+        assert_eq!(s.relay_len(KEY).unwrap(), 1, "no second frame was stored");
+    }
+
+    /// `None` is the empty-batch case, and it must never collapse.
+    #[test]
+    fn a_batch_that_opts_out_is_appended_every_time() {
+        let s = store();
+        for _ in 0..3 {
+            assert!(matches!(
+                s.relay_append(KEY, b"same", &[], None, 0, 1000, big())
+                    .unwrap(),
+                Appended::Fresh { .. }
+            ));
+        }
+        assert_eq!(s.relay_len(KEY).unwrap(), 3);
     }
 }
