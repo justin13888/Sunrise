@@ -56,6 +56,11 @@ outcomes should arrive in, and a crate that arrives short is reported as a
 broken run and excluded from the floor comparison rather than scored on a
 partial denominator. CI passes the counts from its own matrix.
 
+Because the flag and the matrix are two copies of one fact, they can drift. So
+when the flag is supplied it must account for every crate the run produced: a
+crate with outcomes and no expectation is a configuration error, not a silently
+unchecked crate.
+
 Tolerance
 ---------
 
@@ -203,6 +208,26 @@ def main() -> int:
         print("no mutants found in the supplied outcomes; refusing to pass",
               file=sys.stderr)
         return 2
+
+    # The flag and ci.yml's matrix are two copies of one fact, and the copy
+    # that silently stops covering a crate is the dangerous one: a crate added
+    # to the matrix and not to the flag would be scored with no completeness
+    # check for as long as nobody noticed. So if the flag is supplied at all,
+    # it has to account for everything the run produced.
+    if args.expect_shards:
+        undeclared = sorted(set(counts) - set(args.expect_shards))
+        if undeclared:
+            for crate in undeclared:
+                print(f"matrix/flag drift: crate {crate} has outcomes but no "
+                      "expectation in --expect-shards", file=sys.stderr)
+            print(
+                "\nEvery crate the run produces needs a shard count, or it is "
+                "scored with no\ncheck that all of it arrived. Add it to "
+                "--expect-shards in .github/workflows/ci.yml,\nor drop it from "
+                "the matrix.",
+                file=sys.stderr,
+            )
+            return 2
 
     # Judged before anything else: a crate missing a shard has a numerator that
     # never ran, and every number computed from it is a lie in the direction of
