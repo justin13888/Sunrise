@@ -41,6 +41,48 @@ jobs:
       - name: cargo doc-test
         run: cargo test --workspace --doc
 
+  msrv:
+    name: MSRV pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Installs stable, which is deliberately *not* what this job asserts on.
+      # Every `rustc` below runs inside the checkout, where rust-toolchain.toml
+      # overrides the directory and rustup installs the pinned toolchain on
+      # first use — the same mechanism the `rust`, `macos-app` and `ios-app`
+      # jobs rely on. Asserting it here is what makes those three trustworthy.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: rust-toolchain.toml, rust-version and rustc all agree
+        # Three numbers with no mechanism forcing them together.
+        # `rust-toolchain.toml` decides what everyone compiles with;
+        # `rust-version` decides which lints clippy gates and what a consumer
+        # reads as the floor. Drift is silent in both directions — clippy
+        # linting for a compiler nobody runs, or a floor the build already left
+        # behind — and it is exactly the state this repository was in before
+        # ADR-0026, where four files disagreed about why 1.88 was pinned.
+        # ADR-0026 requires the two literals byte-identical, so equality is the
+        # whole check; there is nothing to parse loosely.
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
+          rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          actual=$(rustc --version | cut -d' ' -f2)
+          echo "rust-toolchain.toml channel : ${channel:-<none>}"
+          echo "Cargo.toml rust-version     : ${rust_version:-<none>}"
+          echo "rustc in the checkout       : ${actual:-<none>}"
+          if [ -z "$channel" ] || [ -z "$rust_version" ]; then
+            echo "::error::msrv: could not read the pin from rust-toolchain.toml and/or Cargo.toml"
+            exit 1
+          fi
+          if [ "$channel" != "$rust_version" ]; then
+            echo "::error::msrv: rust-toolchain.toml pins ${channel} but Cargo.toml rust-version is ${rust_version}; ADR-0026 requires them identical"
+            exit 1
+          fi
+          if [ "$actual" != "$channel" ]; then
+            echo "::error::msrv: rust-toolchain.toml pins ${channel} but rustc in the checkout is ${actual}"
+            exit 1
+          fi
+
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
     # `macos-26` is the arm64 Tahoe image; `macos-latest` points at the same
@@ -69,7 +111,7 @@ jobs:
       RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
-      # The toolchain file pins 1.88.0, which rustup installs on first use.
+      # The toolchain file pins 1.91.1, which rustup installs on first use.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # aarch64-apple-darwin is the host triple on this runner, but the
@@ -79,7 +121,7 @@ jobs:
       # This is a step rather than the action's `targets:` input, and the
       # difference is the whole bug it fixes: `targets:` is passed to
       # `rustup toolchain install stable`, so the slices land on *stable*, while
-      # rust-toolchain.toml overrides the working directory to 1.88.0 — which
+      # rust-toolchain.toml overrides the working directory to 1.91.1 — which
       # then has no iOS std and fails with `E0463: can't find crate for core`.
       # Run bare and in the repo, `rustup target add` obeys that same override,
       # so the slices land on the toolchain that actually does the build.
@@ -133,7 +175,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # As in `macos-app`, and for the reason spelled out there: a step rather
       # than the action's `targets:` input, so the slices land on the pinned
-      # 1.88.0 that rust-toolchain.toml selects rather than on stable.
+      # 1.91.1 that rust-toolchain.toml selects rather than on stable.
       - name: Add the iOS slices to the pinned toolchain
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: Install mise, XcodeGen and SwiftLint
