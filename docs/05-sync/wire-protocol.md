@@ -414,4 +414,4 @@ The protocol is identical. Self-host operators may disable certain endpoints (pu
 
 ## Error model
 
-Errors are *terminal* (server sends `Error` then `Close`) or *recoverable* (server sends `Error` for a specific Subscribe but keeps the connection open). Client retries with exponential backoff bounded at 60 s with jitter (start 500 ms, cap 60 s, jitter ±20%).
+Errors are *terminal* (server sends `Error` then `Close`) or *recoverable* (server sends `Error` for a specific Subscribe but keeps the connection open). A client that reconnects after either does so on the one retry policy this system has, stated once in [`offline-queue.md`](./offline-queue.md) §Backoff: five jittered delays of 100, 200, 400, 800 and 1600 ms, then a flat 30 s, then the cycle again, forever. Earlier revisions of this line published a second set of numbers (start 500 ms, cap 60 s) that matched no code; there is one policy, in `crates/sunrise-sync/src/backoff.rs`, and duplicating its constants here is how the two drifted apart.
