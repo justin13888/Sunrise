@@ -47,7 +47,8 @@ jobs:
       # compiler, and unlike excluding the crate this leaves every other doc
       # test in sunrise-server watched, including any added later. The filter
       # is a substring match over the whole workspace, so do not name a real
-      # doc test `relative_uri`.
+      # doc test `relative_uri`. `mise run rust-doctest` is this command
+      # verbatim -- keep the two in step.
       - name: cargo doc-test
         run: cargo test --workspace --doc -- --skip relative_uri
 

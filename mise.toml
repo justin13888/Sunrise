@@ -99,6 +99,14 @@ run = "cargo check --workspace --all-targets"
 description = "Run the Rust test suite"
 run = "cargo test --workspace --all-targets"
 
+[tasks.rust-doctest]
+description = "Run the workspace doc tests (CI's doc gate, verbatim)"
+# `--all-targets` above silently excludes doc tests, so this is the only local
+# command that runs them. The `--skip` matches CI exactly; see
+# crates/sunrise-server/Cargo.toml for why the 18 skipped items exist (#58) and
+# #60 for the upstream fix that retires the filter.
+run = "cargo test --workspace --doc -- --skip relative_uri"
+
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
