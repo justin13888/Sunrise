@@ -77,7 +77,7 @@ existing `apps/web/src/wasm.ts` **`localStorage` stub behind `loadCore()`** as t
 v1 web story. No workspace dependency, MSRV, or `cfg`-gating changes are made; the
 native SQLCipher build and its tests remain exactly as they were.
 
-No `crates/sunrise-core-wasm` crate is created; the pipeline (`just web-wasm`) and
+No `crates/sunrise-core-wasm` crate is created; the pipeline (`mise run web-wasm`) and
 CI `wasm-check` job (slice phases 2–3) are **not** added, since they would only
 guard a path that cannot yet compile.
 
