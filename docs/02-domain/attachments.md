@@ -87,7 +87,7 @@ the entity.
 
 - Hard limit per attachment: 100 MB on managed cloud (configurable on self-host).
 - Recommended UX: nudge user toward external storage links (Drive, Dropbox) for files > 25 MB.
-- Total per-vault quota: tiered (see [`../06-server/billing.md`](../06-server/billing.md)).
+- No per-vault quota. The only ceiling is the fixed 100 MB per attachment above (`crates/sunrise-server/src/api/blobs.rs:61`); v1 has no per-account accounting to charge a vault total against ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 ## Lazy fetch
 

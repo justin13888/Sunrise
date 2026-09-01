@@ -22,11 +22,11 @@ Sync moves encrypted ops between devices that participate in the same identity (
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
 | Transport (SSE + typed POST per [ADR-0023](../11-adr/0023-sse-sync-transport.md); WebSocket is the implementation being replaced) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |
-| Presence | [`presence.md`](./presence.md) |
+| Presence | [`presence.md`](./presence.md) *(proposed)* |
 | Offline outbox | [`offline-queue.md`](./offline-queue.md) |
 | Single-user multi-device | [`multi-device.md`](./multi-device.md) |
-| Cross-user shared docs | [`shared-documents.md`](./shared-documents.md) |
-| Backpressure & quotas | [`backpressure-and-quotas.md`](./backpressure-and-quotas.md) |
+| Cross-user shared docs | [`shared-documents.md`](./shared-documents.md) *(proposed)* |
+| Backpressure & quotas | [`backpressure-and-quotas.md`](./backpressure-and-quotas.md) *(proposed)* |
 
 ## Sync state machine (per device, per Stream)
 
@@ -64,6 +64,5 @@ Sync moves encrypted ops between devices that participate in the same identity (
 | Server unreachable | UI badges as "offline." Local commits still work. Outbox grows. |
 | TLS / cert validation failure | Hard error; sync paused; user notified. |
 | Auth token expired | Silent re-auth on next request; transparent to user. |
-| Quota exceeded | New ops still commit locally; sync gated until user resolves; UI explains. |
 | Two devices propose conflicting LWW writes simultaneously | Merges deterministically on `(hlc, device_id, seq)`; no UI prompt. |
 | A receiver finds a tampered envelope | Drop, log, surface red integrity badge. |

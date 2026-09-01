@@ -80,6 +80,12 @@ AccountCreateRequest { email, identity_signing_pub, identity_dh_pub, recovery_bl
 AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
+`AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
+provisioning (`crates/sunrise-server/src/store.rs:268`) and nothing updates it or
+reads it for a decision. It is retained for wire compatibility, not because it
+means anything — there are no plan tiers in v1
+([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
+
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
 the account `identity_id`; `GET /api/v1/devices` is where device metadata comes
 from. `POST /accounts` neither chooses nor returns a new account id: the account
@@ -288,7 +294,6 @@ period — so it lands with the GC slice rather than as a bare unlink.
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
 | 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
-| 429 | `AUTH_QUOTA_EXCEEDED` | **NOT IMPLEMENTED.** Account is hard-capped (>110% of plan, see [`billing.md`](./billing.md)). Header `Retry-After` carries seconds until period end. | After upgrade or period reset. |
 
 ### Sharing — NOT IMPLEMENTED
 
@@ -367,15 +372,13 @@ The envelope `ApiError` actually renders carries two members and no
 
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
-### Quota responses — NOT IMPLEMENTED
+### Quota responses
 
-Neither response below is produced. `error.rs`'s `codes` module defines no quota
-code at all; the shared catalogue in `sunrise-error` (`codes.toml`) declares
-`AUTH_QUOTA_EXCEEDED` and `STORAGE_QUOTA_EXCEEDED`, and the relay emits neither.
-No handler counts storage, ops, or devices against a plan.
-
-- **Hard quota exceeded** (over 110% of plan, or post-grace downgrade): `429 Too Many Requests`, body `{ "code":"AUTH_QUOTA_EXCEEDED", ... }`, `Retry-After: <seconds-until-period-end>` header.
-- **Soft warning** (within 7-day grace, 100%–110%): `202 Accepted`, header `X-Sunrise-Quota-Warning: true`, body includes `quota_used_ratio`.
+There are none. No quota response exists on the typed surface and none is
+planned for v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
+`sunrise-error`'s shared catalogue (`codes.toml`) still *declares*
+`AUTH_QUOTA_EXCEEDED` and `STORAGE_QUOTA_EXCEEDED`; nothing produces either, and
+removing them is a code change, filed separately.
 
 ## Rate limits — NOT IMPLEMENTED
 
@@ -390,7 +393,12 @@ allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
 The target, when it is built:
 
 Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
-Per-account: see [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md).
+
+Per-account limiting is **out of v1** — it presupposes per-account accounting
+that does not exist ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
+The design of record for it is
+[`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md),
+which is `proposed`.
 
 ## Why so few endpoints?
 

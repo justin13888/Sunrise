@@ -1,11 +1,21 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Presence
 
-> **Nothing on this page is implemented, and one design choice on it needs a
-> decision before any of it is.**
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 3 places presence
+> after v1, and fixes the condition for its return: an ADR that states the
+> behavioural-metadata leak outright and amends
+> [`../06-server/overview.md`](../06-server/overview.md) §Non-responsibilities
+> in the same change. This document is the design of record for that work, not
+> a description of anything that ships.
+>
+> **What exists in the tree:** two message-kind discriminators and nothing
+> behind them (below).
+>
+> **Why it is not v1:** two blockers, one mechanical and one architectural.
 >
 > `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
 > discriminators in `crates/sunrise-wire-protocol/src/messages.rs` and that is
@@ -31,6 +41,10 @@ status: accepted
 > [`../06-server/overview.md`](../06-server/overview.md)'s
 > non-responsibilities list MUST be amended to match. Do not treat this page as
 > having settled that.
+>
+> **What holds regardless:** nothing in this file constrains v1 code. The
+> *posture* statement does bind: until an ADR says otherwise, the relay reads no
+> user data in the clear, and presence is the design that would change it.
 
 Lightweight indicators of which of the user's other devices are online and which shared peers are co-viewing.
 

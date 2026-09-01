@@ -120,7 +120,6 @@ sunrise_sync_ops_delivered_total{kind="Push"}
 sunrise_sync_op_latency_seconds_bucket{le="…"}
 sunrise_blob_uploads_total
 sunrise_push_dispatch_total{provider="apns",result="ok"}
-sunrise_quota_exceeded_total{kind="storage"}
 sunrise_db_query_seconds{op="…"}
 ```
 
@@ -141,7 +140,6 @@ status       (HTTP status code)
 kind         (frame kind, OpBatch | Subscribe | …)
 provider     (apns | fcm | web | google | …)
 result       (ok | failed | rate_limited | …)
-plan_tier    (free | pro)
 wire_proto   (1)
 crypto_suite (1)
 ```
@@ -206,12 +204,15 @@ For account-management actions only (not content):
 - Device added/removed.
 - Recovery blob fetched.
 - Account deleted.
-- Plan changed.
 
 Visible in the user's "Security" page on the web app, derived from a per-account audit log. Retention:
 
-- **Managed: 30 days** (formerly 90; unified to 30 across the system per the v1 retention policy).
-- **Self-host:** configurable via `[observability] audit_retention_days = 30` (default). A cron job at 02:00 UTC deletes expired records. There is no separate `auth_log_retention_hours` setting — server logs use `account_h` everywhere; no email-tagged buffer exists.
+- 30 days, configurable via `[observability] audit_retention_days = 30`
+  (default). A cron job at 02:00 UTC deletes expired records. There is one
+  deployment profile in v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)),
+  so there is no managed/self-host split to state. There is no separate
+  `auth_log_retention_hours` setting — server logs use `account_h` everywhere;
+  no email-tagged buffer exists.
 
 ## Privacy commitments to users
 

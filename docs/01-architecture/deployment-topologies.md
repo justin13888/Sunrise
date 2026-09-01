@@ -4,9 +4,9 @@ status: accepted
 
 # Deployment Topologies
 
-Two topologies are supported. A user can move between them without data loss.
+Two topologies are designed. **v1 ships T2 only** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)); T1 is retained as a post-v1 target. A user can move between them without data loss.
 
-## T1: Managed cloud (default)
+## T1: Managed cloud — post-v1
 
 ```
 [Devices] ── TLS ─▶ [Sunrise Cloud relay + blob store + push gw]
@@ -16,7 +16,7 @@ Two topologies are supported. A user can move between them without data loss.
                            └── push providers (APNs, FCM, Web Push)
 ```
 
-- Sunrise operates the relay. Free tier and paid tiers (see [`../06-server/billing.md`](../06-server/billing.md)).
+- Sunrise operates the relay. **Not a v1 deliverable** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)): v1 ships the self-host single binary only, and there are no plan tiers.
 - E2EE applies; Sunrise cannot read content.
 - Recommended for users who don't want to operate infrastructure.
 

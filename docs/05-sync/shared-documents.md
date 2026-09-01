@@ -1,8 +1,35 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Shared Documents (Cross-User)
+
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5 places cross-user
+> shared documents after v1, consistent with
+> [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a). This document is the
+> design of record for that work, not a description of anything that ships.
+>
+> **What exists in the tree:** nothing. No `shares` table, no `share_grant` /
+> `share_revoke` / `share_decline` op kind, no `api/shares.rs`, and no
+> implementor of the key distribution the design needs — ADR-0020 §(a)
+> enumerates the gap in detail.
+>
+> **Why it is not v1:** beyond ADR-0020's security-review argument, two things
+> in this file are structurally at odds with the relay v1 has. The relay
+> evaluates no role and cannot
+> ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`),
+> so every "the server also checks" sentence has been corrected rather than
+> annotated. And the cross-account blob path cannot work: both blob stores are
+> rooted per account (`crates/sunrise-server/src/api/blobs.rs:29-36`), so a
+> grantee naming an owner's `blb_…` gets `404 BLOB_NOT_FOUND`
+> ([`../06-server/api.md`](../06-server/api.md)`:289`). That root is deliberate;
+> removing it would make content addressing a cross-tenant read primitive.
+>
+> **What holds regardless:** the client-side enforcement model below — role
+> checked by the emitter and re-checked by every receiver against a grant in its
+> own vault — is the only enforcement model available to an E2EE relay, and it
+> is the one any future design starts from.
 
 When user A shares a Stream with user B, that Stream becomes a *shared document*. Both users' devices (and any future devices they pair) participate in its sync.
 

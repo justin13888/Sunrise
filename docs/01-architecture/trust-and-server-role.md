@@ -12,9 +12,8 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 2. **Push fanout.** Wakes a device to pull when an op is queued for it.
 3. **Encrypted blob storage.** Attachments larger than the op-log payload limit are stored as encrypted blobs; the server holds them but cannot read them.
 4. **Authentication for sync.** Verifies an OIDC access token (issued by a separate IdP) plus a registered device ID. See [`../06-server/auth.md`](../06-server/auth.md).
-5. **Rate limiting & abuse prevention.** Per-account quotas to keep the system viable.
-6. **Coordination for sharing.** Invites, key-exchange envelopes between identities (the keys themselves are wrapped end-to-end).
-7. **Account/billing surface.** Email + payment for managed cloud users. Self-hosted servers can omit billing.
+5. **Fixed request and size limits.** Anti-DoS bounds that need no per-account state: request body, blob chunk/count/size, relay-log retention. There are no per-account quotas — [ADR-0027](../11-adr/0027-v1-self-host-first.md).
+6. **Coordination for sharing — post-v1.** Invites and key-exchange envelopes between identities (the keys themselves are wrapped end-to-end). Nothing implements this; sharing is deferred ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a), [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5).
 
 ## What the server explicitly does *not* do
 
@@ -54,12 +53,13 @@ Two limits on that, stated rather than left to be discovered:
 
 ## Self-hosted vs managed distinction
 
-The Sunrise server has **two deployment profiles**:
+**v1 ships one profile: self-hosted.** Managed cloud is post-v1
+([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
-| Profile | Auth | Billing | Push | Geo |
-|---|---|---|---|---|
-| Managed | Sunrise-operated OIDC issuer | Stripe | APNs/FCM via shared cert | Global |
-| Self-hosted | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Off | Optional, operator's own certs | Wherever the operator runs |
+| Profile | Auth | Push | Geo |
+|---|---|---|---|
+| Self-hosted (v1) | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Optional, operator's own certs | Wherever the operator runs |
+| Managed (post-v1) | Sunrise-operated OIDC issuer | APNs/FCM via shared cert | Global |
 
 A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
 

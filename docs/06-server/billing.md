@@ -1,23 +1,31 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Billing (Managed Cloud Only)
 
 Self-host has no billing. Skip this spec for self-host operators.
 
-> **Implementation status: none of this is built.** There is no Stripe client in
-> the workspace, no `processed_stripe_events` table, no webhook route, and no
-> quota accounting anywhere in `crates/sunrise-server`. The only trace of a plan
-> is `accounts.tier`, a `TEXT` column that `Store::resolve_account` sets to
-> `'free'` at provisioning and that nothing ever updates or reads for a
-> decision; it is surfaced verbatim as `AccountInfo.tier`. No handler counts
-> storage, ops, blobs or devices against a limit, and `error.rs`'s `codes`
-> module defines no quota code — so the `429`/`202` responses below cannot be
-> produced. Read this document as a specification.
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places managed cloud, plan
+> tiers and billing after v1. This document is the design of record for that
+> work, not a description of anything that ships.
 >
-> Managed cloud is itself unbuilt: the relay ships in one shape, the self-host
-> single binary. See [`overview.md`](./overview.md).
+> **What exists in the tree:** `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'`
+> column (`crates/sunrise-server/src/store.rs:136`) that `resolve_account` sets
+> to `"free"` (`store.rs:268`) and that is read exactly once, to echo onto
+> `AccountInfo` (`api/accounts.rs:72`). Nothing else: no Stripe client, no
+> `processed_stripe_events` table, no webhook route, no quota accounting.
+>
+> **Why it is not v1:** v1 ships one server shape, the self-host single binary,
+> which needs none of this. The deferred work is not the Stripe integration —
+> it is per-account accounting and enforcement paths through every write route,
+> and none of it exists. The `429`/`202` responses below cannot be produced:
+> `error.rs`'s `codes` module defines no quota code.
+>
+> **What holds regardless:** nothing in this file constrains v1 code. Its
+> numbers are **not** citable from an `accepted` spec; ADR-0027 removed the
+> citations that existed.
 
 ## Plans
 

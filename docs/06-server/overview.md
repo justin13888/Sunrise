@@ -29,8 +29,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 | Store encrypted op log + blobs durably | [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 | Wake devices via push when ops arrive while they're offline — **not implemented** | [`push-notifications.md`](./push-notifications.md) |
 | Handle account lifecycle — create only; **recovery-blob fetch and account deletion have no route** | [`api.md`](./api.md), [`auth.md`](./auth.md) |
-| Enforce quotas and abuse protection — **not implemented** | [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md) |
-| (Managed only) Billing — **not implemented** | [`billing.md`](./billing.md) |
+| Enforce fixed operator limits — request body size, blob chunk/count/size ceilings, relay-log retention | [`api.md`](./api.md), [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 
 ## Non-responsibilities
 
@@ -125,6 +124,6 @@ Persisted server-side structures (recovery blobs at rest; snapshot blobs the ser
 
 ## Deferred to v2
 
-- **Family plan** (group quotas, multi-identity sharing under one subscription). v1 ships Free and Pro tiers only.
+- **Managed cloud, plan tiers and billing** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). v1 ships one server shape and has no tiers.
 - Cross-server federation.
 - Foreground-service "always-on" sync on Android (per-device opt-in; v1 accepts occasional Doze-induced latency).
