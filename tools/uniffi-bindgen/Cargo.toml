@@ -7,21 +7,26 @@ description = "Quarantined UniFFI binding generator. Build tool only; never ship
 
 # NOT a member of the root workspace, and that is the whole point.
 #
-# `uniffi`'s default features pull `uniffi_bindgen -> cargo_metadata ->
-# cargo-platform`, and cargo-platform 0.3.3 requires rustc 1.91. The workspace
-# is pinned to 1.88 (`rust-toolchain.toml`), so a plain `uniffi = "0.32"`
-# anywhere inside it is a hard build failure:
+# It used to be an MSRV quarantine: `uniffi`'s `cargo-metadata` feature reaches
+# `cargo-platform`, whose 0.3.3 release requires rustc 1.91, and the workspace
+# was pinned to 1.88. The lockfile beside this manifest held 0.3.2 to dodge it.
+# ADR-0026 moved the pin to 1.91.1 and the version pin is gone.
 #
-#     error: rustc 1.88.0 is not supported by the following package:
-#       cargo-platform@0.3.3 requires rustc 1.91
+# What keeps this manifest out of the workspace is **feature unification**. The
+# seam crate `sunrise-core-bindings` also depends on `uniffi`; as a workspace
+# member this tool would ask the same package for `cli` (= `bindgen` + `clap` +
+# `camino`), and resolver 2 unifies features per package across one cargo
+# invocation. So `cargo build --workspace` would compile the seam crate against
+# a `uniffi` carrying the entire binding generator — measured, 21 packages that
+# are in this directory's lockfile and in no other part of the tree (`askama`
+# and its three macro crates, `goblin` + `scroll` + `plain`, `uniffi_bindgen`,
+# `uniffi_udl`, `weedle2`, `cargo_metadata`, `cargo-platform`, …) — on every
+# workspace build, test and clippy run, for a code generator no shipping binary
+# links.
 #
-# Two independent fixes, both applied: `sunrise-core-bindings` takes uniffi
-# with `default-features = false` (no bindgen, no cargo_metadata at all), and
-# the generator itself lives here, out of the workspace, with its own lockfile
-# pinning cargo-platform to 0.3.2 — whose MSRV is exactly 1.88.
-#
-# That pin is load-bearing. `cargo update` in this directory will re-break it;
-# use `cargo build --locked`, which is what `mise run apple-xcframework` does.
+# `--locked` in `mise run apple-xcframework` stays for the ordinary reason a
+# build tool is built locked: the generated Swift is an input to the app, and a
+# silent resolver move is not something a diff would show.
 [workspace]
 
 [dependencies]

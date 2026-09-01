@@ -151,9 +151,11 @@ done
 #    reads UniFFI *metadata* out of the library rather than compiling
 #    anything, and the Swift it emits names no platform.
 #
-#    `--locked` is not optional: the generator lives outside the workspace
-#    precisely so its cargo-platform pin survives, and `cargo build` without
-#    it would re-resolve to a version that needs rustc 1.91.
+#    `--locked` is not optional: the Swift this emits is an input to both
+#    apps, so the generator is built from a resolved lockfile rather than
+#    whatever the registry offers today. (It is no longer holding a
+#    cargo-platform pin down — ADR-0026 raised the toolchain past that — but
+#    the tool still lives outside the workspace; see its manifest for why.)
 first=$(echo $macos_slices | awk '{print $1}')
 cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
 tools/uniffi-bindgen/target/release/uniffi-bindgen generate \\

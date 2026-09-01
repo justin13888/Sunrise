@@ -251,8 +251,10 @@ enabling automation mode".
 `apple-xcframework` builds the release slices, generates the Swift bindings from
 the built library, and packages the framework the app links. The bindings generator lives
 in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
-lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features pull a
-version requiring rustc 1.91, which would break the workspace's 1.88 pin.
+lockfile. It is out there for feature unification, not MSRV: as a workspace
+member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
+build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
+21 extra crates on every workspace build ([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
 
 `out/` and `build/` are gitignored: the Swift is generated from the Rust on
 every build, so committing it would let the two drift.
