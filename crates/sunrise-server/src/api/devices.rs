@@ -135,7 +135,7 @@ fn is_ed25519_pub(s: &str) -> bool {
 }
 
 /// Every device on the calling account, revoked ones included.
-#[kynos::get("/api/v1/devices")]
+#[kynos::get("/api/v1/devices", operation_id = "listDevices")]
 pub async fn list(
     Inject(state): Inject<ServerState>,
     SignedParts(caller): SignedParts,
@@ -152,7 +152,7 @@ pub async fn list(
 /// Bootstrap route: a device cannot sign before it exists, so an absent binding
 /// is accepted here even where the server demands one elsewhere. A binding that
 /// *is* supplied is still verified in full.
-#[kynos::post("/api/v1/devices")]
+#[kynos::post("/api/v1/devices", operation_id = "registerDevice")]
 pub async fn register(
     Inject(state): Inject<ServerState>,
     SignedBootstrap {
@@ -203,7 +203,7 @@ pub async fn register(
 /// itself is a device a thief can use to erase the evidence of its own theft,
 /// and the legitimate "sign out here" gesture is a local key wipe rather than a
 /// server call.
-#[kynos::delete("/api/v1/devices/{device_id}")]
+#[kynos::delete("/api/v1/devices/{device_id}", operation_id = "revokeDevice")]
 pub async fn revoke(
     Inject(state): Inject<ServerState>,
     Path(path): Path<DeviceIdPath>,
@@ -243,7 +243,7 @@ pub async fn revoke(
 }
 
 /// File a push token against one of the caller's devices.
-#[kynos::post("/api/v1/devices/push-tokens")]
+#[kynos::post("/api/v1/devices/push-tokens", operation_id = "registerPushToken")]
 pub async fn push_tokens(
     Inject(state): Inject<ServerState>,
     Signed {

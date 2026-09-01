@@ -53,7 +53,7 @@
       "post": {
         "summary": "Set the account's identity keys and recovery blob.",
         "description": "Idempotent: the store coalesces, so a client that retries after a dropped\nresponse does not get a second account. The account itself already exists by\nthe time this runs — it is minted when the token first resolves.",
-        "operationId": "create",
+        "operationId": "createAccount",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -236,7 +236,7 @@
     "/api/v1/accounts/me": {
       "get": {
         "summary": "The calling account.",
-        "operationId": "me",
+        "operationId": "getAccount",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -400,7 +400,7 @@
     "/api/v1/devices": {
       "get": {
         "summary": "Every device on the calling account, revoked ones included.",
-        "operationId": "list",
+        "operationId": "listDevices",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -566,7 +566,7 @@
       "post": {
         "summary": "Register a device.",
         "description": "Bootstrap route: a device cannot sign before it exists, so an absent binding\nis accepted here even where the server demands one elsewhere. A binding that\n*is* supplied is still verified in full.",
-        "operationId": "register",
+        "operationId": "registerDevice",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -750,7 +750,7 @@
       "delete": {
         "summary": "Revoke a device.",
         "description": "**Only callable from another paired device.** A device that can revoke\nitself is a device a thief can use to erase the evidence of its own theft,\nand the legitimate \"sign out here\" gesture is a local key wipe rather than a\nserver call.",
-        "operationId": "revoke",
+        "operationId": "revokeDevice",
         "parameters": [
           {
             "name": "device_id",
@@ -916,7 +916,7 @@
     "/api/v1/devices/push-tokens": {
       "post": {
         "summary": "File a push token against one of the caller's devices.",
-        "operationId": "push_tokens",
+        "operationId": "registerPushToken",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -1083,7 +1083,7 @@
     "/api/v1/blobs/init": {
       "post": {
         "summary": "Reserve an upload id and hand back one URL per chunk.",
-        "operationId": "init",
+        "operationId": "initBlobUpload",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -1257,7 +1257,7 @@
     "/api/v1/blobs/finalize": {
       "post": {
         "summary": "Check every stored chunk and commit the blob under its content address.",
-        "operationId": "finalize",
+        "operationId": "finalizeBlobUpload",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -1431,7 +1431,7 @@
     "/api/v1/blobs/{upload_id}/{chunk_idx}": {
       "put": {
         "summary": "Store one chunk of opaque ciphertext.",
-        "operationId": "put_chunk",
+        "operationId": "putBlobChunk",
         "parameters": [
           {
             "name": "upload_id",
@@ -1618,7 +1618,7 @@
       "get": {
         "summary": "Stream a committed blob's ciphertext back.",
         "description": "One chunk is read from disk at a time rather than the whole blob being\nassembled first. The surface this replaces built a single `Vec<u8>` of up to\n`MAX_BLOB_BYTES` before writing a byte, so one fetch of a large attachment\npinned 100 MB of the relay's memory for as long as the client took to read\nit — and a handful of concurrent fetches was an availability problem rather\nthan a slow response.",
-        "operationId": "fetch",
+        "operationId": "fetchBlob",
         "parameters": [
           {
             "name": "blob_id",
@@ -1790,7 +1790,7 @@
       "post": {
         "summary": "Establish a sync session: negotiate versions and capabilities.",
         "description": "Replaces the `Hello`/`HelloAck` exchange. `Hello::negotiate` is called\nunchanged, so a client that cannot agree on a wire version, a crypto suite\nor a required capability is refused here for the same reason and with the\nsame mapping it was refused at the socket.",
-        "operationId": "session",
+        "operationId": "openSyncSession",
         "parameters": [
           {
             "name": "X-Sunrise-Device",
@@ -1974,7 +1974,7 @@
       "post": {
         "summary": "Replace the set of streams this session receives on.",
         "description": "Takes effect on the next `GET /sync/events`. A stream already open keeps its\ncurrent set: re-subscribing mid-stream is a reconnect, which is what the\nsocket's re-`Subscribe` amounted to once the fan-out had been rebuilt.",
-        "operationId": "subscribe",
+        "operationId": "subscribeStreams",
         "parameters": [
           {
             "name": "X-Sunrise-Session",
@@ -2154,7 +2154,7 @@
       "post": {
         "summary": "Publish one batch of ops.",
         "description": "Durable first, and only then the ack. Acking an op the server has not\ncommitted would promise a durability that does not exist — and the client\ndrops an acked op from its outbox, so the op would be gone from both sides\nat once. A storage failure is reported as a 503 with nothing acked, which\nleaves the batch in the outbox to retry.",
-        "operationId": "ops",
+        "operationId": "publishOps",
         "parameters": [
           {
             "name": "X-Sunrise-Session",
@@ -2341,7 +2341,7 @@
       "post": {
         "summary": "Extend a session without re-establishing it.",
         "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.",
-        "operationId": "refresh",
+        "operationId": "refreshSyncSession",
         "parameters": [
           {
             "name": "X-Sunrise-Session",
@@ -2528,7 +2528,7 @@
       "get": {
         "summary": "The live op stream for this session.",
         "description": "Backpressure and disconnect are the stream's own: events are pulled one at a\ntime and never ahead, and a client that goes away drops the body, which\ndrops the stream, which drops the relay receivers it holds.",
-        "operationId": "events",
+        "operationId": "syncEvents",
         "parameters": [
           {
             "name": "X-Sunrise-Session",

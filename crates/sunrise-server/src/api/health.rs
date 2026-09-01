@@ -18,7 +18,7 @@ pub struct HealthResponse {
 /// Unauthenticated on purpose: a load balancer has no token, and this answers
 /// "is the process up", not "is the database reachable". `docs/06-server/api.md`
 /// specifies a `?deep=1` variant that has never existed and is still not here.
-#[kynos::get("/api/v1/health")]
+#[kynos::get("/api/v1/health", operation_id = "health")]
 pub async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_owned(),

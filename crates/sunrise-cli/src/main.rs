@@ -332,6 +332,33 @@ async fn dispatch(
             );
             return Ok(());
         }
+        // The caller ADR-0021 opens by observing does not exist: "the
+        // account-and-device bootstrap flow the crypto design depends on was
+        // specified, served, and never invoked, and nothing detected that".
+        //
+        // Both calls are idempotent server-side, so running this twice adopts
+        // the existing account rather than failing.
+        "bootstrap" => {
+            let store = login::store_for(vault_dir);
+            let creds = sunrise_auth::store::CredentialStore::load(&store)?
+                .ok_or("not signed in; run `sunrise login` first")?;
+            let url = std::env::var(livesync::ENV_SYNC_URL)
+                .map_err(|_| format!("set {} to the relay origin", livesync::ENV_SYNC_URL))?;
+
+            let outcome = sunrise_relay_client::bootstrap(
+                &url,
+                &creds.access_token,
+                bootstrap_account(rest),
+                bootstrap_device(core),
+            )
+            .await?;
+
+            println!(
+                "Account {} ({}) ready; this device is {}.",
+                outcome.identity_id, outcome.email, outcome.device_id
+            );
+            return Ok(());
+        }
         _ => {}
     }
     match sub {
@@ -1283,5 +1310,38 @@ fn print_tasks(r: QueryResult) {
             " "
         };
         println!("[{mark}] {}  {}", t.id.to_str(), t.title);
+    }
+}
+
+/// The account this device is claiming.
+///
+/// The email is a fallback the server reads only when the IdP emits no `email`
+/// claim, so a CLI that has one passes it and otherwise sends the empty string
+/// rather than inventing an address.
+fn bootstrap_account(rest: &[String]) -> sunrise_onboarding::account::AccountCreateRequest {
+    sunrise_onboarding::account::AccountCreateRequest {
+        email: rest.first().cloned().unwrap_or_default(),
+        identity_signing_pub: String::new(),
+        identity_dh_pub: String::new(),
+        recovery_blob: String::new(),
+        terms_at_ms: 0,
+    }
+}
+
+/// How this device introduces itself.
+fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
+    sunrise_relay_client::DeviceIdentity {
+        device_pub_s: login::device_id_hex(core),
+        device_pub_d: None,
+        device_cert: None,
+        nickname: "sunrise-cli".to_owned(),
+        platform: if cfg!(target_os = "macos") {
+            "macos".to_owned()
+        } else if cfg!(target_os = "windows") {
+            "windows".to_owned()
+        } else {
+            "linux".to_owned()
+        },
+        app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
     }
 }

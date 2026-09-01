@@ -43,6 +43,11 @@ allow = [
     # Mozilla's CA bundle, reached through hyper-rustls.
     # A data licence, permissive, and AGPL-compatible. Permanent.
     "CDLA-Permissive-2.0",
+    # `borrow-or-share`, reached through `fluent-uri` in `spargen`'s **build**
+    # tree (ADR-0021: spargen generates the relay client). MIT with the
+    # attribution clause removed — strictly more permissive than `MIT` above, so
+    # accepting it grants nothing `MIT` does not already.
+    "MIT-0",
     # --- currently unmatched, kept deliberately ---
     #
     # These five are *policy statements* about licences we accept, not

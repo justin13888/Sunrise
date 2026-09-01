@@ -31,6 +31,8 @@ sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
 sunrise-log = { workspace = true }
+sunrise-onboarding = { workspace = true }
+sunrise-relay-client = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 
 [dev-dependencies]

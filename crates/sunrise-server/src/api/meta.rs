@@ -45,7 +45,7 @@ pub struct MetaResponse {
 /// Unauthenticated on purpose: publishing the issuer here is what lets a fresh
 /// client bootstrap its login flow, so requiring a token first would be
 /// circular.
-#[kynos::get("/api/v1/meta")]
+#[kynos::get("/api/v1/meta", operation_id = "meta")]
 pub async fn meta(Inject(state): Inject<ServerState>) -> Json<MetaResponse> {
     Json(MetaResponse {
         server_app_v: state.config.server_app_v.clone(),

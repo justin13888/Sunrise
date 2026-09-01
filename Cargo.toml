@@ -128,7 +128,16 @@ parking_lot = { version = "0.12", default-features = false }
 # a deliberate 1:1 mirror, so that migration is a find-and-replace.
 fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 arc-swap = { version = "1.7", default-features = false }
-bytes = { version = "1.8", default-features = false, features = ["std"] }
+bytes = { version = "1.12.1", default-features = false, features = ["std"] }
+# The generated relay client's runtime is written against these exact crates.
+# `reqwest` keeps default features off and takes its TLS from rustls, the same
+# stack `hyper-rustls` already brings, so no second TLS implementation enters
+# the tree. spargen audits this floor before rustc compiles the emitted client.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots", "json", "stream", "http2"] }
+secrecy = { version = "0.10.3", default-features = false }
+# Build-time only: spargen embeds its runtime into the generated module, so it
+# never appears in a runtime dependency tree.
+spargen = { version = "0.4", default-features = false }
 smallvec = { version = "1.13", default-features = false, features = ["const_generics", "union"] }
 async-trait = { version = "0.1", default-features = false }
 futures-core = { version = "0.3", default-features = false, features = ["std"] }
@@ -168,6 +177,7 @@ sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors", ver
 sunrise-domain = { path = "crates/sunrise-domain", version = "0.1.0" }
 sunrise-storage = { path = "crates/sunrise-storage", version = "0.1.0" }
 sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol", version = "0.1.0" }
+sunrise-relay-client = { path = "crates/sunrise-relay-client", version = "0.1.0" }
 sunrise-sync = { path = "crates/sunrise-sync", version = "0.1.0" }
 sunrise-pairing = { path = "crates/sunrise-pairing", version = "0.1.0" }
 sunrise-onboarding = { path = "crates/sunrise-onboarding", version = "0.1.0" }

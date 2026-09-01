@@ -128,7 +128,7 @@ pub struct BlobIdPath {
 }
 
 /// Reserve an upload id and hand back one URL per chunk.
-#[kynos::post("/api/v1/blobs/init")]
+#[kynos::post("/api/v1/blobs/init", operation_id = "initBlobUpload")]
 pub async fn init(
     Inject(state): Inject<ServerState>,
     Signed {
@@ -167,7 +167,7 @@ pub async fn init(
 }
 
 /// Store one chunk of opaque ciphertext.
-#[kynos::put("/api/v1/blobs/{upload_id}/{chunk_idx}")]
+#[kynos::put("/api/v1/blobs/{upload_id}/{chunk_idx}", operation_id = "putBlobChunk")]
 pub async fn put_chunk(
     Inject(state): Inject<ServerState>,
     Path(path): Path<ChunkPath>,
@@ -193,7 +193,7 @@ pub async fn put_chunk(
 }
 
 /// Check every stored chunk and commit the blob under its content address.
-#[kynos::post("/api/v1/blobs/finalize")]
+#[kynos::post("/api/v1/blobs/finalize", operation_id = "finalizeBlobUpload")]
 pub async fn finalize(
     Inject(state): Inject<ServerState>,
     Signed {
@@ -283,7 +283,7 @@ pub async fn finalize(
 /// pinned 100 MB of the relay's memory for as long as the client took to read
 /// it — and a handful of concurrent fetches was an availability problem rather
 /// than a slow response.
-#[kynos::get("/api/v1/blobs/{blob_id}")]
+#[kynos::get("/api/v1/blobs/{blob_id}", operation_id = "fetchBlob")]
 pub async fn fetch(
     Inject(state): Inject<ServerState>,
     Path(path): Path<BlobIdPath>,

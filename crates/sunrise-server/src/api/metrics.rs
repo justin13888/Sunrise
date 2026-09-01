@@ -26,7 +26,7 @@ use kynos::extract::body::text::Text;
 ///
 /// Unauthenticated, and mounted only on a loopback listener — see the module
 /// docs for why those two facts belong together.
-#[kynos::get("/metrics")]
+#[kynos::get("/metrics", operation_id = "metrics")]
 pub async fn metrics(Inject(state): Inject<ServerState>) -> Result<Text, ApiError> {
     Ok(Text(state.metrics.render()))
 }

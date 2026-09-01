@@ -135,7 +135,7 @@ pub struct SessionHeader {
 /// unchanged, so a client that cannot agree on a wire version, a crypto suite
 /// or a required capability is refused here for the same reason and with the
 /// same mapping it was refused at the socket.
-#[kynos::post("/api/v1/sync/session")]
+#[kynos::post("/api/v1/sync/session", operation_id = "openSyncSession")]
 pub async fn session(
     Inject(state): Inject<ServerState>,
     Signed {
@@ -260,7 +260,7 @@ pub struct SubscribeRequest {
 /// Takes effect on the next `GET /sync/events`. A stream already open keeps its
 /// current set: re-subscribing mid-stream is a reconnect, which is what the
 /// socket's re-`Subscribe` amounted to once the fan-out had been rebuilt.
-#[kynos::post("/api/v1/sync/subscribe")]
+#[kynos::post("/api/v1/sync/subscribe", operation_id = "subscribeStreams")]
 pub async fn subscribe(
     Inject(state): Inject<ServerState>,
     Headers(header): Headers<SessionHeader>,
@@ -336,7 +336,7 @@ pub struct OpsResponse {
 /// drops an acked op from its outbox, so the op would be gone from both sides
 /// at once. A storage failure is reported as a 503 with nothing acked, which
 /// leaves the batch in the outbox to retry.
-#[kynos::post("/api/v1/sync/ops")]
+#[kynos::post("/api/v1/sync/ops", operation_id = "publishOps")]
 pub async fn ops(
     Inject(state): Inject<ServerState>,
     Headers(header): Headers<SessionHeader>,
@@ -446,7 +446,7 @@ pub struct RefreshResponse {
 /// refresh that changed either would let one credential hand a live op stream
 /// to another, which is the whole reason the check exists rather than simply
 /// trusting a valid token.
-#[kynos::post("/api/v1/sync/session/refresh")]
+#[kynos::post("/api/v1/sync/session/refresh", operation_id = "refreshSyncSession")]
 pub async fn refresh(
     Inject(state): Inject<ServerState>,
     Headers(header): Headers<SessionHeader>,
@@ -554,7 +554,7 @@ pub enum SyncEvent {
 /// Backpressure and disconnect are the stream's own: events are pulled one at a
 /// time and never ahead, and a client that goes away drops the body, which
 /// drops the stream, which drops the relay receivers it holds.
-#[kynos::get("/api/v1/sync/events")]
+#[kynos::get("/api/v1/sync/events", operation_id = "syncEvents")]
 pub async fn events(
     Inject(state): Inject<ServerState>,
     Headers(header): Headers<SessionHeader>,

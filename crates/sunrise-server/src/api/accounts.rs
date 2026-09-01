@@ -80,7 +80,7 @@ fn info(state: &ServerState, account: &Account) -> Result<AccountInfo, ApiError>
 /// Idempotent: the store coalesces, so a client that retries after a dropped
 /// response does not get a second account. The account itself already exists by
 /// the time this runs — it is minted when the token first resolves.
-#[kynos::post("/api/v1/accounts")]
+#[kynos::post("/api/v1/accounts", operation_id = "createAccount")]
 pub async fn create(
     Inject(state): Inject<ServerState>,
     // Bootstrap exemption: a device cannot sign before it exists, so this route
@@ -121,7 +121,7 @@ pub async fn create(
 }
 
 /// The calling account.
-#[kynos::get("/api/v1/accounts/me")]
+#[kynos::get("/api/v1/accounts/me", operation_id = "getAccount")]
 pub async fn me(
     Inject(state): Inject<ServerState>,
     SignedParts(caller): SignedParts,
