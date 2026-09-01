@@ -243,7 +243,7 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
-Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent; `batch_id` is the idempotency key the server dedups on. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
+Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. **`batch_id` correlates an `Ack` with the batch that earned it; nothing dedups on it.** The relay appends every batch it accepts to the relay log unconditionally — `relay_append` in `crates/sunrise-server/src/relay_log.rs` is a plain `INSERT` and the table has no `batch_id` column — and `POST /sync/ops` echoes the value straight back (`crates/sunrise-server/src/api/sync.rs`), so a re-sent batch is relayed a second time. Deduplication is the **receiver's**, and its key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` on the deterministic op id, under `UNIQUE(stream_id, device_id, seq)`, and a second copy materializes nothing and raises no event (`crates/sunrise-core/src/engine.rs`, the receive path's idempotence gate). Re-sending is therefore safe, but it is not free: the re-sent portion of the outbox is appended to the relay log again, and the log's per-channel age and size bounds are what absorb it, so the cost lands as a shorter replay window rather than as unbounded growth. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 
 ### OpBatch and Ack payloads
 
@@ -254,7 +254,7 @@ independent canonical encoder reproduces the same bytes.
 ```cddl
 OpBatch = {
   ops:       [* bstr],   ; opaque OpEnvelope bytes, one CBOR byte string each
-  batch_id:  uint,       ; client-generated idempotency key for the batch
+  batch_id:  uint,       ; client-generated correlation id for the batch
   stream_id: bstr .size 16,
 }
 
@@ -269,7 +269,7 @@ Three differences from what this section used to claim, all of them
 consequential:
 
 - **`batch_id` is a `uint`, not a `bstr`.** It is not a ULID; the client mints
-  a `u64` idempotency key.
+  a `u64` correlation id — see above for what is and is not deduped.
 - **`ops` is a flat array of byte strings**, not an array of maps. There is no
   per-op `server_first_seen_ms` on the wire.
 - **`stream_id` is present on both payloads.** A batch targets exactly one
