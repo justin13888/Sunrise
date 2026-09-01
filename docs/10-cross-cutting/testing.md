@@ -156,6 +156,20 @@ floor ratchets: a run may hold or improve it and may not fall below it, and
 moving it up is an explicit `mise run mutants-baseline` in a commit that says
 what was added to earn it.
 
+**When it runs, and what that costs.** The `mutants` and `mutants-gate` jobs in
+`ci.yml` are `schedule` (04:00 UTC) and `workflow_dispatch` only — never on a
+pull request, because a full pass is hours and no pull request waits that long.
+So this is a nightly ratchet on the trunk, not a merge gate: a pull request that
+deletes the test pinning `Backoff::next_delay` merges green, and the gate says
+so the next morning, against a trunk that already contains it. That is a
+deliberate trade — a check nobody can wait for is a check that gets bypassed —
+but it means the floor is a detector with up to a day of lag, not a barrier. To
+score a branch before merging it rather than after, run the job on demand:
+
+```bash
+gh workflow run ci.yml --ref <branch>
+```
+
 ### Running it
 
 ```bash
