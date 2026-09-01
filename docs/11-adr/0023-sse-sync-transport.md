@@ -62,6 +62,13 @@ inside the authoritative document rather than beside it.
 | `RefreshToken` / `RefreshTokenAck` | `POST /sync/session/refresh` |
 | cursor replay, `SYNC_CURSOR_GAP` | SSE `Last-Event-ID` |
 
+That last row is why this is cheaper than it looks. The relay already keeps a
+durable, monotonically-ordered `relay_frames.id` per channel, already replays
+from a client-supplied cursor, and already reports a typed gap rather than
+silently under-delivering when a cursor falls behind `relay_evicted`.
+`Last-Event-ID` is the same idea with a standard spelling, so resumption is a
+rename of machinery that exists and is tested, not new machinery.
+
 **Amended (2026-09):** the `Subscribe` row was absent when this ADR was
 written and is added here to match what shipped. `POST /api/v1/sync/subscribe`
 is its own operation keyed by session
@@ -70,13 +77,6 @@ is its own operation keyed by session
 mapping. The socket's `Subscribe` frame carried the same stream set and
 cursors, so this is that frame's replacement rather than a new capability —
 the table was incomplete, not the build.
-
-That last row is why this is cheaper than it looks. The relay already keeps a
-durable, monotonically-ordered `relay_frames.id` per channel, already replays
-from a client-supplied cursor, and already reports a typed gap rather than
-silently under-delivering when a cursor falls behind `relay_evicted`.
-`Last-Event-ID` is the same idea with a standard spelling, so resumption is a
-rename of machinery that exists and is tested, not new machinery.
 
 The negotiated-session state that `Hello` established once per connection moves
 into `POST /sync/session`, which returns a session id the SSE stream carries.
