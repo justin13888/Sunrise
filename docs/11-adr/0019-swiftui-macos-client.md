@@ -7,6 +7,11 @@
 **Replaces:** the Tauri 2 + React desktop specification formerly in
 [`docs/07-clients/desktop.md`](../07-clients/desktop.md).
 
+**Amended (2026-09):** the decision stands; one of its revisiting triggers has
+since fired. iOS shipped as a second product from the same sources, which is
+the outcome trigger 1 asked for a spike to establish. It transfers no MUST and
+reopens nothing. See the **Amendment** at the end of this file.
+
 ## Context
 
 Three client stories were live in the tree at once, and only one of them was
@@ -194,3 +199,18 @@ any of them wrong produces a crash rather than a compile error:
 3. **The CLI ceasing to be enough for headless use.** If capture-and-review over
    SSH stops covering the researcher persona, the answer is a better CLI, not a
    second interactive client.
+
+## Amendment (2026-09): iOS shipped, and the seam held
+
+Trigger 1 under [What would force revisiting this](#what-would-force-revisiting-this)
+fired: `apps/apple` now builds `SunriseiOS` alongside the macOS product, from
+the same `Sunrise/` sources over the same `sunrise-core-bindings` xcframework,
+with its own CI job. That trigger is recorded in place rather than restated
+here — it carries the detail.
+
+What it means for this ADR is the short version: a second Apple platform cost
+UI work and not a second core, so the seam this decision was mostly about is
+the part that was proven. The v1 parity MUSTs remain macOS's
+([`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)), and iOS
+carries none of them. Nothing in the Decision, the seam, or what we give up
+changes.
