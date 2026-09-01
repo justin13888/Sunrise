@@ -364,6 +364,11 @@ xcodebuild build \\
   -quiet \\
   CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
 app="../../out/dd/Build/Products/Debug-iphonesimulator/Sunrise.app"
+# The bundle id comes from the app that was just built. `project.yml` owns
+# `PRODUCT_BUNDLE_IDENTIFIER`; a literal here is a second source of truth that
+# fails silently — `install` still succeeds and only `launch` reports "not
+# found", which reads like a broken build rather than a stale string.
+bundle_id="$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")"
 # Already-booted is not an error here; `bootstatus -b` then waits for the boot
 # to actually finish, because `simctl install` against a half-booted device
 # fails with a device-not-ready error that reads like a build problem.
@@ -371,9 +376,9 @@ xcrun simctl boot "$ios_sim" 2>/dev/null || true
 open -a Simulator
 xcrun simctl bootstatus "$ios_sim" -b
 xcrun simctl install "$ios_sim" "$app"
-xcrun simctl launch "$ios_sim" dev.sunrise.SunriseiOS
+xcrun simctl launch "$ios_sim" "$bundle_id"
 echo
-echo "To start again from first run:  xcrun simctl uninstall '$ios_sim' dev.sunrise.SunriseiOS"
+echo "To start again from first run:  xcrun simctl uninstall '$ios_sim' $bundle_id"
 """
 
 # --- Release artifacts ---
