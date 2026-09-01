@@ -56,10 +56,20 @@ inside the authoritative document rather than beside it.
 |---|---|
 | `Hello` / `HelloAck` | `POST /sync/session` → session id + negotiated versions and capability bits |
 | server → client fan-out | `GET /sync/events` — `text/event-stream`, `itemSchema`-typed |
+| `Subscribe` | `POST /sync/subscribe` → takes effect on the next `GET /sync/events` |
 | `OpBatch` up, `Ack` down | `POST /sync/ops` → typed `Ack` response |
 | `Ping` / `Pong` | SSE comment heartbeats |
 | `RefreshToken` / `RefreshTokenAck` | `POST /sync/session/refresh` |
 | cursor replay, `SYNC_CURSOR_GAP` | SSE `Last-Event-ID` |
+
+**Amended (2026-09):** the `Subscribe` row was absent when this ADR was
+written and is added here to match what shipped. `POST /api/v1/sync/subscribe`
+is its own operation keyed by session
+(`crates/sunrise-server/src/api/sync.rs`; `subscribeStreams` in
+`schemas/openapi.v1.json`), and the module header there carries the same
+mapping. The socket's `Subscribe` frame carried the same stream set and
+cursors, so this is that frame's replacement rather than a new capability —
+the table was incomplete, not the build.
 
 That last row is why this is cheaper than it looks. The relay already keeps a
 durable, monotonically-ordered `relay_frames.id` per channel, already replays
