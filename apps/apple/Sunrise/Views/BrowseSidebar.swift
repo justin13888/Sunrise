@@ -56,20 +56,15 @@ struct BrowseSidebar: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
-        // The add controls. Under the list rather than in the section
-        // headers, because a header cannot hold one that accessibility can
-        // see — see `header(_:)`.
-        //
-        // The add controls, placed where each platform puts them.
+        // The add controls, placed where each platform puts them — and out of
+        // the section headers they used to live in on both, because a header
+        // cannot hold a control that accessibility can see. See `header(_:)`.
         //
         // On the Mac this is a bottom bar under the sidebar, which is where
         // Mail, Reminders and Finder's tags all keep their `+`. On iPhone that
         // space belongs to the tab bar — a bar of its own there overlaps both
         // the tab bar and the last rows of the list — so the same two actions
         // become a toolbar menu, which is where iOS puts them.
-        //
-        // Neither can live in the section headers they used to. See
-        // `header(_:)`.
         #if os(macOS)
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 4) {
