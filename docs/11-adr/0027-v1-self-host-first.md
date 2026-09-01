@@ -264,6 +264,26 @@ in-memory only) and
 event sets are extracted from source, with the extraction command recorded above
 each).
 
+**Testing and versioning contracts**, both changed by the same rewrite and both
+normative:
+[`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) — §6.3
+declares `crates/sunrise-server/tests/logging.rs` a MUST and that file does not
+exist; the test list and the §11 conformance table now name
+`crates/sunrise-server/src/api/observe.rs`'s in-module suite as what carries the
+guarantee, which is a change to a testing *requirement*, not a citation fix.
+[`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)
+— its published server-metric list named four counters the tree does not define;
+it is replaced by the same source extraction, and points at
+[`../06-server/observability.md`](../06-server/observability.md) for the
+provenance comment.
+
+**Beyond the lists above**, one commit in this change set corrects stale
+*claims* across a further twenty-five `accepted` files — statements the tree
+refutes, each fixed in place with the evidence, none of them altering a contract
+this ADR decides. They are not enumerated here because the list is the commit's
+own `git diff --name-only`; a reader computing the diff of this change set will
+find more files than the sections above name, and that is why.
+
 ### New normative rules this ADR carries
 
 **A `blob_key` MUST NOT seal two different byte sequences.** The blob chunk
