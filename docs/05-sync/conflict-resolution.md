@@ -144,7 +144,11 @@ future migration cannot reintroduce it by copy-paste.
 
 The consequence for the product: **an automatic merge is currently invisible.**
 Nothing records that a concurrent edit lost, so the "X edits merged
-automatically this week" review surface has no data behind it. Reinstating that
+automatically this week" review surface has no data behind it — and neither does
+the UI state that used to exist for it.
+[`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
+§Three-state view contract dropped its `conflict` state on exactly this ground:
+a view cannot raise a toast about a loss nothing recorded. Reinstating that
 UI means designing a journal for an entity-level model — one row per losing
 *entity version*, not per field — and an ADR superseding 0018's removal, not
 restoring the schema above.

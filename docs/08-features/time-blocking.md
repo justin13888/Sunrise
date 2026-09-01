@@ -67,4 +67,4 @@ Today's "Scheduled" section is composed of Blocks for today, sorted by start tim
 
 ## States
 
-Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract).
+Empty / loading / error states follow the three-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#three-state-view-contract).
