@@ -75,7 +75,9 @@ final class AppNavigationUITests: SunriseUITestCase {
         // assertion was red for a different reason though, and it is worth
         // recording: the button was merged out of the accessibility tree by
         // the section header it lives in, so it existed on screen and nowhere
-        // else. See `BrowseSidebar.header(_:add:addLabel:identifier:)`.
+        // else. See `BrowseSidebar.header(_:)`, and
+        // `addButton(_:systemImage:identifier:action:)` for where the
+        // control went.
         let add = app.buttons["sidebar.stream.new"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "the Streams header offers +")
         activate(add)
