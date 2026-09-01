@@ -30,78 +30,58 @@
     clippy::missing_panics_doc
 )]
 
+pub mod api;
 pub mod auth;
 pub mod config;
-pub mod error;
 pub mod logging;
 pub mod metrics;
 pub mod push;
 pub mod relay;
 pub mod relay_log;
-pub mod routes;
 pub mod state;
 pub mod store;
-pub mod ws;
+pub mod sync_session;
 
+pub use api::error::ApiError;
 pub use auth::oidc::{OidcConfig, OidcVerifier};
 pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier, Verified};
 pub use config::ServerConfig;
-pub use error::ApiError;
 pub use logging::{account_h, id_h};
 pub use metrics::Metrics;
 pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushRegistration};
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};
+pub use sync_session::{Session, SessionStore};
 
-use axum::Router;
+use kynos::router::service::Service;
 
-/// Build the public Axum router with all v1 routes wired.
+/// Build the typed surface over `state`, ready to serve.
 ///
-/// `tower-http` was a declared dependency with no import anywhere, so the
-/// relay ran with no CORS policy, no request-size limit, and no trace layer.
-/// All three are mounted here now:
+/// The one place the router and the context meet. `build` is where kynos runs
+/// its structural checks, so an API that cannot be described correctly fails
+/// here — at startup — rather than at documentation time.
 ///
-/// - **CORS** is an exact-match allowlist from `ServerConfig::allowed_origins`,
-///   empty by default. Origins are never reflected back, and `*` is rejected at
-///   config validation — a wildcard origin paired with credentials is what made
-///   the v0 API reachable from any page.
-/// - **Body limit** caps request bodies so an unauthenticated POST cannot pin
-///   memory. The relay's own frames ride the WebSocket and are bounded
-///   separately by the wire protocol's frame cap.
-/// - **Trace** gives request spans. It must never log the `?access_token=`
-///   query parameter that browsers use in place of an `Authorization` header,
-///   so it is [`logging::trace_layer`] rather than `TraceLayer::new_for_http`
-///   with stock callbacks — the stock `MakeSpan` records the full URI.
-#[must_use]
-pub fn build_router(state: ServerState) -> Router {
-    let origins: Vec<axum::http::HeaderValue> = state
-        .config
-        .allowed_origins
-        .iter()
-        .filter_map(|o| o.parse().ok())
-        .collect();
-    let cors = if origins.is_empty() {
-        // No browser client is configured: deny every cross-origin request
-        // rather than defaulting to permissive.
-        tower_http::cors::CorsLayer::new()
-    } else {
-        tower_http::cors::CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-            .allow_headers([
-                axum::http::header::AUTHORIZATION,
-                axum::http::header::CONTENT_TYPE,
-            ])
-    };
-    let max_body = state.config.max_body_bytes;
+/// # Errors
+/// Returns kynos's error naming every violation found.
+pub fn build_service(state: ServerState) -> kynos::Result<Service<ServerState>> {
+    let config = ServerConfig::clone(&state.config);
+    api::router(&config).build(state)
+}
 
-    Router::new()
-        .nest("/api/v1", routes::api_v1())
-        .merge(ws::router())
-        .merge(metrics::router())
-        .layer(cors)
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(max_body))
-        .layer(logging::trace_layer())
-        .with_state(state)
+/// Serve the typed surface on `listener` until the process ends.
+///
+/// kynos owns the accept loop. An earlier design in `api/mod.rs` described a
+/// hand-written dispatcher that would hand `/sync` to axum and everything else
+/// to kynos; ADR-0023 removed the need for it by making `/sync` describable, so
+/// there is one stack and no dispatcher.
+///
+/// # Errors
+/// Returns kynos's error if the surface cannot be built or the listener fails
+/// terminally.
+pub async fn serve(state: ServerState, listener: tokio::net::TcpListener) -> kynos::Result<()> {
+    kynos::server::Server::new(build_service(state)?)
+        .listener(listener)
+        .serve()
+        .await
 }

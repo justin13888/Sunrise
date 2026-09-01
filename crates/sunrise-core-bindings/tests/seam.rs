@@ -1196,6 +1196,8 @@ async fn a_one_field_stream_edit_leaves_the_rest_alone() {
                 parent_id: None,
                 review_cadence: Some(sunrise_domain::StreamReviewCadence::Weekly),
                 reminder_lead_s: Some(900),
+                icon: Some("airplane".into()),
+                default_context: None,
             },
         })
         .await

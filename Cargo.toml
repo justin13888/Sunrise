@@ -72,7 +72,6 @@ http = { version = "1.1", default-features = false }
 # --- TLS / transport ---
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
 # --- storage ---
 rusqlite = { version = "0.31", default-features = false, features = ["bundled-sqlcipher", "blob", "trace"] }
@@ -82,17 +81,23 @@ tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "ti
 # `original-uri` keeps the pre-nesting request target available to handlers.
 # `Router::nest` rewrites `Uri` to the path *inside* the nest, and the device
 # signature covers the target the client actually sent.
-axum = { version = "0.7", default-features = false, features = ["json", "ws", "http1", "http2", "original-uri", "tokio", "tracing"] }
+# The REST surface's framework and its OpenAPI 3.2 document (ADR-0021).
+# `openapi32` is what makes an event stream describable at all -- 3.1 has no
+# `itemSchema`, so `response::stream` is a 3.2-only subtree, and ADR-0023's sync
+# transport needs it.
+kynos = { version = "0.1", default-features = false, features = ["openapi32", "macros", "server", "http1", "http2", "json", "trace"] }
 hyper = { version = "1.5", default-features = false, features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-tower = { version = "0.5", default-features = false, features = ["util"] }
-tower-http = { version = "0.6", default-features = false, features = ["trace", "cors", "limit"] }
 
 # --- serialization ---
 ciborium = { version = "0.2", default-features = false }
 ciborium-io = { version = "0.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+# RFC 8785 JSON Canonicalization. ADR-0022 signs the canonical form of the
+# request *value*, so both the relay and the generated client need one
+# implementation of it and must agree byte for byte.
+serde_jcs = { version = "0.2", default-features = false }
 serde_bytes = { version = "0.11", default-features = false, features = ["alloc"] }
 
 # --- compression / encoding ---
@@ -123,7 +128,16 @@ parking_lot = { version = "0.12", default-features = false }
 # a deliberate 1:1 mirror, so that migration is a find-and-replace.
 fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 arc-swap = { version = "1.7", default-features = false }
-bytes = { version = "1.8", default-features = false, features = ["std"] }
+bytes = { version = "1.12.1", default-features = false, features = ["std"] }
+# The generated relay client's runtime is written against these exact crates.
+# `reqwest` keeps default features off and takes its TLS from rustls, the same
+# stack `hyper-rustls` already brings, so no second TLS implementation enters
+# the tree. spargen audits this floor before rustc compiles the emitted client.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-webpki-roots", "json", "stream", "http2"] }
+secrecy = { version = "0.10.3", default-features = false }
+# Build-time only: spargen embeds its runtime into the generated module, so it
+# never appears in a runtime dependency tree.
+spargen = { version = "0.4", default-features = false }
 smallvec = { version = "1.13", default-features = false, features = ["const_generics", "union"] }
 async-trait = { version = "0.1", default-features = false }
 futures-core = { version = "0.3", default-features = false, features = ["std"] }
@@ -155,6 +169,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 sunrise-log = { path = "crates/sunrise-log", version = "0.1.0" }
 sunrise-id = { path = "crates/sunrise-id", version = "0.1.0" }
 sunrise-error = { path = "crates/sunrise-error", version = "0.1.0" }
+sunrise-http-sig = { path = "crates/sunrise-http-sig", version = "0.1.0" }
 sunrise-auth = { path = "crates/sunrise-auth", version = "0.1.0" }
 sunrise-cbor = { path = "crates/sunrise-cbor", version = "0.1.0" }
 sunrise-crypto = { path = "crates/sunrise-crypto", version = "0.1.0" }
@@ -162,6 +177,7 @@ sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors", ver
 sunrise-domain = { path = "crates/sunrise-domain", version = "0.1.0" }
 sunrise-storage = { path = "crates/sunrise-storage", version = "0.1.0" }
 sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol", version = "0.1.0" }
+sunrise-relay-client = { path = "crates/sunrise-relay-client", version = "0.1.0" }
 sunrise-sync = { path = "crates/sunrise-sync", version = "0.1.0" }
 sunrise-pairing = { path = "crates/sunrise-pairing", version = "0.1.0" }
 sunrise-onboarding = { path = "crates/sunrise-onboarding", version = "0.1.0" }

@@ -13,17 +13,43 @@ description = "Sync session states, backoff, and the transport trait"
 workspace = true
 
 [features]
-# Concrete WebSocket client transport (`WsTransport`). Off by default so the
+# Concrete SSE + POST client transport (`SseTransport`). Off by default so the
 # transport surface stays runtime-agnostic; the clients / e2e opt in.
-ws = ["dep:tokio-tungstenite", "dep:futures-util"]
+#
+# Was `ws`, over `tokio-tungstenite`. ADR-0023 replaced the socket, and the
+# same three dependencies `sunrise-auth` and `sunrise-server` already use for
+# their own HTTP clients replaced the WebSocket stack — no new dependency
+# class, one fewer protocol in the tree.
+sse = [
+    "dep:hyper",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:base64",
+    "dep:ciborium",
+    "dep:hex",
+    "dep:serde_json",
+    "dep:sunrise-wire-protocol",
+    "dep:sunrise-error",
+]
 
 [dependencies]
 async-trait = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-tungstenite = { workspace = true, optional = true }
-futures-util = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+ciborium = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
+# `client-legacy` is the pooled hyper 1.x client, as `sunrise-auth` and
+# `sunrise-server` already drive for their own outbound calls.
+hyper-util = { workspace = true, optional = true, features = ["client-legacy", "http1"] }
+serde_json = { workspace = true, optional = true }
+sunrise-error = { workspace = true, optional = true }
+sunrise-wire-protocol = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

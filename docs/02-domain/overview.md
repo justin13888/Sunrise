@@ -46,6 +46,7 @@ The domain is small on purpose. Every entity below earns its keep against [`../0
 | Note | 0..N per Task/Stream/Block | [`notes.md`](./notes.md) |
 | Attachment | rare; capped per vault | [`attachments.md`](./attachments.md) |
 | FocusSession | 1–20/day; append-only, never edited | [`../08-features/focus-mode.md`](../08-features/focus-mode.md), [ADR-0013](../11-adr/0013-focus-session-op-representation.md) |
+| ReviewSnapshot | 1/week; append-only, never edited | [`../08-features/reviews-and-stats.md`](../08-features/reviews-and-stats.md) |
 
 ## Common CDDL types
 
@@ -107,6 +108,21 @@ bytes) — the rule `validate_title` enforces.
 - **Notes** are children of an entity; they cannot float free.
 - **Routines** generate Tasks; once a generated task exists, edits to the task do not retroactively affect future occurrences (unless the user explicitly chooses "edit series").
 - A **FocusSession** belongs to exactly one Task and is **append-only**: a `start` record and, later, a separate `end` record sharing one id. It is never edited and never deleted, and a `start` with no `end` means the session is still running.
+- A **ReviewSnapshot** is **append-only in the strong sense**: `review.snapshot`
+  is the only op family it has — there is no update op and no delete op, and no
+  patch type. The consequence is user-visible and worth stating plainly: the
+  free-text `note` a user writes during a weekly review **cannot be edited
+  afterwards**, and a snapshot saved by mistake **cannot be removed**. Unlike
+  the `Attachment` case below, nothing about the entity makes that necessary —
+  a review note is prose the user typed, not a description of one specific run
+  of bytes — so this is a gap rather than a decision.
+- An **Attachment** is **write-once by design**, and that one is defensible.
+  Every field but `deleted` describes one specific run of ciphertext identified
+  by `content_hash`, so changing any of them would be describing different
+  bytes; re-attaching an edited file is a new attachment, which is what content
+  addressing already implies. `AttachFile` and `DetachFile` are the only two
+  commands, and there is deliberately no patch type. See
+  [`attachments.md`](./attachments.md) §Write-once metadata.
 - **People** are first-class identities, including the local user. A Task assigned to a non-self Person is a "watching/waiting" annotation in v1, not a delegation primitive.
 - A **Task** or **Routine** may carry **scheduling constraints** — requirement windows (time-of-day / days-of-week / date-range, each `hard` or `soft`) restricting when it should be scheduled. These are a *value type*, not an entity: they mint no ID (see [`scheduling-constraints.md`](./scheduling-constraints.md)) and add no prefix to [`identifiers.md`](./identifiers.md).
 

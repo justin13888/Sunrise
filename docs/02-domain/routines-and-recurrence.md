@@ -100,6 +100,20 @@ An instant has to be re-resolved against the routine's timezone on every read
 and silently stops matching its occurrence when that zone's rules change. A
 key does not.
 
+**`skipped_keys` is append-only, and a skip is permanent.**
+`Command::SkipRoutineOccurrence` appends the occurrence key (deduplicating
+against what is already there) and there is **no un-skip command**: nothing in
+`Command` removes an entry, and `RoutinePatch` has no `skipped_keys` field. A
+user who skips the wrong occurrence cannot restore it, and the occurrence is
+suppressed on every device forever. That is a real gap, not a design choice —
+the append-only shape is what makes the list converge under entity-level LWW,
+but converging on "skipped" was never meant to be irreversible.
+
+**The `DOC_SCHEMA_FLOOR = 3` removal date has not arrived.** `DOC_SCHEMA_FLOOR`
+is **1** in `crates/sunrise-cbor/src/version.rs`, and it moves only when a shape
+stops being readable — not when `DOC_SCHEMA_V` advances past 3. So `skip_dates`
+stays on the wire for now, and stage B ("stop writing") is not due.
+
 ### `merge` semantics
 
 When generation runs and finds N ≥ 2 missed occurrences, `merge` produces exactly **one** task:
@@ -211,6 +225,14 @@ key, so whichever row wins the LWW carries one copy of it. Two devices
 completing *different* occurrences concurrently is where entity LWW bites: one
 row wins whole, and the loser's key and increment are dropped from the
 projection (they survive in the op log). See ADR-0014 §What we give up.
+
+**The streak fields are system-managed.** `RoutinePatch` exposes exactly two
+knobs — `grace_window_s` and `forgiveness_enabled` — and nothing else.
+`streak_counter`, `streak_started_at`, `forgivenesses_in_window`, `streak_keys`
+and `last_completed_at` have no patch field and no command: they move only as a
+side effect of completing an occurrence, in the same transaction as the
+`task.update` that caused it. A streak cannot be corrected by hand, in either
+direction.
 
 Streak resets to 0 on a missed occurrence with one exception: the **forgiveness rule** allows up to one missed occurrence per 30-day rolling window without resetting. The forgiveness rule is enabled by default and toggled per Routine.
 

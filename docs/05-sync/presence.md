@@ -4,6 +4,30 @@ status: accepted
 
 # Presence
 
+> **Nothing on this page is implemented, and one design choice on it needs a
+> decision before any of it is.**
+>
+> `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
+> discriminators in `crates/sunrise-wire-protocol/src/messages.rs` and that is
+> all: there is no payload type for either, no server handler, and no client
+> emitter. `handle_inbound` in `crates/sunrise-server/src/ws.rs` ends in
+> `_ => true`, so a beacon sent today is **silently dropped** — not refused,
+> not logged. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined and is not in
+> `REQUIRED_CLIENT_BITS`. There is no presence channel, no ACL check on one, and
+> no "last activity" tracking.
+>
+> **Presence is specified as UNENCRYPTED, and that is a deliberate choice, not
+> an oversight** — see the Implementation section: device ids and timestamps are
+> treated as metadata the relay sees anyway. It is also the only user data in
+> the design that the relay would read in the clear. Sunrise's whole posture is
+> that the server never sees content; presence would make it see *behaviour* —
+> who is online, when, and which stream cohort someone is looking at, at 30 s
+> resolution, retained for as long as the relay chooses. If presence ships, that
+> is designed leakage the ADR admitting it MUST state outright, and
+> [`../06-server/overview.md`](../06-server/overview.md)'s
+> non-responsibilities list MUST be amended to match. Do not treat this page as
+> having settled that.
+
 Lightweight indicators of which of the user's other devices are online and which shared peers are co-viewing.
 
 ## Scope (small on purpose)

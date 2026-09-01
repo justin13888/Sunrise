@@ -15,8 +15,12 @@ A first-class deployment topology, not a charity afterthought.
 ## Minimum viable host
 
 - 1 vCPU, 1 GB RAM, 20 GB disk for ≤10-user instance.
-- TLS via either the binary's built-in ACME (LetsEncrypt) or operator-provided cert.
-- Outbound network for ACME and (optionally) push provider connections.
+- **TLS terminates at a reverse proxy.** The binary has no ACME client and no
+  certificate loading of any kind; a `[tls]` block is rejected by the config
+  parser rather than silently ignored, precisely so nobody believes they are
+  serving HTTPS when they are not.
+- Outbound network for the OIDC issuer's discovery and JWKS documents (HTTPS
+  only — `HttpsFetch` refuses a plaintext URL before dialling).
 
 ## Config (`sunrise.toml`)
 
@@ -85,25 +89,50 @@ and the `sunrise-server doctor` subcommand.
 
 ## Operator surfaces
 
-| Surface | Purpose |
-|---|---|
-| `/api/v1/admin/*` (loopback only by default) | Health, stats, manual blob GC, user actions |
-| Prometheus `/metrics` | Aggregate metrics (no per-account labels with PII) |
-| Logs (stdout) | Structured JSON; never contains content; never contains push tokens |
+| Surface | Purpose | Built |
+|---|---|---|
+| `/api/v1/admin/*` (loopback only by default) | Health, stats, manual blob GC, user actions | **no — nothing under `/api/v1/admin/` is routed** |
+| Prometheus `/metrics` | Aggregate metrics (no per-account labels with PII) | yes, at the router root — **mounted only on a loopback bind** |
+| Logs (stderr) | Structured NDJSON; never contains content; never contains push tokens | yes (`sunrise_log::init_stderr`) |
+
+**`/metrics` and any admin surface MUST be reachable on loopback only, or behind
+operator authentication.** `build_router` enforces it: the metrics route is
+mounted only when `bind` is a loopback address, and a non-loopback bind logs
+`srv.start.metrics_withheld` and serves `404` there instead. Put a reverse
+proxy in front of the loopback bind if you need to scrape it remotely.
+
+Logs go to **stderr**, not stdout: `main.rs` installs `sunrise_log::init_stderr()`
+as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 
 ## Backup
 
-- Single-binary: stop, `tar czf` the data dir, start. Or use a snapshot-aware filesystem (ZFS, Btrfs).
-- Scaled: standard Postgres + S3 backup tooling.
+- Single-binary: stop, `tar czf` the data dir, start. Or use a snapshot-aware
+  filesystem (ZFS, Btrfs). The op log lives inside `sunrise.db`, so that one
+  file plus `blobs/` is the entire server state.
+- **The data dir is not encrypted.** Unlike the client vault, the relay database
+  applies no SQLCipher key, and it holds account emails, device nicknames and
+  push tokens in plaintext — see
+  [`relay-and-blob-storage.md`](./relay-and-blob-storage.md). Treat a backup of
+  it accordingly.
+- Scaled: standard Postgres + S3 backup tooling. There is no scaled deployment.
 
 ## Upgrade
 
-- Stop, replace binary, start. Migrations run on startup.
+- Stop, replace binary, start. There is no migration framework on the server:
+  `Store::open` executes one `CREATE TABLE IF NOT EXISTS` batch, so a schema
+  change that is not purely additive has no upgrade path yet.
 - Zero-downtime upgrade for scaled deployments via standard rolling restart.
+  (No scaled deployment exists.)
 
-## Testing the install
+## Testing the install — NOT IMPLEMENTED
 
-The binary includes a `sunrise-server doctor` subcommand:
+There is no `doctor` subcommand. `main.rs` parses config, validates it, builds
+the router and serves; it dispatches on no subcommand at all, and `doctor` is
+already listed under "Not yet wired" above. Several checks below could not exist
+as written regardless — there is no Postgres to ask about `fsync`, and no push
+provider to probe.
+
+The intended subcommand:
 
 - Verifies TLS works.
 - Verifies storage is writable: writes a 10 MiB test file under `[storage] data_dir`, fsyncs, reads back, asserts byte-identical, and deletes. Reports the free-space ratio: warns at < 10%, errors at < 1%.
@@ -117,14 +146,18 @@ The binary includes a `sunrise-server doctor` subcommand:
 
 | Feature | Managed | Self-host |
 |---|---|---|
-| Push reliability | High (Sunrise-operated APNs/FCM) | Operator-managed; optional |
+| Push reliability | High (Sunrise-operated APNs/FCM) | Operator-managed; optional. **No push delivery is implemented in either deployment** — see [`push-notifications.md`](./push-notifications.md). |
 | Cross-server sharing | n/a (v1 only same-server) | n/a |
 | Capacity scaling | Auto | Operator-driven |
 | Backups | Sunrise-managed | Operator-managed |
 
-Functional features (E2EE, sync, multi-client, sharing within the same server) are **identical**.
+Functional features (E2EE, sync, multi-client, sharing within the same server) are **identical**. Sharing is not implemented on either (see [`api.md`](./api.md) §Sharing).
 
 ## Migrations between topologies
+
+**Not implemented.** There is no managed cloud to migrate from, and step 3's
+"re-pair against a new server, uploading its full op log" has no client
+implementation. The intended flow:
 
 A managed-cloud user can move to self-host:
 

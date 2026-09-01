@@ -6,32 +6,99 @@ status: accepted
 
 Two surfaces: the **sync protocol** (over WebSocket; spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
 
+> **This document is no longer authoritative about shapes.**
+> [`schemas/openapi.v1.json`](../../schemas/openapi.v1.json) is, per
+> [ADR-0021](../11-adr/0021-kynos-openapi-server.md). It is generated from the
+> handlers, committed, and checked against them by
+> `the_committed_description_is_current` — so where this page and the
+> description disagree, the description is right and this page is stale.
+>
+> What is kept here is what a schema cannot carry: why an operation exists,
+> which failures are retryable, what order the two-phase commit runs in, and
+> the byte layouts the wire depends on.
+>
+> **Implementation status.** Every operation below is served, by
+> `crates/sunrise-server/src/api/`. `routes/`, the hand-written `axum` routing
+> earlier revisions described, is gone; so is the `/sync` WebSocket, replaced by
+> the SSE surface [ADR-0023](../11-adr/0023-sse-sync-transport.md) specifies.
+> Routes this document specifies that **no handler serves** are still marked
+> **NOT IMPLEMENTED** in place.
+
 ## REST endpoints
 
 All endpoints are HTTPS. Authenticated requests carry a standard OIDC access token in `Authorization: Bearer <jwt>` plus an `X-Sunrise-Device: <dev_id>` header (see [`auth.md`](./auth.md)). Sign-up, login, password reset, MFA, and email change are all handled by the configured OIDC issuer — they have no Sunrise REST endpoints.
 
 ### Device binding (per-request)
 
-The `X-Sunrise-Device` header carries the `device_id` (Crockford base32 of 16 bytes) on every authenticated request. Every authenticated request is also accompanied by an `X-Sunrise-Device-Sig` header containing an Ed25519 detached signature over the canonical request line, the `Date` header, and a hash of the request body. The server validates that:
+The `X-Sunrise-Device` header carries the `device_id` (Crockford base32 of 16 bytes) on every authenticated request. Every authenticated request is also accompanied by an `X-Sunrise-Device-Sig` header containing an Ed25519 detached signature over the method, the target, the `Date` header, and a hash of the request body's **canonical form**. The server validates that:
 
 1. `device_id` exists in the account's device set and is not revoked.
 2. `X-Sunrise-Device-Sig` verifies under the device's signing key.
 3. The OIDC token's `https://sunrise.app/device_id` claim (URI-namespaced per RFC 7519 §4.2; issued by the IdP from the client's `claims` parameter) matches `X-Sunrise-Device` (defense in depth).
 
-This `header_sig_v1` mode is the only mode for v1. Clients can probe forward-compat via `GET /api/v1/meta` which returns `{"device_binding_mode":"header_sig_v1"}`.
+The mode is `header_sig_v2` ([ADR-0022](../11-adr/0022-device-signature-canonical-json.md)),
+and its byte layout is specified in [`auth.md`](./auth.md) §Device binding
+rather than left to an implementation. Two live qualifications:
+
+- The binding is **optional by default**. `[auth] require_device_sig` defaults
+  to `false`, so a request with no `X-Sunrise-Device` is accepted with no
+  device resolved. A binding that *is* present is always verified in full,
+  whatever the flag says — a signature that fails verification is never an
+  ignored header. `POST /accounts` and `POST /devices` take a bootstrap
+  exemption: a device cannot sign before it exists.
+- Verification happens **after** the body is parsed, because what is signed is
+  the request's canonical form rather than the octets that carried it. A
+  malformed body therefore fails as a `400` before it can fail as a `401`, and
+  that ordering is observable.
+
+Clients probe via `GET /api/v1/meta`, which returns `device_binding_mode`
+(`"header_sig_v2"`) and `device_binding_required` (the flag's value). v1
+signatures are not accepted: nothing was deployed under the old construction,
+so there is no window to support both, and supporting both would mean retaining
+the raw-body access ADR-0022 exists to remove.
+
+Implemented in `sunrise-http-sig` — shared, so the relay and the generated
+client cannot disagree about it — and reached through `api/signed.rs`, whose
+`Signed<T>` extractor parses and verifies in one step.
 
 ### Account
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| POST | `/api/v1/accounts` | `{ identity_pub_s, identity_pub_d, recovery_blob, terms_accepted_at }` | `{ account_id }` (called once by the first device after OIDC login auto-provisions the account) |
-| GET | `/api/v1/accounts/me` | — | `{ account_id, email, devices: [DeviceMeta], plan }` |
-| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 |
-| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) |
-| POST | `/api/v1/accounts/me/delete/initiate` | — | 202; issues a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) which the OIDC issuer relays to the user's verified email |
-| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) |
+| Method | Path | Body | Returns | Status |
+|---|---|---|---|---|
+| POST | `/api/v1/accounts` | `AccountCreateRequest` = `{ email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }` | `201` + `AccountInfo` | implemented |
+| GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
+| PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
+| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | **NOT IMPLEMENTED** |
+| POST | `/api/v1/accounts/me/delete/initiate` | — | 202; issues a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) which the OIDC issuer relays to the user's verified email | **NOT IMPLEMENTED** |
+| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) | **NOT IMPLEMENTED** |
 
-The `recovery_blob` is stored opaquely. The server does not validate its internal format or version; it only checks size (10 MiB cap, see error table) and that the upload is signed by an active device. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
+Both request and response types live in `sunrise-onboarding` (`account.rs`) and
+are shared with the client:
+
+```rust
+AccountCreateRequest { email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }
+AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
+```
+
+`AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
+the account `identity_id`; `GET /api/v1/devices` is where device metadata comes
+from. `POST /accounts` neither chooses nor returns a new account id: the account
+is already provisioned by the bearer's `(iss, sub)` (see [`auth.md`](./auth.md)
+§per-request-auth), and the call attaches identity material to it. It is
+idempotent by construction — `Store::set_identity` writes each field under
+`COALESCE`, so a retry cannot swap the identity key.
+
+**The recovery flow this document and [`auth.md`](./auth.md) describe is
+unreachable.** `accounts.recovery_blob` is written by `POST /api/v1/accounts`
+and is read back by nothing: no `SELECT` names the column, and `row_to_account`
+does not project it. Neither the `PUT` nor the `GET` above exists, so a blob
+that goes in cannot come out and a fresh device has no way to fetch the
+ciphertext it must decrypt.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) depends on this being fixed: its
+recovery path opens identity-sealed `key_envelope` ops with `ID_D_priv`, which
+lives in exactly this blob.
+
+The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
 #### Account errors
 
@@ -44,25 +111,80 @@ The `recovery_blob` is stored opaquely. The server does not validate its interna
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
 
-### Identity discovery (for sharing)
+`ACCOUNT_DELETE_PHRASE_INVALID` and `VALIDATION_PAYLOAD_TOO_LARGE` are **not
+implemented**: neither constant exists in `error.rs`'s `codes` module, and the
+routes that would emit them do not exist. The codes `codes` actually defines are
+`AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
+`AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`, `VALIDATION_INVALID`,
+`BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`, `BLOB_NOT_FOUND` and
+`FATAL_INTERNAL`, plus `AUTH_DEVICE_SIG_INVALID` in `auth/request.rs`. An
+oversized body is rejected by `tower_http`'s `RequestBodyLimitLayer` at
+`[server] max_body_bytes` (default 2 MiB) with a bare `413` and no Sunrise error
+envelope — well below the 10 MiB cap this section assumes.
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| GET | `/api/v1/identities?handle=<h>` | — | `{ identity_id, identity_pub_s, identity_pub_d, fingerprint_qr }` |
-| GET | `/api/v1/identities/<idn_…>` | — | as above |
+### Identity discovery (for sharing) — NOT IMPLEMENTED
 
-The user's `identity_pub_*` is signed-by-self; a hostile server substituting keys is detectable via OOB fingerprint check.
+Neither route below is mounted; there is no `routes/identities.rs`. Sharing
+depends on discovery, and [`../11-adr/0024-key-hierarchy.md`](../11-adr/0024-key-hierarchy.md)
+makes the point in the other direction: under the derived-key model there is no
+unit smaller than "everything" to grant, so discovery would have had nothing to
+serve even if it existed.
+
+| Method | Path | Body | Returns | Status |
+|---|---|---|---|---|
+| GET | `/api/v1/identities?handle=<h>` | — | `{ identity_id, identity_pub_s, identity_pub_d, fingerprint_qr }` | **NOT IMPLEMENTED** |
+| GET | `/api/v1/identities/<idn_…>` | — | as above | **NOT IMPLEMENTED** |
+
+The user's `identity_pub_*` is signed-by-self; a hostile server substituting keys is detectable via OOB fingerprint check. (ADR-0024 replaces self-signature with identity-signed device certs, which changes what this route would have to return.)
 
 ### Devices
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/devices` | `{ device_pub_s, device_pub_d, device_cert, nickname, platform }` | `{ device_id }` |
+| POST | `/api/v1/devices` | `{ device_pub_s, device_pub_d?, device_cert?, nickname, platform, app_version? }` | `201` + `{ device_id }` |
 | DELETE | `/api/v1/devices/<dev_id>` | — | 204 (revocation; only callable by another paired device) |
 | GET | `/api/v1/devices` | — | `[DeviceMeta]` |
-| POST | `/api/v1/devices/<dev_id>/push_token` | `{ provider, token }` | 204 |
+| POST | `/api/v1/devices/push-tokens` | `PushRegistration` = `{ device_id, platform, token }` | `200` + `{ "registered": true }` |
 
-Device revocation deletes the Postgres row in the request's transaction (synchronous DELETE). Tokens already in flight may still succeed for up to 5 s while connection-affinity caches expire; clients SHOULD NOT rely on instantaneous propagation, and operator docs document this 5 s window.
+The push-token route takes the device id **in the body**, not in the path: it is
+`POST /api/v1/devices/push-tokens`, and `PushRegistration.device_id` (26
+Crockford base-32 characters; the alias `device_id_hex` is still parsed) is
+validated against the caller's own account by `Store::active_device` before the
+token is stored. A device id the caller does not own — or one it owns but has
+revoked — is a `403 AUTH_DEVICE_NOT_OWNER`, so ownership and revocation are
+settled in one lookup. `platform` is the `PushPlatform` enum (`apns` / `fcm` /
+`webpush`), not a free-form `provider` string.
+
+`POST /api/v1/devices` validates `device_pub_s` as a parseable Ed25519 key,
+`nickname` as 1..=64 bytes, and `platform` against the six-value list in
+`DeviceMeta`; each failure is a `400 VALIDATION_INVALID`. It rides the bootstrap
+exemption, because the device it registers cannot have signed the request.
+
+#### Revocation is a soft delete
+
+Revocation does **not** delete a row, and there is no Postgres. `Store::revoke_device`
+runs one SQLite transaction that sets `revoked = 1, revoked_at_ms = <now>` on
+the matching row and deletes that device's `push_tokens` entries. The device row
+survives on purpose: `DeviceMeta.revoked` and `revoked_at_ms` are part of the
+`GET /api/v1/devices` contract, so a listing has to be able to report a device
+as revoked rather than as absent.
+
+Three consequences are observable and tested:
+
+- **A device cannot revoke itself.** `routes/devices.rs` refuses a `DELETE`
+  whose target is the caller's own bound device with `403 AUTH_DEVICE_NOT_OWNER`.
+  A device that can revoke itself is a device a thief can use to erase the
+  evidence; signing out locally is a key wipe, not a server call.
+- **Revoking twice is a `404 DEVICE_NOT_FOUND`**, because the `UPDATE` is
+  guarded by `revoked = 0` and a zero-row update maps to `StoreError::NotFound`.
+  Revoking another account's device lands in the same place — the account id is
+  in the `WHERE` clause, not in a comparison afterwards.
+- **The effect is immediate for REST.** One connection behind a mutex means the
+  update is visible to the very next request; `active_device` filters revoked
+  rows, so the device stops authenticating at once. There is no 5 s
+  connection-affinity window and no cache to expire — an earlier draft of this
+  document asked clients to tolerate one, and nothing in the code produces it.
+  For the `/sync` session, see [`auth.md`](./auth.md) §device-binding.
 
 #### `DeviceMeta` schema
 
@@ -71,7 +193,7 @@ DeviceMeta = {
   device_id:       tstr,        ; Crockford base32 of 16 bytes
   nickname:        tstr,        ; user-set; ≤ 64 bytes; default = platform default ("MacBook Air", etc.)
   platform:       "ios" / "android" / "macos" / "windows" / "linux" / "web",
-  app_version:    tstr,         ; e.g. "1.4.2"
+  app_version:    tstr / null,  ; e.g. "1.4.2"; client-reported, absent by default
   created_at_ms:   uint,
   last_seen_at_ms: uint,
   revoked:         bool,
@@ -85,8 +207,9 @@ DeviceMeta = {
 |---|---|---|---|
 | 400 | `VALIDATION_*` | Bad CBOR, wrong field type, invalid `device_pub_*`. | No. |
 | 401 | `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` | See Account errors. | See Account errors. |
-| 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account. | No. |
-| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any device on this account. | No. |
+| 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
+| 403 | `AUTH_DEVICE_SIG_INVALID` | `X-Sunrise-Device-Sig` present but unverifiable, no `Date` header alongside it, or `Date` outside ±300 s. Also returned when `require_device_sig` is set and the header is absent. | No (re-sign with a correct clock). |
+| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. | No. |
 
 ### Blobs
 
@@ -100,7 +223,13 @@ it is the **content address** of bytes the server has not seen yet.
 | POST | `/api/v1/blobs/finalize` | `{ upload_id, content_hash, chunk_hashes }` | `{ blob_id, size_bytes, chunk_count }` |
 | GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
 
-Every route is authenticated and device-bound like the rest of the REST API.
+Every route is authenticated and device-bound like the rest of the REST API —
+`routes/blobs.rs` runs the full `authenticate` pipeline on all four. `init`
+answers `200`, a chunk `PUT` answers `204`, and `finalize` answers `200`.
+Alongside the hash checks, `init` and `finalize` enforce
+`1 <= chunk_count <= 4096`, `1 <= chunk_bytes <= 1 MiB`, and a
+100 MB per-attachment ceiling from
+[`../02-domain/attachments.md`](../02-domain/attachments.md) §Size policy.
 
 `chunk_hashes` is an array of `BLAKE3(ciphertext_chunk)` as 64 lowercase hex
 characters, one per chunk, in order; its length — not `init`'s advisory
@@ -122,8 +251,20 @@ a cross-tenant read primitive — one account naming another's blob by its hash
 some other account holds those bytes.
 
 Self-host writes chunks to the local filesystem and returns relative
-`chunk_urls`; a managed deployment substitutes presigned URLs (upload URLs
-expiring 1 hour after issuance, download URLs 24 hours).
+`chunk_urls` of the form `/api/v1/blobs/<upload_id>/<i>`, which the `PUT`
+handler serves — this is the built path, and `upload_id` is `up_` followed by 16
+random bytes in lowercase hex. A managed deployment would substitute presigned
+URLs (upload URLs expiring 1 hour after issuance, download URLs 24 hours);
+**no presigned-URL path is implemented**, and there is no object store to sign
+against.
+
+The commit order is load-bearing and is not the outbox pattern
+[`relay-and-blob-storage.md`](./relay-and-blob-storage.md) describes: `finalize`
+re-reads every pending chunk, checks each against the client's per-chunk BLAKE3
+and the concatenation against `content_hash`, writes the chunks under the
+content address, and writes the **manifest last**. A reader that finds no
+manifest sees no blob, so a crash mid-commit leaves an invisible partial rather
+than a short read.
 
 **Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
 an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
@@ -140,15 +281,22 @@ period — so it lands with the GC slice rather than as a bare unlink.
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
 | 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
-| 429 | `AUTH_QUOTA_EXCEEDED` | Account is hard-capped (>110% of plan, see [`billing.md`](./billing.md)). Header `Retry-After` carries seconds until period end. | After upgrade or period reset. |
+| 429 | `AUTH_QUOTA_EXCEEDED` | **NOT IMPLEMENTED.** Account is hard-capped (>110% of plan, see [`billing.md`](./billing.md)). Header `Retry-After` carries seconds until period end. | After upgrade or period reset. |
 
-### Sharing
+### Sharing — NOT IMPLEMENTED
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| POST | `/api/v1/shares` | `{ stream_id, recipient_idn, share_envelope }` | `{ share_id }` |
-| DELETE | `/api/v1/shares/<share_id>` | — | 204 |
-| GET | `/api/v1/shares/incoming` | — | `[{ share_id, granter_idn, share_envelope, created_at }]` |
+No `routes/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
+`/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
+[ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
+derived-key model there is no key unit smaller than the whole vault to grant,
+so the `share_envelope` this section posts has nothing to carry until that ADR
+lands.
+
+| Method | Path | Body | Returns | Status |
+|---|---|---|---|---|
+| POST | `/api/v1/shares` | `{ stream_id, recipient_idn, share_envelope }` | `{ share_id }` | **NOT IMPLEMENTED** |
+| DELETE | `/api/v1/shares/<share_id>` | — | 204 | **NOT IMPLEMENTED** |
+| GET | `/api/v1/shares/incoming` | — | `[{ share_id, granter_idn, share_envelope, created_at }]` | **NOT IMPLEMENTED** |
 
 `POST /api/v1/shares` is idempotent on `(stream_id, recipient_idn)`:
 - If a `pending` or `accepted` grant already exists, return `200 OK` with the existing `share_id`.
@@ -158,13 +306,33 @@ The `share_envelope` is opaque to the server.
 
 ### Health / meta
 
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| GET | `/api/v1/meta` | — | `{ server_version, protocol_version, oidc_issuer, oidc_client_id, capabilities, max_op_size, max_blob_size, device_binding_mode }` |
-| GET | `/api/v1/health` | — | 200 if alive |
-| GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise |
+| Method | Path | Body | Returns | Status |
+|---|---|---|---|---|
+| GET | `/api/v1/meta` | — | `MetaResponse` (below) | implemented |
+| GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
+| GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise | **NOT IMPLEMENTED** |
 
-The deep readiness check returns `200 {"ok":true,"checks":{...}}` only if all of:
+`MetaResponse` (`routes/meta.rs`) is:
+
+```
+{ server_app_v, wire_proto_supported: [uint], crypto_suite_supported: [uint],
+  doc_schema_floor, capabilities, oidc_issuer, oidc_client_id,
+  device_binding_mode, device_binding_required }
+```
+
+Version fields are **arrays** of supported versions sourced from
+`sunrise_cbor::version`, not the single `protocol_version` an earlier draft
+named, and there is no `server_version`, `max_op_size` or `max_blob_size` field.
+`/meta` is deliberately unauthenticated: a client must be able to read the
+issuer before it has a token.
+
+`GET /api/v1/health` takes no parameters and always answers `200
+{"status":"ok"}` — the handler consults nothing, so it is a liveness probe and
+not a readiness one. The deep check below is specified and unbuilt; a `?deep=1`
+query is ignored, which means an operator wiring it as a readiness probe today
+gets an unconditional `200`.
+
+The deep readiness check would return `200 {"ok":true,"checks":{...}}` only if all of:
 
 1. `SELECT 1` from primary DB within 2 s.
 2. Object store HEAD on `_health/probe` within 5 s.
@@ -172,30 +340,47 @@ The deep readiness check returns `200 {"ok":true,"checks":{...}}` only if all of
 
 Otherwise it returns `503` with a body listing the failed checks.
 
-`oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration.
+`oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration. Both are `null` in single-tenant self-host mode, where no issuer is configured.
 
 ## Errors
 
 JSON body:
 
+The envelope `ApiError` actually renders carries two members and no
+`retry_after_seconds`:
+
 ```json
 {
     "error": {
-        "code": "QUOTA_EXCEEDED",
-        "message": "…",        // safe-for-logs
-        "retry_after_seconds": 300
+        "code": "VALIDATION_INVALID",
+        "message": "…"         // safe-for-logs
     }
 }
 ```
 
-Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error.
+Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
-### Quota responses
+### Quota responses — NOT IMPLEMENTED
+
+Neither response below is produced. `error.rs`'s `codes` module defines no quota
+code at all; the shared catalogue in `sunrise-error` (`codes.toml`) declares
+`AUTH_QUOTA_EXCEEDED` and `STORAGE_QUOTA_EXCEEDED`, and the relay emits neither.
+No handler counts storage, ops, or devices against a plan.
 
 - **Hard quota exceeded** (over 110% of plan, or post-grace downgrade): `429 Too Many Requests`, body `{ "code":"AUTH_QUOTA_EXCEEDED", ... }`, `Retry-After: <seconds-until-period-end>` header.
 - **Soft warning** (within 7-day grace, 100%–110%): `202 Accepted`, header `X-Sunrise-Quota-Warning: true`, body includes `quota_used_ratio`.
 
-## Rate limits
+## Rate limits — NOT IMPLEMENTED
+
+There is no rate-limiting middleware anywhere in `crates/sunrise-server`. The
+only `tower-http` layers `build_router` mounts are `CorsLayer`,
+`RequestBodyLimitLayer` and the hand-assembled trace layer; nothing counts
+requests per IP, per account, or per token. An unauthenticated caller can hit
+`/api/v1/meta`, `/api/v1/health` and `/metrics` at whatever rate the socket
+allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
+`401`s.
+
+The target, when it is built:
 
 Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
 Per-account: see [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md).
@@ -206,15 +391,19 @@ Most "API" calls in a typical app — CRUD on tasks — are *not* server API cal
 
 ## Endpoint availability by deployment
 
+Only the single-binary column exists today; the other two describe deployments
+that have not been built.
+
 | Endpoint | Managed | Self-host (default) | Self-host (single-binary) |
 |---|---|---|---|
-| `/api/v1/accounts` | yes | yes | yes |
-| `/api/v1/accounts/me/*` | yes | yes | yes |
-| `/api/v1/identities` (discovery) | yes | yes | yes |
-| `/api/v1/devices/*` | yes | yes | yes |
-| `/api/v1/devices/<id>/push_token` | yes | optional (operator's APNs/FCM creds) | no |
-| `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | yes (local-disk-backed) |
-| `/api/v1/shares/*` | yes | yes | yes |
-| `/api/v1/meta`, `/api/v1/health` | yes | yes | yes |
+| `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
+| `/api/v1/accounts/me/recovery_blob`, `/api/v1/accounts/me/delete/*` | yes | yes | **no route** |
+| `/api/v1/identities` (discovery) | yes | yes | **no route** |
+| `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
+| `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
+| `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
+| `/api/v1/shares/*` | yes | yes | **no route** |
+| `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |
+| `/metrics` (router root, not under `/api/v1`) | yes | yes | **yes — built, unauthenticated** |
 
-Clients query `/api/v1/meta`'s `capabilities` field on connect and adapt UI affordances accordingly (e.g. hide "enable push notifications" if push is unavailable).
+Clients query `/api/v1/meta`'s `capabilities` field on connect and adapt UI affordances accordingly (e.g. hide "enable push notifications" if push is unavailable). Today that field is the constant `REQUIRED_SERVER_BITS`, so it reports the required set rather than what this deployment can actually do.

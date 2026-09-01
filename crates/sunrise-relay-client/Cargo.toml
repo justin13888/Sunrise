@@ -1,0 +1,42 @@
+[package]
+name = "sunrise-relay-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "The generated REST client for the Sunrise relay, and the account/device bootstrap that calls it"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The five crates spargen's generated runtime is written against. It embeds its
+# own support code rather than shipping a runtime crate, so `spargen` itself
+# never appears in the runtime dependency tree — only these do, and generation
+# audits this manifest against them before rustc sees the emitted client.
+#
+# Three are declared here rather than inherited: spargen audits this manifest
+# against the floors its generated runtime is tested at, and the workspace's own
+# requirements sit below them. Raising the floor for one crate is narrower than
+# moving the whole workspace to satisfy a generator.
+bytes = { workspace = true }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# `/sync/events` is a typed SSE response, which lowers to a stream.
+futures-core = "0.3.32"
+
+sunrise-error = { workspace = true }
+sunrise-http-sig = { workspace = true }
+sunrise-onboarding = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+spargen = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

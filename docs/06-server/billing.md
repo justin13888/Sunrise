@@ -6,6 +6,19 @@ status: accepted
 
 Self-host has no billing. Skip this spec for self-host operators.
 
+> **Implementation status: none of this is built.** There is no Stripe client in
+> the workspace, no `processed_stripe_events` table, no webhook route, and no
+> quota accounting anywhere in `crates/sunrise-server`. The only trace of a plan
+> is `accounts.tier`, a `TEXT` column that `Store::resolve_account` sets to
+> `'free'` at provisioning and that nothing ever updates or reads for a
+> decision; it is surfaced verbatim as `AccountInfo.tier`. No handler counts
+> storage, ops, blobs or devices against a limit, and `error.rs`'s `codes`
+> module defines no quota code — so the `429`/`202` responses below cannot be
+> produced. Read this document as a specification.
+>
+> Managed cloud is itself unbuilt: the relay ships in one shape, the self-host
+> single binary. See [`overview.md`](./overview.md).
+
 ## Plans
 
 | Plan | Price (illustrative) | Storage | Devices | Shared streams | Push/day |
@@ -17,16 +30,22 @@ Self-host has no billing. Skip this spec for self-host operators.
 
 Numbers are placeholders pending real cost analysis; do not promote them externally until pricing is finalized.
 
-## Stripe model
+## Stripe model — NOT IMPLEMENTED
 
 - Subscriptions managed via Stripe Customer Portal.
 - Customer Portal handles upgrades, downgrades, payment methods, invoices.
 - Sunrise server stores: `stripe_customer_id`, `plan`, `current_period_end`, *not* card data.
 - Webhook signing: the `Stripe-Signature` header is verified per Stripe's spec (HMAC-SHA256 of timestamp + body, with timestamp tolerance ≤ 5 minutes). Webhook handling is idempotent on Stripe `event.id`, deduplicated via the `processed_stripe_events` table (INSERT … ON CONFLICT DO NOTHING). Rows in `processed_stripe_events` are retained for **30 days**.
 
-## Plan enforcement
+## Plan enforcement — NOT IMPLEMENTED
 
-Quota checks run on op write, blob upload, and device registration.
+Quota checks are specified to run on op write, blob upload, and device
+registration. None runs. Every limit that *is* enforced today is a fixed
+constant, not a plan: `[server] max_body_bytes` (2 MiB default), the blob
+route's 1 MiB chunk / 4096 chunk / 100 MB blob ceilings, and the relay log's
+per-channel 30-day / 256 MiB retention bounds. `Store::active_device_count`
+exists and is reported in `AccountInfo`, but nothing compares it to a device
+cap.
 
 | Phase | Behavior |
 |---|---|
@@ -47,7 +66,7 @@ The 7-day soft-grace window covers transient overages before the hard cap engage
 
 - Downgrade preserves all data; the user is asked to free space if over the new limit.
 - The downgrade grace window is **30 days**: writes that would exceed the new plan's limit return `202 + X-Sunrise-Quota-Warning`; after 30 days, they are hard-rejected.
-- Account deletion at any time triggers full data deletion within 30 days.
+- Account deletion at any time triggers full data deletion within 30 days. (Account deletion has no route — see [`api.md`](./api.md) §account.)
 
 ## Self-host conversion
 

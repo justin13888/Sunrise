@@ -12,14 +12,14 @@
     clippy::doc_markdown
 )]
 
-use sunrise_server::{build_router, ServerConfig, ServerState};
+use sunrise_server::{ServerConfig, ServerState};
 
 async fn boot() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = build_router(ServerState::new(ServerConfig::default()));
+    let state = ServerState::new(ServerConfig::default());
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = sunrise_server::serve(state, listener).await;
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     addr

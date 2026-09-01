@@ -103,8 +103,14 @@ run = "cargo test --workspace --all-targets"
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
 
+# `spargen` reads the committed file, so it is an input rather than a report:
+# `the_committed_description_is_current` fails until this has been re-run.
+[tasks.openapi]
+description = "Regenerate the OpenAPI description from the handlers that produce it"
+run = "cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json"
+
 [tasks.bench]
-description = "Run the Criterion benchmark suite (submit / query_today / fts / ws_handshake)"
+description = "Run the Criterion benchmark suite (submit / query_today / fts / sync_session)"
 run = "cargo bench -p sunrise-bench"
 
 [tasks.bench-baseline]

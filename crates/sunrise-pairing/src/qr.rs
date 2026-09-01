@@ -8,7 +8,8 @@
 //! - `pair_id`: 16 random bytes, base64url no-pad.
 //! - `n_static_pub`: N's ephemeral X25519 static public, base64url no-pad.
 //! - `account_email_hash`: 4-byte hash of the normalized email, 8 hex chars.
-//! - `relay_url`: HTTPS or WSS, ≤ 256 bytes.
+//! - `relay_url`: the relay origin, HTTPS, ≤ 256 bytes. (Was "HTTPS or
+//!   WSS" until ADR-0023 replaced the WebSocket with an SSE stream over HTTP.)
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -133,7 +134,7 @@ mod tests {
             pair_id,
             n_static_pub: n_static,
             account_email_hash: "abcdef01".to_string(),
-            relay_url: "wss://relay.example/sync".to_string(),
+            relay_url: "https://relay.example".to_string(),
         }
     }
 

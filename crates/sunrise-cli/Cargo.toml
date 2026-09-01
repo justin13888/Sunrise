@@ -31,11 +31,12 @@ sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
 sunrise-log = { workspace = true }
-sunrise-sync = { workspace = true, features = ["ws"] }
+sunrise-onboarding = { workspace = true }
+sunrise-relay-client = { workspace = true }
+sunrise-sync = { workspace = true, features = ["sse"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 # Live-sync integration test (tests/live_sync.rs) boots the real relay in-proc.
 sunrise-server = { workspace = true }
-axum = { workspace = true }
 tempfile = "3"

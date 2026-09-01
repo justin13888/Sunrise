@@ -22,7 +22,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0002 | [Shared core in Rust](./0002-shared-core-rust.md) | accepted |
 | 0003 | [CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md) | superseded by 0014 |
 | 0004 | [Crypto primitives selection](./0004-crypto-primitives.md) | accepted |
-| 0005 | [WebSocket as default sync transport](./0005-sync-transport.md) | accepted |
+| 0005 | [WebSocket as default sync transport](./0005-sync-transport.md) | superseded by 0023 |
 | 0006 | [TUI built with Ratatui](./0006-tui-framework.md) | superseded by 0019 |
 | 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted (0019 defers every platform but macOS; the shared-core half is unchanged) |
 | 0008 | [Local FTS over server-side search](./0008-search-strategy.md) | accepted |
@@ -38,6 +38,11 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0018 | [Local schema collapses to one pre-1.0 baseline](./0018-storage-baseline-reset.md) | accepted |
 | 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec) |
 | 0020 | [Three capabilities leave the v1 MUST set](./0020-v1-must-demotions.md) | accepted (amends the client parity matrix) |
+| 0021 | [`kynos` + an authoritative OpenAPI 3.2 document replace hand-written axum routing](./0021-kynos-openapi-server.md) | accepted |
+| 0022 | [`header_sig_v2` signs canonical JSON (RFC 8785)](./0022-device-signature-canonical-json.md) | accepted (forced by 0021) |
+| 0023 | [Sync moves to SSE downstream and typed POST upstream](./0023-sse-sync-transport.md) | accepted (supersedes 0005) |
+| 0024 | [Stream keys are random and wrapped, not derived from the vault root](./0024-key-hierarchy.md) | accepted |
+| 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024) |
 
 ## When to write a new ADR
 

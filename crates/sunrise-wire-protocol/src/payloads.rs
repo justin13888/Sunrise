@@ -298,6 +298,104 @@ canonical_codec!(RefreshTokenAckPayload);
 mod tests {
     use super::*;
 
+    /// Declaration order MUST already be canonical-CBOR order.
+    ///
+    /// `encode_canonical` sorts map keys by encoded length then bytewise, so it
+    /// is correct whatever order the struct declares. What it cannot do is tell
+    /// anyone when the two have diverged — and the divergence is not harmless.
+    /// Every payload here carries a hand-written comment claiming its fields
+    /// are "ordered for canonical CBOR (key length then bytewise)", and nothing
+    /// checked it: `serde`'s derived `Serialize` emits declaration order, so a
+    /// field appended in the wrong place makes the plain encoding and the
+    /// canonical one two different byte strings for one value. Anything that
+    /// hashes or signs a payload without routing through `encode_canonical`
+    /// then disagrees with anything that does.
+    ///
+    /// So this asserts the property the comments assert, for every type the
+    /// `canonical_codec!` macro is applied to. A field added in the wrong
+    /// position fails here rather than in whatever later reads the bytes.
+    #[test]
+    fn declaration_order_is_canonical_order() {
+        fn assert_canonical<T: serde::Serialize + core::fmt::Debug>(label: &str, v: &T) {
+            let mut plain = Vec::new();
+            ciborium::ser::into_writer(v, &mut plain).expect("plain encode");
+            let canonical = encode_canonical(v).expect("canonical encode");
+            assert_eq!(
+                plain, canonical,
+                "{label}: struct field order is not canonical CBOR key order; \
+                 reorder the declaration (key length, then bytewise) so the \
+                 derived Serialize already emits canonical bytes"
+            );
+        }
+
+        assert_canonical(
+            "OpBatchPayload",
+            &OpBatchPayload {
+                ops: vec![vec![1, 2, 3]],
+                batch_id: 7,
+                stream_id: [9u8; 16],
+            },
+        );
+        assert_canonical(
+            "AckPayload",
+            &AckPayload {
+                batch_id: 7,
+                stream_id: [9u8; 16],
+                server_first_seen_ms: 1_700_000_000_000,
+            },
+        );
+        assert_canonical(
+            "SubscribePayload",
+            &SubscribePayload {
+                streams: vec![SubscribeEntry {
+                    cursors: vec![],
+                    stream_id: [3u8; 16],
+                }],
+            },
+        );
+        assert_canonical(
+            "CaughtUpPayload",
+            &CaughtUpPayload {
+                stream_id: [4u8; 16],
+            },
+        );
+        assert_canonical(
+            "NackPayload",
+            &NackPayload {
+                code: ErrorCode::SyncOpInvalid,
+                reason: "nope".into(),
+                batch_id: 7,
+                stream_id: [9u8; 16],
+            },
+        );
+        assert_canonical(
+            "ErrorPayload",
+            &ErrorPayload {
+                code: ErrorCode::SyncOpInvalid,
+                reason: "nope".into(),
+            },
+        );
+        assert_canonical(
+            "ClosePayload",
+            &ClosePayload {
+                code: ErrorCode::AuthTokenExpired,
+                reason: "bye".into(),
+            },
+        );
+        assert_canonical(
+            "RefreshTokenPayload",
+            &RefreshTokenPayload {
+                token: "opaque".into(),
+            },
+        );
+        assert_canonical(
+            "RefreshTokenAckPayload",
+            &RefreshTokenAckPayload {
+                expires_at_ms: 1_700_000_000_000,
+            },
+        );
+    }
+
     #[test]
     fn close_round_trip() {
         let c = ClosePayload::auth_token_expired();

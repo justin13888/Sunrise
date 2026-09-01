@@ -32,12 +32,24 @@ pub struct ServerConfig {
     /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory on
     /// authenticated REST requests (`header_sig_v1`).
     ///
-    /// Off by default so a single-binary self-host works before any device is
-    /// registered. When a binding *is* present it is always verified, whatever
-    /// this says — the flag governs whether absence is tolerated, never whether
-    /// a bad signature is.
+    /// Defaults to **on wherever an OIDC issuer is configured**, and off for
+    /// the single-tenant self-host verifier, which has no devices to tell apart
+    /// and for which [`ConfigError::DeviceSigWithoutOidc`] rejects the flag
+    /// anyway. Set it explicitly to override either way.
+    ///
+    /// When a binding *is* present it is always verified, whatever this says —
+    /// the flag governs whether absence is tolerated, never whether a bad
+    /// signature is.
     #[serde(default)]
     pub require_device_sig: bool,
+    /// How often a live `/sync` session re-checks that its device is still
+    /// registered, in milliseconds.
+    ///
+    /// The bound on how long a revoked device keeps receiving fan-out on a
+    /// socket it already holds. Exposed rather than hard-coded so a test can
+    /// drive the revocation path without waiting the production interval.
+    #[serde(default = "default_device_recheck_ms")]
+    pub device_recheck_ms: u64,
     /// Clock skew tolerated on token `exp`/`nbf`, in seconds.
     #[serde(default = "default_token_leeway_secs")]
     pub token_leeway_secs: u64,
@@ -72,6 +84,12 @@ const fn default_allow_signup() -> bool {
 /// One minute, the usual allowance for unsynchronised consumer clocks.
 const fn default_token_leeway_secs() -> u64 {
     60
+}
+
+/// 30 s: short enough that revoking a device means something promptly, long
+/// enough that an idle socket is not a per-second query against `devices`.
+fn default_device_recheck_ms() -> u64 {
+    30_000
 }
 
 /// Five minutes. Long enough that the JWKS is not refetched per request, short
@@ -161,7 +179,7 @@ impl ServerConfig {
 }
 
 /// Whether `bind` keeps the listener on the local host only.
-fn binds_loopback(bind: &str) -> bool {
+pub(crate) fn binds_loopback(bind: &str) -> bool {
     let host = bind.rsplit_once(':').map_or(bind, |(h, _)| h);
     let host = host.trim_start_matches('[').trim_end_matches(']');
     match host.parse::<std::net::IpAddr>() {
@@ -182,6 +200,7 @@ impl Default for ServerConfig {
             oidc_client_id: None,
             allow_signup: default_allow_signup(),
             require_device_sig: false,
+            device_recheck_ms: default_device_recheck_ms(),
             token_leeway_secs: default_token_leeway_secs(),
             jwks_default_ttl_secs: default_jwks_ttl_secs(),
             sqlite_path: None,
@@ -452,8 +471,19 @@ impl FileConfig {
         if let Some(v) = self.auth.allow_signup {
             base.allow_signup = v;
         }
-        if let Some(v) = self.auth.require_device_sig {
-            base.require_device_sig = v;
+        match self.auth.require_device_sig {
+            Some(v) => base.require_device_sig = v,
+            // Unset means "decide from the deployment", not "off". A relay with
+            // a real issuer can tell devices apart, so binding is required
+            // there by default: leaving it off would mean a stolen bearer alone
+            // is enough, which is the property device binding exists to remove.
+            // Single-tenant self-host cannot tell devices apart at all -- every
+            // caller maps to one account -- and `validate` rejects the
+            // combination outright, so it stays off there.
+            //
+            // Applied after `oidc_issuer` above, so it reads the issuer this
+            // file actually resolved to rather than the default.
+            None => base.require_device_sig = base.oidc_issuer.is_some(),
         }
         if let Some(v) = self.auth.token_leeway_secs {
             base.token_leeway_secs = v;

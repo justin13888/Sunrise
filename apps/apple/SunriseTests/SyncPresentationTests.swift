@@ -117,32 +117,40 @@ struct SyncPlanTests {
     @Test
     func aSelfHostRelayConnectsWithNoBearer() {
         #expect(
-            SyncPlan(relayURL: "ws://127.0.0.1:8443/sync", accessToken: nil)
-                == .connect(url: "ws://127.0.0.1:8443/sync", bearer: nil)
+            SyncPlan(relayURL: "http://127.0.0.1:8443", accessToken: nil)
+                == .connect(url: "http://127.0.0.1:8443", bearer: nil)
         )
     }
 
     /// An empty token is not a token. Passing it through produces a
-    /// "malformed bearer" rejection instead of the anonymous upgrade the user
+    /// "malformed bearer" rejection instead of the anonymous request the user
     /// actually wanted.
     @Test
     func anEmptyTokenIsNoToken() {
         #expect(
-            SyncPlan(relayURL: "wss://relay.example/sync", accessToken: "  ")
-                == .connect(url: "wss://relay.example/sync", bearer: nil)
+            SyncPlan(relayURL: "https://relay.example", accessToken: "  ")
+                == .connect(url: "https://relay.example", bearer: nil)
         )
         #expect(
-            SyncPlan(relayURL: "wss://relay.example/sync", accessToken: "tok")
-                == .connect(url: "wss://relay.example/sync", bearer: "tok")
+            SyncPlan(relayURL: "https://relay.example", accessToken: "tok")
+                == .connect(url: "https://relay.example", bearer: "tok")
         )
     }
 
+    /// The scheme this test asserted was the *only* valid one until ADR-0023,
+    /// and is now the only invalid one. Sync is an SSE stream over HTTP, so a
+    /// relay is reached at its origin.
     @Test
-    func aNonWebSocketURLIsRefusedBeforeDialling() {
-        guard case let .off(reason) = SyncPlan(relayURL: "https://relay.example", accessToken: nil) else {
-            Issue.record("an https URL must not be dialled as a WebSocket")
+    func aWebSocketURLIsRefusedWithAMigrationHint() {
+        guard case let .off(reason) = SyncPlan(relayURL: "wss://relay.example/sync", accessToken: nil)
+        else {
+            Issue.record("a ws:// URL names nothing this app can reach")
             return
         }
-        #expect(reason.contains("ws://"))
+        #expect(reason.contains("http://"))
+        // The hint matters more than the refusal: a user with a working relay
+        // URL from before the change needs to be told what to change it to,
+        // not merely that it stopped working.
+        #expect(reason.contains("WebSocket"))
     }
 }

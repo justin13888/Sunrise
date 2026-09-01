@@ -16,6 +16,17 @@ status: accepted
 > collaborative note bodies or per-field merge become real requirements. See
 > [`../implementation/overview.md`](../implementation/overview.md) for what is
 > actually live.
+>
+> **Read every section below in the conditional, whatever tense it is written
+> in.** Nothing in this document is implemented. `loro` appears in no
+> `Cargo.toml` in the workspace; there is no `StreamCore`, no
+> `StreamCore::mutate`, and no `CROSS_STREAM_REF` error anywhere in `crates/`;
+> no snapshot op exists; the "CRDT properties tested" at the end are tested for
+> the LWW engine, not for a CRDT. What v1 actually ships is
+> `sunrise-core::engine` merging whole entities by
+> `(hlc, device_id, seq)` — see
+> [`conflict-resolution.md`](./conflict-resolution.md) for the rules in force
+> and [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) for why.
 
 ## Choice of CRDT library
 

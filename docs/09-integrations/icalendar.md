@@ -4,7 +4,12 @@ status: accepted
 
 # iCalendar (.ics) Import / Export
 
-For one-shot data movement, in addition to the live CalDAV/Google integrations.
+**One-shot file import and export. There are no subscription URLs.** `URL` is
+explicitly unsupported by the parser — it raises a notice like any other
+unmodelled property — and nothing in the workspace fetches an `.ics` over the
+network. Google Calendar is deferred and unreachable
+([`google-calendar.md`](./google-calendar.md)), and CalDAV is an explicit
+non-goal, so this is the only calendar path a v1 user can actually take.
 
 > **Status: partly implemented. This document is the target; the list below is
 > what ships.** `crates/sunrise-integrations` implements the syntax layer
@@ -37,10 +42,14 @@ For one-shot data movement, in addition to the live CalDAV/Google integrations.
 >   nothing in the `Block` schema backs the rest, and emitting empty properties
 >   would be inventing content. No `DTSTAMP` is written, which some strict
 >   readers require.
-> - **Dedup is by `(source, uid)` but not via the columns below.** The schema
->   has no `external_id` or `import_source_id`; the pair is hashed into the
->   Block's **id**, exactly as a materialized routine occurrence is. That gives
->   the same idempotence with no side table to keep in step with the vault.
+> - **Dedup is by `(source, uid)`, hashed into the Block's id — not by a
+>   column.** The pair is hashed into the Block's **id**, exactly as a
+>   materialized routine occurrence hashes `(routine, occurrence)` into a
+>   Task's, which gives idempotent re-import with no side table to keep in step
+>   with the vault. There is no `import_source_id`, and the `external_id` field
+>   [ADR-0025](../11-adr/0025-integration-account-entity.md) adds **is not the
+>   dedup key** — it exists to round-trip a foreign id outward. See
+>   [`../02-domain/time-blocks.md`](../02-domain/time-blocks.md).
 > - **Imported entities are not marked read-only.** Nothing enforces it.
 >
 > What does hold as written: line unfolding and escapes both directions, CRLF
@@ -52,7 +61,12 @@ For one-shot data movement, in addition to the live CalDAV/Google integrations.
 
 - File picker → parse `.ics` → create Blocks tagged `source = import:ics`.
 - Imported entities are read-only.
-- Re-importing the same file dedups by **`(import_source_id, uid)`**: the same UID from two different sources creates two Blocks (same `external_id`, different `import_source_id`); the same UID from the same source on a subsequent import is treated as an update.
+- **Re-importing the same file is idempotent**, because the Block's id *is* the
+  hash of `(source, uid)`: the same UID from the same source computes the same
+  id and updates the Block already there, and the same UID from two different
+  sources computes two ids and so creates two Blocks. No side table, no lookup,
+  nothing to keep in step with the vault. `ICS_SOURCE` is the constant the file
+  importer passes.
 
 ## Export
 
@@ -68,6 +82,30 @@ Same as CalDAV mapping table. We attempt to preserve fidelity round-trip when po
 
 Identical to the engine subset documented in [`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md). Lossy imports/exports are detected and surfaced; everything outside the subset is rejected with a clear diagnostic.
 
+### What the subset REPORTS rather than silently drops
+
+This is the property that holds today, and it is the one worth protecting: a
+parser that drops what it does not model without saying so is how a user
+discovers, weeks later, that half their calendar is missing. Every one of the
+following raises an `ICalNotice` that the caller shows — the CLI prints them,
+and the macOS app groups them by code:
+
+`VTODO`, `VJOURNAL`, `VFREEBUSY`, `VALARM`, `VTIMEZONE`,
+`RDATE` / `EXDATE` / `RECURRENCE-ID`, `ATTACH`, `ATTENDEE`, `ORGANIZER`,
+`CATEGORIES`, `GEO`, `URL`, and **any `X-` property**.
+
+Two deliberate carve-outs:
+
+- **`RRULE` is not on that list at the syntax layer.** It is read and written
+  back verbatim, so a file round-tripping through `ical` keeps its rule. The
+  notice comes one layer up, from `ical_map`, which has nowhere to put it — see
+  the banner at the top of this file.
+- **Seven properties are dropped silently**, and they are exactly
+  `ical::BOOKKEEPING`: `DTSTAMP`, `SEQUENCE`, `CREATED`, `LAST-MODIFIED`,
+  `TRANSP`, `CLASS`, `STATUS`. They are iCalendar's own record-keeping, carry
+  nothing a user typed, and Sunrise is not a CalDAV store obliged to preserve
+  them byte-for-byte.
+
 ## Edge cases
 
 - **Long descriptions:** no client-side truncation. Round-trip preserves DESCRIPTION verbatim. The Block's description field is plain text; iCalendar HTML in `X-ALT-DESC` is dropped on import (logged) and not regenerated on export.
@@ -78,9 +116,15 @@ Identical to the engine subset documented in [`../08-features/recurrence-engine.
   - A TZID that is not in `VTIMEZONE` and not in the IANA TZDB falls back to UTC and logs `int.import.tz_unknown`.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 
-## Subscribed `.ics` URLs
+## Subscribed `.ics` URLs — not in v1
 
-A remote `.ics` URL can be subscribed to like an inbound calendar:
+**There is no subscription mechanism, and `URL` is not even parsed.** The
+importer takes a file; there is no HTTP client in `crates/sunrise-integrations`
+for iCal, no poll cadence, no subscription config, and no place in the vault to
+store a subscription. `URL` is on the parser's explicitly-unmodelled list, so an
+`.ics` that carries one raises a notice rather than being followed. The section
+below is a target, and adding it means adding network fetching to a path that
+today only reads a file the user chose.
 
 - Periodic HTTPS GET, parse, treat as imported events.
 - Per-subscription poll cadence: default 1 hour, range 15 minutes – 24 hours, stored in the subscription config in the vault.
@@ -90,8 +134,23 @@ A remote `.ics` URL can be subscribed to like an inbound calendar:
 
 ## Privacy
 
-Subscribed URLs are fetched from the user's device, not the server. The .ics URL itself is stored in the vault config.
+Subscription URLs, if they land, are fetched from the user's device, not the
+server, and the URL itself lives in the vault. Today the privacy story is
+simpler and stronger: **a file import touches no network at all.**
 
 ## Test surface
 
-Round-trip fixtures live at `crates/sunrise-integrations/testdata/{google,apple,fastmail,outlook}/*.ics`. CI imports each fixture, exports it, diffs the result, and asserts that any differences fall within the documented "lossy" set. Raw VEVENT samples are included for parser tolerance.
+Round-trip fixtures live at
+`crates/sunrise-integrations/testdata/{google,apple,fastmail,outlook}/basic.ics`,
+driven by `crates/sunrise-integrations/tests/ical_vault.rs` against a real
+vault. They are **hand-written in the shape each vendor emits**, not captures —
+the README beside them says which structural habit each one reproduces — so a
+passing suite is evidence about the parser, not about a particular account.
+
+The named behaviours the suite pins, and each is one this document asserts
+above: re-import updates rather than duplicates
+(`re_importing_the_same_file_updates_rather_than_duplicates`), and does so
+across a vault close/reopen; the same UID under two sources is two Blocks; the
+four RFC 5545 time kinds survive into `SunriseTime` and back; export followed by
+re-import is the identity; a `VTODO` and an unknown `TZID` are **reported**
+rather than silently dropped.

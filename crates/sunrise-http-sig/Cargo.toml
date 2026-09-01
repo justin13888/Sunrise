@@ -1,0 +1,28 @@
+[package]
+name = "sunrise-http-sig"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "header_sig_v2: RFC 8785 canonical-JSON request signing, shared by the relay and its client"
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+serde_jcs = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

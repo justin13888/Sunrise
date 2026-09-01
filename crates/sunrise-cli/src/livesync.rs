@@ -31,10 +31,10 @@ use sunrise_core::{
     TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_sync::WsTransport;
+use sunrise_sync::SseTransport;
 
 /// Env var: relay `/sync` WebSocket URL. Unset ⇒ sync stays off.
-/// Example for the bundled self-host server: `ws://127.0.0.1:8443/sync`.
+/// Example for the bundled self-host server: `http://127.0.0.1:8443`.
 pub const ENV_SYNC_URL: &str = "SUNRISE_SYNC_URL";
 /// Env var: path to write this device's cert (canonical CBOR) on startup.
 pub const ENV_EXPORT_CERT: &str = "SUNRISE_EXPORT_CERT_FILE";
@@ -133,7 +133,7 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     }
 }
 
-/// Build a [`TransportFactory`] that dials `url` with the real [`WsTransport`]
+/// Build a [`TransportFactory`] that reaches `url` with the real [`SseTransport`]
 /// on every connect attempt (initial connect + every reconnect), presenting
 /// whatever bearer `credential` holds **at that moment**.
 ///
@@ -151,7 +151,7 @@ pub fn ws_factory(url: &str, credential: TokenSource) -> TransportFactory {
         let url = url.clone();
         let bearer = credential.get();
         Box::pin(async move {
-            let t = WsTransport::connect_with_bearer(&url, bearer.as_deref()).await?;
+            let t = SseTransport::connect_with_bearer(&url, bearer.as_deref());
             Ok(Box::new(t) as BoxTransport)
         }) as ConnectFuture
     })
@@ -282,7 +282,7 @@ pub async fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
 
 /// The `host[:port]` of a relay URL, for the `relay` log field.
 ///
-/// Everything after the authority is dropped: a `ws://…/sync?access_token=…`
+/// Everything after the authority is dropped: a `http://…?access_token=…`
 /// must never reach a log, and the host is all a connection diagnostic needs.
 /// Falls back to `"unknown"` rather than echoing an unparsable string back.
 #[must_use]
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn a_token_reaches_the_sync_config() {
         let plan = plan_from_env(&SyncEnv {
-            url: Some("ws://127.0.0.1:8443/sync".into()),
+            url: Some("http://127.0.0.1:8443".into()),
             token: Some("  eyJhbGciOiJSUzI1NiJ9  ".into()),
             stored_token: None,
             ..SyncEnv::default()
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn no_token_is_a_valid_plan() {
         let plan = plan_from_env(&SyncEnv {
-            url: Some("ws://127.0.0.1:8443/sync".into()),
+            url: Some("http://127.0.0.1:8443".into()),
             ..SyncEnv::default()
         });
         assert!(!plan.sync.as_ref().unwrap().credential.is_set());
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn a_blank_token_is_treated_as_unset() {
         let plan = plan_from_env(&SyncEnv {
-            url: Some("ws://127.0.0.1:8443/sync".into()),
+            url: Some("http://127.0.0.1:8443".into()),
             token: Some("   ".into()),
             stored_token: None,
             ..SyncEnv::default()
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn plan_reads_url_and_cert_paths_and_trims() {
         let env = SyncEnv {
-            url: Some("  ws://127.0.0.1:8443/sync ".into()),
+            url: Some("  http://127.0.0.1:8443 ".into()),
             export_cert: Some("/tmp/self.cbor".into()),
             trust_cert: Some("   ".into()), // whitespace-only -> None
             token: None,
@@ -394,7 +394,7 @@ mod tests {
         let plan = plan_from_env(&env);
         assert_eq!(
             plan.sync.as_ref().map(|s| s.url.as_str()),
-            Some("ws://127.0.0.1:8443/sync")
+            Some("http://127.0.0.1:8443")
         );
         assert_eq!(plan.export_cert, Some(PathBuf::from("/tmp/self.cbor")));
         assert_eq!(plan.trust_cert, None);
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn relay_host_keeps_only_the_authority() {
-        assert_eq!(relay_host("ws://127.0.0.1:8443/sync"), "127.0.0.1:8443");
+        assert_eq!(relay_host("http://127.0.0.1:8443"), "127.0.0.1:8443");
         assert_eq!(
             relay_host("wss://relay.example.com/sync"),
             "relay.example.com"
@@ -420,13 +420,13 @@ mod tests {
             relay_host("wss://user:hunter2@relay.example/sync?access_token=SECRET"),
             "relay.example"
         );
-        assert_eq!(relay_host("ws://h/sync#frag"), "h");
+        assert_eq!(relay_host("http://h#frag"), "h");
     }
 
     #[test]
     fn relay_host_falls_back_rather_than_echoing_garbage() {
         assert_eq!(relay_host(""), "unknown");
-        assert_eq!(relay_host("ws:///sync"), "unknown");
+        assert_eq!(relay_host("http:///"), "unknown");
     }
 
     #[test]

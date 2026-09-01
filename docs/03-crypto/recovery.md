@@ -6,6 +6,18 @@ status: accepted
 
 If all of a user's devices are lost or wiped, the recovery code restores access. **If the user lacks both their devices and their recovery code, the data is unrecoverable.** This is the fundamental cost of E2EE; we do not pretend otherwise, and we tell the user so before account creation completes.
 
+## Implementation status
+
+The **cryptography below is implemented and correct.** `crates/sunrise-crypto/src/recovery.rs` seals and unseals the blob exactly as specified: Argon2id version 0x13, m = 65536 KiB, t = 3, p = 1, 32-byte output; the blob is `magic(5) || salt(16) || nonce(24) || ct`; the AAD is `"sunrise.recovery_blob.v1" || identity_id_bytes`, so a blob cannot be replayed across accounts. `crates/sunrise-onboarding/src/recovery.rs` wraps the unseal as `recover_identity`.
+
+**The flow around it is not.** Specifically:
+
+* **BIP-39 is not implemented anywhere.** No wordlist, no encoder, no checksum validator. `sunrise-onboarding` says so in its own header: the crate "accepts the already-derived 32-byte seed". Steps 2 and 3 of §Recovery code have no code behind them.
+* **No client ever calls `seal_recovery_blob`** outside tests, so no blob is ever produced or uploaded. `AccountCreateRequest.recovery_blob` has no producer in the tree.
+* **The blob cannot be fetched back.** `recovery_blob` is a write-only column: `POST /api/v1/accounts` stores it (`crates/sunrise-server/src/store.rs`), and the only read route, `GET /api/v1/accounts/me`, returns `AccountInfo`, which has no blob field. **There is no `GET /accounts/me/recovery_blob` route**, and no email-OTP gate in front of one.
+* **Previous-blob retention is not implemented.** There is one `recovery_blob` column and no history table; the 30-day window in §Versioning describes nothing.
+* **Recovery today restores nothing readable.** The blob carries *identity* keys. In the tree's hierarchy, decryption depends solely on the vault root, which is a per-account random value in one machine's Keychain and in no backup — see [`identity-and-device-keys.md`](./identity-and-device-keys.md) §What is specified here vs. what is implemented. **Losing the last paired device is total, unrecoverable data loss.** [ADR-0024](../11-adr/0024-key-hierarchy.md) is the decision that fixes this; §Recovery flow step 8 below states what it changes.
+
 ## Recovery code
 
 - **Format.** 24 words from the BIP-39 English wordlist (`bip39-english.txt`, 2048 entries).
@@ -93,9 +105,15 @@ When a client uploads a new blob (e.g. on passphrase or recovery-code rotation),
 5. Client AEAD-opens `recovery_blob_ct` to recover identity keys.
 6. Client generates new `D_S`, `D_D` device keys, signs a fresh `DeviceCert` with `ID_S_priv`, and publishes it.
 7. Client SHOULD prompt the user to **revoke any other devices** and **rotate every Stream key** (see [`key-rotation.md`](./key-rotation.md)) — recovery implies an unknown-state environment.
-8. Stream keys themselves are NOT in the recovery blob. The recovered device joins as a fresh device of the identity; it receives current Stream keys via the normal sibling-device key-envelope flow once another paired device of this identity comes online — but in the pure recovery scenario, no such device exists. In that case the user has identity but no Stream content keys; they MUST contact any peer with whom they had shared a Stream and request a re-share, or accept that historical content is lost.
+8. Stream keys themselves are NOT in the recovery blob. They do not need to be. Per [ADR-0024](../11-adr/0024-key-hierarchy.md) decision 4, every `(stream_id, epoch)` key is sealed by HPKE to **two** recipient classes: to each device's `ID_D_pub`, and to the **identity**'s `ID_D_pub`. The identity-sealed `key_envelope` ops live in the op log, which the relay stores as ciphertext it cannot open, and they are opened by `ID_D_priv` — which this blob already carries. The recovered device replays them and reads its history. **A pure recovery, with no surviving device and no peer, restores readable content.**
 
-This last point is non-negotiable in v1: storing wrapped Stream keys server-side under recovery-stretched material would re-introduce a single point of compromise; we considered it and rejected it. (See [`../11-adr/0004-crypto-primitives.md`](../11-adr/0004-crypto-primitives.md) for the rationale.)
+### The cost of that, stated plainly
+
+This is not free, and the tradeoff belongs here rather than in a footnote. `ID_D_priv` becomes a **long-lived unwrapping key**: its compromise reaches every epoch ever sealed to it, and those envelopes sit on the relay where an attacker who has the key can also fetch them. Epoch rotation bounds *forward* exposure — a revoked device reads nothing written after the new epoch — but it does not bound backward exposure, and nothing here pretends it does.
+
+What gates that key is the recovery code itself: 256 bits of BIP-39 entropy through Argon2id at m = 65536, t = 3, p = 1. That is the same gate already protecting the blob, so identity-sealing the Stream keys adds no *new* single point of compromise — it widens the blast radius of the one that already existed.
+
+The alternative this replaces was to store wrapped Stream keys server-side under recovery-stretched material. That is still rejected, for the reason it always was: it puts key material the server holds behind a human-memorable secret. Identity-sealed `key_envelope` ops avoid it — the server holds ciphertext addressed to a public key, and never holds anything wrapped under recovery-stretched material. (See [`../11-adr/0004-crypto-primitives.md`](../11-adr/0004-crypto-primitives.md) and [ADR-0024](../11-adr/0024-key-hierarchy.md) §What this fixes in `recovery.md`.)
 
 ## Recovery code rotation
 

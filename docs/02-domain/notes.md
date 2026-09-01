@@ -8,11 +8,15 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 
 > **Status: the `Note` entity is unreachable in v1.** `crates/sunrise-domain/src/note.rs`
 > defines the struct and `0013_baseline.sql` creates a `notes` table, and
-> nothing in between exists: no `Command`, no op kind, no `Query`, no UniFFI
-> surface, and no writer to the table. `Query::EntityById` refuses
+> nothing in between exists: **zero ops, zero commands, zero queries, zero
+> writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
+> surface, and nothing that writes the table. `Query::EntityById` refuses
 > `EntityKind::Note` explicitly. What *is* live is the `body` **field** on
 > Task, Stream and Routine — which is a `NoteBody`, a different thing from a
-> `Note`. See [`../implementation/overview.md`](../implementation/overview.md).
+> `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
+> free-standing entity while keeping notes-as-a-field a v1 MUST, and kept the
+> struct and the table deliberately rather than deleting them. See also
+> [`../implementation/overview.md`](../implementation/overview.md).
 
 ## Why constrained rich text (not Markdown)
 

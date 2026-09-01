@@ -12,8 +12,8 @@ status: accepted
 | User identity private key | Critical | User devices only (OS keystore) |
 | Per-device key | High | User devices only (OS keystore) |
 | Sync metadata (op count, timestamps) | Low–Medium | Server + devices |
-| Account email (login) | Low | Server (hashed where possible) |
-| Push tokens (APNs/FCM) | Low | Server |
+| Account email (login) | Low | Server, in plaintext (`accounts.email`) |
+| Push tokens (APNs/FCM) | Low | Server, in plaintext |
 | Encrypted blobs | Low (ciphertext) | Server + devices |
 
 ## Adversaries
@@ -25,7 +25,7 @@ status: accepted
 **Goal denied.** Reading or modifying user data; impersonating a user or device.
 
 **Mitigations.**
-- TLS 1.3 with cert pinning on managed clients.
+- TLS 1.3. **Certificate pinning is not implemented** and is deferred past v1 — [`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md) says so for the pairing relay, and the same holds for sync: `rustls` validates against the webpki/Mozilla root bundle, with no pinned key anywhere in the tree.
 - All sync ops are E2E-encrypted *under TLS*; TLS compromise alone yields ciphertext.
 - Replay defense via per-device monotonic op counters.
 
@@ -39,7 +39,7 @@ status: accepted
 - Content stored only as ciphertext under per-record keys derived from per-stream keys held by paired devices.
 - Op log entries are signed by the originating device key; server cannot forge.
 - Server cannot decrypt without device or recovery material.
-- Tampering with stored ciphertext is detected at decryption (AEAD) and via Merkle-style hashing of op log (see [`audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)).
+- Tampering with stored ciphertext is detected at decryption (AEAD) — implemented, and the mechanism that actually holds today. The Merkle-style hashing of the op log (see [`audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)) exists only as two hash functions with no caller outside their frozen-vector tests; it detects nothing yet, and neither does the rollback high-water-mark named under Residual risk.
 
 **Residual risk.** A hostile server can:
 - Withhold ops (deny service). Detectable via gaps in op counters.
@@ -53,7 +53,7 @@ status: accepted
 **Goal denied.** Persistent access *after* the user has noticed and revoked.
 
 **Mitigations.**
-- Device revocation: any other paired device can revoke; identity key rotates; new per-stream keys are derived; the revoked device's ops are no longer accepted by other devices.
+- Device revocation: any other paired device can revoke; identity key rotates; new per-Stream keys are issued; the revoked device's ops are no longer accepted by other devices. **Not implemented, and not implementable on the current key hierarchy** — a paired device holds the account-wide vault root, and that root *is* the whole key schedule, so nothing a remaining device emits takes it back. See [ADR-0024](../11-adr/0024-key-hierarchy.md) and [`../03-crypto/key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status. Until that slice lands, A3's denied goal is **not** denied: a compromised device retains read access indefinitely.
 - Optional periodic re-auth (passphrase / biometric) before plaintext is decrypted on disk.
 - OS keystore (Keychain / Keystore / TPM) for at-rest protection of device keys; unlocked only with user presence on platforms that support it.
 
@@ -110,5 +110,5 @@ status: accepted
 ## Privacy commitments (operational)
 
 - The Sunrise-managed cloud server logs request metadata for ≤14 days, no payloads.
-- Push tokens stored on the server are encrypted at rest with a key the operator does not back up.
+- Push tokens stored on the server are held in **plaintext**. The `push_tokens` table in `crates/sunrise-server/src/store.rs` stores `(device_id, platform, token, updated_at_ms)` with no wrapping, and the relay's own SQLite database is not SQLCipher-encrypted (see [`trust-and-server-role.md`](./trust-and-server-role.md)). Encrypting them at rest under a key the operator does not back up is the target, not the state; until it lands, an operator or a storage leak sees every device's APNs/FCM token. The A2 residual-risk list above already assumes the server can read them.
 - Account deletion removes all blob storage and metadata within 30 days.

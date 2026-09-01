@@ -21,7 +21,7 @@ struct PairingModelTests {
         var root: Data?
     }
 
-    private static let relay = "wss://relay.example/sync"
+    private static let relay = "https://relay.example"
     private static let vaultRoot = Data(repeating: 0xAB, count: 32)
 
     private func shownText(_ model: PairingModel) -> String? {

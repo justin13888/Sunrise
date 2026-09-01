@@ -688,6 +688,12 @@ pub struct StreamDraftIn {
     pub review_cadence: Option<StreamReviewCadence>,
     /// Default reminder lead time for this stream's tasks, in seconds.
     pub reminder_lead_s: Option<u32>,
+    /// Optional icon name.
+    #[uniffi(default = None)]
+    pub icon: Option<String>,
+    /// Context applied to Tasks captured into this stream.
+    #[uniffi(default = None)]
+    pub default_context: Option<EntityRef>,
 }
 
 impl From<StreamDraftIn> for sunrise_domain::StreamDraft {
@@ -699,6 +705,8 @@ impl From<StreamDraftIn> for sunrise_domain::StreamDraft {
             parent_id: d.parent_id,
             review_cadence: d.review_cadence,
             reminder_lead_s: d.reminder_lead_s,
+            icon: d.icon,
+            default_context: d.default_context,
         }
     }
 }
@@ -753,6 +761,18 @@ pub struct StreamEdit {
     /// Clear it, falling back to the device default.
     #[uniffi(default = false)]
     pub clear_reminder_lead_s: bool,
+    /// New icon name.
+    #[uniffi(default = None)]
+    pub set_icon: Option<String>,
+    /// Clear the icon.
+    #[uniffi(default = false)]
+    pub clear_icon: bool,
+    /// New default Context for Tasks captured into this stream.
+    #[uniffi(default = None)]
+    pub set_default_context: Option<EntityRef>,
+    /// Clear the default Context.
+    #[uniffi(default = false)]
+    pub clear_default_context: bool,
 }
 
 impl From<StreamEdit> for sunrise_domain::StreamPatch {
@@ -768,6 +788,8 @@ impl From<StreamEdit> for sunrise_domain::StreamPatch {
             paused: e.paused,
             paused_until: patch_field(e.set_paused_until, e.clear_paused_until),
             reminder_lead_s: patch_field(e.set_reminder_lead_s, e.clear_reminder_lead_s),
+            icon: patch_field(e.set_icon, e.clear_icon),
+            default_context: patch_field(e.set_default_context, e.clear_default_context),
         }
     }
 }

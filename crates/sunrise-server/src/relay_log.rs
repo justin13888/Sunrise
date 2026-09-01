@@ -84,6 +84,16 @@ impl Default for DurableCaps {
 /// A channel key: `(account_hash, stream_id)`, the same key the ring uses.
 pub type ChannelKey = ([u8; 16], [u8; 16]);
 
+/// One replayed frame: its durable `relay_frames.id` and its verbatim bytes.
+///
+/// The id is what an SSE `id:` field carries, so `Last-Event-ID` resumes from a
+/// position the server can act on rather than one it has to guess.
+pub type ReplayFrame = (u64, Vec<u8>);
+
+/// What a replay yields: the frames to send, and the gaps retention made
+/// unrecoverable.
+pub type Replay = (Vec<ReplayFrame>, Vec<CursorGap>);
+
 impl Store {
     /// Append one relayed frame and enforce retention for its channel.
     ///
@@ -142,6 +152,30 @@ impl Store {
         key: ChannelKey,
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), StoreError> {
+        let (frames, gaps) = self.relay_replay_after(key, 0, cursors)?;
+        Ok((frames.into_iter().map(|(_, bytes)| bytes).collect(), gaps))
+    }
+
+    /// [`relay_replay`](Self::relay_replay), keeping each frame's durable id and
+    /// resuming after `after_id`.
+    ///
+    /// The id is `relay_frames.id`: durable, per-channel and monotonic in
+    /// arrival order, which is exactly what an SSE `id:` field has to be for
+    /// `Last-Event-ID` to mean anything. ADR-0023 calls resumption "a rename of
+    /// machinery that exists", and this is the rename — the filtering rule below
+    /// is untouched.
+    ///
+    /// `after_id` of 0 replays everything the cursors do not cover, which is a
+    /// first connection. A non-zero one is a reconnect saying where it got to,
+    /// and it takes precedence over the cursors for that reason: the client is
+    /// reporting what it actually received on *this* stream rather than what it
+    /// had applied when it subscribed.
+    pub fn relay_replay_after(
+        &self,
+        key: ChannelKey,
+        after_id: u64,
+        cursors: &HashMap<[u8; 16], u64>,
+    ) -> Result<Replay, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.conn.lock();
 
@@ -160,6 +194,16 @@ impl Store {
             conn.prepare("SELECT device_id, max_seq FROM relay_frame_heads WHERE frame_id = ?1")?;
         let mut out = Vec::new();
         for (id, bytes) in rows {
+            let seq = u64::try_from(id).unwrap_or(0);
+            // A reconnect that names where it got to has said everything the
+            // cursors would: it is reporting delivery on this stream rather
+            // than application in its op log, which is the stricter of the two.
+            if after_id > 0 {
+                if seq > after_id {
+                    out.push((seq, bytes));
+                }
+                continue;
+            }
             let heads = heads_stmt
                 .query_map(params![id], |r| {
                     Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
@@ -168,7 +212,7 @@ impl Store {
             if covered(&heads, cursors) {
                 continue;
             }
-            out.push(bytes);
+            out.push((seq, bytes));
         }
 
         let mut gap_stmt = conn.prepare(
