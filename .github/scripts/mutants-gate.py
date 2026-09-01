@@ -33,6 +33,12 @@ Unviable mutants — ones that do not compile — are excluded from both sides.
 They are an artifact of mutating typed code, not a statement about the tests,
 and their count varies with rustc rather than with anything a person did.
 
+Which leaves a crate whose mutants are *all* unviable with a zero denominator
+and no rate at all. That is not a pass: it means a crate in scope produced
+nothing anyone could score, and the cause is upstream — an `exclude_re` that
+matched too much, or a crate that stopped compiling under mutation. It is
+reported and it fails.
+
 Sharding
 --------
 
@@ -75,9 +81,9 @@ recorded floor is a crate this gate is not protecting, so it fails rather than
 noting it in passing — an unenforced crate that reads as a warning is how most
 of a workspace's mutants end up scored and then ignored.
 
-Exit 0 clean, 1 on a regression, on a crate with no recorded floor, or on a
-run that arrived incomplete, 2 if the gate could not run at all (which is a
-failure, not a pass).
+Exit 0 clean, 1 on a regression, on a crate with no recorded floor, on a crate
+with nothing scorable, or on a run that arrived incomplete, 2 if the gate could
+not run at all (which is a failure, not a pass).
 """
 
 from __future__ import annotations
@@ -210,6 +216,17 @@ def main() -> int:
 
     broken = {crate for crate, _, _ in incomplete}
 
+    # A crate whose every mutant was unviable has a zero denominator: no rate
+    # to compare and no floor to record. Skipping it quietly is the same
+    # silent-unscored failure --expect-shards exists to close, reached by
+    # another route — an exclude_re that swallowed the crate, or a crate that
+    # stopped compiling under mutation, would both read as a clean pass.
+    unscorable = [
+        (crate, bucket[UNVIABLE])
+        for crate, bucket in sorted(counts.items())
+        if crate not in broken and caught_pct(bucket) is None
+    ]
+
     if incomplete:
         print("\nmutation run incomplete — an infrastructure failure, not a "
               "test regression:", file=sys.stderr)
@@ -228,6 +245,14 @@ def main() -> int:
             print("\nrefusing to record a floor from an incomplete run",
                   file=sys.stderr)
             return 1
+
+    if unscorable and args.update:
+        for crate, unviable in unscorable:
+            print(f"{crate}: no scorable mutants ({unviable} unviable)",
+                  file=sys.stderr)
+        print("refusing to record a floor with no scorable mutants",
+              file=sys.stderr)
+        return 1
 
     try:
         baseline = json.loads(args.baseline.read_text())
@@ -254,7 +279,11 @@ def main() -> int:
     unfloored = []
     for crate, bucket in sorted(counts.items()):
         measured = caught_pct(bucket)
-        if measured is None or crate in broken:
+        if crate in broken:
+            continue
+        if measured is None:
+            print(f"  {crate}: no scorable mutants "
+                  f"({bucket[UNVIABLE]} unviable)")
             continue
         shards = len(sources.get(crate, ()))
         expected = args.expect_shards.get(crate)
@@ -296,6 +325,19 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    if unscorable:
+        print("\nno scorable mutants:", file=sys.stderr)
+        for crate, unviable in unscorable:
+            print(f"  {crate}: no scorable mutants ({unviable} unviable)",
+                  file=sys.stderr)
+        print(
+            "\nEvery mutant in these crates failed to compile, so the rate has "
+            "a zero\ndenominator and there is nothing to compare. That is a "
+            "question about the\nbuild or about .cargo/mutants.toml's "
+            "exclude_re, not about the tests.",
+            file=sys.stderr,
+        )
+
     if unfloored:
         print("\nno floor recorded for:", file=sys.stderr)
         for crate, measured in unfloored:
@@ -316,7 +358,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if failures or unfloored or incomplete:
+    if failures or unfloored or incomplete or unscorable:
         return 1
 
     target = baseline.get("target_caught_pct")
