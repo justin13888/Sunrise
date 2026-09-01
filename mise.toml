@@ -343,10 +343,17 @@ echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutan
 [tasks.mutants-baseline]
 description = "Record the current mutation-coverage floors into mutants/baseline.json"
 shell = "bash -c"
-# `--expect-shards` is passed through to the gate, which refuses to record a
-# floor from a crate whose shards did not all arrive. Recording one from a
-# partial run banks a number nobody measured, and it banks it low.
-usage = 'flag "--expect-shards <expect_shards>" default=""'
+# `--expect-shards` is required, not optional, and this is the whole point of
+# the task. The glob below picks up every run sitting under out/mutants/, and
+# what is sitting there is whatever you happened to run last — one shard of
+# sunrise-domain, say. Recorded as a floor, that shard's rate stands for the
+# whole crate: measured over a sixth of its mutants and thereafter too low to
+# fail on anything. Naming the counts is the one moment where someone states
+# what the floor is supposed to cover, so the gate can check it did.
+#
+# For a deliberately partial floor, call the gate directly with
+# `--allow-partial`, which records without the check and says so.
+usage = 'flag "--expect-shards <expect_shards>" required=#true'
 run = """
 set -euo pipefail
 # Deliberately separate from `mutants`, and deliberately not something the gate
@@ -366,15 +373,8 @@ echo "recording from:"
 for outcome in "${outcomes[@]}"; do
   echo "  $outcome"
 done
-# Spelled out twice rather than built in an array: an empty array expanded
-# under `set -u` is either an error or one empty argument depending on the
-# bash, and an empty argument here reaches the gate as a path to read.
-if [ -n "$usage_expect_shards" ]; then
-  .github/scripts/mutants-gate.py "${outcomes[@]}" --update \
-    --expect-shards "$usage_expect_shards"
-else
-  .github/scripts/mutants-gate.py "${outcomes[@]}" --update
-fi
+.github/scripts/mutants-gate.py "${outcomes[@]}" --update \
+  --expect-shards "$usage_expect_shards"
 """
 
 # --- Release artifacts ---

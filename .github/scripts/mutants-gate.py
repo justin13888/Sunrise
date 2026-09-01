@@ -75,11 +75,18 @@ Usage
     mutants-gate.py OUTCOMES... [--baseline mutants/baseline.json]
                                 [--tolerance 0.5] [--update]
                                 [--expect-shards crate=N,...]
+                                [--allow-partial]
 
 `--update` rewrites the baseline from this run instead of judging it. That is
 how the first baseline is recorded and how an intentional improvement is
 banked; it is deliberately a separate, explicit invocation rather than
 something the gate does on its own when the number goes up.
+
+It writes whatever it is handed, which is the whole risk: one shard of a
+six-shard crate would be banked as that crate's floor, measured on a sixth of
+its mutants and permanently too low to catch anything. So `--update` requires
+`--expect-shards`, or an explicit `--allow-partial` that says on the way past
+that the floors describe only what ran.
 
 Every crate that appears in a run must carry a floor. A measured crate with no
 recorded floor is a crate this gate is not protecting, so it fails rather than
@@ -201,6 +208,10 @@ def main() -> int:
                         help="how many outcomes files each crate should arrive "
                              "in; a crate that arrives short is a broken run, "
                              "not a coverage regression")
+    parser.add_argument("--allow-partial", action="store_true",
+                        help="with --update, record floors without a "
+                             "completeness check; the floors then describe "
+                             "exactly what ran and nothing more")
     args = parser.parse_args()
 
     counts, sources = tally(args.outcomes)
@@ -288,6 +299,28 @@ def main() -> int:
     recorded = baseline.setdefault("crates", {})
 
     if args.update:
+        if not args.expect_shards and not args.allow_partial:
+            print(
+                "refusing to record a floor from an unverified set of runs.\n"
+                "\n"
+                "--update banks whatever it is handed. Hand it one shard of a "
+                "six-shard\ncrate and that shard becomes the crate's floor: a "
+                "rate measured over a\nsixth of its mutants, recorded as "
+                "though it covered all of them, and\nthereafter too low to "
+                "fail on anything.\n"
+                "\n"
+                "Say what should be here:\n"
+                "  --expect-shards sunrise-domain=6,...  checked against what "
+                "arrived\n"
+                "  --allow-partial                       unchecked, for a "
+                "deliberately partial floor",
+                file=sys.stderr,
+            )
+            return 1
+        if args.allow_partial and not args.expect_shards:
+            print(f"--allow-partial: recording from {len(args.outcomes)} "
+                  "outcomes file(s) with no completeness check. These floors "
+                  "describe what ran, not the crates.")
         for crate, bucket in sorted(counts.items()):
             recorded[crate] = {
                 "caught": bucket[CAUGHT],
