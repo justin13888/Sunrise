@@ -325,7 +325,13 @@ jobs:
           pattern: mutants-*
           path: outcomes
       - name: Compare against mutants/baseline.json
-        run: .github/scripts/mutants-gate.py outcomes/*/outcomes.json
+        # `--expect-shards` mirrors the matrix above, and has to be edited with
+        # it. Without it a shard whose runner died is silently a crate that
+        # scores low, and the gate blames the tests for a dead runner. With it,
+        # a short crate is reported as a broken run and left unscored.
+        run: |
+          .github/scripts/mutants-gate.py outcomes/*/outcomes.json \
+            --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1
 
   determinism:
     name: Determinism gate

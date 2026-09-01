@@ -41,6 +41,15 @@ runs it in shards and each shard writes its own `outcomes.json`. This accepts
 any number of them and aggregates by crate before comparing, so a sharded run
 and a single-process run produce the same verdict.
 
+That aggregation has one failure mode worth naming. A shard whose runner died
+contributes no outcomes, and the mutants it would have caught are simply absent
+from the numerator — a lost shard and a deleted test look identical in the
+arithmetic, and the gate would blame the tests for an infrastructure failure.
+`--expect-shards crate=N,...` closes that: it says how many files each crate's
+outcomes should arrive in, and a crate that arrives short is reported as a
+broken run and excluded from the floor comparison rather than scored on a
+partial denominator. CI passes the counts from its own matrix.
+
 Tolerance
 ---------
 
@@ -54,6 +63,7 @@ Usage
 
     mutants-gate.py OUTCOMES... [--baseline mutants/baseline.json]
                                 [--tolerance 0.5] [--update]
+                                [--expect-shards crate=N,...]
 
 `--update` rewrites the baseline from this run instead of judging it. That is
 how the first baseline is recorded and how an intentional improvement is
@@ -65,8 +75,9 @@ recorded floor is a crate this gate is not protecting, so it fails rather than
 noting it in passing — an unenforced crate that reads as a warning is how most
 of a workspace's mutants end up scored and then ignored.
 
-Exit 0 clean, 1 on a regression or on a crate with no recorded floor, 2 if the
-gate could not run at all (which is a failure, not a pass).
+Exit 0 clean, 1 on a regression, on a crate with no recorded floor, or on a
+run that arrived incomplete, 2 if the gate could not run at all (which is a
+failure, not a pass).
 """
 
 from __future__ import annotations
@@ -98,9 +109,37 @@ def crate_of(path: str) -> str | None:
     return None
 
 
-def tally(paths: list[pathlib.Path]) -> dict[str, dict[str, int]]:
-    """Aggregate every outcomes.json into per-crate counts."""
+def parse_expect_shards(spec: str) -> dict[str, int]:
+    """`sunrise-core=4,sunrise-sync=1` -> {"sunrise-core": 4, "sunrise-sync": 1}."""
+    expected: dict[str, int] = {}
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        crate, sep, count = item.partition("=")
+        if not crate or not sep or not count.isdigit() or int(count) < 1:
+            raise argparse.ArgumentTypeError(
+                f"cannot parse {item!r}; expected crate=N with N >= 1"
+            )
+        expected[crate] = int(count)
+    if not expected:
+        raise argparse.ArgumentTypeError("expected at least one crate=N")
+    return expected
+
+
+def tally(
+    paths: list[pathlib.Path],
+) -> tuple[dict[str, dict[str, int]], dict[str, set[str]]]:
+    """Aggregate every outcomes.json into per-crate counts.
+
+    Also returns, per crate, the set of input files that carried any of its
+    mutants. That is the only evidence available that all of a crate's shards
+    arrived: a shard that never ran leaves no file and no trace in the counts,
+    so without counting the files a lost shard is indistinguishable from a
+    crate whose tests got worse.
+    """
     counts: dict[str, dict[str, int]] = {}
+    sources: dict[str, set[str]] = {}
     for path in paths:
         try:
             document = json.loads(path.read_text())
@@ -125,10 +164,11 @@ def tally(paths: list[pathlib.Path]) -> dict[str, dict[str, int]]:
             bucket = counts.setdefault(
                 crate, {CAUGHT: 0, MISSED: 0, TIMEOUT: 0, UNVIABLE: 0}
             )
+            sources.setdefault(crate, set()).add(str(path))
             summary = outcome.get("summary")
             if summary in bucket:
                 bucket[summary] += 1
-    return counts
+    return counts, sources
 
 
 def caught_pct(bucket: dict[str, int]) -> float | None:
@@ -145,13 +185,49 @@ def main() -> int:
                         default=pathlib.Path("mutants/baseline.json"))
     parser.add_argument("--tolerance", type=float, default=0.5)
     parser.add_argument("--update", action="store_true")
+    parser.add_argument("--expect-shards", type=parse_expect_shards, default={},
+                        metavar="crate=N,...",
+                        help="how many outcomes files each crate should arrive "
+                             "in; a crate that arrives short is a broken run, "
+                             "not a coverage regression")
     args = parser.parse_args()
 
-    counts = tally(args.outcomes)
+    counts, sources = tally(args.outcomes)
     if not counts:
         print("no mutants found in the supplied outcomes; refusing to pass",
               file=sys.stderr)
         return 2
+
+    # Judged before anything else: a crate missing a shard has a numerator that
+    # never ran, and every number computed from it is a lie in the direction of
+    # "the tests got worse". Reported, excluded from the comparison, never
+    # written to the baseline.
+    incomplete = []
+    for crate, expected in sorted(args.expect_shards.items()):
+        seen = len(sources.get(crate, ()))
+        if seen != expected:
+            incomplete.append((crate, seen, expected))
+
+    broken = {crate for crate, _, _ in incomplete}
+
+    if incomplete:
+        print("\nmutation run incomplete — an infrastructure failure, not a "
+              "test regression:", file=sys.stderr)
+        for crate, seen, expected in incomplete:
+            mutants = sum(counts.get(crate, {}).values())
+            print(f"  {crate}: {seen}/{expected} shards, {mutants} mutants",
+                  file=sys.stderr)
+        print(
+            "\nA shard whose runner died contributes no outcomes, so the crate "
+            "scores\nlow for a reason no test change would explain. Re-run the "
+            "failed shards\nrather than touching the tests or the floor; these "
+            "crates were not scored.",
+            file=sys.stderr,
+        )
+        if args.update:
+            print("\nrefusing to record a floor from an incomplete run",
+                  file=sys.stderr)
+            return 1
 
     try:
         baseline = json.loads(args.baseline.read_text())
@@ -178,9 +254,15 @@ def main() -> int:
     unfloored = []
     for crate, bucket in sorted(counts.items()):
         measured = caught_pct(bucket)
-        if measured is None:
+        if measured is None or crate in broken:
             continue
-        counted = (
+        shards = len(sources.get(crate, ()))
+        expected = args.expect_shards.get(crate)
+        tally_line = (
+            f"      {shards}/{expected} shards" if expected is not None
+            else f"      {shards} shard(s)"
+        ) + (
+            f", {sum(bucket.values())} mutants "
             f"({bucket[CAUGHT]} caught, {bucket[MISSED]} missed, "
             f"{bucket[TIMEOUT]} timeout, {bucket[UNVIABLE]} unviable)"
         )
@@ -189,13 +271,19 @@ def main() -> int:
             # Deliberately not a note. This crate was mutated, scored, and is
             # compared against nothing; treating that as informational is how a
             # gate reports on thousands of mutants while enforcing none of them.
-            print(f"  {crate}: {measured}% {counted} — NO FLOOR RECORDED")
+            print(f"  {crate}: {measured}% — NO FLOOR RECORDED")
+            print(tally_line)
             unfloored.append((crate, measured))
             continue
         verdict = "ok" if measured >= floor - args.tolerance else "REGRESSED"
-        print(f"  {crate}: {measured}% vs floor {floor}% {counted} — {verdict}")
+        print(f"  {crate}: {measured}% vs floor {floor}% — {verdict}")
+        print(tally_line)
         if verdict == "REGRESSED":
             failures.append((crate, measured, floor))
+
+    # The per-crate listing above is the evidence for the summaries below, and
+    # in CI both streams land in one log. Flush so they land in that order.
+    sys.stdout.flush()
 
     if failures:
         print("\nmutation coverage regressed:", file=sys.stderr)
@@ -221,13 +309,14 @@ def main() -> int:
             "\n"
             "  from a nightly run's artifacts:\n"
             "    gh run download <run-id> --pattern 'mutants-*' --dir outcomes\n"
-            "    .github/scripts/mutants-gate.py outcomes/*/outcomes.json --update\n"
+            "    .github/scripts/mutants-gate.py outcomes/*/outcomes.json \\\n"
+            "        --update --expect-shards <the counts in ci.yml's matrix>\n"
             "\n"
             "and commit mutants/baseline.json saying what the number is.",
             file=sys.stderr,
         )
 
-    if failures or unfloored:
+    if failures or unfloored or incomplete:
         return 1
 
     target = baseline.get("target_caught_pct")
