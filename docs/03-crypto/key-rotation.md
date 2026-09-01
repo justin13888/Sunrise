@@ -36,7 +36,16 @@ ADR-0024 makes Stream keys independently random per `(stream_id, epoch)`, wrappe
 4. It re-wraps each Stream key currently stored in `stream_keys` for this device under the new `D_D_pub'` (this is local-only; no peer involvement). The `stream_keys` table is created by [ADR-0024](../11-adr/0024-key-hierarchy.md) and is the shape this step assumes; per the banner above, nothing writes or re-wraps it yet.
 5. It emits a `device_revoke` op for the **old** key with `effective_at = now + 24h` (the overlap window).
 
-The relay continues to accept signed ops from the old device key until `effective_at`. After that, ops signed by the old key are rejected.
+**The overlap window is enforced by receiving clients, not by the relay.** A
+receiver applies an op signed by the old key while `now < effective_at` and drops
+it after; the check is a signature check against the `device_cert` set in the
+receiver's own vault. The relay evaluates no expiry and cannot — it has no
+`device_revoke` op to read, does not open envelopes, and holds no `effective_at`
+anywhere ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)
+§What the server explicitly does *not* do). Its own gate is the binary
+`devices.revoked` flag described under §Revocation below, which is time-less and
+sits on a different mechanism entirely: it refuses the *device's* credential, not
+ops signed by a superseded key.
 
 ## Stream key rotation (medium)
 
