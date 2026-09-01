@@ -392,6 +392,18 @@ impl Transport for SseTransport {
                 // it makes the next read reopen against the new set.
                 self.events = None;
                 self.buf.clear();
+                // And the resume point goes with it, which is the load-bearing
+                // half. `Last-Event-ID` says "I received everything up to here";
+                // the cursors in a `Subscribe` say "I have *applied* everything
+                // up to here". Those differ exactly when delivery succeeded and
+                // application did not — a dropped frame, a client that restarted
+                // mid-batch — and that is precisely when the driver re-sends
+                // `Subscribe` to recover. Keeping the id would resume past the
+                // ops the cursors are asking for, so the recovery path would
+                // silently skip what it exists to fetch. The stricter of the two
+                // statements wins, and a client restating its cursors is making
+                // the stricter one.
+                self.last_event_id = None;
             }
 
             MsgKind::OpBatch => {

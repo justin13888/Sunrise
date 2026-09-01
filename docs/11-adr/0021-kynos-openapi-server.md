@@ -146,3 +146,59 @@ in it — so "the emitted OpenAPI 3.2 document" is only true if 3.2 is *asked*
 for. `openapi_as(SpecVersion::V3_2)` targets rather than downgrades: it fails
 and names what blocks it instead of quietly emitting an older version. That is
 what the build calls, and what `the_router_describes_itself` asserts.
+
+
+## Second addendum — the first one was written against a README
+
+The addendum above was, in its own words, "written against the crate's README
+and feature list". Both of its load-bearing claims turned out to be wrong when
+the port reached the code, and the correction is recorded here rather than
+quietly applied, because the reasoning it replaced is the kind that reads
+convincingly and is not checkable from a README.
+
+**`upgrade_unchecked` was never available, and would not have worked.**
+
+1. It lives behind kynos's `unchecked` feature (`unchecked = ["dep:tower",
+   "dep:tower-service"]`), which this workspace does not enable and which
+   `server` does not pull in. `upgrade_unchecked`, `unchecked_reasons`,
+   `has_unchecked` and `into_tower_unchecked` do not exist in this build — so
+   the CI gate the addendum specified could not have been written, let alone
+   held.
+2. Even with the feature on, `kynos::server` calls hyper's `serve_connection`
+   rather than `serve_connection_with_upgrades`, so a WebSocket handshake cannot
+   complete. kynos's own `examples/unchecked.rs` answers `501` and says as much:
+   "a real upgrade hands the connection to a socket driver."
+
+A working `/sync` WebSocket would therefore have needed the feature enabled
+*and* a hand-written accept loop over `Service::call` with direct `hyper` and
+`tokio-tungstenite` dependencies — which is a second HTTP stack again, the thing
+the addendum believed it had removed.
+
+**What actually happened.** [ADR-0023](./0023-sse-sync-transport.md) landed in
+the same change, so `/sync` is describable and no waiver is taken anywhere. The
+gate is therefore the strict one this ADR called "unholdable for a project with
+a legitimate upgrade route": `.github/scripts/kynos-waiver-gate.py` asserts the
+`unchecked` feature is off, which is stronger than inspecting
+`unchecked_reasons()` because a hatch that does not compile cannot be reached by
+oversight either. `axum` and `tokio-tungstenite` did leave with this change, as
+the addendum predicted — for a different reason than it gave.
+
+**A second correction, to this ADR's own Decision text.** It says kynos "seals"
+nothing of the sort, but the *port* recorded a claim that it did: that
+`Describe` is sealed and `OperationCx` private, so a custom extractor cannot
+describe itself. That is false. `Describe` is a plain public trait carrying only
+a `diagnostic::on_unimplemented`, and `OperationCx` exposes `new`, `finish`,
+`add_parameter`, `set_request_body`, `add_security` and the rest. kynos's own
+`LastEventId` is a hand-written extractor and `examples/parameters.rs`
+advertises one. The device binding is `Signed<T>` — an extractor that parses and
+verifies in one step — for that reason.
+
+**A gap this ADR did not anticipate.** `spargen` rejects the way kynos describes
+a raw binary body. kynos emits the empty Schema Object, citing the shape
+OpenAPI 3.1 describes "by omitting things"; spargen requires a string-like or
+binary schema and refuses with `E009`. Both are first-party
+(`github.com/getkono`), so this ADR's own framing applies — "a gap in either is
+a fix we can make rather than a constraint we work around" — but until the two
+agree, the chunk `PUT` and the blob `GET` are omitted from the generated client
+with the reason recorded at the omission. No client uploads a chunk today, so
+nothing is currently lost.

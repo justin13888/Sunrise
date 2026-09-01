@@ -6,21 +6,23 @@ status: accepted
 
 Two surfaces: the **sync protocol** (over WebSocket; spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
 
-> **Implementation status.** `crates/sunrise-server/src/routes/` mounts exactly
-> five groups — `health`, `meta`, `accounts`, `blobs`, `devices` — plus
-> `/metrics` at the router root and `/sync`. Routes this document specifies that
-> **no handler serves** are marked **NOT IMPLEMENTED** in place; the spec is
-> kept because it is still the target, not because it is live. Where a live
-> route's shape differs from an earlier draft of this document, the live shape
-> is what is written here now.
+> **This document is no longer authoritative about shapes.**
+> [`schemas/openapi.v1.json`](../../schemas/openapi.v1.json) is, per
+> [ADR-0021](../11-adr/0021-kynos-openapi-server.md). It is generated from the
+> handlers, committed, and checked against them by
+> `the_committed_description_is_current` — so where this page and the
+> description disagree, the description is right and this page is stale.
 >
-> [ADR-0021](../11-adr/0021-kynos-openapi-server.md) supersedes the
-> hand-written `axum` routing this document describes: `kynos` plus a generated
-> OpenAPI 3.2 document becomes the contract, and that document — not this one —
-> becomes authoritative about request and response shapes.
-> [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) replaces
-> `header_sig_v1` below with `header_sig_v2`, which signs the RFC 8785 canonical
-> JSON of the request *value* rather than the received octets.
+> What is kept here is what a schema cannot carry: why an operation exists,
+> which failures are retryable, what order the two-phase commit runs in, and
+> the byte layouts the wire depends on.
+>
+> **Implementation status.** Every operation below is served, by
+> `crates/sunrise-server/src/api/`. `routes/`, the hand-written `axum` routing
+> earlier revisions described, is gone; so is the `/sync` WebSocket, replaced by
+> the SSE surface [ADR-0023](../11-adr/0023-sse-sync-transport.md) specifies.
+> Routes this document specifies that **no handler serves** are still marked
+> **NOT IMPLEMENTED** in place.
 
 ## REST endpoints
 
@@ -28,32 +30,36 @@ All endpoints are HTTPS. Authenticated requests carry a standard OIDC access tok
 
 ### Device binding (per-request)
 
-The `X-Sunrise-Device` header carries the `device_id` (Crockford base32 of 16 bytes) on every authenticated request. Every authenticated request is also accompanied by an `X-Sunrise-Device-Sig` header containing an Ed25519 detached signature over the canonical request line, the `Date` header, and a hash of the request body. The server validates that:
+The `X-Sunrise-Device` header carries the `device_id` (Crockford base32 of 16 bytes) on every authenticated request. Every authenticated request is also accompanied by an `X-Sunrise-Device-Sig` header containing an Ed25519 detached signature over the method, the target, the `Date` header, and a hash of the request body's **canonical form**. The server validates that:
 
 1. `device_id` exists in the account's device set and is not revoked.
 2. `X-Sunrise-Device-Sig` verifies under the device's signing key.
 3. The OIDC token's `https://sunrise.app/device_id` claim (URI-namespaced per RFC 7519 §4.2; issued by the IdP from the client's `claims` parameter) matches `X-Sunrise-Device` (defense in depth).
 
-Implemented in `auth/device_sig.rs` and `auth/request.rs`, with two live
-qualifications this document previously omitted:
+The mode is `header_sig_v2` ([ADR-0022](../11-adr/0022-device-signature-canonical-json.md)),
+and its byte layout is specified in [`auth.md`](./auth.md) §Device binding
+rather than left to an implementation. Two live qualifications:
 
-- The canonical string is pinned by `device_sig.rs`, not by this document:
-  `sunrise-device-sig-v1\n<METHOD>\n<path?query>\n<Date>\n<blake3-hex(body)>`,
-  no trailing newline, with `Date` checked against the injected clock inside
-  `MAX_CLOCK_SKEW_SECS` (±300 s).
 - The binding is **optional by default**. `[auth] require_device_sig` defaults
-  to `false`, so a request with no `X-Sunrise-Device` is accepted with
-  `Caller::device = None`. A binding that *is* present is always verified in
-  full, whatever the flag says; a signature that fails verification is a `403
-  AUTH_DEVICE_SIG_INVALID`, never an ignored header. `POST /accounts` and
-  `POST /devices` take a bootstrap exemption — a device cannot sign before it
-  exists.
+  to `false`, so a request with no `X-Sunrise-Device` is accepted with no
+  device resolved. A binding that *is* present is always verified in full,
+  whatever the flag says — a signature that fails verification is never an
+  ignored header. `POST /accounts` and `POST /devices` take a bootstrap
+  exemption: a device cannot sign before it exists.
+- Verification happens **after** the body is parsed, because what is signed is
+  the request's canonical form rather than the octets that carried it. A
+  malformed body therefore fails as a `400` before it can fail as a `401`, and
+  that ordering is observable.
 
-This `header_sig_v1` mode is the only mode for v1. Clients probe via
-`GET /api/v1/meta`, which returns `device_binding_mode` (`"header_sig_v1"`) and
-`device_binding_required` (the flag's value). `header_sig_v2` per
-[ADR-0022](../11-adr/0022-device-signature-canonical-json.md) supersedes the
-construction above; v1 signatures will not be accepted alongside it.
+Clients probe via `GET /api/v1/meta`, which returns `device_binding_mode`
+(`"header_sig_v2"`) and `device_binding_required` (the flag's value). v1
+signatures are not accepted: nothing was deployed under the old construction,
+so there is no window to support both, and supporting both would mean retaining
+the raw-body access ADR-0022 exists to remove.
+
+Implemented in `sunrise-http-sig` — shared, so the relay and the generated
+client cannot disagree about it — and reached through `api/signed.rs`, whose
+`Signed<T>` extractor parses and verifies in one step.
 
 ### Account
 
