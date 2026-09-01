@@ -129,12 +129,11 @@ to bind the session to a registered device row. There is no separate Auth
 message.
 
 A `?access_token=` query parameter, for browsers that cannot set a header, is
-**not implemented**: no route reads one. The only code that knows the name is
-redaction — `templatize_path` in `crates/sunrise-log/src/field.rs` drops the
-query from a logged target, and the server's request log
-(`crates/sunrise-server/src/api/observe.rs`) is handed the matched route rather
-than the request's URI, so there is no query string in reach of it at all. Treat
-the parameter as reserved, not available.
+**not implemented**: no route reads one. What keeps it from becoming a logged
+bearer if it ever is added is the server's request log
+(`crates/sunrise-server/src/api/observe.rs`), which is handed the matched route
+rather than the request's URI and so has no query string in reach of it at all.
+Treat the parameter as reserved, not available.
 
 ### Message kinds (canonical)
 

@@ -92,15 +92,19 @@ For sync: every operation carries `Authorization: Bearer <token>`, and kynos's
 (`api/auth.rs`), so **the `?access_token=…` query-string fallback earlier
 revisions promised browsers does not exist** — a browser that cannot set the
 header cannot authenticate. The defence for it survived the port, as ADR-0021
-required, and it got stronger in the process. `templatize_path` in
-`crates/sunrise-log/src/field.rs` still drops a query string from any logged
-target and still has the test that pins it, and the request log itself
-(`crates/sunrise-server/src/api/observe.rs`) is now handed the *matched route*
-rather than the request's URI, so the concrete path with its query is not
-reachable from the logging path at all. The hazard `tower-http`'s stock
-`MakeSpan` created is gone by construction rather than mitigated by a
-hand-assembled span — which is the outcome to preserve on the day the query
-fallback *is* added.
+required, and it changed shape in the process. The request log
+(`crates/sunrise-server/src/api/observe.rs`) is handed the *matched route*,
+whose `path()` is the description's own `paths` key rather than the request's
+target, and it never consults the URI — so there is no query string in reach of
+it to redact. The hazard `tower-http`'s stock `MakeSpan` created is gone by
+construction rather than mitigated by a hand-assembled span, which is the
+outcome to preserve on the day the query fallback *is* added.
+
+`templatize_path` in `crates/sunrise-log/src/field.rs` is the old mitigation and
+it is still exported and still tested (`templatize_drops_query_string`), but
+**nothing calls it any more** — the span it fed is gone. Read it as a tool kept
+for the next caller that logs a concrete target, not as a guard currently
+standing. The one that is standing is the observer's contract.
 
 Establishing a session authenticates once, but the *session* carries the token's
 `exp` for its whole life (`Session::deadline_ms` in `sync_session.rs`), and
