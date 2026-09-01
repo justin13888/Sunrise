@@ -39,10 +39,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.stop.failed` | error | The server returned an error; `cause`. |
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
-| `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
 | `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present, resolved to an active device of the account, and did not check out; `err_code` (`AUTH_DEVICE_SIG_INVALID`) and `cause`, which names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
 | `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `cause` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
-| `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
 | `srv.sync.session_open` | info | A sync session was established; `account_h`. Replaces `srv.ws.connect`: ADR-0023 split the socket's one negotiation into `POST /sync/session`, so establishing a session and opening a stream are now separate events. |
 | `srv.sync.negotiate_refused` | warn | `POST /sync/session` could not agree a wire version, crypto suite or required capability; `cause`. The client receives a `400` naming the same thing, unlike the socket it replaces, where a closed connection left an operator as the only party who could diagnose it. |
 | `srv.sync.stream_open` | info | `GET /sync/events` opened; `account_h`, `resumed` (whether a `Last-Event-ID` was presented). |
@@ -165,15 +163,26 @@ away from being a plaintext handle.
 | `sync.snapshot.applied` | debug | Snapshot applied. |
 | `sync.transport.fallback` | warn | Reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005). |
 
-### `srv` (quota and push)
+### `srv` (auth outcome and push)
 
-Unimplemented because the features are: there is no quota enforcement and the
-only push provider is `LoggingProvider`, which increments a metric.
+Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
+the Implemented table for the whole of v1 while nothing in
+`crates/sunrise-server/src` produced either: the bearer path logs nothing on
+success, and a refusal is visible as the `srv.req.end` record's status. They are
+worth keeping as names — an operator asking "who authenticated" is a real
+question — but not as a claim about running code.
+
+`srv.quota.warning` and `srv.quota.exceeded` are **deleted rather than
+reserved**: ADR-0027 takes per-account quotas out of v1, and the codes they
+would have carried are gone from the registry with their ids burned.
+
+The push events are unimplemented because the feature is: the only provider is
+`LoggingProvider`, which increments a metric.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `srv.quota.warning` | warn | Quota soft cap reached. |
-| `srv.quota.exceeded` | warn | Quota hard cap exceeded. |
+| `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
+| `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
 | `srv.push.send.ok` | info | Push delivered; `provider`, `n_devices`. |
 | `srv.push.send.failed` | warn | Push delivery failed. |
 

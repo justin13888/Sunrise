@@ -282,7 +282,6 @@ period — so it lands with the GC slice rather than as a bare unlink.
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
 | 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
-| 429 | `AUTH_QUOTA_EXCEEDED` | **NOT IMPLEMENTED.** Account is hard-capped (>110% of plan, see [`billing.md`](./billing.md)). Header `Retry-After` carries seconds until period end. | After upgrade or period reset. |
 
 ### Sharing — NOT IMPLEMENTED
 
@@ -361,15 +360,16 @@ The envelope `ApiError` actually renders carries two members and no
 
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
-### Quota responses — NOT IMPLEMENTED
+### Quota responses — REMOVED FROM v1
 
-Neither response below is produced. `error.rs`'s `codes` module defines no quota
-code at all; the shared catalogue in `sunrise-error` (`codes.toml`) declares
-`AUTH_QUOTA_EXCEEDED` and `STORAGE_QUOTA_EXCEEDED`, and the relay emits neither.
-No handler counts storage, ops, or devices against a plan.
-
-- **Hard quota exceeded** (over 110% of plan, or post-grace downgrade): `429 Too Many Requests`, body `{ "code":"AUTH_QUOTA_EXCEEDED", ... }`, `Retry-After: <seconds-until-period-end>` header.
-- **Soft warning** (within 7-day grace, 100%–110%): `202 Accepted`, header `X-Sunrise-Quota-Warning: true`, body includes `quota_used_ratio`.
+There are none, and there is no longer a code to build them from. ADR-0027
+takes per-account quotas out of v1; `AUTH_QUOTA_EXCEEDED` and
+`STORAGE_QUOTA_EXCEEDED` are gone from `sunrise-error`'s `codes.toml` and their
+ids (203, 300) are burned. Nothing counts storage, ops, or devices against a
+plan, and the `429`/`202` pair this section used to specify — a hard cap over
+110% and a soft warning inside the grace window — is described in
+[`billing.md`](./billing.md) as the shape a future quota surface would take,
+not as anything a client can receive.
 
 ## Rate limits — NOT IMPLEMENTED
 

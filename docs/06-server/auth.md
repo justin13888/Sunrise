@@ -77,9 +77,11 @@ inferring success from the absence of a disconnect. The frame is gated on the
 optional `SrvTokenRefresh` capability bit, which the server ORs into its
 `HelloAck` set — a client only sends `0x12` after seeing that bit agreed, so a
 refresh cannot be silently swallowed by a server that predates the frame.
-Implemented in `ws.rs` (`handle_refresh`), specified in
+Implemented in `crates/sunrise-server/src/api/sync.rs` (`refresh`), specified in
 [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by
-`crates/sunrise-server/tests/ws_token_expiry.rs`.
+that module's own `an_expired_token_ends_the_session` — the socket suite moved
+inline beside the operations that replaced the frames when ADR-0023 retired the
+socket.
 
 A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified.
 

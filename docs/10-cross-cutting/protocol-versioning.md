@@ -158,7 +158,7 @@ Server bits:
 | 3 | `SRV_BLOB_PRESIGN` | Server signs URLs for blob upload/download. |
 | 4 | `SRV_RELAY_PAIR` | Server forwards Noise-XX pairing transport. |
 | 5 | `SRV_INTEGRATION_GCAL` | Server provides Google Calendar OAuth proxy. |
-| 6 | `SRV_BILLING_STRIPE` | Server enforces Stripe-backed quotas. |
+| 6 | *(reserved)* | Was `SRV_BILLING_STRIPE`, "server enforces Stripe-backed quotas". ADR-0027 takes quotas out of v1, so the **name is retired and the position is not**: a peer that ever set bit 6 asserted the Stripe meaning, and reissuing the bit would make that honest claim read as a new one. Nothing above it is renumbered. |
 | 7 | `SRV_DIAGNOSTIC_UPLOAD` | Server accepts opt-in diagnostic bundles. |
 | 8 | `SRV_TOKEN_REFRESH` | Server accepts `0x12 RefreshToken` mid-session and answers `0x13 RefreshTokenAck`. |
 

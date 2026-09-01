@@ -45,7 +45,7 @@ React UI ──▶ Web Worker (sunrise-core WASM)
                 ▼ via OPFS
          vault.db (sqlite-wasm) + blob chunks
                 │
-                ▼ via WebSocket
+                ▼ via SSE + typed POSTs
             Sync server
 ```
 
@@ -60,7 +60,7 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 #### OPFS quota handling
 
 - Storage usage = sum of OPFS file sizes under `sunrise/`. Computed via `navigator.storage.estimate()` (browser-reported) and a recursive `getDirectoryHandle().values()` walk for our own accounting.
-- Warn at 80% of `quota`; block writes at 95% with `STORAGE_QUOTA_EXCEEDED`.
+- Warn at 80% of `quota`; block writes at 95%. **The code is unallocated:** `STORAGE_QUOTA_EXCEEDED` was removed from the registry with ADR-0027 and its id is burned, so a browser-local storage cap needs a new one before this can be built.
 
 ### SQLite in the browser
 

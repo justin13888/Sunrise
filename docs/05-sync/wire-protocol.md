@@ -207,9 +207,12 @@ CRYPTO_SUITE_MISMATCH           SYNC_CURSOR_GAP
 AUTH_TOKEN_EXPIRED              DOC_SCHEMA_TOO_OLD
 AUTH_TOKEN_INVALID              CAPABILITY_REQUIRED_MISSING
 AUTH_DEVICE_REVOKED             RELAY_GRANT_REVOKED
-AUTH_QUOTA_EXCEEDED             RELAY_STORAGE_UNAVAILABLE
+AUTH_DEVICE_SIG_INVALID         RELAY_STORAGE_UNAVAILABLE
                                 FATAL_INTERNAL
 ```
+
+`AUTH_QUOTA_EXCEEDED` was here until ADR-0027 took per-account quotas out of v1;
+it is gone from the enum, its id is burned, and nothing ever emitted it.
 
 Nine names this document used previously are **not** in the enum and MUST NOT be
 quoted: `PROTOCOL_VERSION_MISMATCH` (it is `SYNC_PROTOCOL_VERSION_MISMATCH`),
