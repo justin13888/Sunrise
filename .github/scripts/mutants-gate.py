@@ -94,8 +94,8 @@ noting it in passing — an unenforced crate that reads as a warning is how most
 of a workspace's mutants end up scored and then ignored.
 
 Exit 0 clean, 1 on a regression, on a crate with no recorded floor, on a crate
-with nothing scorable, or on a run that arrived incomplete, 2 if the gate could
-not run at all (which is a failure, not a pass).
+with nothing scorable, or on a run whose shards did not arrive as expected, 2
+if the gate could not run at all (which is a failure, not a pass).
 """
 
 from __future__ import annotations
@@ -244,13 +244,14 @@ def main() -> int:
     # never ran, and every number computed from it is a lie in the direction of
     # "the tests got worse". Reported, excluded from the comparison, never
     # written to the baseline.
-    incomplete = []
+    mismatched = []
     for crate, expected in sorted(args.expect_shards.items()):
         seen = len(sources.get(crate, ()))
         if seen != expected:
-            incomplete.append((crate, seen, expected))
+            cause = "shards missing" if seen < expected else "duplicate artifacts"
+            mismatched.append((crate, seen, expected, cause))
 
-    broken = {crate for crate, _, _ in incomplete}
+    broken = {crate for crate, _, _, _ in mismatched}
 
     # A crate whose every mutant was unviable has a zero denominator: no rate
     # to compare and no floor to record. Skipping it quietly is the same
@@ -263,22 +264,33 @@ def main() -> int:
         if crate not in broken and caught_pct(bucket) is None
     ]
 
-    if incomplete:
-        print("\nmutation run incomplete — an infrastructure failure, not a "
-              "test regression:", file=sys.stderr)
-        for crate, seen, expected in incomplete:
+    if mismatched:
+        print("\nmutation run does not match the expected shards — an "
+              "infrastructure failure,\nnot a test regression:",
+              file=sys.stderr)
+        for crate, seen, expected, cause in mismatched:
             mutants = sum(counts.get(crate, {}).values())
-            print(f"  {crate}: {seen}/{expected} shards, {mutants} mutants",
-                  file=sys.stderr)
-        print(
-            "\nA shard whose runner died contributes no outcomes, so the crate "
-            "scores\nlow for a reason no test change would explain. Re-run the "
-            "failed shards\nrather than touching the tests or the floor; these "
-            "crates were not scored.",
-            file=sys.stderr,
-        )
+            print(f"  {crate}: {seen}/{expected} shards, {mutants} mutants "
+                  f"— {cause}", file=sys.stderr)
+        if any(cause == "shards missing" for *_, cause in mismatched):
+            print(
+                "\nA shard whose runner died contributes no outcomes, so the "
+                "crate scores low\nfor a reason no test change would explain. "
+                "Re-run the failed shards rather\nthan touching the tests or "
+                "the floor.",
+                file=sys.stderr,
+            )
+        if any(cause == "duplicate artifacts" for *_, cause in mismatched):
+            print(
+                "\nMore files than shards means one shard's outcomes arrived "
+                "twice — an artifact\ndownloaded into two directories, or a "
+                "stale run left beside a fresh one. Every\nmutant in it is "
+                "then counted twice. Narrow the inputs and re-run the gate.",
+                file=sys.stderr,
+            )
+        print("\nEither way these crates were not scored.", file=sys.stderr)
         if args.update:
-            print("\nrefusing to record a floor from an incomplete run",
+            print("\nrefusing to record a floor from a mismatched run",
                   file=sys.stderr)
             return 1
 
@@ -416,7 +428,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if failures or unfloored or incomplete or unscorable:
+    if failures or unfloored or mismatched or unscorable:
         return 1
 
     target = baseline.get("target_caught_pct")
