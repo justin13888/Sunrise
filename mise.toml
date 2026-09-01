@@ -320,27 +320,61 @@ set -euo pipefail
 # default is chosen to be safe on the machine most likely to run this, not fast
 # on the biggest one.
 shard_arg=""
+slug="$usage_crate"
 if [ -n "$usage_shard" ]; then
   shard_arg="--shard $usage_shard"
+  # 3/6 -> 3-6. One directory per invocation, because cargo-mutants always
+  # writes `mutants.out` under the directory it is given: pointed at a shared
+  # one, every shard of a crate overwrites the last, and the run that scored
+  # six shards would score whichever finished last. The gate reads the whole
+  # tree of them, so keeping them apart is what makes a sharded local run add
+  # up to the same verdict as CI's.
+  slug="$slug-$(printf '%s' "$usage_shard" | tr / -)"
 fi
 # cargo-mutants creates its own `mutants.out` but not the parent it was told
 # to put it in, and `out/` is gitignored so a fresh clone has none.
-mkdir -p out/mutants
-cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output out/mutants
+mkdir -p "out/mutants/$slug"
+cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug"
 echo
-echo "surviving mutants: out/mutants/mutants.out/missed.txt"
-echo "score this run:    .github/scripts/mutants-gate.py out/mutants/mutants.out/outcomes.json"
+echo "surviving mutants: out/mutants/$slug/mutants.out/missed.txt"
+echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutants.out/outcomes.json"
 """
 
 [tasks.mutants-baseline]
 description = "Record the current mutation-coverage floors into mutants/baseline.json"
 shell = "bash -c"
+# `--expect-shards` is passed through to the gate, which refuses to record a
+# floor from a crate whose shards did not all arrive. Recording one from a
+# partial run banks a number nobody measured, and it banks it low.
+usage = 'flag "--expect-shards <expect_shards>" default=""'
 run = """
 set -euo pipefail
 # Deliberately separate from `mutants`, and deliberately not something the gate
 # does on its own when the number goes up. Moving a floor is a claim that the
 # tests got better, and a claim belongs in a commit message.
-.github/scripts/mutants-gate.py out/mutants/mutants.out/outcomes.json --update
+#
+# Every run under out/mutants/, not one fixed path: `mise run mutants` gives
+# each crate and shard its own directory, and a floor recorded from one of them
+# while the others sit on disk is a floor for a fraction of the crate.
+shopt -s nullglob
+outcomes=(out/mutants/*/mutants.out/outcomes.json)
+if [ -z "${outcomes[0]:-}" ]; then
+  echo "no results under out/mutants/; run 'mise run mutants <crate>' first" >&2
+  exit 1
+fi
+echo "recording from:"
+for outcome in "${outcomes[@]}"; do
+  echo "  $outcome"
+done
+# Spelled out twice rather than built in an array: an empty array expanded
+# under `set -u` is either an error or one empty argument depending on the
+# bash, and an empty argument here reaches the gate as a path to read.
+if [ -n "$usage_expect_shards" ]; then
+  .github/scripts/mutants-gate.py "${outcomes[@]}" --update \
+    --expect-shards "$usage_expect_shards"
+else
+  .github/scripts/mutants-gate.py "${outcomes[@]}" --update
+fi
 """
 
 # --- Release artifacts ---

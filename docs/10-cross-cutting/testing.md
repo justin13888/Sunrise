@@ -164,9 +164,15 @@ mise run mutants sunrise-domain --shard 1/6   # one slice of a big one
 mise run mutants-baseline                     # record a new floor
 ```
 
-Surviving mutants land in `out/mutants/mutants.out/missed.txt`. It is
-deliberately **not** in `lefthook.yaml`: the pre-push hook already runs the
-whole Rust suite, and adding hours to a push is how a hook gets bypassed.
+Each invocation writes its own directory — `out/mutants/sunrise-domain-1-6/`
+and so on — because `cargo mutants` always puts `mutants.out` directly under
+the directory it is given, so a shared one means every shard overwrites the
+last. Surviving mutants land in that run's `mutants.out/missed.txt`;
+`mise run mutants-baseline` scores every run under `out/mutants/` together, so
+a crate covered in six local shards records one floor rather than six.
+
+It is deliberately **not** in `lefthook.yaml`: the pre-push hook already runs
+the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
 
 ## Release gates
 
