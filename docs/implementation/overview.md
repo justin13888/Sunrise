@@ -57,7 +57,7 @@ and a crate can be reachable while a capability inside it is not.
 | `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync, fanned out to every subscriber. **Re-graded from 🟨 this cycle.** The partial mark was for one stated reason — `import_ical` / `export_ical` had no Swift caller — and `apps/apple` now calls both, so the mark was re-derived rather than inherited. Sweeping every exported symbol for a Swift caller leaves a much smaller residue: `parse_saved_view` has none at all, and `energy_fit_label` is reached only from the test target. Neither carries a parity MUST — the *Saved searches / views* MUST is met through `SavedViews.load` / `.save` — so they are unconsumed surface rather than an unreachable requirement, which is the distinction the 🟨 mark is for |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
-| `apps/apple` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~17.8k lines of app source, **471 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Built in CI** — a `macos-app` job on `macos-26` runs `just macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
+| `apps/apple` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~17.8k lines of app source, **471 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Built in CI** — a `macos-app` job on `macos-26` runs `mise run macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Its **one** consumer (`apps/web`, itself deferred) imports only `taskStateGlyph` and hardcodes colours. It had two until the Tauri shell was removed; the macOS app is Swift and does not consume it, so no shipping client does |
 
@@ -370,20 +370,20 @@ carried over from an earlier revision.
 
 | Gate | Result |
 |---|---|
-| `just rust-test` | **1335 passed**, 0 failed, 3 ignored |
+| `mise run rust-test` | **1335 passed**, 0 failed, 3 ignored |
 | `cargo test -p sunrise-cli` | **77 passed** — 48 in `tests/`, 29 in-crate |
 | `cargo test --workspace --doc` | 0 doc tests |
-| `just macos-app` | **471 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
-| `just rust-fmt-check` | clean |
-| `just rust-clippy` | clean (pedantic, `-D warnings`) |
+| `mise run macos-app` | **471 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
+| `mise run rust-fmt-check` | clean |
+| `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
 | `cargo deny check` | clean |
-| `just validate` | clean (no TS tests exist yet) |
-| `just orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
+| `mise run validate` | clean (no TS tests exist yet) |
+| `mise run orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
 
 The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
 tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`
 them. The macOS 471 does **not** include the 4 XCUITest cases, which are
-`skipped: true` in the scheme and run only under `just macos-uitest`.
+`skipped: true` in the scheme and run only under `mise run macos-uitest`.
 
 The `sunrise-cli` line is broken out because it is the one gate that proves the
 core without a UI: `main.rs` itself has **no** unit tests, so every subcommand's
@@ -423,12 +423,12 @@ difference is whether anyone reads the assertion.
 Prefer the reachability column above as the signal.
 
 ```
-just rust-test        # cargo test --workspace --all-targets
-just rust-clippy      # pedantic, -D warnings
-just rust-fmt-check   # formatting
-just validate         # Biome CI + typecheck + coverage
-just macos-app        # xcframework + swiftlint --strict + xcodebuild test
-just orphan-crates    # every crate reachable from a shipping binary
+mise run rust-test        # cargo test --workspace --all-targets
+mise run rust-clippy      # pedantic, -D warnings
+mise run rust-fmt-check   # formatting
+mise run validate         # Biome CI + typecheck + coverage
+mise run macos-app        # xcframework + swiftlint --strict + xcodebuild test
+mise run orphan-crates    # every crate reachable from a shipping binary
 cargo deny check      # advisories, bans, licences, sources
 ```
 

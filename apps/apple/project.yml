@@ -1,9 +1,9 @@
 # XcodeGen input. The generated `Sunrise.xcodeproj` is NOT committed —
-# `just macos-app` regenerates it — so this file is the project.
+# `mise run macos-app` regenerates it — so this file is the project.
 #
 # Two things here are load-bearing:
 #
-# 1. `SunriseFFI` is an aggregate target that runs `just apple-xcframework`,
+# 1. `SunriseFFI` is an aggregate target that runs `mise run apple-xcframework`,
 #    and the app *depends* on it. The Rust build cannot be a script phase on
 #    the app target: Xcode resolves and processes an `.xcframework` while it
 #    plans that target's build, before any of its phases run, so a phase that
@@ -16,7 +16,7 @@ name: Sunrise
 options:
   bundleIdPrefix: dev.sunrise
   createIntermediateGroups: true
-  # Both must equal the matching `*_target` in the justfile, which is what the
+  # Both must equal the matching `*_target` in mise.toml, which is what the
   # xcframework's slices are built against.
   #
   # iOS 26.0 rather than the 17+ that `docs/07-clients/mobile-ios.md` used to
@@ -57,7 +57,10 @@ aggregateTargets:
           cd "$SRCROOT/../.."
           # Xcode's PATH carries neither Homebrew nor rustup.
           export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
-          just apple-xcframework
+          # `mise exec --` rather than a bare `mise run`: this script runs
+          # under Xcode, which has none of the shell activation mise normally
+          # relies on to put the toolchain on PATH.
+          mise exec -- mise run apple-xcframework
 
 targets:
   Sunrise:
@@ -242,7 +245,7 @@ targets:
   # A macOS XCUITest drives another process on the developer's machine, which
   # the system refuses until `DevToolsSecurity` is enabled, so that target is
   # `skipped: true` in its scheme. A simulator runner has no such requirement:
-  # these run on every `just ios-app`, which means iOS is the platform where a
+  # these run on every `mise run ios-app`, which means iOS is the platform where a
   # tap is actually proved to reach the core on every build.
   SunriseiOSUITests:
     type: bundle.ui-testing
@@ -308,9 +311,9 @@ schemes:
         #
         #     sudo DevToolsSecurity -enable
         #
-        # Then: `just macos-uitest`, which runs the scheme below. Leaving it in
+        # Then: `mise run macos-uitest`, which runs the scheme below. Leaving it in
         # this scheme keeps it compiled on every build — an uncompiled test
-        # target rots in a week — while keeping `just macos-app` honest about
+        # target rots in a week — while keeping `mise run macos-app` honest about
         # what it ran.
         - name: SunriseUITests
           skipped: true
@@ -318,7 +321,7 @@ schemes:
   # The UI tests on their own, and a scheme rather than a flag because
   # `-only-testing` cannot select a testable the scheme has skipped:
   # `xcodebuild` refuses with "isn't a member of the specified test plan or
-  # scheme". `just macos-uitest` asked for exactly that and so had never run
+  # scheme". `mise run macos-uitest` asked for exactly that and so had never run
   # once — which is how a UI test that captured on Today and asserted the row
   # appeared stayed red without anybody hearing about it.
   SunriseUITests:

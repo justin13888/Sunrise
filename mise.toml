@@ -1,0 +1,352 @@
+# Sunrise developer task runner.
+# All project commands live here; git hooks (lefthook.yaml) call these tasks.
+# Run `mise tasks` to see everything available, `mise run <task>` to run one.
+#
+# Task names are exactly the recipe names this file replaces, so every command
+# in the README and the docs is the old one with `just` swapped for `mise run`.
+#
+# Two mise details worth knowing before editing:
+#
+# 1. `run` strings are Tera templates, so a literal `{{` would be interpreted.
+#    None is needed here — what were `just` variables are environment variables
+#    below, referenced as `$name`, which is also what makes them visible to the
+#    scripts the tasks call.
+# 2. `depends` runs in **parallel**. That is fine for a single dependency and
+#    wrong for the aggregates, where order is the point and, for `apple-app`,
+#    two concurrent release builds of the C dependencies are how the disk
+#    fills. Those chain `mise run` calls in `run` instead, which is sequential.
+
+[env]
+# The UniFFI-exported crate, its underscored cargo lib name, and the framework.
+ffi_crate = "sunrise-core-bindings"
+ffi_lib = "sunrise_core_bindings"
+ffi_fw = "SunriseCore"
+
+# Slices, grouped by *platform*. Each group becomes one `-library` in the
+# xcframework; several triples inside a group are `lipo`d into one fat archive
+# first (add `x86_64-apple-darwin` to `macos_slices` — and `rustup target add`
+# it — for a universal Mac binary).
+#
+# The three groups cannot be collapsed into one list. An xcframework is keyed
+# by platform, and `aarch64-apple-ios` and `aarch64-apple-ios-sim` are both
+# arm64: what tells them apart is the `LC_BUILD_VERSION` platform recorded in
+# every object file, which is the whole reason the `-sim` triple exists.
+macos_slices = "aarch64-apple-darwin"
+ios_slices = "aarch64-apple-ios"
+ios_sim_slices = "aarch64-apple-ios-sim"
+
+# Deployment targets. Each must equal the matching `options.deploymentTarget`
+# entry in apps/apple/project.yml; see the note in `apple-xcframework`.
+macos_target = "26.0"
+ios_target = "26.0"
+
+# The simulator this project tests against. Any booted iPhone would do; naming
+# one keeps `mise run ios-app` reproducible and keeps CI and a laptop on the
+# same device.
+ios_sim = "iPhone 17 Pro"
+
+# --- Setup ---
+
+[tasks.setup]
+description = "Install JS dependencies and git hooks"
+run = ["bun install", "lefthook install"]
+
+# --- JavaScript / TypeScript (Bun + Biome + tsc) ---
+
+[tasks.check]
+description = "Lint & format check, no writes (Biome)"
+run = "bun run check"
+
+[tasks.fix]
+description = "Lint & format with autofix (Biome)"
+run = "bun run check:fix"
+
+[tasks.ci]
+description = "Strict CI lint check, no writes (Biome)"
+run = "bun run ci"
+
+[tasks.typecheck]
+description = "Type-check every workspace package"
+run = "bun run typecheck"
+
+[tasks.test]
+description = "Run the JS/TS test suite once"
+run = "bun run test:run"
+
+[tasks.test-coverage]
+description = "Run the JS/TS test suite with coverage"
+run = "bun run test:coverage"
+
+# --- Rust (Cargo) ---
+
+[tasks.rust-fmt-check]
+description = "Check Rust formatting, no writes"
+run = "cargo fmt --all -- --check"
+
+[tasks.rust-fmt]
+description = "Format Rust code in place"
+run = "cargo fmt --all"
+
+[tasks.rust-clippy]
+description = "Lint Rust with Clippy (warnings denied)"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.rust-check]
+description = "Type-check the Rust workspace"
+run = "cargo check --workspace --all-targets"
+
+[tasks.rust-test]
+description = "Run the Rust test suite"
+run = "cargo test --workspace --all-targets"
+
+[tasks.orphan-crates]
+description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
+run = ".github/scripts/orphan-crate-gate.py"
+
+[tasks.bench]
+description = "Run the Criterion benchmark suite (submit / query_today / fts / ws_handshake)"
+run = "cargo bench -p sunrise-bench"
+
+[tasks.bench-baseline]
+description = "Run the benches, then merge the results into bench/baseline.json for this platform"
+run = ["cargo bench -p sunrise-bench", "cargo run -p sunrise-bench --bin baseline"]
+
+# --- Apple clients (Swift / UniFFI) ---
+
+[tasks.apple-xcframework]
+description = "Build the Swift bindings + SunriseCore.xcframework both Apple apps link"
+shell = "bash -c"
+run = """
+set -euo pipefail
+rm -rf build "out/$ffi_fw.xcframework"
+mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
+
+# 1. One static + dynamic lib per slice. `--library` binding generation
+#    reads the .dylib, so both crate-types are load-bearing.
+#
+#    The deployment targets must match the apps', or every object file in
+#    the archive draws an `ld` warning about being built for a newer OS
+#    than it is linked against — hundreds of them, from the C dependencies
+#    (sqlite, zstd, ring), drowning every real diagnostic. Both variables
+#    are exported for every slice: cc-rs reads whichever one matches the
+#    target it is building for and ignores the other.
+#
+#    Serially, on purpose. A release build of the C dependencies for three
+#    triples is the largest thing this repo does to the disk, and three of
+#    them at once is how it fills.
+export MACOSX_DEPLOYMENT_TARGET="$macos_target"
+export IPHONEOS_DEPLOYMENT_TARGET="$ios_target"
+for t in $macos_slices $ios_slices $ios_sim_slices; do
+  cargo build -p "$ffi_crate" --release --target "$t"
+done
+
+# 2. Bindings, generated from the built library — no .udl, no build.rs.
+#    Generated once, from the macOS slice, and used by both apps: this
+#    reads UniFFI *metadata* out of the library rather than compiling
+#    anything, and the Swift it emits names no platform.
+#
+#    `--locked` is not optional: the generator lives outside the workspace
+#    precisely so its cargo-platform pin survives, and `cargo build` without
+#    it would re-resolve to a version that needs rustc 1.91.
+first=$(echo $macos_slices | awk '{print $1}')
+cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
+tools/uniffi-bindgen/target/release/uniffi-bindgen generate \\
+  --library "target/$first/release/lib$ffi_lib.dylib" \\
+  --language swift --out-dir out/swift
+
+# 3. The module map. UniFFI's own is unusable inside an xcframework: it is
+#    named <lib>FFI.modulemap, which Xcode does not look for, and it emits
+#    `use Darwin` / `use _Builtin_stdbool` / `use _Builtin_stdint` lines
+#    that fail to resolve there. Rewriting it is the fix; the module name
+#    must stay <lib>FFI to match the generated `import`. One set of headers
+#    serves all three platforms — the C API does not vary by target.
+cp "out/swift/${ffi_lib}FFI.h" build/headers/
+printf 'module %sFFI {\\n    header "%sFFI.h"\\n    export *\\n}\\n' \\
+  "$ffi_lib" "$ffi_lib" > build/headers/module.modulemap
+
+# 4. One fat static lib per platform, then package the three together.
+fatten() {
+  local out="$1"; shift
+  local libs=()
+  for t in "$@"; do libs+=("target/$t/release/lib$ffi_lib.a"); done
+  lipo -create "${libs[@]}" -output "build/$out/lib$ffi_lib.a"
+}
+fatten macos $macos_slices
+fatten ios $ios_slices
+fatten ios-sim $ios_sim_slices
+xcodebuild -create-xcframework \\
+  -library "build/macos/lib$ffi_lib.a" -headers build/headers \\
+  -library "build/ios/lib$ffi_lib.a" -headers build/headers \\
+  -library "build/ios-sim/lib$ffi_lib.a" -headers build/headers \\
+  -output "out/$ffi_fw.xcframework"
+echo "out/$ffi_fw.xcframework (macOS + iOS + iOS Simulator) + out/swift/$ffi_lib.swift"
+"""
+
+# Generate the Xcode project, build the macOS app, and run its tests.
+#
+# `xcodegen` needs the generated Swift bindings to exist before it can add them
+# to the target, so the xcframework is built first even though the project's
+# own `SunriseFFI` target would rebuild it. `.xcodeproj` is gitignored: this
+# task is the only supported way to get one.
+[tasks.macos-app]
+description = "Generate the Xcode project, build the macOS app, and run its tests"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+swiftlint lint --strict --quiet --config .swiftlint.yml
+xcodebuild test \\
+  -project Sunrise.xcodeproj \\
+  -scheme Sunrise \\
+  -destination 'platform=macOS,arch=arm64' \\
+  -quiet \\
+  CODE_SIGNING_ALLOWED=NO
+"""
+
+# Generate the Xcode project, build the iOS app, and run its tests.
+#
+# The tests are `SunriseTests/` — the *same* sources the macOS bundle compiles,
+# built a second time against the iOS app. That is the whole claim this task
+# makes: not that the iOS app builds, but that it behaves the way the Mac does
+# everywhere the two share a model.
+[tasks.ios-app]
+description = "Generate the Xcode project, build the iOS app, and run its tests"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+swiftlint lint --strict --quiet --config .swiftlint.yml
+# Signed, unlike the macOS build, and it has to be. iOS gates the Keychain
+# on an application-identifier entitlement, which only exists on a signed
+# binary — with `CODE_SIGNING_ALLOWED=NO` every `SecItemAdd` returns
+# `errSecMissingEntitlement` and the vault cannot store its root, so the
+# five Keychain and vault-root tests fail for a reason that has nothing to
+# do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
+# enough for the simulator and needs no developer account.
+xcodebuild test \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseiOS \\
+  -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -quiet \\
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+"""
+
+[tasks.apple-app]
+description = "Both Apple apps, back to back. What CI runs across its two jobs"
+# Sequential rather than `depends`, which mise runs in parallel: two release
+# builds of the C dependencies at once is how the disk fills.
+run = ["mise run macos-app", "mise run ios-app"]
+
+[tasks.ios-open]
+description = "Generate the Xcode project and open it, with the iOS scheme selected"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
+
+[tasks.macos-uitest]
+description = "Drive the real window (XCUITest); needs `sudo DevToolsSecurity -enable` once"
+depends = ["apple-xcframework"]
+shell = "bash -c"
+run = """
+set -euo pipefail
+# Separate from `macos-app` because it needs one thing a build must not do
+# for you. A macOS UI test takes control of another process, and the system
+# kills the runner ("signal kill before establishing connection") unless
+# developer mode is on — a one-time change to the machine's security
+# posture. Signing is left on, too: the runner will not launch
+# ad-hoc-unsigned.
+if ! DevToolsSecurity -status | grep -q enabled; then
+  echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
+  exit 1
+fi
+# Developer mode is the first of two grants and not the last. The runner
+# also has to take automation control of the app, which is a separate TCC
+# decision: the first attempt raises a system prompt, and a run nobody is
+# watching fails with "Timed out while enabling automation mode" instead.
+# Accept it, or add Xcode Helper under Privacy & Security → Accessibility.
+# Both are one-time changes to the machine, which is why neither is done
+# here.
+cd apps/apple
+xcodegen generate --quiet
+# Its own scheme, not `-only-testing` on `Sunrise`: that flag cannot select
+# a testable the scheme has skipped, and asking it to made this task fail
+# before it built anything.
+xcodebuild test \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseUITests \\
+  -destination 'platform=macOS,arch=arm64' \\
+  -quiet
+"""
+
+[tasks.macos-open]
+description = "Generate the Xcode project and open it. Everyday development entry point"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
+
+# --- Release artifacts ---
+#
+# Same Dockerfile and the same build args the release workflow uses, so a
+# failure here is a failure there. Note the size of the job: a release build of
+# the workspace's C dependencies (SQLCipher, ring, zstd) inside a fresh
+# container wants ~10 GB of container storage and tens of minutes cold.
+
+# The two tasks that take arguments, and the one place mise is not a rename of
+# what `just` did. `just` bound named parameters with defaults; mise appends
+# whatever is on the command line to the `run` string, so a bare `$1` here
+# would read the *script's* first argument and silently ignore the caller's —
+# which is exactly what it did, quietly rendering the whole history.
+#
+# `usage` is the binding that works, and the only one with a future: the older
+# `{{arg()}}` template is deprecated for removal in mise 2027.5.0, and it
+# shell-quotes what it substitutes, so a value that then gets quoted again
+# arrives with the quotes still on it. Declared args arrive as `usage_<name>`.
+# `mise run <task> --help` lists them.
+
+[tasks.docker-build]
+description = "Build the sunrise-server image that the release workflow publishes to GHCR"
+shell = "bash -c"
+usage = 'arg "<tag>" default="sunrise-server:dev"'
+run = '''
+set -euo pipefail
+docker build \
+  --build-arg VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)" \
+  --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
+  -t "$usage_tag" .
+'''
+
+[tasks.changelog]
+description = "Render the Conventional-Commit changelog for a range, as the release notes do"
+usage = '''
+arg "<from>" default=""
+arg "<to>" default="HEAD"
+'''
+run = '.github/scripts/changelog.sh "$usage_from" "$usage_to"'
+
+# --- Aggregates (mirror the git hooks; handy to run by hand) ---
+
+[tasks.pre-commit]
+description = "Everything the pre-commit hook runs"
+run = [
+  "mise run fix",
+  "mise run typecheck",
+  "mise run rust-fmt-check",
+  "mise run rust-clippy",
+]
+
+[tasks.pre-push]
+description = "Everything the pre-push hook runs"
+run = [
+  "mise run ci",
+  "mise run typecheck",
+  "mise run test",
+  "mise run rust-test",
+]
+
+[tasks.validate]
+description = "Full local validation: Biome CI + typecheck + coverage"
+run = "bun run validate"

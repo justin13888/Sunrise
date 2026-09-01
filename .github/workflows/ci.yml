@@ -50,7 +50,7 @@ jobs:
     # through 26.6 are all present), matching the SDK the app is developed
     # against, so nothing here is approximated — the deployment target is met
     # exactly. If `macos-latest` ever advances past 26, revisit this together
-    # with `macos_target` in the justfile and `deploymentTarget` in project.yml,
+    # with `macos_target` in mise.toml and `deploymentTarget` in project.yml,
     # which must all agree.
     #
     # Cost note: macOS minutes bill at 10x Linux, and this job builds a release
@@ -72,14 +72,19 @@ jobs:
       # The toolchain file pins 1.88.0, which rustup installs on first use.
       # aarch64-apple-darwin is the host triple on this runner, but the
       # xcframework carries three slices and the other two are not installed by
-      # default — `just apple-xcframework` fails without them.
+      # default — `mise run apple-xcframework` fails without them.
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
       # None of the three are in the runner image.
-      - name: Install just, XcodeGen and SwiftLint
-        run: brew install --quiet just xcodegen swiftlint
+      - name: Install mise, XcodeGen and SwiftLint
+        run: brew install --quiet mise xcodegen swiftlint
+      # mise refuses to run tasks from a config it has not been told to trust,
+      # and a fresh checkout is never trusted. Explicit rather than implicit:
+      # the runner has no interactive prompt to answer.
+      - name: Trust mise config
+        run: mise trust --yes
       - name: Toolchain versions
         # Printed, not asserted: if the default Xcode ever regresses below 26,
         # the build fails on the deployment target with a clearer message than
@@ -89,14 +94,14 @@ jobs:
           xcodebuild -showsdks | grep -i macos
           swiftlint version
           xcodegen --version
-      # One recipe, deliberately. `just macos-app` builds the xcframework,
+      # One task, deliberately. `mise run macos-app` builds the xcframework,
       # runs `xcodegen generate` (the .xcodeproj is gitignored and this is the
       # only supported way to get one), runs `swiftlint lint --strict`, and
       # runs `xcodebuild test`. Re-expressing those four steps as YAML would
       # create a second definition of the macOS build that drifts from the one
       # developers actually run.
-      - name: just macos-app
-        run: just macos-app
+      - name: mise run macos-app
+        run: mise run macos-app
 
   ios-app:
     name: iOS app (xcframework + SwiftLint + XCTest + XCUITest)
@@ -120,21 +125,26 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
-      - name: Install just, XcodeGen and SwiftLint
-        run: brew install --quiet just xcodegen swiftlint
+      - name: Install mise, XcodeGen and SwiftLint
+        run: brew install --quiet mise xcodegen swiftlint
+      # mise refuses to run tasks from a config it has not been told to trust,
+      # and a fresh checkout is never trusted. Explicit rather than implicit:
+      # the runner has no interactive prompt to answer.
+      - name: Trust mise config
+        run: mise trust --yes
       - name: Toolchain versions
         run: |
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios
           xcrun simctl list devices available | grep -i iphone
-      # One recipe, as with macOS. `just ios-app` builds the three-slice
+      # One task, as with macOS. `mise run ios-app` builds the three-slice
       # xcframework, runs `xcodegen generate`, `swiftlint --strict`, and
       # `xcodebuild test` against the iPhone 17 Pro simulator — which runs both
       # the shared `SunriseTests` bundle and, unlike the macOS job, the UI
       # tests: a simulator runner needs no change to the machine's security
       # posture, so there is nothing to opt into.
-      - name: just ios-app
-        run: just ios-app
+      - name: mise run ios-app
+        run: mise run ios-app
 
   rust-deny:
     name: cargo-deny
