@@ -63,14 +63,27 @@ The Sunrise server has **two deployment profiles**:
 
 A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
 
-### Cross-server delivery (managed ↔ self-hosted)
+### Cross-server delivery
 
-v1 ships with a single rule: **the owner's server is authoritative for relay**. If a user on managed cloud shares a Stream with a user on a self-hosted instance, both clients connect to the **owner's** server. The non-owner side authenticates to the owner's server using a relay-only token issued at share-grant time.
+This is the single answer; other specs point here rather than restating it.
 
-- The `share_grant` envelope carries `relay_url` (the owner's server) and `relay_token` (a short-lived bearer scoped to that share).
-- The recipient's client adds an outbound connection to `relay_url` in addition to its own server connection. Quotas are charged to the owner.
-- If the owner's server is unreachable, the share is in-progress unavailable (no peer-to-peer fallback in v1). UI surfaces `"Stream unavailable — owner's server is offline"`.
-- Federation between independent servers is explicitly out of scope for v1.
+**Cross-server delivery is not in v1.** Sharing itself is deferred
+([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a),
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5), so there is no
+cross-server case to answer yet.
+
+When sharing lands, the rule is that **the owner's relay is authoritative**:
+`ShareGrantPayload` carries `relay_url`, the recipient's client adds an outbound
+connection to it alongside its own relay connection, and there is no federation
+between independent relays. If the owner's relay is unreachable the shared Stream
+is unavailable; there is no peer-to-peer fallback.
+
+What the credentials for that outbound connection are is **not decided**, and
+cannot be until the grant model exists. Earlier revisions specified a
+`relay_token` short-lived bearer minted at grant time; nothing implements it, no
+route accepts it, and designing an authentication token before the thing it
+authorizes is the wrong order. It is removed rather than left standing as a
+contract.
 
 ## Rationale
 

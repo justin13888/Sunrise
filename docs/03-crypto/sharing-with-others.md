@@ -90,7 +90,7 @@ A Note in a shared Stream may contain `{kind: "ref", target: EntityRef}` pointin
 On op emission, the **owner's device** runs egress scrubbing per recipient cohort as part of constructing the op:
 
 1. Walk the Note's outbound payload before encryption.
-2. For every `{kind: "ref", target}` whose `target` is in a Stream this cohort does not share, replace with `{kind: "redacted", placeholder: "—"}`. The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
+2. For every `{kind: "ref", target}` whose `target` is in a Stream this cohort does not share, replace with `{kind: "redacted", reason: "private_ref", placeholder: "—"}` ([`../02-domain/notes.md`](../02-domain/notes.md) §In-app references defines the shape). The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
 3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
 
 A scrubbed envelope is detectable to the **owner** (they retain the original). Recipients cannot tell whether their envelope was scrubbed; this is by design (no leak of the existence of private references).
@@ -99,10 +99,10 @@ There is no editor→owner re-scrubbing path: editors cannot author cross-stream
 
 ## Cross-relay sharing
 
-Both parties' devices SHOULD reach the same relay for v1. If they reach different relays:
-
-- **v1 path:** the granting client uploads the `share_grant` op to its own relay; the recipient must connect to that relay (with credentials provided OOB by the granter, e.g. a self-host operator's invite token) to fetch ongoing Stream ops. There is no automatic federation between relays in v1.
-- **Future:** a federated forwarding handshake between cooperating relays. Tracked in `11-adr/` as a v2 candidate; not part of v1.
+Not in v1, and the single answer — the owner's relay is authoritative, there is
+no federation, and the credential question is open — lives in
+[`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)
+§Cross-server delivery.
 
 ## Edits by editors
 

@@ -69,7 +69,7 @@ Scrubbing happens **per envelope, per cohort**, at op-emit time:
 
 1. Author's device builds the canonical (unscrubbed) op.
 2. For each recipient cohort that this op fans out to, compute the cohort's accessible-Stream set.
-3. Walk the op's references; replace any reference to an entity in a non-accessible Stream with `{kind: "redacted", reason: "private_ref"}`.
+3. Walk the op's references; replace any reference to an entity in a non-accessible Stream with `{kind: "redacted", reason: "private_ref", placeholder: "—"}`.
 4. CBOR-encode the per-cohort variant; encrypt under the cohort's Stream key.
 5. Emit each per-cohort envelope as a separate sub-op in the same OpBatch.
 
@@ -77,19 +77,12 @@ Editors **cannot** create cross-stream references in v1 — the UI prevents it b
 
 ### Entity reference format
 
-References inside Note bodies and free-text fields use the canonical form:
-
-```
-[<display>](sr://<entity_kind>/<entity_id>)
-```
-
-Where:
-
-- `entity_kind` ∈ `{task, stream, context, person, block, attachment, routine}`.
-- `entity_id` is the prefixed id from [`../02-domain/identifiers.md`](../02-domain/identifiers.md), URL-safe (no encoding needed; ids are alphanumeric + underscore).
-- `display` is the user-typed display text, escaped per markdown rules.
-
-The scrubber recognizes `sr://` URIs and rewrites the URI portion to `redacted:` while preserving display text (or replacing with `(redacted)`).
+References are `{kind: "ref", target: entity-ref}` inline nodes and redactions are
+`{kind: "redacted", reason, placeholder}`, both defined once in
+[`../02-domain/notes.md`](../02-domain/notes.md) §In-app references. There is no
+URI form: an `sr://` scheme appeared in this file and nowhere else in `docs/` or
+`crates/`, and the only registered scheme in the product is `sunrise://` for
+deep links ([`../02-domain/identifiers.md`](../02-domain/identifiers.md)`:68`).
 
 ## Joining and leaving
 

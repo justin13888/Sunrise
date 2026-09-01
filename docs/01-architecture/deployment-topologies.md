@@ -46,4 +46,4 @@ The wire protocol is the same in both topologies. Only the server URL and OIDC i
 
 ## Federation note
 
-There is no federation between Sunrise servers in v1. A managed-cloud user and a self-hosted user can still share *data* by adding each other's identity (the sharing protocol uses the *user's* public identity, not the server). The relay path for shared ops is whichever server hosts the *shared document* (see [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)). Cross-server delivery is not part of v1.
+There is no federation between Sunrise servers, and cross-server delivery is not part of v1 — nor is the sharing it would carry. The one answer, including what happens when sharing does land, is in [`trust-and-server-role.md`](./trust-and-server-role.md) §Cross-server delivery.
