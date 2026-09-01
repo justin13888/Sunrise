@@ -233,6 +233,19 @@ ciphertext = XChaCha20-Poly1305_seal(
 )
 ```
 
+> **A `blob_key` MUST NOT seal two different byte sequences.** The nonce above is
+> derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness, so
+> reusing a key across two distinct plaintexts at the same `chunk_idx` reuses an
+> XChaCha20-Poly1305 nonce — which forfeits confidentiality of both messages and
+> leaks the Poly1305 authentication key. Every sealed byte sequence — every
+> attachment, every thumbnail, every re-attach of the same file — gets a fresh
+> 32-byte random `blob_key`.
+>
+> Consequently there is no dedup by key sharing, at any scope, and
+> content-addressing over ciphertext never collides across attachments. See
+> [`../04-storage/blob-store.md`](../04-storage/blob-store.md) §No key-sharing
+> dedup.
+
 **Per-chunk integrity at decrypt time** is provided by the AEAD tag — XChaCha20-Poly1305 fails closed if any byte of `ciphertext` or `aad` is altered. Re-verifying with a separate hash on every read would duplicate that work; we don't.
 
 **Content integrity** for the assembled attachment is recorded once on the parent attachment metadata op as a single BLAKE3 hash over the concatenated plaintext chunks:

@@ -26,7 +26,7 @@ Attachment = {
     blob_key:      bstr .size 32,       ; per-blob symmetric key; sealed inside the op envelope
     blob_id:       bstr .size 16,       ; assigned by the creating device
     chunk_count:   uint,                ; >= 1
-    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext, for dedup and integrity
+    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext; end-to-end integrity
     deleted:       bool,
     unknown-fields,                     ; see overview.md
 }
@@ -142,7 +142,17 @@ The server runs the GC; only the **blob** is GC'd, never the metadata, since met
 Image attachments include a thumbnail generated on the **source device** at attach time:
 
 - Max edge: 512 px; format: AVIF (fallback JPEG for platforms without AVIF encode).
-- Stored as a separate small blob with the same per-blob key as the original (no extra key envelope).
-- The thumbnail's `BlobRef` is recorded in a `thumbnail_ref` field on the Attachment metadata op.
+- Stored as a **separate blob with its own fresh random `blob_key` and its own
+  `blob_id`**. It MUST NOT reuse the original's key: the chunk nonce is derived
+  from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness, so one key over
+  two different plaintexts is a nonce reuse
+  ([`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+  §Blob chunks). Earlier revisions of this file specified the key sharing
+  explicitly, on the grounds that it saved a key envelope; the saving is not
+  worth the property it destroys.
+- *Target state.* `crates/sunrise-domain/src/attachment.rs` models no thumbnail:
+  there is no `thumbnail_ref` field, no second `blob_key`, and no generation
+  path. Whatever shape it lands in has to carry both a key and an id, not a
+  reference alone.
 
 Generating on receivers is rejected for v1: it would require every receiver to fetch the full ciphertext just to thumbnail, defeating the lazy-fetch policy.
