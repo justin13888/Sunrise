@@ -484,7 +484,13 @@ private struct CaptureSheet: ViewModifier {
                     commit: { try await surfaces.commitCapture($0) },
                     dismiss: { surfaces.captureDismissed() }
                 )
-                .presentationDetents([.height(280)])
+                // `.medium` beside the fixed height, not instead of it. The
+                // small detent is the point — a full-screen sheet for one line
+                // of text is what makes quick capture stop feeling quick — but
+                // the content grows: one label per token the parser could not
+                // place, and enough of those would push Add, the sheet's only
+                // commit control, past a height nothing can scroll.
+                .presentationDetents([.height(280), .medium])
                 .presentationDragIndicator(.visible)
             }
         }
