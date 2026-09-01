@@ -538,9 +538,16 @@ impl Core {
         Ok(sunrise_storage::Outbox::pending_count(&db)?)
     }
 
-    /// Build the subscribe set: every known stream (the zero meta/inbox stream,
-    /// every stream we have ops for, and every declared stream) with its
-    /// per-`(device)` cursors from `sync_cursors`.
+    /// Build the subscribe set: every known stream — the vault-meta stream, the
+    /// Inbox, every stream we have ops for, and every declared stream — with
+    /// its per-`(device)` cursors from `sync_cursors`.
+    ///
+    /// Both fixed ids are seeded unconditionally. They are the two streams a
+    /// vault can hold ops for while having no row that names them: the meta
+    /// stream has no `streams` row at all, and the Inbox's row only appears
+    /// once a task lands in it. A subscribe set that omitted either would
+    /// silently never receive that stream's ops — including, since ADR-0024,
+    /// the `key_envelope` ops that carry its keys.
     /// The configured anti-entropy resync interval, when sync is configured.
     pub(crate) fn sync_resync_interval(&self) -> Option<std::time::Duration> {
         self.cfg.sync.as_ref().map(|s| s.resync_interval)
@@ -563,7 +570,8 @@ impl Core {
         let db = self.db.lock();
         let conn = db.conn();
         let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
-        streams.insert([0u8; 16]);
+        streams.insert(crate::engine::META_STREAM);
+        streams.insert(sunrise_domain::INBOX_STREAM_BYTES);
         {
             let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;

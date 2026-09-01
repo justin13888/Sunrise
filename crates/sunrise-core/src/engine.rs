@@ -88,13 +88,19 @@ use thiserror::Error;
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///
-/// v1 routing: Stream lifecycle ops (create/update/delete) and all routine ops
-/// are logged under this meta stream, while task ops are logged under their
-/// owning Stream's id. The Inbox stream id is *also* all-zeros
-/// (`INBOX_STREAM_BYTES`), so inbox-task ops and meta ops share this id and its
-/// derived Stream key in v1. Accepted: meta and inbox coincide until a dedicated
-/// meta-stream id is introduced.
-const META_STREAM: [u8; 16] = [0u8; 16];
+/// Routing: Stream lifecycle ops (create/update/delete), all routine ops, review
+/// snapshots and the control op families are logged under this meta stream,
+/// while task ops are logged under their owning Stream's id.
+///
+/// It is an ordinary member of the rotation set. Revoking a device mints a new
+/// epoch here as it does for every other stream, so a revoked device stops
+/// seeing Streams created after it was cut off — not only their tasks. Leaving
+/// vault-meta on a fixed epoch would have left the metadata readable forever,
+/// which is exactly the claim ADR-0025's credential story rests on.
+///
+/// The Inbox no longer shares this id: see
+/// [`sunrise_domain::INBOX_STREAM_BYTES`].
+pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
 
 /// Upper bound on the trend window a caller may ask for.
 ///

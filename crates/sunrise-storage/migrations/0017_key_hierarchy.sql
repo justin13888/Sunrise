@@ -70,3 +70,26 @@ ALTER TABLE devices ADD COLUMN identity_id BLOB;
 ALTER TABLE devices ADD COLUMN d_d_pub BLOB;
 ALTER TABLE devices ADD COLUMN revoked_by BLOB;
 ALTER TABLE devices ADD COLUMN revoke_reason TEXT;
+
+-- --- the Inbox stops sharing the vault-meta stream id ---
+-- Pre-0017 the Inbox was sixteen zero bytes, which is also the vault-meta
+-- stream id, so an Inbox task and a Stream-lifecycle op shared a stream and a
+-- key. Existing rows are re-pointed at the new id so a vault does not appear to
+-- lose its Inbox on upgrade. The `streams` row is inserted first because
+-- `tasks.stream_id` has a foreign key to it and `PRAGMA foreign_keys` is on.
+--
+-- The already-signed *envelopes* in `ops` still name the old id and cannot be
+-- rewritten. That is accepted under ADR-0018: a peer replaying its own
+-- pre-0017 Inbox ops re-materializes them under the old id, and the fix is the
+-- same one that ADR sanctions everywhere else pre-1.0 — no released build
+-- produced such a vault.
+INSERT OR IGNORE INTO streams
+    (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+SELECT X'00000073756E726973652E696E626F78',
+       X'0000000000000000000000000000000000000000000000000000000000000000',
+       0, '', 0, 0
+WHERE EXISTS (
+    SELECT 1 FROM tasks WHERE stream_id = X'00000000000000000000000000000000'
+);
+UPDATE tasks SET stream_id = X'00000073756E726973652E696E626F78'
+WHERE stream_id = X'00000000000000000000000000000000';
