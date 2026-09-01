@@ -55,12 +55,16 @@ jobs:
         # ADR-0026 requires the three file literals byte-identical and the
         # `rustc` a checkout resolves to match them, so equality is the whole
         # check — there is nothing to parse loosely. Fail closed: an
-        # unreadable value is a failure, not a skipped comparison.
+        # unreadable value is a failure, not a skipped comparison. The
+        # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
+        # carrying a trailing comment or quotes then matches nothing and is
+        # reported as unreadable, rather than being captured verbatim and
+        # reported as a version disagreement it is not.
         run: |
           set -euo pipefail
           channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
           rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
-          docker_version=$(sed -n 's/^ARG RUST_VERSION=\(.*\)$/\1/p' Dockerfile)
+          docker_version=$(sed -n 's/^ARG RUST_VERSION=\([^ #"]*\)$/\1/p' Dockerfile)
           actual=$(rustc --version | cut -d' ' -f2)
           echo "rust-toolchain.toml channel   : ${channel:-<none>}"
           echo "Cargo.toml rust-version       : ${rust_version:-<none>}"
