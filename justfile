@@ -76,6 +76,13 @@ rust-test:
 orphan-crates:
     .github/scripts/orphan-crate-gate.py
 
+# Regenerate the OpenAPI description from the handlers that produce it.
+# `spargen` reads the committed file, so it is an input rather than a report:
+# `the_committed_description_is_current` fails until this has been re-run.
+[group('rust')]
+openapi:
+    cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json
+
 # Run the Criterion benchmark suite (submit / query_today / fts / ws_handshake)
 [group('rust')]
 bench:

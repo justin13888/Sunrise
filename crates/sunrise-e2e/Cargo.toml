@@ -17,12 +17,11 @@ sunrise-core = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-crypto = { workspace = true }
-sunrise-sync = { workspace = true, features = ["ws"] }
+sunrise-sync = { workspace = true, features = ["sse"] }
 sunrise-id = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 ciborium = { workspace = true }
-axum = { workspace = true }
 jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 async-trait = { workspace = true }

@@ -4,7 +4,7 @@
 //! ./sunrise-server -c sunrise.toml
 //! ```
 //!
-//! v1 self-host scope: REST endpoints + (deferred) WebSocket relay.
+//! v1 self-host scope: the typed REST surface plus ADR-0023's SSE sync.
 //! Configuration via TOML; defaults bind 127.0.0.1:8443.
 //!
 //! Logging is installed first, before anything that could want to log. A
@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_log::ProtoVersions;
-use sunrise_server::{build_router, state::ServerState, OidcVerifier};
+use sunrise_server::{state::ServerState, OidcVerifier};
 
 /// `EX_CONFIG` from `sysexits.h`: the server was asked to run a configuration
 /// it cannot honour. Distinct from a crash so a supervisor does not restart
@@ -111,8 +111,6 @@ async fn run() -> Result<(), u8> {
         return Err(EX_CONFIG);
     }
 
-    let app = build_router(state);
-
     // The protocol versions ride the startup line rather than every record —
     // see `sunrise_log::proto` for why that trade was made. Both binaries
     // report them through the same struct so the two startup records have the
@@ -143,8 +141,16 @@ async fn run() -> Result<(), u8> {
             return Err(EX_FAILURE);
         }
     };
-    if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!(ev = "srv.stop.failed", cause = %e, "server stopped");
+    // A surface that cannot be described correctly fails here rather than at
+    // documentation time, which is what makes the document authoritative rather
+    // than aspirational — so this refusal is `EX_CONFIG`, not a crash.
+    if let Err(e) = sunrise_server::serve(state, listener).await {
+        tracing::error!(
+            ev = "srv.stop.failed",
+            err_kind = "permanent",
+            cause = %e,
+            "server stopped"
+        );
         return Err(EX_FAILURE);
     }
 

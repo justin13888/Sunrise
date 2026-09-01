@@ -14,7 +14,7 @@ use std::time::Duration;
 use sunrise_cli::livesync::{open_with_plan, SyncPlan};
 use sunrise_core::{Command, Core, DomainEvent, Query, QueryResult, SyncConfig};
 use sunrise_domain::TaskDraft;
-use sunrise_server::{build_router, ServerConfig, ServerState};
+use sunrise_server::{ServerConfig, ServerState};
 use sunrise_sync::SyncState;
 use tokio::task::JoinHandle;
 
@@ -35,9 +35,9 @@ async fn spawn_relay() -> (SocketAddr, JoinHandle<()>) {
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = build_router(ServerState::new(ServerConfig::default()));
+    let state = ServerState::new(ServerConfig::default());
     let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = sunrise_server::serve(state, listener).await;
     });
     (addr, handle)
 }
@@ -79,7 +79,7 @@ async fn wait_inbox_len(core: &Core, n: usize) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tui_wiring_reaches_live_and_converges() {
     let (addr, relay) = spawn_relay().await;
-    let url = format!("ws://{addr}/sync");
+    let url = format!("http://{addr}");
 
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
@@ -175,7 +175,7 @@ async fn tui_wiring_reaches_live_and_converges() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_binary_sync_once_actually_reaches_the_relay() {
     let (addr, relay) = spawn_relay().await;
-    let url = format!("ws://{addr}/sync");
+    let url = format!("http://{addr}");
     let dir = tempfile::tempdir().expect("tempdir");
     let vault = dir.path().to_path_buf();
     // The binary mints this vault's root on first open and files it here.

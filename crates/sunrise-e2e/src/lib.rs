@@ -28,8 +28,8 @@ use sunrise_core::{
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::{SunriseTime, Task, TaskState};
 use sunrise_id::EntityRef;
-use sunrise_server::{build_router, ServerConfig, ServerState};
-use sunrise_sync::WsTransport;
+use sunrise_server::{ServerConfig, ServerState};
+use sunrise_sync::SseTransport;
 use tokio::task::JoinHandle;
 
 /// Crate-level marker used by the test harness.
@@ -68,32 +68,32 @@ pub async fn spawn_relay_with(
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let app = build_router(tweak(ServerState::new(config)));
+    let state = tweak(ServerState::new(config));
     let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = sunrise_server::serve(state, listener).await;
     });
     (addr, handle)
 }
 
-/// Build a [`TransportFactory`] that dials `ws://{addr}/sync` with the real
-/// [`WsTransport`] on every connect attempt (initial connect + every
+/// Build a [`TransportFactory`] that reaches `http://{addr}` with the real
+/// [`SseTransport`] on every connect attempt (initial connect + every
 /// reconnect).
 #[must_use]
 pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
     // The harness relay runs the self-host `NullVerifier`, which accepts an
-    // absent bearer. Authenticated dialling is covered in
-    // `sunrise-server/tests/ws_auth.rs` and `ws_token_expiry.rs`.
-    let url = format!("ws://{addr}/sync");
+    // absent bearer. Authenticated access is covered by the sync surface's own
+    // tests in `sunrise-server::api::sync`.
+    let url = format!("http://{addr}");
     Arc::new(move || {
         let url = url.clone();
         Box::pin(async move {
-            let t = WsTransport::connect(&url).await?;
+            let t = SseTransport::connect(&url);
             Ok(Box::new(t) as BoxTransport)
         }) as sunrise_core::ConnectFuture
     })
 }
 
-/// Build a [`TransportFactory`] that dials the relay with a real [`WsTransport`]
+/// Build a [`TransportFactory`] that reaches the relay with a real [`SseTransport`]
 /// and wraps every freshly-connected transport in a [`Toxic`] fault injector.
 ///
 /// All connections a single factory opens share the one [`FaultHandle`]
@@ -108,7 +108,7 @@ pub fn toxic_ws_factory(
     config: ToxicConfig,
     seed: u64,
 ) -> (TransportFactory, FaultHandle) {
-    let url = format!("ws://{addr}/sync");
+    let url = format!("http://{addr}");
     let handle = FaultHandle::from_config(config);
     let delay = config.delay;
     let counter = Arc::new(AtomicU64::new(0));
@@ -119,7 +119,7 @@ pub fn toxic_ws_factory(
         let n = counter.fetch_add(1, Ordering::Relaxed);
         let conn_seed = seed.wrapping_add(n);
         Box::pin(async move {
-            let inner = WsTransport::connect(&url).await?;
+            let inner = SseTransport::connect(&url);
             let toxic = Toxic::with_handle(inner, faults, delay, conn_seed);
             Ok(Box::new(toxic) as BoxTransport)
         }) as sunrise_core::ConnectFuture
@@ -163,8 +163,7 @@ pub async fn open_core_with_factory(
         // milliseconds rather than the production 30 s. The mechanism is the
         // same one; only its period is tuned, exactly like a backoff constant.
         sync: Some(
-            SyncConfig::new(format!("ws://{addr}/sync"))
-                .with_resync_interval(HARNESS_RESYNC_INTERVAL),
+            SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
         ),
         ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };

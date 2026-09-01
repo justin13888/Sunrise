@@ -40,7 +40,7 @@ struct AccountView: View {
             vaultSection
 
             Section("Sync") {
-                TextField("Relay URL", text: $settings.relayURL, prompt: Text("ws://127.0.0.1:8443/sync"))
+                TextField("Relay URL", text: $settings.relayURL, prompt: Text("http://127.0.0.1:8443"))
                     .textContentType(.URL)
                 Text("Leave empty to work entirely on this Mac.")
                     .font(.caption)

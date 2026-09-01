@@ -700,7 +700,7 @@ fn ws_factory(url: &str, credential: sunrise_core::TokenSource) -> sunrise_core:
         let url = url.clone();
         let bearer = credential.get();
         Box::pin(async move {
-            let t = sunrise_sync::WsTransport::connect_with_bearer(&url, bearer.as_deref()).await?;
+            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, bearer.as_deref());
             Ok(Box::new(t) as sunrise_core::BoxTransport)
         }) as sunrise_core::ConnectFuture
     })

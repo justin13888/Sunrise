@@ -1,0 +1,3641 @@
+{
+  "openapi": "3.2.0",
+  "info": {
+    "title": "Sunrise relay",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "summary": "Liveness probe.",
+        "description": "Unauthenticated on purpose: a load balancer has no token, and this answers\n\"is the process up\", not \"is the database reachable\". `docs/06-server/api.md`\nspecifies a `?deep=1` variant that has never existed and is still not here.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        }
+      }
+    },
+    "/api/v1/meta": {
+      "get": {
+        "summary": "Versions, capabilities, and the facts a client needs before it has a token.",
+        "description": "Unauthenticated on purpose: publishing the issuer here is what lets a fresh\nclient bootstrap its login flow, so requiring a token first would be\ncircular.",
+        "operationId": "meta",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts": {
+      "post": {
+        "summary": "Set the account's identity keys and recovery blob.",
+        "description": "Idempotent: the store coalesces, so a client that retries after a dropped\nresponse does not get a second account. The account itself already exists by\nthe time this runs — it is minted when the token first resolves.",
+        "operationId": "createAccount",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "the resource was created",
+            "headers": {
+              "Location": {
+                "description": "Where the created resource lives",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/me": {
+      "get": {
+        "summary": "The calling account.",
+        "operationId": "getAccount",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "summary": "Every device on the calling account, revoked ones included.",
+        "operationId": "listDevices",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceMeta"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Register a device.",
+        "description": "Bootstrap route: a device cannot sign before it exists, so an absent binding\nis accepted here even where the server demands one elsewhere. A binding that\n*is* supplied is still verified in full.",
+        "operationId": "registerDevice",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "the resource was created",
+            "headers": {
+              "Location": {
+                "description": "Where the created resource lives",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRegisterResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{device_id}": {
+      "delete": {
+        "summary": "Revoke a device.",
+        "description": "**Only callable from another paired device.** A device that can revoke\nitself is a device a thief can use to erase the evidence of its own theft,\nand the legitimate \"sign out here\" gesture is a local key wipe rather than a\nserver call.",
+        "operationId": "revokeDevice",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "The device being addressed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/push-tokens": {
+      "post": {
+        "summary": "File a push token against one of the caller's devices.",
+        "operationId": "registerPushToken",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/init": {
+      "post": {
+        "summary": "Reserve an upload id and hand back one URL per chunk.",
+        "operationId": "initBlobUpload",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/finalize": {
+      "post": {
+        "summary": "Check every stored chunk and commit the blob under its content address.",
+        "operationId": "finalizeBlobUpload",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizeResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/{upload_id}/{chunk_idx}": {
+      "put": {
+        "summary": "Store one chunk of opaque ciphertext.",
+        "operationId": "putBlobChunk",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "description": "The upload this chunk belongs to.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chunk_idx",
+            "in": "path",
+            "description": "Zero-based index within the upload.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/blobs/{blob_id}": {
+      "get": {
+        "summary": "Stream a committed blob's ciphertext back.",
+        "description": "One chunk is read from disk at a time rather than the whole blob being\nassembled first. The surface this replaces built a single `Vec<u8>` of up to\n`MAX_BLOB_BYTES` before writing a byte, so one fetch of a large attachment\npinned 100 MB of the relay's memory for as long as the client took to read\nit — and a handful of concurrent fetches was an availability problem rather\nthan a slow response.",
+        "operationId": "fetchBlob",
+        "parameters": [
+          {
+            "name": "blob_id",
+            "in": "path",
+            "description": "The blob being read.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "itemSchema": {}
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/session": {
+      "post": {
+        "summary": "Establish a sync session: negotiate versions and capabilities.",
+        "description": "Replaces the `Hello`/`HelloAck` exchange. `Hello::negotiate` is called\nunchanged, so a client that cannot agree on a wire version, a crypto suite\nor a required capability is refused here for the same reason and with the\nsame mapping it was refused at the socket.",
+        "operationId": "openSyncSession",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "the resource was created",
+            "headers": {
+              "Location": {
+                "description": "Where the created resource lives",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/subscribe": {
+      "post": {
+        "summary": "Replace the set of streams this session receives on.",
+        "description": "Takes effect on the next `GET /sync/events`. A stream already open keeps its\ncurrent set: re-subscribing mid-stream is a reconnect, which is what the\nsocket's re-`Subscribe` amounted to once the fan-out had been rebuilt.",
+        "operationId": "subscribeStreams",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Session",
+            "in": "header",
+            "description": "The id `POST /sync/session` returned.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscribeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/ops": {
+      "post": {
+        "summary": "Publish one batch of ops.",
+        "description": "Durable first, and only then the ack. Acking an op the server has not\ncommitted would promise a durability that does not exist — and the client\ndrops an acked op from its outbox, so the op would be gone from both sides\nat once. A storage failure is reported as a 503 with nothing acked, which\nleaves the batch in the outbox to retry.",
+        "operationId": "publishOps",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Session",
+            "in": "header",
+            "description": "The id `POST /sync/session` returned.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/session/refresh": {
+      "post": {
+        "summary": "Extend a session without re-establishing it.",
+        "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.",
+        "operationId": "refreshSyncSession",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Session",
+            "in": "header",
+            "description": "The id `POST /sync/session` returned.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/events": {
+      "get": {
+        "summary": "The live op stream for this session.",
+        "description": "Backpressure and disconnect are the stream's own: events are pulled one at a\ntime and never ahead, and a client that goes away drops the body, which\ndrops the stream, which drops the relay receivers it holds.",
+        "operationId": "syncEvents",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Session",
+            "in": "header",
+            "description": "The id `POST /sync/session` returned.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string",
+                      "contentMediaType": "application/json",
+                      "contentSchema": {
+                        "$ref": "#/components/schemas/SyncEvent"
+                      }
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "type": "integer",
+                      "minimum": 0.0
+                    }
+                  },
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "The counter registry, in the Prometheus text exposition format.",
+        "description": "Unauthenticated, and mounted only on a loopback listener — see the module\ndocs for why those two facts belong together.",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"ok\"` while the server is healthy."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
+      },
+      "MetaResponse": {
+        "properties": {
+          "server_app_v": {
+            "type": "string",
+            "description": "Server's `<semver>+<platform>` string."
+          },
+          "wire_proto_supported": {
+            "items": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            },
+            "type": "array",
+            "description": "Wire-protocol versions the server speaks."
+          },
+          "crypto_suite_supported": {
+            "items": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            },
+            "type": "array",
+            "description": "Crypto-suite versions the server speaks."
+          },
+          "doc_schema_floor": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Server's `doc_schema_floor` (lowest accepted)."
+          },
+          "capabilities": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Server's capability bitfield."
+          },
+          "oidc_issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC issuer discovery URL, so an unauthenticated client can bootstrap\nthe login flow without static configuration. `None` in self-host mode."
+          },
+          "oidc_client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC client id tokens must be audienced to."
+          },
+          "device_binding_mode": {
+            "type": "string",
+            "description": "Device-binding mode. The field exists so a client can detect a server\nthat has moved on without having to infer it from a 403."
+          },
+          "device_binding_required": {
+            "type": "boolean",
+            "description": "Whether the server *requires* device binding on authenticated requests.\nA client that sees `false` may still sign, and the signature is still\nverified."
+          }
+        },
+        "type": "object",
+        "required": [
+          "server_app_v",
+          "wire_proto_supported",
+          "crypto_suite_supported",
+          "doc_schema_floor",
+          "capabilities",
+          "device_binding_mode",
+          "device_binding_required"
+        ],
+        "description": "Server meta response."
+      },
+      "Problem": {
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 0.0,
+            "format": "uint16"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "type",
+          "status"
+        ],
+        "title": "Problem Details",
+        "description": "An RFC 9457 problem detail."
+      },
+      "AccountCreateRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "User email. Normalized server-side, and only a fallback: the IdP owns\nthe address, and this is read solely when the verifier emits no `email`\nclaim at all."
+          },
+          "identity_signing_pub": {
+            "type": "string",
+            "description": "Identity Ed25519 public key, base64url no-pad."
+          },
+          "identity_dh_pub": {
+            "type": "string",
+            "description": "Identity X25519 public key, base64url no-pad."
+          },
+          "recovery_blob": {
+            "type": "string",
+            "description": "Encrypted recovery blob. Opaque to the server, base64url no-pad."
+          },
+          "terms_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Terms acceptance timestamp, milliseconds since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "identity_signing_pub",
+          "identity_dh_pub",
+          "recovery_blob",
+          "terms_at_ms"
+        ],
+        "description": "`POST /api/v1/accounts` request body."
+      },
+      "AccountInfo": {
+        "properties": {
+          "identity_id": {
+            "type": "string",
+            "description": "16-byte identity id."
+          },
+          "email": {
+            "type": "string",
+            "description": "Normalized email."
+          },
+          "tier": {
+            "type": "string",
+            "description": "Subscription tier."
+          },
+          "device_count": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Number of registered, unrevoked devices."
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Account creation time, milliseconds since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity_id",
+          "email",
+          "tier",
+          "device_count",
+          "created_at_ms"
+        ],
+        "description": "An account, as this surface reports it."
+      },
+      "DeviceMeta": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "Crockford base-32 of 16 bytes."
+          },
+          "nickname": {
+            "type": "string",
+            "description": "User-set name."
+          },
+          "platform": {
+            "type": "string",
+            "description": "Platform tag."
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reported app version, if any."
+          },
+          "created_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Registration time, milliseconds since the epoch."
+          },
+          "last_seen_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Last authenticated request, milliseconds since the epoch."
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "Whether the device has been revoked.\n\nRevocation is a soft delete: the row survives so this can be reported."
+          },
+          "revoked_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Revocation time, milliseconds since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "nickname",
+          "platform",
+          "created_at_ms",
+          "last_seen_at_ms",
+          "revoked"
+        ],
+        "description": "A registered device."
+      },
+      "DeviceRegisterRequest": {
+        "properties": {
+          "device_pub_s": {
+            "type": "string",
+            "description": "Ed25519 device signing key, base64url no-pad. This is what verifies the\ndevice's `X-Sunrise-Device-Sig` on every later request."
+          },
+          "device_pub_d": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "X25519 device key, base64url no-pad."
+          },
+          "device_cert": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Self-signed device certificate. Opaque to the server, which never parses\nit — trust in a device cert is established client-side by\n`Command::TrustDevice`, and ADR-0024 is what gives it an identity anchor."
+          },
+          "nickname": {
+            "type": "string",
+            "description": "User-visible name."
+          },
+          "platform": {
+            "type": "string",
+            "description": "Platform tag."
+          },
+          "app_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reported app version."
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_pub_s",
+          "nickname",
+          "platform"
+        ],
+        "description": "`POST /api/v1/devices` request body."
+      },
+      "DeviceRegisterResponse": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "The server-assigned device id."
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id"
+        ],
+        "description": "`POST /api/v1/devices` response body."
+      },
+      "PushPlatform": {
+        "type": "string",
+        "enum": [
+          "apns",
+          "fcm",
+          "webpush"
+        ],
+        "description": "Push platform tag.\n\n`kynos::Schema` so the typed surface can take this directly rather than a\nfree string: the three platforms then appear in the OpenAPI document as an\nenum, and an unknown one is rejected by the parse rather than stored."
+      },
+      "PushRegistration": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "Which of the caller's devices this token belongs to. Validated against\nthe caller's own rows; it cannot file a token under an unowned device."
+          },
+          "platform": {
+            "$ref": "#/components/schemas/PushPlatform",
+            "description": "Provider tag.\n\nThe enum rather than a free string: a token filed under a platform no\nprovider serves is a notification that silently never arrives, and the\nparse is the cheapest place to refuse it."
+          },
+          "token": {
+            "type": "string",
+            "description": "The provider token. Stored in plaintext today — see\n`docs/01-architecture/threat-model.md`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "platform",
+          "token"
+        ],
+        "description": "`POST /api/v1/devices/push-tokens` request body."
+      },
+      "InitRequest": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "description": "Stream id this blob belongs to."
+          },
+          "chunk_count": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Total chunk count."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Total ciphertext size in bytes. Advisory: the server enforces the\nper-attachment ceiling here and the real size at finalize."
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "chunk_count",
+          "size_bytes"
+        ],
+        "description": "`POST /api/v1/blobs/init` request body."
+      },
+      "InitResponse": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`."
+          },
+          "chunk_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "Per-chunk upload URLs. Self-host returns relative paths under\n`/api/v1/blobs/<upload_id>/<idx>`, which the PUT operation serves."
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "chunk_urls"
+        ],
+        "description": "`POST /api/v1/blobs/init` response body."
+      },
+      "FinalizeRequest": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "description": "Upload id from `init`."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "BLAKE3 of the concatenated chunk ciphertext, 64 lowercase hex."
+          },
+          "chunk_hashes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is\nthe chunk count: `init`'s advisory count is not trusted here."
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "content_hash",
+          "chunk_hashes"
+        ],
+        "description": "`POST /api/v1/blobs/finalize` request body."
+      },
+      "FinalizeResponse": {
+        "properties": {
+          "blob_id": {
+            "type": "string",
+            "description": "Canonical blob id: `blb_` + the first 16 bytes of `content_hash` in\nlowercase hex. Content-addressed, so re-uploading identical ciphertext\nconverges on the same id."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Committed size in bytes."
+          },
+          "chunk_count": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Committed chunk count."
+          }
+        },
+        "type": "object",
+        "required": [
+          "blob_id",
+          "size_bytes",
+          "chunk_count"
+        ],
+        "description": "`POST /api/v1/blobs/finalize` response body."
+      },
+      "SessionRequest": {
+        "properties": {
+          "client_app_v": {
+            "type": "string",
+            "description": "Client app version."
+          },
+          "client_platform": {
+            "type": "string",
+            "description": "Platform string."
+          },
+          "wire_proto_supported": {
+            "items": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            },
+            "type": "array",
+            "description": "Ascending list of wire-protocol versions the client speaks."
+          },
+          "doc_schema_min": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Lowest document schema the client can produce."
+          },
+          "doc_schema_max": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Highest document schema the client can read."
+          },
+          "crypto_suite_supported": {
+            "items": {
+              "type": "integer",
+              "maximum": 4294967295.0,
+              "minimum": 0.0,
+              "format": "uint32"
+            },
+            "type": "array",
+            "description": "Crypto suites the client speaks."
+          },
+          "capabilities": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Bitfield of optional features."
+          },
+          "trace": {
+            "type": "string",
+            "description": "ULID of the session trace."
+          }
+        },
+        "type": "object",
+        "required": [
+          "client_app_v",
+          "client_platform",
+          "wire_proto_supported",
+          "doc_schema_min",
+          "doc_schema_max",
+          "crypto_suite_supported",
+          "capabilities",
+          "trace"
+        ],
+        "description": "`POST /api/v1/sync/session` request body — the `Hello` fields."
+      },
+      "SessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session id, presented as `X-Sunrise-Session` on every later call."
+          },
+          "server_app_v": {
+            "type": "string",
+            "description": "Server app version."
+          },
+          "wire_proto": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Negotiated wire protocol version."
+          },
+          "crypto_suite": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "Negotiated crypto suite."
+          },
+          "doc_schema_floor": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "The server's accepted document-schema floor."
+          },
+          "capabilities": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The capability bitfield both sides agreed on."
+          },
+          "server_time_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Server time, advisory, for clock-skew detection."
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "server_app_v",
+          "wire_proto",
+          "crypto_suite",
+          "doc_schema_floor",
+          "capabilities",
+          "server_time_ms"
+        ],
+        "description": "`POST /api/v1/sync/session` response body — `HelloAck` plus the id."
+      },
+      "DeviceCursor": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "The originating device, 32 lowercase hex characters."
+          },
+          "last_applied_seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The highest `seq` from that device this subscriber has applied."
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "last_applied_seq"
+        ],
+        "description": "One device's position in a stream."
+      },
+      "StreamSubscription": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "description": "The stream, 32 lowercase hex characters."
+          },
+          "cursors": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceCursor"
+            },
+            "type": "array",
+            "description": "Per-device positions. Anything already covered is not replayed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id"
+        ],
+        "description": "One stream to receive on, with the subscriber's cursors."
+      },
+      "SubscribeRequest": {
+        "properties": {
+          "streams": {
+            "items": {
+              "$ref": "#/components/schemas/StreamSubscription"
+            },
+            "type": "array",
+            "description": "The streams this session wants. **Replaces** the current set rather than\nadding to it, which is what a re-sent `Subscribe` frame did."
+          }
+        },
+        "type": "object",
+        "required": [
+          "streams"
+        ],
+        "description": "`POST /api/v1/sync/subscribe` request body."
+      },
+      "OpsRequest": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "description": "The stream the batch targets, 32 lowercase hex characters."
+          },
+          "batch_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Client-generated idempotency key for the batch."
+          },
+          "ops": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "The already-encoded `OpEnvelope`s, base64 standard, one per element.\nThe server never decodes their ciphertext; it reads only the cleartext\nrouting head to tag the frame for cursor filtering."
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "batch_id",
+          "ops"
+        ],
+        "description": "`POST /api/v1/sync/ops` request body — one `OpBatch`."
+      },
+      "OpsResponse": {
+        "properties": {
+          "batch_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Echoes the acked batch's `batch_id`."
+          },
+          "stream_id": {
+            "type": "string",
+            "description": "The stream the batch targeted."
+          },
+          "server_first_seen_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "Server wall-clock at which the batch was first seen, for clock-skew\nclamping."
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "stream_id",
+          "server_first_seen_ms"
+        ],
+        "description": "`POST /api/v1/sync/ops` response body — the `Ack`."
+      },
+      "RefreshRequest": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The replacement bearer."
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "description": "`POST /api/v1/sync/session/refresh` request body."
+      },
+      "RefreshResponse": {
+        "properties": {
+          "expires_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The new deadline, or 0 where the verifier issues none."
+          }
+        },
+        "type": "object",
+        "required": [
+          "expires_at_ms"
+        ],
+        "description": "`POST /api/v1/sync/session/refresh` response body."
+      },
+      "SyncEvent": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "ops"
+              },
+              "stream_id": {
+                "type": "string",
+                "description": "The stream it belongs to."
+              },
+              "frame": {
+                "type": "string",
+                "description": "The frame, exactly as the relay stored it."
+              }
+            },
+            "type": "object",
+            "required": [
+              "kind",
+              "stream_id",
+              "frame"
+            ],
+            "description": "A batch of ops, as the verbatim wire frame, base64 standard."
+          },
+          {
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "caught_up"
+              },
+              "stream_id": {
+                "type": "string",
+                "description": "The stream now live."
+              }
+            },
+            "type": "object",
+            "required": [
+              "kind",
+              "stream_id"
+            ],
+            "description": "The retained backlog for a stream has been fully replayed.\n\nNever sent where a gap was reported for that stream without the gap\ngoing first: a client must not read \"caught up\" as \"complete\"."
+          },
+          {
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "gap"
+              },
+              "stream_id": {
+                "type": "string",
+                "description": "The stream with the hole."
+              },
+              "code": {
+                "type": "string",
+                "description": "The canonical error code, always `SYNC_CURSOR_GAP`."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Which devices, and how far the loss runs."
+              }
+            },
+            "type": "object",
+            "required": [
+              "kind",
+              "stream_id",
+              "code",
+              "reason"
+            ],
+            "description": "The subscriber's cursor predates what retention still holds."
+          },
+          {
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "closed"
+              },
+              "code": {
+                "type": "string",
+                "description": "The canonical error code a client can branch on."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Diagnostic detail."
+              }
+            },
+            "type": "object",
+            "required": [
+              "kind",
+              "code",
+              "reason"
+            ],
+            "description": "The session is over. The stream ends after this."
+          }
+        ],
+        "description": "One event on the sync stream.\n\n`itemSchema`-typed, which is what OpenAPI 3.2 adds and 3.1 has no way to\nsay: each event of the `text/event-stream` body is described rather than the\nbody being an opaque string.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      }
+    },
+    "securitySchemes": {
+      "AccountToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An OIDC access token for the calling account, verified against the issuer's JWKS."
+      }
+    }
+  }
+}

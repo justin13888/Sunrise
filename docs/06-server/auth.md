@@ -81,7 +81,7 @@ Implemented in `ws.rs` (`handle_refresh`), specified in
 [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by
 `crates/sunrise-server/tests/ws_token_expiry.rs`.
 
-A per-request Ed25519 device signature (`X-Sunrise-Device-Sig` over the canonical request line + `Date` + body hash) accompanies the bearer token; this is the `header_sig_v1` device-binding mode and is the only mode v1 supports. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified. See [`api.md`](./api.md) for the exact mechanics, and [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) for the v2 construction that replaces it.
+A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified.
 
 For sync WebSocket connections: the client sends `Authorization: Bearer <token>` on the WebSocket upgrade request. `auth::extract_bearer` reads the `Authorization` header and nothing else, so **the `?access_token=…` query-string fallback earlier revisions promised browsers does not exist** — a browser that cannot set the header cannot authenticate. What *does* exist is the defence for it: `logging/mod.rs` assembles the trace layer by hand so the span records a templated path with the query dropped, precisely because `tower-http`'s stock `MakeSpan` records the full URI, and `crates/sunrise-server/tests/logging.rs` regression-tests that `access_token` never reaches the log. That is a mitigation standing guard over a feature that was never built; it MUST survive any port (ADR-0021 says the same), because the day the query fallback *is* added is the day it starts mattering. The upgrade is authenticated once, but the *session* carries the token's `exp` for its whole life, and expiry is enforced two ways:
 
@@ -95,6 +95,63 @@ A session closed by the server keeps reading its socket briefly before dropping 
 ## Device binding
 
 A device must be associated with an account so the server can route ops correctly and so revocation works.
+
+### `header_sig_v2`: the canonical string
+
+Specified here rather than left to an implementation, which is the gap
+[ADR-0022](../11-adr/0022-device-signature-canonical-json.md) records against v1
+— whose byte layout lived only in the module that produced it, a fact that
+module noted about itself.
+
+A device signs the UTF-8 bytes of
+
+```text
+sunrise-device-sig-v2\n<METHOD>\n<path?query>\n<Date>\n<blake3-hex(canonical-body)>
+```
+
+with **no trailing newline**, and sends the detached Ed25519 signature as
+`X-Sunrise-Device-Sig`, base64url no-pad.
+
+| Field | Value |
+|---|---|
+| `<METHOD>` | The HTTP method, uppercase: `GET`, `POST`, `PUT`, `DELETE`. |
+| `<path?query>` | The **concrete** target as sent, including any query string. Never a route template: a signature over `/api/v1/devices/{device_id}` would verify for every device id, which is the whole thing this binding exists to prevent. |
+| `<Date>` | The `Date` header verbatim, RFC 2822. It is inside the signature, so it cannot be adjusted in flight. |
+| `<canonical-body>` | The body's **canonical form** — see below. |
+| `blake3-hex(...)` | BLAKE3 of those bytes, 64 lowercase hex characters. |
+
+**The canonical form of a body.**
+
+- **JSON** — the RFC 8785 (JCS) encoding of the parsed *value*, not of the
+  octets that carried it. Both sides compute it from the typed value: the client
+  from what it is sending, the server from what it parsed. Transport-level
+  variation in key order, whitespace and escaping stops mattering, which is what
+  JCS is for.
+- **Binary** — the bytes as received. A chunk upload is raw ciphertext with no
+  key order, whitespace or escaping to normalise away, so the bytes already
+  *are* the canonical form. This is the same rule rather than a second scheme,
+  and it is why a chunk's signature covers exactly the bytes the blob store then
+  content-addresses.
+- **No body** — the empty string. Stripping a body is therefore not a way to
+  produce a signature that verifies.
+
+**`Date` is checked against the server's injected clock inside ±300 s**
+(`MAX_CLOCK_SKEW_SECS`), which is the replay window.
+
+**Request bodies reject unknown fields** (`serde(deny_unknown_fields)`). This is
+the load-bearing half: a signature over a re-serialisation verifies only if the
+parse was lossless, and a silently-dropped field is exactly a lossy parse.
+Rejecting the field turns a would-be signature mismatch into a typed `400` that
+names the offending member. Floats stay forbidden, matching
+`sunrise_cbor::CborValue`'s existing refusal, so JCS's number rules are never
+exercised on a value the codebase treats as inadmissible anyway.
+
+**Verification happens after parsing**, necessarily — there is no canonical form
+before there is a value. So a malformed body fails as a `400` before it can fail
+as a `401`, and that ordering is observable.
+
+Implemented once, in `sunrise-http-sig`, so the relay and the generated client
+cannot disagree about it. `sign` is the client half and `verify` the server's.
 
 1. After OIDC login, the client calls `POST /api/v1/devices` with `{ device_pub_s, device_pub_d, device_cert, nickname, platform }`. The server records the device under the account.
 2. The client's OIDC token implicitly identifies the *account*. The `device_id` is conveyed in two places (defense in depth): a custom URI-namespaced claim `https://sunrise.app/device_id` on the OIDC token (each device runs its own OIDC client and requests this claim via the authorization-request `claims` parameter — RFC 7519 §4.2; if the IdP refuses, it returns `invalid_claims`) and the `X-Sunrise-Device` header. The server requires both to match.
@@ -186,7 +243,7 @@ Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling).
 - MFA enrollment UX, TOTP secrets, WebAuthn ceremonies.
 - Refresh-token rotation, opaque-token introspection endpoints, custom token-revocation lists.
 - hCaptcha, Cloudflare Turnstile, or in-house bot mitigation.
-- Per-request HMAC schemes over a shared secret. (`header_sig_v1` is a *device* signature under a public key the account registered — asymmetric, no shared secret, and it exists to bind a request to a device rather than to authenticate the account.)
+- Per-request HMAC schemes over a shared secret. (`header_sig_v2` is a *device* signature under a public key the account registered — asymmetric, no shared secret, and it exists to bind a request to a device rather than to authenticate the account.)
 - A custom session cookie format.
 
 Each item above is a standard OIDC issuer feature; reimplementing it would add weeks of build time and a permanent surface for subtle security bugs.

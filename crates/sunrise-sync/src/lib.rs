@@ -10,7 +10,7 @@
 //! - [`Backoff`] — exponential backoff with jitter.
 //! - [`TokenSource`] — the shared, swappable bearer a session presents.
 //! - [`Transport`] — async trait the driver drives.
-//! - [`WsTransport`] — the production WebSocket client transport (`ws`
+//! - [`SseTransport`] — the production SSE + POST client transport (`sse`
 //!   feature).
 
 #![forbid(unsafe_code)]
@@ -23,14 +23,14 @@
 
 pub mod backoff;
 pub mod credential;
+#[cfg(feature = "sse")]
+pub mod sse;
 pub mod state;
 pub mod transport;
-#[cfg(feature = "ws")]
-pub mod ws;
 
 pub use backoff::Backoff;
 pub use credential::{TokenSource, TokenWatch};
+#[cfg(feature = "sse")]
+pub use sse::SseTransport;
 pub use state::SyncState;
 pub use transport::{Transport, TransportError};
-#[cfg(feature = "ws")]
-pub use ws::WsTransport;

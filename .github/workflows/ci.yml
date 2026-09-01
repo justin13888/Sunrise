@@ -225,7 +225,8 @@ jobs:
           # The list below is every crate that emits a log record today
           # (`sunrise-log`, `-server`, `-cli`, `-storage`, `-core`) plus the
           # client-seam crates that are next in line to (`-sync`,
-          # `-client-core`, `-core-bindings`). It used to be
+          # `-client-core`, `-core-bindings`, `-relay-client`, `-http-sig`).
+          # It used to be
           # `crates/sunrise-log/src` plus three glob patterns that matched
           # nothing and a `packages/sunrise-log/src` that never existed — a
           # gate over one orphan crate that no other code could reach. It also
@@ -253,7 +254,44 @@ jobs:
             crates/sunrise-sync/src \
             crates/sunrise-client-core/src \
             crates/sunrise-core-bindings/src \
+            crates/sunrise-http-sig/src \
+            crates/sunrise-relay-client/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+
+  kynos-waiver:
+    name: Kynos waiver gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `cargo metadata` resolves features without compiling anything, so this
+      # job needs a cargo on PATH and takes seconds.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reject any escape hatch that would make the description opaque
+        # ADR-0021 adopts kynos on the premise that a handler which cannot be
+        # described does not compile. Every documented way around that sits
+        # behind one feature, and each item behind it stamps an operation with
+        # an `OpaqueReason`. Asserting the feature is off is therefore stronger
+        # than inspecting the reasons at runtime -- and it is the strict gate
+        # the ADR called unholdable, which ADR-0023 made holdable by removing
+        # the one legitimate upgrade route.
+        run: .github/scripts/kynos-waiver-gate.py
+
+  openapi-current:
+    name: OpenAPI description gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Reject a description that has drifted from its handlers
+        # `schemas/openapi.v1.json` is an *input*: `spargen` generates the relay
+        # client from it. A stale one yields a client that disagrees with the
+        # server and compiles perfectly while doing so, so regenerating it is
+        # not optional and cannot be left to a reviewer noticing.
+        run: |
+          cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json
+          git diff --exit-code -- schemas/openapi.v1.json \
+            || { echo "::error::openapi: the description is stale; run \`just openapi\` and commit the result."; exit 1; }
 
   orphan-crates:
     name: Orphan crate gate
