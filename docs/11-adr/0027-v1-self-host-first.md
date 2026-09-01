@@ -2,12 +2,19 @@
 
 **Status:** accepted
 
-**Amends:** six specs demoted to `status: proposed` (listed in §Consequences),
-five accepted specs from which plan-tier claims are removed, and
+**Amends:** seven specs demoted to `status: proposed`, and **twenty-four
+`accepted` specs materially edited**. Both lists are enumerated in
+§Consequences; nothing this ADR changes is left to be discovered by diffing.
+The heaviest single amendment is
 [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
-§Merkle fold order (the clamp is deleted; see §Decision clause 6).
+§Merkle fold order, where the relay-derived clamp is deleted (§Decision
+clause 6).
 
 ## Context
+
+*Every `file:line` in this section is read at commit `310e377`, the base this ADR
+was written against. The reconciliation it authorises moves many of them; the
+section headings named alongside each citation are the durable half.*
 
 The design tree describes a product with two deployment profiles, a paid tier,
 per-account quotas, live presence, an Android client and cross-user sharing.
@@ -204,18 +211,85 @@ pass, on a different ground: it is a per-field CRDT type catalogue for a merge
 model ADR-0014 replaced. Seven files carry `status: proposed` after this ADR;
 every other file under `docs/` is `accepted` or `living`.
 
-**Edited to remove plan-tier and relay-enforcement claims** (still `accepted`):
+### `accepted` specs materially edited
+
+Still `accepted`, but changed in ways a reader who cited them needs to know
+about. Grouped by what changed.
+
+**Plan-tier and quota claims removed** (§Decision clause 2):
 [`../06-server/api.md`](../06-server/api.md),
 [`../06-server/observability.md`](../06-server/observability.md),
 [`../06-server/overview.md`](../06-server/overview.md),
 [`../05-sync/multi-device.md`](../05-sync/multi-device.md),
 [`../05-sync/overview.md`](../05-sync/overview.md),
 [`deployment-topologies.md`](../01-architecture/deployment-topologies.md),
+[`../02-domain/attachments.md`](../02-domain/attachments.md).
+
+**Relay-enforcement claims corrected** (§Decision clause 7):
 [`trust-and-server-role.md`](../01-architecture/trust-and-server-role.md),
-[`../02-domain/attachments.md`](../02-domain/attachments.md),
 [`../02-domain/people-and-sharing.md`](../02-domain/people-and-sharing.md),
 [`../03-crypto/key-rotation.md`](../03-crypto/key-rotation.md),
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md).
+
+**Wire and crypto contracts** (each a byte-level statement, so each is listed
+individually):
+[`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) —
+`Ack.server_first_seen_ms` is declared advisory and barred from influencing
+merge order, fold order or acceptance;
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) —
+gains the `blob_key` MUST below;
+[`../04-storage/blob-store.md`](../04-storage/blob-store.md) — one blob identity,
+`BlobChunkId` and the `BlobMeta` CDDL deleted;
+[`../02-domain/notes.md`](../02-domain/notes.md) and
+[`../01-architecture/threat-model.md`](../01-architecture/threat-model.md) — the
+in-app reference and redaction shapes are consolidated on the keys the shipped
+codec emits.
+
+**The `conflict` view state is deleted** (consequence below):
+[`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md) and the
+five feature specs that cited it —
+[`focus-mode.md`](../08-features/focus-mode.md),
+[`inbox-and-capture.md`](../08-features/inbox-and-capture.md),
+[`planning-views.md`](../08-features/planning-views.md),
+[`search.md`](../08-features/search.md),
+[`time-blocking.md`](../08-features/time-blocking.md) — plus the cross-reference
+in [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
+
+**Rewritten to the as-built state**, because the gap was large enough that
+patching sentences would have been dishonest:
+[`../05-sync/offline-queue.md`](../05-sync/offline-queue.md) (no `attempts` or
+`next_retry_at` column; no `applied_seq_range` on the `Ack`; retry state is
+in-memory only) and
+[`../06-server/observability.md`](../06-server/observability.md) (the metric and
+event sets are extracted from source, with the extraction command recorded above
+each).
+
+### New normative rules this ADR carries
+
+**A `blob_key` MUST NOT seal two different byte sequences.** The blob chunk
+nonce is derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness,
+so one key over two distinct plaintexts at the same `chunk_idx` is an
+XChaCha20-Poly1305 nonce reuse — forfeiting confidentiality of both and leaking
+the Poly1305 key. Every sealed byte sequence gets a fresh 32-byte random
+`blob_key`. This is a **new MUST in a byte-exact design of record**, not a
+clarification: the previous text specified key-sharing dedup and a thumbnail
+sharing its parent's key, both of which are the forbidden thing. Its consequence
+is that dedup by key sharing does not exist at any scope.
+
+**`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
+as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
+relay re-derives from disk rather than trusting the claim
+(`crates/sunrise-server/src/api/blobs.rs:222-247,416-425`). This reconciles
+`crates/sunrise-domain/src/attachment.rs:42-44` ("assigned by the creating
+device") with the relay's content addressing, which had been read as two
+competing identities and specified as two.
+
+**The view contract has three states, not four.** The `conflict` state is
+deleted rather than left unbuilt: its data source was removed by
+[ADR-0018](./0018-storage-baseline-reset.md), and
+`baseline_omits_the_dead_schema` fails if `merge_journal` returns. A view cannot
+raise a toast about a loss nothing records, so the state cannot be built without
+an ADR superseding 0018's removal.
 
 **The status legend gains a third value.** `README.md:38` now reads
 `accepted` / `living` / `proposed`, the last defined as "design of record for
