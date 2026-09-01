@@ -149,7 +149,7 @@ around it is recorded in the cells below and in
 gap was never in the core: `SunriseCore::import_ical` / `::export_ical` and the
 `IcalImportReport` / `IcalNotice` DTOs were correct and tested, and
 `sunrise-cli` already consumed them — what was missing was a caller on the
-client the row applies to. `apps/macos` now has one: `CoreBridge.importIcal` /
+client the row applies to. `apps/apple` now has one: `CoreBridge.importIcal` /
 `.exportIcal`, an `IcalModel` holding the report as a value, and the two File
 menu items. The import's notices are **shown to the user, grouped by code**,
 rather than counted — an importer that silently drops a `VTODO` is the failure

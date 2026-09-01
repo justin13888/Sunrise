@@ -4,13 +4,13 @@ status: accepted
 
 # macOS Client
 
-A native **SwiftUI** application in `apps/macos/`. The Sunrise core is a Rust
+A native **SwiftUI** application in `apps/apple/`. The Sunrise core is a Rust
 static library, reached through a UniFFI seam
 ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)).
 
 Target: **macOS 26**, Apple Silicon. Swift 6 with
 `-strict-concurrency=complete`. Universal (Intel) is one `rustup target add`
-and one entry in the justfile's `ffi_slices`; it is not built today.
+and one entry in `mise.toml`'s `macos_slices`; it is not built today.
 
 > An earlier revision of this file specified a Tauri 2 + React app across
 > macOS, Windows and Linux. That app never existed — there was no `main.rs`, no
@@ -19,7 +19,7 @@ and one entry in the justfile's `ffi_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 18k lines of Swift under `apps/macos/Sunrise/`, covered by 471 Swift
+Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 471 Swift
 Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
@@ -85,10 +85,10 @@ something neither client needs.
 ### Build
 
 ```
-just macos-xcframework    # cargo build → uniffi-bindgen → lipo → xcframework
-just macos-app            # + xcodegen generate, swiftlint --strict, xcodebuild test
-just macos-uitest         # the XCUITest target, which macos-app does not run
-just macos-open           # open the generated project in Xcode
+mise run apple-xcframework    # cargo build → uniffi-bindgen → lipo → xcframework
+mise run macos-app            # + xcodegen generate, swiftlint --strict, xcodebuild test
+mise run macos-uitest         # the XCUITest target, which macos-app does not run
+mise run macos-open           # open the generated project in Xcode
 ```
 
 `project.yml` (XcodeGen) is committed; the generated `.xcodeproj` is not.
@@ -97,15 +97,19 @@ Rust source on every build, so committing them would let the two drift.
 
 **CI builds this.** `.github/workflows/ci.yml` has a `macos-app` job on the
 `macos-26` runner — pinned because `project.yml` sets a macOS 26.0 deployment
-target that no earlier image can build — which runs `just macos-app` as a single
+target that no earlier image can build — which runs `mise run macos-app` as a single
 step on every push and PR to `master` and `v1-rewrite`, plus nightly. So a
 Swift-side break is caught.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
-the scheme, because macOS XCUITest needs `sudo DevToolsSecurity -enable`; it is
-compiled but only executed by `just macos-uitest` on a developer machine. That
-target is the one that proves a click reaches the core through the real window,
-so the automated coverage is view-model-level. Worth knowing when reading a
+the `Sunrise` scheme, because a macOS XCUITest takes control of another process
+and the machine has to be told that is allowed; it is compiled on every build
+but only executed by `mise run macos-uitest`, which has a scheme of its own so that
+the skip can be bypassed, on a developer machine. Two separate grants are
+needed: `sudo DevToolsSecurity -enable`, and accepting the automation prompt the
+runner raises the first time it launches. That target is the one that proves a
+click reaches the core through the real window, so the automated coverage is
+view-model-level. Worth knowing when reading a
 green CI run: it proves the app builds, lints and its models behave — not that
 every screen is still reachable.
 

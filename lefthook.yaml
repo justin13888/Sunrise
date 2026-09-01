@@ -1,27 +1,27 @@
-# Git hooks via lefthook. All command logic lives in the justfile;
-# these hooks only call `just <recipe>`. Run `just --list` to see them.
+# Git hooks via lefthook. All command logic lives in mise.toml;
+# these hooks only call `mise run <task>`. Run `mise tasks` to see them.
 pre-commit:
   parallel: true
   commands:
     biome-check:
-      run: just fix
+      run: mise run fix
     bun-typecheck:
-      run: just typecheck
+      run: mise run typecheck
     rust-fmt:
       glob: "*.rs"
-      run: just rust-fmt-check
+      run: mise run rust-fmt-check
     rust-clippy:
       glob: "*.rs"
-      run: just rust-clippy
+      run: mise run rust-clippy
 
 pre-push:
   parallel: true
   commands:
     biome-ci:
-      run: just ci
+      run: mise run ci
     bun-typecheck:
-      run: just typecheck
+      run: mise run typecheck
     bun-test:
-      run: just test
+      run: mise run test
     rust-test:
-      run: just rust-test
+      run: mise run rust-test

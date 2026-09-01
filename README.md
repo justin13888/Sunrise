@@ -24,7 +24,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
 - **Rust core** (`crates/`): a Cargo workspace of 21 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
-- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/macos`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
+- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/apple`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
 
 ### Project structure
 
@@ -48,7 +48,7 @@ crates/        Rust workspace — the shared core, the server, the clients' core
 tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/
-  macos/       Native SwiftUI client over the UniFFI seam — see ADR-0019
+  apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
   sunrise-ui/  Shared UI tokens, consumed only by the deferred web app
@@ -62,22 +62,31 @@ docs/          Design source of truth: product, architecture, domain, crypto, sy
 
 - [Bun](https://bun.sh) — JS/TS package manager and runtime
 - [Rust](https://rustup.rs) — toolchain version is pinned in `rust-toolchain.toml`
-- [just](https://github.com/casey/just) — command runner; all project tasks live in the `justfile`
+- [mise](https://mise.jdx.dev) — task runner; all project tasks live in `mise.toml`
 - [lefthook](https://github.com/evilmartians/lefthook) — git hooks manager
 
-Building the macOS client additionally needs Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Building the Apple clients additionally needs Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen),
+and the Rust target for every slice the xcframework carries:
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+```
+
+The host triple (`aarch64-apple-darwin`) is already installed; the two iOS ones
+are not installed by default. Nothing else is needed — the core builds for iOS
+with no manifest change.
 
 ### Getting started
 
 ```bash
-just setup    # install JS dependencies (bun install) and git hooks (lefthook install)
+mise run setup    # install JS dependencies (bun install) and git hooks (lefthook install)
 ```
 
 Then confirm the toolchain is wired up by running the full automated gate (see [End-to-end QA](#end-to-end-qa) for the complete walkthrough):
 
 ```bash
-just validate     # JS/TS: Biome CI + typecheck + coverage
-just rust-test    # Rust: unit tests + cross-crate end-to-end tests
+mise run validate     # JS/TS: Biome CI + typecheck + coverage
+mise run rust-test    # Rust: unit tests + cross-crate end-to-end tests
 ```
 
 ### Try it in 30 seconds
@@ -144,9 +153,9 @@ Confirm the toolchains are present. The exact Rust version is pinned in `rust-to
 ```bash
 cargo --version     # Rust toolchain (pinned via rust-toolchain.toml)
 bun --version       # JS/TS runtime + package manager
-just --version      # command runner (all tasks live in the justfile)
+mise --version      # task runner (all tasks live in mise.toml)
 
-just setup          # one-time: bun install + lefthook install (git hooks)
+mise run setup          # one-time: bun install + lefthook install (git hooks)
 ```
 
 #### 2. Automated gates (the source of truth)
@@ -161,7 +170,7 @@ cargo fmt --check                         # formatting clean
 cargo deny check                          # advisories, bans, licences, sources
 ```
 
-`just validate && just rust-test` is the same pass wrapped in `just` recipes (what `just pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
+`mise run validate && mise run rust-test` is the same pass wrapped in mise tasks (what `mise run pre-push` mirrors for the git hook). The `sunrise-e2e` crate is the cross-crate release-gate proof: it boots the server binary and hits `/health`, `/meta`, `/metrics`, and `/api/v1/accounts`, runs two independent `Core` vaults side by side to prove vault-lock isolation, and — in `two_core_relay_convergence` — drives two synced `Core`s through the relay to prove live convergence, offline catch-up, LWW conflict resolution, and routine dedup.
 
 #### 3. Headless, no client at all
 
@@ -224,18 +233,22 @@ cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback red
 #### 5. macOS client
 
 ```bash
-just macos-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
-just macos-app            # + xcodegen, swiftlint --strict, xcodebuild test
-just macos-open           # open the generated project in Xcode
-just macos-uitest         # the XCUITest target, which macos-app does not run
+mise run apple-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
+mise run macos-app            # + xcodegen, swiftlint --strict, xcodebuild test
+mise run macos-open           # open the generated project in Xcode
+mise run macos-uitest         # the XCUITest target, which macos-app does not run
 ```
 
-`just macos-app` is exactly what CI runs on `macos-26`. Note that the UI test
-target is `skipped: true` in the scheme — macOS XCUITest needs
-`sudo DevToolsSecurity -enable` — so `just macos-uitest` is the only thing that
-drives the real window, and it runs on a developer machine only.
+`mise run macos-app` is exactly what CI runs on `macos-26`. Note that the UI test
+target is `skipped: true` in the `Sunrise` scheme, so `mise run macos-uitest` — which
+has a scheme of its own, because `-only-testing` cannot select a skipped
+testable — is the only thing that drives the real window, and it runs on a
+developer machine only. It needs **two** one-time grants, not one:
+`sudo DevToolsSecurity -enable`, and then accepting the automation prompt the
+runner raises the first time. Without the second it fails with "Timed out while
+enabling automation mode".
 
-`macos-xcframework` builds the release slices, generates the Swift bindings from
+`apple-xcframework` builds the release slices, generates the Swift bindings from
 the built library, and packages the framework the app links. The bindings generator lives
 in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
 lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features pull a
@@ -249,8 +262,8 @@ every build, so committing it would let the two drift.
 Populate this platform's performance baselines. `bench/baseline.json` already carries `linux-x86_64` numbers; `bench-baseline` runs the criterion suite (submit / query_today@10k / fts@10k / ws-handshake) and merges the results back for your platform.
 
 ```bash
-just bench            # run the criterion suite only
-just bench-baseline   # run benches, then update bench/baseline.json for this platform
+mise run bench            # run the criterion suite only
+mise run bench-baseline   # run benches, then update bench/baseline.json for this platform
 ```
 
 #### 7. Chaos suite (manual)
@@ -273,31 +286,31 @@ bun run --filter @sunrise/web preview # serve the production build
 
 ### Common tasks
 
-All project commands are centralized in the [`justfile`](justfile). Run `just` (or `just --list`) to see everything:
+All project commands are centralized in [`mise.toml`](mise.toml). Run `mise tasks` to see everything:
 
 | Command                  | Description                                            |
 | ------------------------ | ------------------------------------------------------ |
-| `just check`             | Lint & format check, no writes (Biome)                 |
-| `just fix`               | Lint & format with autofix (Biome)                     |
-| `just ci`                | Strict CI lint check, no writes (Biome)                |
-| `just typecheck`         | Type-check every JS/TS workspace package               |
-| `just test`              | Run the JS/TS test suite once                          |
-| `just test-coverage`     | Run the JS/TS test suite with coverage                 |
-| `just rust-fmt`          | Format Rust code in place                              |
-| `just rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
-| `just rust-check`        | Type-check the Rust workspace                          |
-| `just rust-test`         | Run the Rust test suite                                |
-| `just orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
-| `just macos-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
-| `just macos-app`         | Build, SwiftLint `--strict` and test the macOS app     |
-| `just validate`          | Full local validation: Biome CI + typecheck + coverage |
+| `mise run check`             | Lint & format check, no writes (Biome)                 |
+| `mise run fix`               | Lint & format with autofix (Biome)                     |
+| `mise run ci`                | Strict CI lint check, no writes (Biome)                |
+| `mise run typecheck`         | Type-check every JS/TS workspace package               |
+| `mise run test`              | Run the JS/TS test suite once                          |
+| `mise run test-coverage`     | Run the JS/TS test suite with coverage                 |
+| `mise run rust-fmt`          | Format Rust code in place                              |
+| `mise run rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
+| `mise run rust-check`        | Type-check the Rust workspace                          |
+| `mise run rust-test`         | Run the Rust test suite                                |
+| `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
+| `mise run apple-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
+| `mise run macos-app`         | Build, SwiftLint `--strict` and test the macOS app     |
+| `mise run validate`          | Full local validation: Biome CI + typecheck + coverage |
 
 ### Git hooks
 
-Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and defined in `lefthook.yaml`, which simply calls `just` recipes so there is a single source of truth:
+Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook) and defined in `lefthook.yaml`, which simply calls mise tasks so there is a single source of truth:
 
-- **pre-commit** — `just fix`, `just typecheck`, and (for staged `*.rs` files) `just rust-fmt-check` + `just rust-clippy`. Run the lot with `just pre-commit`.
-- **pre-push** — `just ci`, `just typecheck`, `just test`, and `just rust-test`. Run the lot with `just pre-push`.
+- **pre-commit** — `mise run fix`, `mise run typecheck`, and (for staged `*.rs` files) `mise run rust-fmt-check` + `mise run rust-clippy`. Run the lot with `mise run pre-commit`.
+- **pre-push** — `mise run ci`, `mise run typecheck`, `mise run test`, and `mise run rust-test`. Run the lot with `mise run pre-push`.
 
 ## License
 

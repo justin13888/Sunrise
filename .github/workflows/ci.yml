@@ -45,17 +45,17 @@ jobs:
     name: macOS app (xcframework + SwiftLint + XCTest)
     # `macos-26` is the arm64 Tahoe image; `macos-latest` points at the same
     # one today, but this pin is load-bearing rather than cosmetic:
-    # apps/macos/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
+    # apps/apple/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
     # earlier image can build. macOS 26 ships Xcode 26.6 by default (Xcode 26.0
     # through 26.6 are all present), matching the SDK the app is developed
     # against, so nothing here is approximated — the deployment target is met
     # exactly. If `macos-latest` ever advances past 26, revisit this together
-    # with `macos_target` in the justfile and `deploymentTarget` in project.yml,
+    # with `macos_target` in mise.toml and `deploymentTarget` in project.yml,
     # which must all agree.
     #
     # Cost note: macOS minutes bill at 10x Linux, and this job builds a release
     # xcframework and runs XCTest. If minutes become the constraint, the lever
-    # is a path filter on `apps/macos/**` + `crates/sunrise-core-bindings/**`,
+    # is a path filter on `apps/apple/**` + `crates/sunrise-core-bindings/**`,
     # not deleting the job — nothing else in CI compiles a line of Swift.
     runs-on: macos-26
     timeout-minutes: 60
@@ -70,13 +70,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The toolchain file pins 1.88.0, which rustup installs on first use.
-      # aarch64-apple-darwin is the host triple on this runner, so the slice
-      # `just macos-xcframework` builds needs no `rustup target add`.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # aarch64-apple-darwin is the host triple on this runner, but the
+      # xcframework carries three slices and the other two are not installed by
+      # default — `mise run apple-xcframework` fails without them.
+      #
+      # This is a step rather than the action's `targets:` input, and the
+      # difference is the whole bug it fixes: `targets:` is passed to
+      # `rustup toolchain install stable`, so the slices land on *stable*, while
+      # rust-toolchain.toml overrides the working directory to 1.88.0 — which
+      # then has no iOS std and fails with `E0463: can't find crate for core`.
+      # Run bare and in the repo, `rustup target add` obeys that same override,
+      # so the slices land on the toolchain that actually does the build.
+      - name: Add the iOS slices to the pinned toolchain
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       # None of the three are in the runner image.
-      - name: Install just, XcodeGen and SwiftLint
-        run: brew install --quiet just xcodegen swiftlint
+      - name: Install mise, XcodeGen and SwiftLint
+        run: brew install --quiet mise xcodegen swiftlint
+      # mise refuses to run tasks from a config it has not been told to trust,
+      # and a fresh checkout is never trusted. Explicit rather than implicit:
+      # the runner has no interactive prompt to answer.
+      - name: Trust mise config
+        run: mise trust --yes
       - name: Toolchain versions
         # Printed, not asserted: if the default Xcode ever regresses below 26,
         # the build fails on the deployment target with a clearer message than
@@ -86,14 +102,60 @@ jobs:
           xcodebuild -showsdks | grep -i macos
           swiftlint version
           xcodegen --version
-      # One recipe, deliberately. `just macos-app` builds the xcframework,
+      # One task, deliberately. `mise run macos-app` builds the xcframework,
       # runs `xcodegen generate` (the .xcodeproj is gitignored and this is the
       # only supported way to get one), runs `swiftlint lint --strict`, and
       # runs `xcodebuild test`. Re-expressing those four steps as YAML would
       # create a second definition of the macOS build that drifts from the one
       # developers actually run.
-      - name: just macos-app
-        run: just macos-app
+      - name: mise run macos-app
+        run: mise run macos-app
+
+  ios-app:
+    name: iOS app (xcframework + SwiftLint + XCTest + XCUITest)
+    # Same image and same pin as `macos-app`, for the same reason:
+    # apps/apple/project.yml sets `deploymentTarget.iOS: "26.0"`, and the iOS
+    # 26 SDK and simulators ship with the Xcode on `macos-26`.
+    #
+    # A separate job rather than a step on `macos-app`. The two share only the
+    # xcframework, they fail for different reasons, and a red iOS test run
+    # should not hide a green macOS one — nor cost the macOS build its result
+    # when the simulator is the thing that broke.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      # As in `macos-app`: this job builds `tools/uniffi-bindgen`, whose
+      # third-party tree is not ours to keep warning-free.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # As in `macos-app`, and for the reason spelled out there: a step rather
+      # than the action's `targets:` input, so the slices land on the pinned
+      # 1.88.0 that rust-toolchain.toml selects rather than on stable.
+      - name: Add the iOS slices to the pinned toolchain
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Install mise, XcodeGen and SwiftLint
+        run: brew install --quiet mise xcodegen swiftlint
+      # mise refuses to run tasks from a config it has not been told to trust,
+      # and a fresh checkout is never trusted. Explicit rather than implicit:
+      # the runner has no interactive prompt to answer.
+      - name: Trust mise config
+        run: mise trust --yes
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
+          xcrun simctl list devices available | grep -i iphone
+      # One task, as with macOS. `mise run ios-app` builds the three-slice
+      # xcframework, runs `xcodegen generate`, `swiftlint --strict`, and
+      # `xcodebuild test` against the iPhone 17 Pro simulator — which runs both
+      # the shared `SunriseTests` bundle and, unlike the macOS job, the UI
+      # tests: a simulator runner needs no change to the machine's security
+      # posture, so there is nothing to opt into.
+      - name: mise run ios-app
+        run: mise run ios-app
 
   rust-deny:
     name: cargo-deny
@@ -291,7 +353,7 @@ jobs:
         run: |
           cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json
           git diff --exit-code -- schemas/openapi.v1.json \
-            || { echo "::error::openapi: the description is stale; run \`just openapi\` and commit the result."; exit 1; }
+            || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
 
   orphan-crates:
     name: Orphan crate gate

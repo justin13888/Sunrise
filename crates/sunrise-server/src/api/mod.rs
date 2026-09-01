@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(
             committed, generated,
             "schemas/openapi.v1.json is stale; regenerate it with \
-             `just openapi` (cargo run -p sunrise-server --bin openapi)"
+             `mise run openapi` (cargo run -p sunrise-server --bin openapi)"
         );
     }
 

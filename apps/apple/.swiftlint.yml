@@ -1,0 +1,66 @@
+# Lints the hand-written app only. `out/swift/sunrise_core_bindings.swift` is
+# generated from the Rust crate on every build and is not ours to style.
+included:
+  - Sunrise
+  - macOS
+  - iOS
+  - SunriseTests
+  - SunriseUITests
+  - SunriseiOSUITests
+  - UITestSupport
+
+excluded:
+  - ../../out
+
+opt_in_rules:
+  - array_init
+  - closure_spacing
+  - contains_over_filter_count
+  - empty_count
+  - empty_string
+  - explicit_init
+  - first_where
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - last_where
+  - literal_expression_end_indentation
+  - modifier_order
+  - multiline_parameters
+  - overridden_super_call
+  - prefer_self_type_over_type_of_self
+  - redundant_nil_coalescing
+  - toggle_bool
+  - unneeded_parentheses_in_closure_argument
+  - yoda_condition
+
+analyzer_rules:
+  - unused_import
+
+line_length:
+  warning: 110
+  error: 140
+  ignores_comments: true
+
+type_body_length:
+  warning: 320
+  error: 450
+
+file_length:
+  warning: 520
+  error: 700
+
+function_body_length:
+  warning: 70
+  error: 110
+
+identifier_name:
+  min_length: 2
+  excluded: [id, tz, at, ms, x, y]
+
+# A view model's initialiser legitimately takes its collaborators.
+function_parameter_count:
+  warning: 7
+  error: 9
+
+nesting:
+  type_level: 3

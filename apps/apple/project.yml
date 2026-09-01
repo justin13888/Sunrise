@@ -1,0 +1,351 @@
+# XcodeGen input. The generated `Sunrise.xcodeproj` is NOT committed —
+# `mise run macos-app` regenerates it — so this file is the project.
+#
+# Two things here are load-bearing:
+#
+# 1. `SunriseFFI` is an aggregate target that runs `mise run apple-xcframework`,
+#    and the app *depends* on it. The Rust build cannot be a script phase on
+#    the app target: Xcode resolves and processes an `.xcframework` while it
+#    plans that target's build, before any of its phases run, so a phase that
+#    deletes and recreates the framework would race its own consumer.
+# 2. `SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY` is deliberately absent. Turning
+#    it on produces 20 warnings in the generated bindings, which this project
+#    compiles as errors.
+name: Sunrise
+
+options:
+  bundleIdPrefix: dev.sunrise
+  createIntermediateGroups: true
+  # Both must equal the matching `*_target` in mise.toml, which is what the
+  # xcframework's slices are built against.
+  #
+  # iOS 26.0 rather than the 17+ that `docs/07-clients/mobile-ios.md` used to
+  # specify, and for one reason: the macOS app is pinned to macOS 26.0, and a
+  # shared source file cannot use an API that only one of its two targets can
+  # reach. Matching the majors means the shared tree needs no `@available`
+  # forks at all — which is the whole point of sharing it.
+  deploymentTarget:
+    macOS: "26.0"
+    iOS: "26.0"
+  minimumXcodeGenVersion: "2.38.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: YES
+    # The Rust build shells out to cargo, rustup and lipo. Script sandboxing
+    # denies it the writes it needs under `target/` and `out/`.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+
+# Builds `out/SunriseCore.xcframework` + `out/swift/sunrise_core_bindings.swift`.
+# Cargo decides whether there is anything to do, so an unchanged core costs a
+# fingerprint check.
+aggregateTargets:
+  SunriseFFI:
+    buildScripts:
+      - name: Build SunriseCore.xcframework
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          cd "$SRCROOT/../.."
+          # Xcode's PATH carries neither Homebrew nor rustup.
+          export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+          # `mise exec --` rather than a bare `mise run`: this script runs
+          # under Xcode, which has none of the shell activation mise normally
+          # relies on to put the toolchain on PATH.
+          mise exec -- mise run apple-xcframework
+
+targets:
+  Sunrise:
+    type: application
+    platform: macOS
+    sources:
+      # `Sunrise/` compiles into both apps; `macOS/` into this one only. The
+      # split is the point: everything a phone and a Mac agree on lives in the
+      # first, and the second holds the surfaces a Mac has and a phone does not
+      # — the menu bar, the global hotkey, the borderless capture panel, the
+      # modal file panels and `NSPrintOperation`.
+      - path: Sunrise
+      - path: macOS
+      # Generated from the Rust crate on every build; never edited, and
+      # excluded from SwiftLint for the same reason.
+      - path: ../../out/swift/sunrise_core_bindings.swift
+        group: Generated
+    dependencies:
+      - target: SunriseFFI
+      - framework: ../../out/SunriseCore.xcframework
+        embed: false
+      # `Sunrise/Intents/` — the App Intents / Shortcuts surface
+      # `docs/07-clients/parity-matrix.md` marks a MUST for macOS.
+      #
+      # Swift would autolink this from `import AppIntents` alone. It is named
+      # anyway because the *other* half of the feature is invisible in the
+      # sources: declaring the framework is what makes Xcode run
+      # `appintentsmetadataprocessor` over this target, and that step is what
+      # writes `Sunrise.app/Contents/Resources/Metadata.appintents`. Without
+      # that bundle the intents compile, link, and are never offered by
+      # Spotlight, Shortcuts or Siri — a surface that exists only in the
+      # binary. `AppIntentsMetadataTests` asserts the bundle is really there.
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise
+        PRODUCT_NAME: Sunrise
+        # Pinned rather than derived from the target name, and it is what makes
+        # one test bundle serve both apps. Xcode would otherwise name the
+        # module after the target, so the iOS app would be module `SunriseiOS`
+        # and every `@testable import Sunrise` in `SunriseTests/` would have to
+        # be conditional. Two targets may share a module name: they are
+        # separate products, each with its own binary.
+        PRODUCT_MODULE_NAME: Sunrise
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        # No App Sandbox in v1. Sandboxing moves Keychain items into an
+        # app-scoped group, which would have to land together with the
+        # entitlement and a signing identity; both are release work.
+        ENABLE_HARDENED_RUNTIME: NO
+    # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting
+    # behind it, so registering `sunrise://` needs a real plist. It is
+    # generated from here and gitignored, like the `.xcodeproj`: this file
+    # stays the source of truth. `GENERATE_INFOPLIST_FILE` above still
+    # supplies the rest — Xcode merges the `INFOPLIST_KEY_` settings into this
+    # base.
+    #
+    # Written outside `Sunrise/` on purpose: a plist inside the source path
+    # would also be copied into the bundle as a resource.
+    info:
+      path: Generated/Info.plist
+      properties:
+        # Per `docs/07-clients/interaction-patterns.md` §URL scheme.
+        # Notification bodies carry these links, so without the registration a
+        # tapped reminder opens nothing at all.
+        #
+        # `Viewer` rather than `Editor`: this app displays what the URL names,
+        # it does not claim ownership of a document format.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.sunrise.Sunrise
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [sunrise]
+        # XcodeGen writes literal defaults for these two; deferring to the
+        # build settings keeps one version number in this file.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    postCompileScripts:
+      - name: SwiftLint
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -x /opt/homebrew/bin/swiftlint ]; then
+            /opt/homebrew/bin/swiftlint lint --quiet --config "$SRCROOT/.swiftlint.yml" "$SRCROOT/Sunrise" "$SRCROOT/macOS"
+          else
+            echo "warning: swiftlint not installed; skipping"
+          fi
+
+  # The iOS / iPadOS app. Same `Sunrise/` sources as the Mac, plus `iOS/`
+  # instead of `macOS/`.
+  #
+  # No `MenuBarExtra`, no hotkey and no `NSPanel` — those are the three
+  # surfaces that do not cross, and they are whole files under `macOS/` rather
+  # than conditionals precisely so this target simply does not see them.
+  SunriseiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sunrise
+      - path: iOS
+      - path: ../../out/swift/sunrise_core_bindings.swift
+        group: Generated
+    dependencies:
+      - target: SunriseFFI
+      - framework: ../../out/SunriseCore.xcframework
+        embed: false
+      # The same argument as the macOS target: naming it is what makes Xcode
+      # run `appintentsmetadataprocessor`, and without that bundle the intents
+      # link but are never offered by Shortcuts or Siri. `Sunrise/Intents/` is
+      # shared, so this surface is the Mac's, unchanged.
+      - sdk: AppIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS
+        PRODUCT_NAME: Sunrise
+        # See the macOS target: pinned so `SunriseTests/` needs no conditional
+        # imports.
+        PRODUCT_MODULE_NAME: Sunrise
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Portrait plus both landscapes on iPad, portrait-first on iPhone. The
+        # calendar grid and the split shell are the two screens that earn
+        # landscape, and both are better for it.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
+          UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad:
+          UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
+          UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Generated/Info-iOS.plist
+      properties:
+        # The same registration the Mac carries, and for the same reason:
+        # notification bodies and the widget's tap target are `sunrise://`
+        # links, so without this a tapped reminder opens nothing.
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.sunrise.SunriseiOS
+            CFBundleTypeRole: Viewer
+            CFBundleURLSchemes: [sunrise]
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+    postCompileScripts:
+      - name: SwiftLint
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ -x /opt/homebrew/bin/swiftlint ]; then
+            /opt/homebrew/bin/swiftlint lint --quiet --config "$SRCROOT/.swiftlint.yml" "$SRCROOT/Sunrise" "$SRCROOT/iOS"
+          else
+            echo "warning: swiftlint not installed; skipping"
+          fi
+
+  # Drives the real window. This is the only target that proves a click
+  # reaches the core: `SunriseTests` exercises the view *models*, which is a
+  # different claim.
+  SunriseUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: SunriseUITests
+      - path: UITestSupport
+    dependencies:
+      - target: Sunrise
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Sunrise
+
+  SunriseTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: SunriseTests
+    dependencies:
+      - target: Sunrise
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseTests
+        GENERATE_INFOPLIST_FILE: YES
+
+  # The iOS twin of `SunriseUITests`, and — unlike it — actually run.
+  #
+  # A macOS XCUITest drives another process on the developer's machine, which
+  # the system refuses until `DevToolsSecurity` is enabled, so that target is
+  # `skipped: true` in its scheme. A simulator runner has no such requirement:
+  # these run on every `mise run ios-app`, which means iOS is the platform where a
+  # tap is actually proved to reach the core on every build.
+  SunriseiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: SunriseiOSUITests
+      - path: UITestSupport
+    dependencies:
+      - target: SunriseiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOSUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: SunriseiOS
+
+  # The same `SunriseTests/` sources, compiled against the iOS app.
+  #
+  # One suite, built twice, rather than an iOS suite of its own. What these
+  # tests assert is view-*model* behaviour against a real vault over the real
+  # seam — none of it is macOS-specific, and none of it should be allowed to
+  # become iOS-specific either. Running the identical file on both platforms is
+  # what turns "the iOS app compiles" into "the iOS app behaves the same", and
+  # it is the reason `PRODUCT_MODULE_NAME` is pinned on both app targets: with
+  # it, `@testable import Sunrise` resolves in either bundle unchanged.
+  SunriseiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: SunriseTests
+    dependencies:
+      - target: SunriseiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOSTests
+        GENERATE_INFOPLIST_FILE: YES
+        # Spelled out because the target is `SunriseiOS` and its product is
+        # `Sunrise.app` — the app a user installs is called Sunrise on both
+        # platforms, and only the *target* carries the suffix. XcodeGen's
+        # default derives both halves from the target name, which looks for a
+        # `SunriseiOS.app/SunriseiOS` that is never built.
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Sunrise.app/Sunrise
+        BUNDLE_LOADER: $(TEST_HOST)
+
+schemes:
+  Sunrise:
+    build:
+      targets:
+        Sunrise: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - SunriseTests
+        # Skipped by default, and not because it is optional.
+        #
+        # A macOS UI test takes control of another process, which the system
+        # refuses while developer mode is off: the runner is killed with
+        # "signal kill before establishing connection" before it can connect.
+        # Turning it on is a one-time change to the machine's security
+        # posture, not something a build should do:
+        #
+        #     sudo DevToolsSecurity -enable
+        #
+        # Then: `mise run macos-uitest`, which runs the scheme below. Leaving it in
+        # this scheme keeps it compiled on every build — an uncompiled test
+        # target rots in a week — while keeping `mise run macos-app` honest about
+        # what it ran.
+        - name: SunriseUITests
+          skipped: true
+
+  # The UI tests on their own, and a scheme rather than a flag because
+  # `-only-testing` cannot select a testable the scheme has skipped:
+  # `xcodebuild` refuses with "isn't a member of the specified test plan or
+  # scheme". `mise run macos-uitest` asked for exactly that and so had never run
+  # once — which is how a UI test that captured on Today and asserted the row
+  # appeared stayed red without anybody hearing about it.
+  SunriseUITests:
+    build:
+      targets:
+        Sunrise: all
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - SunriseUITests
+
+  SunriseiOS:
+    build:
+      targets:
+        SunriseiOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - SunriseiOSTests
+        # Not skipped, unlike the macOS UI tests: a simulator runner needs no
+        # change to the machine's security posture, so there is nothing to opt
+        # into.
+        - SunriseiOSUITests

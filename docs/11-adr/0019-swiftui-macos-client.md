@@ -43,14 +43,14 @@ was finished would have been worse.
 
 Before committing, an executed spike built the whole pipeline end to end: a
 UniFFI-annotated crate, a generated Swift binding, an xcframework, and a SwiftUI
-app compiled under Swift 6 `-strict-concurrency=complete`. `just macos-app` went
+app compiled under Swift 6 `-strict-concurrency=complete`. `mise run macos-app` went
 from clean to BUILD SUCCEEDED with zero warnings from generated code, and 25
 runtime assertions passed against a real core. Everything in the Decision below
 was observed, not reasoned about.
 
 ## Decision
 
-**The v1 graphical client is a native SwiftUI app for macOS**, in `apps/macos/`,
+**The v1 graphical client is a native SwiftUI app for macOS**, in `apps/apple/`,
 talking to `sunrise-core` through a **UniFFI seam** in
 `crates/sunrise-core-bindings`. Every other client — iOS, Android, Web, and the
 TUI — is **deferred**, with no date.
@@ -158,7 +158,7 @@ any of them wrong produces a crash rather than a compile error:
 * **The rustc 1.88 pin stays.** It was raised for ratatui, but it is a
   reproducibility floor, not a workaround, and dropping back would be an
   unforced change.
-* **`just macos-xcframework`** builds the slices, generates the Swift bindings
+* **`mise run apple-xcframework`** builds the slices, generates the Swift bindings
   in `--library` mode, and **rewrites** the generated module map — UniFFI's own
   is named `<lib>FFI.modulemap` and emits `use Darwin` / `use _Builtin_*` lines
   that do not resolve inside an xcframework.

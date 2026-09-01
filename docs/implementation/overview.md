@@ -54,10 +54,10 @@ and a crate can be reachable while a capability inside it is not.
 | `sunrise-integrations` | 🟨 partial | **No longer an orphan.** The iCal half is live and dual-consumed: `ical` (RFC 5545 syntax) → `ical_map` (domain mapping) → `ical_vault` (the vault driver), reached by `sunrise-cli`'s `ical import` / `ical export` and, across the seam's `import_ical` / `export_ical`, by the macOS File menu — so both shipping clients reach it, which was not true a cycle ago. Imports are idempotent because the Block id *is* a hash of `(source, uid)`. The subset is narrow and **reports rather than drops**: `VTODO`, `VALARM`, `VTIMEZONE`, `VJOURNAL`, `VFREEBUSY`, `RDATE`/`EXDATE`/`RECURRENCE-ID`, `ATTACH`, `ATTENDEE` and any `X-` property each raise an `ICalNotice`. `RRULE`, `DESCRIPTION` and `LOCATION` parse and are then reported at the domain boundary, because `Block` has no field for them — so **a recurring event imports as a single occurrence**, and an exported `.ics` carries only `UID`, `SUMMARY`, `DTSTART`, `DTEND`. The GCal half is **implemented, tested and unconsumed**, deferred to [#4](https://github.com/justin13888/Sunrise/issues/4) by [ADR-0020](../11-adr/0020-v1-must-demotions.md): PKCE exchange/refresh with the durable-refresh-token rule and change detection that suppresses phantom deletes, all with injected transport, but nothing has run against the live API (needs a Google OAuth client ID) and there is no `impl EventSyncer` anywhere. `IntegrationProvider` still has **no implementor** — not even the live iCal path uses it, so the crate's own claim that integrations "run through" it is not true today |
 | `sunrise-cli` | ✅ live | The `sunrise` binary: **twenty-three** one-shot subcommands — `capture`, `edit`, `defer`, `done`, `drop`, `today`, `inbox`, `next`, `search`, `streams` (incl. `streams move`), `stream`, `contexts`, `context`, `routines`, `review`, `export`, `ical` (`import` / `export`), `vaults`, `login`, `logout`, `whoami`, `focus`, `sync --once` — plus the env-driven live-sync wiring. Six landed this cycle (`edit`, `defer`, `drop`, `stream`, `context`, `vaults`) and they are what closed the CLI's three partial MUSTs; **all nine are now met**, see the [status audit](../07-clients/parity-matrix.md#v1-status-audit). It submits ten of the core's thirty commands: `CreateTask`, `UpdateTask`, `PromoteToStream`, `DeferTask`, `CompleteTask`, `DeleteTask`, `UpdateStream`, `StartFocus`, `ImportBlock`, and `TrustDevice` from the startup path. Arg parsing is hand-rolled, not clap. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process |
 | `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
-| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync, fanned out to every subscriber. **Re-graded from 🟨 this cycle.** The partial mark was for one stated reason — `import_ical` / `export_ical` had no Swift caller — and `apps/macos` now calls both, so the mark was re-derived rather than inherited. Sweeping every exported symbol for a Swift caller leaves a much smaller residue: `parse_saved_view` has none at all, and `energy_fit_label` is reached only from the test target. Neither carries a parity MUST — the *Saved searches / views* MUST is met through `SavedViews.load` / `.save` — so they are unconsumed surface rather than an unreachable requirement, which is the distinction the 🟨 mark is for |
+| `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync, fanned out to every subscriber. **Re-graded from 🟨 this cycle.** The partial mark was for one stated reason — `import_ical` / `export_ical` had no Swift caller — and `apps/apple` now calls both, so the mark was re-derived rather than inherited. Sweeping every exported symbol for a Swift caller leaves a much smaller residue: `parse_saved_view` has none at all, and `energy_fit_label` is reached only from the test target. Neither carries a parity MUST — the *Saved searches / views* MUST is met through `SavedViews.load` / `.save` — so they are unconsumed surface rather than an unreachable requirement, which is the distinction the 🟨 mark is for |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
-| `apps/macos` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~17.8k lines of app source, **471 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Built in CI** — a `macos-app` job on `macos-26` runs `just macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
+| `apps/apple` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~17.8k lines of app source, **471 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Built in CI** — a `macos-app` job on `macos-26` runs `mise run macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Its **one** consumer (`apps/web`, itself deferred) imports only `taskStateGlyph` and hardcodes colours. It had two until the Tauri shell was removed; the macOS app is Swift and does not consume it, so no shipping client does |
 
@@ -178,7 +178,7 @@ re-worded:**
 - **iCal import/export has no macOS caller** — fixed. It was never a defect in
   the code; both seam methods were correct and tested. It was a parity **MUST**
   no user could reach on the client that requires it, which is precisely the
-  class of gap this file exists to surface. `apps/macos` now has the wrapper,
+  class of gap this file exists to surface. `apps/apple` now has the wrapper,
   the model and the two File menu items.
 - **`CoreBridge.startRoutineTimer` has no caller** — fixed. It is now started
   from `RootView`'s vault lifecycle, keyed on the bridge's identity so a vault
@@ -373,20 +373,20 @@ carried over from an earlier revision.
 
 | Gate | Result |
 |---|---|
-| `just rust-test` | **1335 passed**, 0 failed, 3 ignored |
+| `mise run rust-test` | **1335 passed**, 0 failed, 3 ignored |
 | `cargo test -p sunrise-cli` | **77 passed** — 48 in `tests/`, 29 in-crate |
 | `cargo test --workspace --doc` | 0 doc tests |
-| `just macos-app` | **471 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
-| `just rust-fmt-check` | clean |
-| `just rust-clippy` | clean (pedantic, `-D warnings`) |
+| `mise run macos-app` | **471 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
+| `mise run rust-fmt-check` | clean |
+| `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
 | `cargo deny check` | clean |
-| `just validate` | clean (no TS tests exist yet) |
-| `just orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
+| `mise run validate` | clean (no TS tests exist yet) |
+| `mise run orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
 
 The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
 tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`
 them. The macOS 471 does **not** include the 4 XCUITest cases, which are
-`skipped: true` in the scheme and run only under `just macos-uitest`.
+`skipped: true` in the scheme and run only under `mise run macos-uitest`.
 
 The `sunrise-cli` line is broken out because it is the one gate that proves the
 core without a UI: `main.rs` itself has **no** unit tests, so every subcommand's
@@ -426,12 +426,12 @@ difference is whether anyone reads the assertion.
 Prefer the reachability column above as the signal.
 
 ```
-just rust-test        # cargo test --workspace --all-targets
-just rust-clippy      # pedantic, -D warnings
-just rust-fmt-check   # formatting
-just validate         # Biome CI + typecheck + coverage
-just macos-app        # xcframework + swiftlint --strict + xcodebuild test
-just orphan-crates    # every crate reachable from a shipping binary
+mise run rust-test        # cargo test --workspace --all-targets
+mise run rust-clippy      # pedantic, -D warnings
+mise run rust-fmt-check   # formatting
+mise run validate         # Biome CI + typecheck + coverage
+mise run macos-app        # xcframework + swiftlint --strict + xcodebuild test
+mise run orphan-crates    # every crate reachable from a shipping binary
 cargo deny check      # advisories, bans, licences, sources
 ```
 
