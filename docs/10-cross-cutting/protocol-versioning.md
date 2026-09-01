@@ -267,7 +267,7 @@ The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
   - All Streams the user owns have rotated past the old suite (client surfaces the list).
   - At least 12 months since the new suite shipped to all client platforms.
   - A superseding ADR.
-- The negotiated suite is reported once per process as `crypto_v` on the startup event — not per record and not per session; see [§6](#6-wire-protocol-evolution-rules) and [§11](#11-logging-and-metrics). The per-session distribution a deprecation decision actually needs is `sunrise_sync_session_total{crypto_suite}`, which does not exist yet.
+- The negotiated suite is **not logged anywhere**. Negotiation is per session (`max_intersection` in `crates/sunrise-wire-protocol/src/negotiation.rs`), and its result is discarded for observability purposes: `srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries `account_h` and nothing about the suite. The `crypto_v` on the startup line is a different number — the binary's compiled `CRYPTO_SUITE_V`, what this process *supports*, not what any session *chose*. Nor do the metrics cover it: `sunrise_sync_session_total` is incremented once per session but is unlabelled. The registry's `render` passes a name containing `{` through verbatim, so a labelled series is expressible as a string, but nothing constructs one — the single `incr` site at `api/sync.rs` would have to build the name (see [§11](#11-logging-and-metrics)).
 
 There is no per-session crypto-suite mixing. A session uses exactly one suite for transport-level handshake; ops within the session may carry envelopes encrypted under any suite the recipient supports.
 

@@ -211,8 +211,9 @@ over:
   or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
   block → Task gesture, which the shipped layout cannot express. Print covers
   four surfaces and skips two by decision. Search reaches FTS5 on tasks only,
-  as a literal AND of quoted terms: every operator `search.md` specifies is
-  currently matched as a literal word, and the by-kind grouping does not exist.
+  as a literal AND of quoted terms: every operator
+  [search.md](../08-features/search.md) specifies is currently matched as a
+  literal word, and the by-kind grouping does not exist.
 - **CLI.** A Task's `body` is unreachable — Notes is a CLI **MAY**, and what
   plain stdin should become as structured `NoteBlock`s is a design question
   rather than a gap. Streams, Contexts and Routines can be listed and (for
@@ -220,9 +221,10 @@ over:
   the row asks for *read + capture*, and that is what it has.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
-  Search reaches FTS5 on tasks only, as a literal AND of quoted terms: every
-  operator `search.md` specifies is currently matched as a literal word, and
-  the by-kind grouping does not exist.
+  `search` issues the same query the app does, so it inherits the same
+  narrowness — the operator grammar
+  [search.md](../08-features/search.md) specifies is matched literally; see
+  the macOS note above.
 
 Every one of these is inside a row graded **met**, because each row asks for a
 capability and each capability is reachable. They are written down so that "met"

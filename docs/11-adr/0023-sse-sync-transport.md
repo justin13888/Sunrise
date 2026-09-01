@@ -7,6 +7,11 @@
 **Amends** [`docs/05-sync/transports.md`](../05-sync/transports.md) and
 [`docs/05-sync/wire-protocol.md`](../05-sync/wire-protocol.md).
 
+**Amended (2026-09):** the Decision's frame-mapping table shipped without a
+`Subscribe` row. The row is added there, in place, and the reason is recorded
+beneath the table. Nothing else in this ADR changes. See the **Amendment** at
+the end of this file.
+
 ## Context
 
 `/sync` is the only surface ops travel over. Everything else the relay serves is
@@ -62,6 +67,13 @@ inside the authoritative document rather than beside it.
 | `RefreshToken` / `RefreshTokenAck` | `POST /sync/session/refresh` |
 | cursor replay, `SYNC_CURSOR_GAP` | SSE `Last-Event-ID` |
 
+That last row is why this is cheaper than it looks. The relay already keeps a
+durable, monotonically-ordered `relay_frames.id` per channel, already replays
+from a client-supplied cursor, and already reports a typed gap rather than
+silently under-delivering when a cursor falls behind `relay_evicted`.
+`Last-Event-ID` is the same idea with a standard spelling, so resumption is a
+rename of machinery that exists and is tested, not new machinery.
+
 **Amended (2026-09):** the `Subscribe` row was absent when this ADR was
 written and is added here to match what shipped. `POST /api/v1/sync/subscribe`
 is its own operation keyed by session
@@ -70,13 +82,6 @@ is its own operation keyed by session
 mapping. The socket's `Subscribe` frame carried the same stream set and
 cursors, so this is that frame's replacement rather than a new capability —
 the table was incomplete, not the build.
-
-That last row is why this is cheaper than it looks. The relay already keeps a
-durable, monotonically-ordered `relay_frames.id` per channel, already replays
-from a client-supplied cursor, and already reports a typed gap rather than
-silently under-delivering when a cursor falls behind `relay_evicted`.
-`Last-Event-ID` is the same idea with a standard spelling, so resumption is a
-rename of machinery that exists and is tested, not new machinery.
 
 The negotiated-session state that `Hello` established once per connection moves
 into `POST /sync/session`, which returns a session id the SSE stream carries.
@@ -114,3 +119,17 @@ its semantics, its error mapping and its frozen fixtures.
 * The `Transport` trait in `sunrise-sync` keeps its purpose. It is a three-method
   byte-frame pipe, which is why ADR-0005's claim that the wire protocol is
   transport-agnostic held; a future P2P or WebTransport path re-enters here.
+
+## Amendment (2026-09): the mapping table was missing a row
+
+The frame-mapping table in the Decision claimed a one-for-one replacement and
+listed six of the socket's seven frames. `Subscribe` — which carries the
+per-stream cursors and drives the cursor-gap and `CaughtUp` protocol — had no
+row. The row and its reasoning are now in the table's own section, where a
+reader checking the mapping will be looking.
+
+This corrects the record, not the build: `POST /api/v1/sync/subscribe` shipped
+as its own session-keyed operation, is in `schemas/openapi.v1.json` as
+`subscribeStreams`, and `crates/sunrise-server/src/api/sync.rs` has carried the
+complete mapping in its module header since it was written. The implementation
+was never ambiguous about it; this ADR was.
