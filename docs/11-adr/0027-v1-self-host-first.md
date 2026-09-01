@@ -110,7 +110,7 @@ roots both the pending area and the committed store under a per-account
 directory keyed by a BLAKE3 of the account id — deliberately, so that content
 addressing cannot become a cross-tenant read primitive. A grantee naming an
 owner's `blb_…` therefore gets `404 BLOB_NOT_FOUND` ("No committed blob under
-that id **for this account**", `api.md:289`). Sharing is already deferred by
+that id **for this account**", `api.md:295`). Sharing is already deferred by
 [ADR-0020](./0020-v1-must-demotions.md) §(a); this file is the part of the
 design that was left saying otherwise.
 

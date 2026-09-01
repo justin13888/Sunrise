@@ -115,7 +115,7 @@ Two deliberate carve-outs:
 - **Time zones:**
   - *Target state:* `VTIMEZONE` blocks emitted on export. The exporter does not emit them; zoned times go out as TZID references without an accompanying definition.
   - *Target state:* parsing an inline `VTIMEZONE` on import and using it to resolve VEVENT TZID values. The parser skips `VTIMEZONE` bodies entirely (`crates/sunrise-integrations/src/ical.rs:37-39,259-264`); a `TZID` is resolved against the **bundled IANA tzdb** instead, and the skipped component is reported as an `ICalNotice` rather than dropped silently.
-  - A TZID that is not in `VTIMEZONE` and not in the IANA TZDB falls back to UTC and logs `int.import.tz_unknown`.
+  - A TZID that the bundled IANA tzdb does not know falls back to UTC and logs `int.import.tz_unknown`.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 
 ## Subscribed `.ics` URLs — not in v1

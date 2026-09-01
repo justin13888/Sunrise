@@ -17,6 +17,7 @@ status: proposed
 >
 > **Why it is not v1:** two blockers, one mechanical and one architectural.
 >
+> *Mechanical — there is no frame to carry it.*
 > `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
 > discriminators in `crates/sunrise-wire-protocol/src/messages.rs` and that is
 > all: there is no payload type for either, no server handler, and no client
@@ -26,10 +27,13 @@ status: proposed
 > (`crates/sunrise-server/src/api/sync.rs`) are typed one per purpose, so a
 > beacon has no route that would accept it. It is now unreachable rather than
 > silently dropped, which is a smaller gap than it sounds: neither state has a
-> handler behind it. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined and is
-> not in `REQUIRED_CLIENT_BITS`. There is no presence channel, no ACL check on one,
-> and no "last activity" tracking.
+> handler behind it. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined only in
+> [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)`:173`
+> — the registry is prose; no constant for it exists in `crates/`, so it is not
+> in `REQUIRED_CLIENT_BITS` because there is no bit to be in it. There is no
+> presence channel, no ACL check on one, and no "last activity" tracking.
 >
+> *Architectural — it would be the relay's first look at user data.*
 > **Presence is specified as UNENCRYPTED, and that is a deliberate choice, not
 > an oversight** — see the Implementation section: device ids and timestamps are
 > treated as metadata the relay sees anyway. It is also the only user data in

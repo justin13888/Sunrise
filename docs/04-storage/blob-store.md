@@ -102,7 +102,7 @@ The per-account root is deliberate and load-bearing (`blobs.rs:29-36,340-350`):
 content addressing without it would be a cross-tenant read primitive, since one
 account could name another's blob by its hash. A grantee naming an owner's
 `blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id
-**for this account**" ([`../06-server/api.md`](../06-server/api.md)`:289`). This
+**for this account**" ([`../06-server/api.md`](../06-server/api.md) §Blobs). This
 is one of the reasons cross-user sharing is post-v1
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 

@@ -4,8 +4,6 @@ status: proposed
 
 # Billing (Managed Cloud Only)
 
-Self-host has no billing. Skip this spec for self-host operators.
-
 > **Status: proposed. Not scheduled for v1.**
 > [ADR-0027](../11-adr/0027-v1-self-host-first.md) places managed cloud, plan
 > tiers and billing after v1. This document is the design of record for that
@@ -26,6 +24,8 @@ Self-host has no billing. Skip this spec for self-host operators.
 > **What holds regardless:** nothing in this file constrains v1 code. Its
 > numbers are **not** citable from an `accepted` spec; ADR-0027 removed the
 > citations that existed.
+
+Self-host has no billing. Skip this spec for self-host operators.
 
 ## Plans
 
