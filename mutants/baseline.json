@@ -1,6 +1,13 @@
 {
     "_comment": "Mutation-coverage floors per crate, compared by .github/scripts/mutants-gate.py. The floor ratchets: a run may hold or improve it and may not fall below it. `target_caught_pct` is what docs/10-cross-cutting/testing.md requires for release sign-off, and it is the destination rather than the floor \u2014 a gate that failed from day one would be switched off in a week. Record a new floor with `mutants-gate.py <outcomes...> --update`, in a commit that says what was added to earn it.",
     "crates": {
+        "sunrise-crypto": {
+            "caught": 200,
+            "caught_pct": 78.43,
+            "missed": 55,
+            "timeout": 0,
+            "unviable": 41
+        },
         "sunrise-sync": {
             "caught": 25,
             "caught_pct": 27.17,
