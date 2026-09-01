@@ -115,9 +115,9 @@ The `recovery_blob` is stored opaquely. The server does not validate its interna
 implemented**: neither constant exists in `error.rs`'s `codes` module, and the
 routes that would emit them do not exist. The codes `codes` actually defines are
 `AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
-`AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`, `VALIDATION_INVALID`,
-`BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`, `BLOB_NOT_FOUND` and
-`FATAL_INTERNAL`, plus `AUTH_DEVICE_SIG_INVALID` in `auth/request.rs`. An
+`AUTH_DEVICE_SIG_INVALID`, `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`,
+`VALIDATION_INVALID`, `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`,
+`BLOB_NOT_FOUND`, `RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. An
 oversized body is rejected by `tower_http`'s `RequestBodyLimitLayer` at
 `[server] max_body_bytes` (default 2 MiB) with a bare `413` and no Sunrise error
 envelope — well below the 10 MiB cap this section assumes.
@@ -208,7 +208,8 @@ DeviceMeta = {
 | 400 | `VALIDATION_*` | Bad CBOR, wrong field type, invalid `device_pub_*`. | No. |
 | 401 | `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` | See Account errors. | See Account errors. |
 | 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
-| 403 | `AUTH_DEVICE_SIG_INVALID` | `X-Sunrise-Device-Sig` present but unverifiable, no `Date` header alongside it, or `Date` outside ±300 s. Also returned when `require_device_sig` is set and the header is absent. | No (re-sign with a correct clock). |
+| 401 | `AUTH_DEVICE_SIG_INVALID` | The caller **is** an active device of this account and its `header_sig_v2` binding still did not check out: an unverifiable `X-Sunrise-Device-Sig`, no `Date` header alongside it, or a `Date` outside ±300 s. Also returned when `require_device_sig` is set and the header is absent, which `GET /meta`'s `device_binding_required` already advertises. | No — re-sign with a correct clock. Never refresh the bearer; it was not the problem. |
+| 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
 | 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. | No. |
 
 ### Blobs

@@ -104,10 +104,12 @@ pub struct DeviceSig {
 /// nothing. A caller cannot borrow another account's device by naming it.
 ///
 /// # Errors
-/// [`ApiError::Unauthenticated`] when binding is required and absent, when the named device
-/// is not active on this account, or when the signature does not verify. Every
-/// case collapses to one rejection: the distinction is useful to the server's
-/// log and to nobody else.
+/// A `401` [`ApiError::Unauthenticated`] in every failing case. The *code* it
+/// carries is two-tier: `AUTH_DEVICE_SIG_INVALID` once the named device has
+/// resolved to an active row on this account and only the signature is wrong,
+/// `AUTH_TOKEN_INVALID` for everything upstream of that lookup — including a
+/// device id that is not on this account, which must stay indistinguishable
+/// from a bad bearer or the code becomes an enumeration oracle.
 pub fn verify<T: serde::Serialize>(
     state: &ServerState,
     principal: &Principal,
@@ -145,7 +147,10 @@ pub fn verify_bytes(
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
         if state.config.require_device_sig {
-            return Err(ApiError::unauthenticated());
+            // The one pre-lookup case that names the signature. Nothing is
+            // disclosed: the server has already told every caller it demands a
+            // binding, in `GET /meta`'s `device_binding_required`.
+            return Err(ApiError::device_sig_invalid());
         }
         // Self-host single-tenant: there are no device rows to bind to, and
         // `ServerConfig::validate` refuses `require_device_sig` in that mode,
@@ -161,13 +166,21 @@ pub fn verify_bytes(
         }
     }
 
+    // Deliberately `unauthenticated`, not `device_sig_invalid`: a caller who
+    // guessed a device id must not be able to tell "not on this account" from
+    // "your bearer is no good". Everything below this line has proved it is an
+    // active device of the authenticated account, which is what earns it the
+    // finer code.
     let device = state
         .store
         .active_device(&principal.account.account_id, device_id)
         .map_err(|_| ApiError::unauthenticated())?
         .ok_or_else(ApiError::unauthenticated)?;
 
-    let date = sig.date.as_deref().ok_or_else(ApiError::unauthenticated)?;
+    let date = sig
+        .date
+        .as_deref()
+        .ok_or_else(ApiError::device_sig_invalid)?;
     sunrise_http_sig::verify_canonical(
         &device.device_pub_s,
         signature,
@@ -181,11 +194,12 @@ pub fn verify_bytes(
         state.metrics.incr("sunrise_device_sig_rejected_total");
         tracing::warn!(
             ev = "srv.auth.device_sig_rejected",
+            err_code = %sunrise_error::ErrorCode::AuthDeviceSigInvalid,
             err_kind = "user",
             reason = %e,
             "device signature rejected"
         );
-        ApiError::unauthenticated()
+        ApiError::device_sig_invalid()
     })?;
 
     let _ = state
@@ -504,6 +518,7 @@ impl RequestContent for SignedBinary {
 
 #[cfg(test)]
 mod tests {
+    use crate::api::error::codes::{AUTH_DEVICE_SIG_INVALID, AUTH_TOKEN_INVALID};
     use crate::api::testing::{Client, BEARER};
     use crate::ServerConfig;
     use base64::Engine as _;
@@ -512,6 +527,15 @@ mod tests {
 
     fn b64(b: &[u8]) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+    }
+
+    /// The problem document's `code` extension member — the thing a client
+    /// switches on, and the whole point of the two-tier rule.
+    fn code_of(res: &crate::api::testing::Res) -> String {
+        res.json()["code"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a code member: {}", res.json()))
+            .to_owned()
     }
 
     /// The server's own now, formatted as the `Date` the scheme signs.
@@ -604,7 +628,7 @@ mod tests {
         let (device_id, _) = paired(&client, 8).await;
         let impostor = SigningKey::from_bytes(&[9u8; 32]);
 
-        send_signed(
+        let res = send_signed(
             &client,
             "GET",
             "/api/v1/accounts/me",
@@ -612,8 +636,93 @@ mod tests {
             &impostor,
             None::<&serde_json::Value>,
         )
-        .await
-        .assert_status(StatusCode::UNAUTHORIZED);
+        .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        // The device is real and active; only the signature is wrong, so the
+        // caller is told which of the two credentials to fix.
+        assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
+    }
+
+    /// A clock 400 s out is the commonest real cause of this refusal, and the
+    /// fix is "set your clock", not "log in again". Before the code existed
+    /// the client saw a bare `AUTH_TOKEN_INVALID` and refreshed a bearer that
+    /// was never the problem, into the same rejection, forever.
+    #[tokio::test]
+    async fn a_skewed_clock_is_told_its_clock_is_wrong() {
+        let client = Client::new(ServerConfig::default());
+        let (device_id, sk) = paired(&client, 14).await;
+
+        let secs = i64::try_from(client.clock_now_ms() / 1000).expect("a sane clock")
+            + sunrise_http_sig::MAX_CLOCK_SKEW_SECS
+            + 100;
+        let date = jiff::Timestamp::from_second(secs)
+            .expect("a valid timestamp")
+            .strftime("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        let signature = sunrise_http_sig::sign::<serde_json::Value>(
+            &sk,
+            "GET",
+            "/api/v1/accounts/me",
+            &date,
+            None,
+        )
+        .expect("the client half signs");
+
+        let res = client
+            .send_with(
+                Method::GET,
+                "/api/v1/accounts/me",
+                Some(BEARER),
+                None,
+                &[
+                    ("x-sunrise-device", &device_id),
+                    ("x-sunrise-device-sig", &signature),
+                    ("date", &date),
+                ],
+            )
+            .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
+    }
+
+    /// The guard on the whole distinction.
+    ///
+    /// A correct signature over a device that is not an active row on this
+    /// account must be indistinguishable from a bad bearer — otherwise the
+    /// code answers "does this device exist here?" for a caller who has proved
+    /// nothing, which is exactly the enumeration oracle the collapse existed
+    /// to prevent.
+    #[tokio::test]
+    async fn an_unknown_device_is_still_indistinguishable_from_a_bad_bearer() {
+        let client = Client::new(ServerConfig::default());
+        let sk = SigningKey::from_bytes(&[15u8; 32]);
+
+        let res = send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+            &sk,
+            None::<&serde_json::Value>,
+        )
+        .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_TOKEN_INVALID);
+    }
+
+    /// The other pre-lookup case that *does* name the signature: the server
+    /// has already published `device_binding_required` in `GET /meta`, so
+    /// saying "you did not sign" discloses nothing it has not advertised.
+    #[tokio::test]
+    async fn an_absent_binding_where_one_is_required_names_the_signature() {
+        let client = Client::new(ServerConfig {
+            require_device_sig: true,
+            ..ServerConfig::default()
+        });
+
+        let res = client.send(Method::GET, "/api/v1/accounts/me", None).await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
     }
 
     /// A signature is not transferable between targets.

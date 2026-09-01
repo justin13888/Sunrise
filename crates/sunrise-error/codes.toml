@@ -84,12 +84,21 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
-# 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed
-# here: ADR-0027 takes per-account quotas out of v1 and nothing ever emitted
-# either. Both ids are burned by the rule above — never re-used, never
-# repurposed — so the next auth code is 204 and the next storage code is 304.
+# 203 was `AUTH_QUOTA_EXCEEDED`. ADR-0027 takes per-account quotas out of v1
+# and nothing ever emitted it, so it was removed — and the id is burned by the
+# rule above, never re-used and never repurposed. Hence 204 below.
+
+[[code]]
+id = 204
+name = "AUTH_DEVICE_SIG_INVALID"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "header_sig_v2 signature did not verify, or its Date is outside MAX_CLOCK_SKEW_SECS (±300 s). Re-sign with a correct clock; never refresh the bearer. Emitted only once the caller's device has resolved to an active row on the authenticated account — every rejection upstream of that lookup stays AUTH_TOKEN_INVALID, so the code cannot be used to enumerate accounts or devices."
 
 # --- Storage --------------------------------------------------------------
+
+# 300 was `STORAGE_QUOTA_EXCEEDED`, removed with 203 above and burned with it.
 
 [[code]]
 id = 301
