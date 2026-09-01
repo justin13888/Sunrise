@@ -254,7 +254,8 @@ in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
 lockfile. It is out there for feature unification, not MSRV: as a workspace
 member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
 build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
-21 extra crates on every workspace build ([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
+20 extra third-party crates on every workspace build
+([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
 
 `out/` and `build/` are gitignored: the Swift is generated from the Rust on
 every build, so committing it would let the two drift.

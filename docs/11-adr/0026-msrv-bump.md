@@ -103,7 +103,8 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
   `camino`), and resolver 2 unifies features per package across one cargo
   invocation, so the seam crate would compile against a `uniffi` carrying the
   whole binding generator. Measured: 21 packages live in that directory's
-  lockfile and nowhere else in the tree.
+  lockfile and nowhere else in the tree — 20 third-party dependencies, plus the
+  generator crate itself.
 * **The five stale explanations are corrected.** The claim in
   `tools/uniffi-bindgen/Cargo.toml`, `crates/sunrise-core-bindings/Cargo.toml`,
   `mise.toml`, `README.md` and `docs/01-architecture/dependencies.md` — that

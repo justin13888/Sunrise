@@ -37,10 +37,11 @@
 //! rather than `fcntl` is load-bearing: `fcntl` locks belong to the *process*
 //! and are dropped when any descriptor for the file closes, so a contender
 //! merely reading the owner payload would destroy the holder's lock. This was
-//! the `fs4` crate until the toolchain pin reached 1.89 (ADR-0026); std gives
-//! the same guarantees with no dependency at all, which is the strongest form
-//! of the `forbid(unsafe_code)` argument that picked `fs4` over `fs2` and
-//! `fd-lock` to begin with.
+//! the `fs4` crate while the toolchain pin sat below 1.89; the pin moved to
+//! 1.91.1 (ADR-0026), which is what retired it. std gives the same guarantees
+//! with no dependency at all, which is the strongest form of the
+//! `forbid(unsafe_code)` argument that picked `fs4` over `fs2` and `fd-lock`
+//! to begin with.
 //!
 //! But an OS lock alone does not enforce the *in-process* invariant:
 //!
