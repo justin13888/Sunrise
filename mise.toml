@@ -300,13 +300,21 @@ depends = ["apple-xcframework"]
 shell = "bash -c"
 run = """
 set -euo pipefail
-# The macOS half is an XCUITest, so it needs the same one-time grant
-# `macos-uitest` does. The iOS half would run without it; failing here rather
-# than producing half a walk is the more useful answer.
+# The macOS half is an XCUITest, so it needs both of the grants `macos-uitest`
+# documents — and the second one bites here in a way it does not there. The
+# automation grant is keyed to the *app bundle path*, and these tasks build
+# into `out/dd`, so a fresh clone or a new worktree is a new path and raises
+# the prompt again. Unattended, it fails with "Timed out while enabling
+# automation mode" after about three minutes.
+#
+# The iOS half needs neither. Failing here rather than producing half a walk
+# is the more useful answer.
 if ! DevToolsSecurity -status | grep -q enabled; then
   echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
   exit 1
 fi
+echo "note: the first macOS run from this checkout raises an automation prompt." >&2
+echo "      accept it, or the macOS half times out after ~3 minutes." >&2
 root="$PWD"
 # `-resultBundlePath` refuses to overwrite, and a stale bundle beside a fresh
 # one is worse than no bundle at all.

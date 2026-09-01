@@ -9,6 +9,13 @@ import XCTest
 ///
 /// Run it with `mise run apple-shots`, which extracts the attachments into
 /// `out/shots/ios/`.
+///
+/// Unlike its macOS twin, this **also runs on every `mise run ios-app`** and so
+/// in CI, because `SunriseiOSUITests` is not skipped in the `SunriseiOS`
+/// scheme. That costs about a minute and buys two things: the walk cannot rot
+/// unnoticed, and every CI run leaves a full set of screenshots in its result
+/// bundle. If that minute ever stops being worth it, `-skip-testing:` on the
+/// `ios-app` task is the lever — not deleting the suite.
 @MainActor
 final class ScreenshotWalkTests: SunriseUITestCase {
 
