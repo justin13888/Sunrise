@@ -19,7 +19,7 @@ and one entry in `mise.toml`'s `macos_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 471 Swift
+Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 477 Swift
 Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
