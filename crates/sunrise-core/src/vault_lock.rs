@@ -32,6 +32,16 @@
 //! released by the kernel when the holding process dies, however it dies —
 //! that is the entire point of this module.
 //!
+//! The lock is `std::fs::File::try_lock` / `File::unlock`, stable since Rust
+//! 1.89 — `flock(LOCK_EX | LOCK_NB)` on Unix, `LockFileEx` on Windows. `flock`
+//! rather than `fcntl` is load-bearing: `fcntl` locks belong to the *process*
+//! and are dropped when any descriptor for the file closes, so a contender
+//! merely reading the owner payload would destroy the holder's lock. This was
+//! the `fs4` crate until the toolchain pin reached 1.89 (ADR-0026); std gives
+//! the same guarantees with no dependency at all, which is the strongest form
+//! of the `forbid(unsafe_code)` argument that picked `fs4` over `fs2` and
+//! `fd-lock` to begin with.
+//!
 //! But an OS lock alone does not enforce the *in-process* invariant:
 //!
 //! - `flock` over NFS on Linux is emulated with `fcntl`, which is per-process,
@@ -42,10 +52,9 @@
 //! authority for same-process contention, and the OS lock is the authority
 //! across processes.
 
-use fs4::{FileExt, TryLockError};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -189,7 +198,7 @@ impl VaultLock {
                 .open(&lock_path)?; // `?` drops `claim`, releasing it — by design
 
             // 3. Non-blocking OS advisory lock.
-            match FileExt::try_lock(&file) {
+            match file.try_lock() {
                 Ok(()) => {
                     // Only now, holding the lock, is it safe to publish identity.
                     write_owner(&owner_path, pid, started_at_iso);
@@ -251,7 +260,7 @@ impl Drop for VaultLock {
         // Order matters: release the OS lock before the registry entry, so a
         // same-process retry loop cannot win the registry and then lose the OS
         // lock in a tight spin. Neither file is unlinked (see module docs).
-        let _ = FileExt::unlock(&self.file);
+        let _ = self.file.unlock();
         HELD.lock().remove(&self.key);
         // `self.file` closes here; on abnormal exit the OS does this for us.
     }

@@ -14,7 +14,8 @@
 //!
 //! Single-writer guarantee: exactly one [`Core`] per vault path per
 //! process. Enforced by two mechanisms: an OS advisory lock on
-//! `<vault>/core.lock` (`flock` on Unix, `LockFileEx` on Windows, via `fs4`)
+//! `<vault>/core.lock` (`std::fs::File::try_lock`: `flock` on Unix,
+//! `LockFileEx` on Windows)
 //! for cross-process exclusion, plus a process-local registry of canonicalized
 //! vault paths for same-process exclusion — which the OS lock alone cannot
 //! guarantee, since `flock` degrades to per-process `fcntl` semantics over
