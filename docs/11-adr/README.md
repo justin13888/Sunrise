@@ -27,7 +27,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0007 | [Native-per-platform UI vs shared UI framework](./0007-mobile-strategy.md) | accepted (0019 defers every platform but macOS; the shared-core half is unchanged) |
 | 0008 | [Local FTS over server-side search](./0008-search-strategy.md) | accepted |
 | 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted (amended by 0015: the envelope container is versioned separately from the doc schema) |
-| 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted |
+| 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted (amended 2026-08: `tracing` carries the transport) |
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
 | 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted |
 | 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | accepted (amended by 0014: OR-Set → append-only row) |
@@ -43,6 +43,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0023 | [Sync moves to SSE downstream and typed POST upstream](./0023-sse-sync-transport.md) | accepted (supersedes 0005) |
 | 0024 | [Stream keys are random and wrapped, not derived from the vault root](./0024-key-hierarchy.md) | accepted |
 | 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024) |
+| 0027 | [v1 is self-host-first: managed cloud, billing, quotas, presence, Android and sharing are post-v1](./0027-v1-self-host-first.md) | accepted |
 
 ## When to write a new ADR
 
