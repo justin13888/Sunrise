@@ -59,7 +59,8 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 #### Perf-bench CI integration
 
 - Per-platform baselines live in `bench/baseline.json`, committed to the repo.
-- Every PR runs the benchmark suite and compares against the baseline.
+- The suite runs on `schedule` and `workflow_dispatch` only, never on a pull
+  request, and the comparison it prints against that baseline is informational.
 - **As specified:** any benchmark regressing >5% blocks merge via a required check, and a nightly job opens a bot PR updating `bench/baseline.json`.
 - **As built:** the `bench-regression` job in `ci.yml` runs on `schedule` and
   `workflow_dispatch` only — never on a pull request — and carries
