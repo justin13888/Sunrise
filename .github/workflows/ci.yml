@@ -303,10 +303,22 @@ jobs:
         # `--jobs 1` here for the same reason the mise task pins it: each job
         # is a full copy of the tree plus a resident rustc, and a hosted runner
         # has less headroom than the laptop the figure was measured on.
+        #
+        # cargo-mutants exits 2 when mutants survived and 3 when some timed
+        # out. Both mean the run measured something, and on this workspace
+        # both are the ordinary result — no scoped crate is near 100%. Whether
+        # that measurement is good enough is the gate's question, not this
+        # step's, so 0/2/3 are success here and every other code propagates.
+        # Red on this step now means the shard could not be measured at all.
         run: |
+          rc=0
           cargo mutants -p ${{ matrix.crate }} \
             --jobs 1 --shard ${{ matrix.shard }} \
-            --output out/mutants
+            --output out/mutants || rc=$?
+          case "$rc" in
+            0 | 2 | 3) ;;
+            *) exit "$rc" ;;
+          esac
       - name: Upload outcomes
         if: always()
         uses: actions/upload-artifact@v4

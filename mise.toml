@@ -334,7 +334,20 @@ fi
 # cargo-mutants creates its own `mutants.out` but not the parent it was told
 # to put it in, and `out/` is gitignored so a fresh clone has none.
 mkdir -p "out/mutants/$slug"
-cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug"
+# cargo-mutants exits 2 when mutants survived and 3 when some timed out. Both
+# mean the run measured something, and on this workspace both are the ordinary
+# result — every scoped crate has surviving mutants, which is the entire reason
+# the floors exist. Under `set -e` that aborted the task before the two lines
+# below ever printed, so a run that worked perfectly looked like a run that
+# broke, and the guidance it prints was unreachable in the only case that
+# needed it. Coverage is the gate's verdict, not this task's; any other exit
+# code is a real failure and is re-raised.
+rc=0
+cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
+case "$rc" in
+  0 | 2 | 3) ;;
+  *) exit "$rc" ;;
+esac
 echo
 echo "surviving mutants: out/mutants/$slug/mutants.out/missed.txt"
 echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutants.out/outcomes.json"
