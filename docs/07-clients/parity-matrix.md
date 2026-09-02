@@ -276,32 +276,33 @@ over:
   narrowness — the operator grammar
   [search.md](../08-features/search.md) specifies is matched literally; see
   the macOS note above.
-
 - **iOS.** Two SHOULDs are unmet, and both for the same shape of reason — a
   working, tested shared model with no iOS caller: **saved views** and **iCal
   import / export**. Background sync runs only while the app is frontmost.
   Keyboard navigation is the list keymap and nothing above it, because
-  `onKeyChord` is applied in one place in the whole tree; an iPad that draws a
-  system menu bar therefore gets only the system's own items, since the
-  `Commands` scene that would fill it is in `macOS/`. Two things are narrow
-  that no row is about, and they are worth naming rather than losing:
-  several shared sheets carry unconditional Mac-sized frames — the settings
-  `Form` is `.frame(width: 520)` (`AccountView.swift:101`), the task editor
-  460 (`TaskEditorView.swift:97`), the block editor 420
-  (`BlockEditorView.swift:35`), the pairing sheet 560×520
-  (`PairingView.swift:25`), none of them behind an `#if`, all of them wider
-  than an iPhone; and the copy still calls the device a Mac.
-  `Platform.deviceName` (`PlatformKit.swift:163-183`) exists for exactly that
-  and has two callers, while seventeen further lines across six shared files
-  say "Mac" literally — including the pairing sheet's own title
-  (`PairingView.swift:32`) and the vim toggle's caption
-  (`AccountView.swift:222`, "Stored on this Mac only"). Neither changes a
-  verdict, because both rows are reachable; both are real and neither has an
-  issue of its own yet.
+  `onKeyChord` is applied in exactly one place in the tree; an iPad that draws
+  a system menu bar therefore gets only the system's own items, since the
+  `Commands` scene that would fill it is under `macOS/`. *File → Task* drag is
+  iPad-only, because dragging in from another app needs two apps on screen.
 
-Every one of these is inside a row graded **met**, except the two iOS rows
-named as unmet, because each row asks for a capability and each capability is
-reachable. They are written down so that "met"
+  Two further things are narrow that no row is about, and they are worth
+  naming here rather than losing. **The shared sheets are Mac-shaped**:
+  unconditional frames of 520 points on the settings `Form`
+  (`AccountView.swift:101`), 460 on the task editor
+  (`TaskEditorView.swift:97`), 420 on the block editor
+  (`BlockEditorView.swift:35`) and 560×520 on the pairing sheet
+  (`PairingView.swift:25`) — none behind an `#if`, all wider than an iPhone.
+  **And the copy still calls the device a Mac**: `Platform.deviceName`
+  (`PlatformKit.swift:163-183`) exists for exactly this and has two callers,
+  while seventeen further lines across six shared files say "Mac" outright —
+  among them the pairing sheet's own title (`PairingView.swift:32`) and the
+  vim toggle's caption (`AccountView.swift:222`, "Stored on this Mac only").
+  Neither sinks a verdict, because the rows they sit in are reachable. Both
+  are real, and neither has an issue of its own yet.
+
+Every one of these is inside a row graded **met** — the two iOS rows named
+unmet above are the exception — because each row asks for a capability and
+each capability is reachable. They are written down so that "met"
 never has to be re-derived from scratch to find out what it covered.
 
 ## Hard rules
