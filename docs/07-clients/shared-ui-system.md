@@ -98,14 +98,16 @@ Patterns are described once and implemented natively per platform:
 
 ## Component implementations
 
-Deferred clients (iOS, Android, Web) keep their rows so the shape is recorded
-for when they are scheduled; only macOS ships today.
+**macOS and iOS both ship** ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)), and their two
+columns are very largely the same source file rather than two implementations
+that agree. Android and Web keep their rows so the shape is recorded for when
+they are scheduled; nothing behind those two columns exists.
 
-| Pattern | macOS | iOS *(deferred)* | Android *(deferred)* | Web *(deferred)* |
+| Pattern | macOS | iOS | Android *(deferred)* | Web *(deferred)* |
 |---|---|---|---|---|
-| Task row | SwiftUI `TaskRow` | SwiftUI `TaskRow` | Compose `TaskRow()` | React `<TaskRow>` |
-| Quick capture | Borderless window | Sheet | BottomSheet | Modal |
-| Detail pane | Sliding panel | NavigationStack push | NavigationCompose push | Sliding panel |
+| Task row | SwiftUI `TaskRowView` | SwiftUI `TaskRowView` — literally the Mac's | Compose `TaskRow()` | React `<TaskRow>` |
+| Quick capture | Borderless `NSPanel` | Sheet, `.presentationDetents([.height(280), .medium])` | BottomSheet | Modal |
+| Detail pane | Sliding panel | `NavigationStack` push | NavigationCompose push | Sliding panel |
 
 ## Density
 

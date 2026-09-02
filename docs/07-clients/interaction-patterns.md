@@ -100,19 +100,21 @@ they cannot honour.
 
 ## Drag-and-drop matrix
 
-Deferred clients (iOS, Android, Web) are omitted; see
-[`parity-matrix.md`](./parity-matrix.md).
+Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
+The iOS column is not a second implementation: every modifier below sits in a
+shared file with no platform fork, so what changes is the gesture — a
+long-press drag where the Mac has a click-drag.
 
-| From → To | macOS | CLI |
-|---|---|---|
-| Task → Stream | Yes | N/A |
-| Task → Context | Yes | N/A |
-| Task → Calendar block | Yes | N/A |
-| Calendar block → Task | **No** — see below | N/A |
-| Calendar block → Calendar (move / resize) | Yes | N/A |
-| File → Task (attach) | Yes | N/A |
-| Task → Task (reorder) | Yes | N/A |
-| Stream → Stream (reorder) | Yes | N/A |
+| From → To | macOS | iOS | CLI |
+|---|---|---|---|
+| Task → Stream | Yes | Yes | N/A |
+| Task → Context | Yes | Yes | N/A |
+| Task → Calendar block | Yes | Yes | N/A |
+| Calendar block → Task | **No** — see below | **No** — see below | N/A |
+| Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
+| File → Task (attach) | Yes | Yes *(iPad)* | N/A |
+| Task → Task (reorder) | Yes | Yes | N/A |
+| Stream → Stream (reorder) | Yes | Yes | N/A |
 
 **Calendar block → Task is the one cell not built, and it is a layout
 consequence rather than a missing write.** The macOS window is a sidebar plus a
@@ -123,7 +125,17 @@ would perform exists and is tested — `TaskListModel.bind(_:to:)`, the same
 list beside the grid makes the cell reachable without new core work. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-Every other cell is live in `apps/apple`: `TaskRowView` is `.draggable`, and the
+**On iOS the same cell is unreachable for a stronger version of the same
+reason.** The shell is a tab bar, and the calendar and a task list are on two
+different tabs: they are not merely never co-resident in one window, they
+cannot be on screen together at all. *File → Task* is the other qualified iOS
+cell, and that one is the platform's doing rather than the app's — the drop
+target is shared and unconditional, but dragging a file in from another app
+needs two apps on screen, which is iPad multitasking.
+
+Every other cell is live in `apps/apple`, and in both products at once: every
+file named here is under `Sunrise/`, which compiles into the Mac app and the
+iOS app alike. `TaskRowView` is `.draggable`, and the
 drop targets are the sidebar's stream and context rows (`BrowseSidebar`), the
 task rows themselves (`TaskListView`, which declines the drop in Today and in
 Search because the core ranks those lists), the calendar grid and its block
@@ -153,16 +165,26 @@ These run via local OS APIs (deep links into the app for desktop; native action 
 | Snooze | one action per span the domain offers (`Query::ReminderIntents` carries the targets; the client does no date arithmetic of its own) | `snooze_1h` | same | `actions[1]` |
 | Open | tap body | tap body | tap body | default action |
 
-macOS is the only column implemented today; the other three are
-[deferred clients](./parity-matrix.md) and carry no MUSTs.
+**macOS and iOS are both implemented today**, and not as two implementations:
+the categories, the task category's three buttons and the response delegate
+are one shared file
+(`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:60-105`)
+compiled into both products. The iOS column carries SHOULDs rather than MUSTs
+([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). Android and Web remain
+[deferred clients](./parity-matrix.md) and carry no MUSTs at all.
 
 The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to an op without opening UI when possible.
 
 ## URL scheme
 
-`sunrise://` deep links. The scheme is registered by the macOS app through
-`project.yml`'s `info:` block, because `CFBundleURLTypes` has no
-`INFOPLIST_KEY_` equivalent and the generated plist is gitignored.
+`sunrise://` deep links. The scheme is registered by **both** Apple apps, each
+through its own `info:` block in `project.yml` (`:124-140` for macOS,
+`:192-203` for iOS), because `CFBundleURLTypes` has no `INFOPLIST_KEY_`
+equivalent and the generated plists are gitignored. The parser
+(`Sunrise/Notifications/DeepLink.swift`) is shared; the destination it produces
+is resolved to a sidebar selection on macOS and to a tab plus a stack on iOS
+(`iOS/TabRoute.swift:83-116`). The two rows marked *not implemented* below are
+unparsed on both platforms.
 
 | Link | Status | Notes |
 |---|---|---|
