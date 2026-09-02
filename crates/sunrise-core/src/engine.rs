@@ -84,7 +84,7 @@ use sunrise_domain::{
     SessionLength, SessionRecord, StreakOutcome, StreakRow, Stream, StreamColor, StreamDraft,
     StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, Trends,
     ValidationError, WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
-    DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
+    DRIFT_WINDOW_WEEKS, INBOX_STREAM_BYTES, POMODORO_MS, TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -1559,9 +1559,12 @@ impl Engine {
 
     fn delete_stream(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Stream)?;
-        if id.bytes() == &[0u8; 16] {
+        // Compared against the Inbox's own id, not against sixteen zero bytes:
+        // those are the vault-meta stream now, and a guard that names the wrong
+        // constant is a guard that protects the wrong thing.
+        if id.bytes() == &INBOX_STREAM_BYTES || id.bytes() == &META_STREAM {
             return Err(EngineError::Invalid(
-                "cannot delete the inbox stream".into(),
+                "cannot delete the inbox or vault-meta stream".into(),
             ));
         }
         let now_ms = self.clock.now_ms();
@@ -3381,6 +3384,14 @@ impl Engine {
     }
 
     /// Log one control op into the vault-meta stream.
+    ///
+    /// The epoch is resolved **before** the sequence number is read, and that
+    /// order is load-bearing. Resolving it can mint the vault-meta stream's own
+    /// first key, which emits `key_envelope` ops into this same stream; a `seq`
+    /// read before that happened would already be taken by the time this op
+    /// reached the log, and `ops` has a `UNIQUE(stream_id, device_id, seq)`.
+    /// The op would be ignored, and its outbox row would then fail its foreign
+    /// key — which is exactly how this was found.
     fn emit_control_op(
         &self,
         tx: &Transaction<'_>,
@@ -3389,45 +3400,30 @@ impl Engine {
         seal_under: Option<&(u32, StreamKey)>,
     ) -> rusqlite::Result<()> {
         let blob = encode_inner_op(inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        let (epoch, key) = match seal_under {
+            Some((epoch, key)) => (*epoch, key.clone()),
+            None => self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?,
+        };
         let op_id = self.fresh_op_id(now_ms);
         let seq = self.next_seq_tx(tx, &META_STREAM)?;
         let hlc = self.hlc.send();
-        let inner_kind = inner.inner_kind();
-        let target_kind = inner.target_kind();
-        match seal_under {
-            Some((epoch, key)) => self.ops_insert_at(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                hlc,
-                &blob,
-                inner_kind,
-                target_kind,
-                None,
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-                *epoch,
-                key,
-            ),
-            None => self.ops_insert(
-                tx,
-                &op_id,
-                &META_STREAM,
-                seq,
-                hlc,
-                &blob,
-                inner_kind,
-                target_kind,
-                None,
-                Some(now_ms),
-                None,
-                now_ms,
-                &[],
-            ),
-        }
+        self.ops_insert_at(
+            tx,
+            &op_id,
+            &META_STREAM,
+            seq,
+            hlc,
+            &blob,
+            inner.inner_kind(),
+            inner.target_kind(),
+            None,
+            Some(now_ms),
+            None,
+            now_ms,
+            &[],
+            epoch,
+            &key,
+        )
     }
 
     /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
@@ -7189,8 +7185,9 @@ mod tests {
         let env_bytes = OpLog::get_envelope(&db, &res.op_id).unwrap().unwrap();
         assert_eq!(&env_bytes[..2], b"SR", "envelope carries the magic prefix");
         let env = sunrise_crypto::decode_envelope(&env_bytes).unwrap();
-        // Inbox tasks route to the zero (meta) stream id.
-        assert_eq!(env.stream_id, [0u8; 16]);
+        // Inbox tasks route to the Inbox's own stream id, which since ADR-0024
+        // is no longer the vault-meta id.
+        assert_eq!(env.stream_id, INBOX_STREAM_BYTES);
         assert_eq!(env.device_id, e.keychain.device_id());
         assert_eq!(env.seq, res.seq);
 

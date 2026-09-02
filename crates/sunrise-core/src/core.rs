@@ -1086,17 +1086,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let device_id_first;
+        let pending_before_close;
         {
             let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+            // Not zero: opening a vault publishes this device's certificate and
+            // the identity-sealed copies of its first Stream keys, and those
+            // queue like any other op.
+            let announced = core.sync_pending().unwrap();
+            assert!(announced > 0, "the vault announces itself at open");
             core.submit(Command::CreateTask(TaskDraft {
                 title: "persisted".into(),
                 ..Default::default()
             }))
             .await
             .unwrap();
+            pending_before_close = core.sync_pending().unwrap();
             device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
                 QueryResult::SyncStatus(s) => {
-                    assert_eq!(s.outbox_pending, 1, "one op pending after submit");
+                    // Two more, not one: the first task in the Inbox also
+                    // mints that stream's key, and the `key_envelope` op
+                    // distributing it queues alongside the task.
+                    assert_eq!(
+                        u64::from(s.outbox_pending),
+                        announced + 2,
+                        "the task and the key that opens it are both pending"
+                    );
                     // Read the device id straight from the vault for comparison.
                     let db = core.db.lock();
                     db.conn()
@@ -1130,7 +1144,13 @@ mod tests {
             "same device id on reopen"
         );
         match core2.query(Query::SyncStatus).await.unwrap() {
-            QueryResult::SyncStatus(s) => assert_eq!(s.outbox_pending, 1),
+            // The outbox hydrates from the DB, so the reopened vault sees
+            // exactly what the first one left pending — announcement, key
+            // envelope and task alike. The reopen itself adds nothing: the
+            // certificate is published once per vault, not once per open.
+            QueryResult::SyncStatus(s) => {
+                assert_eq!(u64::from(s.outbox_pending), pending_before_close);
+            }
             _ => panic!("expected sync status"),
         }
         core2.close().await.unwrap();

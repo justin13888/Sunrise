@@ -1652,6 +1652,28 @@ mod tests {
         (RemotePeer { bundle, meta }, stream, envs)
     }
 
+    /// Ack this vault's opening announcement out of band.
+    ///
+    /// A freshly opened vault is no longer empty. `Core::open` publishes this
+    /// device's identity-signed certificate and the identity-sealed copies of
+    /// the first Stream keys it mints, and those queue in the outbox like any
+    /// other op — which is the point: a peer that never receives them can
+    /// neither verify this device's envelopes nor recover its content.
+    ///
+    /// The tests below are about the driver's handling of *one* op the test
+    /// submitted, so the announcement is acked directly rather than counted.
+    /// `paired_devices_converge` and `device_revocation` in `sunrise-e2e` are
+    /// where the announcement travelling for real is asserted.
+    fn drain_announcement(core: &Core) {
+        let ids: Vec<[u8; 16]> = core
+            .sync_outbox_grouped(&std::collections::HashSet::new())
+            .unwrap()
+            .into_iter()
+            .flat_map(|(_, ops)| ops.into_iter().map(|(op_id, _)| op_id))
+            .collect();
+        core.sync_mark_acked(&ids).unwrap();
+    }
+
     /// Open a core that is already a sibling of `peer`.
     async fn open_arc_paired(dir: &Path, peer: &RemotePeer) -> Arc<Core> {
         open_paired(make_cfg(dir), peer).await
@@ -1924,6 +1946,18 @@ mod tests {
     async fn on_connect_drains_pending_outbox_and_reaches_live() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
         core.submit(Command::CreateTask(TaskDraft {
             title: "pending".into(),
             ..Default::default()
@@ -2066,6 +2100,18 @@ mod tests {
     async fn submit_while_live_pushes_without_reconnect() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
 
         let mut status_rx = core.sync_status();
         let (factory, server, mut batch_rx) = harness(vec![]);
@@ -2107,6 +2153,18 @@ mod tests {
     async fn unacked_batch_is_retransmitted_within_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
 
         let mut status_rx = core.sync_status();
         let script = Script {

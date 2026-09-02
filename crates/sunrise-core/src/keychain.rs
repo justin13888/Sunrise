@@ -753,6 +753,19 @@ impl Keychain {
         tx: &rusqlite::Transaction<'_>,
         stream_id: &[u8; 16],
     ) -> rusqlite::Result<Option<(u32, StreamKey)>> {
+        // A derived-key test keychain always "has" every key, so an engine unit
+        // test never mints one and never emits the `key_envelope` ops it has no
+        // relay to carry. Without this the first vault-meta op of every test
+        // would mint that stream's key mid-transaction and emit envelope ops
+        // into the very stream whose sequence number the caller had already
+        // read.
+        #[cfg(test)]
+        if self.test_derived_keys {
+            return Ok(Some((
+                LEGACY_EPOCH,
+                legacy_derived_stream_key(&self.vault_root, stream_id, LEGACY_EPOCH),
+            )));
+        }
         let Some(epoch) = self.current_epoch_tx(tx, stream_id)? else {
             return Ok(None);
         };
