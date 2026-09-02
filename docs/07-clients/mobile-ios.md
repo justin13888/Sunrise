@@ -17,10 +17,16 @@ that is no longer what is built.
 
 ## Status
 
-**The app ships and is in CI.** It is not, however, held to the v1 MUST set —
-[`parity-matrix.md`](./parity-matrix.md) still carries no iOS requirements, and
-the platform surfaces below are specification rather than description. Read
-[Platform surfaces](#platform-surfaces-not-built) with that in mind.
+**The app ships and is in CI, and it is a v1 client at SHOULD level.**
+[`parity-matrix.md`](./parity-matrix.md) now carries a filled iOS column and
+[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) is the record of why: every
+row the shell reaches is a **SHOULD**, and none of them is a MUST until an iOS
+release ships. Twenty-three SHOULDs, graded **21 met and 2 unmet** — saved
+views and iCal import/export, both of them a working shared model with no iOS
+caller.
+
+The platform surfaces below are still specification rather than description.
+Read [Platform surfaces](#platform-surfaces-not-built) with that in mind.
 
 What exists today:
 
