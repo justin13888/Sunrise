@@ -175,8 +175,18 @@ gh workflow run ci.yml --ref <branch>
 ```bash
 mise run mutants sunrise-sync                 # one crate
 mise run mutants sunrise-domain --shard 0/6   # one slice of a big one
-mise run mutants-baseline                     # record a new floor
+
+# record a floor, naming what it is meant to cover
+mise run mutants-baseline --expect-shards sunrise-sync=1
 ```
+
+`--expect-shards` is required when recording, because the task scores every
+run sitting under `out/mutants/` and what is sitting there is whatever you last
+ran. One shard of `sunrise-domain` banked unchecked becomes that crate's floor:
+a rate measured over a sixth of its mutants, recorded as though it covered all
+of them, and thereafter too low to fail on anything. For a deliberately partial
+floor, call `.github/scripts/mutants-gate.py … --update --allow-partial`, which
+skips the check and says so.
 
 Shards are zero-based: a crate split six ways is `0/6` through `5/6`, and
 `cargo mutants` rejects `6/6`. Each invocation writes its own directory —
