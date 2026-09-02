@@ -45,7 +45,10 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 # `mise run mutants` writes under out/, but a bare `cargo mutants` with no
-# --output drops its copied trees and logs here, at the repo root.
+# --output drops its copied trees and logs into a mutants.out/ beside whatever
+# it was run from. No leading slash, so these match at any depth rather than
+# only at the repo root — a run started from inside crates/<name>/ leaves one
+# there instead.
 mutants.out/
 mutants.out.old/
 
