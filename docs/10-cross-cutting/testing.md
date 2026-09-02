@@ -190,11 +190,12 @@ skips the check and says so.
 
 Shards are zero-based: a crate split six ways is `0/6` through `5/6`, and
 `cargo mutants` rejects `6/6`. Each invocation writes its own directory —
-`out/mutants/sunrise-domain-0-6/` and so on — because `cargo mutants` always puts `mutants.out` directly under
-the directory it is given, so a shared one means every shard overwrites the
-last. Surviving mutants land in that run's `mutants.out/missed.txt`;
-`mise run mutants-baseline` scores every run under `out/mutants/` together, so
-a crate covered in six local shards records one floor rather than six.
+`out/mutants/sunrise-domain-0-6/` and so on — because `cargo mutants` always
+puts `mutants.out` directly under the directory it is given, so a shared one
+means every shard overwrites the last. Surviving mutants land in that run's
+`mutants.out/missed.txt`; `mise run mutants-baseline` scores every run under
+`out/mutants/` together, so a crate covered in six local shards records one
+floor rather than six.
 
 It is deliberately **not** in `lefthook.yaml`: the pre-push hook already runs
 the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
