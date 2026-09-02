@@ -365,8 +365,19 @@ set -euo pipefail
 # while the others sit on disk is a floor for a fraction of the crate.
 shopt -s nullglob
 outcomes=(out/mutants/*/mutants.out/outcomes.json)
+# Results from before each run got its own directory sit one level shallower,
+# and the glob above steps straight over them. A tree that has them is not an
+# empty tree, and saying "no results" to someone looking at a mutants.out they
+# just produced is the wrong answer. Named literally rather than globbed:
+# nullglob only drops patterns, and a literal path that does not exist would
+# survive into the array and be handed to the gate as a file to read.
+legacy=out/mutants/mutants.out/outcomes.json
+if [ -f "$legacy" ]; then
+  outcomes+=("$legacy")
+fi
 if [ -z "${outcomes[0]:-}" ]; then
-  echo "no results under out/mutants/; run 'mise run mutants <crate>' first" >&2
+  echo "no results in out/mutants/*/mutants.out/ or out/mutants/mutants.out/;" >&2
+  echo "run 'mise run mutants <crate>' first" >&2
   exit 1
 fi
 echo "recording from:"
