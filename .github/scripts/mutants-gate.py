@@ -102,6 +102,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
@@ -200,7 +201,10 @@ def tally(
             bucket = counts.setdefault(
                 crate, {CAUGHT: 0, MISSED: 0, TIMEOUT: 0, UNVIABLE: 0}
             )
-            sources.setdefault(crate, set()).add(str(path))
+            # Keyed on the resolved path: `a/outcomes.json` and
+            # `./a/outcomes.json` are one shard, and counting them as two
+            # would report a crate complete that is missing a real one.
+            sources.setdefault(crate, set()).add(os.path.realpath(path))
             summary = outcome.get("summary")
             if summary in bucket:
                 bucket[summary] += 1
@@ -232,8 +236,25 @@ def main() -> int:
                              "exactly what ran and nothing more")
     args = parser.parse_args()
 
+    # One file named twice is a duplicated argument, not a duplicated shard —
+    # overlapping globs, or a path listed twice by hand. It doubles every
+    # mutant in that file, and the completeness check counts distinct files, so
+    # it would see one file where two were passed and call the crate complete.
+    # Deduplicated here so nothing is counted twice, then reported below:
+    # accepting it quietly is how `--update` banks doubled counts as a floor.
+    unique: list[pathlib.Path] = []
+    repeated: dict[str, int] = {}
+    resolved: set[str] = set()
+    for path in args.outcomes:
+        real = os.path.realpath(path)
+        if real in resolved:
+            repeated[real] = repeated.get(real, 1) + 1
+        else:
+            resolved.add(real)
+            unique.append(path)
+
     try:
-        counts, sources = tally(args.outcomes)
+        counts, sources = tally(unique)
     except CannotRun as error:
         print(error, file=sys.stderr)
         return 2
@@ -241,6 +262,20 @@ def main() -> int:
         print("no mutants found in the supplied outcomes; refusing to pass",
               file=sys.stderr)
         return 2
+
+    if repeated:
+        print("\nduplicate artifacts — the same outcomes file was supplied "
+              "more than once:", file=sys.stderr)
+        for real, times in sorted(repeated.items()):
+            print(f"  {real} (x{times})", file=sys.stderr)
+        print(
+            "\nEvery mutant in it would be counted that many times, and the "
+            "shard check\ncounts distinct files, so the crate would still "
+            "look complete. Overlapping\nglobs are the usual cause. Narrow "
+            "the inputs and re-run the gate.",
+            file=sys.stderr,
+        )
+        return 1
 
     # The flag and ci.yml's matrix are two copies of one fact, and the copy
     # that silently stops covering a crate is the dangerous one: a crate added
