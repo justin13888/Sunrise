@@ -233,6 +233,10 @@ about. Grouped by what changed.
 
 **Wire and crypto contracts** (each a byte-level statement, so each is listed
 individually):
+[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md) —
+the Merkle fold order loses its relay-derived clamp and carries an in-place
+"Amended (ADR-0027)" block, per §Decision clause 6; this is the amendment named
+in §Amends;
 [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) —
 `Ack.server_first_seen_ms` is declared advisory and barred from influencing
 merge order, fold order or acceptance;
@@ -277,12 +281,13 @@ it is replaced by the same source extraction, and points at
 [`../06-server/observability.md`](../06-server/observability.md) for the
 provenance comment.
 
-**Beyond the lists above**, one commit in this change set corrects stale
-*claims* across a further twenty-five `accepted` files — statements the tree
-refutes, each fixed in place with the evidence, none of them altering a contract
-this ADR decides. They are not enumerated here because the list is the commit's
-own `git diff --name-only`; a reader computing the diff of this change set will
-find more files than the sections above name, and that is why.
+**Beyond the lists above**, one commit in this change set — the stale-reference
+pass — touches twenty-five files (twenty-four `accepted`, one `proposed`), eight
+of which are also listed above. What it changes are stale *claims*: statements
+the tree refutes, each fixed in place with the evidence, none altering a
+contract this ADR decides. They are not enumerated here because the list is that
+commit's own `git diff --name-only`; a reader computing the diff of this change
+set will find more files than the sections above name, and that is why.
 
 ### New normative rules this ADR carries
 
