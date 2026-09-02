@@ -16,46 +16,50 @@ specified, not scheduled for v1, with the reason recorded in
 > the question is "is it built yet". Keeping the two apart is deliberate: a
 > requirement edited to match the tree stops being a requirement.
 
-Two clients ship in v1: the **macOS** app and the **CLI**. iOS, Android and Web
-are **deferred** — specified, not scheduled, and carrying no MUSTs, because a
-deferred client cannot regress one. The **TUI** was removed by
+**Three** clients ship in v1: the **macOS** app, the **iOS / iPadOS** app and
+the **CLI**. macOS and the CLI carry the MUSTs. iOS carries **SHOULDs and no
+MUSTs** until a release ships — [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)
+is the record of why, and it is also why iOS has a filled column here rather
+than a row of dashes. **Android** and **Web** are ***deferred*** — specified,
+not scheduled, and carrying no MUSTs, because a deferred client cannot regress
+one. The **TUI** was removed by
 [ADR-0019](../11-adr/0019-swiftui-macos-client.md); its column is kept for one
 release so the table records what was withdrawn rather than quietly losing it.
 
 | Capability | macOS | CLI | iOS | Android | Web | TUI |
 |---|---|---|---|---|---|---|
-| | | | *deferred* | *deferred* | *deferred* | *removed* |
-| Read/write tasks | MUST | MUST | — | — | — | — |
-| Streams, contexts, routines | MUST | MUST (read + capture) | — | — | — | — |
-| Today / Inbox / Stream views | MUST | MUST (list form) | — | — | — | — |
-| Focus mode | MUST | MUST (`next`, `focus <id>`) | — | — | — | — |
-| Time-blocking on calendar grid | MUST | N/A | — | — | — | — |
-| Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | — | — | — | — |
-| Attachments — view image/PDF | MUST | N/A | — | — | — | — |
-| Attachments — upload | MUST | MAY | — | — | — | — |
-| Search (FTS) | MUST | MUST | — | — | — | — |
-| Saved searches / views | MUST | MAY | — | — | — | — |
-| Keyboard navigation | MUST (full) | N/A (non-interactive) | — | — | — | — |
-| Drag-and-drop | MUST | N/A | — | — | — | — |
-| Quick capture (global hotkey / system surface) | MUST (global hotkey, menu bar) | MUST (`sunrise capture`) | — | — | — | — |
-| Reminders / scheduled local notifications | MUST | N/A (one-shot process) | — | — | — | — |
-| Multi-account | MUST | MUST (`SUNRISE_VAULT`) | — | — | — | — |
-| Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | — | — | — | — |
-| Pairing — show QR | MUST | MAY (ASCII QR) | — | — | — | — |
-| Sharing — accept invite | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | — | — | — | — |
-| Sharing — view shared stream as editor | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — | — |
-| Calendar integration (Google) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | — | — | — | — |
-| iCal import / export | MUST | MUST | — | — | — | — |
-| Background sync | MUST (while running) | N/A (`sync --once` for cron) | — | — | — | — |
-| Menu bar | MUST | N/A | — | — | — | — |
-| Lock screen / home screen widget | N/A | N/A | — | — | — | — |
-| Watch app | N/A | N/A | — | — | — | — |
-| OS automation surface (App Intents / Shortcuts) | MUST | MUST (the CLI *is* one) | — | — | — | — |
-| Vim-style modal navigation | SHOULD (opt-in) | N/A | — | — | — | — |
-| Mouse | MUST | N/A | — | — | — | — |
-| Touch | MAY | N/A | — | — | — | — |
-| Print / PDF export | SHOULD | MAY (`export`) | — | — | — | — |
-| First-run pairing | MUST | SHOULD | — | — | — | — |
+| | | | **v1** ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | *deferred* | *deferred* | *removed* |
+| Read/write tasks | MUST | MUST | SHOULD | — | — | — |
+| Streams, contexts, routines | MUST | MUST (read + capture) | SHOULD | — | — | — |
+| Today / Inbox / Stream views | MUST | MUST (list form) | SHOULD | — | — | — |
+| Focus mode | MUST | MUST (`next`, `focus <id>`) | SHOULD | — | — | — |
+| Time-blocking on calendar grid | MUST | N/A | SHOULD | — | — | — |
+| Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | SHOULD (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
+| Attachments — view image/PDF | MUST | N/A | SHOULD | — | — | — |
+| Attachments — upload | MUST | MAY | SHOULD | — | — | — |
+| Search (FTS) | MUST | MUST | SHOULD | — | — | — |
+| Saved searches / views | MUST | MAY | SHOULD | — | — | — |
+| Keyboard navigation | MUST (full) | N/A (non-interactive) | SHOULD (the list keymap, on an attached keyboard) | — | — | — |
+| Drag-and-drop | MUST | N/A | SHOULD (long-press) | — | — | — |
+| Quick capture (global hotkey / system surface) | MUST (global hotkey, menu bar) | MUST (`sunrise capture`) | SHOULD (capture sheet, inline bar, App Shortcut) | — | — | — |
+| Reminders / scheduled local notifications | MUST | N/A (one-shot process) | SHOULD | — | — | — |
+| Multi-account | MUST | MUST (`SUNRISE_VAULT`) | SHOULD | — | — | — |
+| Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | SHOULD (camera or paste) | — | — | — |
+| Pairing — show QR | MUST | MAY (ASCII QR) | SHOULD | — | — | — |
+| Sharing — accept invite | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
+| Sharing — view shared stream as editor | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
+| Calendar integration (Google) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | — | — | — |
+| iCal import / export | MUST | MUST | SHOULD | — | — | — |
+| Background sync | MUST (while running) | N/A (`sync --once` for cron) | SHOULD (while frontmost) | — | — | — |
+| Menu bar | MUST | N/A | N/A | — | — | — |
+| Lock screen / home screen widget | N/A | N/A | *deferred* ([#14](https://github.com/justin13888/Sunrise/issues/14)) | — | — | — |
+| Watch app | N/A | N/A | MAY | — | — | — |
+| OS automation surface (App Intents / Shortcuts) | MUST | MUST (the CLI *is* one) | SHOULD | — | — | — |
+| Vim-style modal navigation | SHOULD (opt-in) | N/A | SHOULD (opt-in; attached keyboard) | — | — | — |
+| Mouse | MUST | N/A | MAY (iPadOS pointer) | — | — | — |
+| Touch | MAY | N/A | SHOULD | — | — | — |
+| Print / PDF export | SHOULD | MAY (`export`) | MAY | — | — | — |
+| First-run pairing | MUST | SHOULD | SHOULD | — | — | — |
 
 ## The v1 scoping pass (ADR-0020)
 
@@ -108,7 +112,10 @@ which is the whole point of grading this way.
 
 Verdicts: **met** / **partial** (reachable, narrower than the row) / **unmet**.
 
-**Every MUST in both shipping columns is now met.** The previous revision of
+**Every MUST is met.** The MUSTs live in two columns — macOS and the CLI. iOS
+ships too and carries none: [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) puts it at
+SHOULD level until a release, and its rows are graded in an **iOS** section of
+[this audit](#v1-status-audit) below. The previous revision of
 this audit recorded one unmet macOS MUST (iCal import/export), one partial macOS
 MUST (drag-and-drop) and three partial CLI MUSTs (read/write tasks, the Stream
 view, multi-account); all five were closed in code, and each was re-traced from
@@ -201,6 +208,50 @@ moved. Refusing and then telling the user exactly how to proceed is the point:
 guessing would have left every such vault readable by anyone holding a copy of
 `sunrise`.
 
+### iOS — 23 SHOULDs
+
+Measured the same way, and against the same two trees the iOS product compiles:
+`apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
+everything below it. **21 met, 2 unmet.** iOS carries no MUSTs
+([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)), so nothing here is a v1 release gate;
+it is the record of what a user can actually reach on a phone.
+
+| Capability | Verdict | Reached from |
+|---|---|---|
+| Read/write tasks | met | Today tab → the shared `TaskListView` (`iOS/VaultTabs.swift:125-139`); the row menu's **Edit…** (`TaskListView.swift:217`) opens the Mac's own `TaskEditorView`; swipe actions for Delete and Tomorrow (`:199-203`) |
+| Streams, contexts, routines | met | Browse tab → `BrowseSidebar`: the section headers' **+** (`:139`) → `StreamEditorView` / `ContextEditorView` (`:67-80`), and per-row Edit / Pause / Archive / Delete (`:186-194`, `:224-229`). More → Routines → `RoutinesView`'s **New routine** (`:44`) |
+| Today / Inbox / Stream views | met | Today is a tab root (`VaultTabs.swift:138`); the Inbox, a stream and a context push onto Browse instead, so the list they came from stays behind them (`iOS/TabRoute.swift:97-98`) |
+| Focus mode | met | Focus tab (`VaultTabs.swift:80-86`) → the shared `FocusView`, and **Start focus session** on any row (`TaskListView.swift:225`) |
+| Time-blocking on calendar grid | met | Calendar tab (`VaultTabs.swift:70-76`) → the shared `CalendarView`: drag-to-create (`:220`), block move (`:408`) and resize (`:445`), `BlockEditorView` on tap |
+| Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor` (`TaskEditorView.swift:92`). Checklist ticks draw as filling circles rather than switches, because the iOS default for a `Toggle` says "this setting is on" where a checklist means "this is done" (`PlatformKit.swift:187-212`). Scope per ADR-0020 |
+| Attachments — view image/PDF | met | task editor → Attachments pane (`TaskEditorView.swift:93`); `PDFView` bridged through `UIViewRepresentable` (`AttachmentsView.swift:165-169`) |
+| Attachments — upload | met | `.fileImporter` (`AttachmentsView.swift:38`) and a URL drop target beside it (`:32`) |
+| Search (FTS) | met *(plain-text half)* | the `.search`-role tab (`VaultTabs.swift:90-92`) → the shared `SearchView`. It issues the identical literal-AND FTS query the Mac does and inherits the identical narrowness ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
+| Saved searches / views | **unmet** | `SavedViewsModel` is built by the shared `VaultModels` and the shell even loads it (`VaultTabs.swift:456`) — but `SavedViewsMenu` is instantiated in exactly one place in the tree, `macOS/VaultWindow.swift:89`. A working, tested model with no iOS surface |
+| Keyboard navigation | met *(list keymap)* | `onKeyChord(scope: .list…)` on the shared `TaskListView` (`:118`) — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. **Nothing above it**: `onKeyChord` is applied in that one place in the whole tree, so every `.application`-scoped chord (`Keymap.swift:177-199`) reaches a user only through the Mac's `Commands` scene, and the palette and the cheat sheet are handed inert closures (`VaultTabs.swift:283-288`) |
+| Drag-and-drop | met | the same seven of eight cells macOS has, from shared files with no platform fork: `.draggable` on the row (`TaskRowView.swift:74`), drops on stream and context rows (`BrowseSidebar.swift:175`, `:218`), on task rows (`TaskListView.swift:192`), on the calendar grid (`CalendarView.swift:221`) and on the attachments pane (`AttachmentsView.swift:32`), plus `ForEach.onMove` for stream order (`BrowseSidebar.swift:45`). The gesture is a long-press drag rather than a click-drag. The eighth cell (Calendar block → Task) is unreachable for the same reason as on the Mac, and more so: a tab shell shows one screen at a time |
+| Quick capture (system surface) | met | a **Capture** toolbar button on every screen (`VaultTabs.swift:318-324`), routed to the inline bar where the list has one and to the sheet where it does not (`:339-362`, `:471-498`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:198-201`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
+| Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`VaultTabs.swift:454`); the category, its three buttons and the response delegate are one shared file (`NotificationCenterClient.swift:60-105`); Settings asks for authorization (`VaultTabs.swift:374`) |
+| Multi-account | met | More → Settings (`VaultTabs.swift:364-386`) → the vault picker → `SessionModel.switchTo`, teardown before reopen (`AccountView.swift:131-145`) |
+| Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field (`:233-240`), reached from Settings → **Add a device…** (`AccountView.swift:159`) and from `LockedView` (`:62`). **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS |
+| Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
+| iCal import / export | **unmet** | the picker-driven `importIcal()` / `exportIcal(_:)` are inside `#if os(macOS)` (`Sunrise/Ical/AppSurfaces+Ical.swift:52-75`), the `IcalSurfaces` modifier is applied only at `macOS/VaultWindow.swift:141`, and the File menu items live in `macOS/AppCommands.swift:104-118`. The URL-taking halves and `CoreBridge.importIcal` / `.exportIcal` are shared and have no iOS caller — the same shape as saved views |
+| Background sync | met *(frontmost only)* | `startSync` on the shell's `.task` and again on every relay-URL change (`VaultTabs.swift:388-394`, `:448-457`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
+| OS automation (App Intents) | met | `Sunrise/Intents/` compiles into both products; the iOS target names `AppIntents.framework` (`project.yml:173`), which is what makes Xcode write the metadata bundle without which the intents link and are never offered; six `AppShortcut`s (`SunriseShortcuts.swift:22-83`); the live vault is adopted at `AppSurfaces.swift:162` so an intent fired while the app is open is answered rather than refused |
+| Vim-style modal navigation | met | the same ten-binding subset behind the same toggle — `onKeyChord(… vim:)` (`TaskListView.swift:118`) and Settings → Keyboard → **Vim-style motions** (`AccountView.swift:216-228`). Needs an attached keyboard, which is the row's own scope |
+| Touch | met | tap-to-select on tagged rows, which iOS does **not** give for free and which left every `BrowseSidebar` entry inert until it was added (`PlatformKit.swift:133-159`); swipe actions (`TaskListView.swift:199-203`); a **Done** toolbar to put the software keyboard away, since a phone has no Escape (`CaptureBar.swift:59+`); **Cancel** / **Add** in the capture sheet, where the Mac has only Return and Escape (`QuickCaptureView.swift:66-85`); haptic refusal feedback where the Mac beeps (`PlatformKit.swift:122-128`) |
+| First-run pairing | met | `OnboardingView`'s **Pair with that device** (`:63`), and the same route out of `LockedView` (`:62`) |
+
+**The three MAYs are in prose because none of them is a v1 ask.** *Watch app*
+is unbuilt: `apps/apple` contains no `WatchConnectivity` and `project.yml`
+declares no watch extension target. *Mouse* is met by inheritance rather than
+by intent — an iPad with a pointer gets the shared controls, the row's
+double-click-to-open (`TaskRowView.swift:69`) and the context menus, none of
+which were written for a pointer. *Print / PDF export* is unbuilt on iOS, and
+the split is exact: `Sunrise/Print/PrintDocument.swift` builds and paginates
+the document and is shared, while the rendering, the print panel and the save
+panel are all in `macOS/PrintJob.swift`.
+
 ### What is still narrow
 
 Nothing above demotes a mark, and nothing above is graded up past what a user
@@ -226,8 +277,31 @@ over:
   [search.md](../08-features/search.md) specifies is matched literally; see
   the macOS note above.
 
-Every one of these is inside a row graded **met**, because each row asks for a
-capability and each capability is reachable. They are written down so that "met"
+- **iOS.** Two SHOULDs are unmet, and both for the same shape of reason — a
+  working, tested shared model with no iOS caller: **saved views** and **iCal
+  import / export**. Background sync runs only while the app is frontmost.
+  Keyboard navigation is the list keymap and nothing above it, because
+  `onKeyChord` is applied in one place in the whole tree; an iPad that draws a
+  system menu bar therefore gets only the system's own items, since the
+  `Commands` scene that would fill it is in `macOS/`. Two things are narrow
+  that no row is about, and they are worth naming rather than losing:
+  several shared sheets carry unconditional Mac-sized frames — the settings
+  `Form` is `.frame(width: 520)` (`AccountView.swift:101`), the task editor
+  460 (`TaskEditorView.swift:97`), the block editor 420
+  (`BlockEditorView.swift:35`), the pairing sheet 560×520
+  (`PairingView.swift:25`), none of them behind an `#if`, all of them wider
+  than an iPhone; and the copy still calls the device a Mac.
+  `Platform.deviceName` (`PlatformKit.swift:163-183`) exists for exactly that
+  and has two callers, while seventeen further lines across six shared files
+  say "Mac" literally — including the pairing sheet's own title
+  (`PairingView.swift:32`) and the vim toggle's caption
+  (`AccountView.swift:222`, "Stored on this Mac only"). Neither changes a
+  verdict, because both rows are reachable; both are real and neither has an
+  issue of its own yet.
+
+Every one of these is inside a row graded **met**, except the two iOS rows
+named as unmet, because each row asks for a capability and each capability is
+reachable. They are written down so that "met"
 never has to be re-derived from scratch to find out what it covered.
 
 ## Hard rules
@@ -245,6 +319,20 @@ never has to be re-derived from scratch to find out what it covered.
   Spotlight, etc.); fallbacks via plain notifications must exist.
 - **A deferred client has no MUSTs.** When one is scheduled, its column is
   filled in and the fill-in is the commitment — not this table's history.
+- **A v1 client below MUST level has no MUSTs either — and its *met* SHOULDs
+  still cannot regress.** An iOS SHOULD graded **met** in the audit above may
+  not become unmet without an ADR. Deliberately weaker than the MUST rule,
+  because there is no release to protect; a rule at all, because a green audit
+  row is a claim that somebody traced a surface down to a seam, and deleting
+  the surface silently throws that work away ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)).
+- **A qualified *met* is still a met.** A verdict written with a parenthetical
+  qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
+  `met *(list keymap)*`, `met *(frontmost only)*` — discharges the row's
+  requirement. The qualifier names which part of the specified capability is
+  reachable, and it is repeated under
+  [What is still narrow](#what-is-still-narrow) so the narrowness never has to
+  be re-derived. A qualifier is **not** a *partial*: *partial* means a user
+  cannot complete the row's core action.
 
 ## What the CLI is and is not
 
@@ -261,7 +349,8 @@ the day the core's tests stop describing a usable system.
 ## Capture-surface portability
 
 Each platform MUST implement its native capture surface (macOS global hotkey +
-menu bar, CLI subcommand). Platforms MAY implement additional surfaces. There
+menu bar; on iOS the capture sheet, the inline bar and the capture App
+Shortcut; CLI subcommand). Platforms MAY implement additional surfaces. There
 is no requirement for cross-platform parity *of capture surfaces*; the
 requirement is parity of *capture semantics* — the resulting Task is identical
 regardless of capture origin, because every surface calls the same parser
