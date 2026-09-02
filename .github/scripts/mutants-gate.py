@@ -114,6 +114,15 @@ UNVIABLE = "Unviable"
 BASELINE_SCENARIO = "Baseline"
 
 
+class CannotRun(Exception):
+    """The gate could not evaluate the run at all.
+
+    Distinct from a verdict. Every path that raises this exits 2, because the
+    alternative — reporting a run nobody scored as a run that passed — is the
+    one outcome a gate must never produce.
+    """
+
+
 def crate_of(path: str) -> str | None:
     """`crates/sunrise-sync/src/backoff.rs` -> `sunrise-sync`.
 
@@ -159,10 +168,19 @@ def tally(
     counts: dict[str, dict[str, int]] = {}
     sources: dict[str, set[str]] = {}
     for path in paths:
+        if not path.is_file():
+            # The common shape of this is a quoted glob that matched nothing
+            # and reached argv verbatim. A shell with nullglob set instead
+            # drops it, leaving an empty argument. Both mean the outcomes
+            # never arrived, which is a broken run and not an empty one.
+            hint = ("an unexpanded glob — it matched no files"
+                    if any(c in str(path) for c in "*?[")
+                    else "a missing file or an empty argument")
+            raise CannotRun(f"not a readable file: {str(path)!r} — {hint}")
         try:
             document = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError) as error:
-            raise SystemExit(f"cannot read {path}: {error}") from error
+            raise CannotRun(f"cannot read {path}: {error}") from error
 
         for outcome in document.get("outcomes", []):
             scenario = outcome.get("scenario")
@@ -214,7 +232,11 @@ def main() -> int:
                              "exactly what ran and nothing more")
     args = parser.parse_args()
 
-    counts, sources = tally(args.outcomes)
+    try:
+        counts, sources = tally(args.outcomes)
+    except CannotRun as error:
+        print(error, file=sys.stderr)
+        return 2
     if not counts:
         print("no mutants found in the supplied outcomes; refusing to pass",
               file=sys.stderr)
