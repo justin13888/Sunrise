@@ -9,8 +9,9 @@ Sunrise is split into four cleanly bounded layers. Layers communicate only throu
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Presentation                                                    │
-│  Per-platform UI: macOS (SwiftUI) and the `sunrise` CLI (Rust);  │
-│  iOS / Android / Web deferred. Owns: layout, input, native APIs. │
+│  Per-platform UI: macOS and iOS/iPadOS (SwiftUI, one shared      │
+│  view layer) and the `sunrise` CLI (Rust); Android and Web       │
+│  are deferred. Owns: layout, input, native APIs.                 │
 └──────────────────────────────────────────────────────────────────┘
                                 │  uses
                                 ▼
