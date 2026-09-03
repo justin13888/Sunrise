@@ -349,10 +349,13 @@ the day the core's tests stop describing a usable system.
 
 ## Capture-surface portability
 
-Each platform MUST implement its native capture surface (macOS global hotkey +
-menu bar; on iOS the capture sheet, the inline bar and the capture App
-Shortcut; CLI subcommand). Platforms MAY implement additional surfaces. There
-is no requirement for cross-platform parity *of capture surfaces*; the
+macOS and the CLI MUST implement their native capture surface (macOS global
+hotkey + menu bar; CLI subcommand). iOS SHOULD implement its own — the capture
+sheet, the inline bar and the capture App Shortcut — and carries no MUST here
+until an iOS release ships, which is the level
+[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) puts every iOS row at. Any
+platform MAY implement additional surfaces. There is no requirement for
+cross-platform parity *of capture surfaces*; the
 requirement is parity of *capture semantics* — the resulting Task is identical
 regardless of capture origin, because every surface calls the same parser
 (`sunrise_domain::capture`).
