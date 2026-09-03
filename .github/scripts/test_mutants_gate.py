@@ -50,24 +50,35 @@ TIMEOUT = "Timeout"
 UNVIABLE = "Unviable"
 
 
-def mutant(crate: str, summary: str) -> dict:
+def mutant(crate: str, summary: str, package=None, file=None) -> dict:
     """One outcome in the shape cargo-mutants writes.
 
-    Only the fields the gate reads are populated. `package` carries the
-    crate name and `file` the path, because the gate prefers the path and
-    falls back to the package, and a fixture that supplied only one of
-    them would stop exercising that fallback the day it changed.
+    Only the fields the gate reads are populated, and both of them are:
+    `package` is what it consults first, `file` the fallback for when the
+    package is absent. A fixture carrying one of them would leave whichever
+    it dropped unexercised, and the two are pinned apart in
+    `CrateAttribution` below.
+
+    `package` and `file` override the defaults, which is how a mutant that
+    disagrees with itself gets built.
     """
     return {
         "scenario": {
             "Mutant": {
-                "package": crate,
-                "file": f"crates/{crate}/src/lib.rs",
+                "package": crate if package is None else package,
+                "file": f"crates/{crate}/src/lib.rs" if file is None else file,
                 "name": f"replace * with + in {crate}::f",
             }
         },
         "summary": summary,
     }
+
+
+def document_file(path: pathlib.Path, outcomes: list) -> pathlib.Path:
+    """Write an outcomes.json holding exactly these outcomes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"outcomes": outcomes}))
+    return path
 
 
 def outcomes_file(
@@ -103,6 +114,66 @@ def baseline_file(path: pathlib.Path, crates: dict, target=None) -> pathlib.Path
         document["target_caught_pct"] = target
     path.write_text(json.dumps(document))
     return path
+
+
+class CrateAttribution(unittest.TestCase):
+    """Which field of a mutant decides the crate it is counted against.
+
+    Everything else in this file assumes a mutant lands in the right
+    bucket, and nothing asserted which field puts it there. Both operands
+    of `package or file` are pinned, in both directions: swapping the
+    precedence, or dropping either side, has to break something here.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def score(self, *outcomes) -> subprocess.CompletedProcess:
+        run = document_file(self.tmp / "a.json", list(outcomes))
+        base = baseline_file(self.tmp / "base.json", {})
+        return subprocess.run(
+            [sys.executable, str(GATE), str(run), "--baseline", str(base)],
+            cwd=self.tmp, capture_output=True, text=True,
+        )
+
+    def test_package_wins_over_the_file_path(self):
+        # A mutant that disagrees with itself. cargo-mutants does not emit
+        # this, which is the point: it separates two fields that otherwise
+        # always agree, so the precedence is observable at all.
+        result = self.score(
+            mutant("sunrise-sync", CAUGHT,
+                   package="sunrise-sync",
+                   file="crates/sunrise-domain/src/lib.rs"),
+        )
+        self.assertIn("sunrise-sync: measured", result.stderr)
+        self.assertNotIn("sunrise-domain", result.stderr)
+
+    def test_the_file_path_is_the_fallback(self):
+        result = self.score(
+            mutant("sunrise-domain", CAUGHT,
+                   package="",
+                   file="crates/sunrise-domain/src/lib.rs"),
+        )
+        self.assertIn("sunrise-domain: measured", result.stderr)
+
+    def test_a_package_given_as_a_path_is_reduced_to_the_crate(self):
+        # crates/<name>/... is the shape the reducer exists for; a bare
+        # name falls through it unchanged, which the first test covers.
+        result = self.score(
+            mutant("sunrise-core", CAUGHT,
+                   package="crates/sunrise-core/src/lib.rs"),
+        )
+        self.assertIn("sunrise-core: measured", result.stderr)
+        self.assertNotIn("crates/sunrise-core", result.stderr)
+
+    def test_a_mutant_naming_no_crate_is_skipped(self):
+        # Not attributable to anything, so it cannot be counted anywhere —
+        # and a run of nothing but these is a run with no mutants in it.
+        result = self.score(mutant("sunrise-sync", CAUGHT, package="", file=""))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no mutants found", result.stderr)
 
 
 class GateContract(unittest.TestCase):
