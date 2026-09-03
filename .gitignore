@@ -52,6 +52,12 @@ fuzz/artifacts/
 mutants.out/
 mutants.out.old/
 
+# Byte-compiled output from the CI gates in .github/scripts/, which are Python.
+# Written whenever one is imported or executed, and they are run by hand as
+# often as by CI. Same reasoning as above for the missing leading slash.
+__pycache__/
+*.pyc
+
 # Local vault data (dev/test)
 .sunrise-vault/
 *.sqlite
