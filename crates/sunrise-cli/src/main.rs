@@ -262,30 +262,37 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     // Opened offline first, so the vault is available to price a stored
     // token against the core's clock rather than the host's — which the
     // workspace lint bans reading directly.
-    let (core, _) = livesync::open_with_plan(
-        dir,
-        env!("CARGO_PKG_VERSION"),
-        root,
-        &livesync::SyncPlan::default(),
-    )
-    .await?;
+    //
+    // The one part of the plan that cannot wait until after the open is
+    // `adopt_pairing`: the identity a vault belongs to is decided when it is
+    // created, so a payload handed over afterwards has nothing left to join.
+    // It needs no token and no clock, so reading it here costs nothing.
+    let mut env = livesync::SyncEnv::from_process_env();
+    let pre_open = livesync::SyncPlan {
+        adopt_pairing: livesync::plan_from_env(&env).adopt_pairing,
+        ..livesync::SyncPlan::default()
+    };
+    let (core, open_log) =
+        livesync::open_with_plan(dir, env!("CARGO_PKG_VERSION"), root, &pre_open).await?;
 
-    // Then the real plan. Every subcommand honours the cert-file vars —
-    // `SUNRISE_EXPORT_CERT_FILE` is documented as acting "on startup" — but
+    // Then the real plan. Every subcommand honours the pairing-file vars —
+    // `SUNRISE_EXPORT_PAIRING_FILE` is documented as acting "on startup" — but
     // only `sync` starts a driver: opening one for a command that exits
     // milliseconds later would just churn the relay.
-    let mut env = livesync::SyncEnv::from_process_env();
     if sub != "sync" {
         env.url = None;
     }
     let plan =
         livesync::plan_from_env(&env.with_stored(&login::store_for(&dir_for_store), core.now_ms()));
-    // The startup banner names the cert files it touched, which is what the
+    // The startup banner names the files it touched, which is what the
     // two-replica walkthrough needs to see. stderr, because stdout is the
     // contract a script reads — and not a log record, because those strings
     // carry filesystem paths (`livesync::apply_plan`, "Two outputs").
     #[allow(clippy::print_stderr)]
-    for line in livesync::apply_plan(&core, &plan).await {
+    for line in open_log
+        .into_iter()
+        .chain(livesync::apply_plan(&core, &plan).await)
+    {
         eprintln!("{line}");
     }
 
