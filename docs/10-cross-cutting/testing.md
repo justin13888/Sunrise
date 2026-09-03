@@ -169,8 +169,9 @@ climbs toward it.** The two are deliberately separate. A gate that failed from
 day one would be switched off within a week, and then it would protect nothing —
 the same failure mode this document records for the bench gate below. So the
 floor ratchets: a run may hold or improve it and may not fall below it, and
-moving it up is an explicit `mise run mutants-baseline` in a commit that says
-what was added to earn it.
+moving it up is an explicit `mise run mutants-baseline --expect-shards
+sunrise-sync=1` — the counts are required, see "Running it" below — in a commit
+that says what was added to earn it.
 
 **When it runs, and what that costs.** The `mutants` and `mutants-gate` jobs in
 `ci.yml` are `schedule` (04:00 UTC) and `workflow_dispatch` only — never on a
@@ -209,9 +210,11 @@ Shards are zero-based: a crate split six ways is `0/6` through `5/6`, and
 `out/mutants/sunrise-domain-0-6/` and so on — because `cargo mutants` always
 puts `mutants.out` directly under the directory it is given, so a shared one
 means every shard overwrites the last. Surviving mutants land in that run's
-`mutants.out/missed.txt`; `mise run mutants-baseline` scores every run under
-`out/mutants/` together, so a crate covered in six local shards records one
-floor rather than six.
+`mutants.out/missed.txt`; `mise run mutants-baseline --expect-shards
+sunrise-domain=6` scores every run under `out/mutants/` together, so a crate
+covered in six local shards records one floor rather than six — and a stale
+directory from an earlier crate is scored with them, which is what the gate's
+"undeclared crate" failure means when it names one you did not ask for.
 
 It is deliberately **not** in `lefthook.yaml`: the pre-push hook already runs
 the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
