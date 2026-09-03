@@ -66,9 +66,10 @@ Read from the tree rather than from a plan:
   branch is filtered out on its base, as the one carrying this ADR was, based
   on `docs-51-architecture-freeze`. The other two triggers carry no `branches:`
   key, and only one of them is unconstrained for it: GitHub fires a `schedule`
-  on the repository's **default branch** alone, so the 04:00 nightly builds
-  `master` and nothing else — bounded by GitHub's rule rather than by this
-  file. `workflow_dispatch` is the one that will build any ref on request. So
+  on the repository's **default branch** alone, and this repository's default
+  is `master`, so the 04:00 nightly builds `master` and nothing else — bounded
+  by GitHub's rule rather than by this file. `workflow_dispatch` is the one
+  that will build any ref on request. So
   the two `branches:` lists do not by themselves describe what CI does
   automatically: the nightly is automatic too, and constrained elsewhere. It
   runs on the same pinned `macos-26`

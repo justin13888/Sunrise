@@ -309,7 +309,10 @@ over:
   across a tab switch would bridge them — a runtime question tracked as
   [#72](https://github.com/justin13888/Sunrise/issues/72) and recorded in
   [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix) as
-  the thing that would overturn the cell.
+  the thing that would overturn the cell. Search and *Pairing — scan QR* are
+  narrow here in exactly the way they are on the Mac — the literal-AND FTS
+  query and the absent camera scanner are both the shared seam's rather than
+  iOS's; see the macOS note above.
 
   Two further things are narrow that no row is about, and they are worth
   naming here rather than losing. **The shared sheets are Mac-shaped**: seven
