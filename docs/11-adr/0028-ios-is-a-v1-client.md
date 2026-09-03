@@ -303,3 +303,36 @@ is tested, and has not been released.
   `08-features/{keyboard,inbox-and-capture}.md`,
   `01-architecture/{overview,shared-core}.md`, `02-domain/notes.md`,
   `implementation/overview.md` and the README. No code changes.
+
+## What would force revisiting this
+
+1. **An iOS release shipping.** Everything above is levelled on there being no
+   release yet: SHOULD is chosen because this is a client that ships, is tested
+   and has *not* been released; the regression rule is weakened for that exact
+   reason (Decision 5); and Decision 6 already reserves promotion to MUST
+   parity for its own record. Cutting a release fires all three at once, and
+   the re-entry point is that promotion ADR, not an edit to this one.
+2. **`ios-app` ceasing to prove that a tap reaches the core.** The case against
+   *deferred* and against MAY is evidential — a UI test drives the shell on a
+   simulator in CI on every pull request into `master` or `v1-rewrite`. Delete
+   the job, put an `if:` or a path filter on it, or mark `SunriseiOSUITests`
+   `skipped: true` the way the macOS scheme marks its own
+   (`project.yml:319`), and every row here falls back to "it compiles", which
+   this file says is not evidence.
+3. **A widget, share or watch extension target appearing in `project.yml`.**
+   Decision 3 defers the widget row, and grades *Watch app* MAY, on the
+   strength of there being no such target — today the file declares six, all
+   applications and test bundles. One landing moves the widget row off
+   *deferred*, and the macOS and CLI cells on that row **are** N/A, so unlike
+   this ADR that edit does meet the N/A rule and needs its own record.
+4. **The shared tree ceasing to be shared.** SHOULD is assigned by reachability
+   from the shipped shell over one `Sunrise/`, and ADR-0019's surviving claim
+   is that a second Apple platform cost UI work and not a second core. Rows
+   starting to fork behind `#if os(iOS)`, or an iOS-only model growing beside a
+   shared one, would make reachability a per-platform measurement and this
+   column a second implementation rather than a second shell.
+5. **The audit going stale anyway.** Decision 5 traded an ADR gate for an
+   obligation on the pull request that regresses a row, on the argument that a
+   record of decision per SHOULD would price the rule out of being followed. If
+   green rows outlive the surfaces behind them, that trade was wrong and the
+   rule should be re-cut at MUST strength.
