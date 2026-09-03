@@ -145,7 +145,7 @@ around it is recorded in the cells below and in
 | Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
 | Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet |
-| Drag-and-drop | met | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built, and what is missing is two modifiers rather than a layout: `BlockChip` is not `.draggable` and `TaskListView`'s drop only reorders. The write it would issue exists and is tested — `TaskListModel.bind(_:to:)` → `Command::BindTask` |
+| Drag-and-drop | met *(seven of eight cells)* | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built, and what is missing is two modifiers rather than a layout: `BlockChip` is not `.draggable` and `TaskListView`'s drop only reorders. The write it would issue exists and is tested — `TaskListModel.bind(_:to:)` → `Command::BindTask` |
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
@@ -347,12 +347,19 @@ never has to be re-derived from scratch to find out what it covered.
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
   qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
   `met *(list keymap)*`, `met *(frontmost only)*`,
-  `met *(six of eight cells)*` — discharges the row's
-  requirement. The qualifier names which part of the specified capability is
-  reachable, and it is repeated under
+  `met *(seven of eight cells)*`, `met *(six of eight cells)*` — discharges the
+  row's requirement. The qualifier names which part of the specified capability
+  is reachable, and it is repeated under
   [What is still narrow](#what-is-still-narrow) so the narrowness never has to
   be re-derived. A qualifier is **not** a *partial*: *partial* means a user
   cannot complete the row's core action.
+
+  **A qualifier attaches wherever a row's reach falls short of the full
+  capability, in any column.** It is not an iOS device: a MUST-carrying column
+  takes one on the same terms, and a row that reaches seven of eight cells is
+  scoped exactly as much as one that reaches six. Leaving the better-served
+  column bare would make the qualifier read as a mark of the weaker client
+  rather than as the scope note it is.
 
 ## What the CLI is and is not
 

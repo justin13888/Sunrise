@@ -3,8 +3,9 @@
 **Status:** accepted
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
-(one new column, 31 cells, plus an audit section and two hard rules — the
-iOS regression rule and the definition of a qualified *met*) and
+(one new column, 31 cells, plus an audit section, two hard rules — the iOS
+regression rule and the definition of a qualified *met* — and one macOS verdict
+regraded to a qualified *met* under that definition) and
 [`./0019-swiftui-macos-client.md`](./0019-swiftui-macos-client.md) (revisit
 trigger 1).
 
@@ -235,7 +236,10 @@ is tested, and has not been released.
   `met *(six of eight cells)*` — iOS reaches six of the eight cells in
   [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)'s
   matrix where macOS reaches seven, *Task → Calendar block* being a **No** here
-  for want of a screen that shows both of its ends.
+  for want of a screen that shows both of its ends. The same definition regrades
+  the **macOS** drag row `met *(seven of eight cells)*`: seven of eight is a
+  scope note as much as six is, and the rule now says so in as many words, so a
+  qualifier cannot come to read as a mark of the weaker client.
 
 - **[#14](https://github.com/justin13888/Sunrise/issues/14) gains a cell.** The
   widgets row's iOS cell is where widget work now lands. Grepping `apps/apple`
