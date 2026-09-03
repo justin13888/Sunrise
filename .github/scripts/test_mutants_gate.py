@@ -334,6 +334,79 @@ class GateContract(unittest.TestCase):
             1, "mutation coverage regressed",
         )
 
+    # --- a lost shard is an infrastructure failure, not a regression ------
+    #
+    # The reason --expect-shards exists. A crate that arrived short has a
+    # numerator that never ran, so every number computed from it is wrong in
+    # the direction of "the tests got worse" — and the two exclusions that
+    # keep it out of the comparison are one `continue` and one clause, both
+    # of which can be deleted without any other test noticing.
+
+    def test_a_broken_crate_is_never_called_a_regression(self):
+        # Two of six shards, 50% measured, floor 90. Scored, this is a
+        # textbook regression; excluded, it is a dead runner. The gate has
+        # to say the second, or --expect-shards is decoration.
+        shards = [
+            outcomes_file(
+                self.tmp / f"shard{n}" / "outcomes.json", "sunrise-domain",
+                caught=1, missed=1)
+            for n in range(2)
+        ]
+        base = baseline_file(self.tmp / "base.json", {"sunrise-domain": 90.0})
+        result = self.run_gate(
+            *(str(shard) for shard in shards), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6",
+        )
+        self.assert_code(
+            result, 1,
+            "2/6 shards",
+            "shards missing",
+            "these crates were not scored",
+        )
+        output = result.stdout + result.stderr
+        self.assertNotIn("REGRESSED", output)
+        self.assertNotIn("mutation coverage regressed", output)
+        self.assertNotIn("vs floor", output)
+
+    def test_a_broken_crate_is_never_called_unscorable(self):
+        # The same exclusion by the other route: a crate that is both short
+        # of shards and entirely unviable is a broken run, and reporting it
+        # as a crate with nothing to score would send the reader to
+        # exclude_re over a runner that died.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-domain", unviable=3)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-domain": 90.0})
+        result = self.run_gate(
+            str(run), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6",
+        )
+        self.assert_code(result, 1, "1/6 shards", "shards missing")
+        output = result.stdout + result.stderr
+        self.assertNotIn("no scorable mutants", output)
+        self.assertNotIn("REGRESSED", output)
+
+    def test_a_broken_crate_does_not_stop_the_others_being_scored(self):
+        # Not fail-fast: the shards that did arrive for other crates are
+        # still judged, which is why the gate job runs on always().
+        broken = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-domain", caught=1)
+        fine = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync",
+            caught=1, missed=1)
+        base = baseline_file(
+            self.tmp / "base.json",
+            {"sunrise-domain": 90.0, "sunrise-sync": 90.0},
+        )
+        result = self.run_gate(
+            str(broken), str(fine), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "sunrise-sync: 50.0% vs floor 90.0% — REGRESSED",
+            "sunrise-domain: 1/6 shards",
+        )
+        self.assertNotIn("sunrise-domain: 100.0%", result.stdout)
+
     # --- timeouts: in the denominator, never in the numerator -------------
     #
     # The gate's headline design claim, and the one a plausible "fix" would
