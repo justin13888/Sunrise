@@ -393,14 +393,23 @@ never has to be re-derived from scratch to find out what it covered.
   parenthetical covers only what it says, though — *Today / Inbox / Stream
   views (list form)* names the output shape, so the missing `today` context
   filter is a different shortfall and still earns its qualifier. And a recorded
-  shortfall with **no verdict cell** cannot carry a qualifier at all — the
-  audit tables grade the MUSTs, and iOS its SHOULDs, so a narrowness belonging
-  to a capability graded at some other level has nowhere to attach and stays in
-  the notes. There are two of those today. Print's two skipped surfaces belong
-  to a macOS **SHOULD** the 23-MUST audit has no line for. The CLI's unwritable
-  Task `body` belongs to its *Notes* row, a **MAY** the 9-MUST audit has no
-  line for — which is why *Read/write tasks*, in whose cell that gap is
-  recorded, is bare.
+  shortfall with **no verdict cell** cannot carry a qualifier at all: the
+  audits grade the macOS and CLI MUSTs and the iOS SHOULDs, so a narrowness
+  belonging to a capability this column grades at any *other* level has nothing
+  to attach to and stays in prose. The test is mechanical — find the capability
+  in the requirement table above, and if its mark in that column is not the one
+  that column's audit grades, there is no cell to qualify. Among the ones
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the 23-MUST audit
+  has no line for; the CLI's unwritable Task `body`, which belongs to its
+  *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
+  *Read/write tasks* — in whose cell that gap is recorded — is bare; and on
+  iOS the three **MAY**s the audit deliberately keeps in prose for this very
+  reason, *Watch app*, *Mouse* and *Print / PDF export*. No count is given
+  because the set grows every time a narrowness is written down against a
+  capability the audits do not grade. Outside the mechanism altogether are the
+  two items under [What is still narrow](#what-is-still-narrow) that no row is
+  about — the Mac-shaped sheets and the copy that says "Mac" — which belong to
+  no capability at any level.
 
 ## What the CLI is and is not
 
