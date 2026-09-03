@@ -94,12 +94,17 @@ noting it in passing — an unenforced crate that reads as a warning is how most
 of a workspace's mutants end up scored and then ignored.
 
 Exit 0 clean, 1 on a regression, on a crate with no recorded floor, on a crate
-with nothing scorable, on a run whose shards did not arrive as expected, or on
-an outcomes file supplied more than once, 2 if the gate could not run at all
-(which is a failure, not a pass). A duplicated argument is deliberately a 1 and
-not a 2: the run itself is fine and the gate read it, the invocation naming it
-twice is what is wrong, and a caller that treats 2 as "infrastructure" should
-not be told to re-run the shards over a bad command line.
+with nothing scorable, on a run whose shards did not arrive as expected, on an
+outcomes file supplied more than once, or on an `--update` that names neither
+--expect-shards nor --allow-partial, 2 if the gate could not run at all (which
+is a failure, not a pass).
+
+The last two are deliberately 1 and not 2, by the same argument: the run itself
+is fine and the gate read it, the invocation is what is wrong, and a caller that
+treats 2 as "infrastructure" should not be told to re-run shards over a bad
+command line. The `--update` refusal is judged on the flags alone, before any
+completeness or scorability check, so it is the one exit 1 that can be reached
+by a run with nothing wrong with it at all.
 """
 
 from __future__ import annotations
