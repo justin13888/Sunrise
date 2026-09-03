@@ -133,23 +133,35 @@ in Today and in Search. The write the cell would perform exists and is tested �
 drop issues — so building it is UI work with no core work behind it. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-**The iOS cell for *Task → Calendar block* is No: both ends ship, and they
-cannot be put on screen at the same time.** The drag source
-(`TaskRowView.swift:74`) and the grid's drop target (`CalendarView.swift:221`,
-into `accept(items:at:)` at `:312`) are shared, unguarded and compiled into
-`SunriseiOS` — this cell fails
-on reach, not on code. `TaskRowView` renders only inside `TaskListView`
-(`:172`) and `DailyBriefView` (`:82`); the grid renders on iOS only at
-`VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination that
-replaces the list on the same stack. Nothing carries a drag between them: no
-`Tab` has a `dropDestination`, and there is no spring-loading. So on an iPhone
-there is no screen from which the gesture can start and finish, which is what a
-**No** records.
+**The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
+in the shell presents them together.** The drag source (`TaskRowView.swift:74`)
+and the grid's drop target (`CalendarView.swift:221`, into `accept(items:at:)`
+at `:312`) are shared, unguarded and compiled into `SunriseiOS` — this cell
+fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
+(`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
+iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination
+that replaces the list on the same stack. Three things the tree establishes:
+the grid sits on a different tab from every drag source, no `Tab` carries a
+`dropDestination`, and nothing configures spring-loading. Nothing in the tree
+shows a path that completes the gesture, and that is what the **No** records.
 
-**The iPad does not rescue it, and the reason is what separates this cell from
-*File → Task*.** A second Sunrise window would put a list beside the grid, but
-this app cannot vend one: `iOS/SunriseiOSApp.swift:23-24` declares a single
-`WindowGroup`, and multiple
+**One path this file cannot settle, and it is the one that would overturn the
+verdict.** On iOS and iPadOS a drag session survives navigation — an item held
+under one finger stays held while a second finger taps a tab — and that needs
+neither spring-loading nor a second scene. If a task row held that way reaches
+the Calendar tab and lands on the grid's `dropDestination`, the cell is a
+**Yes** and the paragraph above is wrong about the consequence, though not
+about any of its three facts. Reading the source cannot decide it: the question
+is what UIKit delivers to a drop target across a tab change at runtime, not
+what the tree declares, and nobody has run it. The verdict stays **No** on the
+evidence that exists — a completable path has to be shown, not merely left
+open — but it is the cheapest of these cells to overturn, and it takes a
+simulator rather than another grep.
+
+**The other way out would be a second window, and that one the tree does
+close.** It is also what separates this cell from *File → Task*. A second
+Sunrise window would put a list beside the grid, but this app cannot vend one:
+`iOS/SunriseiOSApp.swift:23-24` declares a single `WindowGroup`, and multiple
 windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
 `UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
 has no checked-in plist at all — its Info.plist is generated
