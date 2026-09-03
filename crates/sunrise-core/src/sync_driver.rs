@@ -934,21 +934,31 @@ async fn handle_frame(
                 if let Ok(oe) = sunrise_crypto::decode_envelope(env) {
                     shared.note_peer(oe.device_id);
                 }
-                match core.apply_remote(env).await {
-                    Ok(Some(DomainEvent::Created(r))) if r.kind() == EntityKind::Stream => {
-                        // Newly-learned stream (StreamCreate): subscribe to
-                        // its channel so its task ops flow.
-                        let sid = *r.bytes();
-                        if subscribed.insert(sid) {
-                            if let Ok(frame) = encode_subscribe_one(sid) {
-                                pending_sends.push(frame);
+                match core.apply_remote_all(env).await {
+                    Ok(events) if !events.is_empty() => {
+                        for ev in &events {
+                            // Newly-learned stream (StreamCreate): subscribe to
+                            // its channel so its task ops flow. Scanned across
+                            // every event the delivery produced, because one
+                            // envelope can produce several — a `key_envelope`
+                            // op releases whatever was parked waiting for its
+                            // key, and a `stream.create` can be among them.
+                            if let DomainEvent::Created(r) = ev {
+                                if r.kind() == EntityKind::Stream {
+                                    let sid = *r.bytes();
+                                    if subscribed.insert(sid) {
+                                        if let Ok(frame) = encode_subscribe_one(sid) {
+                                            pending_sends.push(frame);
+                                        }
+                                    }
+                                }
                             }
                         }
                         shared.mark_synced(core.now_ms());
                     }
-                    Ok(Some(_)) => shared.mark_synced(core.now_ms()),
-                    // Idempotent re-receive: nothing to do, nothing wrong.
-                    Ok(None) => {}
+                    // Idempotent re-receive, or an op parked awaiting its key:
+                    // nothing to do, nothing wrong.
+                    Ok(_) => {}
                     Err(e) => {
                         // An op that fails its own integrity checks was
                         // damaged in transit; an op from a device this vault

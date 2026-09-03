@@ -584,6 +584,23 @@ impl Engine {
         db: &mut Db,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, EngineError> {
+        Ok(self.apply_remote_all(db, envelope_bytes)?.into_iter().next())
+    }
+
+    /// [`Self::apply_remote`], returning **every** event the delivery produced.
+    ///
+    /// One envelope can produce more than one, and the case is not exotic: a
+    /// `key_envelope` op is itself silent, but absorbing the key it carries
+    /// releases every op that had been parked waiting for it. Those ops
+    /// materialize now, and a caller that broadcast only the first — or only
+    /// the envelope op's own `None` — would leave a screen showing a vault the
+    /// database no longer contains. [`crate::Core::apply_remote`] takes this
+    /// form for exactly that reason.
+    pub fn apply_remote_all(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         // a. Decode.
         let env = decode_envelope(envelope_bytes)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;
@@ -629,7 +646,7 @@ impl Engine {
         let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
         if keys.is_empty() {
             self.defer_op(db, envelope_bytes, &env)?;
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let inner_cbor = keys
             .iter()
@@ -712,19 +729,21 @@ impl Engine {
         })?;
 
         if !applied {
-            return Ok(None);
+            return Ok(Vec::new());
         }
+        let mut events = match effect {
+            OpEffect::Create => vec![DomainEvent::Created(target)],
+            OpEffect::Update => vec![DomainEvent::Updated(target)],
+            OpEffect::Delete => vec![DomainEvent::Deleted(target)],
+            // The control op itself changed nothing on screen. What it
+            // released might have.
+            OpEffect::Control => Vec::new(),
+        };
         // A newly absorbed key may be the one a parked op was waiting for.
         for (stream_id, epoch) in absorbed {
-            self.drain_deferred(db, &stream_id, epoch)?;
+            events.extend(self.drain_deferred(db, &stream_id, epoch)?);
         }
-        Ok(match effect {
-            OpEffect::Create => Some(DomainEvent::Created(target)),
-            OpEffect::Update => Some(DomainEvent::Updated(target)),
-            OpEffect::Delete => Some(DomainEvent::Deleted(target)),
-            // Nothing on screen changed, so there is nothing to broadcast.
-            OpEffect::Control => None,
-        })
+        Ok(events)
     }
 
     /// Recover the signing key for an op from a device this vault has never
@@ -837,7 +856,7 @@ impl Engine {
         db: &mut Db,
         stream_id: &[u8; 16],
         epoch: u32,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         let parked: Vec<Vec<u8>> = {
             let mut stmt = db.conn().prepare(
                 "SELECT envelope FROM deferred_ops
@@ -849,7 +868,7 @@ impl Engine {
             rows
         };
         if parked.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         db.with_tx(|tx| {
             tx.execute(
@@ -858,13 +877,16 @@ impl Engine {
             )?;
             Ok(())
         })?;
+        let mut events = Vec::new();
         for envelope in parked {
             // A drained op that still cannot be applied is dropped rather than
             // failing the absorb that released it: the key arrived correctly,
             // and one bad op must not undo that.
-            let _ = self.apply_remote(db, &envelope);
+            if let Ok(more) = self.apply_remote_all(db, &envelope) {
+                events.extend(more);
+            }
         }
-        Ok(())
+        Ok(events)
     }
 
     /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys

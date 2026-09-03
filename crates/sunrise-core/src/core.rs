@@ -218,25 +218,46 @@ impl Core {
 
     /// Apply a remote op envelope (the receive half of sync).
     ///
-    /// Locks the vault, applies the op via [`Engine::apply_remote`] (idempotent,
-    /// entity-level LWW), and broadcasts the resulting [`DomainEvent`] on
-    /// `changes()`. Returns `Ok(None)` for an idempotent re-receive. The sync
-    /// driver (next slice) calls this for every inbound envelope.
+    /// Locks the vault, applies the op via [`Engine::apply_remote_all`]
+    /// (idempotent, entity-level LWW), and broadcasts every resulting
+    /// [`DomainEvent`] on `changes()`. Returns `Ok(None)` for an idempotent
+    /// re-receive. The sync driver calls this for every inbound envelope.
+    ///
+    /// One envelope can produce several events: a `key_envelope` op is silent
+    /// in itself, but the key it carries releases every op that had been parked
+    /// waiting for it, and each of those materializes now. All of them are
+    /// broadcast; the first is returned, because the driver only needs to know
+    /// *whether* something landed and what kind it was.
     pub async fn apply_remote(
         &self,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, CoreError> {
+        Ok(self.apply_remote_all(envelope_bytes).await?.into_iter().next())
+    }
+
+    /// [`Self::apply_remote`], handing back every event rather than the first.
+    ///
+    /// The sync driver needs all of them: a `Created` event naming a Stream is
+    /// what makes it subscribe to that Stream's channel, and after ADR-0024
+    /// such an event can arrive as the *second* thing one envelope produced —
+    /// a `key_envelope` op releasing a parked `stream.create`. A driver reading
+    /// only the first would never subscribe, and the Stream's tasks would never
+    /// arrive.
+    pub(crate) async fn apply_remote_all(
+        &self,
+        envelope_bytes: &[u8],
+    ) -> Result<Vec<DomainEvent>, CoreError> {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
-        let event = {
+        let events = {
             let mut db = self.db.lock();
-            self.engine.apply_remote(&mut db, envelope_bytes)?
+            self.engine.apply_remote_all(&mut db, envelope_bytes)?
         };
-        if let Some(ev) = &event {
+        for ev in &events {
             let _ = self.changes_tx.send(ev.clone());
         }
-        Ok(event)
+        Ok(events)
     }
 
     /// Run a read query.
