@@ -109,29 +109,45 @@ long-press drag where the Mac has a click-drag.
 |---|---|---|---|
 | Task → Stream | Yes | Yes | N/A |
 | Task → Context | Yes | Yes | N/A |
-| Task → Calendar block | Yes | Yes | N/A |
+| Task → Calendar block | Yes | Yes *(unverified)* | N/A |
 | Calendar block → Task | **No** — see below | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
 | Task → Task (reorder) | Yes | Yes | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
-**Calendar block → Task is the one cell not built, and it is a layout
-consequence rather than a missing write.** The macOS window is a sidebar plus a
-*single* detail pane, so the calendar grid and a task list are never on screen
-at the same time; the gesture has no two surfaces to drag between. The write it
-would perform exists and is tested — `TaskListModel.bind(_:to:)`, the same
-`Command::BindTask` the grid's own drop issues — so a future layout that puts a
-list beside the grid makes the cell reachable without new core work. Until then
+**Calendar block → Task is the one cell not built, and what is missing is the
+two modifiers, not a layout that could hold them.** A Block is not a drag
+source: `BlockChip` (`CalendarView.swift:358-457`) carries a tap
+(`:407`), a move gesture (`:408`) and a context menu (`:410`), and no
+`.draggable` — the only `.draggable` in the whole tree is the task row's
+(`TaskRowView.swift:74`). A task row is not a drop target for one either:
+`TaskListView.swift:192` is a `dropDestination` that reorders and does nothing
+else, returning `model.reorder(moved, before: task.id)` and declining outright
+in Today and in Search. The write the cell would perform exists and is tested —
+`TaskListModel.bind(_:to:)` (`TaskListModel.swift:179`) issuing the same
+`Command::BindTask` (`crates/sunrise-core/src/commands.rs:157`) the grid's own
+drop issues — so building it is UI work with no core work behind it. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-**On iOS the same cell is unreachable for a stronger version of the same
-reason.** The shell is a tab bar, and the calendar and a task list are on two
-different tabs: they are not merely never co-resident in one window, they
-cannot be on screen together at all. *File → Task* is the other qualified iOS
-cell, and that one is the platform's doing rather than the app's — the drop
-target is shared and unconditional, but dragging a file in from another app
-needs two apps on screen, which is iPad multitasking.
+**The iOS cell for *Task → Calendar block* is a qualified Yes: both endpoints
+ship, and nothing exercises them together.** The drag source
+(`TaskRowView.swift:74`) and the grid's drop target (`CalendarView.swift:221`,
+into `accept(items:at:)` at `:312`) are both shared, both unguarded, and both
+compile into `SunriseiOS`. What is not substantiated is delivery. `TaskRowView`
+renders only inside `TaskListView` (`:172`) and `DailyBriefView` (`:82`); the
+grid renders on iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a
+pushed destination that replaces the list on the same stack — so a task row and
+the grid are never on screen together. Nothing lets a drag get from one to the
+other in flight: no `Tab` carries a `dropDestination`, there is no
+spring-loading, and the iOS app declares a single scene
+(`SunriseiOSApp.swift:23-24`), so an iPad has no second window to drag into
+either. The cell is not a **No** — nothing refuses the gesture, and both halves
+of it ship — but no one has traced it end to end, and the qualifier says so.
+*File → Task* is the other qualified iOS cell, and that one is the platform's
+doing rather than the app's — the drop target is shared and unconditional, but
+dragging a file in from another app needs two apps on screen, which is iPad
+multitasking.
 
 Every other cell is live in `apps/apple`, and in both products at once: every
 file named here is under `Sunrise/`, which compiles into the Mac app and the
