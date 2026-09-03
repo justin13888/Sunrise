@@ -558,16 +558,35 @@ def main() -> int:
             # so any invocation printed at this point is one the reader would
             # paste and watch fail — and the failure they would then be trying
             # to fix is not the one they were sent here for. The floor has to
-            # wait for a run that arrived whole.
-            short = ", ".join(crate for crate, _, _, _ in mismatched)
-            print(
-                "\nNo floor can be recorded from this run: "
-                f"{short} did not arrive\ncomplete, and --update refuses a "
-                "mismatched run rather than banking a rate\nmeasured over "
-                "part of a crate. Repeat the run — or just the shards that "
-                "went\nmissing — and record the floor from a complete one.",
-                file=sys.stderr,
-            )
+            # wait for a run the gate can score.
+            #
+            # Split by cause, because the two remedies are opposites: one run
+            # is missing files and wants repeating, the other has too many and
+            # wants narrowing. Telling someone whose artifacts arrived twice to
+            # re-run the missing shards describes a run that did not happen and
+            # prescribes the one thing that reproduces theirs.
+            missing = [c for c, _, _, cause in mismatched
+                       if cause == "shards missing"]
+            duplicated = [c for c, _, _, cause in mismatched
+                          if cause == "duplicate artifacts"]
+            print("\nNo floor can be recorded from this run: --update refuses "
+                  "a mismatched run\nrather than bank a rate measured over "
+                  "the wrong population.", file=sys.stderr)
+            if missing:
+                print(
+                    f"\n  {', '.join(missing)} arrived short. Repeat the run "
+                    "— or just the shards\n  that went missing — and record "
+                    "the floor from a complete one.",
+                    file=sys.stderr,
+                )
+            if duplicated:
+                print(
+                    f"\n  {', '.join(duplicated)} arrived more than once, so "
+                    "every mutant in the\n  repeated file counts twice. "
+                    "Narrow the inputs to one file per shard\n  and record "
+                    "from that; the run itself is fine.",
+                    file=sys.stderr,
+                )
         else:
             # Assembled from this run rather than printed as `<crate>=<N>`: a
             # remedy with angle brackets in it is four redirections when

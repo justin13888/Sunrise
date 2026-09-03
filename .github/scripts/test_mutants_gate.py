@@ -692,10 +692,41 @@ class GateContract(unittest.TestCase):
             result, 1,
             "no floor recorded for",
             "No floor can be recorded from this run",
-            "sunrise-domain did not arrive",
+            "sunrise-domain arrived short",
             "Repeat the run",
         )
         self.assertNotIn("mise run mutants-baseline", result.stderr)
+        # The other cause's remedy is the opposite of this one, so it must
+        # not appear beside it.
+        self.assertNotIn("Narrow the inputs to one file per shard",
+                         result.stderr)
+
+    def test_a_duplicated_run_is_told_to_narrow_not_to_repeat(self):
+        # Two files for a one-shard crate, beside a crate with no floor.
+        # Nothing went missing and nothing is partial here: repeating the
+        # run is the one action guaranteed to reproduce it.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-domain", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-domain", caught=1)
+        unfloored = outcomes_file(
+            self.tmp / "three" / "outcomes.json", "sunrise-sync",
+            caught=1, missed=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(first), str(second), str(unfloored), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=1,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "2/1 shards",
+            "No floor can be recorded from this run",
+            "sunrise-domain arrived more than once",
+            "Narrow the inputs to one file per shard",
+        )
+        self.assertNotIn("mise run mutants-baseline", result.stderr)
+        self.assertNotIn("arrived short", result.stderr)
+        self.assertNotIn("shards that went missing", result.stderr)
 
     # --- 0: scored and accepted -------------------------------------------
 
