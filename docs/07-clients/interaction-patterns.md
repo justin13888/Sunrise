@@ -159,7 +159,8 @@ the Calendar tab and lands on the grid's `dropDestination`, the cell is a
 **Yes** and the paragraph above is wrong about the consequence, though not
 about any of its three facts. Reading the source cannot decide it: the question
 is what UIKit delivers to a drop target across a tab change at runtime, not
-what the tree declares, and nobody has run it. The verdict stays **No** on the
+what the tree declares, and nobody has run it. It is tracked as
+[#72](https://github.com/justin13888/Sunrise/issues/72). The verdict stays **No** on the
 evidence that exists — a completable path has to be shown, not merely left
 open — but it is the cheapest of these cells to overturn, and it takes a
 simulator rather than another grep.

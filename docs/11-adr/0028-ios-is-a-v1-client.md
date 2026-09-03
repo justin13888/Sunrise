@@ -243,8 +243,13 @@ is tested, and has not been released.
   `met *(six of eight cells)*` — iOS reaches six of the eight cells in
   [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)'s
   matrix where macOS reaches seven, *Task → Calendar block* being a **No** here
-  for want of a screen that shows both of its ends. The same definition then
-  applies to the MUST-carrying columns, swept over the rows whose shortfall the
+  because no iOS screen shows a task row and the grid together, no `Tab` carries
+  a `dropDestination` and nothing configures spring-loading — with one link in
+  that argument left open, and tracked: whether a drag *held* across a tab
+  switch bridges the two is a runtime question no reading of the tree settles
+  ([#72](https://github.com/justin13888/Sunrise/issues/72)), and it is what
+  would turn the cell back into a **Yes**. The same definition then applies to
+  the MUST-carrying columns, swept over the rows whose shortfall the
   audit or the narrow notes already record — five of them: macOS drag-and-drop
   `met *(seven of eight cells)*` and macOS iCal `met *(windowed, no
   round-trip)*`; the CLI's `today` view (`met *(today, no context filter)*`),
