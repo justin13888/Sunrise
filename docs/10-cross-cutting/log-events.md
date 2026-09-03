@@ -161,7 +161,7 @@ away from being a plaintext handle.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005). |
+| `sync.transport.fallback` | warn | Reserved for a v2 transport fallback; unused in v1. ADR-0005 chose a WebSocket and ADR-0023 replaced it: v1 is an SSE stream downstream and typed `POST`s upstream, with no second transport to fall back to. |
 
 ### `srv` (auth outcome and push)
 

@@ -225,7 +225,7 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 ### Partial OpBatch on disconnect
 
-The server **buffers** each inbound OpBatch until the full frame is received and CBOR-validates. A disconnect mid-frame discards the partial buffer; nothing is persisted. The relay never *applies* anything — it decodes the payload only far enough to read `stream_id` and the cleartext per-device heads, appends the frame bytes verbatim to the durable relay log, and only then acks (`handle_op_batch` in `crates/sunrise-server/src/ws.rs`). Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
+The server **buffers** each inbound OpBatch until the full frame is received and CBOR-validates. A disconnect mid-frame discards the partial buffer; nothing is persisted. The relay never *applies* anything — it decodes the payload only far enough to read `stream_id` and the cleartext per-device heads, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
 Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 

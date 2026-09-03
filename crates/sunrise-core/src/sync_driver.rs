@@ -360,9 +360,14 @@ impl SyncShared {
 
 /// In-flight (sent, not yet acked) outbox batch.
 ///
-/// Keeps the encoded frame so it can be sent again: without it "retry" would
-/// mean re-reading and re-encoding the outbox, which would produce a *different*
-/// `batch_id` and defeat the relay's idempotency key.
+/// Keeps the encoded frame so it can be sent again *byte for byte*. Without it
+/// "retry" would mean re-reading the outbox, which is not the same operation:
+/// `Core::sync_outbox_grouped` returns whatever is unacked *now*, so a re-read
+/// picks up ops enqueued since and mints a fresh `batch_id`. That is a new
+/// batch, not a retransmit — the relay dedups on the ops' content, so a
+/// re-partitioned batch is stored again, and the `Ack` comes back under a
+/// number the client is no longer waiting on. `batch_id` is an ack correlator
+/// and not an idempotency key (`docs/05-sync/wire-protocol.md`).
 struct InflightBatch {
     op_ids: Vec<[u8; 16]>,
     frame: Vec<u8>,
