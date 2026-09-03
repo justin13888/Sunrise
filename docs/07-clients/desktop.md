@@ -125,9 +125,9 @@ Rust source on every build, so committing them would let the two drift.
 target that no earlier image can build — which runs `mise run macos-app` as a
 single step on every push and PR to `master` and `v1-rewrite`, plus a 04:00 UTC
 nightly on `master` alone, since GitHub fires a `schedule` only on the
-repository's default branch. Any other ref builds on demand through
-`workflow_dispatch` — `gh workflow run ci.yml --ref <branch>` — which carries
-no branch filter at all. So a Swift-side break is caught.
+repository's default branch, which is `master`. Any other ref builds on demand
+through `workflow_dispatch` — `gh workflow run ci.yml --ref <branch>` — which
+carries no branch filter at all. So a Swift-side break is caught.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
 the `Sunrise` scheme, because a macOS XCUITest takes control of another process

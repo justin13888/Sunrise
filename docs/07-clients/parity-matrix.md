@@ -310,9 +310,10 @@ over:
   [#72](https://github.com/justin13888/Sunrise/issues/72) and recorded in
   [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix) as
   the thing that would overturn the cell. Search and *Pairing — scan QR* are
-  narrow here in exactly the way they are on the Mac — the literal-AND FTS
-  query and the absent camera scanner are both the shared seam's rather than
-  iOS's; see the macOS note above.
+  narrow here in exactly the way they are on the Mac, and neither narrowness is
+  iOS's: the literal-AND FTS query is the seam's, while the absent camera
+  scanner is shared SwiftUI rather than anything in the core. See the macOS
+  note above.
 
   Two further things are narrow that no row is about, and they are worth
   naming here rather than losing. **The shared sheets are Mac-shaped**: seven
@@ -406,10 +407,10 @@ never has to be re-derived from scratch to find out what it covered.
   has no line for; the CLI's unwritable Task `body`, which belongs to its
   *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
   *Read/write tasks* — in whose cell that gap is recorded — is bare; and on
-  iOS the three **MAY**s the audit deliberately keeps in prose for this very
-  reason, *Watch app*, *Mouse* and *Print / PDF export*. No count is given
-  because the set grows every time a narrowness is written down against a
-  capability the audits do not grade. Outside the mechanism altogether are the
+  iOS the **MAY**s the audit keeps in prose rather than in the table —
+  *Watch app*, *Mouse* and *Print / PDF export*. No count is given because the
+  set grows every time a narrowness is written down against a capability the
+  audits do not grade. Outside the mechanism altogether are the
   two items under [What is still narrow](#what-is-still-narrow) that no row is
   about — the Mac-shaped sheets and the copy that says "Mac" — which belong to
   no capability at any level.
