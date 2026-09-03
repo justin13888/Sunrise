@@ -513,35 +513,54 @@ def main() -> int:
         print("\nno floor recorded for:", file=sys.stderr)
         for crate, measured in unfloored:
             print(f"  {crate}: measured {measured}%", file=sys.stderr)
-        # Assembled from this run rather than printed as `<crate>=<N>`: a
-        # remedy with angle brackets in it is four redirections when pasted
-        # into a shell, so the reader gets `No such file or directory` from
-        # bash and never reaches the task at all.
-        #
-        # Every crate the run produced, not only the unfloored ones. The mise
-        # task scores every directory under out/mutants/ together, so a spec
-        # naming just the crate that failed comes straight back as an
-        # undeclared crate for the ones that passed.
-        spec = ",".join(
-            f"{crate}="
-            f"{args.expect_shards.get(crate) or len(sources.get(crate, ()))}"
-            for crate in sorted(counts)
-        )
-        print(
-            "\nEvery crate in scope carries a floor or it is not enforced. "
-            "Record one from this run:\n"
-            "\n"
-            "  locally, from out/:\n"
-            f"    mise run mutants-baseline --expect-shards {spec}\n"
-            "\n"
-            "  from a nightly run's artifacts:\n"
-            "    gh run download <run-id> --pattern 'mutants-*' --dir outcomes\n"
-            "    .github/scripts/mutants-gate.py outcomes/*/outcomes.json \\\n"
-            "        --update --expect-shards <the counts in ci.yml's matrix>\n"
-            "\n"
-            "and commit mutants/baseline.json saying what the number is.",
-            file=sys.stderr,
-        )
+        if mismatched:
+            # No command here on purpose. `--update` refuses a mismatched run,
+            # so any invocation printed at this point is one the reader would
+            # paste and watch fail — and the failure they would then be trying
+            # to fix is not the one they were sent here for. The floor has to
+            # wait for a run that arrived whole.
+            short = ", ".join(crate for crate, _, _, _ in mismatched)
+            print(
+                "\nNo floor can be recorded from this run: "
+                f"{short} did not arrive\ncomplete, and --update refuses a "
+                "mismatched run rather than banking a rate\nmeasured over "
+                "part of a crate. Repeat the run — or just the shards that "
+                "went\nmissing — and record the floor from a complete one.",
+                file=sys.stderr,
+            )
+        else:
+            # Assembled from this run rather than printed as `<crate>=<N>`: a
+            # remedy with angle brackets in it is four redirections when
+            # pasted into a shell, so the reader gets `No such file or
+            # directory` from bash and never reaches the task at all.
+            #
+            # Every crate the run produced, not only the unfloored ones. The
+            # mise task scores every directory under out/mutants/ together, so
+            # a spec naming just the crate that failed comes straight back as
+            # an undeclared crate for the ones that passed.
+            spec = ",".join(
+                f"{crate}="
+                f"{args.expect_shards.get(crate) or len(sources.get(crate, ()))}"
+                for crate in sorted(counts)
+            )
+            print(
+                "\nEvery crate in scope carries a floor or it is not "
+                "enforced. Record one from this run:\n"
+                "\n"
+                "  locally, from out/:\n"
+                f"    mise run mutants-baseline --expect-shards {spec}\n"
+                "\n"
+                "  from a nightly run's artifacts:\n"
+                "    gh run download <run-id> --pattern 'mutants-*' "
+                "--dir outcomes\n"
+                "    .github/scripts/mutants-gate.py outcomes/*/outcomes.json "
+                "\\\n"
+                "        --update --expect-shards <the counts in ci.yml's "
+                "matrix>\n"
+                "\n"
+                "and commit mutants/baseline.json saying what the number is.",
+                file=sys.stderr,
+            )
 
     if failures or unfloored or mismatched or unscorable:
         return 1

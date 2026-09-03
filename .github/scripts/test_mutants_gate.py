@@ -392,6 +392,29 @@ class GateContract(unittest.TestCase):
             "--expect-shards sunrise-domain=1,sunrise-sync=1",
         )
 
+    def test_mismatched_run_is_not_offered_a_floor_command(self):
+        # One crate short of its shards, another with no floor. `--update`
+        # refuses a mismatched run, so printing a mutants-baseline command
+        # here would be handing the reader something that cannot work.
+        broken = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-domain", caught=1)
+        unfloored = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync",
+            caught=1, missed=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(broken), str(unfloored), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "no floor recorded for",
+            "No floor can be recorded from this run",
+            "sunrise-domain did not arrive",
+            "Repeat the run",
+        )
+        self.assertNotIn("mise run mutants-baseline", result.stderr)
+
     # --- 0: scored and accepted -------------------------------------------
 
     def test_clean_run_is_0(self):
