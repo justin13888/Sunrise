@@ -390,6 +390,17 @@ describe("the emitted Swift declares exactly the model, in order", () => {
 
     it("states durations in seconds, with each curve's own control points", () => {
         const motion = swiftEnum(swift, "Motion", 4);
+
+        // The block-scoped list first, exactly as the other enums are checked.
+        // The value regex below reads only what it matches, so a stray
+        // `static let legacyFast: TimeInterval = 999 / 1000` would otherwise
+        // sit inside `Motion` unnoticed.
+        expect(swiftLets(motion)).toEqual([
+            ...MOTION_CURVE_KEYS.map((key) => `${key} = MotionToken(`),
+            // Seconds, not milliseconds — `/ 1000`, like every curve above.
+            `reducedDuration: TimeInterval = ${tokens.motion.reducedDurationMs} / 1000`,
+        ]);
+
         const found = [
             ...motion.matchAll(
                 /static let (\w+) = MotionToken\(\n *duration: (\S+) \/ 1000,\n *easing: Easing\(x1: (\S+), y1: (\S+), x2: (\S+), y2: (\S+)\)\n *\)/g,
@@ -400,11 +411,6 @@ describe("the emitted Swift declares exactly the model, in order", () => {
                 const { durationMs, easing } = tokens.motion.curves[key];
                 return [key, durationMs, ...easing].join(" ");
             }),
-        );
-        // Seconds, not milliseconds: `/ 1000` on every one, and the policy
-        // value spelled the same way.
-        expect(motion).toContain(
-            `static let reducedDuration: TimeInterval = ${tokens.motion.reducedDurationMs} / 1000`,
         );
     });
 
@@ -436,10 +442,16 @@ describe("the emitted Swift declares exactly the model, in order", () => {
         }
     });
 
-    it("lists the stream names in declaration order", () => {
-        expect(swift).toContain(
-            `static let names: [String] = [${tokens.streamKeys.map((key) => `"${key}"`).join(", ")}]`,
-        );
+    it("lists the stream names in declaration order, and nothing else", () => {
+        // `enum Stream` holds `names` plus the two nested theme enums, whose
+        // members are checked above. Cutting at the first nested `enum` leaves
+        // the direct members, so this is a list assertion rather than a
+        // whole-file `toContain` an addition could slip past.
+        const stream = swiftEnum(swift, "Stream", 4);
+        const direct = stream.slice(0, stream.indexOf("\n        enum "));
+        expect(swiftLets(direct)).toEqual([
+            `names: [String] = [${tokens.streamKeys.map((key) => `"${key}"`).join(", ")}]`,
+        ]);
     });
 });
 

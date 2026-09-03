@@ -249,9 +249,26 @@ field records nothing and can silently disagree with itself.
   block. So each target instead rebuilds the **complete** expected declaration
   list from the model, in emit order, with that target's serialisation spelled
   out in the test rather than imported from the emitter, and compares it with
-  one `toEqual`. That single assertion covers a wrong value, an omission, an
-  extra, a duplicated block, a reordering, and — because every list is scoped
-  to its own block — a light/dark swap.
+  one `toEqual`.
+
+  What that buys, precisely: a **wrong value**, an **omission** and a
+  **reordering** are caught in all four targets, and so is a **light/dark
+  swap**, because every list is scoped to its own block rather than matched
+  against the whole file. An **addition** is caught *inside* an extracted list
+  and not outside one — a stray `pub const` joins the Rust list and fails, a
+  stray `static let` inside `enum Motion` joins that enum's list and fails, but
+  a new top-level Swift or TypeScript item, a non-`pub const` Rust item, or a
+  second `:root{` spelled without the space the block counter looks for, would
+  not.
+
+  That residue is inherent to testing a string's shape and is **not** a defect
+  to close by pinning the whole file. Pinning the file is exactly what the
+  drift check above already does, and it is blind for the reason given there:
+  it compares the emitter to itself. A shape assertion earns its keep by
+  restating the contract independently, which means it can only ever cover what
+  it names. The line is drawn at what the emitters can plausibly get wrong — a
+  value, an order, a theme, a unit, a dropped token — and additive or cosmetic
+  differences no emitter path produces are left to review.
 - **Biome formats everything except `generated/`, and still parses it.** The
   directory is written by `mise run tokens` and drift-checked against the TOML,
   so it is not ours to *format*: `lefthook.yaml`'s pre-commit
@@ -266,6 +283,18 @@ field records nothing and can silently disagree with itself.
   `ci.yml` builds `apps/web`, so Vite never sees the stylesheet in a gate.
   Excluding the directory outright, as this first did, would have left the one
   output nothing else validates unvalidated.
+
+  The accepted cost of the override is that **the generated CSS, TypeScript and
+  Swift have no formatting gate at all**: Biome's formatter is off for the
+  directory, `apps/apple/.swiftlint.yml` excludes it, and the shape assertions
+  are deliberately indent-insensitive, so stripping every indent from `:root`
+  or reindenting the Swift members from eight spaces to two is green
+  everywhere. Rust is the exception — `mise run tokens-check` runs
+  `rustfmt --check` over `tokens.rs`. This is a consequence of committing
+  generated files that no consumer's build reformats, not a gap to plug: a
+  formatter check would have to re-encode the emitters' whitespace decisions in
+  a second place, and only a human editing a file the banner says not to edit
+  can produce the failure.
 
 ## What would force revisiting this
 
