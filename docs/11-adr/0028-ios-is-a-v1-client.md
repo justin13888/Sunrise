@@ -85,8 +85,12 @@ behaviour has regressed. Four open issues
 ([#14](https://github.com/justin13888/Sunrise/issues/14),
 [#31](https://github.com/justin13888/Sunrise/issues/31),
 [#40](https://github.com/justin13888/Sunrise/issues/40) and
-[#12](https://github.com/justin13888/Sunrise/issues/12)) already target iOS
-surfaces and have no row anywhere to attach to.
+[#42](https://github.com/justin13888/Sunrise/issues/42)) already target iOS
+surfaces and have no row anywhere to attach to. (#42 is the vault root's
+Keychain accessibility class, `Keychain.swift:62`, measured against the spec on
+[`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §OS keystore
+(`:185-188`) — a shared constant, so it lands on macOS identically, and the
+matrix has no key-storage row in either column.)
 
 **What makes this an ADR is not the N/A rule.** The rules do say a cell marked
 N/A may only be revisited with a record, but no such cell is revisited here.
