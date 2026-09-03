@@ -3,7 +3,8 @@
 **Status:** accepted
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
-(one new column, 31 cells, plus an audit section and one hard rule) and
+(one new column, 31 cells, plus an audit section and two hard rules — the
+iOS regression rule and the definition of a qualified *met*) and
 [`./0019-swiftui-macos-client.md`](./0019-swiftui-macos-client.md) (revisit
 trigger 1).
 
