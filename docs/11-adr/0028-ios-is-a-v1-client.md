@@ -279,10 +279,13 @@ is tested, and has not been released.
   block draft sheet 420 (`BlockDraftSheetView`, `:35`), the block editor 460
   (`BlockEditorView`, `:155`) and the conflict adjuster 620
   (`AdjustBlocksView`, `:280`) — all wider than an iPhone, none behind an
-  `#if`. Those seven are every **fixed** width — every `.frame(width:)` — the
-  tab shell can put on screen. Two things the sentence deliberately does not
-  claim. It is not every oversized frame in a shared file: the rest are either
-  unreachable from the tab shell (`Views/IcalView.swift:35`, behind the
+  `#if`. Those seven are every fixed width **wider than an iPhone** that the
+  tab shell can put on screen — the tree holds plenty of narrower ones
+  (`TaskListView.swift:276`, `StreamEditorView.swift:77`, `ReviewView.swift:353`
+  at 380; `CalendarView.swift:44` at 140), and a frame that fits is not a
+  defect. Two further things the sentence does not claim. It is not every
+  oversized frame in a shared file: the rest are either unreachable from the
+  tab shell (`Views/IcalView.swift:35`, behind the
   `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
   `Keyboard/CommandPaletteView.swift:20` and `:182`, behind a palette iOS hands
   an inert closure at `iOS/VaultTabs.swift:286`) or already guarded
