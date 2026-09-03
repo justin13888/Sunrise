@@ -290,13 +290,32 @@ def main() -> int:
         undeclared = sorted(set(counts) - set(args.expect_shards))
         if undeclared:
             for crate in undeclared:
-                print(f"matrix/flag drift: crate {crate} has outcomes but no "
+                print(f"undeclared crate: {crate} has outcomes but no "
                       "expectation in --expect-shards", file=sys.stderr)
+                for path in sorted(sources.get(crate, ())):
+                    print(f"    from {path}", file=sys.stderr)
+            # Two callers reach this, and the advice is not the same for both.
+            # In CI the flag and the matrix are the only two things in play. On
+            # a laptop the third is out/mutants/, which `mise run
+            # mutants-baseline` globs whole: a crate mutated last week is still
+            # sitting there and still gets scored, so the crate the gate is
+            # complaining about may be one nobody meant to run at all. Naming
+            # only the matrix sent that reader to edit a workflow file that has
+            # nothing to do with what they are looking at.
             print(
                 "\nEvery crate the run produces needs a shard count, or it is "
-                "scored with no\ncheck that all of it arrived. Add it to "
-                "--expect-shards in .github/workflows/ci.yml,\nor drop it from "
-                "the matrix.",
+                "scored with no\ncheck that all of it arrived. Two ways to be "
+                "here:\n"
+                "\n"
+                "  in CI, --expect-shards and ci.yml's matrix have drifted "
+                "apart. Add the\n  crate to --expect-shards in "
+                ".github/workflows/ci.yml, or drop it from\n  the matrix.\n"
+                "\n"
+                "  locally, out/mutants/ holds a run for a crate this command "
+                "did not\n  declare — often a stale one, since "
+                "`mise run mutants-baseline` scores\n  every directory under "
+                "it together. Declare the crate, or delete the\n  directory "
+                "listed above.",
                 file=sys.stderr,
             )
             return 2
