@@ -520,6 +520,41 @@ class GateContract(unittest.TestCase):
         self.assertNotIn("mutation coverage regressed", output)
         self.assertNotIn("vs floor", output)
 
+    def test_a_crate_that_produced_nothing_is_still_reported(self):
+        # Not one short shard — no shards. This is the shape CI actually
+        # reaches: `mutants-gate` runs on always(), so if all six domain
+        # jobs die there is no domain artifact to download and the crate
+        # vanishes from `counts` entirely. Every other broken-crate test
+        # supplies at least one file for the short crate, which is how a
+        # `if crate not in counts: continue` in the mismatch report stayed
+        # green: silence about a crate that produced nothing reads exactly
+        # like a crate that was never in scope.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(run), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "sunrise-domain: 0/6 shards, 0 mutants — shards missing",
+            "these crates were not scored",
+        )
+
+    def test_a_crate_that_produced_nothing_does_not_pass_the_run(self):
+        # The verdict, not just the message. A crate declared and absent
+        # must not leave the gate green, whatever the crates that did
+        # arrive scored.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, missed=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(run), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=6,sunrise-sync=1",
+        )
+        # sunrise-sync is at its floor and says so; the run still fails.
+        self.assert_code(result, 1, "sunrise-sync: 50.0% vs floor 50.0% — ok")
+
     def test_a_broken_crate_is_never_called_unscorable(self):
         # The same exclusion by the other route: a crate that is both short
         # of shards and entirely unviable is a broken run, and reporting it
