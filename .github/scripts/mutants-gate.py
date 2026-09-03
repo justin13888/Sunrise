@@ -474,7 +474,7 @@ def main() -> int:
             "Record one from this run:\n"
             "\n"
             "  locally, from out/:\n"
-            "    mise run mutants-baseline\n"
+            "    mise run mutants-baseline --expect-shards <crate>=<N>,...\n"
             "\n"
             "  from a nightly run's artifacts:\n"
             "    gh run download <run-id> --pattern 'mutants-*' --dir outcomes\n"
