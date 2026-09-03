@@ -90,13 +90,25 @@ describe("the two themes are the same shape", () => {
 
 describe("the stream palette is keyed on the domain enum", () => {
     /**
-     * Both halves of the enum, because either one alone can be fooled.
+     * `StreamColor`, read four ways, because each one alone can be fooled.
      *
-     * Reading only the `as_str` arms misses a variant added with a catch-all:
-     * `Teal` plus `_ => "slate"` compiles, and `#[serde(rename_all =
-     * "lowercase")]` still persists `"teal"` into the vault, so the palette
-     * would be missing a colour that storage can hold. Reading only the
-     * declaration misses the opposite — an arm renamed without its variant.
+     * The palette's keys are not a naming convenience — they are the strings
+     * `#[serde(rename_all = "lowercase")]` persists into the vault, so a
+     * palette that disagrees with the enum is a colour storage can hold and no
+     * client can draw. Every check below closes a way that disagreement can
+     * hide:
+     *
+     * - **The declaration**, so a variant that exists is in the palette. A
+     *   ninth `Teal` behind `_ => "slate"` otherwise leaves the `as_str` scrape
+     *   at eight.
+     * - **`as_str`**, so a variant's own spelling is the one the palette uses.
+     * - **No per-variant `#[serde(rename …)]`**, because both scrapes read the
+     *   *identifier*: renaming `Pink` to `"fuchsia"` changes what is persisted
+     *   and nothing else, which is exactly the drift this test exists to stop.
+     * - **Unit variants only**, because `Custom(u8)` matches neither scrape, so
+     *   both lists agree at eight while a ninth case exists.
+     * - **`from_str_lossy`**, which nothing else reads: dropping
+     *   `"pink" => Self::Pink` silently loads every stored `"pink"` as `Slate`.
      */
     it("matches StreamColor in crates/sunrise-domain/src/stream.rs", async () => {
         const source = await readFile(STREAM_RS, "utf8");
@@ -108,30 +120,94 @@ describe("the stream palette is keyed on the domain enum", () => {
             declaration,
             "the StreamColor declaration must still be findable in stream.rs",
         ).not.toBeNull();
-        const declared = [
-            ...(declaration?.[1] ?? "").matchAll(/^ {4}([A-Z]\w*),$/gm),
-        ].map((m) => (m[1] as string).toLowerCase());
+        const body = declaration?.[1] ?? "";
 
-        const body =
+        // Every line in the block that opens a variant: `Name`, `Name(T)` and
+        // `Name { .. }` all start the same way, so the payload — if any — is
+        // captured rather than skipped.
+        const variants = [...body.matchAll(/^ {4}([A-Z]\w*)(.*)$/gm)].map(
+            (m) => ({ name: m[1] as string, tail: m[2] as string }),
+        );
+        expect(
+            variants.length,
+            "stream.rs must declare at least one variant",
+        ).toBeGreaterThan(0);
+
+        for (const { name, tail } of variants) {
+            expect(
+                tail,
+                `${name} must be a unit variant: a payload is a case the palette cannot key`,
+            ).toBe(",");
+        }
+
+        // The type-level `rename_all` is the contract. A per-variant rename
+        // changes the persisted string while leaving the identifier — and so
+        // both scrapes below — untouched.
+        expect(
+            body,
+            "no variant may carry its own #[serde(rename …)]",
+        ).not.toMatch(/#\[serde\(rename\s*=/);
+        expect(source).toContain('#[serde(rename_all = "lowercase")]');
+
+        const declared = variants.map(({ name }) => name.toLowerCase());
+
+        const asStr =
             /pub const fn as_str\(self\) -> &'static str \{([\s\S]*?)\n {4}\}/.exec(
                 source,
             );
         expect(
-            body,
+            asStr,
             "StreamColor::as_str must still be findable in stream.rs",
         ).not.toBeNull();
         const spelled = [
-            ...(body?.[1] ?? "").matchAll(/Self::\w+ => "(\w+)",/g),
-        ].map((m) => m[1]);
+            ...(asStr?.[1] ?? "").matchAll(/Self::(\w+) => "(\w+)",/g),
+        ].map((m) => ({
+            variant: (m[1] as string).toLowerCase(),
+            text: m[2] as string,
+        }));
+        for (const { variant, text } of spelled) {
+            expect(text, `as_str must spell ${variant} as its own name`).toBe(
+                variant,
+            );
+        }
 
-        expect(
-            declared.length,
-            "stream.rs must declare at least one variant",
-        ).toBeGreaterThan(0);
         // The two lists must agree with each other before either is worth
         // comparing to the palette: a mismatch here is a catch-all arm.
-        expect([...spelled].sort()).toEqual([...declared].sort());
+        expect(spelled.map(({ text }) => text).sort()).toEqual(
+            [...declared].sort(),
+        );
         expect([...tokens.streamKeys].sort()).toEqual([...declared].sort());
+
+        // The parser is the other direction of the same contract, and nothing
+        // else in this repository reads it.
+        const lossy =
+            /pub fn from_str_lossy\(s: &str\) -> Self \{([\s\S]*?)\n {4}\}/.exec(
+                source,
+            );
+        expect(
+            lossy,
+            "StreamColor::from_str_lossy must still be findable in stream.rs",
+        ).not.toBeNull();
+        const parsed = new Map(
+            [...(lossy?.[1] ?? "").matchAll(/"(\w+)" => Self::(\w+),/g)].map(
+                (m) => [m[1] as string, (m[2] as string).toLowerCase()],
+            ),
+        );
+        const fallback = /_ => Self::(\w+),/
+            .exec(lossy?.[1] ?? "")?.[1]
+            ?.toLowerCase();
+        expect(
+            fallback,
+            "from_str_lossy must keep a lossy fallback",
+        ).toBeDefined();
+        for (const key of tokens.streamKeys) {
+            const round =
+                parsed.get(key) ?? (key === fallback ? key : undefined);
+            expect(
+                round,
+                `from_str_lossy must map "${key}" back to ${key}, not silently to ${fallback}`,
+            ).toBe(key);
+        }
     });
 });
 

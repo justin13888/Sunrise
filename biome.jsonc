@@ -13,14 +13,7 @@
             "!**/dist",
             "!**/build",
             "!**/coverage",
-            "!.claude",
-            // Written by `mise run tokens` and drift-checked against the TOML
-            // that produced it, so it is not ours to format — the same reason
-            // `apps/apple/.swiftlint.yml` excludes it. Without this,
-            // `lefthook.yaml`'s pre-commit `biome check --write .` would
-            // rewrite a generated file and pre-push would then fail with
-            // "stale; regenerate it", naming the wrong cause.
-            "!packages/sunrise-ui-tokens/generated"
+            "!.claude"
         ]
     },
     "formatter": {
@@ -44,6 +37,25 @@
             "tailwindDirectives": true
         }
     },
+    // `packages/sunrise-ui-tokens/generated/` is written by `mise run tokens`
+    // and drift-checked against the TOML that produced it, so it is not ours to
+    // *format*: `lefthook.yaml`'s pre-commit `biome check --write .` would
+    // otherwise rewrite a generated file, and pre-push would then fail with
+    // "stale; regenerate it" while naming the wrong cause.
+    //
+    // Only the formatter is off. Parsing and linting stay on, and that half
+    // matters: `tokens.css` is the one generated output with no other parser
+    // anywhere — `tokens.rs` gets `rustc` and `rustfmt` from
+    // `mise run tokens-check`, `tokens.swift` is compiled by Xcode and
+    // `tokens.ts` by `mise run typecheck`, but no gate builds `apps/web`, so
+    // Vite never sees the stylesheet. Excluding the directory outright would
+    // have left it unparsed by anything.
+    "overrides": [
+        {
+            "includes": ["packages/sunrise-ui-tokens/generated/**"],
+            "formatter": { "enabled": false }
+        }
+    ],
     "assist": {
         "enabled": true,
         "actions": {

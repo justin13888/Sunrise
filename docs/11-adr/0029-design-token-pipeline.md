@@ -175,9 +175,16 @@ field records nothing and can silently disagree with itself.
   `crates/sunrise-domain/src/stream.rs` is a serde-stable eight-variant enum
   whose lowercase names are persisted in the vault and parsed back leniently by
   `from_str_lossy`, so renumbering the palette would be a storage-format change
-  rather than a design change. `test/invariants.test.ts` reads
-  `StreamColor::as_str` out of the Rust and fails when the two lists diverge —
-  which is the enforceable form of the comment `tokens.ts` used to carry.
+  rather than a design change. `test/invariants.test.ts` reads that file and
+  fails when it diverges from the palette — the enforceable form of the comment
+  `tokens.ts` used to carry. It reads the enum four ways, because each one
+  alone can be fooled: the *declaration* (a ninth variant behind a catch-all
+  `as_str` arm otherwise leaves the arm scrape at eight), `as_str` itself, the
+  absence of any per-variant `#[serde(rename …)]` (both scrapes read the
+  identifier, so a rename changes what is persisted and nothing else), that
+  every variant is a *unit* variant (`Custom(u8)` matches neither scrape), and
+  `from_str_lossy`, which nothing else in the repository reads — dropping
+  `"pink" => Self::Pink` would silently load every stored `"pink"` as `Slate`.
 - **Easing is four control points, not a CSS string.** Only one of the four
   emitters speaks CSS; storing `cubic-bezier(0.2, 0, 0, 1)` would make the
   Swift and Rust emitters parse it back out. The loader range-checks the two
@@ -230,14 +237,35 @@ field records nothing and can silently disagree with itself.
   ratios the invariants **do** assert are the ones with a consumer; the palette
   is left as specified rather than quietly altered here, and raising these
   values is a design decision with its own issue.
-- **The drift gate is deliberately paired with shape assertions.** Comparing
-  the committed file to `emit(tokens)` proves only that somebody ran
-  `mise run tokens`: both sides come from the same function, so a wrong emitter
-  regenerates and stays green. `test/drift.test.ts`'s second half asserts what
-  each output must *look like* — units, both media queries, both themes
-  differing **in the emitted text** rather than in the model, the stream tints
-  present, the glyph map intact — because that is the half that catches a
-  wrong emitter.
+- **The drift gate is paired with systematic shape assertions, not exemplary
+  ones.** Comparing the committed file to `emit(tokens)` proves only that
+  somebody ran `mise run tokens`: both sides come from the same function, so a
+  wrong emitter regenerates and stays green. `test/drift.test.ts`'s second half
+  is the part that catches one, and its design matters more than its existence.
+  An exemplary version — `toContain` on a handful of hardcoded examples —
+  pinned those examples and nothing else: whole scales could be tripled,
+  zeroed or handed the wrong sub-object and stay green, and a whole-theme swap
+  survived because each theme's assertion was satisfied by the *other* theme's
+  block. So each target instead rebuilds the **complete** expected declaration
+  list from the model, in emit order, with that target's serialisation spelled
+  out in the test rather than imported from the emitter, and compares it with
+  one `toEqual`. That single assertion covers a wrong value, an omission, an
+  extra, a duplicated block, a reordering, and — because every list is scoped
+  to its own block — a light/dark swap.
+- **Biome formats everything except `generated/`, and still parses it.** The
+  directory is written by `mise run tokens` and drift-checked against the TOML,
+  so it is not ours to *format*: `lefthook.yaml`'s pre-commit
+  `biome check --write .` would otherwise rewrite a generated file and pre-push
+  would then fail with "stale; regenerate it", naming the wrong cause. That is
+  a `biome.jsonc` `overrides` entry disabling the formatter for the directory,
+  not an entry in `files.includes` excluding it. The distinction is
+  load-bearing: `tokens.css` is the only output with no other parser anywhere.
+  `tokens.rs` gets `rustc --emit=metadata` and `rustfmt --check` from
+  `mise run tokens-check`, `tokens.swift` is compiled by Xcode and `tokens.ts`
+  by `mise run typecheck` — but no task in `mise.toml`, `lefthook.yaml` or
+  `ci.yml` builds `apps/web`, so Vite never sees the stylesheet in a gate.
+  Excluding the directory outright, as this first did, would have left the one
+  output nothing else validates unvalidated.
 
 ## What would force revisiting this
 

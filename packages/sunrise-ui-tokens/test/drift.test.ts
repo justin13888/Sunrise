@@ -24,21 +24,17 @@ import { emitCss } from "../src/emit-css";
 import { emitRust } from "../src/emit-rust";
 import { emitSwift } from "../src/emit-swift";
 import { emitTs } from "../src/emit-ts";
-import { type Hex, loadTokens, SPACE_KEYS, SURFACE_KEYS } from "../src/model";
+import {
+    type Hex,
+    loadTokens,
+    MOTION_CURVE_KEYS,
+    RADIUS_KEYS,
+    SPACE_KEYS,
+    SURFACE_KEYS,
+    TYPE_KEYS,
+} from "../src/model";
 
 const tokens = await loadTokens();
-
-/** `#rrggbb` as the Swift emitter writes it. */
-function rgbLiteral(hex: Hex): string {
-    const at = (index: number) =>
-        Number.parseInt(hex.slice(index, index + 2), 16);
-    return `RGB(red: ${at(1)} / 255, green: ${at(3)} / 255, blue: ${at(5)} / 255)`;
-}
-
-/** `#rrggbb` as the Rust emitter writes it. */
-function rustLiteral(hex: Hex): string {
-    return `[0x${hex.slice(1, 3)}, 0x${hex.slice(3, 5)}, 0x${hex.slice(5, 7)}]`;
-}
 
 describe("the committed token files are current", () => {
     for (const [name, emit] of OUTPUTS) {
@@ -91,189 +87,366 @@ describe("the committed token files are current", () => {
  * The drift block above compares the committed file to `emit(tokens)`, and both
  * sides come from the same function — so it proves somebody ran
  * `mise run tokens` and proves nothing at all about whether the emitter is
- * right. Every one of these mutations regenerated cleanly and left that block
- * green: `px` on the unitless type tokens, `prefers-color-scheme: dark`
- * swapped for `min-width: 0px`, the stream tints dropped from the CSS, Swift
- * dividing colour channels by 256, the whole `Space` enum omitted,
- * `SURFACE_DARK_*` carrying the light values, `color.dark` carrying the light
- * theme, and `taskStateGlyph.done` flipping to `[X]`.
+ * right. A wrong emitter regenerates and stays green.
  *
- * These assertions read the *emitted string*, never the model. Asserting light
- * ≠ dark on `tokens.light` / `tokens.dark` is what let the `color.dark`
- * mutation through: the model was fine, the output was not.
+ * These checks are **systematic rather than exemplary**, and that is the whole
+ * design. An earlier version pinned a handful of hardcoded examples — CSS
+ * radius only for `pill`, Swift `Typography` only for `sizeXs`, easing only for
+ * `fast` — so whole scales could be tripled, zeroed or fed the wrong
+ * sub-object and stay green. Instead, each target rebuilds the *complete*
+ * expected declaration list from the model, in emit order, with that target's
+ * own serialisation spelled out here rather than imported from the emitter,
+ * and compares it with `toEqual`.
+ *
+ * One `toEqual` over an ordered list is what catches all of: a wrong value, a
+ * missing token, an extra one, a duplicated block, a reordering, and — because
+ * every list is scoped to its own block — a light/dark swap, which whole-file
+ * `toContain` cannot see because each theme's assertion is satisfied by the
+ * other theme's block.
+ *
+ * These read the emitted *string*, never the model. Asserting light ≠ dark on
+ * `tokens.light` / `tokens.dark` is what let a `color.dark` swap through once:
+ * the model was fine, the output was not.
  */
-describe("the emitted CSS has the right shape", () => {
+
+/** `#rrggbb` split into its three 0-255 channels. */
+function channels(hex: Hex): [number, number, number] {
+    const at = (index: number) =>
+        Number.parseInt(hex.slice(index, index + 2), 16);
+    return [at(1), at(3), at(5)];
+}
+
+/** How many times `needle` occurs in `haystack`. */
+function occurrences(haystack: string, needle: string): number {
+    return haystack.split(needle).length - 1;
+}
+
+// --- CSS -------------------------------------------------------------------
+
+/** Every `--name: value;` in one block, in order, as `"name: value"`. */
+function cssDeclarations(block: string): string[] {
+    return [...block.matchAll(/^ *--([a-z0-9-]+): (.+);$/gm)].map(
+        (m) => `${m[1]}: ${m[2]}`,
+    );
+}
+
+/** The body of `:root { … }`, of the dark block, and of the reduced block. */
+function cssBlocks(css: string) {
+    const root = /^:root \{\n([\s\S]*?)\n\}/m.exec(css);
+    const dark =
+        /@media \(prefers-color-scheme: dark\) \{\n([\s\S]*?)\n\}/.exec(css);
+    const reduced =
+        /@media \(prefers-reduced-motion: reduce\) \{\n([\s\S]*?)\n\}/.exec(
+            css,
+        );
+    return { root: root?.[1], dark: dark?.[1], reduced: reduced?.[1] };
+}
+
+describe("the emitted CSS declares exactly the model, in order", () => {
     const css = emitCss(tokens);
+    const blocks = cssBlocks(css);
 
-    it("puts px on lengths and leaves weights and line heights unitless", () => {
-        expect(css).toContain("--sunrise-space-md: 12px;");
-        expect(css).toContain("--sunrise-radius-pill: 9999px;");
-        expect(css).toContain("--sunrise-type-size-xs: 11px;");
-        expect(css).toContain("--sunrise-type-weight-regular: 400;");
-        expect(css).toContain("--sunrise-type-line-tight: 1.25;");
-        // The mutation this catches spells them `400px` / `1.25px`, which is
-        // not a `font-weight` or a `line-height` at all.
-        expect(css).not.toMatch(
-            /--sunrise-type-(weight|line)-[a-z]+: [\d.]+px;/,
+    it("has the three blocks a consumer resolves against, and only those", () => {
+        expect(blocks.root, ":root must exist").toBeDefined();
+        expect(
+            blocks.dark,
+            "a prefers-color-scheme: dark block must exist",
+        ).toBeDefined();
+        expect(
+            blocks.reduced,
+            "a prefers-reduced-motion: reduce block must exist",
+        ).toBeDefined();
+        // Three `:root` selectors — the bare one plus one inside each media
+        // query — and exactly two at-rules. A fourth `:root` is a duplicated
+        // block; a third `@media` is a theme applying on something other than
+        // the user's preference.
+        expect(occurrences(css, ":root {")).toBe(3);
+        expect(occurrences(css, "@media ")).toBe(2);
+    });
+
+    it("binds every token on :root with its CSS unit", () => {
+        const expected: string[] = [];
+        for (const key of SPACE_KEYS) {
+            expected.push(`sunrise-space-${key}: ${tokens.space[key]}px`);
+        }
+        for (const key of RADIUS_KEYS) {
+            expected.push(`sunrise-radius-${key}: ${tokens.radius[key]}px`);
+        }
+        for (const key of TYPE_KEYS) {
+            // Sizes are lengths; weights and line heights are unitless by
+            // definition — `font-weight: 400px` is not a declaration.
+            const unit = key.startsWith("size_") ? "px" : "";
+            expected.push(
+                `sunrise-type-${key.replaceAll("_", "-")}: ${tokens.type[key]}${unit}`,
+            );
+        }
+        for (const key of MOTION_CURVE_KEYS) {
+            const { durationMs, easing } = tokens.motion.curves[key];
+            expected.push(`sunrise-motion-${key}-duration: ${durationMs}ms`);
+            expected.push(
+                `sunrise-motion-${key}-easing: cubic-bezier(${easing.join(", ")})`,
+            );
+        }
+        // Asserted positively, not just as "no reduced easing": dropping the
+        // line entirely is otherwise green.
+        expected.push(
+            `sunrise-motion-reduced-duration: ${tokens.motion.reducedDurationMs}ms`,
         );
-    });
-
-    it("states durations in milliseconds", () => {
-        expect(css).toContain("--sunrise-motion-fast-duration: 120ms;");
-        expect(css).toContain(
-            "--sunrise-motion-fast-easing: cubic-bezier(0.2, 0, 0, 1);",
-        );
-        expect(css).not.toContain("--sunrise-motion-reduced-easing");
-    });
-
-    it("carries both media queries, spelled the way a browser matches them", () => {
-        expect(css).toContain("@media (prefers-color-scheme: dark) {");
-        expect(css).toContain("@media (prefers-reduced-motion: reduce) {");
-        // Exactly two at-rules: a third would mean a theme applying
-        // unconditionally, which is how the `min-width: 0px` mutation read.
-        expect(css.match(/@media /g)).toHaveLength(2);
-    });
-
-    it("emits both themes, and emits them differently", () => {
-        const dark =
-            /@media \(prefers-color-scheme: dark\) \{([\s\S]*?)\n\}/.exec(css);
-        expect(dark, "the dark block must exist").not.toBeNull();
-        const darkBlock = dark?.[1] ?? "";
         for (const key of SURFACE_KEYS) {
-            const custom = `--sunrise-color-${key.replaceAll("_", "-")}`;
-            expect(css, `${custom} must be bound on :root`).toContain(
-                `${custom}: ${tokens.light.surface[key]};`,
-            );
-            expect(darkBlock, `${custom} must be rebound in dark`).toContain(
-                `${custom}: ${tokens.dark.surface[key]};`,
+            expected.push(
+                `sunrise-color-${key.replaceAll("_", "-")}: ${tokens.light.surface[key]}`,
             );
         }
+        for (const key of tokens.streamKeys) {
+            expected.push(`sunrise-stream-${key}: ${tokens.light.stream[key]}`);
+        }
+        expect(cssDeclarations(blocks.root ?? "")).toEqual(expected);
     });
 
-    it("emits the stream tints in both themes", () => {
-        const dark =
-            /@media \(prefers-color-scheme: dark\) \{([\s\S]*?)\n\}/.exec(css);
-        for (const key of tokens.streamKeys) {
-            expect(css).toContain(
-                `--sunrise-stream-${key}: ${tokens.light.stream[key]};`,
-            );
-            expect(dark?.[1] ?? "").toContain(
-                `--sunrise-stream-${key}: ${tokens.dark.stream[key]};`,
+    it("rebinds every colour, and only colours, under prefers-color-scheme: dark", () => {
+        const expected: string[] = [];
+        for (const key of SURFACE_KEYS) {
+            expected.push(
+                `sunrise-color-${key.replaceAll("_", "-")}: ${tokens.dark.surface[key]}`,
             );
         }
+        for (const key of tokens.streamKeys) {
+            expected.push(`sunrise-stream-${key}: ${tokens.dark.stream[key]}`);
+        }
+        expect(cssDeclarations(blocks.dark ?? "")).toEqual(expected);
+    });
+
+    it("collapses every duration, and only durations, under reduced motion", () => {
+        expect(cssDeclarations(blocks.reduced ?? "")).toEqual(
+            MOTION_CURVE_KEYS.map(
+                (key) =>
+                    `sunrise-motion-${key}-duration: ${tokens.motion.reducedDurationMs}ms`,
+            ),
+        );
     });
 });
 
-describe("the emitted TypeScript has the right shape", () => {
+// --- TypeScript ------------------------------------------------------------
+
+/** The body of `export const <name> = { … } as const;`. */
+function tsConst(ts: string, name: string): string {
+    const found = new RegExp(
+        `^export const ${name} = \\{\\n([\\s\\S]*?)\\n\\} as const;$`,
+        "m",
+    ).exec(ts);
+    expect(found, `export const ${name} must exist`).not.toBeNull();
+    return found?.[1] ?? "";
+}
+
+/** The body of a nested `<key>: { … },` at a known indent. */
+function tsNested(block: string, key: string, indent: number): string {
+    const pad = " ".repeat(indent);
+    const found = new RegExp(
+        `^${pad}${key}: \\{\\n([\\s\\S]*?)\\n${pad}\\},$`,
+        "m",
+    ).exec(block);
+    expect(found, `a nested \`${key}\` must exist`).not.toBeNull();
+    return found?.[1] ?? "";
+}
+
+/** Every `key: value,` in one block, in order. */
+function tsEntries(block: string): string[] {
+    return [...block.matchAll(/^ *([A-Za-z0-9_]+): (.+),$/gm)].map(
+        (m) => `${m[1]}: ${m[2]}`,
+    );
+}
+
+describe("the emitted TypeScript declares exactly the model, in order", () => {
     const ts = emitTs(tokens);
 
-    it("emits the light theme under light and the dark theme under dark", () => {
-        const light = / {4}light: \{([\s\S]*?)\n {4}\},/.exec(ts);
-        const dark = / {4}dark: \{([\s\S]*?)\n {4}\},/.exec(ts);
-        expect(light, "a `light:` block must exist").not.toBeNull();
-        expect(dark, "a `dark:` block must exist").not.toBeNull();
-        for (const key of SURFACE_KEYS) {
-            expect(light?.[1] ?? "").toContain(
-                `${key}: "${tokens.light.surface[key]}",`,
+    it("exports each name once", () => {
+        for (const name of [
+            "spacing",
+            "radii",
+            "typography",
+            "motion",
+            "color",
+            "streamColors",
+            "reducedMotionDurationMs",
+            "taskStateGlyph",
+        ]) {
+            expect(occurrences(ts, `export const ${name} `), name).toBe(1);
+        }
+    });
+
+    it("emits the three numeric scales whole", () => {
+        expect(tsEntries(tsConst(ts, "spacing"))).toEqual(
+            SPACE_KEYS.map((key) => `${key}: ${tokens.space[key]}`),
+        );
+        expect(tsEntries(tsConst(ts, "radii"))).toEqual(
+            RADIUS_KEYS.map((key) => `${key}: ${tokens.radius[key]}`),
+        );
+        expect(tsEntries(tsConst(ts, "typography"))).toEqual(
+            TYPE_KEYS.map((key) => `${key}: ${tokens.type[key]}`),
+        );
+    });
+
+    it("states every duration in milliseconds with its own curve", () => {
+        const motion = tsConst(ts, "motion");
+        for (const key of MOTION_CURVE_KEYS) {
+            const { durationMs, easing } = tokens.motion.curves[key];
+            expect(tsEntries(tsNested(motion, key, 4)), key).toEqual([
+                `durationMs: ${durationMs}`,
+                `easing: [${easing.join(", ")}]`,
+            ]);
+        }
+        expect(ts).toContain(
+            `export const reducedMotionDurationMs = ${tokens.motion.reducedDurationMs};`,
+        );
+    });
+
+    it("emits each theme's colours under that theme's key", () => {
+        const color = tsConst(ts, "color");
+        for (const name of ["light", "dark"] as const) {
+            const theme = tsNested(color, name, 4);
+            expect(tsEntries(tsNested(theme, "surface", 8)), name).toEqual(
+                SURFACE_KEYS.map(
+                    (key) => `${key}: "${tokens[name].surface[key]}"`,
+                ),
             );
-            expect(dark?.[1] ?? "").toContain(
-                `${key}: "${tokens.dark.surface[key]}",`,
+            expect(tsEntries(tsNested(theme, "stream", 8)), name).toEqual(
+                tokens.streamKeys.map(
+                    (key) => `${key}: "${tokens[name].stream[key]}"`,
+                ),
             );
         }
-        expect(light?.[1]).not.toBe(dark?.[1]);
+    });
+
+    it("lists the stream names in declaration order", () => {
+        const found =
+            /^export const streamColors = \[\n([\s\S]*?)\n\] as const;$/m.exec(
+                ts,
+            );
+        expect(found, "streamColors must exist").not.toBeNull();
+        expect(
+            [...(found?.[1] ?? "").matchAll(/^ *"(\w+)",$/gm)].map((m) => m[1]),
+        ).toEqual([...tokens.streamKeys]);
     });
 
     it("round-trips the task-state glyphs its one consumer reads", () => {
-        expect(ts).toContain('todo: "[ ]",');
-        expect(ts).toContain('in_progress: "[·]",');
-        expect(ts).toContain('done: "[x]",');
-        expect(ts).toContain('cancelled: "[/]",');
-    });
-
-    it("states durations in milliseconds and keeps the scales whole", () => {
-        expect(ts).toContain("durationMs: 120,");
-        expect(ts).toContain("export const reducedMotionDurationMs = 0;");
-        for (const key of SPACE_KEYS) {
-            expect(ts).toContain(`    ${key}: ${tokens.space[key]},`);
-        }
+        expect(tsEntries(tsConst(ts, "taskStateGlyph"))).toEqual([
+            'todo: "[ ]"',
+            'in_progress: "[·]"',
+            'done: "[x]"',
+            'cancelled: "[/]"',
+        ]);
     });
 });
 
-describe("the emitted Swift has the right shape", () => {
+// --- Swift -----------------------------------------------------------------
+
+/** The body of `enum <name> {` at a known indent, brace-matched. */
+function swiftEnum(source: string, name: string, indent: number): string {
+    const pad = " ".repeat(indent);
+    const open = `${pad}enum ${name} {\n`;
+    expect(occurrences(source, open), `${name} must be declared once`).toBe(1);
+    const start = source.indexOf(open) + open.length;
+    const end = source.indexOf(`\n${pad}}`, start);
+    expect(end, `${name} must be closed`).toBeGreaterThan(start);
+    return source.slice(start, end);
+}
+
+/** Every `static let name = value` / `static let name: T = value`, in order. */
+function swiftLets(block: string): string[] {
+    return [
+        ...block.matchAll(/^ *static let (\w+)(: [\w[\]]+)? = (.+)$/gm),
+    ].map((m) => `${m[1]}${m[2] ?? ""} = ${m[3]}`);
+}
+
+describe("the emitted Swift declares exactly the model, in order", () => {
     const swift = emitSwift(tokens);
 
-    it("divides colour channels by 255", () => {
-        expect(swift).toContain(
-            "static let bg = RGB(red: 251 / 255, green: 251 / 255, blue: 250 / 255)",
-        );
-        expect(swift).not.toContain("/ 256");
+    it("imports Foundation and CoreGraphics and nothing else", () => {
+        expect(
+            [...swift.matchAll(/^import (\w+)$/gm)].map((m) => m[1]).sort(),
+        ).toEqual(["CoreGraphics", "Foundation"]);
     });
 
-    it("emits every scale, whole", () => {
-        expect(swift).toContain("enum Space {");
-        for (const key of SPACE_KEYS) {
-            expect(swift).toContain(
-                `static let ${key}: CGFloat = ${tokens.space[key]}`,
+    it("makes every value type Sendable, so a `static let` is legal", () => {
+        for (const type of ["RGB", "Easing", "MotionToken"]) {
+            expect(swift).toContain(`struct ${type}: Sendable, Equatable {`);
+        }
+    });
+
+    it("emits the three CGFloat scales whole", () => {
+        expect(swiftLets(swiftEnum(swift, "Space", 4))).toEqual(
+            SPACE_KEYS.map((key) => `${key}: CGFloat = ${tokens.space[key]}`),
+        );
+        expect(swiftLets(swiftEnum(swift, "Radius", 4))).toEqual(
+            RADIUS_KEYS.map((key) => `${key}: CGFloat = ${tokens.radius[key]}`),
+        );
+        expect(swiftLets(swiftEnum(swift, "Typography", 4))).toEqual(
+            TYPE_KEYS.map(
+                (key) =>
+                    `${key.replace(/_(.)/g, (_, c: string) => c.toUpperCase())}: CGFloat = ${tokens.type[key]}`,
+            ),
+        );
+    });
+
+    it("states durations in seconds, with each curve's own control points", () => {
+        const motion = swiftEnum(swift, "Motion", 4);
+        const found = [
+            ...motion.matchAll(
+                /static let (\w+) = MotionToken\(\n *duration: (\S+) \/ 1000,\n *easing: Easing\(x1: (\S+), y1: (\S+), x2: (\S+), y2: (\S+)\)\n *\)/g,
+            ),
+        ].map((m) => m.slice(1, 7).join(" "));
+        expect(found).toEqual(
+            MOTION_CURVE_KEYS.map((key) => {
+                const { durationMs, easing } = tokens.motion.curves[key];
+                return [key, durationMs, ...easing].join(" ");
+            }),
+        );
+        // Seconds, not milliseconds: `/ 1000` on every one, and the policy
+        // value spelled the same way.
+        expect(motion).toContain(
+            `static let reducedDuration: TimeInterval = ${tokens.motion.reducedDurationMs} / 1000`,
+        );
+    });
+
+    it("emits each theme's colours under that theme's nested enum", () => {
+        const surface = swiftEnum(swift, "Surface", 4);
+        const stream = swiftEnum(swift, "Stream", 4);
+        for (const [name, theme] of [
+            ["Light", "light"],
+            ["Dark", "dark"],
+        ] as const) {
+            const rgb = (hex: Hex) => {
+                const [red, green, blue] = channels(hex);
+                // `/ 255`, never `/ 256`: the comment carries the source hex so
+                // a swapped block is visible in the failure diff too.
+                return `RGB(red: ${red} / 255, green: ${green} / 255, blue: ${blue} / 255)  // ${hex}`;
+            };
+            expect(swiftLets(swiftEnum(surface, name, 8)), name).toEqual(
+                SURFACE_KEYS.map(
+                    (key) =>
+                        `${key.replace(/_(.)/g, (_, c: string) => c.toUpperCase())} = ${rgb(tokens[theme].surface[key] as Hex)}`,
+                ),
+            );
+            expect(swiftLets(swiftEnum(stream, name, 8)), name).toEqual(
+                tokens.streamKeys.map(
+                    (key) =>
+                        `${key} = ${rgb(tokens[theme].stream[key] as Hex)}`,
+                ),
             );
         }
-        expect(swift).toContain("enum Radius {");
-        expect(swift).toContain("static let pill: CGFloat = 9999");
-        expect(swift).toContain("enum Typography {");
-        expect(swift).toContain("static let sizeXs: CGFloat = 11");
     });
 
-    it("states durations in seconds, not milliseconds", () => {
-        expect(swift).toContain("duration: 120 / 1000,");
+    it("lists the stream names in declaration order", () => {
         expect(swift).toContain(
-            "static let reducedDuration: TimeInterval = 0 / 1000",
-        );
-        expect(swift).not.toMatch(/duration: \d+,\s*$/m);
-    });
-
-    it("emits both themes, and emits them differently", () => {
-        const light = /enum Light \{([\s\S]*?)\n {8}\}/.exec(swift);
-        const dark = /enum Dark \{([\s\S]*?)\n {8}\}/.exec(swift);
-        expect(light?.[1]).toBeDefined();
-        expect(dark?.[1]).toBeDefined();
-        expect(light?.[1]).not.toBe(dark?.[1]);
-        expect(swift).toContain(
-            `static let bg = ${rgbLiteral(tokens.dark.surface.bg)}  // ${tokens.dark.surface.bg}`,
-        );
-    });
-
-    it("lists the stream names a hand-written enum can be checked against", () => {
-        expect(swift).toContain(
-            `static let names: [String] = [${tokens.streamKeys.map((k) => `"${k}"`).join(", ")}]`,
+            `static let names: [String] = [${tokens.streamKeys.map((key) => `"${key}"`).join(", ")}]`,
         );
     });
 });
 
-describe("the emitted Rust has the right shape", () => {
+// --- Rust ------------------------------------------------------------------
+
+describe("the emitted Rust declares exactly the model, in order", () => {
     const rust = emitRust(tokens);
-
-    it("keeps the dark surface constants dark", () => {
-        for (const key of SURFACE_KEYS) {
-            const name = key.toUpperCase();
-            expect(rust).toContain(
-                `pub const SURFACE_LIGHT_${name}: [u8; 3] = ${rustLiteral(tokens.light.surface[key])};`,
-            );
-            expect(rust).toContain(
-                `pub const SURFACE_DARK_${name}: [u8; 3] = ${rustLiteral(tokens.dark.surface[key])};`,
-            );
-        }
-    });
-
-    it("states durations in milliseconds and types floats as floats", () => {
-        expect(rust).toContain("pub const MOTION_FAST_DURATION_MS: u32 = 120;");
-        expect(rust).toContain(
-            "pub const MOTION_REDUCED_DURATION_MS: u32 = 0;",
-        );
-        expect(rust).not.toContain("MOTION_REDUCED_EASING");
-        expect(rust).toContain("pub const TYPE_LINE_TIGHT: f32 = 1.25;");
-        expect(rust).toContain(
-            "pub const MOTION_FAST_EASING: [f32; 4] = [0.2, 0.0, 0.0, 1.0];",
-        );
-    });
 
     it("stays `include!`-ready: no inner doc comment", () => {
         // `//!` in expansion position is a hard parse error (E0753), so the
@@ -282,11 +455,81 @@ describe("the emitted Rust has the right shape", () => {
         expect(rust.split("\n")[0]).toMatch(/^\/\/ Generated by/);
     });
 
-    it("emits every scale, whole", () => {
+    it("declares every constant once, in order, with the right type", () => {
+        const rgb = (hex: Hex) =>
+            `[u8; 3] = [0x${hex.slice(1, 3)}, 0x${hex.slice(3, 5)}, 0x${hex.slice(5, 7)}]`;
+        const expected: string[] = [];
         for (const key of SPACE_KEYS) {
-            expect(rust).toContain(
-                `pub const SPACE_${key.toUpperCase()}: u32 = ${tokens.space[key]};`,
+            expected.push(
+                `SPACE_${key.toUpperCase()}: u32 = ${tokens.space[key]}`,
             );
+        }
+        for (const key of RADIUS_KEYS) {
+            expected.push(
+                `RADIUS_${key.toUpperCase()}: u32 = ${tokens.radius[key]}`,
+            );
+        }
+        for (const key of TYPE_KEYS) {
+            // `pub const X: f32 = 0;` does not compile, so a float always
+            // carries a point — and a size must not.
+            const value = tokens.type[key] as number;
+            expected.push(
+                key.startsWith("line_")
+                    ? `TYPE_${key.toUpperCase()}: f32 = ${Number.isInteger(value) ? `${value}.0` : value}`
+                    : `TYPE_${key.toUpperCase()}: u32 = ${value}`,
+            );
+        }
+        for (const key of MOTION_CURVE_KEYS) {
+            const { durationMs, easing } = tokens.motion.curves[key];
+            const name = key.toUpperCase();
+            expected.push(`MOTION_${name}_DURATION_MS: u32 = ${durationMs}`);
+            expected.push(
+                `MOTION_${name}_EASING: [f32; 4] = [${easing
+                    .map((point) =>
+                        Number.isInteger(point) ? `${point}.0` : point,
+                    )
+                    .join(", ")}]`,
+            );
+        }
+        expected.push(
+            `MOTION_REDUCED_DURATION_MS: u32 = ${tokens.motion.reducedDurationMs}`,
+        );
+        for (const [prefix, theme] of [
+            ["LIGHT", "light"],
+            ["DARK", "dark"],
+        ] as const) {
+            for (const key of SURFACE_KEYS) {
+                expected.push(
+                    `SURFACE_${prefix}_${key.toUpperCase()}: ${rgb(tokens[theme].surface[key] as Hex)}`,
+                );
+            }
+        }
+        for (const [prefix, theme] of [
+            ["LIGHT", "light"],
+            ["DARK", "dark"],
+        ] as const) {
+            for (const key of tokens.streamKeys) {
+                expected.push(
+                    `STREAM_${prefix}_${key.toUpperCase()}: ${rgb(tokens[theme].stream[key] as Hex)}`,
+                );
+            }
+        }
+
+        const found = [
+            ...rust.matchAll(/^pub const (\w+): (.+) = (.+);$/gm),
+        ].map((m) => `${m[1]}: ${m[2]} = ${m[3]}`);
+        expect(found).toEqual(expected);
+    });
+
+    it("documents every constant, so a `missing_docs` crate can include! it", () => {
+        const lines = rust.split("\n");
+        for (const [index, line] of lines.entries()) {
+            if (line.startsWith("pub const ")) {
+                expect(
+                    lines[index - 1],
+                    `${line} must carry an outer doc comment`,
+                ).toMatch(/^\/\/\/ /);
+            }
         }
     });
 });
