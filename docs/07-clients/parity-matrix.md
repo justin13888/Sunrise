@@ -292,12 +292,16 @@ over:
   iPad-only, because dragging in from another app needs two apps on screen.
 
   Two further things are narrow that no row is about, and they are worth
-  naming here rather than losing. **The shared sheets are Mac-shaped**:
-  unconditional frames of 520 points on the settings `Form`
-  (`AccountView.swift:101`), 460 on the task editor
-  (`TaskEditorView.swift:97`), 420 on the block editor
-  (`BlockEditorView.swift:35`) and 560×520 on the pairing sheet
-  (`PairingView.swift:25`) — none behind an `#if`, all wider than an iPhone.
+  naming here rather than losing. **The shared sheets are Mac-shaped**: seven
+  fixed frames that an iOS user can reach, none behind an `#if` and every one
+  wider than an iPhone — 520 points on the settings `Form` (`AccountView`,
+  `AccountView.swift:101`), 560×520 on the pairing sheet (`PairingView`,
+  `PairingView.swift:25`), 460 on the task editor (`TaskEditorView`,
+  `TaskEditorView.swift:97`), 440 on the routine editor (`RoutineEditorView`,
+  `RoutineEditorView.swift:132`), and three inside `BlockEditorView.swift`:
+  420 on the block draft sheet (`BlockDraftSheetView`, `:35`), 460 on the block
+  editor itself (`BlockEditorView`, `:155`) and 620 on the conflict adjuster
+  (`AdjustBlocksView`, `:280`).
   **And the copy still calls the device a Mac**: `Platform.deviceName`
   (`PlatformKit.swift:163-183`) exists for exactly this and has two callers,
   while seventeen further lines across six shared files say "Mac" outright —

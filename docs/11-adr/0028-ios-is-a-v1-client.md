@@ -227,14 +227,25 @@ is tested, and has not been released.
   in the matrix; it has no issue of its own yet.
 
 - **A layout defect is now inside a graded row rather than outside the table.**
-  Several shared sheets carry unconditional Mac-sized frames — the settings
-  `Form` is `.frame(width: 520)` (`Views/AccountView.swift:101`), the task
-  editor 460 (`Views/TaskEditorView.swift:97`), the block editor 420
-  (`Views/BlockEditorView.swift:35`), the pairing sheet 560×520
-  (`Views/PairingView.swift:25`) — all wider than an iPhone, none behind an
-  `#if`. Multi-account and first-run pairing are graded **met** because the
-  capability is reachable; the width is recorded under *What is still narrow*
-  rather than allowed to sink a verdict it does not change.
+  Seven shared sheets an iOS user can reach carry unconditional Mac-sized
+  frames — the settings `Form` is `.frame(width: 520)`
+  (`AccountView`, `Views/AccountView.swift:101`), the pairing sheet 560×520
+  (`PairingView`, `Views/PairingView.swift:25`), the task editor 460
+  (`TaskEditorView`, `Views/TaskEditorView.swift:97`), the routine editor 440
+  (`RoutineEditorView`, `Views/RoutineEditorView.swift:132`), and three in
+  `Views/BlockEditorView.swift`, which holds three sheets and not one: the
+  block draft sheet 420 (`BlockDraftSheetView`, `:35`), the block editor 460
+  (`BlockEditorView`, `:155`) and the conflict adjuster 620
+  (`AdjustBlocksView`, `:280`) — all wider than an iPhone, none behind an
+  `#if`. That is the whole set: the remaining oversized frames in shared files
+  are either unreachable from the tab shell (`Views/IcalView.swift:35`, behind
+  the `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
+  `Keyboard/CommandPaletteView.swift:20` and `:182`, behind a palette iOS hands
+  an inert closure at `iOS/VaultTabs.swift:286`) or already guarded
+  (`Views/QuickCaptureView.swift:88-91`). Multi-account and first-run pairing
+  are graded **met** because the capability is reachable; the width is recorded
+  under *What is still narrow* rather than allowed to sink a verdict it does
+  not change.
 
 - **ADR-0019's revisit trigger 1 is superseded on this point only.** Its
   amendment's remaining claims stand: the seam held, a second Apple platform
