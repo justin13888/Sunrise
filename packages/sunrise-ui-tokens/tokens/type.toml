@@ -1,0 +1,20 @@
+# Typography, per docs/07-clients/shared-ui-system.md §Typography.
+#
+# Sizes are points/pixels, weights are CSS numeric weights, and line heights are
+# unitless multipliers. No font *family* is a token: each platform uses its own
+# system face (SF on Apple, `system-ui` on the web), which is a rendering choice
+# rather than a shared value.
+size_xs = 11
+size_sm = 13
+size_base = 15
+size_lg = 17
+size_xl = 22
+size_2xl = 28
+
+weight_regular = 400
+weight_medium = 500
+weight_semibold = 600
+weight_bold = 700
+
+line_tight = 1.25
+line_normal = 1.5

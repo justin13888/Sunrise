@@ -109,6 +109,36 @@ run = ".github/scripts/orphan-crate-gate.py"
 description = "Regenerate the OpenAPI description from the handlers that produce it"
 run = "cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json"
 
+# The same shape as `openapi` above, and for the same reason: the four files
+# under `packages/sunrise-ui-tokens/generated/` are *inputs* — Xcode compiles
+# `tokens.swift` and Vite bundles `tokens.css` — rather than reports, and
+# neither build environment has Bun or mise on PATH to produce them on demand.
+# `tokens-check` fails until this has been re-run. See ADR-0029.
+[tasks.tokens]
+description = "Regenerate the design tokens from packages/sunrise-ui-tokens/tokens/*.toml"
+run = "bun run packages/sunrise-ui-tokens/build.ts"
+
+[tasks.tokens-check]
+description = "Reject generated tokens that have drifted, and prove tokens.rs still compiles"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+bun run packages/sunrise-ui-tokens/build.ts >/dev/null
+git diff --exit-code -- packages/sunrise-ui-tokens/generated \
+  || { echo "tokens: the generated files are stale; run \`mise run tokens\` and commit the result." >&2; exit 1; }
+
+# `tokens.rs` is the one output with no consumer (ADR-0029), so nothing else
+# would notice it stop compiling. These two checks are what keep it a Rust file
+# rather than a text file with a .rs extension. It is not a Cargo member and
+# adds nothing to Cargo.toml or Cargo.lock, so `rustc` is invoked directly on
+# the pinned toolchain.
+meta="$(mktemp -d)"
+trap 'rm -rf "$meta"' EXIT
+rustc --edition 2021 --crate-type rlib --emit=metadata \
+  --out-dir "$meta" packages/sunrise-ui-tokens/generated/tokens.rs
+rustfmt --check --edition 2021 packages/sunrise-ui-tokens/generated/tokens.rs
+'''
+
 [tasks.bench]
 description = "Run the Criterion benchmark suite (submit / query_today / fts / sync_session)"
 run = "cargo bench -p sunrise-bench"

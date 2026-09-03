@@ -1,0 +1,9 @@
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "noEmit": true
+    },
+    // No `rootDir`, unlike `packages/sunrise-ui`: `build.ts` sits at the package
+    // root, outside `src/`, so a root of `src` would reject it.
+    "include": ["src/**/*", "build.ts", "test/**/*", "generated/**/*"]
+}

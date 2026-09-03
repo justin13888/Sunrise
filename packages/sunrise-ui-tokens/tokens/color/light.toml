@@ -1,0 +1,36 @@
+# Light-theme colour, per docs/07-clients/shared-ui-system.md §Color.
+#
+# Two tables, and they answer different questions.
+#
+# `[surface]` is semantic: a client asks for `accent`, never for a blue. Its
+# keys and `dark.toml`'s must match exactly, and the contrast ratios between
+# them are asserted in test/invariants.test.ts against
+# docs/10-cross-cutting/accessibility.md §Color and contrast.
+#
+# `[stream]` is *not* semantic and is not generated from `accent`. Its keys are
+# the eight variants of `StreamColor` in crates/sunrise-domain/src/stream.rs,
+# which is a serde-stable enum persisted in the vault — so the palette is
+# enumerated to match the enum, and test/invariants.test.ts reads that file and
+# fails if the two lists diverge.
+
+[surface]
+bg = "#fbfbfa"
+fg = "#1a1a1a"
+muted = "#6e6e73"
+accent = "#2563eb"
+accent_text = "#ffffff"
+border = "#e5e5e7"
+danger = "#dc2626"
+warning = "#d97706"
+success = "#059669"
+info = "#0891b2"
+
+[stream]
+slate = "#475569"
+rose = "#e11d48"
+amber = "#d97706"
+emerald = "#059669"
+sky = "#0284c7"
+indigo = "#4f46e5"
+violet = "#7c3aed"
+pink = "#db2777"

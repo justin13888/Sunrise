@@ -1,0 +1,30 @@
+# Motion, per docs/07-clients/shared-ui-system.md §Motion.
+#
+# `easing` is four cubic-Bézier control points — x1, y1, x2, y2 — and not a CSS
+# `cubic-bezier(...)` string. Only one of the four emitters speaks CSS; storing
+# the string would make the Swift and Rust emitters parse it back out.
+#
+# `reduced` is the policy value, not a curve anybody picks: it is what every
+# other entry collapses to when the platform reports a reduced-motion
+# preference. The CSS emitter writes it into a `prefers-reduced-motion: reduce`
+# block; the Swift adapter returns `nil` instead of an `Animation`.
+
+[fast]
+duration_ms = 120
+easing = [0.2, 0.0, 0.0, 1.0]
+
+[med]
+duration_ms = 220
+easing = [0.4, 0.0, 0.2, 1.0]
+
+[slow]
+duration_ms = 360
+easing = [0.4, 0.0, 0.2, 1.0]
+
+[linear]
+duration_ms = 0
+easing = [0.0, 0.0, 1.0, 1.0]
+
+[reduced]
+duration_ms = 0
+easing = [0.0, 0.0, 1.0, 1.0]
