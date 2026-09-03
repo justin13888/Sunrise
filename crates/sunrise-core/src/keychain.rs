@@ -160,6 +160,13 @@ pub enum KeychainError {
 }
 
 /// The account identity: one keypair pair per account, not per device.
+///
+/// `identity_id` keeps its full name rather than shortening to `id`: it is the
+/// name the format carries — `identity_id_from_pub`, the `identity` table's
+/// column, field 5 of `PairingPayload`, the `identity_id` in every `DeviceCert`
+/// — and one struct renaming it would be the only place in the tree where the
+/// value is called something else.
+#[allow(clippy::struct_field_names)]
 pub struct Identity {
     identity_id: [u8; 16],
     signing: IdentitySigningKeyPair,
@@ -173,6 +180,13 @@ impl std::fmt::Debug for Identity {
             .finish_non_exhaustive()
     }
 }
+
+/// Every Stream key one device holds, indexed by `(stream_id, epoch)`.
+///
+/// A `Vec` per slot rather than one key: two devices can mint the same epoch
+/// concurrently and both keys are kept, with the AEAD tag deciding which one
+/// opens a given op.
+type StreamKeyCache = Mutex<HashMap<([u8; 16], u32), Vec<StreamKey>>>;
 
 /// Persistent per-device keychain.
 pub struct Keychain {
@@ -190,7 +204,7 @@ pub struct Keychain {
     /// back transaction never committed simply fails to open anything. The
     /// *live epoch* is never read from here — that comes from the table inside
     /// the caller's transaction, where it is consistent by construction.
-    cache: Mutex<HashMap<([u8; 16], u32), Vec<StreamKey>>>,
+    cache: StreamKeyCache,
     /// Engine unit tests only: mint and look up Stream keys by the
     /// pre-ADR-0024 derivation instead of drawing them at random.
     ///
@@ -474,25 +488,7 @@ impl Keychain {
         let (wrapped_signing, wrapped_dh) =
             wrap_device_secrets(&vault_root, &signing, &device_dh, &device_id, rng);
 
-        // Every stream this vault could hold ops for. The two fixed ids are in
-        // the set unconditionally: the meta stream never has a `streams` row,
-        // and the Inbox's only appears once a task lands in it.
-        let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
-        streams.insert(crate::engine::META_STREAM);
-        streams.insert(INBOX_STREAM_BYTES);
-        {
-            let conn = db.conn();
-            for sql in [
-                "SELECT DISTINCT stream_id FROM ops",
-                "SELECT stream_id FROM streams",
-            ] {
-                let mut stmt = conn.prepare(sql)?;
-                let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
-                for row in rows {
-                    streams.insert(to16(&row?));
-                }
-            }
-        }
+        let streams = legacy_stream_set(db)?;
 
         db.with_tx(|tx| {
             insert_identity_row(tx, &identity, &wrapped_identity, now_ms)?;
@@ -852,6 +848,11 @@ impl Keychain {
 
     /// 32 fresh random bytes — the whole point of ADR-0024, and the reason a
     /// Stream key can be rotated at all.
+    // `self` is read only by the `cfg(test)` branch below, which is the whole
+    // point of it being a method: a derived-key test keychain has to mint the
+    // key the other replica would derive. Taking `&self` unconditionally keeps
+    // one call site rather than two.
+    #[allow(clippy::unused_self)]
     fn fresh_key(&self, stream_id: &[u8; 16], epoch: u32, rng: &dyn Rng) -> StreamKey {
         #[cfg(test)]
         if self.test_derived_keys {
@@ -1086,6 +1087,31 @@ const LEGACY_EPOCH: u32 = 1;
 /// change has ops sealed under these exact bytes, and adopting it means
 /// recomputing them once.
 ///
+/// Every stream a pre-ADR-0024 vault could hold ops for.
+///
+/// The two fixed ids are in the set unconditionally: the vault-meta stream
+/// never has a `streams` row, and the Inbox's only appears once a task has
+/// landed in it.
+///
+/// Delete at 1.0, along with [`Keychain::adopt_legacy_vault`].
+fn legacy_stream_set(db: &Db) -> rusqlite::Result<std::collections::BTreeSet<[u8; 16]>> {
+    let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
+    streams.insert(crate::engine::META_STREAM);
+    streams.insert(INBOX_STREAM_BYTES);
+    let conn = db.conn();
+    for sql in [
+        "SELECT DISTINCT stream_id FROM ops",
+        "SELECT stream_id FROM streams",
+    ] {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        for row in rows {
+            streams.insert(to16(&row?));
+        }
+    }
+    Ok(streams)
+}
+
 /// Delete at 1.0, along with [`Keychain::adopt_legacy_vault`].
 fn legacy_derived_stream_key(
     vault_root: &VaultRootKey,

@@ -291,7 +291,7 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     #[allow(clippy::print_stderr)]
     for line in open_log
         .into_iter()
-        .chain(livesync::apply_plan(&core, &plan).await)
+        .chain(livesync::apply_plan(&core, &plan))
     {
         eprintln!("{line}");
     }

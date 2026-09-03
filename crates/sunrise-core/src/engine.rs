@@ -3669,6 +3669,12 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// with `deleted` set, so a winning delete replaces the whole row and a delete
 /// that overtakes its own create still materializes the tombstone (see
 /// [`crate::inner_op`] docs and ADR-0014).
+//
+// Two arms below have empty bodies and are deliberately not merged: the
+// append-only families and the control families are handled by different
+// guards earlier in the function, and spelling both out is what makes adding a
+// fifth family a compile-time decision rather than a silent fall-through.
+#[allow(clippy::match_same_arms)]
 fn materialize_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
@@ -10777,7 +10783,7 @@ mod tests {
         stream: &[u8; 16],
     ) {
         let (epoch, key) = sdb
-            .with_tx(|tx| Ok(sender.keychain.current_stream_key_tx(tx, stream)?))
+            .with_tx(|tx| sender.keychain.current_stream_key_tx(tx, stream))
             .unwrap()
             .expect("the sender holds a key for this stream");
         rdb.with_tx(|tx| {

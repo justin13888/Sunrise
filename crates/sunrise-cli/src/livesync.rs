@@ -174,9 +174,11 @@ pub fn ws_factory(url: &str, credential: TokenSource) -> TransportFactory {
 /// is chosen when the vault is created, not afterwards. [`open_with_plan`]
 /// reads it before `Core::open`.
 ///
-/// Must be called from within a tokio runtime ([`Core::start_sync`] spawns the
-/// driver task). Every step is best-effort for the demo: a missing/unwritable
-/// pairing file is logged, not fatal.
+/// Not `async`, but must still be called from within a tokio runtime:
+/// [`Core::start_sync`] spawns the driver task. It awaits nothing itself —
+/// adopting a pairing payload is the one step that has to happen inside
+/// `Core::open`, so it left this function. Every step is best-effort for the
+/// demo: a missing/unwritable pairing file is logged, not fatal.
 ///
 /// # Two outputs, on purpose
 ///
@@ -189,7 +191,7 @@ pub fn ws_factory(url: &str, credential: TokenSource) -> TransportFactory {
 /// The `tracing` events emitted alongside carry the *structure* — did it work,
 /// which relay host, what failed — with no paths in them. Integration tests
 /// read the strings; the log reads the events.
-pub async fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
+pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     let mut log = Vec::new();
 
     if let Some(path) = &plan.export_pairing {
@@ -353,7 +355,7 @@ pub async fn open_with_plan(
         .await?,
     );
     let mut log = preamble;
-    log.extend(apply_plan(&core, plan).await);
+    log.extend(apply_plan(&core, plan));
     Ok((core, log))
 }
 

@@ -108,7 +108,7 @@ async fn context_names(core: &Core) -> Vec<String> {
 /// The revocation is an op like any other: it reaches a peer over the relay, so
 /// a peer's view of it is eventually consistent and has to be waited on.
 async fn wait_revoked(core: &Core, device: [u8; 16], timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let seen = match core.query(Query::DeviceList).await.expect("device list") {
             QueryResult::Devices(rows) => rows
@@ -121,7 +121,7 @@ async fn wait_revoked(core: &Core, device: [u8; 16], timeout: Duration) {
             return;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "timed out waiting for the revocation to reach a peer"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -129,13 +129,13 @@ async fn wait_revoked(core: &Core, device: [u8; 16], timeout: Duration) {
 }
 
 async fn wait_context(core: &Core, name: &str, timeout: Duration) {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if context_names(core).await.iter().any(|n| n == name) {
             return;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "timed out waiting for the context {name:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;

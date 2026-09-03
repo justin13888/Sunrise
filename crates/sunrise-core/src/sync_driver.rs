@@ -936,24 +936,7 @@ async fn handle_frame(
                 }
                 match core.apply_remote_all(env).await {
                     Ok(events) if !events.is_empty() => {
-                        for ev in &events {
-                            // Newly-learned stream (StreamCreate): subscribe to
-                            // its channel so its task ops flow. Scanned across
-                            // every event the delivery produced, because one
-                            // envelope can produce several — a `key_envelope`
-                            // op releases whatever was parked waiting for its
-                            // key, and a `stream.create` can be among them.
-                            if let DomainEvent::Created(r) = ev {
-                                if r.kind() == EntityKind::Stream {
-                                    let sid = *r.bytes();
-                                    if subscribed.insert(sid) {
-                                        if let Ok(frame) = encode_subscribe_one(sid) {
-                                            pending_sends.push(frame);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        subscribe_to_new_streams(&events, subscribed, pending_sends);
                         shared.mark_synced(core.now_ms());
                     }
                     // Idempotent re-receive, or an op parked awaiting its key:
@@ -1167,6 +1150,34 @@ fn encode_subscribe_all(core: &Core) -> Result<Vec<u8>, ()> {
     let sub = SubscribePayload { streams: entries };
     let bytes = sub.encode().map_err(|_| ())?;
     encode_frame(MsgKind::Subscribe, FrameFlags::EMPTY, &bytes).map_err(|_| ())
+}
+
+/// Queue a `Subscribe` for every Stream a delivery just taught this device
+/// about, so that Stream's task ops start flowing.
+///
+/// Scanned across **every** event one delivery produced, not just the first: a
+/// `key_envelope` op releases whatever was parked waiting for its key, and a
+/// `stream.create` can be among them. A driver that read only the first event
+/// would never subscribe, and the Stream's tasks would never arrive.
+fn subscribe_to_new_streams(
+    events: &[DomainEvent],
+    subscribed: &mut HashSet<[u8; 16]>,
+    pending_sends: &mut Vec<Vec<u8>>,
+) {
+    for ev in events {
+        let DomainEvent::Created(r) = ev else {
+            continue;
+        };
+        if r.kind() != EntityKind::Stream {
+            continue;
+        }
+        let sid = *r.bytes();
+        if subscribed.insert(sid) {
+            if let Ok(frame) = encode_subscribe_one(sid) {
+                pending_sends.push(frame);
+            }
+        }
+    }
 }
 
 /// Whether an `apply_remote` failure means the bytes were damaged, as opposed

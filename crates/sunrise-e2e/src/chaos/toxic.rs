@@ -28,7 +28,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rand::Rng;
@@ -191,7 +191,11 @@ pub struct Toxic<T: Transport> {
     /// another branch wins. A frame held across an `await` on the stack goes
     /// with it — a loss no test asked the injector for, and one that grows
     /// with the delay range. Parked in the wrapper it simply resumes.
-    held: Option<(Vec<u8>, Instant)>,
+    ///
+    /// `tokio::time::Instant` rather than `std::time::Instant`: this is a
+    /// transport deadline, not a reading of the wall clock the workspace lint
+    /// is protecting, and it is what `sleep_until` takes.
+    held: Option<(Vec<u8>, tokio::time::Instant)>,
 }
 
 impl<T: Transport> fmt::Debug for Toxic<T> {
@@ -327,13 +331,13 @@ impl<T: Transport> Transport for Toxic<T> {
                     continue;
                 }
                 let frame = self.maybe_corrupt(frame);
-                let due = Instant::now() + self.sample_delay();
+                let due = tokio::time::Instant::now() + self.sample_delay();
                 self.held = Some((frame, due));
             }
             let Some((_, due)) = self.held.as_ref() else {
                 unreachable!("held was just filled");
             };
-            tokio::time::sleep_until(tokio::time::Instant::from_std(*due)).await;
+            tokio::time::sleep_until(*due).await;
             let Some((frame, _)) = self.held.take() else {
                 unreachable!("held was just filled");
             };

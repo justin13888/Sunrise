@@ -95,7 +95,7 @@ async fn wait_stream_tasks(
     n: usize,
     timeout: Duration,
 ) {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let count = match core
             .query(Query::StreamTasks(stream))
@@ -109,7 +109,7 @@ async fn wait_stream_tasks(
             return;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            tokio::time::Instant::now() < deadline,
             "timed out waiting for {n} tasks in the post-pairing stream (saw {count})"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
