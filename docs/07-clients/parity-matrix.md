@@ -366,8 +366,9 @@ never has to be re-derived from scratch to find out what it covered.
   `met *(list keymap)*`, `met *(frontmost only)*`,
   `met *(seven of eight cells)*`, `met *(six of eight cells)*`,
   `met *(windowed, no round-trip)*`, `met *(0600 on unix only)*`,
-  `met *(today, no context filter)*` — discharges the row's requirement. The qualifier names which part of the specified capability
-  is reachable, and it is repeated under
+  `met *(today, no context filter)*` — discharges the row's requirement. The
+  qualifier names which part of the specified capability is reachable, and it
+  is repeated under
   [What is still narrow](#what-is-still-narrow) so the narrowness never has to
   be re-derived. A qualifier is **not** a *partial*: *partial* means a user
   cannot complete the row's core action.
@@ -391,9 +392,15 @@ never has to be re-derived from scratch to find out what it covered.
   measuring against the capability rather than against that row. A title
   parenthetical covers only what it says, though — *Today / Inbox / Stream
   views (list form)* names the output shape, so the missing `today` context
-  filter is a different shortfall and still earns its qualifier. And a
-  shortfall with **no row** stays in the notes: Print's two skipped surfaces
-  are recorded against a SHOULD that the 23-MUST audit has no line for.
+  filter is a different shortfall and still earns its qualifier. And a recorded
+  shortfall with **no verdict cell** cannot carry a qualifier at all — the
+  audit tables grade the MUSTs, and iOS its SHOULDs, so a narrowness belonging
+  to a capability graded at some other level has nowhere to attach and stays in
+  the notes. There are two of those today. Print's two skipped surfaces belong
+  to a macOS **SHOULD** the 23-MUST audit has no line for. The CLI's unwritable
+  Task `body` belongs to its *Notes* row, a **MAY** the 9-MUST audit has no
+  line for — which is why *Read/write tasks*, in whose cell that gap is
+  recorded, is bare.
 
 ## What the CLI is and is not
 
