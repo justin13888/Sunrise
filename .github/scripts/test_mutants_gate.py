@@ -320,18 +320,36 @@ class GateContract(unittest.TestCase):
         result = self.run_gate(str(run), "--baseline", str(base))
         self.assert_code(result, 1, "no floor recorded")
 
-    def test_tolerance_absorbs_a_timeout_flake(self):
-        # 0.5 points by default, and no more: this is the width of the
-        # timeout flake, not a licence to lose coverage.
+    def test_default_tolerance_is_half_a_point(self):
+        # The default exists to absorb one thing — a timeout that depends on
+        # how loaded the machine was — and it is sized to that and no more.
+        # An unpinned default is a silent licence: at 5.0 a real 4.9-point
+        # loss of coverage passes this gate without a word. So both sides of
+        # the boundary are asserted, which fixes the number at 0.5 from
+        # above and below. Measured here is 50.0%.
         run = outcomes_file(
-            self.tmp / "a.json", "sunrise-sync", caught=999, missed=1)
-        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 100.0})
-        self.assert_code(self.run_gate(str(run), "--baseline", str(base)), 0)
-        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 100.0})
+            self.tmp / "a.json", "sunrise-sync", caught=1, missed=1)
+
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.5})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            0, "50.0% vs floor 50.5% — ok",
+        )
+
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.6})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            1, "mutation coverage regressed",
+        )
+
+    def test_tolerance_flag_overrides_the_default(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, missed=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.6})
         self.assert_code(
             self.run_gate(
-                str(run), "--baseline", str(base), "--tolerance", "0.05"),
-            1, "mutation coverage regressed",
+                str(run), "--baseline", str(base), "--tolerance", "1.0"),
+            0, "50.0% vs floor 50.6% — ok",
         )
 
     # --- a lost shard is an infrastructure failure, not a regression ------
