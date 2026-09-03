@@ -10745,6 +10745,166 @@ mod tests {
         Engine::from_clock(clock, Arc::new(SystemRng), kc)
     }
 
+    /// Like [`engine_seeded`] but with **real random** Stream keys, so a key
+    /// this device does not hold is genuinely one it cannot open.
+    ///
+    /// Every other engine unit test derives its keys from the shared vault root
+    /// (see [`Keychain::for_test_seeded`]) precisely so two in-memory engines
+    /// can read each other with no relay to carry `key_envelope` ops. That is
+    /// the wrong world for the deferral path, whose whole subject is an op
+    /// arriving before the key that opens it.
+    fn engine_random_keys(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {
+        let kc = Arc::new(Keychain::for_test_random_keys(
+            VaultRootKey::from_bytes(root),
+            seed,
+        ));
+        Engine::from_clock(clock, Arc::new(SystemRng), kc)
+    }
+
+    /// Hand `receiver` the `(epoch, key)` `sender` holds for `stream_id`.
+    ///
+    /// This is what pairing does for real — the payload carries every Stream
+    /// key the inviting device holds — compressed into one call, because these
+    /// engines have no relay and no Noise channel between them.
+    fn hand_over_key(
+        receiver: &Engine,
+        rdb: &mut Db,
+        sender: &Engine,
+        sdb: &mut Db,
+        stream: &[u8; 16],
+    ) {
+        let (epoch, key) = sdb
+            .with_tx(|tx| Ok(sender.keychain.current_stream_key_tx(tx, stream)?))
+            .unwrap()
+            .expect("the sender holds a key for this stream");
+        rdb.with_tx(|tx| {
+            receiver.keychain.absorb_stream_key(
+                tx,
+                stream,
+                epoch,
+                &key,
+                KeySource::Pairing,
+                receiver.rng.as_ref(),
+                T0,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Every sealed `key.envelope` op `db` holds, oldest first.
+    ///
+    /// Not narrowed by stream: a control op is logged with no `target_id` (it
+    /// names no entity of its own), so which stream's key one carries is
+    /// visible only inside the sealed payload. The caller applies them all,
+    /// which is what a replica does anyway.
+    fn key_envelope_envs(db: &Db) -> Vec<Vec<u8>> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT op_id FROM ops
+                 WHERE inner_kind = 'key.envelope'
+                 ORDER BY rowid ASC",
+            )
+            .unwrap();
+        let ids: Vec<Vec<u8>> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ids.iter().map(|id| env_bytes(db, &to16(id))).collect()
+    }
+
+    fn deferred_rows(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM deferred_ops", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// An op that arrives before the key that opens it is parked, not lost, and
+    /// the `key_envelope` op carrying that key releases it.
+    ///
+    /// The two halves are both assertions. Parking must be **silent**: no
+    /// event, no error, and no entity — a `RemoteOpInvalid` here would make the
+    /// driver treat a perfectly good op as a damaged frame and ask for a
+    /// resync it cannot be helped by. Draining must be **complete**: the
+    /// envelope op itself changes nothing on screen, so if the delivery did not
+    /// hand back the released op's event the screen would never learn about a
+    /// task the database now holds.
+    #[test]
+    fn an_op_that_arrives_before_its_key_is_parked_and_the_envelope_releases_it() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        // Each knows the other's identity-signed cert, so B knows A's key to
+        // verify with and A knows B's `D_D_pub` to seal an envelope to.
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        // A captures a task. This mints the Inbox key and the vault-meta key,
+        // and emits a `key_envelope` op per recipient for each.
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "buy milk".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        // B was paired, so it holds the vault-meta key and can read control
+        // ops. It was never told the Inbox key.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        assert!(
+            eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "the premise: B holds no Inbox key"
+        );
+
+        // The task op arrives first.
+        let create_env = create_env_for(&dba, task.bytes());
+        let events = eb.apply_remote_all(&mut dbb, &create_env).unwrap();
+        assert!(events.is_empty(), "parking is silent");
+        assert_eq!(deferred_rows(&dbb), 1, "and it is parked, not dropped");
+        assert!(
+            read_task(dbb.conn(), task.bytes()).unwrap().is_none(),
+            "nothing materialized from an op nobody could open"
+        );
+
+        // Re-delivery of the same op must not pile up a second row.
+        assert!(eb
+            .apply_remote_all(&mut dbb, &create_env)
+            .unwrap()
+            .is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "parking is idempotent on op id");
+
+        // Now A's `key_envelope` ops. One per (stream, recipient); the delivery
+        // that lands B's copy of the Inbox key is the one that releases the
+        // task, and the rest are silent.
+        let mut released = Vec::new();
+        let envs = key_envelope_envs(&dba);
+        assert!(!envs.is_empty(), "A emitted envelopes to seal to B at all");
+        for env in envs {
+            released.extend(eb.apply_remote_all(&mut dbb, &env).unwrap());
+        }
+        assert!(
+            matches!(released.as_slice(), [DomainEvent::Created(r)] if *r == task),
+            "the envelope op is silent; the op it released is not, got {released:?}"
+        );
+        assert_eq!(deferred_rows(&dbb), 0, "the park is emptied by the drain");
+        assert_eq!(
+            read_task_t(&eb, &dbb, task).title,
+            "buy milk",
+            "and the task is really there"
+        );
+    }
+
     fn set_clock(c: &FakeClock, v: u64) {
         *c.0.lock() = v;
     }
