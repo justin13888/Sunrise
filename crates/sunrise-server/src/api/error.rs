@@ -214,14 +214,48 @@ impl ApiError {
 
     /// `401 AUTH_DEVICE_SIG_INVALID` — the signature, and only the signature.
     ///
-    /// Callable **only** once `active_device` has returned a row for the
-    /// caller on the authenticated account. Every rejection upstream of that
-    /// lookup — an absent or unverifiable bearer, an account that did not
-    /// resolve, a device id that is not an active row here — must stay
-    /// [`Self::unauthenticated`], because a code that distinguishes them
-    /// answers "which devices does this account have?" for a caller who has
-    /// proved nothing. `api/signed.rs::verify_bytes` is the one place the rule
-    /// is applied, and its tests pin both sides of it.
+    /// `api/signed.rs::verify_bytes` is the one place this is emitted, in three
+    /// spots. Two are after the caller's device has resolved to an active row
+    /// on the authenticated account; one is not:
+    ///
+    /// 1. **Before any lookup** — `require_device_sig` is set and the caller
+    ///    sent no binding at all. This discloses nothing about the account:
+    ///    `GET /meta` already publishes `device_binding_required` to anyone who
+    ///    asks. See the caveat below for what it does disclose.
+    /// 2. **After** the lookup — the `Date` header is absent.
+    /// 3. **After** the lookup — `verify_canonical` refused: a bad signature,
+    ///    an unparseable key, or a `Date` outside the ±300 s replay window.
+    ///    This is the case the code exists for. A drifted clock is cured by
+    ///    setting the clock, and a client told `AUTH_TOKEN_INVALID` instead
+    ///    refreshes a bearer that was never the problem, forever.
+    ///
+    /// What must stay [`Self::unauthenticated`] is everything that would answer
+    /// a question about the account: a device id that is not an active row
+    /// here, a header that disagrees with the token's own `device_id` claim,
+    /// and any failure to resolve the account or the bearer. A code that
+    /// separated those would answer "which devices does this account have?" for
+    /// a caller who has proved nothing.
+    /// `an_unknown_device_is_still_indistinguishable_from_a_bad_bearer` is the
+    /// guard on that half.
+    ///
+    /// # What case 1 discloses
+    ///
+    /// With `require_device_sig = true`, a caller who sends no binding gets
+    /// `401 AUTH_DEVICE_SIG_INVALID` on a valid bearer and
+    /// `401 AUTH_TOKEN_INVALID` on an invalid one — the bearer never reaches
+    /// this code, so the two are told apart. Both were `AUTH_TOKEN_INVALID`
+    /// before. That is a bearer-validity oracle, and it is live wherever
+    /// `require_device_sig` is on, which `ServerConfig` derives from
+    /// `oidc_issuer` when the operator does not set it.
+    ///
+    /// It is narrow: the endpoint returns no `200` to a binding-less caller
+    /// whatever the bearer says, so it separates "this token is currently
+    /// valid" from "it is not" and discloses nothing about the account behind
+    /// it — against an attacker who already holds the token to test. Closing it
+    /// means putting case 1 behind its own opt-in config so an operator can
+    /// trade the diagnostic for the silence. That is worth doing deliberately
+    /// rather than as a side effect of this change, so it is recorded here and
+    /// the behaviour is left alone.
     #[must_use]
     pub fn device_sig_invalid() -> Self {
         Self::Unauthenticated {

@@ -104,12 +104,16 @@ pub struct DeviceSig {
 /// nothing. A caller cannot borrow another account's device by naming it.
 ///
 /// # Errors
-/// A `401` [`ApiError::Unauthenticated`] in every failing case. The *code* it
-/// carries is two-tier: `AUTH_DEVICE_SIG_INVALID` once the named device has
-/// resolved to an active row on this account and only the signature is wrong,
-/// `AUTH_TOKEN_INVALID` for everything upstream of that lookup — including a
+/// A `401` [`ApiError::Unauthenticated`] in every failing case; only the *code*
+/// it carries varies. `AUTH_DEVICE_SIG_INVALID` says "the signature, not the
+/// bearer" and is returned once the named device has resolved to an active row
+/// on this account and the binding still did not check out — and, before any
+/// lookup, when `require_device_sig` is set and no binding was sent at all.
+/// `AUTH_TOKEN_INVALID` covers the rest of the pre-lookup ground, including a
 /// device id that is not on this account, which must stay indistinguishable
-/// from a bad bearer or the code becomes an enumeration oracle.
+/// from a bad bearer or the code becomes an enumeration oracle. See
+/// [`ApiError::device_sig_invalid`] for the full rule and for the bearer-
+/// validity disclosure the pre-lookup case carries.
 pub fn verify<T: serde::Serialize>(
     state: &ServerState,
     principal: &Principal,

@@ -94,7 +94,7 @@ name = "AUTH_DEVICE_SIG_INVALID"
 kind = "user"
 retryable = false
 since = "v1"
-docs = "header_sig_v2 signature did not verify, or its Date is outside MAX_CLOCK_SKEW_SECS (±300 s). Re-sign with a correct clock; never refresh the bearer. Emitted only once the caller's device has resolved to an active row on the authenticated account — every rejection upstream of that lookup stays AUTH_TOKEN_INVALID, so the code cannot be used to enumerate accounts or devices."
+docs = "header_sig_v2 signature did not verify, or its Date is outside MAX_CLOCK_SKEW_SECS (±300 s). Re-sign with a correct clock; never refresh the bearer. Emitted once the caller's device has resolved to an active row on the authenticated account, and also — before any lookup — when require_device_sig is set and no binding was sent, which GET /meta's device_binding_required already advertises. Every other pre-lookup rejection, a device id that is not on this account included, stays AUTH_TOKEN_INVALID, so the code cannot be used to enumerate accounts or devices."
 
 # --- Storage --------------------------------------------------------------
 
