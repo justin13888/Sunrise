@@ -121,10 +121,16 @@ and it carries no MUSTs until an iOS release ships.**
      status item (`macOS/SunriseMacApp.swift:63`) — a persistent, glanceable
      surface outside the app's own window. iOS has no status-item equivalent;
      the nearest thing is a widget, which is its own row. (An iPad that draws a
-     system menu bar gets only the system's own items, because the `Commands`
-     scene that would populate it lives in `macOS/AppCommands.swift` and the
-     iOS target does not compile it. That is a keyboard-navigation narrowness,
-     recorded there, not a second menu-bar row.)
+     system menu bar gets only the system's own items. The `.commands { … }`
+     scene modifier that would populate it is at
+     `macOS/SunriseMacApp.swift:30-61`; `macOS/AppCommands.swift` holds the
+     `View`s it hangs in those menus — `AppMenuItems`, `CommandMenuItem`,
+     `NewMenuItems`, `IcalMenuItems`, `PrintMenuItems`, `GoMenuItems` — and
+     declares no `Commands`-conforming type, as nothing in the tree does. The
+     `SunriseiOS` target's `sources:` are `Sunrise` and `iOS`
+     (`project.yml:160-164`), so it compiles neither file. That is a
+     keyboard-navigation narrowness, recorded there, not a second menu-bar
+     row.)
    - ***deferred*** four times: the three [ADR-0020](./0020-v1-must-demotions.md)
      capabilities (both sharing rows and Google Calendar) inherit their
      capability-level deferral unchanged, and **Lock screen / home screen
