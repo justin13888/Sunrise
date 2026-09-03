@@ -267,8 +267,14 @@ over:
 - **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
   or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
   block → Task gesture — unbuilt rather than inexpressible: the block chip is
-  not a drag source and the task row's drop only reorders. Print covers
-  four surfaces and skips two by decision. Search reaches FTS5 on tasks only,
+  not a drag source and the task row's drop only reorders. iCal is windowed on
+  the way out and lossy on the way in: export offers Today and This Week and no
+  Stream scope, because a day and a week are the only Block windows the core
+  has, and import drops `RRULE`, `DESCRIPTION` and `LOCATION` — `Block` has no
+  field to hold them — so a recurring event lands as a single occurrence. Every
+  loss raises a notice rather than passing silently, but the round-trip the
+  mapping rules describe does not exist yet. Print covers four surfaces and
+  skips two by decision. Search reaches FTS5 on tasks only,
   as a literal AND of quoted terms: every operator
   [search.md](../08-features/search.md) specifies is currently matched as a
   literal word, and the by-kind grouping does not exist.
@@ -277,6 +283,11 @@ over:
   rather than a gap. Streams, Contexts and Routines can be listed and (for
   Streams) reordered, but none can be created, renamed, archived or deleted;
   the row asks for *read + capture*, and that is what it has.
+  `ical export` takes the same windows and no Stream scope — `today`, `day`,
+  `week` — and `ical import` drops `RRULE`, `DESCRIPTION` and `LOCATION` for
+  the same missing `Block` fields, so a recurring event imports as one
+  occurrence with a notice against it. Both halves are the seam's, so the CLI
+  is narrow here in exactly the way the app is.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
   `search` issues the same query the app does, so it inherits the same

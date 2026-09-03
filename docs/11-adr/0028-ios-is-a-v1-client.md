@@ -254,8 +254,11 @@ is tested, and has not been released.
   switch bridges the two is a runtime question no reading of the tree settles
   ([#72](https://github.com/justin13888/Sunrise/issues/72)), and it is what
   would turn the cell back into a **Yes**. The same definition then applies to
-  the MUST-carrying columns, swept over the rows whose shortfall the
-  audit or the narrow notes already record — five of them: macOS drag-and-drop
+  the MUST-carrying columns, swept over the rows whose shortfall the audit or
+  the narrow notes record — the iCal narrowness being written into those notes
+  as part of this change, since its substance sat in
+  [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md) and the
+  bound admits only the matrix's own records. Five rows: macOS drag-and-drop
   `met *(seven of eight cells)*` and macOS iCal `met *(windowed, no
   round-trip)*`; the CLI's `today` view (`met *(today, no context filter)*`),
   multi-account (`met *(0600 on unix only)*`) and iCal. Seven of eight is a
