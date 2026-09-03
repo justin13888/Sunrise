@@ -6,7 +6,15 @@
  * a malformed source is not a local mistake — it is four generated files that
  * disagree with each other, three of which are compiled by a toolchain that has
  * never seen the TOML. Failing here is the only cheap place to fail.
+ *
+ * The TOML parser is `smol-toml` rather than `Bun.TOML`, and that is not a
+ * preference: vitest runs `test/drift.test.ts` under Node — `@vitest/coverage-v8`
+ * cannot run under Bun at all ("Coverage APIs are not supported") — so a
+ * Bun-only loader would put the drift gate out of reach of `mise run test`.
  */
+
+import { readFile } from "node:fs/promises";
+import { parse as parseToml } from "smol-toml";
 
 /** A colour, as `#rrggbb`. Lowercase, six digits, no shorthand and no alpha. */
 export type Hex = `#${string}`;
@@ -328,7 +336,7 @@ export function buildTokens(sources: {
 const TOKENS_DIR = new URL("../tokens/", import.meta.url);
 
 async function readToml(relative: string): Promise<unknown> {
-    return Bun.TOML.parse(await Bun.file(new URL(relative, TOKENS_DIR)).text());
+    return parseToml(await readFile(new URL(relative, TOKENS_DIR), "utf8"));
 }
 
 /** Read and validate `tokens/`. The only impure function in the generator. */
