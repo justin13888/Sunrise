@@ -88,9 +88,19 @@ behaviour has regressed. Four open issues
 [#12](https://github.com/justin13888/Sunrise/issues/12)) already target iOS
 surfaces and have no row anywhere to attach to.
 
-The same rules also say a cell marked N/A may only be revisited with an ADR,
-and the *Lock screen / home screen widget* row currently marks every column
-N/A. Filling in the iOS column touches that cell, so it needs this record.
+**What makes this an ADR is not the N/A rule.** The rules do say a cell marked
+N/A may only be revisited with a record, but no such cell is revisited here.
+On the base revision the widget row's six cells read
+`N/A | N/A | — | — | — | —` under `macOS | CLI | iOS | Android | Web | TUI`:
+the iOS cell this ADR fills was a dash, and the two N/A cells beside it stay
+exactly where they are — Decision 3 below says so outright. What forces the
+record is
+[ADR-0019](./0019-swiftui-macos-client.md)'s own revisit trigger, quoted above:
+it fired, its amendment declined to draw the conclusion, and answering a
+question another ADR raised and left open is what this directory is for. The
+requirement levels in 31 cells change, the column header has to cite something,
+and Decision 5 adds a hard rule to the matrix — which the matrix keeps in
+[`../11-adr/`](../11-adr/).
 
 ## Decision
 
