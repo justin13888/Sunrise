@@ -316,6 +316,33 @@ class GateContract(unittest.TestCase):
         )
         self.assert_code(result, 1, "shards missing", "1/2 shards")
 
+    def test_more_files_than_shards_is_1(self):
+        # The other half of the mismatch check, and the half no test
+        # reached: `test_duplicate_artifacts_is_1` passes one file twice,
+        # which the realpath dedup catches long before the counting. Two
+        # *distinct* files for a crate declared as one shard is the case
+        # that gets here — an artifact downloaded into two directories, or
+        # a stale run left beside a fresh one — and every mutant in the
+        # pair is counted, so the crate's rate is computed over a
+        # population that does not exist.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(first), str(second), "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "2/1 shards",
+            "duplicate artifacts",
+            "More files than shards",
+        )
+        # Not the other cause, whose remedy is to re-run the dead shards.
+        self.assertNotIn("shards missing", result.stderr)
+
     def test_unscorable_with_update_is_1(self):
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", unviable=3)
         base = baseline_file(self.tmp / "base.json", {})
