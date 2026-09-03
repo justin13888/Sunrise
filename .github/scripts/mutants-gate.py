@@ -153,6 +153,39 @@ def crate_of(path: str) -> str | None:
     return None
 
 
+def malformed(baseline: object) -> str | None:
+    """Say how a parsed baseline fails to be one, or None if it is fine.
+
+    `mutants/baseline.json` is hand-edited every time a floor moves, so it
+    is the one input to this gate that a person types. A file that parses
+    as JSON but is not shaped like a baseline used to reach
+    `recorded.get(crate).get("caught_pct")` and die on an AttributeError —
+    and an uncaught exception exits 1, which is this gate's code for
+    "coverage regressed". A typo in the floors would have been reported as
+    a test regression, with a traceback where the crate names go.
+
+    Structure only. Whether the numbers in it are the right numbers is not
+    something any check here can know.
+    """
+    if not isinstance(baseline, dict):
+        return f"top level is {type(baseline).__name__}, expected an object"
+    crates = baseline.get("crates", {})
+    if not isinstance(crates, dict):
+        return f'"crates" is {type(crates).__name__}, expected an object'
+    for crate, entry in crates.items():
+        if not isinstance(entry, dict):
+            return (f'"crates.{crate}" is {type(entry).__name__}, '
+                    "expected an object")
+        floor = entry.get("caught_pct")
+        # bool is an int as far as isinstance is concerned, and `true` is
+        # not a floor.
+        if floor is not None and (isinstance(floor, bool)
+                                  or not isinstance(floor, (int, float))):
+            return (f'"crates.{crate}.caught_pct" is '
+                    f"{type(floor).__name__}, expected a number")
+    return None
+
+
 def parse_expect_shards(spec: str) -> dict[str, int]:
     """`sunrise-core=4,sunrise-sync=1` -> {"sunrise-core": 4, "sunrise-sync": 1}."""
     expected: dict[str, int] = {}
@@ -424,6 +457,14 @@ def main() -> int:
         baseline = json.loads(args.baseline.read_text())
     except (OSError, json.JSONDecodeError) as error:
         print(f"cannot read {args.baseline}: {error}", file=sys.stderr)
+        return 2
+
+    # Same exit as an unreadable one, for the same reason: a baseline the
+    # gate cannot use is a run nobody scored, and the one thing it must not
+    # do with that is return a verdict.
+    problem = malformed(baseline)
+    if problem is not None:
+        print(f"cannot use {args.baseline}: {problem}", file=sys.stderr)
         return 2
 
     recorded = baseline.setdefault("crates", {})

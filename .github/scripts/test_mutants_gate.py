@@ -264,6 +264,39 @@ class GateContract(unittest.TestCase):
             2, "cannot read",
         )
 
+    def test_a_baseline_of_the_wrong_shape_is_2(self):
+        # Parses as JSON, is not a baseline. This is the file a person
+        # hand-edits on every ratchet, and before the shapes were checked
+        # each of these died on an AttributeError deep in the comparison —
+        # which exits 1, the gate's code for "coverage regressed". The
+        # worst available answer: a typo reported as a test failure.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        for text, expected in [
+            ('{"crates": {"sunrise-sync": 50.0}}', "expected an object"),
+            ('{"crates": []}', '"crates" is list'),
+            ('[]', "top level is list"),
+            ('"nope"', "top level is str"),
+            ('{"crates": {"sunrise-sync": {"caught_pct": "50"}}}',
+             "caught_pct"),
+        ]:
+            with self.subTest(baseline=text):
+                base.write_text(text)
+                result = self.run_gate(str(run), "--baseline", str(base))
+                self.assert_code(result, 2, "cannot use", expected)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_baseline_with_no_crates_key_is_usable(self):
+        # Absent is not malformed: an empty baseline is where every floor
+        # starts, and the gate's answer to it is "no floor recorded".
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        base.write_text('{"target_caught_pct": 90.0}')
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            1, "no floor recorded",
+        )
+
     def test_bad_expect_shards_spec_is_2(self):
         # argparse's own exit for a type error, which is 2 and happens to
         # agree with the gate's "could not run" — asserted so a future
