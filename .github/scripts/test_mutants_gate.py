@@ -292,6 +292,13 @@ class GateContract(unittest.TestCase):
             ('"nope"', "top level is str"),
             ('{"crates": {"sunrise-sync": {"caught_pct": "50"}}}',
              "caught_pct"),
+            # `true` is an int as far as isinstance is concerned, so the
+            # bool clause is the one thing standing between this and
+            # `1.0% vs floor True% — ok`, exit 0. Sibling of the `N >= 1`
+            # and isdigit() clauses in the shard spec: same family, same
+            # failure mode, and the one that was missed.
+            ('{"crates": {"sunrise-sync": {"caught_pct": true}}}',
+             'caught_pct" is bool, expected a number'),
         ]:
             with self.subTest(baseline=text):
                 base.write_text(text)
@@ -733,6 +740,51 @@ class GateContract(unittest.TestCase):
             "sunrise-sync: 50.0% < 60.0%",
             "(3 caught, 1 missed, 2 timeout, 0 unviable)",
         )
+
+    def test_both_mismatch_causes_in_one_run_stay_separate(self):
+        # The composition, which each side being pinned separately does
+        # not cover: one crate short, another duplicated, a third complete
+        # and unfloored. Every paragraph has to appear exactly once and
+        # name only the crates it is about — the failure mode is a report
+        # that tells the reader to repeat a run that was not short, or to
+        # narrow inputs that were not duplicated.
+        short = outcomes_file(
+            self.tmp / "d" / "outcomes.json", "sunrise-domain",
+            caught=1, missed=1)
+        twice = [
+            outcomes_file(
+                self.tmp / f"c{n}" / "outcomes.json", "sunrise-crypto",
+                caught=1, missed=1)
+            for n in range(2)
+        ]
+        unfloored = outcomes_file(
+            self.tmp / "s" / "outcomes.json", "sunrise-sync",
+            caught=1, missed=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(short), *(str(t) for t in twice), str(unfloored),
+            "--baseline", str(base),
+            "--expect-shards",
+            "sunrise-domain=6,sunrise-crypto=1,sunrise-sync=1",
+        )
+        self.assert_code(
+            result, 1,
+            "sunrise-domain: 1/6 shards, 2 mutants — shards missing",
+            "sunrise-crypto: 2/1 shards, 4 mutants — duplicate artifacts",
+            "no floor recorded for",
+        )
+        stderr = result.stderr
+        for once in [
+            "A shard whose runner died",          # cause paragraph, missing
+            "More files than shards",             # cause paragraph, duplicate
+            "sunrise-domain arrived short",       # remedy, missing
+            "sunrise-crypto arrived more than once",  # remedy, duplicate
+        ]:
+            self.assertEqual(stderr.count(once), 1, once)
+        # Neither remedy reaches across to the other's crate.
+        self.assertNotIn("sunrise-crypto arrived short", stderr)
+        self.assertNotIn("sunrise-domain arrived more than once", stderr)
+        self.assertNotIn("sunrise-sync arrived", stderr)
 
     def test_a_run_of_only_timeouts_scores_zero(self):
         # Nothing was refuted, so the rate is 0% and the floor bites.
