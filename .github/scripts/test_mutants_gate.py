@@ -301,11 +301,46 @@ class GateContract(unittest.TestCase):
         # argparse's own exit for a type error, which is 2 and happens to
         # agree with the gate's "could not run" — asserted so a future
         # remap of the gate's codes has to confront the collision.
+        #
+        # Every clause of the spec parser gets a spelling here. The one
+        # that matters most is `=0`: a crate declared as zero shards is
+        # complete the moment it produces nothing, so it passes the
+        # completeness check, contributes no outcomes, and is scored
+        # against nothing — the crate silently dropped from the run, which
+        # is the hole --expect-shards exists to close, reached through the
+        # flag instead of through a dead runner.
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
-        self.assert_code(
-            self.run_gate(str(run), "--expect-shards", "sunrise-sync"),
-            2, "cannot parse",
+        for spec, expected in [
+            ("sunrise-sync", "cannot parse"),          # no '='
+            ("=1", "cannot parse"),                    # no crate
+            ("sunrise-sync=", "cannot parse"),         # no count
+            ("sunrise-sync=x", "cannot parse"),        # not a number
+            ("sunrise-sync=1.5", "cannot parse"),      # not an integer
+            ("sunrise-sync=-1", "cannot parse"),       # not a count
+            ("sunrise-sync=0", "N >= 1"),              # not a shard
+            ("sunrise-domain=0,sunrise-sync=1", "N >= 1"),
+            ("", "at least one crate=N"),              # nothing declared
+            (",", "at least one crate=N"),
+            ("  ", "at least one crate=N"),
+        ]:
+            with self.subTest(spec=spec):
+                self.assert_code(
+                    self.run_gate(str(run), "--expect-shards", spec),
+                    2, expected,
+                )
+
+    def test_a_zero_shard_crate_cannot_be_declared_away(self):
+        # The behaviour the guard above is protecting, spelled out: were
+        # `=0` accepted, this run would exit 0 with sunrise-domain neither
+        # scored nor mentioned.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(
+            str(run), "--baseline", str(base),
+            "--expect-shards", "sunrise-domain=0,sunrise-sync=1",
         )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("N >= 1", result.stderr)
 
     def test_no_arguments_is_2(self):
         self.assert_code(self.run_gate(), 2, "usage")
