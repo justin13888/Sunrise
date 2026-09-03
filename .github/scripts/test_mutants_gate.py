@@ -171,6 +171,19 @@ class CrateAttribution(unittest.TestCase):
         self.assertIn("sunrise-core: measured", result.stderr)
         self.assertNotIn("crates/sunrise-core", result.stderr)
 
+    def test_a_path_outside_crates_names_no_crate(self):
+        # The `parts[0] == "crates"` half of the reducer. Without it,
+        # `src/main.rs` yields a crate called `main.rs`: a floor keyed on a
+        # filename, which no baseline has and every run would then fail
+        # for want of. Workspace members live under crates/, and a mutant
+        # from anywhere else is not attributable to one.
+        result = self.score(
+            mutant("sunrise-sync", CAUGHT, package="", file="src/main.rs"),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no mutants found", result.stderr)
+        self.assertNotIn("main.rs", result.stdout)
+
     def test_a_mutant_naming_no_crate_is_skipped(self):
         # Not attributable to anything, so it cannot be counted anywhere —
         # and a run of nothing but these is a run with no mutants in it.
@@ -385,7 +398,13 @@ class GateContract(unittest.TestCase):
             str(run), "--baseline", str(base),
             "--expect-shards", "sunrise-sync=2",
         )
-        self.assert_code(result, 1, "shards missing", "1/2 shards")
+        self.assert_code(
+            result, 1, "shards missing", "1/2 shards",
+            # Its own remedy paragraph, which the duplicate-artifacts cause
+            # has asserted and this one did not — the asymmetry was the tell.
+            "Re-run the failed shards rather",
+        )
+        self.assertNotIn("More files than shards", result.stderr)
 
     def test_more_files_than_shards_is_1(self):
         # The other half of the mismatch check, and the half no test
@@ -430,6 +449,11 @@ class GateContract(unittest.TestCase):
         base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
         result = self.run_gate(str(run), "--baseline", str(base))
         self.assert_code(result, 1, "no scorable mutants")
+        # The per-crate line in the run listing, distinct from the summary
+        # on stderr: it is what puts the crate in the report at all, and
+        # the count is what says how much was thrown away.
+        self.assertIn(
+            "  sunrise-sync: no scorable mutants (3 unviable)", result.stdout)
 
     def test_update_without_shard_flags_is_1(self):
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
@@ -628,6 +652,44 @@ class GateContract(unittest.TestCase):
             "sunrise-domain: 1/6 shards",
         )
         self.assertNotIn("sunrise-domain: 100.0%", result.stdout)
+
+    def test_an_unrecognised_summary_is_counted_nowhere(self):
+        # cargo-mutants writes summaries this gate has no bucket for, and a
+        # future version will write more. Counting them anyway puts an
+        # unknown key in the tally, which `sum(bucket.values())` then
+        # reports as mutants — see the report test below. What is asserted
+        # here is the shape of the record that reaches
+        # mutants/baseline.json, a committed file the next run reads: five
+        # keys, chosen deliberately, whatever cargo-mutants invents next.
+        run = document_file(self.tmp / "a.json", [
+            mutant("sunrise-sync", CAUGHT),
+            mutant("sunrise-sync", "SomethingElse"),
+        ])
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(result, 0, "recorded 1 crate(s)")
+        recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
+        self.assertEqual(
+            sorted(recorded),
+            ["caught", "caught_pct", "missed", "timeout", "unviable"],
+        )
+        self.assertEqual(recorded["caught"], 1)
+        self.assertEqual(recorded["caught_pct"], 100.0)
+
+    def test_an_unrecognised_summary_is_not_counted_in_the_report(self):
+        run = document_file(self.tmp / "a.json", [
+            mutant("sunrise-sync", CAUGHT),
+            mutant("sunrise-sync", "SomethingElse"),
+        ])
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 100.0})
+        result = self.run_gate(str(run), "--baseline", str(base))
+        self.assert_code(
+            result, 0,
+            "1 mutants (1 caught, 0 missed, 0 timeout, 0 unviable)",
+        )
 
     # --- timeouts: in the denominator, never in the numerator -------------
     #
@@ -846,6 +908,20 @@ class GateContract(unittest.TestCase):
             str(run), "--update", "--allow-partial", "--baseline", str(base),
         )
         self.assert_code(result, 0, "no completeness check")
+
+    def test_allow_partial_says_nothing_when_the_counts_are_given(self):
+        # The notice is the whole point of --allow-partial: floors recorded
+        # without a completeness check describe what ran and not the crates,
+        # and that has to be said out loud. But --expect-shards checks them,
+        # so printing it here would be announcing a check that happened.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--allow-partial", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(result, 0, "recorded 1 crate(s)")
+        self.assertNotIn("no completeness check", result.stdout)
 
     def test_shards_of_one_crate_aggregate_before_scoring(self):
         # The property the whole sharding design rests on: six shards and
