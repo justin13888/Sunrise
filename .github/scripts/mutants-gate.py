@@ -129,8 +129,6 @@ CAUGHT = "CaughtMutant"
 MISSED = "MissedMutant"
 TIMEOUT = "Timeout"
 UNVIABLE = "Unviable"
-# The unmutated baseline scenario cargo-mutants runs first. Not a mutant.
-BASELINE_SCENARIO = "Baseline"
 
 
 class CannotRun(Exception):
