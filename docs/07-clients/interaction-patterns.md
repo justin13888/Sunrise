@@ -102,11 +102,13 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork. Two things still differ. The gesture is a
-long-press drag where the Mac has a click-drag; and one cell splits —
+shared file with no platform fork. Three things still differ. The gesture is a
+long-press drag where the Mac has a click-drag. One cell splits outright —
 *Task → Calendar block* is a **Yes** on macOS and a **No** on iOS — which is
 not about the gesture at all, but about which surfaces the shell can put in
-front of a user at once. Both are set out below.
+front of a user at once. And one is narrowed rather than lost: *File → Task* is
+a plain **Yes** on the Mac and iPad-only on iOS, because dragging a file in
+from another app needs two apps on screen. All three are set out below.
 
 | From → To | macOS | iOS | CLI |
 |---|---|---|---|
@@ -180,8 +182,9 @@ complementary reason: it needs a second **app** — Files beside Sunrise in Spli
 View — which asks nothing of this app's own scene support. One window each is
 exactly what Split View hands out.
 
-Every file named here is under `Sunrise/`, so every modifier below compiles
-into the Mac app and the iOS app alike — what differs between the columns is
+Every file named above is under `Sunrise/`, so every modifier this section
+names compiles into the Mac app and the iOS app alike — what differs between
+the columns is
 which of them a user can bring together on one screen, not which of them exist.
 `TaskRowView` is `.draggable`, and it is accepted by the sidebar's stream and
 context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
