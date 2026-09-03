@@ -102,8 +102,11 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork, so what changes is the gesture — a
-long-press drag where the Mac has a click-drag.
+shared file with no platform fork. Two things still differ. The gesture is a
+long-press drag where the Mac has a click-drag; and one cell splits —
+*Task → Calendar block* is a **Yes** on macOS and a **No** on iOS — which is
+not about the gesture at all, but about which surfaces the shell can put in
+front of a user at once. Both are set out below.
 
 | From → To | macOS | iOS | CLI |
 |---|---|---|---|
