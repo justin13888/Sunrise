@@ -16,7 +16,7 @@
 
 import {
     BANNER,
-    MOTION_KEYS,
+    MOTION_CURVE_KEYS,
     num,
     RADIUS_KEYS,
     SPACE_KEYS,
@@ -123,8 +123,8 @@ export function emitRust(tokens: Tokens): string {
     lines.push(
         "// Motion durations, in milliseconds, with their cubic-Bézier control points.",
     );
-    for (const key of MOTION_KEYS) {
-        const motion = tokens.motion[key];
+    for (const key of MOTION_CURVE_KEYS) {
+        const motion = tokens.motion.curves[key];
         const name = key.toUpperCase();
         lines.push(`/// Duration of the \`${key}\` motion token.`);
         lines.push(
@@ -137,6 +137,12 @@ export function emitRust(tokens: Tokens): string {
             `pub const MOTION_${name}_EASING: [f32; 4] = [${motion.easing.map(float).join(", ")}];`,
         );
     }
+    lines.push(
+        "/// What every duration collapses to under a reduced-motion preference.",
+    );
+    lines.push(
+        `pub const MOTION_REDUCED_DURATION_MS: u32 = ${num(tokens.motion.reducedDurationMs)};`,
+    );
     lines.push("");
 
     lines.push(...themeConsts("SURFACE_LIGHT", tokens.light, "Light-theme"));

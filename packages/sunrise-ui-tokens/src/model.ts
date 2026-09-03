@@ -38,14 +38,15 @@ export const TYPE_KEYS = [
     "line_tight",
     "line_normal",
 ] as const;
-/** The keys of `tokens/motion.toml`, in emit order. */
-export const MOTION_KEYS = [
-    "fast",
-    "med",
-    "slow",
-    "linear",
-    "reduced",
-] as const;
+/**
+ * The named curves in `tokens/motion.toml`, in emit order.
+ *
+ * `reduced` is deliberately not one of them. It is the no-motion *policy* —
+ * duration zero — and a curve over zero milliseconds is not observable, so a
+ * required `easing` on it would be a field that can never matter and can
+ * always be wrong.
+ */
+export const MOTION_CURVE_KEYS = ["fast", "med", "slow", "linear"] as const;
 /** The `[surface]` keys both themes must carry, in emit order. */
 export const SURFACE_KEYS = [
     "bg",
@@ -63,13 +64,20 @@ export const SURFACE_KEYS = [
 export type SpaceKey = (typeof SPACE_KEYS)[number];
 export type RadiusKey = (typeof RADIUS_KEYS)[number];
 export type TypeKey = (typeof TYPE_KEYS)[number];
-export type MotionKey = (typeof MOTION_KEYS)[number];
+export type MotionCurveKey = (typeof MOTION_CURVE_KEYS)[number];
 export type SurfaceKey = (typeof SURFACE_KEYS)[number];
 
 /** A duration in milliseconds plus its four cubic-Bézier control points. */
 export interface MotionToken {
     readonly durationMs: number;
     readonly easing: readonly [number, number, number, number];
+}
+
+/** The named curves, plus the one policy value that is not a curve. */
+export interface Motion {
+    readonly curves: Readonly<Record<MotionCurveKey, MotionToken>>;
+    /** What every duration collapses to under a reduced-motion preference. */
+    readonly reducedDurationMs: number;
 }
 
 /** One theme: the semantic surface palette plus the per-stream tints. */
@@ -83,7 +91,7 @@ export interface Tokens {
     readonly space: Readonly<Record<SpaceKey, number>>;
     readonly radius: Readonly<Record<RadiusKey, number>>;
     readonly type: Readonly<Record<TypeKey, number>>;
-    readonly motion: Readonly<Record<MotionKey, MotionToken>>;
+    readonly motion: Motion;
     readonly light: Theme;
     readonly dark: Theme;
     /** `[stream]` keys, in the order both themes declare them. */
@@ -177,6 +185,19 @@ function easing(
         }
         return point;
     });
+    // CSS constrains the two *abscissae* to [0, 1] and leaves the ordinates
+    // free — that is what lets a curve overshoot. A `cubic-bezier()` outside
+    // that range is invalid at computed-value time, which browsers resolve by
+    // silently discarding the declaration, so an out-of-range control point
+    // here would emit a stylesheet that animates with the wrong curve and
+    // reports nothing.
+    for (const [index, point] of points.entries()) {
+        if (index % 2 === 0 && (point < 0 || point > 1)) {
+            throw new TokenError(
+                `${source}: ${key}.easing x${index / 2 + 1} must be in [0, 1], got ${point}`,
+            );
+        }
+    }
     return [
         points[0] as number,
         points[1] as number,
@@ -228,20 +249,20 @@ export function parseType(raw: unknown): Record<TypeKey, number> {
 }
 
 /** Parse `tokens/motion.toml`. */
-export function parseMotion(raw: unknown): Record<MotionKey, MotionToken> {
-    const values = exactly(
-        "motion.toml",
-        table("motion.toml", raw),
-        MOTION_KEYS,
-    );
-    const out = {} as Record<MotionKey, MotionToken>;
-    for (const key of MOTION_KEYS) {
+export function parseMotion(raw: unknown): Motion {
+    const values = exactly("motion.toml", table("motion.toml", raw), [
+        ...MOTION_CURVE_KEYS,
+        "reduced",
+    ] as const);
+
+    const curves = {} as Record<MotionCurveKey, MotionToken>;
+    for (const key of MOTION_CURVE_KEYS) {
         const entry = exactly(
             `motion.toml [${key}]`,
             table(`motion.toml [${key}]`, values[key]),
             ["duration_ms", "easing"] as const,
         );
-        out[key] = {
+        curves[key] = {
             durationMs: nonNegativeInt(
                 "motion.toml",
                 `${key}.duration_ms`,
@@ -250,12 +271,26 @@ export function parseMotion(raw: unknown): Record<MotionKey, MotionToken> {
             easing: easing("motion.toml", key, entry.easing),
         };
     }
-    if (out.reduced.durationMs !== 0) {
+
+    // `[reduced]` carries a duration and nothing else, so `exactly` rejects an
+    // `easing` written there rather than silently ignoring it.
+    const policy = exactly(
+        "motion.toml [reduced]",
+        table("motion.toml [reduced]", values.reduced),
+        ["duration_ms"] as const,
+    );
+    const reducedDurationMs = nonNegativeInt(
+        "motion.toml",
+        "reduced.duration_ms",
+        policy.duration_ms,
+    );
+    if (reducedDurationMs !== 0) {
         throw new TokenError(
             "motion.toml: [reduced] is the no-motion policy, so duration_ms must be 0",
         );
     }
-    return out;
+
+    return { curves, reducedDurationMs };
 }
 
 /** Parse one `tokens/color/<theme>.toml`. */

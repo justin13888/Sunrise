@@ -80,10 +80,8 @@ pub const MOTION_SLOW_EASING: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
 pub const MOTION_LINEAR_DURATION_MS: u32 = 0;
 /// Cubic-Bézier control points of the `linear` motion token.
 pub const MOTION_LINEAR_EASING: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-/// Duration of the `reduced` motion token.
+/// What every duration collapses to under a reduced-motion preference.
 pub const MOTION_REDUCED_DURATION_MS: u32 = 0;
-/// Cubic-Bézier control points of the `reduced` motion token.
-pub const MOTION_REDUCED_EASING: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// Light-theme `bg`, as sRGB `#fbfbfa`.
 pub const SURFACE_LIGHT_BG: [u8; 3] = [0xfb, 0xfb, 0xfa];

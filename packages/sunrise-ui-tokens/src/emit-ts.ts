@@ -11,7 +11,7 @@
 
 import {
     BANNER,
-    MOTION_KEYS,
+    MOTION_CURVE_KEYS,
     num,
     RADIUS_KEYS,
     SPACE_KEYS,
@@ -92,14 +92,21 @@ export function emitTs(tokens: Tokens): string {
         "/** Durations in milliseconds with their cubic-Bézier control points. */",
     );
     lines.push("export const motion = {");
-    for (const key of MOTION_KEYS) {
-        const value = tokens.motion[key];
+    for (const key of MOTION_CURVE_KEYS) {
+        const value = tokens.motion.curves[key];
         lines.push(`    ${key}: {`);
         lines.push(`        durationMs: ${num(value.durationMs)},`);
         lines.push(`        easing: [${value.easing.map(num).join(", ")}],`);
         lines.push("    },");
     }
     lines.push("} as const;");
+    lines.push("");
+    lines.push(
+        "/** What every duration collapses to under a reduced-motion preference. */",
+    );
+    lines.push(
+        `export const reducedMotionDurationMs = ${num(tokens.motion.reducedDurationMs)};`,
+    );
     lines.push("");
 
     lines.push(

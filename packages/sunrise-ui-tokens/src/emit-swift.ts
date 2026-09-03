@@ -14,7 +14,7 @@
 
 import {
     BANNER,
-    MOTION_KEYS,
+    MOTION_CURVE_KEYS,
     num,
     RADIUS_KEYS,
     SPACE_KEYS,
@@ -144,11 +144,11 @@ export function emitSwift(tokens: Tokens): string {
     lines.push("");
 
     lines.push(
-        "    /// Durations and curves. `reduced` is the no-motion policy value.",
+        "    /// Durations and curves, plus the one policy value that is neither.",
     );
     lines.push("    enum Motion {");
-    for (const key of MOTION_KEYS) {
-        const motion = tokens.motion[key];
+    for (const key of MOTION_CURVE_KEYS) {
+        const motion = tokens.motion.curves[key];
         const [x1, y1, x2, y2] = motion.easing;
         lines.push(`        static let ${key} = MotionToken(`);
         lines.push(`            duration: ${num(motion.durationMs)} / 1000,`);
@@ -157,6 +157,16 @@ export function emitSwift(tokens: Tokens): string {
         );
         lines.push("        )");
     }
+    lines.push("");
+    lines.push(
+        "        /// What every duration collapses to under Reduce Motion. Seconds,",
+    );
+    lines.push(
+        "        /// like every other duration here, and not a curve: nothing is drawn.",
+    );
+    lines.push(
+        `        static let reducedDuration: TimeInterval = ${num(tokens.motion.reducedDurationMs)} / 1000`,
+    );
     lines.push("    }");
     lines.push("");
 
@@ -172,6 +182,16 @@ export function emitSwift(tokens: Tokens): string {
         "    /// The per-`StreamColor` tints, per theme. Keyed on the domain enum.",
     );
     lines.push("    enum Stream {");
+    lines.push(
+        "        /// Every `StreamColor` name the token set carries, in declaration",
+    );
+    lines.push(
+        "        /// order. It is what a hand-written list of cases can be checked against.",
+    );
+    lines.push(
+        `        static let names: [String] = [${tokens.streamKeys.map((k) => `"${k}"`).join(", ")}]`,
+    );
+    lines.push("");
     lines.push(...streamEnum("Light", tokens.light, "        "));
     lines.push("");
     lines.push(...streamEnum("Dark", tokens.dark, "        "));

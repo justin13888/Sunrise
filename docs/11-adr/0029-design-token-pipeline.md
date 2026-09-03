@@ -17,10 +17,9 @@ holding eight stream colours, a spacing scale, four radii and four glyphs, with
 a header comment asking a reader to keep it in step with `StreamColor` in
 `crates/sunrise-domain/src/stream.rs` and nothing enforcing that.
 
-Building it forces four decisions that a future contributor would reasonably
-wonder about. Three are recorded here; the fourth (TypeScript is a fourth
-emitter target, not one of the doc's three) follows from the first two and is
-noted under Consequences.
+Building it forces a handful of decisions a future contributor would reasonably
+wonder about. Five are recorded here; the rest — TypeScript as a fourth emitter
+target chief among them — follow from these and are noted under Consequences.
 
 ## Decision
 
@@ -127,6 +126,41 @@ The rename is free in practice: `packages/sunrise-ui`'s one consumer,
 disagreement in favour of the scale with less evidence behind it, and would
 leave `12` unnameable.
 
+### 4. `prefers-color-scheme` is the only theme switch
+
+The emitted CSS binds the light palette on `:root` and rebinds the colour
+customs inside `@media (prefers-color-scheme: dark)`. There is no
+`:root[data-theme="dark"]` block, no class hook, and no way for a page to
+override the OS.
+
+That is a decision rather than an omission. The media query is what every
+platform in this product already honours — the Swift adapter resolves the same
+two themes through `@Environment(\.colorScheme)` — so "the OS decides" is one
+rule across all clients rather than a web-only special case. Adding an override
+later is not an additive change: an attribute selector has to win over the media
+query, which means every consumer's expectation about *where* a colour comes
+from changes at once, and a consumer that had been reading the customs directly
+starts needing to know about a scope it never had. That deserves its own change
+with its own consumers to test against, not a speculative selector shipped
+empty today.
+
+**Reverses when:** a user-facing theme preference is specified. It is a CSS
+block, a TOML-free change to `emit-css.ts`, and a pass over whatever is
+reading the customs by then.
+
+### 5. `[reduced]` carries a duration and no curve
+
+`tokens/motion.toml`'s `[reduced]` table has `duration_ms = 0` and nothing
+else; the loader rejects an `easing` written there rather than ignoring it, and
+no emitter produces a `reduced` curve — there is no
+`--sunrise-motion-reduced-easing`, no `MOTION_REDUCED_EASING`, and Swift
+carries `Motion.reducedDuration` rather than a `MotionToken`.
+
+A curve over zero milliseconds is not observable. A required field that can
+never matter is a trap: the next person editing the TOML has to supply four
+numbers that are never read, and any value they pick is equally right, so the
+field records nothing and can silently disagree with itself.
+
 ## Consequences
 
 - **TypeScript becomes a fourth emitter target**, which the doc's original
@@ -146,7 +180,10 @@ leave `12` unnameable.
   which is the enforceable form of the comment `tokens.ts` used to carry.
 - **Easing is four control points, not a CSS string.** Only one of the four
   emitters speaks CSS; storing `cubic-bezier(0.2, 0, 0, 1)` would make the
-  Swift and Rust emitters parse it back out.
+  Swift and Rust emitters parse it back out. The loader range-checks the two
+  abscissae to `[0, 1]` and leaves the ordinates free: a `cubic-bezier()`
+  outside that range is invalid at computed-value time, which a browser
+  resolves by dropping the declaration silently.
 - **Contrast is a test.** `test/invariants.test.ts` computes WCAG 2.1 ratios
   over the surface palette, which turns
   [`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
@@ -161,6 +198,46 @@ leave `12` unnameable.
   app decided a stream's colour) and `DropHighlight`. The 193 raw spacing
   literals counted above are left alone; 75 of them are off-scale, and each is
   a design judgement rather than a substitution.
+- **One value changed rather than moved.** `DropHighlight`'s corner radius was
+  a literal `5` and is now `Radius.sm`, which is `4`. It was the only number in
+  that file with no spec behind it — `interaction-patterns.md` names the border
+  width and the two opacities and says nothing about a radius — so nothing is
+  violated, but it is a one-point visual change rather than a substitution, and
+  it is the only one in this change.
+- **Half the Swift adapter has no production consumer yet, on purpose.**
+  `SunrisePalette`, `SunriseTokens.Space` and `SunriseTokens.Typography` are
+  reached only from `DesignTokensTests`. They are the API the migration
+  follow-up consumes, and decision 3's scope — two call sites, not 193 — is
+  what leaves them unused for now. Deleting them and re-adding them later would
+  cost a second review of the same code.
+  The sharpest form of that gap: `DropHighlight` still draws
+  `Color.accentColor`, as do eight other places in `apps/apple`, and there is
+  **no asset catalog anywhere under `apps/apple`** — so that is the user's OS
+  accent preference, not `SunriseTokens.Surface.*.accent`.
+  `shared-ui-system.md`'s "a client asks for `accent`, never for a blue" is
+  therefore not yet true on Apple, and that file now says so rather than
+  reading as satisfied.
+- **Seven light-theme colours do not clear AA against `bg`.** Measured as WCAG
+  2.1 ratios on `#fbfbfa`: `warning` 3.08, `info` 3.56, `success` 3.64 in
+  `[surface]`, and `amber` 3.08, `emerald` 3.64, `sky` 3.96, `pink` 4.44 in
+  `[stream]`. The other stream tints clear it — `slate` 7.32, `indigo` 6.07,
+  `violet` 5.50, `rose` 4.54 — as do `fg` 16.81, `accent` 4.99, `muted` 4.90
+  and `danger` 4.66. (`accent_text` and `border` are not foreground-on-`bg`
+  pairs: `accent_text` is tested against `accent`, at 5.17, and `border` is a
+  hairline.) `accessibility.md` asks for AA on interactive elements, and none
+  of these seven is used as an interactive foreground today — the stream tints
+  are dots beside a label, decoration next to text rather than text. The three
+  ratios the invariants **do** assert are the ones with a consumer; the palette
+  is left as specified rather than quietly altered here, and raising these
+  values is a design decision with its own issue.
+- **The drift gate is deliberately paired with shape assertions.** Comparing
+  the committed file to `emit(tokens)` proves only that somebody ran
+  `mise run tokens`: both sides come from the same function, so a wrong emitter
+  regenerates and stays green. `test/drift.test.ts`'s second half asserts what
+  each output must *look like* — units, both media queries, both themes
+  differing **in the emitted text** rather than in the model, the stream tints
+  present, the glyph map intact — because that is the half that catches a
+  wrong emitter.
 
 ## What would force revisiting this
 

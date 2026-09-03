@@ -47,7 +47,7 @@ Kotlin consumer to read it; it lands with the Android client, not before.
 
 | Target | What reads it |
 |---|---|
-| Web | `apps/web/src/main.tsx` imports `@sunrise/ui-tokens/css`, so the custom properties and both media queries are in the bundle. `packages/sunrise-ui` re-exports the typed object as `colors`, `spacing`, `radii`, `typography`, `motion`, `surface` and `taskStateGlyph` |
+| Web | `apps/web/src/main.tsx` imports `@sunrise/ui-tokens/css`, so the custom properties and both media queries are in the bundle. `packages/sunrise-ui` re-exports the typed object as `colors`, `spacing`, `radii`, `typography`, `motion`, `theme` and `taskStateGlyph` |
 | macOS / iOS | `apps/apple/project.yml` adds `tokens.swift` to both app targets. `apps/apple/Sunrise/Design/Tokens.swift` is the hand-written adapter: it resolves light/dark through `@Environment(\.colorScheme)` and Reduce Motion through `@Environment(\.accessibilityReduceMotion)`, and it is the one place a `StreamColor` becomes a `Color` |
 | Rust | Nothing, yet. `tokens.rs` is an `include!`-ready const module — the CLI is specified as plain text with no colour ([`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)), and the shared core does not decide presentation ([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)), so there is no consumer to write. It is compiled and rustfmt-checked by `mise run tokens-check` so the first one inherits a working file |
 
@@ -57,6 +57,14 @@ Colour is semantic, not raw: a client asks for `accent`, never for a blue.
 Light and dark carry identical key sets, and
 `packages/sunrise-ui-tokens/test/invariants.test.ts` fails if they stop doing
 so.
+
+**That is not yet true of the Apple clients.** They reach `Surface.*` through
+`Sunrise/Design/Tokens.swift`, and nothing in production calls it: every accent
+in `apps/apple` is `Color.accentColor`, and there is no asset catalog anywhere
+under `apps/apple`, so that is the user's OS accent preference rather than
+`accent` from this table. Migrating those call sites is scoped out of the
+pipeline's own change deliberately — see
+[ADR-0029](../11-adr/0029-design-token-pipeline.md) §Consequences.
 
 ```toml
 # tokens/color/light.toml
@@ -132,11 +140,17 @@ easing = [0.2, 0.0, 0.0, 1.0]   # out
 `linear` is 0 ms on `[0.0, 0.0, 1.0, 1.0]`.
 
 Easing is four cubic-Bézier control points rather than a `cubic-bezier(...)`
-string, so that only the CSS emitter has to know CSS. `[reduced]` is the
-no-motion policy — `duration_ms = 0`, enforced by the loader — and it is what
-every other duration collapses to: the emitted CSS carries a
-`prefers-reduced-motion: reduce` block, and the Swift adapter returns `nil`
-instead of an `Animation`.
+string, so that only the CSS emitter has to know CSS. The two abscissae are
+range-checked to `[0, 1]`, because a `cubic-bezier()` outside that is invalid
+at computed-value time and a browser drops the declaration without saying so;
+the ordinates are left free, which is what lets a curve overshoot.
+
+`[reduced]` is the no-motion policy — `duration_ms = 0`, enforced by the
+loader — and it is what every other duration collapses to: the emitted CSS
+carries a `prefers-reduced-motion: reduce` block, and the Swift adapter returns
+`nil` instead of an `Animation`. It carries **no** `easing`, and the loader
+rejects one written there: a curve over zero milliseconds is not observable, so
+the field could never matter and could always be wrong.
 
 ### Spacing (4 px base)
 
@@ -167,7 +181,7 @@ pill = 9999
 ### Typography
 
 ```toml
-# tokens/type.toml — Inter base; SF on Apple, Roboto on Android
+# tokens/type.toml
 size_xs   = 11
 size_sm   = 13
 size_base = 15

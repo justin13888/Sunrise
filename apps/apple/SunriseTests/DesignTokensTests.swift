@@ -14,10 +14,16 @@ import Testing
 struct DesignTokensTests {
     /// Every variant, so a ninth `StreamColor` fails here rather than drawing
     /// whatever the compiler picks.
+    ///
+    /// `StreamColor.all` is hand-written in `BrowseSidebar.swift` and tracked
+    /// nothing until this test; a bare `count == 8` would have moved with it.
+    /// It is pinned against the generated name list instead, which the TOML
+    /// owns and `invariants.test.ts` pins to the Rust enum in turn.
     @Test
     func everyStreamColourResolvesToItsGeneratedTint() {
-        #expect(StreamColor.all.count == 8)
+        #expect(StreamColor.all.count == SunriseTokens.Stream.names.count)
         for stream in StreamColor.all {
+            #expect(SunriseTokens.Stream.names.contains(String(describing: stream)))
             #expect(stream.tint(for: .light) != stream.tint(for: .dark))
         }
     }
@@ -70,7 +76,7 @@ struct DesignTokensTests {
     func motionDurationsAreSeconds() {
         #expect(SunriseTokens.Motion.fast.duration == 0.12)
         #expect(SunriseTokens.Motion.med.duration == 0.22)
-        #expect(SunriseTokens.Motion.reduced.duration == 0)
+        #expect(SunriseTokens.Motion.reducedDuration == 0)
     }
 
     /// The spacing scale the pipeline settled on, which is not the one

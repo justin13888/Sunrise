@@ -58,11 +58,10 @@ export const motion = {
         durationMs: 0,
         easing: [0, 0, 1, 1],
     },
-    reduced: {
-        durationMs: 0,
-        easing: [0, 0, 1, 1],
-    },
 } as const;
+
+/** What every duration collapses to under a reduced-motion preference. */
+export const reducedMotionDurationMs = 0;
 
 /** The two themes. `surface` is semantic; `stream` is keyed on `StreamColor`. */
 export const color = {

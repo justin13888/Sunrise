@@ -27,6 +27,12 @@ struct DropHighlight: ViewModifier {
             .animation(Motion.fast(reduceMotion: reduceMotion), value: isActive)
     }
 
+    // The corner radius above **changed**: it was a literal 5 and is now
+    // `Radius.sm`, which is 4. No spec named 5 — it was the one number in this
+    // file with no doc behind it — so nothing is violated by moving it onto the
+    // scale, but it is a one-point visual change rather than a pure
+    // substitution, and worth knowing about at a glance.
+    //
     // The three numbers below stay literals, and deliberately. They are
     // `interaction-patterns.md` §Drag-and-drop UX tokens' own values — a border
     // width and two opacities — and `shared-ui-system.md`'s token set has no

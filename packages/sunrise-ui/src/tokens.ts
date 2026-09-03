@@ -35,8 +35,8 @@ export {
  * The eight Stream tints, light theme.
  *
  * Light-only because that is what `colors` has always meant to its consumer.
- * `surface.dark.stream` is the dark set; a client that renders both reads
- * `surface` instead.
+ * `theme.dark.stream` is the dark set; a client that renders both reads
+ * `theme` instead.
  */
 export const colors = color.light.stream;
 
@@ -44,9 +44,14 @@ export const colors = color.light.stream;
 export type StreamColor = keyof typeof colors;
 
 /**
- * The semantic surface palette, per theme.
+ * Both themes, whole: `theme.light.surface.bg`, `theme.dark.stream.rose`.
  *
- * Entirely new: there was no `bg`, `fg`, `muted`, `accent`, `border`, `danger`,
- * `warning`, `success` or `info` here before, and no dark theme at all.
+ * The nesting is `theme -> light | dark -> surface | stream`, and the export is
+ * named for the outer level rather than an inner one — `surface.light.surface`
+ * read like a mistake because it was one.
+ *
+ * The `surface` half is entirely new: there was no `bg`, `fg`, `muted`,
+ * `accent`, `border`, `danger`, `warning`, `success` or `info` here before, and
+ * no dark theme at all.
  */
-export const surface = color;
+export const theme = color;

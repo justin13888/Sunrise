@@ -8,7 +8,7 @@
 
 import {
     BANNER,
-    MOTION_KEYS,
+    MOTION_CURVE_KEYS,
     num,
     RADIUS_KEYS,
     SPACE_KEYS,
@@ -63,8 +63,8 @@ export function emitCss(tokens: Tokens): string {
         lines.push(`    --sunrise-type-${customName(key)}: ${rendered};`);
     }
     lines.push("");
-    for (const key of MOTION_KEYS) {
-        const motion = tokens.motion[key];
+    for (const key of MOTION_CURVE_KEYS) {
+        const motion = tokens.motion.curves[key];
         lines.push(
             `    --sunrise-motion-${key}-duration: ${num(motion.durationMs)}ms;`,
         );
@@ -72,6 +72,9 @@ export function emitCss(tokens: Tokens): string {
             `    --sunrise-motion-${key}-easing: cubic-bezier(${motion.easing.map(num).join(", ")});`,
         );
     }
+    lines.push(
+        `    --sunrise-motion-reduced-duration: ${num(tokens.motion.reducedDurationMs)}ms;`,
+    );
     lines.push("");
     lines.push(...surfaceDeclarations(tokens.light, "    "));
     lines.push("}");
@@ -95,13 +98,16 @@ export function emitCss(tokens: Tokens): string {
     lines.push(
         " * animate at all. The easing customs are left alone — a curve over zero",
     );
-    lines.push(" * milliseconds is not observable.");
+    lines.push(
+        " * milliseconds is not observable, which is also why `reduced` has no",
+    );
+    lines.push(" * easing of its own.");
     lines.push(" */");
     lines.push("@media (prefers-reduced-motion: reduce) {");
     lines.push("    :root {");
-    for (const key of MOTION_KEYS) {
+    for (const key of MOTION_CURVE_KEYS) {
         lines.push(
-            `        --sunrise-motion-${key}-duration: ${num(tokens.motion.reduced.durationMs)}ms;`,
+            `        --sunrise-motion-${key}-duration: ${num(tokens.motion.reducedDurationMs)}ms;`,
         );
     }
     lines.push("    }");

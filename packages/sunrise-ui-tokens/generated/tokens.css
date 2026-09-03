@@ -41,7 +41,6 @@
     --sunrise-motion-linear-duration: 0ms;
     --sunrise-motion-linear-easing: cubic-bezier(0, 0, 1, 1);
     --sunrise-motion-reduced-duration: 0ms;
-    --sunrise-motion-reduced-easing: cubic-bezier(0, 0, 1, 1);
 
     --sunrise-color-bg: #fbfbfa;
     --sunrise-color-fg: #1a1a1a;
@@ -91,7 +90,8 @@
  * Reduced motion is a policy, not a shorter duration: every duration
  * collapses to `reduced`, so a transition that reads a token cannot
  * animate at all. The easing customs are left alone — a curve over zero
- * milliseconds is not observable.
+ * milliseconds is not observable, which is also why `reduced` has no
+ * easing of its own.
  */
 @media (prefers-reduced-motion: reduce) {
     :root {
@@ -99,6 +99,5 @@
         --sunrise-motion-med-duration: 0ms;
         --sunrise-motion-slow-duration: 0ms;
         --sunrise-motion-linear-duration: 0ms;
-        --sunrise-motion-reduced-duration: 0ms;
     }
 }

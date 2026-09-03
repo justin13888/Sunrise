@@ -8,6 +8,10 @@
 # other entry collapses to when the platform reports a reduced-motion
 # preference. The CSS emitter writes it into a `prefers-reduced-motion: reduce`
 # block; the Swift adapter returns `nil` instead of an `Animation`.
+#
+# It carries no `easing`, and the loader rejects one written here. A curve over
+# zero milliseconds is not observable, so the field could never matter and
+# could always be wrong.
 
 [fast]
 duration_ms = 120
@@ -27,4 +31,3 @@ easing = [0.0, 0.0, 1.0, 1.0]
 
 [reduced]
 duration_ms = 0
-easing = [0.0, 0.0, 1.0, 1.0]

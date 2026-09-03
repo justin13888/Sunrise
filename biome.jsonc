@@ -13,7 +13,14 @@
             "!**/dist",
             "!**/build",
             "!**/coverage",
-            "!.claude"
+            "!.claude",
+            // Written by `mise run tokens` and drift-checked against the TOML
+            // that produced it, so it is not ours to format — the same reason
+            // `apps/apple/.swiftlint.yml` excludes it. Without this,
+            // `lefthook.yaml`'s pre-commit `biome check --write .` would
+            // rewrite a generated file and pre-push would then fail with
+            // "stale; regenerate it", naming the wrong cause.
+            "!packages/sunrise-ui-tokens/generated"
         ]
     },
     "formatter": {

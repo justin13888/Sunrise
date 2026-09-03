@@ -23,7 +23,7 @@ import {
     buildTokens,
     type Hex,
     loadTokens,
-    MOTION_KEYS,
+    MOTION_CURVE_KEYS,
     parseMotion,
     parseSpacing,
     parseTheme,
@@ -89,8 +89,29 @@ describe("the two themes are the same shape", () => {
 });
 
 describe("the stream palette is keyed on the domain enum", () => {
-    it("matches StreamColor::as_str in crates/sunrise-domain/src/stream.rs", async () => {
+    /**
+     * Both halves of the enum, because either one alone can be fooled.
+     *
+     * Reading only the `as_str` arms misses a variant added with a catch-all:
+     * `Teal` plus `_ => "slate"` compiles, and `#[serde(rename_all =
+     * "lowercase")]` still persists `"teal"` into the vault, so the palette
+     * would be missing a colour that storage can hold. Reading only the
+     * declaration misses the opposite — an arm renamed without its variant.
+     */
+    it("matches StreamColor in crates/sunrise-domain/src/stream.rs", async () => {
         const source = await readFile(STREAM_RS, "utf8");
+
+        const declaration = /pub enum StreamColor \{([\s\S]*?)\n\}/.exec(
+            source,
+        );
+        expect(
+            declaration,
+            "the StreamColor declaration must still be findable in stream.rs",
+        ).not.toBeNull();
+        const declared = [
+            ...(declaration?.[1] ?? "").matchAll(/^ {4}([A-Z]\w*),$/gm),
+        ].map((m) => (m[1] as string).toLowerCase());
+
         const body =
             /pub const fn as_str\(self\) -> &'static str \{([\s\S]*?)\n {4}\}/.exec(
                 source,
@@ -99,14 +120,18 @@ describe("the stream palette is keyed on the domain enum", () => {
             body,
             "StreamColor::as_str must still be findable in stream.rs",
         ).not.toBeNull();
-        const variants = [
+        const spelled = [
             ...(body?.[1] ?? "").matchAll(/Self::\w+ => "(\w+)",/g),
         ].map((m) => m[1]);
+
         expect(
-            variants.length,
+            declared.length,
             "stream.rs must declare at least one variant",
         ).toBeGreaterThan(0);
-        expect([...tokens.streamKeys].sort()).toEqual([...variants].sort());
+        // The two lists must agree with each other before either is worth
+        // comparing to the palette: a mismatch here is a catch-all arm.
+        expect([...spelled].sort()).toEqual([...declared].sort());
+        expect([...tokens.streamKeys].sort()).toEqual([...declared].sort());
     });
 });
 
@@ -143,18 +168,18 @@ describe("reduced motion is expressible on every target", () => {
             block,
             "the CSS must carry a prefers-reduced-motion block",
         ).not.toBeNull();
-        for (const key of MOTION_KEYS) {
+        for (const key of MOTION_CURVE_KEYS) {
             expect(block?.[1]).toContain(
                 `--sunrise-motion-${key}-duration: 0ms;`,
             );
         }
     });
 
-    it("the Swift carries a `reduced` token the adapter can return nil for", () => {
+    it("the Swift carries a `reduced` duration the adapter can return nil for", () => {
         expect(emitSwift(tokens)).toContain(
-            "static let reduced = MotionToken(",
+            "static let reducedDuration: TimeInterval = 0 / 1000",
         );
-        expect(tokens.motion.reduced.durationMs).toBe(0);
+        expect(tokens.motion.reducedDurationMs).toBe(0);
     });
 });
 
@@ -198,7 +223,7 @@ describe("the model refuses sources it cannot emit from", () => {
             med: { duration_ms: 220, easing: [0.4, 0, 0.2, 1] },
             slow: { duration_ms: 360, easing: [0.4, 0, 0.2, 1] },
             linear: { duration_ms: 0, easing: [0, 0, 1, 1] },
-            reduced: { duration_ms: 0, easing: [0, 0, 1, 1] },
+            reduced: { duration_ms: 0 },
         },
         light: { surface: tokens.light.surface, stream: { slate: "#475569" } },
         dark: { surface: tokens.dark.surface, stream: { slate: "#94a3b8" } },
@@ -278,10 +303,30 @@ describe("the model refuses sources it cannot emit from", () => {
         expect(() => parseMotion(motion)).toThrow(/finite numbers/);
     });
 
+    it("rejects an easing CSS would refuse", () => {
+        // The abscissae are constrained to [0, 1]; the ordinates are free,
+        // which is what lets a curve overshoot. `cubic-bezier(1.5, …)` is
+        // invalid at computed-value time, and a browser drops the declaration
+        // without saying so.
+        const motion = structuredClone(good.motion);
+        motion.fast.easing = [1.5, 0, 0, 1];
+        expect(() => parseMotion(motion)).toThrow(/x1 must be in \[0, 1\]/);
+        motion.fast.easing = [0.2, 0, -0.3, 1];
+        expect(() => parseMotion(motion)).toThrow(/x2 must be in \[0, 1\]/);
+        motion.fast.easing = [0.2, -0.6, 0, 1.8];
+        expect(() => parseMotion(motion)).not.toThrow();
+    });
+
     it("rejects a `reduced` policy that still animates", () => {
         const motion = structuredClone(good.motion);
         motion.reduced.duration_ms = 120;
         expect(() => parseMotion(motion)).toThrow(/duration_ms must be 0/);
+    });
+
+    it("rejects an easing written on `reduced`, rather than ignoring it", () => {
+        const motion = structuredClone(good.motion) as Record<string, unknown>;
+        motion.reduced = { duration_ms: 0, easing: [0, 0, 1, 1] };
+        expect(() => parseMotion(motion)).toThrow(/unexpected easing/);
     });
 
     it("rejects themes whose stream palettes disagree", () => {

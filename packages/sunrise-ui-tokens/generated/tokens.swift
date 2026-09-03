@@ -68,7 +68,7 @@ enum SunriseTokens {
         static let lineNormal: CGFloat = 1.5
     }
 
-    /// Durations and curves. `reduced` is the no-motion policy value.
+    /// Durations and curves, plus the one policy value that is neither.
     enum Motion {
         static let fast = MotionToken(
             duration: 120 / 1000,
@@ -86,10 +86,10 @@ enum SunriseTokens {
             duration: 0 / 1000,
             easing: Easing(x1: 0, y1: 0, x2: 1, y2: 1)
         )
-        static let reduced = MotionToken(
-            duration: 0 / 1000,
-            easing: Easing(x1: 0, y1: 0, x2: 1, y2: 1)
-        )
+
+        /// What every duration collapses to under Reduce Motion. Seconds,
+        /// like every other duration here, and not a curve: nothing is drawn.
+        static let reducedDuration: TimeInterval = 0 / 1000
     }
 
     /// The semantic surface palette, per theme.
@@ -123,6 +123,10 @@ enum SunriseTokens {
 
     /// The per-`StreamColor` tints, per theme. Keyed on the domain enum.
     enum Stream {
+        /// Every `StreamColor` name the token set carries, in declaration
+        /// order. It is what a hand-written list of cases can be checked against.
+        static let names: [String] = ["slate", "rose", "amber", "emerald", "sky", "indigo", "violet", "pink"]
+
         enum Light {
             static let slate = RGB(red: 71 / 255, green: 85 / 255, blue: 105 / 255)  // #475569
             static let rose = RGB(red: 225 / 255, green: 29 / 255, blue: 72 / 255)  // #e11d48
