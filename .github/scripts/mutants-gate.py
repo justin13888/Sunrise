@@ -473,12 +473,26 @@ def main() -> int:
         print("\nno floor recorded for:", file=sys.stderr)
         for crate, measured in unfloored:
             print(f"  {crate}: measured {measured}%", file=sys.stderr)
+        # Assembled from this run rather than printed as `<crate>=<N>`: a
+        # remedy with angle brackets in it is four redirections when pasted
+        # into a shell, so the reader gets `No such file or directory` from
+        # bash and never reaches the task at all.
+        #
+        # Every crate the run produced, not only the unfloored ones. The mise
+        # task scores every directory under out/mutants/ together, so a spec
+        # naming just the crate that failed comes straight back as an
+        # undeclared crate for the ones that passed.
+        spec = ",".join(
+            f"{crate}="
+            f"{args.expect_shards.get(crate) or len(sources.get(crate, ()))}"
+            for crate in sorted(counts)
+        )
         print(
             "\nEvery crate in scope carries a floor or it is not enforced. "
             "Record one from this run:\n"
             "\n"
             "  locally, from out/:\n"
-            "    mise run mutants-baseline --expect-shards <crate>=<N>,...\n"
+            f"    mise run mutants-baseline --expect-shards {spec}\n"
             "\n"
             "  from a nightly run's artifacts:\n"
             "    gh run download <run-id> --pattern 'mutants-*' --dir outcomes\n"
