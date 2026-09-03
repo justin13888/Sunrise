@@ -584,7 +584,10 @@ impl Engine {
         db: &mut Db,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, EngineError> {
-        Ok(self.apply_remote_all(db, envelope_bytes)?.into_iter().next())
+        Ok(self
+            .apply_remote_all(db, envelope_bytes)?
+            .into_iter()
+            .next())
     }
 
     /// [`Self::apply_remote`], returning **every** event the delivery produced.

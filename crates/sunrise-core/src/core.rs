@@ -232,7 +232,11 @@ impl Core {
         &self,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, CoreError> {
-        Ok(self.apply_remote_all(envelope_bytes).await?.into_iter().next())
+        Ok(self
+            .apply_remote_all(envelope_bytes)
+            .await?
+            .into_iter()
+            .next())
     }
 
     /// [`Self::apply_remote`], handing back every event rather than the first.

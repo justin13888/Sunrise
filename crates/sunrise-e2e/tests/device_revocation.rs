@@ -224,9 +224,7 @@ async fn a_revoked_device_cannot_write_and_the_survivors_keep_syncing() {
     // And C keeps what it already had. Rotation bounds forward exposure at
     // best; it never reaches backwards.
     assert!(
-        task_titles(&c)
-            .await
-            .contains(&"before the cut".to_owned()),
+        task_titles(&c).await.contains(&"before the cut".to_owned()),
         "the pre-revocation task is still readable on the revoked device"
     );
 }
