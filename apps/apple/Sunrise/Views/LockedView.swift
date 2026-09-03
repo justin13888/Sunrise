@@ -90,7 +90,9 @@ struct LockedView: View {
         PairingModel(
             intent: .addThisMac,
             relayURL: settings.relayURL.trimmed,
-            adopt: { [session] root in await session?.adoptVaultRoot(root) }
+            adopt: { [session] root, bundle in
+                await session?.adoptPairing(root: root, bundle: bundle)
+            }
         )
     }
 }

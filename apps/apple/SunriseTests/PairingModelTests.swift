@@ -19,10 +19,34 @@ struct PairingModelTests {
     @MainActor
     final class Sink {
         var root: Data?
+        var bundle: Data?
     }
 
     private static let relay = "https://relay.example"
     private static let vaultRoot = Data(repeating: 0xAB, count: 32)
+
+    /// One real, canonically encoded `PairingPayload`.
+    ///
+    /// The seam takes the payload's bytes, not a bare root: `openPairingPayload`
+    /// decodes what it opens and refuses a payload whose `identity_id` is not
+    /// the id derived from its own `ID_S_pub`, so this cannot be 32 arbitrary
+    /// bytes. It is a fixture rather than something assembled here because
+    /// Swift has no constructor for the type — a payload is built inside the
+    /// core, out of a vault, and this test has no vault.
+    ///
+    /// Produced by `sunrise_pairing::encode_pairing_payload` over `ID_S_priv` =
+    /// 32 x 0x11, `ID_D_priv` = 32 x 0x22, one Stream key (the vault-meta
+    /// stream, epoch 1, 32 x 0xCD), and `vault_root` = ``vaultRoot``.
+    /// Regenerate it if the payload's CDDL changes; a stale one fails loudly
+    /// here rather than quietly somewhere else.
+    private static let pairingPayload = Data(
+        base64Encoded:
+        "qQFYIBERERERERERERERERERERERERERERERERERERERERERAlggIiIiIiIiIiIiIiIiIiIi"
+            + "IiIiIiIiIiIiIiIiIiIiIiIDWCDQSrIydCu0qzoTaL1GFeTm0CJKtxoBa6+FIKMyyXeHNwRY"
+            + "IA+qaE7SiGe5f0pqLe5d+M6XTna3AY4/IqHEzyZ4Vw8gBVCIl23Dj6JC18nj/FiYj1YNBqFQ"
+            + "AAAAAAAAAAAAAAAAAAAAAKEBWCDNzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3NzQdnZml4"
+            + "dHVyZQhkdGVzdAlYIKurq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur"
+    )!
 
     private func shownText(_ model: PairingModel) -> String? {
         guard case let .handOff(handOff) = model.phase else { return nil }
@@ -38,16 +62,19 @@ struct PairingModelTests {
     /// below's starting point but one.
     private func handshake(
         sink: Sink = Sink(),
-        sealRoot: ((DevicePairing) async throws -> String)? = { pairing in
-            try pairing.sealVaultRoot(vaultRoot: vaultRoot)
+        sealPayload: ((DevicePairing) async throws -> String)? = { pairing in
+            try pairing.sealPairingPayload(payload: pairingPayload)
         }
     ) async throws -> (added: PairingModel, holder: PairingModel) {
         let added = PairingModel(
             intent: .addThisMac,
             relayURL: Self.relay,
-            adopt: { root in sink.root = root }
+            adopt: { root, bundle in
+                sink.root = root
+                sink.bundle = bundle
+            }
         )
-        let holder = PairingModel(intent: .addAnotherDevice, sealRoot: sealRoot)
+        let holder = PairingModel(intent: .addAnotherDevice, sealPayload: sealPayload)
 
         added.accountEmail = "someone@example.com"
         added.begin()
@@ -75,10 +102,10 @@ struct PairingModelTests {
         return (added, holder)
     }
 
-    /// The whole point: a vault root that started on one device ends up on the
-    /// other, and every leg in between was something a person could do.
+    /// The whole point: the pairing payload that started on one device ends up
+    /// on the other, and every leg in between was something a person could do.
     @Test
-    func theRootCrossesWhenBothUsersConfirmTheSameDigits() async throws {
+    func thePayloadCrossesWhenBothUsersConfirmTheSameDigits() async throws {
         let sink = Sink()
         let (added, holder) = try await handshake(sink: sink)
 
@@ -92,12 +119,16 @@ struct PairingModelTests {
         await added.confirm(matched: true)
         await holder.confirm(matched: true)
 
-        // The sealed root is the last thing the user carries.
+        // The sealed payload is the last thing the user carries.
         added.pasted = try #require(shownText(holder))
         await added.submit()
         holder.advance()
 
-        #expect(sink.root == Self.vaultRoot)
+        #expect(sink.root == Self.vaultRoot, "the root comes out of the payload")
+        #expect(
+            sink.bundle == Self.pairingPayload,
+            "and the bundle behind it, which is what carries the Stream keys"
+        )
         if case .done = added.phase {} else { Issue.record("expected done, got \(added.phase)") }
         if case .done = holder.phase {} else { Issue.record("expected done, got \(holder.phase)") }
     }
@@ -208,7 +239,7 @@ struct PairingModelTests {
     /// producing a sealed blob that carries nothing.
     @Test
     func sharingWithNoOpenVaultFailsRatherThanSealingNothing() async throws {
-        let (added, holder) = try await handshake(sealRoot: nil)
+        let (added, holder) = try await handshake(sealPayload: nil)
 
         await added.confirm(matched: true)
         await holder.confirm(matched: true)

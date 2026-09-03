@@ -218,7 +218,7 @@ struct SessionModelTests {
             rootStore: StubRootStore(root: Data(repeating: 9, count: 32)),
             appVersion: "test",
             configurationError: nil,
-            openBridge: { _, _, _ in throw StubError() }
+            openBridge: { _, _, _, _ in throw StubError() }
         )
         await session.start()
         #expect(session.phase == .failed("the Keychain is locked"))

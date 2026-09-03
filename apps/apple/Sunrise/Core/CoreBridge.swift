@@ -29,10 +29,17 @@ actor CoreBridge {
     ///
     /// The root comes from the Keychain or a completed pairing. This type does
     /// not derive it and does not keep a copy.
+    ///
+    /// `pairedBundle` is what a completed pairing produced, and is passed
+    /// **once**, on the first open of a device that was just added. Since
+    /// ADR-0024 the root no longer implies the key schedule — Stream keys are
+    /// random, not derived — so a device handed only a root would open a vault
+    /// full of ciphertext it could never read. `nil` everywhere else.
     static func open(
         directory: URL,
         vaultRoot: Data,
-        appVersion: String
+        appVersion: String,
+        pairedBundle: Data? = nil
     ) async throws -> CoreBridge {
         try FileManager.default.createDirectory(
             at: directory,
@@ -41,7 +48,8 @@ actor CoreBridge {
         let core = try await SunriseCore.open(
             vaultDir: directory.path(percentEncoded: false),
             vaultRoot: vaultRoot,
-            appVersion: appVersion
+            appVersion: appVersion,
+            pairedBundle: pairedBundle
         )
         return CoreBridge(core: core)
     }
@@ -154,12 +162,14 @@ actor CoreBridge {
 
     // MARK: - Pairing
 
-    /// Seal this vault's root into a confirmed pairing.
+    /// Seal this vault's pairing payload into a confirmed pairing.
     ///
-    /// The root itself never reaches Swift. What comes back is ciphertext only
-    /// the device on the other end of the confirmed handshake can open.
-    func sendVaultRoot(to pairing: DevicePairing) throws -> String {
-        try core.sendVaultRoot(pairing: pairing)
+    /// The payload itself never reaches Swift — it carries the account
+    /// identity's private keys and every Stream key, not just the root. What
+    /// comes back is ciphertext only the device on the other end of the
+    /// confirmed handshake can open.
+    func sendPairingPayload(to pairing: DevicePairing) throws -> String {
+        try core.sendPairingPayload(pairing: pairing)
     }
 
     /// This device's stable id, hex-encoded — what a login binds its token to.
