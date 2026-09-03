@@ -10,21 +10,34 @@ import SwiftUI
 struct DropHighlight: ViewModifier {
     let isActive: Bool
 
+    /// `nil` under Reduce Motion, which is how the highlight stops animating
+    /// without a branch here. See `Sunrise/Design/Tokens.swift`.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color.accentColor.opacity(isActive ? 0.08 : 0))
+                RoundedRectangle(cornerRadius: SunriseTokens.Radius.sm)
+                    .fill(Color.accentColor.opacity(isActive ? DropHighlight.fillOpacity : 0))
                     .stroke(
                         Color.accentColor.opacity(isActive ? 1 : 0),
                         lineWidth: DropHighlight.borderWidth
                     )
             )
-            .animation(.easeOut(duration: 0.1), value: isActive)
+            .animation(Motion.fast(reduceMotion: reduceMotion), value: isActive)
     }
+
+    // The three numbers below stay literals, and deliberately. They are
+    // `interaction-patterns.md` §Drag-and-drop UX tokens' own values — a border
+    // width and two opacities — and `shared-ui-system.md`'s token set has no
+    // scale for either. Inventing one would put values in
+    // `packages/sunrise-ui-tokens/tokens/` that no design doc specifies, which
+    // is the failure mode #29 is about, pointed the other way.
 
     /// The spec's own number.
     static let borderWidth: CGFloat = 2
+    /// The spec's own number: the accent tint behind an active drop target.
+    static let fillOpacity: Double = 0.08
     /// The spec's own number: what a dragged item is drawn at while in flight.
     static let ghostOpacity: Double = 0.65
 }

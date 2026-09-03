@@ -78,6 +78,14 @@ targets:
       # excluded from SwiftLint for the same reason.
       - path: ../../out/swift/sunrise_core_bindings.swift
         group: Generated
+      # Generated from `packages/sunrise-ui-tokens/tokens/*.toml`, and — unlike
+      # the bindings above — *committed*, not rebuilt here. Xcode's environment
+      # has neither Bun nor mise on PATH (see the `SunriseFFI` script, which has
+      # to inject both Homebrew and rustup), so this target cannot run the
+      # generator. `mise run tokens-check` and the vitest drift test are what
+      # keep the committed file honest instead. See ADR-0029.
+      - path: ../../packages/sunrise-ui-tokens/generated/tokens.swift
+        group: Generated
     dependencies:
       - target: SunriseFFI
       - framework: ../../out/SunriseCore.xcframework
@@ -161,6 +169,10 @@ targets:
       - path: Sunrise
       - path: iOS
       - path: ../../out/swift/sunrise_core_bindings.swift
+        group: Generated
+      # The same committed, drift-checked token file the macOS target compiles.
+      # See the note on that target.
+      - path: ../../packages/sunrise-ui-tokens/generated/tokens.swift
         group: Generated
     dependencies:
       - target: SunriseFFI
