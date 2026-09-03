@@ -109,15 +109,15 @@ long-press drag where the Mac has a click-drag.
 |---|---|---|---|
 | Task → Stream | Yes | Yes | N/A |
 | Task → Context | Yes | Yes | N/A |
-| Task → Calendar block | Yes | Yes *(unverified)* | N/A |
+| Task → Calendar block | Yes | **No** — see below | N/A |
 | Calendar block → Task | **No** — see below | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
 | Task → Task (reorder) | Yes | Yes | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
-**Calendar block → Task is the one cell not built, and what is missing is the
-two modifiers, not a layout that could hold them.** A Block is not a drag
+**Calendar block → Task is No in both columns, and what is missing is the two
+modifiers, not a layout that could hold them.** A Block is not a drag
 source: `BlockChip` (`CalendarView.swift:358-457`) carries a tap
 (`:407`), a move gesture (`:408`) and a context menu (`:410`), and no
 `.draggable` — the only `.draggable` in the whole tree is the task row's
@@ -130,24 +130,36 @@ in Today and in Search. The write the cell would perform exists and is tested �
 drop issues — so building it is UI work with no core work behind it. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-**The iOS cell for *Task → Calendar block* is a qualified Yes: both endpoints
-ship, and nothing exercises them together.** The drag source
+**The iOS cell for *Task → Calendar block* is No: both ends ship, and they
+cannot be put on screen at the same time.** The drag source
 (`TaskRowView.swift:74`) and the grid's drop target (`CalendarView.swift:221`,
-into `accept(items:at:)` at `:312`) are both shared, both unguarded, and both
-compile into `SunriseiOS`. What is not substantiated is delivery. `TaskRowView`
-renders only inside `TaskListView` (`:172`) and `DailyBriefView` (`:82`); the
-grid renders on iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a
-pushed destination that replaces the list on the same stack — so a task row and
-the grid are never on screen together. Nothing lets a drag get from one to the
-other in flight: no `Tab` carries a `dropDestination`, there is no
-spring-loading, and the iOS app declares a single scene
-(`SunriseiOSApp.swift:23-24`), so an iPad has no second window to drag into
-either. The cell is not a **No** — nothing refuses the gesture, and both halves
-of it ship — but no one has traced it end to end, and the qualifier says so.
-*File → Task* is the other qualified iOS cell, and that one is the platform's
-doing rather than the app's — the drop target is shared and unconditional, but
-dragging a file in from another app needs two apps on screen, which is iPad
-multitasking.
+into `accept(items:at:)` at `:312`) are shared, unguarded and compiled into
+`SunriseiOS` — this cell fails
+on reach, not on code. `TaskRowView` renders only inside `TaskListView`
+(`:172`) and `DailyBriefView` (`:82`); the grid renders on iOS only at
+`VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination that
+replaces the list on the same stack. Nothing carries a drag between them: no
+`Tab` has a `dropDestination`, and there is no spring-loading. So on an iPhone
+there is no screen from which the gesture can start and finish, which is what a
+**No** records.
+
+**The iPad does not rescue it, and the reason is what separates this cell from
+*File → Task*.** A second Sunrise window would put a list beside the grid, but
+this app cannot vend one: `iOS/SunriseiOSApp.swift:23-24` declares a single
+`WindowGroup`, and multiple
+windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
+`UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
+has no checked-in plist at all — its Info.plist is generated
+(`project.yml:192-203`, `GENERATE_INFOPLIST_FILE: YES` at `:181`) from three
+`properties` (`CFBundleURLTypes` and the two version keys) and three
+`INFOPLIST_KEY_` settings (`UILaunchScreen_Generation`, and the two
+`UISupportedInterfaceOrientations`, `:182-190`). Neither key appears in any of
+them, or anywhere in `apps/apple`; absent, `UIApplicationSupportsMultipleScenes`
+takes its default of `NO`, so iPadOS grants the app one scene and there is no
+second window to drag into. *File → Task* is qualified to the iPad for the
+complementary reason: it needs a second **app** — Files beside Sunrise in Split
+View — which asks nothing of this app's own scene support. One window each is
+exactly what Split View hands out.
 
 Every other cell is live in `apps/apple`, and in both products at once: every
 file named here is under `Sunrise/`, which compiles into the Mac app and the
