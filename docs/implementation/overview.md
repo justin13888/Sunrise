@@ -363,22 +363,24 @@ Recorded because each presented as something other than what it was:
   ±100% against its own baseline from scheduling noise alone, so `testing.md`'s
   >5% blocking gate needs dedicated hardware. `cargo-mutants` is wired, but
   nightly rather than per-pull-request: `ci.yml`'s `Mutation coverage` job runs
-  the four scoped crates as a 13-entry shard matrix (`sunrise-domain` ×6,
-  `sunrise-core` ×4, `sunrise-crypto` ×2, `sunrise-sync` ×1) on `schedule` and
-  `workflow_dispatch` only, and `Mutation coverage gate` feeds every shard's
-  `outcomes.json` to `.github/scripts/mutants-gate.py`, which aggregates per
-  crate and compares against `mutants/baseline.json` with `--expect-shards`
-  mirroring that matrix, so a shard whose runner died reads as a broken run
-  rather than as a coverage regression. The mutate step treats cargo-mutants'
-  exit 0, 2 and 3 — clean, mutants missed, mutants timed out — as success,
-  because on this workspace 2 and 3 are the ordinary result and judging them is
-  the gate's job, and propagates every other code, notably 4: the unmutated
-  baseline failed to build or test. `mise run mutants <crate> [--shard k/n]` is
-  the same pass locally, and `mise run mutants-baseline --expect-shards
-  <crate>=<N>,...` is how a floor is recorded.
-  Floors exist for `sunrise-crypto` (78.43%) and `sunrise-sync` (27.17%) only;
-  `sunrise-domain` and `sunrise-core` are recorded from the first nightly, and
-  until then the gate fails on them for having no floor.
+  the four scoped crates as a per-crate shard matrix — the counts live in that
+  matrix and are sized by mutant count — on `schedule` and `workflow_dispatch`
+  only, and `Mutation coverage gate` feeds every shard's `outcomes.json` to
+  `.github/scripts/mutants-gate.py`, which aggregates per crate and compares
+  against `mutants/baseline.json` with `--expect-shards` mirroring that matrix,
+  so a shard whose runner died reads as a broken run rather than as a coverage
+  regression. The mutate step treats cargo-mutants' exit 0, 2 and 3 — clean,
+  mutants missed, mutants timed out — as success, because on this workspace 2
+  and 3 are the ordinary result and judging them is the gate's job, and it
+  propagates every other code, notably 4: the unmutated baseline failed to
+  build or test. `mise run mutants <crate> [--shard k/n]` is the same pass
+  locally, and `mise run mutants-baseline` — with the shard
+  counts it requires — is how a floor is recorded. The floors themselves are
+  deliberately not restated here: `mutants/baseline.json` is the only thing the
+  gate reads, the numbers ratchet upward as tests improve, and a copy in this
+  file would be wrong the first time one moves. It currently carries
+  `sunrise-crypto` and `sunrise-sync`; `sunrise-domain` and `sunrise-core` get
+  theirs from the first nightly and until then fail the gate for having none.
   `CODEOWNERS` now encodes the security-review gate, though GitHub only enforces
   it once branch protection requires code-owner review.
 - **`cargo-fuzz` targets** — `testing.md` specifies six; `fuzz/` does not exist.
