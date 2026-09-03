@@ -51,8 +51,13 @@ What exists today:
   (`.github/workflows/ci.yml:3-11`), two of them branch-filtered: `push` on
   `master` or `v1-rewrite` and `pull_request` targeting either — `branches:` is
   nested under those two events and constrains only them — plus the nightly
-  schedule and `workflow_dispatch`, neither of which is filtered, so
-  `gh workflow run ci.yml --ref <branch>` builds any ref on demand.
+  schedule and `workflow_dispatch`, which carry no `branches:` key. Only one of
+  those two is actually unconstrained. GitHub fires a `schedule` on the
+  repository's **default branch** alone, and that is `master`, so the 04:00
+  nightly builds `master` and never `v1-rewrite` — a branch constraint that
+  comes from GitHub's rule rather than from this file, and one no `--ref` can
+  change. `workflow_dispatch` is the one that will build any ref on request:
+  `gh workflow run ci.yml --ref <branch>`.
 
 ## Run it
 

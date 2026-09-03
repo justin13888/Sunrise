@@ -122,9 +122,10 @@ Rust source on every build, so committing them would let the two drift.
 
 **CI builds this.** `.github/workflows/ci.yml` has a `macos-app` job on the
 `macos-26` runner — pinned because `project.yml` sets a macOS 26.0 deployment
-target that no earlier image can build — which runs `mise run macos-app` as a single
-step on every push and PR to `master` and `v1-rewrite`, plus nightly. So a
-Swift-side break is caught.
+target that no earlier image can build — which runs `mise run macos-app` as a
+single step on every push and PR to `master` and `v1-rewrite`, plus a 04:00 UTC
+nightly on `master` alone, since GitHub fires a `schedule` only on the
+repository's default branch. So a Swift-side break is caught.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
 the `Sunrise` scheme, because a macOS XCUITest takes control of another process
