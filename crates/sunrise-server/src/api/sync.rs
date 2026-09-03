@@ -344,6 +344,19 @@ pub struct OpsResponse {
 // the ack leaves the batch in the outbox, and every reconnect re-drains it. See
 // `batch_ops_hash` for why the key is the content rather than the `batch_id`.
 //
+// The key is the *whole* batch, which bounds what "already seen" can mean. Two
+// of the three re-send shapes are covered: an in-session retransmit replays
+// `InflightBatch.frame` verbatim, and a reconnect that adds nothing to the
+// outbox re-drains the same ops. An **active** client is not.
+// `Core::sync_outbox_grouped` puts every unacked op for a stream into one batch
+// with no size cap, so a user who edits between a lost ack and the reconnect
+// makes session 2 send `[O1, O2]` where session 1 sent `[O1]`: different
+// content, a `Fresh` append, and `O1` stored twice. Re-applying it is harmless
+// — ops are idempotent — but the relay pays the disk and fan-out cost, and
+// nothing upstream prevents it. A per-op key would close this and is a separate
+// change: it needs a retention rule of its own, because forgetting an op id is
+// precisely what lets a legitimate replay through.
+//
 // Deliberately a `//` comment rather than a `///` one: kynos publishes a
 // handler's doc comment as the operation `description`, and
 // `schemas/openapi.v1.json` is a committed artefact this change has no business

@@ -233,6 +233,8 @@ Client-side: an outbound OpBatch is held in the persistent outbox until the serv
 
 The relay dedups on the **content** of a batch's ops instead: a domain-separated BLAKE3 over the op count and each op's length and bytes, scoped to `(account, stream)` and remembered exactly as long as the frame it named survives retention. A batch already in that window is not stored and not fanned out again, and is answered with a `200` carrying the **original** `server_first_seen_ms` — the field says "first seen", and a re-send is the only thing a client that lost an ack can do. An empty batch is exempt: it carries no content to be the same as, so three empty batches are three events.
 
+The key is the **whole batch**, which bounds what "already seen" can mean. Two of the three re-send shapes are covered: a retransmit inside a session replays the encoded frame verbatim, and a reconnect that adds nothing to the outbox re-sends the same ops. An **active** client is not. The client batches every unacked op for a stream into one frame with no size cap (`Core::sync_outbox_grouped`), so a user who edits between a lost `Ack` and the reconnect makes session 2 send `[O1, O2]` where session 1 sent `[O1]`. Those are two different batches by content: the second is stored, and `O1` lands twice. Re-applying it is harmless — ops are idempotent — but the relay pays the disk and fan-out cost. A per-op key would close this and is tracked separately; it needs a retention rule of its own, because forgetting an op id is precisely what lets a legitimate replay through.
+
 ### OpBatch and Ack payloads
 
 The authority is `crates/sunrise-wire-protocol/src/payloads.rs`. Fields are
