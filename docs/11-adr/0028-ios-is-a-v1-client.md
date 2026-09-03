@@ -56,11 +56,13 @@ Read from the tree rather than from a plan:
   workflow itself** — the job has no `if:` and no path filter, so it runs every
   time CI runs, which the triggers define as pushes to `master` and
   `v1-rewrite` (`:4-5`), pull requests targeting those two branches (`:6-7`),
-  the 04:00 UTC nightly (`:8-10`) and manual dispatch (`:11`). Both `branches:`
-  filters name the **base**, so this is narrower than "every push and every
-  pull request": a push to a feature branch runs nothing, and so does a pull
-  request stacked on another feature branch — as the one carrying this ADR was,
-  based on `docs-51-architecture-freeze`. It runs on the same pinned `macos-26`
+  the 04:00 UTC nightly (`:8-10`) and manual dispatch (`:11`). The two
+  `branches:` filters match different things — `push` matches the ref that was
+  pushed, `pull_request` matches the **base** the request targets — and both
+  are narrower than "every push and every pull request": a push to a feature
+  branch matches neither list, and a pull request stacked on another feature
+  branch is filtered out on its base, as the one carrying this ADR was, based
+  on `docs-51-architecture-freeze`. It runs on the same pinned `macos-26`
   image the macOS job uses, adding both iOS Rust slices to the pinned toolchain
   first (`:138`).
 - **`apps/apple/iOS/` is 647 lines** of shell — a five-tab `TabView` with

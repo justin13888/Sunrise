@@ -49,8 +49,8 @@ What exists today:
 - CI: an `ios-app` job on `macos-26`. It carries no `if:` and no path filter,
   so it runs whenever CI runs — pushes to `master` or `v1-rewrite`, pull
   requests targeting either, the nightly schedule and manual dispatch
-  (`.github/workflows/ci.yml:3-11`). A push to a branch with no open pull
-  request builds nothing.
+  (`.github/workflows/ci.yml:3-11`). A branch outside those two builds only
+  through a pull request that targets one of them.
 
 ## Run it
 
