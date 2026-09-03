@@ -102,9 +102,11 @@ is a failure, not a pass).
 The last two are deliberately 1 and not 2, by the same argument: the run itself
 is fine and the gate read it, the invocation is what is wrong, and a caller that
 treats 2 as "infrastructure" should not be told to re-run shards over a bad
-command line. The `--update` refusal is judged on the flags alone, before any
-completeness or scorability check, so it is the one exit 1 that can be reached
-by a run with nothing wrong with it at all.
+command line. The `--update` refusal is judged on argv alone, before the
+outcomes are read at all, so it is the one exit 1 that can be reached by a run
+with nothing wrong with it at all — and the one that outranks every exit 2: a
+caller who cannot record a floor is told which flag is missing rather than
+which file, because fixing the file would not let the command succeed.
 
 Every route named above is asserted in `test_mutants_gate.py` beside this file,
 which synthesises its own outcomes and runs in about a second — `mise run
@@ -250,6 +252,32 @@ def main() -> int:
                              "completeness check; the floors then describe "
                              "exactly what ran and nothing more")
     args = parser.parse_args()
+
+    # First, and on argv alone. This asks nothing about the run: it is the
+    # question of whether the caller is in a position to record a floor at all,
+    # and the answer does not depend on a single outcome. Judged here so a
+    # caller who forgot the counts is told about the counts — not about a
+    # baseline they were never going to write, or the scorability of a run they
+    # were never going to bank, which is what they got while this sat four
+    # checks further down. The message below says why the counts matter.
+    if args.update and not args.expect_shards and not args.allow_partial:
+        print(
+            "refusing to record a floor from an unverified set of runs.\n"
+            "\n"
+            "--update banks whatever it is handed. Hand it one shard of a "
+            "six-shard\ncrate and that shard becomes the crate's floor: a "
+            "rate measured over a\nsixth of its mutants, recorded as "
+            "though it covered all of them, and\nthereafter too low to "
+            "fail on anything.\n"
+            "\n"
+            "Say what should be here:\n"
+            "  --expect-shards sunrise-domain=6,...  checked against what "
+            "arrived\n"
+            "  --allow-partial                       unchecked, for a "
+            "deliberately partial floor",
+            file=sys.stderr,
+        )
+        return 1
 
     # One file named twice is a duplicated argument, not a duplicated shard —
     # overlapping globs, or a path listed twice by hand. It doubles every
@@ -402,24 +430,6 @@ def main() -> int:
     recorded = baseline.setdefault("crates", {})
 
     if args.update:
-        if not args.expect_shards and not args.allow_partial:
-            print(
-                "refusing to record a floor from an unverified set of runs.\n"
-                "\n"
-                "--update banks whatever it is handed. Hand it one shard of a "
-                "six-shard\ncrate and that shard becomes the crate's floor: a "
-                "rate measured over a\nsixth of its mutants, recorded as "
-                "though it covered all of them, and\nthereafter too low to "
-                "fail on anything.\n"
-                "\n"
-                "Say what should be here:\n"
-                "  --expect-shards sunrise-domain=6,...  checked against what "
-                "arrived\n"
-                "  --allow-partial                       unchecked, for a "
-                "deliberately partial floor",
-                file=sys.stderr,
-            )
-            return 1
         if args.allow_partial and not args.expect_shards:
             print(f"--allow-partial: recording from {len(args.outcomes)} "
                   "outcomes file(s) with no completeness check. These floors "

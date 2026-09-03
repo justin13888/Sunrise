@@ -263,8 +263,6 @@ class GateContract(unittest.TestCase):
         self.assert_code(result, 1, "no scorable mutants")
 
     def test_update_without_shard_flags_is_1(self):
-        # Judged on the flags alone, after the baseline is read and before
-        # anything about the run is considered.
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
         base = baseline_file(self.tmp / "base.json", {})
         result = self.run_gate(str(run), "--update", "--baseline", str(base))
@@ -272,6 +270,41 @@ class GateContract(unittest.TestCase):
             result, 1, "refusing to record a floor from an unverified set",
         )
         self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    # The three below pin the *order*, not just the code. The refusal is
+    # judged on argv before the outcomes are read, so it outranks every
+    # exit 2 that a further-along check would have produced: a caller who
+    # cannot record a floor whatever happens is told which flag is missing,
+    # rather than being sent to fix a file that would not have helped.
+
+    def test_update_refusal_outranks_an_unreadable_baseline(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(self.tmp / "gone.json"),
+        )
+        self.assert_code(
+            result, 1, "refusing to record a floor from an unverified set",
+        )
+        self.assertNotIn("cannot read", result.stderr)
+
+    def test_update_refusal_outranks_an_unscorable_run(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", unviable=3)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(str(run), "--update", "--baseline", str(base))
+        self.assert_code(
+            result, 1, "refusing to record a floor from an unverified set",
+        )
+        self.assertNotIn("no scorable mutants", result.stderr)
+
+    def test_update_refusal_outranks_unreadable_outcomes(self):
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            "nope.json", "--update", "--baseline", str(base),
+        )
+        self.assert_code(
+            result, 1, "refusing to record a floor from an unverified set",
+        )
+        self.assertNotIn("not a readable file", result.stderr)
 
     def test_regression_is_1(self):
         run = outcomes_file(
