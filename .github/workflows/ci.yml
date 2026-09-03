@@ -352,13 +352,15 @@ jobs:
   mutants-gate-contract:
     name: Mutation gate contract
     runs-on: ubuntu-latest
-    # On every push and pull request, deliberately not inside the nightly
-    # `Mutation coverage gate` job above. What this asserts is the gate's
-    # exit-code contract, which is the thing ci.yml and the gate's own printed
+    # Deliberately not inside the nightly `Mutation coverage gate` job above,
+    # and deliberately without an `if:` — so it runs on every trigger this
+    # workflow has, pull requests included. What it asserts is the gate's
+    # exit-code contract, which is what ci.yml and the gate's own printed
     # remedies depend on, and it has drifted twice — both times in a pull
     # request that a 04:00 schedule would only have caught the morning after
-    # it merged. It needs no Rust, no cargo-mutants and no outcomes: it
-    # synthesises its fixtures and runs in about a second.
+    # it merged. Running it nightly as well costs a second and occasionally
+    # catches a change to the runner rather than to the gate. It needs no
+    # Rust, no cargo-mutants and no outcomes: it synthesises its fixtures.
     steps:
       - uses: actions/checkout@v4
       - name: Exit-code contract

@@ -19,10 +19,13 @@ to be on disk. That is not a check; the tree it reads is gitignored and
 differs per machine.
 
 So: every documented route, its own fixture, its own asserted code. The
-docstring of `mutants-gate.py` names this file, and the `mutants-gate`
-job in ci.yml runs it on every push and pull request rather than in the
-nightly mutation run, because a contract test that only runs at 04:00 on
-a schedule would not have caught either drift before it merged.
+docstring of `mutants-gate.py` names this file, and the
+`mutants-gate-contract` job ("Mutation gate contract") in ci.yml runs it
+on every trigger the workflow has — push, pull request, the nightly
+schedule and a manual dispatch. It carries no `if:`, which is the point:
+the `mutants` and `mutants-gate` jobs are the ones held to the nightly,
+and a contract test that only ran at 04:00 would have reported both of
+those drifts the morning after they merged.
 
 Fixtures are synthesised in a temp directory. Nothing here reads or
 writes `mutants/baseline.json`, and every subprocess runs with its cwd

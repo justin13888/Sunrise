@@ -110,7 +110,8 @@ which file, because fixing the file would not let the command succeed.
 
 Every route named above is asserted in `test_mutants_gate.py` beside this file,
 which synthesises its own outcomes and runs in about a second — `mise run
-mutants-gate-test`, and the `Mutation gate contract` job on every push. This
+mutants-gate-test`, and the `Mutation gate contract` job on every CI run,
+nightly or not, unlike the mutation jobs it guards. This
 paragraph and those assertions are two statements of one contract, and the
 tests are the half that cannot quietly stop being true.
 """

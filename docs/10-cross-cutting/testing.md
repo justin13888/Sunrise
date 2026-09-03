@@ -169,9 +169,9 @@ was scored, do not read a verdict into this" is the contract `ci.yml` and the
 gate's own printed remedies are built on, so it is asserted rather than
 described: `.github/scripts/test_mutants_gate.py` synthesises its own outcomes
 files and checks the code for every route in about a second. `mise run
-mutants-gate-test` locally, and the `Mutation gate contract` job on every push
-and pull request — the only part of mutation testing that does not wait for the
-nightly.
+mutants-gate-test` locally, and the `Mutation gate contract` job in CI, which
+carries no schedule condition and so runs on every push, pull request and
+nightly alike — the only part of mutation testing that does not wait for 04:00.
 
 **≥ 90 % caught is the release sign-off requirement, and the baseline is what
 climbs toward it.** The two are deliberately separate. A gate that failed from
