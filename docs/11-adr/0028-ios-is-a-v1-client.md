@@ -88,11 +88,17 @@ behaviour has regressed. Four open issues
 [#31](https://github.com/justin13888/Sunrise/issues/31),
 [#40](https://github.com/justin13888/Sunrise/issues/40) and
 [#42](https://github.com/justin13888/Sunrise/issues/42)) already target iOS
-surfaces and have no row anywhere to attach to. (#42 is the vault root's
-Keychain accessibility class, `Keychain.swift:62`, measured against the spec on
+surfaces and have no row to attach to. For three of them that is exactly what
+the dash column costs: widgets, the platform surfaces `mobile-ios.md` specifies
+and the unparsed `sunrise://` links are all iOS behaviour this table currently
+requires nothing of, and filling the column is what gives them somewhere to
+land. (#42 is the exception, and worth naming as one: the vault root's Keychain
+accessibility class, `Keychain.swift:62`, measured against
 [`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §OS keystore
-(`:185-188`) — a shared constant, so it lands on macOS identically, and the
-matrix has no key-storage row in either column.)
+(`:185-188`). It targets an iOS surface, but the row it lacks is missing from
+**every** column — the matrix grades no key storage anywhere, and the constant
+is shared, so macOS is affected identically. Filling the iOS column does not
+give it a home, and this ADR does not add the row that would.)
 
 **What makes this an ADR is not the N/A rule.** The rules do say a cell marked
 N/A may only be revisited with a record, but no such cell is revisited here.
@@ -104,9 +110,12 @@ record is
 [ADR-0019](./0019-swiftui-macos-client.md)'s own revisit trigger, quoted above:
 it fired, its amendment declined to draw the conclusion, and answering a
 question another ADR raised and left open is what this directory is for. The
-requirement levels in 31 cells change, the column header has to cite something,
-and Decision 5 adds a hard rule to the matrix — which the matrix keeps in
-[`../11-adr/`](../11-adr/).
+requirement levels in 31 cells change, the column header has to cite
+something, and Decision 5 adds a rule to the matrix's own §Hard rules
+([`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md#hard-rules)),
+which is a change to the table's standing terms and wants a reason on the
+record. What the matrix keeps in [`../11-adr/`](../11-adr/) is narrower — the
+reason an N/A or a *deferred* mark moved — and neither moves here.
 
 ## Decision
 
@@ -330,8 +339,9 @@ is tested, and has not been released.
    this file says is not evidence.
 3. **A widget, share or watch extension target appearing in `project.yml`.**
    Decision 3 defers the widget row, and grades *Watch app* MAY, on the
-   strength of there being no such target — today the file declares six, all
-   applications and test bundles. One landing moves the widget row off
+   strength of there being no such target — today `targets:` declares six, all
+   applications and test bundles, with `aggregateTargets:` adding `SunriseFFI`
+   (`project.yml:50-51`). One landing moves the widget row off
    *deferred*, and the macOS and CLI cells on that row **are** N/A, so unlike
    this ADR that edit does meet the N/A rule and needs its own record.
 4. **The shared tree ceasing to be shared.** SHOULD is assigned by reachability
