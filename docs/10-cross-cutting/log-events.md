@@ -89,8 +89,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | Event | Level | Meaning |
 |---|---|---|
 | `ui.start` | info | Client starting; `app_v` and the protocol versions. Emitted by `sunrise-cli`; the macOS app will emit the same name. |
-| `ui.pair.cert_exported` | info/warn | Dev cert export step of the two-vault demo; `result`. Never the path. |
-| `ui.pair.peer_trusted` | info/warn | Dev peer-trust step; `result`, `err_code` on failure. |
+| `ui.pair.payload_exported` | info/warn | Dev pairing-payload export step of the two-vault demo; `result`. Never the path. |
+| `ui.pair.payload_adopted` | info/warn | Dev pairing-payload adoption step, at `Core::open`; `result`, `err_code` on failure. |
 
 ---
 
