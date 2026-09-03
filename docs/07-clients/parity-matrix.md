@@ -327,11 +327,13 @@ never has to be re-derived from scratch to find out what it covered.
 - **A deferred client has no MUSTs.** When one is scheduled, its column is
   filled in and the fill-in is the commitment — not this table's history.
 - **A v1 client below MUST level has no MUSTs either — and its *met* SHOULDs
-  still cannot regress.** An iOS SHOULD graded **met** in the audit above may
-  not become unmet without an ADR. Deliberately weaker than the MUST rule,
+  cannot regress silently.** A pull request that takes an iOS SHOULD graded
+  **met** in the audit above back to unmet updates that audit row in the same
+  pull request. Deliberately weaker than the MUST rule — no ADR is required,
   because there is no release to protect; a rule at all, because a green audit
   row is a claim that somebody traced a surface down to a seam, and deleting
-  the surface silently throws that work away ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)).
+  the surface without touching the row throws that work away and leaves the
+  table lying ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)).
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
   qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
   `met *(list keymap)*`, `met *(frontmost only)*` — discharges the row's

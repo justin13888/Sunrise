@@ -124,11 +124,14 @@ and it carries no MUSTs until an iOS release ships.**
    way — reachability from a running binary.
 
 5. **A regression rule, weaker than the MUST rule and deliberately so.** An iOS
-   SHOULD graded **met** in the audit may not become unmet without an ADR.
-   There is no release to protect, so this cannot be the MUST rule; but a green
-   audit row is a claim that somebody traced a surface to a seam, and silently
-   deleting the surface would throw that away. Recorded as a hard rule in the
-   matrix.
+   SHOULD graded **met** in the audit may not become unmet *silently*: the pull
+   request that causes the regression updates the audit row in the same pull
+   request. No ADR is required — there is no release to protect, so this cannot
+   be the MUST rule, and a decision record for every SHOULD would price the
+   rule out of being followed. What it does protect is the audit: a green row
+   is a claim that somebody traced a surface to a seam, and deleting the
+   surface without touching the row throws that away and leaves the table
+   lying. Recorded as a hard rule in the matrix.
 
 6. **Promotion to MUST parity is a separate ADR**, written when an iOS release
    is cut. This one deliberately does not pre-commit to it.
