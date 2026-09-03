@@ -91,17 +91,21 @@ behaviour has regressed. Four open issues
 [#31](https://github.com/justin13888/Sunrise/issues/31),
 [#40](https://github.com/justin13888/Sunrise/issues/40) and
 [#42](https://github.com/justin13888/Sunrise/issues/42)) already target iOS
-surfaces and have no row to attach to. For three of them that is exactly what
-the dash column costs: widgets, the platform surfaces `mobile-ios.md` specifies
-and the unparsed `sunrise://` links are all iOS behaviour this table currently
-requires nothing of, and filling the column is what gives them somewhere to
-land. (#42 is the exception, and worth naming as one: the vault root's Keychain
-accessibility class, `Keychain.swift:62`, measured against
+surfaces and have no row to attach to. For two of them that is exactly what the
+dash column costs: widgets and the platform surfaces `mobile-ios.md` specifies
+are iOS behaviour this table currently requires nothing of, and filling the
+column is what gives them somewhere to land. The other two do not land, and
+both are worth naming as exceptions rather than counted as wins. **#40** —
+`sunrise://focus` and `sunrise://share` unparsed — gains visibility and not a
+row: the matrix grades no URL scheme in any column, which is why the
+Consequences below say it is "unchanged and now visible". **#42** is the same
+shape one layer down: the vault root's Keychain accessibility class,
+`Keychain.swift:62`, measured against
 [`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §OS keystore
 (`:185-188`). It targets an iOS surface, but the row it lacks is missing from
 **every** column — the matrix grades no key storage anywhere, and the constant
-is shared, so macOS is affected identically. Filling the iOS column does not
-give it a home, and this ADR does not add the row that would.)
+is shared, so macOS is affected identically. Filling the iOS column gives
+neither a home, and this ADR adds neither row.
 
 **What makes this an ADR is not the N/A rule.** The rules do say a cell marked
 N/A may only be revisited with a record, but no such cell is revisited here.
