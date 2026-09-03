@@ -210,11 +210,10 @@ document's intent, not yet implemented).
   not, because a Task has no ordering facet to write. Files drop onto a task's
   Attachments pane. Today and Search decline a reorder drop rather than
   accepting one that would snap back, because the core ranks those two lists.
-  The one gesture not built is **Calendar block → Task**, and it is a layout
-  consequence: this is a sidebar plus a *single* detail pane, so a grid and a
-  task list are never on screen together. `TaskListModel.bind(_:to:)` exists and
-  is tested, so the write is ready if a future layout makes the gesture
-  expressible.
+  The one gesture not built is **Calendar block → Task**, and what is missing is
+  two modifiers rather than a layout: `BlockChip` is not `.draggable`, and the
+  task row's drop destination only reorders. `TaskListModel.bind(_:to:)` exists
+  and is tested, so the write is ready and building the gesture is UI work.
 - **built — `sunrise://` URL scheme**, registered in `Info.plist` and handled by
   `onOpenURL`, for notification deep links
   ([`interaction-patterns.md`](./interaction-patterns.md)). When no main window
