@@ -72,7 +72,7 @@ Alongside it, the hierarchy the documents already specify is made real:
 4. **`key_envelope` ops distribute Stream keys** by HPKE, sealing each
    `(stream_id, epoch)` key to a recipient's X25519 public key. Two recipient
    classes, and the distinction is what makes both revocation and recovery work:
-   * to each **device**'s `ID_D`, so a device learns the epochs it is entitled to;
+   * to each **device**'s `D_D_pub`, so a device learns the epochs it is entitled to;
    * to the **identity**'s `ID_D`, so the recovery path can reach them.
 5. **Epochs are real.** Revoking a device mints a new epoch for every Stream it
    could read and seals envelopes only to the remaining devices. The revoked

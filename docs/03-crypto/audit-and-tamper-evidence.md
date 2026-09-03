@@ -13,7 +13,7 @@ The relay is untrusted but is in the message path. We need to detect: dropped op
 Concretely, none of the following exists:
 
 * **No root is persisted.** There is no column, no table, and no "highest-seen root per Stream", so §Rollback detection has nothing to compare against on reconnect.
-* **No checkpoint op.** All 21 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`) are domain CRUD; `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
+* **No checkpoint op.** Of the 24 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`), 21 are domain CRUD and the three [ADR-0024](../11-adr/0024-key-hierarchy.md) added carry keys and trust (`key_envelope`, `device_revoke`, `device_cert`). `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
 * **No `server_first_seen_ms` annotation.** The relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)` and parses only `EnvelopeHeader` — `{stream_id, device_id, seq}` — for routing. It emits no unsigned addendum, so the `hlc_clamped` ordering rule has no input.
 * **No fork or rollback detection, and no integrity indicator.** §Verifying checkpoints from peers, §Fork detection and §Per-vault Integrity indicator describe no code and no UI.
 

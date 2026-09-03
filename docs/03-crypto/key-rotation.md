@@ -6,20 +6,22 @@ status: accepted
 
 Three key types rotate, each with a different cost and cascade. Throughout this spec, "the rotating device" is the device the user initiated rotation from; it MUST be a paired, currently-authorized device.
 
-## Implementation status: none of this is built
+## Implementation status: Stream-key rotation and revocation are built; identity rotation is not
 
-**Every procedure in this document is a target, not a description.** [ADR-0024](../11-adr/0024-key-hierarchy.md) is the governing decision and explains why: rotation is not implementable on the key hierarchy the tree actually has.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) landed the hierarchy these procedures assume: Stream keys are 32 random bytes per `(stream_id, epoch)`, wrapped under the vault root in `stream_keys`, and distributed by HPKE `key_envelope` ops.
 
-The evidence, so this is checkable rather than asserted:
+**Built:**
 
-* **No rotation entry points exist.** There is no `device_rotate`, `device_revoke`, `identity_transition`, re-wrap, or epoch bump anywhere in `crates/`.
-* **No control ops exist.** The op kinds this spec depends on — `key_envelope`, `device_cert`, `device_revoke`, `share_grant`, `share_revoke`, `snapshot`, `checkpoint`, `identity_transition` — have no implementation. All 21 variants of `InnerOp` in `crates/sunrise-core/src/inner_op.rs` are domain CRUD (task, stream, context, routine, block, attachment, focus, review).
-* **Epochs do not move.** `crates/sunrise-core/src/keychain.rs` pins `pub const EPOCH: u32 = 1` and derives every Stream key as `BLAKE3.derive_key("sunrise.stream_key.v1", vault_root || stream_id || u32_be(epoch))`. Bumping that constant re-derives a key anyone holding the vault root can also compute — it rotates ciphertext, not the secret. ADR-0024 §Alternatives rejects exactly that as "rotation that looks like rotation and is not".
-* **Stream-key rotation would be vault-root rotation.** Because every Stream key derives from the one account-wide root, there is no per-Stream unit to rotate. Rotating one rotates all.
-* **Revocation is not expressible.** A paired device holds the vault root, and the root *is* the whole key schedule. Nothing a still-authorized device emits can take that back.
-* **HPKE, which steps 2 and 3 of Stream-key rotation require, has no consumer.** `hpke = "0.13"` sits in `[workspace.dependencies]` and no member `Cargo.toml` references it.
+* **§Stream key rotation**, in full. `Keychain::mint_epoch` draws a fresh key, `Engine::emit_key_envelopes` seals it to every non-revoked sibling device's `D_D_pub` and to the identity's `ID_D_pub`, and past epochs are retained: `stream_keys` is keyed `(stream_id, epoch, key_id)` and a decrypt tries every key at `(stream_id, epoch)`, so two devices minting one epoch concurrently both keep theirs. `Command::RotateStreamKey` is the narrow entry point.
+* **§Revocation steps 1 and 2.** `Command::RevokeDevice` emits a `device_revoke` op and rotates every stream in the rotation set — the vault-meta stream and the Inbox included, not only user Streams — sealing the new epochs to the devices that remain and not to the revoked one. Every replica that has applied the revocation refuses ops the revoked device signed at or after `effective_at`.
+* **§Slow peers and out-of-order epochs**, as written. There is no per-epoch barrier: an op whose key has not arrived is parked in `deferred_ops` and retried after every absorbed key, so arrival order across epochs changes nothing.
 
-ADR-0024 makes Stream keys independently random per `(stream_id, epoch)`, wrapped under the vault root, distributed by `key_envelope` ops and read from the `stream_keys` table — which is what the procedures below assume. Until that slice lands, treat this document as the specification it is.
+**Not built, and named here rather than discovered later:**
+
+* **Identity rotation.** There is no `identity_transition` op. This is not a detail: pairing hands every device `ID_D_priv` (see [`pairing-and-onboarding.md`](./pairing-and-onboarding.md)) and every epoch is sealed to the identity as well as to each device, so **a revoked device can still open the identity's copy of every new epoch**. Revocation therefore bounds a revoked device's *writes* today, not its *reads*. It also still holds `ID_S_priv`, so it can issue itself a fresh valid cert under a new device id. Closing both needs step 1 of §Identity rotation.
+* **§Device key rotation.** No `device_rotate`; a device's `D_S` / `D_D` are minted once at open and never replaced.
+* **`share_grant` / `share_revoke`.** Sharing is unbuilt, so every "and shared peers" clause below describes nothing.
+* **§Revocation steps 3 and 4.** The relay does not read `device_revoke` and does not refuse a revoked device's uploads — refusal is client-side, at `apply_remote`. Nothing wipes the revoked device's local database.
 
 ## Device key rotation (cheap)
 

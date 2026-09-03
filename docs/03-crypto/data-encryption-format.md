@@ -76,8 +76,11 @@ the emitting device's true clock, never behind it.
 
 | Value | Meaning |
 |---|---|
-| `0x00…00` (16 zero bytes) | Vault-meta log (per-identity, holds DeviceCerts, share grants, settings) |
+| `0x00…00` (16 zero bytes) | Vault-meta log (per-identity, holds DeviceCerts, key envelopes, revocations, Contexts, Routines, settings) |
+| `0x000000` ‖ ASCII `sunrise.inbox` | The Inbox, rendered `str_0000076XBEE9MQ6S9ED5Q64VVR`. A regular Stream in every respect that matters here: its own key, its own epochs, its own rotation |
 | Any other 16-byte value | A regular Stream's op log |
+
+The two were the same sixteen zero bytes until [ADR-0024](../11-adr/0024-key-hierarchy.md). Once each stream carries its own key and epoch, sharing an id means sharing a key schedule, so they were split.
 
 ### Per-(stream, device) `seq`
 
@@ -177,9 +180,9 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 | Kind | `aead_alg` | Payload sketch |
 |---|---|---|
-| `device_cert` | 0 | The `DeviceCert` map (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)) |
-| `device_revoke` | 0 | `{ revoked_device_id, reason_code, effective_at }` |
-| `key_envelope` | 0 | `{ stream_id, epoch, recipient_device_id, hpke_ciphertext }` |
+| `device_cert` | 1 | The `DeviceCert` map (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)) |
+| `device_revoke` | 1 | `{ revoked_device_id, reason_code, effective_at }` |
+| `key_envelope` | 1 | `{ stream_id, epoch, recipient, key_id, hpke_ciphertext }` |
 | `share_grant` | 0 | `{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ciphertext, identity_sig }` |
 | `share_revoke` | 0 | `{ stream_id, recipient_identity_id, effective_at }` |
 | `snapshot` | 1 | `{ covers: { device_id => max_seq }, base_root, state_cbor }` (encrypted under Stream key) |
@@ -190,7 +193,41 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 `identity_sig` on `share_grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
-**None of the control kinds in that table is implemented.** The container above — the envelope, its AAD-by-exclusion rule, the signature, the canonical-CBOR enforcement, the verification order and the blob chunking — is implemented byte-exactly and covered by frozen vectors. The *payloads* are not: all 21 variants of `InnerOp` in `crates/sunrise-core/src/inner_op.rs` are domain CRUD, and `key_envelope`, `device_cert`, `device_revoke`, `share_grant`, `share_revoke`, `snapshot`, `checkpoint` and `identity_transition` have no encoder, decoder or emitter. The `hpke` crate that §HPKE single-shot depends on has no consumer. [ADR-0024](../11-adr/0024-key-hierarchy.md) adds `key_envelope` and `device_revoke` as the first two, and records that a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses it — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+### The three families that are implemented
+
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`. `share_grant`, `share_revoke`, `snapshot`, `checkpoint` and `identity_transition` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+
+The three are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
+
+```cddl
+InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
+         / { "DeviceRevoke" => DeviceRevokePayload }
+         / { "DeviceCertPublish" => bstr }        ; canonical-CBOR DeviceCert
+
+KeyEnvelopePayload = {
+    "stream_id" => bstr .size 16,
+    "epoch" => uint,
+    "recipient" => { "Device" => bstr .size 16 } / { "Identity" => bstr .size 16 },
+    "key_id" => bstr .size 8,      ; derive_key("sunrise.stream_key_id.v1", stream_key, 8)
+    "hpke_ciphertext" => bstr,     ; enc(32) || ct(32) || tag(16)
+}
+
+DeviceRevokePayload = {
+    "revoked_device_id" => bstr .size 16,
+    "reason_code" => "Lost" / "Stolen" / "Retired" / "Compromised",
+    "effective_at_ms" => uint,
+}
+```
+
+Map keys are emitted in the order shown — struct declaration order, not sorted — which is what every inner-op payload in the tree does.
+
+Three things about these that the table above does not say:
+
+- **They are sealed, not cleartext.** `aead_alg` is 1: a control op rides in an ordinary sealed envelope under the vault-meta stream's own key. The relay routes them and cannot read them. The key envelopes for a rotation are sealed under the **pre**-rotation meta epoch, because a device that has not yet received the new meta key could not read one sealed under it.
+- **`recipient` names a class, not just an id.** Every `(stream_id, epoch)` key is sealed twice: once per remaining device (`Device`, to `D_D_pub`) and once to the account identity (`Identity`, to `ID_D_pub`). A replica can tell whose copy an envelope is without trial-decrypting it.
+- **`key_id` is a disambiguator, not an authenticator.** Two devices can mint the same epoch concurrently; both keys are retained at `(stream_id, epoch, key_id)` and the AEAD tag decides which one opens an op. Nothing trusts the field — the value is re-derived from the opened key.
+
+An op whose `(stream_id, epoch)` key has not arrived yet is **parked**, not refused: it goes to `deferred_ops` and is retried after every absorbed key. There is no per-epoch barrier.
 
 ## HPKE single-shot
 
