@@ -27,6 +27,13 @@
 
 use serde::{Deserialize, Serialize};
 
+// Every fixed-width id and every opaque blob below carries
+// `#[serde(with = "serde_bytes")]`. Without it `[u8; N]` and `Vec<u8>` encode
+// as CBOR *arrays of integers* — two bytes per byte, and a shape no other id in
+// `data-encryption-format.md` has, where every id is `bstr .size 16`. These
+// families are new at `DOC_SCHEMA_V = 5`, so this is the one moment the choice
+// is free.
+
 /// Who a [`KeyEnvelopePayload`] is sealed to.
 ///
 /// The two classes are what make revocation and recovery both work, and they
@@ -38,17 +45,18 @@ pub enum Recipient {
     /// Sealed to a device's `D_D_pub`. The device learns the epochs it is
     /// entitled to; a revoked device is simply not among the recipients of the
     /// epochs minted after it was cut off.
-    Device([u8; 16]),
+    Device(#[serde(with = "serde_bytes")] [u8; 16]),
     /// Sealed to the account identity's `ID_D_pub`. Opened by the recovery
     /// blob's `ID_D_priv`, so a recovery with no surviving device still reaches
     /// the content.
-    Identity([u8; 16]),
+    Identity(#[serde(with = "serde_bytes")] [u8; 16]),
 }
 
 /// One Stream key, sealed to one recipient.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyEnvelopePayload {
     /// The stream whose key this is.
+    #[serde(with = "serde_bytes")]
     pub stream_id: [u8; 16],
     /// The epoch this key belongs to.
     pub epoch: u32,
@@ -60,8 +68,10 @@ pub struct KeyEnvelopePayload {
     /// epoch concurrently and both keys are kept; this says which row a
     /// recipient should file the opened key under without having to open it
     /// first. Nothing trusts it — the value is re-derived from the opened key.
+    #[serde(with = "serde_bytes")]
     pub key_id: [u8; 8],
     /// `enc(32) || ciphertext(32) || tag(16)`, RFC 9180 Base.
+    #[serde(with = "serde_bytes")]
     pub hpke_ciphertext: Vec<u8>,
 }
 
@@ -112,6 +122,7 @@ impl RevokeReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceRevokePayload {
     /// The device being revoked.
+    #[serde(with = "serde_bytes")]
     pub revoked_device_id: [u8; 16],
     /// Why.
     pub reason_code: RevokeReason,
@@ -185,3 +196,5 @@ mod tests {
         assert_eq!(back, p);
     }
 }
+
+
