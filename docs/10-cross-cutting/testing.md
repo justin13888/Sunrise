@@ -131,7 +131,10 @@ excluded — `sunrise-server`, `sunrise-storage`, `sunrise-auth` and the rest.
 The config does not keep them out; the `-p` does. A bare `cargo mutants` with
 no `-p` mutates all fourteen, takes far longer than the numbers below, and
 produces a run the gate fails with "no floor recorded" for each of them. Run it
-through `mise run mutants <crate>`.
+through `mise run mutants <crate>`. That task does not check the name against
+the four either — the argument goes straight to `-p` — so
+`mise run mutants sunrise-storage` mutates an unscoped crate and the gate fails
+that run the same way.
 
 ### Cost, measured
 
