@@ -161,15 +161,19 @@ complementary reason: it needs a second **app** — Files beside Sunrise in Spli
 View — which asks nothing of this app's own scene support. One window each is
 exactly what Split View hands out.
 
-Every other cell is live in `apps/apple`, and in both products at once: every
-file named here is under `Sunrise/`, which compiles into the Mac app and the
-iOS app alike. `TaskRowView` is `.draggable`, and the
-drop targets are the sidebar's stream and context rows (`BrowseSidebar`), the
-task rows themselves (`TaskListView`, which declines the drop in Today and in
-Search because the core ranks those lists), the calendar grid and its block
-chips (`CalendarView`), and the attachments pane (`AttachmentsView`). Stream
-reorder is `ForEach.onMove` writing `Stream.sort_order` through the core, so it
-syncs; task reorder is per-device, per [§Reorder](#reorder) above.
+Every file named here is under `Sunrise/`, so every modifier below compiles
+into the Mac app and the iOS app alike — what differs between the columns is
+which of them a user can bring together on one screen, not which of them exist.
+`TaskRowView` is `.draggable`, and it is accepted by the sidebar's stream and
+context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
+declines the drop in Today and in Search because the core ranks those lists).
+The attachments pane takes files (`AttachmentsView`), and a block moves and
+resizes within the grid by its own gestures rather than by a drop. The grid's
+own `dropDestination` serves exactly one cell — *Task → Calendar block*, since
+`accept(items:at:)` takes `tsk_` payloads only — so it is evidence for that
+cell and for no other. Stream reorder is `ForEach.onMove` writing
+`Stream.sort_order` through the core, so it syncs; task reorder is per-device,
+per [§Reorder](#reorder) above.
 
 ### Drag-and-drop UX tokens
 
