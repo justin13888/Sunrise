@@ -48,8 +48,12 @@ struct Server {
 }
 
 impl Server {
-    fn new(config: ServerConfig) -> Self {
-        let state = ServerState::new(config);
+    /// Assemble from a state the caller has already configured.
+    ///
+    /// [`ServerState::with_verifier`] is the seam an operator's `main` uses to
+    /// install a real identity provider, so a test that needs a bearer the
+    /// server can *refuse* reaches for it rather than for a test-only hook.
+    fn from_state(state: ServerState) -> Self {
         Self {
             service: sunrise_server::build_service(state).expect("the typed surface must build"),
         }
@@ -109,6 +113,15 @@ where
     F: FnOnce(Server) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    captured_with(filter, ServerState::new(config), body)
+}
+
+/// [`captured`], from a state the caller has already configured.
+fn captured_with<F, Fut>(filter: &str, state: ServerState, body: F) -> String
+where
+    F: FnOnce(Server) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let cap = Capture::new();
     let dispatch = build_subscriber(LogConfig {
         target: LogTarget::Capture(cap.clone()),
@@ -122,7 +135,7 @@ where
         .build()
         .expect("runtime");
     tracing::dispatcher::with_default(&dispatch, || {
-        rt.block_on(async move { body(Server::new(config)).await });
+        rt.block_on(async move { body(Server::from_state(state)).await });
     });
     cap.contents()
 }
@@ -353,5 +366,134 @@ fn healthy_traffic_is_silent_at_info() {
     assert_eq!(
         end["level"], "WARN",
         "a 5xx must clear an info filter: {end}"
+    );
+}
+
+/// A bearer-shaped refresh token, so a leak is greppable rather than inferred.
+const REFRESH_TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.SENTINELINREFRESHBODY.sig";
+
+/// The other refusal records that carried their diagnostic under `reason`.
+///
+/// `reason` is not on `sunrise-log`'s allowlist, so `RedactionLayer` refused
+/// the whole event: a panic under `debug_assertions`, a silent drop and a
+/// `violations()` bump in release. Every one of these warnings was invisible to
+/// the operator it was written for.
+/// [`a_signed_request_that_is_refused_logs_no_signature_bytes`] pins
+/// `srv.auth.device_sig_rejected`; these are the two others a client can reach
+/// through the public surface.
+///
+/// `srv.store.failed` is the fourth and is deliberately not here: it fires only
+/// when `SQLite` itself fails, which no request can provoke through this surface
+/// without a test-only seam into the store. `sunrise-log`'s
+/// `every_emitted_field_name_is_on_the_redaction_allowlist` is what covers it —
+/// statically, at every site, which is the gate this class of defect needed.
+#[test]
+fn the_refusal_records_survive_redaction_and_carry_their_cause() {
+    use sunrise_server::{StaticVerifier, Subject};
+    use sunrise_wire_protocol::{Capability, CapabilityBits, REQUIRED_CLIENT_BITS};
+
+    // `NullVerifier`, the self-host default, accepts every bearer it is shown,
+    // so under it a refresh can never be refused. `StaticVerifier` is the same
+    // public seam a multi-tenant deployment installs its own provider through.
+    let state = ServerState::new(ServerConfig::default()).with_verifier(std::sync::Arc::new(
+        StaticVerifier::default().with("test", Subject::new("https://idp.test", "user-1")),
+    ));
+
+    let out = captured_with("debug", state, |server| async move {
+        let caps =
+            REQUIRED_CLIENT_BITS.0 | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0;
+        let doc_v = u32::from(sunrise_cbor::version::DOC_SCHEMA_V);
+        let crypto_v = u32::from(sunrise_cbor::version::CRYPTO_SUITE_V);
+
+        // A wire version no server can agree to: `srv.sync.negotiate_refused`.
+        let (status, _) = server
+            .send(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(&serde_json::json!({
+                    "client_app_v": "0.1.0",
+                    "client_platform": "test",
+                    "wire_proto_supported": [9999u32],
+                    "doc_schema_min": doc_v,
+                    "doc_schema_max": doc_v,
+                    "crypto_suite_supported": [crypto_v],
+                    "capabilities": caps,
+                    "trace": "01J000000000000000000000000",
+                })),
+                &[("authorization", "Bearer test")],
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "the negotiation must be refused, or this test proves nothing"
+        );
+
+        // Then a real session, refreshed with a token the verifier refuses:
+        // `srv.sync.refresh_rejected`.
+        let (status, bytes) = server
+            .send(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(&serde_json::json!({
+                    "client_app_v": "0.1.0",
+                    "client_platform": "test",
+                    "wire_proto_supported": [u32::from(sunrise_cbor::WIRE_PROTO_V)],
+                    "doc_schema_min": doc_v,
+                    "doc_schema_max": doc_v,
+                    "crypto_suite_supported": [crypto_v],
+                    "capabilities": caps,
+                    "trace": "01J000000000000000000000000",
+                })),
+                &[("authorization", "Bearer test")],
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "the session must establish");
+        let session_id = serde_json::from_slice::<serde_json::Value>(&bytes).expect("a JSON body")
+            ["session_id"]
+            .as_str()
+            .expect("a session id")
+            .to_owned();
+
+        let (status, _) = server
+            .send(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some(&serde_json::json!({ "token": REFRESH_TOKEN })),
+                &[
+                    ("authorization", "Bearer test"),
+                    ("x-sunrise-session", &session_id),
+                ],
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "the replacement token must be refused"
+        );
+    });
+
+    let refused = record(&out, "srv.sync.negotiate_refused");
+    assert_eq!(refused["err_kind"], "user");
+    assert!(
+        refused["cause"].is_string(),
+        "an operator needs to know what could not be agreed: {refused}"
+    );
+
+    let rejected = record(&out, "srv.sync.refresh_rejected");
+    assert_eq!(rejected["err_kind"], "user");
+    assert!(
+        rejected["cause"].is_string(),
+        "an operator needs to know why the token failed: {rejected}"
+    );
+    assert!(
+        rejected["account_h"].is_string(),
+        "the record is scoped to an account by hash: {rejected}"
+    );
+
+    // The rejected credential is still a credential.
+    assert!(
+        !out.contains("SENTINELINREFRESHBODY"),
+        "the refused refresh token reached the log: {out}"
     );
 }
