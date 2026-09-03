@@ -151,7 +151,7 @@ around it is recorded in the cells below and in
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
 | Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
-| iCal import / export | met | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
+| iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
 | OS automation (App Intents) | met | six intents + `AppShortcutsProvider` + `TaskEntity`/`EntityStringQuery`; `IntentVault` counted lease |
@@ -190,12 +190,12 @@ menu item flickering as tasks come and go would explain less.
 |---|---|---|
 | Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
 | Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
-| Today / Inbox / Stream views (list form) | met | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
+| Today / Inbox / Stream views (list form) | met *(today, no context filter)* | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
 | Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
-| Multi-account (`SUNRISE_VAULT`) | met | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
-| iCal import / export | met | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
+| Multi-account (`SUNRISE_VAULT`) | met *(0600 on unix only)* | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
+| iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
 
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
@@ -350,8 +350,9 @@ never has to be re-derived from scratch to find out what it covered.
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
   qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
   `met *(list keymap)*`, `met *(frontmost only)*`,
-  `met *(seven of eight cells)*`, `met *(six of eight cells)*` — discharges the
-  row's requirement. The qualifier names which part of the specified capability
+  `met *(seven of eight cells)*`, `met *(six of eight cells)*`,
+  `met *(windowed, no round-trip)*`, `met *(0600 on unix only)*`,
+  `met *(today, no context filter)*` — discharges the row's requirement. The qualifier names which part of the specified capability
   is reachable, and it is repeated under
   [What is still narrow](#what-is-still-narrow) so the narrowness never has to
   be re-derived. A qualifier is **not** a *partial*: *partial* means a user
@@ -363,6 +364,22 @@ never has to be re-derived from scratch to find out what it covered.
   scoped exactly as much as one that reaches six. Leaving the better-served
   column bare would make the qualifier read as a mark of the weaker client
   rather than as the scope note it is.
+
+  **The set is bounded by what is already written down.** A qualifier is owed
+  wherever the audit above or [What is still narrow](#what-is-still-narrow)
+  already records a shortfall for that row. That is a finite list anyone can
+  check against the notes, and it is deliberately not an obligation to go
+  hunting for shortfalls nobody has recorded — an unrecorded narrowness is a
+  gap in the notes first, and gets a qualifier when it is written down. Two
+  things sit outside the set. A scope the row's own **title** already carries
+  needs no second copy in the verdict: *Streams, contexts, routines (read +
+  capture)* names its bound, and the note saying the CLI mints no Stream is
+  measuring against the capability rather than against that row. A title
+  parenthetical covers only what it says, though — *Today / Inbox / Stream
+  views (list form)* names the output shape, so the missing `today` context
+  filter is a different shortfall and still earns its qualifier. And a
+  shortfall with **no row** stays in the notes: Print's two skipped surfaces
+  are recorded against a SHOULD that the 23-MUST audit has no line for.
 
 ## What the CLI is and is not
 

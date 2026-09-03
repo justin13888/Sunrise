@@ -4,8 +4,9 @@
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (one new column, 31 cells, plus an audit section, two hard rules — the iOS
-regression rule and the definition of a qualified *met* — and one macOS verdict
-regraded to a qualified *met* under that definition) and
+regression rule and the definition of a qualified *met* — and five verdicts in
+the MUST-carrying columns regraded to qualified *met*s under that definition)
+and
 [`./0019-swiftui-macos-client.md`](./0019-swiftui-macos-client.md) (revisit
 trigger 1).
 
@@ -242,10 +243,16 @@ is tested, and has not been released.
   `met *(six of eight cells)*` — iOS reaches six of the eight cells in
   [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)'s
   matrix where macOS reaches seven, *Task → Calendar block* being a **No** here
-  for want of a screen that shows both of its ends. The same definition regrades
-  the **macOS** drag row `met *(seven of eight cells)*`: seven of eight is a
-  scope note as much as six is, and the rule now says so in as many words, so a
-  qualifier cannot come to read as a mark of the weaker client.
+  for want of a screen that shows both of its ends. The same definition then
+  applies to the MUST-carrying columns, swept over the rows whose shortfall the
+  audit or the narrow notes already record — five of them: macOS drag-and-drop
+  `met *(seven of eight cells)*` and macOS iCal `met *(windowed, no
+  round-trip)*`; the CLI's `today` view (`met *(today, no context filter)*`),
+  multi-account (`met *(0600 on unix only)*`) and iCal. Seven of eight is a
+  scope note as much as six is, and a rule the table visibly broke in its
+  better-served columns would stop being a rule. **Every one stays a met**: the
+  23 macOS MUSTs and the 9 CLI MUSTs are all still met, because a qualifier
+  scopes a verdict rather than demoting it.
 
 - **[#14](https://github.com/justin13888/Sunrise/issues/14) gains a cell.** The
   widgets row's iOS cell is where widget work now lands. Grepping `apps/apple`
