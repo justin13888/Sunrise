@@ -304,7 +304,8 @@ over:
   (`AdjustBlocksView`, `:280`).
   **And the copy still calls the device a Mac**: `Platform.deviceName`
   (`PlatformKit.swift:163-183`) exists for exactly this and has two callers,
-  while seventeen further lines across six shared files say "Mac" outright —
+  while twenty-eight further lines across six shared files put "Mac" in a
+  string the user reads —
   among them the pairing sheet's own title (`PairingView.swift:32`) and the
   vim toggle's caption (`AccountView.swift:222`, "Stored on this Mac only").
   Neither sinks a verdict, because the rows they sit in are reachable. Both

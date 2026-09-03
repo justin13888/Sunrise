@@ -219,12 +219,18 @@ is tested, and has not been released.
   Every user-facing string in `apps/apple/Sunrise/` now ships on two platforms.
   `Platform.deviceName` (`Sunrise/Platform/PlatformKit.swift:163-183`) exists
   for exactly this and has **two** callers (`Views/LockedView.swift:72`,
-  `Views/OnboardingView.swift:32`); seventeen further lines across six shared
-  files still say "Mac" literally, including the pairing sheet's own title
-  (`Views/PairingView.swift:32`, driven by an intent case named `addThisMac`)
-  and the vim toggle's caption (`Views/AccountView.swift:222`, "Stored on this
-  Mac only"). A phone tells its user it is a Mac. This is filed as narrowness
-  in the matrix; it has no issue of its own yet.
+  `Views/OnboardingView.swift:32`); **twenty-eight** further lines across six
+  shared files still put "Mac" in a string the user reads —
+  `Pairing/PairingModel.swift` (11), `Views/PairingView.swift` (8),
+  `Views/AccountView.swift` (5), `Sync/SyncPresentation.swift` (2),
+  `Notifications/NotificationAuthorization.swift` and
+  `Keyboard/CommandPaletteView.swift` (1 each). Comments, the `addThisMac`
+  intent case and the `#if os(macOS)` arm of `deviceName` itself are excluded;
+  the count is of user-facing text. Among them are the pairing sheet's own
+  title (`Views/PairingView.swift:32`, driven by that intent case) and the vim
+  toggle's caption (`Views/AccountView.swift:222`, "Stored on this Mac only").
+  A phone tells its user it is a Mac. This is filed as narrowness in the
+  matrix; it has no issue of its own yet.
 
 - **A layout defect is now inside a graded row rather than outside the table.**
   Seven shared sheets an iOS user can reach carry unconditional Mac-sized
