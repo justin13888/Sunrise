@@ -302,7 +302,9 @@ over:
   Two further things are narrow that no row is about, and they are worth
   naming here rather than losing. **The shared sheets are Mac-shaped**: seven
   unconditional `.frame(width:)` calls the tab shell can put on screen, every
-  one wider than an iPhone — 520 points on the settings `Form` (`AccountView`,
+  one wider than the `iPhone 17 Pro` the UI tests run on (about 402 points
+  portrait; the narrowest of the seven is 420) — 520 points on the settings
+  `Form` (`AccountView`,
   `AccountView.swift:101`), 560×520 on the pairing sheet (`PairingView`,
   `PairingView.swift:25`), 460 on the task editor (`TaskEditorView`,
   `TaskEditorView.swift:97`), 440 on the routine editor (`RoutineEditorView`,

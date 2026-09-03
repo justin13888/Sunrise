@@ -305,8 +305,14 @@ is tested, and has not been released.
   block draft sheet 420 (`BlockDraftSheetView`, `:35`), the block editor 460
   (`BlockEditorView`, `:155`) and the conflict adjuster 620
   (`AdjustBlocksView`, `:280`) — all wider than an iPhone, none behind an
-  `#if`. Those seven are every fixed width **wider than an iPhone** that the
-  tab shell can put on screen — the tree holds plenty of narrower ones
+  `#if`. The reference for "an iPhone" is the device the UI tests actually run
+  on: the `iPhone 17 Pro` simulator `mise.toml` pins as `ios_sim` (`:46`, and
+  [`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §Run it), about
+  402 points wide in portrait against a narrowest-of-the-seven of 420. The
+  bound is sensitive to that choice and the number is not a law of nature — on
+  a 440-point Pro Max only five of the seven are still too wide, and on an
+  iPad none of them is. Those seven are every fixed width over that reference
+  that the tab shell can put on screen — the tree holds plenty of narrower ones
   (`TaskListView.swift:276`, `StreamEditorView.swift:77`, `ReviewView.swift:353`
   at 380; `CalendarView.swift:44` at 140), and a frame that fits is not a
   defect. Two further things the sentence does not claim. It is not every
