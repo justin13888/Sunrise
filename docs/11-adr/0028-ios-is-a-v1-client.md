@@ -63,7 +63,9 @@ Read from the tree rather than from a plan:
   are narrower than "every push and every pull request": a push to a feature
   branch matches neither list, and a pull request stacked on another feature
   branch is filtered out on its base, as the one carrying this ADR was, based
-  on `docs-51-architecture-freeze`. It runs on the same pinned `macos-26`
+  on `docs-51-architecture-freeze`. Neither the schedule nor `workflow_dispatch`
+  is branch-filtered, so any ref can still be built on demand — what the filters
+  bound is what happens *automatically*. It runs on the same pinned `macos-26`
   image the macOS job uses, adding both iOS Rust slices to the pinned toolchain
   first (`:138`).
 - **`apps/apple/iOS/` is 647 lines** of shell — a five-tab `TabView` with
