@@ -244,7 +244,9 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
     create_task(&core_b, "written on the paired device").await;
     create_task(&core_a, "written on the original device").await;
 
-    wait_tasks_converge(&core_a, &core_b, 3, TIMEOUT).await;
+    // Four, not three: `canonical_tasks` is the whole table, so the task in
+    // the post-pairing Stream counts alongside the three in the Inbox.
+    wait_tasks_converge(&core_a, &core_b, 4, TIMEOUT).await;
 
     let mut titles = inbox_titles(&core_b).await;
     titles.sort();
