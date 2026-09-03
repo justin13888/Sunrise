@@ -273,11 +273,20 @@ impl Recorder {
 }
 
 /// Consumes slowly enough to fall behind a burst.
+///
+/// The delay is deliberately far larger than it needs to be. The claim under
+/// test is only that `on_lagged` is reachable, but *whether* it is reached is a
+/// race between this sleep and how long a `CreateTask` takes: the channel holds
+/// 256, so the burst has to get 257 ahead. At 2 ms that margin was thin enough
+/// that a loaded machine, or a write path that got a little heavier — ADR-0024
+/// added a `stream_keys` lookup inside every op's transaction — could make the
+/// producer lose the race and the test fail while nothing was wrong. 20 ms
+/// makes the outcome independent of both.
 struct Slow(Arc<Recorder>);
 
 impl ChangeListener for Slow {
     fn on_change(&self, event: ChangeEvent) {
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(20));
         self.0.on_change(event);
     }
     fn on_lagged(&self, skipped: u64) {
