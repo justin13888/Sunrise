@@ -104,9 +104,11 @@ is fine and the gate read it, the invocation is what is wrong, and a caller that
 treats 2 as "infrastructure" should not be told to re-run shards over a bad
 command line. The `--update` refusal is judged on argv alone, before the
 outcomes are read at all, so it is the one exit 1 that can be reached by a run
-with nothing wrong with it at all — and the one that outranks every exit 2: a
-caller who cannot record a floor is told which flag is missing rather than
-which file, because fixing the file would not let the command succeed.
+with nothing wrong with it at all — and the one that outranks every exit 2 the
+gate itself returns: a caller who cannot record a floor is told which flag is
+missing rather than which file, because fixing the file would not let the
+command succeed. argparse gets there first with its own 2, so an `--update`
+with no outcomes named at all is a usage error and not this.
 
 Every route named above is asserted in `test_mutants_gate.py` beside this file,
 which synthesises its own outcomes and runs in about a second — `mise run
