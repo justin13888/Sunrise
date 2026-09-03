@@ -111,6 +111,12 @@ compiles is not evidence; an unreachable correct implementation counts as unmet,
 which is the whole point of grading this way.
 
 Verdicts: **met** / **partial** (reachable, narrower than the row) / **unmet**.
+A verdict carrying a parenthetical qualifier — `met *(paste half)*` and its
+kind — is a **met**. The row's requirement is discharged; the qualifier is a
+scope note recording which part of the specified capability the reachable
+surface covers, so that the narrowness never has to be re-derived. It is not a
+*partial*, which is reserved for a row whose core action a user cannot
+complete.
 
 **Every MUST is met.** The MUSTs live in two columns — macOS and the CLI. iOS
 ships too and carries none: [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) puts it at
