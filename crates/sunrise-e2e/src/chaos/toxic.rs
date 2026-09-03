@@ -28,7 +28,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use rand::Rng;
@@ -184,6 +184,14 @@ pub struct Toxic<T: Transport> {
     faults: FaultHandle,
     delay: Option<(Duration, Duration)>,
     rng: ChaCha20Rng,
+    /// An inbound frame already taken off `inner`, waiting out its delay.
+    ///
+    /// It lives here rather than on `recv_frame`'s stack because the driver
+    /// polls `recv_frame` inside a `select!` and drops the future whenever
+    /// another branch wins. A frame held across an `await` on the stack goes
+    /// with it — a loss no test asked the injector for, and one that grows
+    /// with the delay range. Parked in the wrapper it simply resumes.
+    held: Option<(Vec<u8>, Instant)>,
 }
 
 impl<T: Transport> fmt::Debug for Toxic<T> {
@@ -215,6 +223,7 @@ impl<T: Transport> Toxic<T> {
             faults: faults.clone(),
             delay: config.delay,
             rng: ChaCha20Rng::seed_from_u64(seed),
+            held: None,
         };
         (toxic, faults)
     }
@@ -238,6 +247,7 @@ impl<T: Transport> Toxic<T> {
             faults,
             delay,
             rng: ChaCha20Rng::seed_from_u64(seed),
+            held: None,
         }
     }
 
@@ -305,18 +315,28 @@ impl<T: Transport> Transport for Toxic<T> {
             if self.faults.is_partitioned() {
                 return Err(TransportError::Unavailable("partitioned".into()));
             }
-            let Some(frame) = self.inner.recv_frame().await? else {
-                return Ok(None);
+            // Both awaits below are resumption points, not restart points: the
+            // frame and its due time are parked in `self.held` before either
+            // one, so a cancelled poll costs latency and never a frame.
+            if self.held.is_none() {
+                let Some(frame) = self.inner.recv_frame().await? else {
+                    return Ok(None);
+                };
+                // Drop: swallow this inbound frame and keep waiting.
+                if self.rng.gen_bool(self.faults.drop_prob()) {
+                    continue;
+                }
+                let frame = self.maybe_corrupt(frame);
+                let due = Instant::now() + self.sample_delay();
+                self.held = Some((frame, due));
+            }
+            let Some((_, due)) = self.held.as_ref() else {
+                unreachable!("held was just filled");
             };
-            // Drop: swallow this inbound frame and keep waiting.
-            if self.rng.gen_bool(self.faults.drop_prob()) {
-                continue;
-            }
-            let frame = self.maybe_corrupt(frame);
-            let delay = self.sample_delay();
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
+            tokio::time::sleep_until(tokio::time::Instant::from_std(*due)).await;
+            let Some((frame, _)) = self.held.take() else {
+                unreachable!("held was just filled");
+            };
             return Ok(Some(frame));
         }
     }
