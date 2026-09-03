@@ -43,6 +43,7 @@ ciborium = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 sunrise-wire-protocol = { workspace = true }
+sunrise-cbor = { workspace = true }
 
 [[bench]]
 name = "submit"

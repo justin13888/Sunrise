@@ -22,6 +22,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_server::{ServerConfig, ServerState};
 use sunrise_sync::{SseTransport, Transport};
 use sunrise_wire_protocol::{
@@ -34,10 +35,13 @@ fn fixture_hello() -> Hello {
     Hello {
         client_app_v: "0.1.0+bench".into(),
         client_platform: "bench".into(),
-        wire_proto_supported: vec![1],
-        doc_schema_min: 1,
-        doc_schema_max: 1,
-        crypto_suite_supported: vec![1],
+        // Read from the constants, not pinned. A literal here made the bench
+        // fail on `CRYPTO_SUITE_V`'s 1 -> 2 bump with `VALIDATION_INVALID`,
+        // which reads as a broken server rather than a stale fixture.
+        wire_proto_supported: vec![u32::from(WIRE_PROTO_V)],
+        doc_schema_min: u32::from(DOC_SCHEMA_FLOOR),
+        doc_schema_max: u32::from(DOC_SCHEMA_V),
+        crypto_suite_supported: vec![u32::from(CRYPTO_SUITE_V)],
         capabilities: REQUIRED_CLIENT_BITS.0 | REQUIRED_SERVER_BITS.0,
         trace: "01HXTRACE000000000000000000".into(),
     }
