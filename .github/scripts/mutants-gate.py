@@ -105,6 +105,12 @@ treats 2 as "infrastructure" should not be told to re-run shards over a bad
 command line. The `--update` refusal is judged on the flags alone, before any
 completeness or scorability check, so it is the one exit 1 that can be reached
 by a run with nothing wrong with it at all.
+
+Every route named above is asserted in `test_mutants_gate.py` beside this file,
+which synthesises its own outcomes and runs in about a second — `mise run
+mutants-gate-test`, and the `Mutation gate contract` job on every push. This
+paragraph and those assertions are two statements of one contract, and the
+tests are the half that cannot quietly stop being true.
 """
 
 from __future__ import annotations

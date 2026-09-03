@@ -164,6 +164,15 @@ not scored as one a test refuted. Unviable mutants — ones that do not compile 
 are excluded from both sides, being an artifact of mutating typed code rather
 than a statement about the tests.
 
+Which exit code means "scored, and the answer is no" and which means "nothing
+was scored, do not read a verdict into this" is the contract `ci.yml` and the
+gate's own printed remedies are built on, so it is asserted rather than
+described: `.github/scripts/test_mutants_gate.py` synthesises its own outcomes
+files and checks the code for every route in about a second. `mise run
+mutants-gate-test` locally, and the `Mutation gate contract` job on every push
+and pull request — the only part of mutation testing that does not wait for the
+nightly.
+
 **≥ 90 % caught is the release sign-off requirement, and the baseline is what
 climbs toward it.** The two are deliberately separate. A gate that failed from
 day one would be switched off within a week, and then it would protect nothing —

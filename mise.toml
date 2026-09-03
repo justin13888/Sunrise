@@ -401,6 +401,15 @@ done
   --expect-shards "$usage_expect_shards"
 """
 
+[tasks.mutants-gate-test]
+description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
+# Runs in about a second: it synthesises outcomes.json fixtures in a temp
+# directory and never invokes cargo. That is the point — the gate's contract is
+# what CI and the printed remedies depend on, and it had drifted twice before
+# anything asserted it, because the only way to exercise it was a full mutation
+# run nobody waits for.
+run = "python3 .github/scripts/test_mutants_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
