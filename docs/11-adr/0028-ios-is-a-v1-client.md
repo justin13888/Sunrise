@@ -215,12 +215,16 @@ is tested, and has not been released.
   the matrix's own "the marks are requirement levels, not status" callout
   draws.
 
-- **Four qualified verdicts**, and the matrix now defines the vocabulary for
+- **Five qualified verdicts**, and the matrix now defines the vocabulary for
   them: search is `met *(plain-text half)*` (it inherits the macOS FTS
   narrowness, [#28](https://github.com/justin13888/Sunrise/issues/28)),
   keyboard navigation is `met *(list keymap)*`, pairing-scan is
-  `met *(paste half)*` (no camera scanner exists on **either** platform), and
-  background sync is `met *(frontmost only)*`.
+  `met *(paste half)*` (no camera scanner exists on **either** platform),
+  background sync is `met *(frontmost only)*`, and drag-and-drop is
+  `met *(six of eight cells)*` — iOS reaches six of the eight cells in
+  [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)'s
+  matrix where macOS reaches seven, *Task → Calendar block* being a **No** here
+  for want of a screen that shows both of its ends.
 
 - **[#14](https://github.com/justin13888/Sunrise/issues/14) gains a cell.** The
   widgets row's iOS cell is where widget work now lands. Grepping `apps/apple`
