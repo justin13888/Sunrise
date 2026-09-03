@@ -46,7 +46,11 @@ What exists today:
 - `SunriseiOSUITests` — and unlike the macOS UI tests, these are **not** skipped.
   A simulator runner needs no change to the machine's security posture, so iOS is
   the platform where a tap is proved to reach the core on every build.
-- CI: an `ios-app` job on `macos-26`, unconditional on every push and PR.
+- CI: an `ios-app` job on `macos-26`. It carries no `if:` and no path filter,
+  so it runs whenever CI runs — pushes to `master` or `v1-rewrite`, pull
+  requests targeting either, the nightly schedule and manual dispatch
+  (`.github/workflows/ci.yml:3-11`). A push to a branch with no open pull
+  request builds nothing.
 
 ## Run it
 

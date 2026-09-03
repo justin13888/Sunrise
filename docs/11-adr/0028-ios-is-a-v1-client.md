@@ -52,10 +52,14 @@ Read from the tree rather than from a plan:
   simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
   `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
   a tap reaches the core.**
-- **`.github/workflows/ci.yml:114-158` runs `ios-app` unconditionally** — no
-  `if:`, no path filter, on every push, every pull request and the nightly
-  schedule, on the same pinned `macos-26` image the macOS job uses, adding both
-  iOS Rust slices to the pinned toolchain first (`:138`).
+- **`.github/workflows/ci.yml:114-158` gates `ios-app` no further than the
+  workflow itself** — the job has no `if:` and no path filter, so it runs every
+  time CI runs, which the triggers define as pushes to `master` and
+  `v1-rewrite` (`:4-5`), pull requests targeting those two branches (`:6-7`),
+  the 04:00 UTC nightly (`:8-10`) and manual dispatch (`:11`). Not every push
+  to every branch: a branch with no open pull request builds nothing. It runs
+  on the same pinned `macos-26` image the macOS job uses, adding both iOS Rust
+  slices to the pinned toolchain first (`:138`).
 - **`apps/apple/iOS/` is 647 lines** of shell — a five-tab `TabView` with
   `.tabViewStyle(.sidebarAdaptable)` so a phone gets a tab bar and an iPad a
   sidebar from one declaration — over the same `apps/apple/Sunrise/` views the
@@ -71,9 +75,10 @@ scheduled, its column is filled in and the fill-in is the commitment"**.
 
 Put together, a column of `—` under a `*deferred*` header states that nothing
 whatsoever is required of this client. For a client that is scheduled, built,
-running in CI on every push, and the *only* one whose UI tests execute, that is
-not a placeholder — it is a false statement, and it is the one that makes it
-impossible to say that any iOS behaviour has regressed. Four open issues
+run in CI on every pull request, and the *only* one whose UI tests execute,
+that is not a placeholder — it is a false statement, and it is the one that
+makes it impossible to say that any iOS behaviour has regressed. Four open
+issues
 ([#14](https://github.com/justin13888/Sunrise/issues/14),
 [#31](https://github.com/justin13888/Sunrise/issues/31),
 [#40](https://github.com/justin13888/Sunrise/issues/40) and
@@ -141,10 +146,10 @@ and it carries no MUSTs until an iOS release ships.**
 
 **Leave iOS deferred.** Rejected as false by the file's own definition:
 *deferred* is "specified, not scheduled for v1", and iOS is built and tested
-on every push. The matrix additionally forbids using *deferred* "to make this
-table agree with the code after the fact"; leaving it in place would be that
-same failure pointed the other way — keeping the table disagreeing with the
-code because moving it is work.
+on every pull request. The matrix additionally forbids using *deferred* "to
+make this table agree with the code after the fact"; leaving it in place would
+be that same failure pointed the other way — keeping the table disagreeing with
+the code because moving it is work.
 
 **MUST parity with macOS.** Rejected. No iOS release exists, and three MUSTs
 would be unmet the moment they were written:
@@ -171,7 +176,7 @@ requirement level stops meaning anything.
 
 **MAY for every row.** Rejected: it says less than the tree already proves. MAY
 means "future". A capability that a UI test drives on a simulator in CI on
-every push is not future.
+every pull request is not future.
 
 **SHOULD.** Chosen. It is the only mark that is true of a client which ships,
 is tested, and has not been released.
