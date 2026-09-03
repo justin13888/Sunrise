@@ -334,6 +334,63 @@ class GateContract(unittest.TestCase):
             1, "mutation coverage regressed",
         )
 
+    # --- timeouts: in the denominator, never in the numerator -------------
+    #
+    # The gate's headline design claim, and the one a plausible "fix" would
+    # undo in either direction. A mutant that hung is a mutant no test
+    # refuted, so scoring it as caught would let an infinite loop improve the
+    # number; dropping it from the denominator instead would let one hide.
+    # Both fixtures below are chosen so that the correct rate, the
+    # numerator-mutation rate and the denominator-mutation rate are three
+    # different numbers.
+
+    def test_timeouts_are_in_the_denominator_not_the_numerator(self):
+        # 3 caught, 1 missed, 2 timeout. Correct: 3 / 6 = 50%. Counting
+        # timeouts as caught: 5 / 6 = 83.33%. Dropping them from the
+        # denominator: 3 / 4 = 75%.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync",
+            caught=3, missed=1, timeout=2)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1",
+        )
+        self.assert_code(result, 0, "recorded 1 crate(s)")
+        recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
+        self.assertEqual(recorded["caught_pct"], 50.0)
+        self.assertEqual(recorded["timeout"], 2)
+
+    def test_a_timeout_cannot_hold_a_crate_above_its_floor(self):
+        # The same tally judged rather than recorded, against a floor of 60.
+        # At the true 50% this is a regression; at either mutation's rate
+        # (83.33% or 75%) it passes, and a hung mutant has bought coverage.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync",
+            caught=3, missed=1, timeout=2)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 60.0})
+        result = self.run_gate(str(run), "--baseline", str(base))
+        self.assert_code(
+            result, 1,
+            "mutation coverage regressed",
+            "sunrise-sync: 50.0% < 60.0%",
+            "(3 caught, 1 missed, 2 timeout, 0 unviable)",
+        )
+
+    def test_a_run_of_only_timeouts_scores_zero(self):
+        # Nothing was refuted, so the rate is 0% and the floor bites.
+        # Counting timeouts as caught makes this 100%; dropping them from
+        # the denominator makes it unscorable, which is a different exit
+        # path and a different message.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", timeout=2)
+        base = baseline_file(self.tmp / "base.json", {"sunrise-sync": 50.0})
+        result = self.run_gate(str(run), "--baseline", str(base))
+        self.assert_code(
+            result, 1, "sunrise-sync: 0.0% < 50.0%", "0 caught, 0 missed, "
+            "2 timeout",
+        )
+        self.assertNotIn("no scorable mutants", result.stderr)
+
     # --- the remedy a failure prints has to be runnable -------------------
 
     def test_unfloored_remedy_is_a_pasteable_command(self):
@@ -449,8 +506,10 @@ class GateContract(unittest.TestCase):
         )
         self.assert_code(result, 0, "recorded 1 crate(s)")
         recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
-        # Unviable mutants are excluded from both sides of the rate and
-        # timeouts sit in the denominator: 3 / (3 + 1) = 75%.
+        # Unviable mutants are excluded from both sides: the 2 here are in
+        # neither half of 3 / (3 + 1) = 75%, which is caught over caught plus
+        # missed. What timeouts do to that fraction is a separate claim, and
+        # this fixture has none — see the timeout tests below.
         self.assertEqual(recorded["caught_pct"], 75.0)
         self.assertEqual(recorded["unviable"], 2)
 
