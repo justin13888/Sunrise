@@ -140,10 +140,14 @@ at `:312`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
 iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination
-that replaces the list on the same stack. Three things the tree establishes:
-the grid sits on a different tab from every drag source, no `Tab` carries a
-`dropDestination`, and nothing configures spring-loading. Nothing in the tree
-shows a path that completes the gesture, and that is what the **No** records.
+that replaces the list on the same stack. The tab is not the boundary and it
+would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:212`) is
+attached to the Today and the Browse stacks alike (`:136`, `:144`), so the grid
+can be pushed onto the very stack a task list is on — it just arrives *instead
+of* the list, not beside it. Three things the tree establishes: no iOS screen
+shows a task row and the grid together, no `Tab` carries a `dropDestination`,
+and nothing configures spring-loading. Nothing in the tree shows a path that
+completes the gesture, and that is what the **No** records.
 
 **One path this file cannot settle, and it is the one that would overturn the
 verdict.** On iOS and iPadOS a drag session survives navigation — an item held
