@@ -187,9 +187,10 @@ menu item flickering as tasks come and go would explain less.
 
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
 `whoami` (OIDC + PKCE, token stored mode-0600 and device-bound), `review`,
-`export` as an *analytics* export, `vaults`, and device trust via
-`SUNRISE_TRUST_CERT_FILE`, which reaches `Command::TrustDevice` on every
-subcommand. The last is security-relevant and unrowed.
+`export` as an *analytics* export, `vaults`, and account joining via
+`SUNRISE_PAIRING_FILE`, which is read before `Core::open` on every subcommand
+and hands the vault an account identity and every Stream key. The last is
+security-relevant and unrowed.
 
 `SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
 carefully: it supplies a root outright and touches no keystore, which is how two

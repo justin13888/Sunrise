@@ -23,30 +23,7 @@ struct PairingModelTests {
     }
 
     private static let relay = "https://relay.example"
-    private static let vaultRoot = Data(repeating: 0xAB, count: 32)
-
-    /// One real, canonically encoded `PairingPayload`.
-    ///
-    /// The seam takes the payload's bytes, not a bare root: `openPairingPayload`
-    /// decodes what it opens and refuses a payload whose `identity_id` is not
-    /// the id derived from its own `ID_S_pub`, so this cannot be 32 arbitrary
-    /// bytes. It is a fixture rather than something assembled here because
-    /// Swift has no constructor for the type — a payload is built inside the
-    /// core, out of a vault, and this test has no vault.
-    ///
-    /// Produced by `sunrise_pairing::encode_pairing_payload` over `ID_S_priv` =
-    /// 32 x 0x11, `ID_D_priv` = 32 x 0x22, one Stream key (the vault-meta
-    /// stream, epoch 1, 32 x 0xCD), and `vault_root` = ``vaultRoot``.
-    /// Regenerate it if the payload's CDDL changes; a stale one fails loudly
-    /// here rather than quietly somewhere else.
-    private static let pairingPayload = Data(
-        base64Encoded:
-        "qQFYIBERERERERERERERERERERERERERERERERERERERERERAlggIiIiIiIiIiIiIiIiIiIi"
-            + "IiIiIiIiIiIiIiIiIiIiIiIDWCDQSrIydCu0qzoTaL1GFeTm0CJKtxoBa6+FIKMyyXeHNwRY"
-            + "IA+qaE7SiGe5f0pqLe5d+M6XTna3AY4/IqHEzyZ4Vw8gBVCIl23Dj6JC18nj/FiYj1YNBqFQ"
-            + "AAAAAAAAAAAAAAAAAAAAAKEBWCDNzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3NzQdnZml4"
-            + "dHVyZQhkdGVzdAlYIKurq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur"
-    )!
+    private static let vaultRoot = PairingFixture.vaultRoot
 
     private func shownText(_ model: PairingModel) -> String? {
         guard case let .handOff(handOff) = model.phase else { return nil }
@@ -63,7 +40,7 @@ struct PairingModelTests {
     private func handshake(
         sink: Sink = Sink(),
         sealPayload: ((DevicePairing) async throws -> String)? = { pairing in
-            try pairing.sealPairingPayload(payload: pairingPayload)
+            try pairing.sealPairingPayload(payload: PairingFixture.payload())
         }
     ) async throws -> (added: PairingModel, holder: PairingModel) {
         let added = PairingModel(
@@ -126,7 +103,7 @@ struct PairingModelTests {
 
         #expect(sink.root == Self.vaultRoot, "the root comes out of the payload")
         #expect(
-            sink.bundle == Self.pairingPayload,
+            sink.bundle == (try PairingFixture.payload()),
             "and the bundle behind it, which is what carries the Stream keys"
         )
         if case .done = added.phase {} else { Issue.record("expected done, got \(added.phase)") }

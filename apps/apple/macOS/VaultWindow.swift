@@ -205,9 +205,6 @@ struct VaultWindow: View {
         .task {
             deviceID = await bridge.deviceId()
             account.restore()
-            #if DEBUG
-            await DevPeerTrust.exchange(bridge: bridge)
-            #endif
             await startSync()
         }
         .task { await sync.poll(from: bridge) }

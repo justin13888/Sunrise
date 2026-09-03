@@ -50,7 +50,7 @@
 //!
 //! Two vaults that *should* share a root — one account on two devices — is
 //! pairing, and pairing over the wire is a later slice. [`ENV_VAULT_ROOT`] is
-//! the stand-in, in exactly the spirit of `SUNRISE_TRUST_CERT_FILE`: an
+//! the stand-in, in exactly the spirit of `SUNRISE_PAIRING_FILE`: an
 //! explicit, documented dev affordance that says "use this root", replacing an
 //! implicit constant that said it for you. It is also the escape hatch for a
 //! vault made before this existed — see [`VaultError::PreMultiAccount`].

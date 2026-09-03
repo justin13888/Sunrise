@@ -185,36 +185,31 @@ cargo test -p sunrise-e2e     # relay convergence, pairing, four chaos scenarios
 
 #### 4. Live sync demo (server + two vaults)
 
-`sunrise` wires live sync through four optional env vars: `SUNRISE_SYNC_URL` starts the WebSocket sync driver, `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev two-file device-cert exchange, and `SUNRISE_VAULT_ROOT` gives both instances the **same vault root**, so their stream keys derive identically and each can decrypt the other's op envelopes. All four unset = fully offline, with each vault on its own key.
+`sunrise` wires live sync through four optional env vars: `SUNRISE_SYNC_URL` starts the sync driver, `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` perform the dev two-file **pairing-payload** exchange that makes a second vault a second *device* on one account, and `SUNRISE_VAULT_ROOT` supplies a vault's at-rest key outright. All four unset = fully offline, with each vault on its own key.
 
-That last variable is what makes this a demo of two *devices* rather than two accounts. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders. Sharing a root is what pairing will do over the wire; until then it is spelled out, exactly like the cert exchange beside it.
+The **payload** is what makes this a demo of two *devices* rather than two accounts, and since [ADR-0024](docs/11-adr/0024-key-hierarchy.md) nothing else does. Sharing a vault root no longer suffices: each vault mints its own account identity and its Stream keys are random rather than derived, so two vaults on one root are two accounts holding the same at-rest key and neither can read the other's ops. The payload carries the identity and every Stream key, and it can only be adopted by a vault *being created* — the identity a vault belongs to is decided when it is created. So the order below matters: A must export before B first opens, and B's directory must not exist yet. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders.
 
 ```bash
 # Terminal 0 — run the self-host relay:
 cargo run -p sunrise-server
 # → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
 
-# One account, two replicas: any 64 hex characters, the same in both terminals.
-export SUNRISE_VAULT_ROOT=$(head -c32 /dev/urandom | xxd -p -c64)
-
-# Terminal 1 — vault A exports its cert and trusts B's:
+# Terminal 1 — vault A writes something and exports its pairing payload:
 SUNRISE_VAULT=/tmp/vault-a \
 SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
-SUNRISE_EXPORT_CERT_FILE=/tmp/a.cert \
-SUNRISE_TRUST_CERT_FILE=/tmp/b.cert \
+SUNRISE_EXPORT_PAIRING_FILE=/tmp/a.pairing \
 cargo run -p sunrise-cli -- capture 'Written on A'
 
-# Terminal 2 — vault B exports its cert and trusts A's:
+# Terminal 2 — vault B joins A's account by adopting that payload:
 SUNRISE_VAULT=/tmp/vault-b \
 SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
-SUNRISE_EXPORT_CERT_FILE=/tmp/b.cert \
-SUNRISE_TRUST_CERT_FILE=/tmp/a.cert \
+SUNRISE_PAIRING_FILE=/tmp/a.pairing \
 cargo run -p sunrise-cli -- today
 ```
 
 > Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
 
-Cert trust is a two-sided file exchange: the **first** run of each vault only exports its cert (the peer's file doesn't exist yet); **run both again** so each picks up the peer cert and submits `TrustDevice`. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
+The payload exchange is one-directional and one-shot: A exports, B joins on the open that creates it. A vault that already exists ignores the file — there is no identity left to decide — so if B was created first, delete `/tmp/vault-b` and run it again. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
 
 ```bash
 cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture

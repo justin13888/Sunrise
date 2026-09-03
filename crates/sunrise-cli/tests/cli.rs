@@ -46,8 +46,8 @@ fn run(vault: &Path, args: &[&str]) -> Output {
         // Keep the relay out of it: subcommands are one-shot and offline.
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env_remove("SUNRISE_EXPORT_CERT_FILE")
-        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+        .env_remove("SUNRISE_PAIRING_FILE")
         .output()
         .expect("run sunrise")
 }
@@ -650,8 +650,8 @@ fn a_pre_multi_account_vault_is_refused_but_the_quoted_root_opens_it() {
             )
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_CERT_FILE")
-            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -694,8 +694,8 @@ fn an_explicit_root_opens_a_vault_with_no_keystore_at_all() {
             .env("SUNRISE_VAULT_ROOT", &hex)
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_CERT_FILE")
-            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -1152,8 +1152,8 @@ fn ical_import_reads_stdin() {
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
         .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_EXPORT_CERT_FILE")
-        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+        .env_remove("SUNRISE_PAIRING_FILE")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
