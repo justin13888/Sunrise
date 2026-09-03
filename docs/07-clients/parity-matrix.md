@@ -293,8 +293,8 @@ over:
 
   Two further things are narrow that no row is about, and they are worth
   naming here rather than losing. **The shared sheets are Mac-shaped**: seven
-  fixed frames that an iOS user can reach, none behind an `#if` and every one
-  wider than an iPhone — 520 points on the settings `Form` (`AccountView`,
+  unconditional `.frame(width:)` calls the tab shell can put on screen, every
+  one wider than an iPhone — 520 points on the settings `Form` (`AccountView`,
   `AccountView.swift:101`), 560×520 on the pairing sheet (`PairingView`,
   `PairingView.swift:25`), 460 on the task editor (`TaskEditorView`,
   `TaskEditorView.swift:97`), 440 on the routine editor (`RoutineEditorView`,

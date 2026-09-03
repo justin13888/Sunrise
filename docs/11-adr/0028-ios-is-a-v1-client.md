@@ -273,13 +273,20 @@ is tested, and has not been released.
   block draft sheet 420 (`BlockDraftSheetView`, `:35`), the block editor 460
   (`BlockEditorView`, `:155`) and the conflict adjuster 620
   (`AdjustBlocksView`, `:280`) — all wider than an iPhone, none behind an
-  `#if`. That is the whole set: the remaining oversized frames in shared files
-  are either unreachable from the tab shell (`Views/IcalView.swift:35`, behind
-  the `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
+  `#if`. Those seven are every **fixed** width — every `.frame(width:)` — the
+  tab shell can put on screen. Two things the sentence deliberately does not
+  claim. It is not every oversized frame in a shared file: the rest are either
+  unreachable from the tab shell (`Views/IcalView.swift:35`, behind the
+  `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
   `Keyboard/CommandPaletteView.swift:20` and `:182`, behind a palette iOS hands
   an inert closure at `iOS/VaultTabs.swift:286`) or already guarded
-  (`Views/QuickCaptureView.swift:88-91`). Multi-account and first-run pairing
-  are graded **met** because the capability is reachable; the width is recorded
+  (`Views/QuickCaptureView.swift:88-91`). And it does not count `minWidth:`
+  floors, which are not fixed widths: `Views/AttachmentsView.swift:31` sets one
+  at 420, shared and unguarded on a surface graded **met**, but its only
+  instantiation is `Views/TaskEditorView.swift:93` — inside the task editor,
+  whose fixed 460 at `:97` is already in the list — so it widens nothing the
+  list does not already carry. Multi-account and first-run pairing are graded
+  **met** because the capability is reachable; the width is recorded
   under *What is still narrow* rather than allowed to sink a verdict it does
   not change.
 
