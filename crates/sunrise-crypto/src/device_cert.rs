@@ -309,7 +309,17 @@ impl DeviceCert {
             };
             match (id, v) {
                 (1, val) => {
-                    // Re-encode body and re-decode for canonical-form check.
+                    // Re-encoded only so `body_from_cbor` can read it: the
+                    // outer map has already been consumed into `Value`s, and
+                    // the body decoder takes bytes. This is **not** a
+                    // canonicity check — nothing here compares the re-encoding
+                    // against the bytes that arrived, so a body with unsorted
+                    // or non-minimal keys decodes exactly as a canonical one
+                    // does. The comment used to claim otherwise. Canonical CBOR
+                    // is unenforced across the whole inner-op surface (see the
+                    // note in `docs/03-crypto/data-encryption-format.md`), and
+                    // enforcing it here alone would reject certs this build's
+                    // own encoder emits.
                     let mut buf = Vec::new();
                     ciborium::ser::into_writer(&val, &mut buf)
                         .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
