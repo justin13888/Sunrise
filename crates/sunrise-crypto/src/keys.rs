@@ -24,6 +24,14 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Identity signing keypair (Ed25519). The private half is `ID_S_priv`; the
 /// public half is `ID_S_pub`.
+///
+/// The zeroize is derived, not hand-written. The hand-written version did
+/// `let mut bytes = self.signing.to_bytes(); bytes.zeroize();`, which wipes the
+/// *copy* `to_bytes` just made and leaves the key itself untouched — a comment
+/// claiming belt-and-suspenders over an assignment that does nothing. What
+/// actually protects the seed is `ed25519_dalek::SigningKey`'s own `Drop`, and
+/// the derive is how that gets asserted at compile time instead of assumed.
+#[derive(ZeroizeOnDrop)]
 pub struct IdentitySigningKeyPair {
     signing: SigningKey,
 }
@@ -74,15 +82,6 @@ impl IdentitySigningKeyPair {
     #[inline]
     pub const fn dalek(&self) -> &SigningKey {
         &self.signing
-    }
-}
-
-impl Drop for IdentitySigningKeyPair {
-    fn drop(&mut self) {
-        // `dalek::SigningKey` implements Zeroize on Drop in ≥2.x, but we add
-        // an explicit zeroize for belt-and-suspenders.
-        let mut bytes = self.signing.to_bytes();
-        bytes.zeroize();
     }
 }
 
@@ -163,6 +162,11 @@ impl IdentityDhKeyPair {
 /// happily signed a device cert with a device key — which is precisely the
 /// self-signature ADR-0024 removes. Two structs make the roles a type error
 /// rather than a review comment.
+///
+/// Zeroized on drop by the derive, for the reason given on
+/// [`IdentitySigningKeyPair`] — the hand-written `Drop` this replaces wiped a
+/// copy of the seed rather than the seed.
+#[derive(ZeroizeOnDrop)]
 pub struct DeviceSigningKeyPair {
     signing: SigningKey,
 }
@@ -213,13 +217,6 @@ impl DeviceSigningKeyPair {
     #[inline]
     pub const fn dalek(&self) -> &SigningKey {
         &self.signing
-    }
-}
-
-impl Drop for DeviceSigningKeyPair {
-    fn drop(&mut self) {
-        let mut bytes = self.signing.to_bytes();
-        bytes.zeroize();
     }
 }
 
