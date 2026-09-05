@@ -341,6 +341,10 @@ mod tests {
     fn payload(streams: u32, epochs: u32) -> PairingPayload {
         let signing = IdentitySigningKeyPair::from_secret_bytes(&[0x21; 32]);
         let id_s_pub = signing.public_bytes();
+        // The decoder recomputes both public halves from their private ones, so
+        // the fixture has to be a real key pair rather than two chosen
+        // constants — which is the whole point of the check.
+        let id_d_pub = IdentityDhKeyPair::from_secret_bytes([0x22; 32]).public_bytes();
         let mut stream_keys = BTreeMap::new();
         for s in 0..streams {
             let mut sid = [0u8; 16];
@@ -355,7 +359,7 @@ mod tests {
             id_s_priv: [0x21; 32],
             id_d_priv: [0x22; 32],
             id_s_pub,
-            id_d_pub: [0x24; 32],
+            id_d_pub,
             identity_id: identity_id_from_pub(&id_s_pub),
             vault_root: [0x25; 32],
             stream_keys,
