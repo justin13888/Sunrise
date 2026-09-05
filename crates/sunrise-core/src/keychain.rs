@@ -160,6 +160,14 @@ pub enum KeychainError {
     /// A stored row holds a blob of the wrong length for the field it fills.
     #[error("corrupt vault row: {0} is not the right length")]
     CorruptRow(&'static str),
+    /// A pre-ADR-0024 vault with more than one device row cannot be adopted:
+    /// see [`Keychain::adopt_legacy_vault`].
+    #[error(
+        "this vault predates the key hierarchy and holds {0} devices; adopting it would mint a \
+         different account identity on each one and silently split the account. Re-pair the other \
+         devices from this one after it upgrades, or open it on a single device only."
+    )]
+    LegacyMultiDevice(i64),
 }
 
 /// The account identity: one keypair pair per account, not per device.
@@ -441,6 +449,27 @@ impl Keychain {
     /// longer exists. It also gets a new `D_D`, because the old one was
     /// generated at first open and immediately dropped; only its public half
     /// survived, and `key_envelope` needs the private half.
+    ///
+    /// # The one vault this refuses
+    ///
+    /// A pre-0017 account with **more than one device** cannot be adopted, and
+    /// this returns [`KeychainError::LegacyMultiDevice`] rather than try.
+    ///
+    /// The identity is minted here, from this device's RNG. Two devices sharing
+    /// a vault root that both upgrade therefore mint two *different* accounts,
+    /// and nothing afterwards notices: each writes `d_d_pub` only for its own
+    /// `devices` row, so the peer's stays NULL from the migration and
+    /// `emit_key_envelopes` — which selects `d_d_pub IS NOT NULL` — never makes
+    /// it a recipient of any new epoch. Each device's `DeviceCertPublish` then
+    /// fails the other's `verify_binding`, so the NULL is never repaired. The
+    /// two go on syncing the streams they already share on the legacy epoch-1
+    /// keys while every stream created after the upgrade parks in the peer's
+    /// `deferred_ops` forever, with nothing on either screen saying so.
+    ///
+    /// A silent fork of one account into two is the worst outcome available
+    /// here, and it is worse than an error the user can act on. The way
+    /// forward is the ordinary one: upgrade on a single device, then re-pair
+    /// the others from it, which is what hands them the *same* identity.
     fn adopt_legacy_vault(
         db: &mut Db,
         vault_root: VaultRootKey,
@@ -448,6 +477,12 @@ impl Keychain {
         rng: &dyn Rng,
         local: &IdentityRow,
     ) -> Result<Self, KeychainError> {
+        let devices: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM devices", [], |r| r.get(0))?;
+        if devices > 1 {
+            return Err(KeychainError::LegacyMultiDevice(devices));
+        }
         let now_ms = clock.now_ms();
         let mut secret = unwrap_secret(
             &vault_root,
@@ -1931,6 +1966,68 @@ mod tests {
         assert_eq!(again.identity_id(), identity_id);
         assert_eq!(again.cert_blob(), &cert[..]);
         assert_eq!(again.open_op(&legacy_env).unwrap(), b"a pre-0017 op");
+    }
+
+    /// A pre-0017 vault that already had two devices is refused rather than
+    /// adopted.
+    ///
+    /// Adoption mints an account identity from *this* device's RNG. Two devices
+    /// sharing one vault root that both upgrade therefore mint two different
+    /// accounts, each writing `d_d_pub` only for its own `devices` row — so
+    /// `emit_key_envelopes`, which selects `d_d_pub IS NOT NULL`, never makes
+    /// the peer a recipient of a new epoch, and each device's cert fails the
+    /// other's `verify_binding`. The account splits in two and neither screen
+    /// says so. An error naming re-pairing is the only honest outcome.
+    #[test]
+    fn a_legacy_vault_with_two_devices_is_refused() {
+        let root = VaultRootKey::from_bytes([0x78; 32]);
+        let mut d = db(&root);
+
+        let device_signing = DeviceSigningKeyPair::from_secret_bytes(&[0x43; 32]);
+        let device_id = device_id_from_pub(&device_signing.public_bytes());
+        let mut secret = device_signing.secret_bytes();
+        let wrapped = wrap_secret(&root, &secret, &device_aad(&device_id), &SystemRng);
+        secret.zeroize();
+        d.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO local_identity
+                 (id, device_id, signing_secret_wrapped, cert_blob, created_at_ms)
+                 VALUES (1, ?, ?, X'00', 1)",
+                params![&device_id[..], wrapped],
+            )?;
+            // This device and one peer, exactly as a pre-0017 two-device
+            // account records them.
+            for (id, name) in [(device_id, "laptop"), ([0x99; 16], "phone")] {
+                tx.execute(
+                    "INSERT INTO devices
+                     (device_id, cert_blob, nickname, platform, created_at_ms)
+                     VALUES (?, X'00', ?, 'macos', 1)",
+                    params![&id[..], name],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let err = Keychain::open(&mut d, root.clone(), &clock(), &SystemRng, None)
+            .expect_err("a two-device legacy vault must not be adopted");
+        assert!(
+            matches!(err, KeychainError::LegacyMultiDevice(2)),
+            "got {err:?}"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Re-pair"),
+            "the error has to name the way forward: {message}"
+        );
+
+        // And nothing was written on the way out: a refused adoption must not
+        // leave half an identity behind for the next open to load.
+        let identities: i64 = d
+            .conn()
+            .query_row("SELECT count(*) FROM identity", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(identities, 0, "the refusal is total");
     }
 
     /// A device opened with a pairing payload joins the *sender's* account and
