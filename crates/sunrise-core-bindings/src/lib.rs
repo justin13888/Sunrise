@@ -609,6 +609,9 @@ impl SunriseCore {
             .inner
             .export_pairing_payload()
             .map_err(|e| BindingError::Core(e.to_string()))?;
+        // `payload` zeroizes itself on drop; the encoding is the same secret in
+        // serialized form, and `seal_pairing_payload` takes ownership of it and
+        // wipes it once the ciphertext exists.
         let encoded = sunrise_pairing::encode_pairing_payload(&payload)
             .map_err(|e| BindingError::Pairing(e.to_string()))?;
         pairing.seal_pairing_payload(encoded)

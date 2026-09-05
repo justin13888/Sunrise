@@ -48,6 +48,8 @@ use sunrise_pairing::{
     PairedChannel, PairingSession, QrPayload, Role, MAGIC_V1_HEX,
 };
 
+use zeroize::Zeroize;
+
 use crate::BindingError;
 
 /// How long a vault root is.
@@ -310,6 +312,18 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
     pub fn seal_pairing_payload(&self, payload: Vec<u8>) -> Result<String, BindingError> {
+        // Taken by value and wiped here rather than left to the caller.
+        // `PairingPayload` zeroizes itself on drop; its *encoding* is the same
+        // secret in serialized form and has no such courtesy, so the one place
+        // that is guaranteed to see the end of its life is the place that
+        // consumes it.
+        let mut payload = payload;
+        let out = self.seal_encoded(&payload);
+        payload.zeroize();
+        out
+    }
+
+    fn seal_encoded(&self, payload: &[u8]) -> Result<String, BindingError> {
         if self.role != PairingRole::ExistingDevice {
             return Err(BindingError::Pairing(
                 "only the existing device sends the pairing payload".into(),
@@ -319,7 +333,7 @@ impl DevicePairing {
         let channel = guard
             .as_mut()
             .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        let sealed = channel.send(&payload)?;
+        let sealed = channel.send(payload)?;
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
         Ok(URL_SAFE_NO_PAD.encode(sealed))
     }
@@ -361,18 +375,35 @@ impl DevicePairing {
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
         Ok(PairedBundle {
             vault_root,
-            sealed_bundle: bundle,
+            payload_bytes: bundle,
         })
     }
 }
 
 /// What a completed pairing hands the new device.
-#[derive(Debug, Clone, uniffi::Record)]
+///
+/// Both fields are **plaintext**. `payload_bytes` is the opened
+/// `PairingPayload` — `ID_S_priv`, `ID_D_priv`, the vault root and every Stream
+/// key in the account — and it was called `sealed_bundle` while nothing sealed
+/// it: the field is the output of `channel.receive`, which is where the sealing
+/// ends. A name that says "sealed" is the one thing that would make a caller
+/// comfortable logging it.
+///
+/// `Debug` is hand-written for the same reason `PairingPayload`'s is: the
+/// derive would print every one of those bytes, undoing at this seam the
+/// redaction the type it carries is careful about one crate over.
+#[derive(Clone, uniffi::Record)]
 pub struct PairedBundle {
     /// The 32-byte vault root, for `SunriseCore::open`'s `vault_root`.
     pub vault_root: Vec<u8>,
-    /// The decoded payload bytes, for `SunriseCore::open`'s `paired_bundle`.
-    pub sealed_bundle: Vec<u8>,
+    /// The opened payload bytes, for `SunriseCore::open`'s `paired_bundle`.
+    pub payload_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for PairedBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PairedBundle(<redacted>)")
+    }
 }
 
 impl DevicePairing {

@@ -208,7 +208,7 @@ final class PairingModel {
                 pasted = ""
                 phase = .working
                 syncSeamState()
-                await adopt?(bundle.vaultRoot, bundle.sealedBundle)
+                await adopt?(bundle.vaultRoot, bundle.payloadBytes)
                 pairing = nil
                 phase = .done(doneSummary)
                 syncSeamState()

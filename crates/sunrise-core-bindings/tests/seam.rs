@@ -1562,7 +1562,7 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
     let bundle = new_device.open_pairing_payload(sealed).expect("open");
     assert_eq!(bundle.vault_root.len(), 32);
     assert!(
-        !bundle.sealed_bundle.is_empty(),
+        !bundle.payload_bytes.is_empty(),
         "the bundle is what `open`'s `paired_bundle` takes"
     );
     assert_eq!(new_device.step(), PairingStep::Finished);
@@ -1576,7 +1576,7 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
         path,
         bundle.vault_root,
         "test".into(),
-        Some(bundle.sealed_bundle),
+        Some(bundle.payload_bytes),
     )
     .await
     .expect("the transferred payload opens the vault");
