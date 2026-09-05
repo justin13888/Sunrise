@@ -730,8 +730,9 @@ impl Engine {
                     "no key at this (stream, epoch) opens the envelope".into(),
                 )
             })?;
-        let inner = decode_inner_op(&inner_cbor)
+        let mut inner = decode_inner_op(&inner_cbor)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
+        remap_legacy_inbox(&mut inner);
 
         // e. Clock gate. A reading far in OUR future is a broken or hostile
         //    clock; absorbing it would drag this device's HLC forward with the
@@ -3939,6 +3940,51 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 // append-only families and the control families are handled by different
 // guards earlier in the function, and spelling both out is what makes adding a
 // fifth family a compile-time decision rather than a silent fall-through.
+/// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
+/// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
+///
+/// Migration 0017 does exactly this to the local tables of a vault that
+/// upgrades. It cannot do it to the already-signed envelopes in `ops`, which
+/// still name the old id and cannot be rewritten without breaking their
+/// signatures. That is fine on the device that migrated, and not fine on a
+/// device paired *after* the upgrade: that device receives the legacy
+/// `([0u8; 16], 1)` key in its pairing payload, replays the whole history, and
+/// materializes those tasks under the id in the payload — which is the
+/// vault-meta stream id. `materialize_remote` would then `ensure_stream_row`
+/// the one stream that must never have a `streams` row, and the two replicas of
+/// one account would disagree about where the user's oldest tasks live.
+///
+/// Remapping here rather than refusing the ops is deliberate. Refusing would
+/// drop the user's pre-0017 Inbox on the new device while the migrated device
+/// kept it — permanent, silent divergence, and a data loss the user did not ask
+/// for. Remapping reproduces the migration's own rewrite at the only other
+/// place the same rows can be born, so both replicas land on the same state.
+///
+/// Only *entity* payloads are touched. A `key_envelope` naming the vault-meta
+/// stream at `[0u8; 16]` is naming it correctly and is left alone.
+///
+/// Delete at 1.0, with the rest of the 0017 legacy path.
+fn remap_legacy_inbox(inner: &mut InnerOp) {
+    fn fix(r: &mut EntityRef) {
+        if r.bytes() == &META_STREAM {
+            *r = EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES);
+        }
+    }
+    match inner {
+        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) | InnerOp::TaskDelete(t) => {
+            fix(&mut t.stream_id);
+        }
+        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) | InnerOp::RoutineDelete(r) => {
+            fix(&mut r.template.stream_id);
+        }
+        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
+            fix(&mut b.stream_id);
+        }
+        InnerOp::FocusStart(f) => fix(&mut f.stream_id),
+        _ => {}
+    }
+}
+
 #[allow(clippy::match_same_arms)]
 fn materialize_remote(
     tx: &Transaction<'_>,
@@ -11889,6 +11935,89 @@ mod tests {
             oldest,
             i64::try_from(T0).unwrap() + 16,
             "the first 16 were the ones dropped"
+        );
+    }
+
+    /// A pre-0017 op naming the Inbox by its old id — sixteen zero bytes, which
+    /// are also the vault-meta stream — materializes into the Inbox, not into a
+    /// `streams` row for the one stream that must never have one.
+    ///
+    /// Migration 0017 rewrites exactly these rows on a vault that upgrades. It
+    /// cannot rewrite the signed envelopes, so a device paired *after* the
+    /// upgrade replays that history and is the only other place the same rows
+    /// can be born.
+    #[test]
+    fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "captured before the split".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // Rewrite the op's payload to name the Inbox the way a pre-0017 build
+        // did, and re-seal it: the signature covers the payload, so a legacy op
+        // has to be built rather than patched.
+        let env = env_bytes(&dba, &res.op_id);
+        let mut inner = decode_inner_op(&ea.keychain.open_op(&env).unwrap()).unwrap();
+        let InnerOp::TaskCreate(task) = &mut inner else {
+            panic!("expected a task.create");
+        };
+        task.stream_id = EntityRef::new(EntityKind::Stream, META_STREAM);
+        let meta_key = dba
+            .with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &META_STREAM))
+            .unwrap()
+            .expect("A holds the vault-meta key");
+        let legacy_env = ea
+            .keychain
+            .seal_op_at(
+                META_STREAM,
+                // A seq of its own in the vault-meta space, which is where a
+                // pre-0017 Inbox op was logged: the two shared an id.
+                900,
+                ea.hlc.send(),
+                &encode_inner_op(&inner).unwrap(),
+                ea.rng.as_ref(),
+                meta_key.0,
+                &meta_key.1,
+            )
+            .unwrap();
+
+        eb.apply_remote(&mut dbb, &legacy_env)
+            .expect("a legacy Inbox op still applies");
+        let stored: Vec<u8> = dbb
+            .conn()
+            .query_row(
+                "SELECT stream_id FROM tasks WHERE id = ?",
+                params![&res.entity.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            sunrise_domain::INBOX_STREAM_BYTES.to_vec(),
+            "the task belongs to the Inbox, which is where 0017 put it locally"
+        );
+        let meta_rows: i64 = dbb
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM streams WHERE stream_id = ?",
+                params![&META_STREAM[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            meta_rows, 0,
+            "and the vault-meta stream still has no `streams` row"
         );
     }
 

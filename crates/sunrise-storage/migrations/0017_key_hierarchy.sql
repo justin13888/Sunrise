@@ -86,10 +86,13 @@ ALTER TABLE devices ADD COLUMN revoke_reason TEXT;
 -- `tasks.stream_id` has a foreign key to it and `PRAGMA foreign_keys` is on.
 --
 -- The already-signed *envelopes* in `ops` still name the old id and cannot be
--- rewritten. That is accepted under ADR-0018: a peer replaying its own
--- pre-0017 Inbox ops re-materializes them under the old id, and the fix is the
--- same one that ADR sanctions everywhere else pre-1.0 — no released build
--- produced such a vault.
+-- rewritten: the signature covers the payload. A device paired *after* this
+-- upgrade replays that history and is the only other place these rows can be
+-- born, so `Engine::remap_legacy_inbox` performs exactly the rewrite below on
+-- any entity payload naming `[0u8; 16]` as it materializes. Without it that
+-- device would `ensure_stream_row` the vault-meta stream — the one stream that
+-- must never have a `streams` row — and the two replicas of one account would
+-- disagree about where the user's oldest tasks live.
 INSERT OR IGNORE INTO streams
     (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
 SELECT X'00000073756E726973652E696E626F78',
