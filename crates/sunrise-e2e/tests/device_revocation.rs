@@ -228,3 +228,83 @@ async fn a_revoked_device_cannot_write_and_the_survivors_keep_syncing() {
         "the pre-revocation task is still readable on the revoked device"
     );
 }
+
+/// Wait until `core` shows a task titled `title`.
+async fn wait_title(core: &Core, title: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if task_titles(core).await.iter().any(|t| t == title) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for the task {title:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// `effective_at_ms` is a **time**, and an op signed before it still applies on
+/// a replica that has already recorded the revocation.
+///
+/// The scenario is the ordinary one, not an exotic one: C does a morning's work
+/// on a laptop, the laptop goes offline, the user revokes it from another
+/// device that evening, and the morning's ops reach the rest of the account
+/// afterwards. Dropping them would throw away honest work the user never asked
+/// to lose, and would leave the replicas permanently disagreeing about it.
+///
+/// The cut is placed a minute ahead rather than staging an offline window,
+/// which makes the ordering deterministic: C is already marked revoked on B —
+/// `wait_revoked` proves it — before C writes anything at all, so the op is
+/// unambiguously delivered *after* the revocation and unambiguously signed
+/// *before* the cut. Nothing but the `effective_at_ms` comparison can let it
+/// through.
+///
+/// Before this was fixed, `lookup_device_cert` filtered `revoked_at_ms IS NULL`
+/// and the row simply vanished for a revoked device, so every family except
+/// `device_cert` came back `UnknownDevice` whatever its HLC said, and
+/// `is_revoked_at` — the only place `effective_at_ms` is read — was unreachable
+/// for all twenty domain families.
+#[tokio::test]
+async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
+    let (addr, _relay) = spawn_relay().await;
+    let dir_a = tempfile::tempdir().expect("tmp a");
+    let dir_b = tempfile::tempdir().expect("tmp b");
+    let dir_c = tempfile::tempdir().expect("tmp c");
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+
+    let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
+    let c = open_paired_core(dir_c.path(), &a, addr, clock.clone()).await;
+    wait_live(&a, TIMEOUT).await;
+    wait_live(&b, TIMEOUT).await;
+    wait_live(&c, TIMEOUT).await;
+
+    create_task(&a, "baseline").await;
+    wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
+    wait_tasks_converge(&a, &c, 1, TIMEOUT).await;
+
+    // The cut is in the future, so everything C signs from here until then is
+    // pre-cut work.
+    let cut = a.now_ms() + 60_000;
+    let c_device = c.device_id();
+    a.submit(Command::RevokeDevice {
+        device_id: EntityRef::new(EntityKind::Device, c_device),
+        reason: RevokeReason::Retired,
+        effective_at_ms: Some(cut),
+    })
+    .await
+    .expect("revoke C");
+    wait_revoked(&b, c_device, TIMEOUT).await;
+
+    // C writes only now — after B has the revocation, and still before the cut.
+    create_task(&c, "signed before the cut").await;
+    wait_title(&b, "signed before the cut", TIMEOUT).await;
+    wait_title(&a, "signed before the cut", TIMEOUT).await;
+
+    assert_eq!(
+        task_titles(&a).await,
+        task_titles(&b).await,
+        "the survivors agree about the pre-cut work"
+    );
+}

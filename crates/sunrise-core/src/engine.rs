@@ -617,6 +617,10 @@ impl Engine {
         //    `d_s_pub`, and the cert against this vault's account identity. A
         //    stranger's cert fails the second check however it is delivered,
         //    which is exactly what `Command::TrustDevice` could not do.
+        //
+        //    A *revoked* device's row is still found here. Whether its op
+        //    stands is a question about the op's timestamp, not about whether
+        //    the device is still a member, and step c2 is where that is asked.
         let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
             Some(cert_blob) => {
                 let cert = DeviceCert::from_cbor(&cert_blob)
@@ -809,7 +813,30 @@ impl Engine {
     }
 
     /// Whether `device_id` was revoked with an effect time at or before
-    /// `at_ms`.
+    /// `at_ms`, which is the envelope's own HLC reading.
+    ///
+    /// The comparison is against a timestamp the *sender* chose and signed, so
+    /// this is a **convergence** boundary rather than a cryptographic one: a
+    /// revoked device that can still reach a peer can date an op below the cut
+    /// and have it applied. Only the direction is constrained — the clock gate
+    /// in step e refuses a reading in this device's future, so the lie can only
+    /// ever be backwards, into a past this device already agrees existed.
+    ///
+    /// Closing it is a *transport* question, not a comparison this function
+    /// could make. `DELETE /api/v1/devices/{id}` makes the relay refuse the
+    /// device's signed uploads and its sync sessions outright, and nothing at
+    /// all reaches a peer after that. `Command::RevokeDevice` does not call it:
+    /// the `device_revoke` op is vault state, the relay never reads it
+    /// (`docs/03-crypto/key-rotation.md` §Revocation step 3, marked not built),
+    /// and wiring the two together is its own change.
+    ///
+    /// The residual is written down in `docs/01-architecture/threat-model.md`
+    /// §A3 together with the reason it is the right trade. The alternative —
+    /// treating revocation as retroactive, which is what filtering the cert
+    /// lookup on `revoked_at_ms` amounted to — throws away honest work a user
+    /// did yesterday on the laptop they revoked today. That is a worse and far
+    /// more likely failure than a backdating attacker who, by construction,
+    /// already had to be reachable and is already inside the account.
     fn is_revoked_at(
         &self,
         db: &Db,
@@ -1055,7 +1082,17 @@ impl Engine {
         }
     }
 
-    /// Trusted device cert lookup (non-revoked). `None` = untrusted sender.
+    /// The stored cert for `device_id`, revoked or not. `None` = a device this
+    /// vault has never admitted.
+    ///
+    /// Deliberately **not** filtered on `revoked_at_ms`. Filtering here is what
+    /// made a revocation retroactive: with the row hidden, every op from a
+    /// revoked device fell through to [`Self::self_authenticating_signer`],
+    /// which knows only `DeviceCertPublish`, and so came back `UnknownDevice`
+    /// whatever its HLC said — including work the device did honestly, months
+    /// before anyone revoked it. The cut is a *time*, and the comparison that
+    /// applies it lives in [`Self::is_revoked_at`], one step further on, where
+    /// the envelope's HLC is available to compare against.
     fn lookup_device_cert(
         &self,
         db: &Db,
@@ -1064,8 +1101,7 @@ impl Engine {
         let blob: Option<Vec<u8>> = db
             .conn()
             .query_row(
-                "SELECT cert_blob FROM devices
-                 WHERE device_id = ? AND revoked_at_ms IS NULL",
+                "SELECT cert_blob FROM devices WHERE device_id = ?",
                 params![&device_id[..]],
                 |r| r.get(0),
             )
@@ -10894,6 +10930,29 @@ mod tests {
             .unwrap()
     }
 
+    /// Apply a `device_revoke` for `target`, effective at `effective_at_ms`,
+    /// through the same code path the op takes when it arrives over sync.
+    fn revoke(
+        receiver: &Engine,
+        db: &mut Db,
+        sender: &Engine,
+        target: [u8; 16],
+        effective_at_ms: u64,
+    ) {
+        let sender_id = sender.keychain.device_id();
+        let inner = InnerOp::DeviceRevoke(DeviceRevokePayload {
+            revoked_device_id: target,
+            reason_code: RevokeReason::Lost,
+            effective_at_ms,
+        });
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(tx, &inner, &sender_id, effective_at_ms)
+                .map(|_| ())
+        })
+        .unwrap();
+    }
+
     /// An op that arrives before the key that opens it is parked, not lost, and
     /// the `key_envelope` op carrying that key releases it.
     ///
@@ -11352,6 +11411,126 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity), task_after_first);
         assert_eq!(op_count(&dbb), ops_after_first);
         assert_eq!(ops_after_first, 1, "exactly one remote op recorded");
+    }
+
+    /// The cut is a **time**, not a flag: an op a device signed before its
+    /// revocation still applies on a replica that has already recorded the
+    /// revocation.
+    ///
+    /// This is the scenario that made revocation retroactive. `A` writes at
+    /// t=100 and is offline; `B` revokes it at t=200; the op reaches a third
+    /// replica after the revocation does. `lookup_device_cert` used to filter
+    /// `revoked_at_ms IS NULL`, so the row simply vanished, the op fell through
+    /// to `self_authenticating_signer` — which knows only `DeviceCertPublish` —
+    /// and came back `UnknownDevice` whatever its HLC said. Six months of
+    /// honest work on a laptop the user retired yesterday, dropped, and
+    /// `effective_at_ms` never consulted for any of the twenty domain families.
+    #[test]
+    fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        // A's op, written before anyone thought about revoking it.
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "written before the cut".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+
+        // B revokes A with a cut *after* that op's HLC, and only then receives
+        // it — the ordering a device coming back from offline produces.
+        revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0 + 1_000);
+        let event = eb
+            .apply_remote(&mut dbb, &env)
+            .expect("a pre-cut op is not a revoked op");
+        assert!(matches!(event, Some(DomainEvent::Created(r)) if r == res.entity));
+        assert_eq!(
+            read_task_t(&eb, &dbb, res.entity).title,
+            "written before the cut"
+        );
+    }
+
+    /// The other half of the same cut: an op signed at or after
+    /// `effective_at_ms` is refused, and the cursor moves past it anyway.
+    ///
+    /// The refusal alone would be a second bug. A refused op never reaches
+    /// `ops`, and the cursor is the contiguous *applied* prefix, so it would
+    /// stop one seq short of that op forever — and the relay filters its replay
+    /// by exactly that number, so it would re-send the op, and everything after
+    /// it, on every reconnect, none of it ever advancing anything. Recording
+    /// the refusal is what makes "do not send me this again" expressible.
+    #[test]
+    fn an_op_signed_after_the_cut_is_refused_and_the_cursor_passes_it() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let first = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "before".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let first_env = env_bytes(&dba, &first.op_id);
+        let head = sunrise_cbor::decode_envelope_header(&first_env).unwrap();
+        let (stream, device) = (head.stream_id, head.device_id);
+        eb.apply_remote(&mut dbb, &first_env).unwrap();
+        assert_eq!(cursor_for(&dbb, &stream, &device), 1);
+
+        revoke(&eb, &mut dbb, &eb, device, T0 + 1);
+
+        set_clock(&ca, T0 + 5_000);
+        let after = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "after".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let after_env = env_bytes(&dba, &after.op_id);
+        assert!(
+            matches!(
+                eb.apply_remote(&mut dbb, &after_env),
+                Err(EngineError::DeviceRevoked)
+            ),
+            "an op past the cut must not apply"
+        );
+        assert!(
+            read_task(dbb.conn(), after.entity.bytes())
+                .unwrap()
+                .is_none(),
+            "and nothing of it materialized"
+        );
+        assert_eq!(
+            cursor_for(&dbb, &stream, &device),
+            2,
+            "the refusal is a decision, so the cursor must pass it rather than \
+             stall and have the relay replay it forever"
+        );
+
+        // Re-delivery is still a refusal, and still idempotent.
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &after_env),
+            Err(EngineError::DeviceRevoked)
+        ));
+        assert_eq!(cursor_for(&dbb, &stream, &device), 2);
     }
 
     /// Read the stored cursor for `(stream, device)`, or 0 if none.
