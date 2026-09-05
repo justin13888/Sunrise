@@ -100,3 +100,24 @@ WHERE EXISTS (
 );
 UPDATE tasks SET stream_id = X'00000073756E726973652E696E626F78'
 WHERE stream_id = X'00000000000000000000000000000000';
+
+-- --- ops this replica has permanently decided not to apply ---
+-- The sync cursor is the *contiguous applied prefix* of `(stream_id,
+-- device_id)` seqs, computed from `ops`, and the relay replays from it. An op
+-- that is refused never reaches `ops`, so without this table the prefix stops
+-- one short of it forever: the relay re-sends that op and every op after it on
+-- every reconnect, none of them ever advancing anything.
+--
+-- A refusal is recorded here only when it is *permanent and converged* — the
+-- op's signature verified, so the bytes are known intact, and the decision is a
+-- function of state every replica shares. An op refused because its bytes did
+-- not decode or verify is NOT recorded: those bytes may have been damaged in
+-- transit, and the replay is the only thing that would ever repair them.
+CREATE TABLE refused_ops (
+    stream_id       BLOB NOT NULL,
+    device_id       BLOB NOT NULL,
+    seq             INTEGER NOT NULL,
+    reason          TEXT NOT NULL,
+    refused_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY (stream_id, device_id, seq)
+);

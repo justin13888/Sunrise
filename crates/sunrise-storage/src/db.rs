@@ -524,9 +524,9 @@ mod tests {
         );
     }
 
-    /// A 0016 vault upgrades to 0017: the identity, `deferred_ops` and
-    /// revocation columns arrive, and `stream_keys` is re-keyed on
-    /// `(stream_id, epoch, key_id)`.
+    /// A 0016 vault upgrades to 0017: the identity, `deferred_ops`,
+    /// `refused_ops` and the revocation columns arrive, and `stream_keys` is
+    /// re-keyed on `(stream_id, epoch, key_id)`.
     ///
     /// The pre-0017 rows are dropped on purpose and this asserts it: every one
     /// of them wrapped a key *derived* from the vault root, so
@@ -560,7 +560,7 @@ mod tests {
         tx.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1].sql)
             .unwrap();
 
-        for table in ["identity", "stream_keys", "deferred_ops"] {
+        for table in ["identity", "stream_keys", "deferred_ops", "refused_ops"] {
             let n: i64 = tx
                 .query_row(
                     "SELECT count(*) FROM sqlite_master

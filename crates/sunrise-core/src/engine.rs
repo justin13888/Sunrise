@@ -631,7 +631,15 @@ impl Engine {
             .map_err(|e| EngineError::RemoteOpInvalid(format!("verify: {e}")))?;
 
         // c2. A revoked device's past ops still stand; its later ones do not.
+        //
+        //     The refusal is recorded before it is returned. It is permanent —
+        //     there is no un-revoke — and every replica holds the same
+        //     revocation op, so every replica makes the same cut. Without the
+        //     record the sync cursor would stop one seq short of this op
+        //     forever and the relay would replay it, and everything after it,
+        //     on every reconnect.
         if self.is_revoked_at(db, &env.device_id, env.hlc.physical_ms)? {
+            self.record_refusal(db, &env, "device revoked")?;
             return Err(EngineError::DeviceRevoked);
         }
 
@@ -818,6 +826,49 @@ impl Engine {
             .optional()?
             .flatten();
         Ok(revoked.is_some_and(|effective| u64::try_from(effective).unwrap_or(0) <= at_ms))
+    }
+
+    /// Record that this replica will never apply `env`, so the sync cursor can
+    /// move past it.
+    ///
+    /// Only for refusals that are **permanent and converged**: the envelope's
+    /// signature has verified, so the bytes are known intact, and the reason is
+    /// a function of state every replica shares. Two refusals deliberately do
+    /// not qualify:
+    ///
+    /// * a decode or signature failure — those bytes may have been damaged in
+    ///   transit, and the relay's replay is the only thing that would ever
+    ///   repair them;
+    /// * "no key at this `(stream, epoch)` opens it" — two devices can mint one
+    ///   epoch concurrently (D-7), so the key that opens it may still be in a
+    ///   `key_envelope` op on its way. Recording that as decided would turn a
+    ///   late key into permanent data loss.
+    fn record_refusal(
+        &self,
+        db: &mut Db,
+        env: &sunrise_crypto::OpEnvelope,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let now_ms = self.clock.now_ms();
+        db.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO refused_ops
+                 (stream_id, device_id, seq, reason, refused_at_ms)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &env.stream_id[..],
+                    &env.device_id[..],
+                    i64::try_from(env.seq).unwrap_or(i64::MAX),
+                    reason,
+                    now_ms
+                ],
+            )?;
+            // The refusal is what unblocks the prefix, so the cursor is
+            // recomputed inside the same transaction that recorded it.
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Park an op whose Stream key has not arrived yet.
@@ -3524,25 +3575,38 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
 /// prevent it, so the cursor has to mean "I have everything through n", which
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
 ///
-/// Regressing the cursor is impossible: the prefix is a function of the op log,
-/// and rows are only ever inserted, so it can only grow.
+/// Regressing the cursor is impossible: the prefix is a function of the op log
+/// and the refusal log, and rows are only ever inserted into either, so it can
+/// only grow.
 fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
 ) -> rusqlite::Result<()> {
-    // The prefix ends at the lowest present seq whose successor is absent —
+    // The prefix ends at the lowest *decided* seq whose successor is absent —
     // unless seq 1 itself is missing, in which case there is no prefix at all.
-    // `UNIQUE (stream_id, device_id, seq)` serves both scans.
+    // `UNIQUE (stream_id, device_id, seq)` on `ops` and the primary key on
+    // `refused_ops` serve both scans.
+    //
+    // "Decided" is the union of applied and permanently refused, and the union
+    // is the whole point. A refused op never reaches `ops`, so a prefix read
+    // from `ops` alone would stop one short of it *forever*: the relay filters
+    // its replay by this number, so it would re-send that op and everything
+    // after it on every reconnect, none of it ever advancing anything. The
+    // cursor means "do not send me this again", and a refusal is exactly that.
     let prefix: i64 = tx.query_row(
-        "SELECT CASE
-                  WHEN EXISTS (SELECT 1 FROM ops
-                               WHERE stream_id = ?1 AND device_id = ?2 AND seq = 1)
-                  THEN (SELECT COALESCE(MIN(o.seq), 0) FROM ops o
-                        WHERE o.stream_id = ?1 AND o.device_id = ?2
-                          AND NOT EXISTS (SELECT 1 FROM ops n
-                                          WHERE n.stream_id = ?1 AND n.device_id = ?2
-                                            AND n.seq = o.seq + 1))
+        "WITH decided(seq) AS (
+             SELECT seq FROM ops
+             WHERE stream_id = ?1 AND device_id = ?2
+             UNION
+             SELECT seq FROM refused_ops
+             WHERE stream_id = ?1 AND device_id = ?2
+         )
+         SELECT CASE
+                  WHEN EXISTS (SELECT 1 FROM decided WHERE seq = 1)
+                  THEN (SELECT COALESCE(MIN(d.seq), 0) FROM decided d
+                        WHERE NOT EXISTS (SELECT 1 FROM decided n
+                                          WHERE n.seq = d.seq + 1))
                   ELSE 0
                 END",
         params![&stream_id[..], &device_id[..]],
