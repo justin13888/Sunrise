@@ -39,7 +39,9 @@
 //! and the vault root was never the smaller secret.
 
 use std::collections::BTreeMap;
+use subtle::ConstantTimeEq;
 use sunrise_crypto::identity_id_from_pub;
+use sunrise_crypto::keys::IdentityDhKeyPair;
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -294,9 +296,24 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
         platform: platform.ok_or(PairingPayloadError::BadField("platform"))?,
     };
 
-    // The one check that cannot be skipped: the id is a derivation of the key,
-    // so it is recomputed rather than trusted.
-    if identity_id_from_pub(&payload.id_s_pub) != payload.identity_id {
+    // The checks that cannot be skipped: every public half in the payload is a
+    // derivation of a private half that is also in the payload, so each one is
+    // recomputed rather than trusted.
+    //
+    // Both comparisons are constant-time, which is what
+    // `docs/03-crypto/pairing-and-onboarding.md` §7 has always said they were
+    // and what a plain `!=` on `[u8; 16]` is not. The timing signal is small —
+    // the attacker here is on the far side of a SAS-confirmed Noise channel —
+    // but a documented property that the code does not have is worse than
+    // either having it or not claiming it, and the fix is one call.
+    let id_ok = identity_id_from_pub(&payload.id_s_pub).ct_eq(&payload.identity_id);
+    // `ID_D_pub` is what every `key_envelope` is sealed to, and `ID_D_priv` is
+    // what opens it. A payload whose two halves disagree produces a device that
+    // silently opens nothing the identity was addressed on — including, after a
+    // revocation, every rotated Stream key. Nothing downstream would say why.
+    let dh_pub = IdentityDhKeyPair::from_secret_bytes(payload.id_d_priv).public_bytes();
+    let dh_ok = dh_pub.ct_eq(&payload.id_d_pub);
+    if !bool::from(id_ok & dh_ok) {
         return Err(PairingPayloadError::IdentityMismatch);
     }
     Ok(payload)

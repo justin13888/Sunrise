@@ -2962,6 +2962,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snow",
+ "subtle",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-error",
