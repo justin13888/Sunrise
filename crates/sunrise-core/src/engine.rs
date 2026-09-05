@@ -1043,9 +1043,43 @@ impl Engine {
                 // here for an unknown sender; re-verified here because a known
                 // sender's op takes the ordinary path and could otherwise
                 // publish an unchecked cert for a third device.
+                //
+                // Every rejection below is logged rather than returned. The
+                // caller is `apply_remote`, which has already accepted the
+                // envelope — the signature verified and the sender is a member
+                // — so failing the whole delivery would put a well-formed op
+                // into the refusal path over a payload defect. But dropping it
+                // *silently* is how a `d_d_pub` stays NULL forever while the
+                // vault looks healthy: the device is never a `key_envelope`
+                // recipient, its peers' ops park in `deferred_ops`, and nothing
+                // anywhere says why.
                 let Ok(cert) = DeviceCert::from_cbor(cert_cbor) else {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "undecodable",
+                        sender_h = hex_short(sender),
+                        "a published device cert did not decode"
+                    );
                     return Ok(Vec::new());
                 };
+                // A cert is published by the device it names, and by no one
+                // else. Without this, any member could rebind a sibling's
+                // `cert_blob` — and with it that sibling's `d_s_pub` and
+                // `d_d_pub` — through the `ON CONFLICT DO UPDATE` below: a
+                // converging denial of service on the sibling's future ops and
+                // a redirect of its future `key_envelope`s. The unknown-sender
+                // path in `self_authenticating_signer` has always made this
+                // check; the two paths now agree.
+                if cert.body.device_id != *sender {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "names_another_device",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        "a device published a cert naming another device"
+                    );
+                    return Ok(Vec::new());
+                }
                 if cert
                     .verify_binding(
                         &self.keychain.identity_signing_pub(),
@@ -1053,6 +1087,12 @@ impl Engine {
                     )
                     .is_err()
                 {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "binding",
+                        sender_h = hex_short(sender),
+                        "a published device cert does not verify under this account identity"
+                    );
                     return Ok(Vec::new());
                 }
                 tx.execute(
@@ -11531,6 +11571,80 @@ mod tests {
             Err(EngineError::DeviceRevoked)
         ));
         assert_eq!(cursor_for(&dbb, &stream, &device), 2);
+    }
+
+    /// A member cannot republish a *sibling's* cert under its own signature.
+    ///
+    /// `ON CONFLICT(device_id) DO UPDATE` overwrites `cert_blob` — and with it
+    /// the `d_s_pub` every one of that sibling's envelopes is verified against —
+    /// and `d_d_pub`, which is where its `key_envelope`s are sealed. Publishing
+    /// a cert for someone else is therefore a converging denial of service plus
+    /// a redirect of their key material, from one well-formed op.
+    #[test]
+    fn a_device_cannot_publish_a_cert_naming_another_device() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&eb, &mut dbb, &ec);
+
+        let stored = |db: &Db, id: &[u8; 16]| -> Vec<u8> {
+            db.conn()
+                .query_row(
+                    "SELECT cert_blob FROM devices WHERE device_id = ?",
+                    params![&id[..]],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let c_id = ec.keychain.device_id();
+        let before = stored(&dbb, &c_id);
+
+        // A issues a cert naming C, binding C's device id to **A's** DH key,
+        // and publishes it. Pairing hands every device `ID_S_priv`, so this
+        // cert verifies perfectly: the check that has to catch it is the one
+        // about *who sent it*, not the one about whether it is well formed.
+        let a_id = ea.keychain.device_id();
+        let cert = ea.keychain.issue_cert_for(
+            c_id,
+            ec.keychain.device_signing_pub(),
+            ea.keychain.device_dh_pub(),
+            T0,
+        );
+        dbb.with_tx(|tx| {
+            eb.apply_control_op(tx, &InnerOp::DeviceCertPublish(cert), &a_id, T0)
+                .map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(
+            stored(&dbb, &c_id),
+            before,
+            "A must not be able to rewrite C's row"
+        );
+        let d_d: Vec<u8> = dbb
+            .conn()
+            .query_row(
+                "SELECT d_d_pub FROM devices WHERE device_id = ?",
+                params![&c_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            d_d,
+            ec.keychain.device_dh_pub().to_vec(),
+            "and C's future key envelopes still go to C"
+        );
+
+        // C publishing its own cert is of course fine, and is how the row is
+        // written in the first place.
+        let own = ec.keychain.cert_blob().to_vec();
+        dbb.with_tx(|tx| {
+            eb.apply_control_op(tx, &InnerOp::DeviceCertPublish(own.clone()), &c_id, T0)
+                .map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(stored(&dbb, &c_id), own);
     }
 
     /// Read the stored cursor for `(stream, device)`, or 0 if none.

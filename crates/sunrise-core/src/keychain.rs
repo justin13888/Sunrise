@@ -1011,6 +1011,39 @@ impl Keychain {
         Err(KeychainError::NoStreamKey)
     }
 
+    /// Issue a cert naming **another** device, under this keychain's account
+    /// identity.
+    ///
+    /// Not a hypothetical: pairing hands every device `ID_S_priv`
+    /// (`docs/03-crypto/pairing-and-onboarding.md` §102-103), so any member can
+    /// build one of these for any sibling and it verifies. That is what makes
+    /// "the sender must be the device the cert names" a real check rather than
+    /// a formality, and this is how the engine test builds the op that check
+    /// has to refuse. Tracked as the identity-rotation gap in issue #76.
+    #[cfg(test)]
+    pub(crate) fn issue_cert_for(
+        &self,
+        device_id: [u8; 16],
+        d_s_pub: [u8; 32],
+        d_d_pub: [u8; 32],
+        now_ms: u64,
+    ) -> Vec<u8> {
+        let body = DeviceCertInner {
+            v: 1,
+            device_id,
+            d_s_pub,
+            d_d_pub,
+            identity_id: self.identity.identity_id,
+            created_at_ms: now_ms,
+            nickname: "impostor".into(),
+            platform: "macos".into(),
+        };
+        DeviceCert::issue(body, &self.identity.signing)
+            .unwrap()
+            .to_cbor()
+            .unwrap()
+    }
+
     /// Cheap in-memory keychain for engine unit tests: deterministic keys, no
     /// DB row.
     #[cfg(test)]
