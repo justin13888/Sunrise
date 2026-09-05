@@ -157,6 +157,9 @@ pub enum KeychainError {
     /// No key at the envelope's `(stream_id, epoch)` opened it.
     #[error("no stream key opens this envelope")]
     NoStreamKey,
+    /// A stored row holds a blob of the wrong length for the field it fills.
+    #[error("corrupt vault row: {0} is not the right length")]
+    CorruptRow(&'static str),
 }
 
 /// The account identity: one keypair pair per account, not per device.
@@ -562,7 +565,13 @@ impl Keychain {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut cache = self.cache.lock();
         for (stream_id, epoch, wrapped) in rows {
-            let stream_id = to16(&stream_id);
+            // A row whose id is not 16 bytes is skipped for the same reason an
+            // unopenable wrap is: it is one corrupt row, not a lost vault. It
+            // is *not* zero-padded into `[0u8; 16]`, which is the vault-meta
+            // stream and would file a stranger's key against it.
+            let Some(stream_id) = to16(&stream_id) else {
+                continue;
+            };
             let epoch = u32::try_from(epoch).unwrap_or(0);
             // A row whose wrap does not open under this root is not fatal: the
             // rest of the vault still works, and refusing to open the whole
@@ -893,7 +902,13 @@ impl Keychain {
             let mut stmt = tx.prepare(sql)?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                streams.insert(to16(&row?));
+                // A stream id that is not 16 bytes cannot be rotated — there is
+                // no stream to rotate. Skipping it keeps a corrupt row from
+                // silently adding `[0u8; 16]`, the vault-meta stream, to a set
+                // that already contains it.
+                if let Some(id) = to16(&row?) {
+                    streams.insert(id);
+                }
             }
         }
         Ok(streams.into_iter().collect())
@@ -1139,7 +1154,9 @@ fn legacy_stream_set(db: &Db) -> rusqlite::Result<std::collections::BTreeSet<[u8
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         for row in rows {
-            streams.insert(to16(&row?));
+            if let Some(id) = to16(&row?) {
+                streams.insert(id);
+            }
         }
     }
     Ok(streams)
@@ -1462,12 +1479,15 @@ fn load_identity_row(db: &Db) -> Result<Option<IdentityRow>, KeychainError> {
             },
         )
         .optional()?;
-    Ok(row.map(|(d, s, dh, c)| IdentityRow {
-        device_id: to16(&d),
-        signing_wrapped: s,
-        dh_wrapped: dh,
-        cert_blob: c,
-    }))
+    row.map(|(d, s, dh, c)| {
+        Ok(IdentityRow {
+            device_id: to16(&d).ok_or(KeychainError::CorruptRow("local_identity.device_id"))?,
+            signing_wrapped: s,
+            dh_wrapped: dh,
+            cert_blob: c,
+        })
+    })
+    .transpose()
 }
 
 fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, KeychainError> {
@@ -1488,27 +1508,33 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
             },
         )
         .optional()?;
-    Ok(row.map(|(id, sp, dp, sw, dw)| AccountIdentityRow {
-        identity_id: to16(&id),
-        id_s_pub: to32(&sp),
-        id_d_pub: to32(&dp),
-        id_s_priv_wrapped: sw,
-        id_d_priv_wrapped: dw,
-    }))
+    row.map(|(id, sp, dp, sw, dw)| {
+        Ok(AccountIdentityRow {
+            identity_id: to16(&id).ok_or(KeychainError::CorruptRow("identity.identity_id"))?,
+            id_s_pub: to32(&sp).ok_or(KeychainError::CorruptRow("identity.id_s_pub"))?,
+            id_d_pub: to32(&dp).ok_or(KeychainError::CorruptRow("identity.id_d_pub"))?,
+            id_s_priv_wrapped: sw,
+            id_d_priv_wrapped: dw,
+        })
+    })
+    .transpose()
 }
 
-fn to16(raw: &[u8]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    let take = raw.len().min(16);
-    out[..take].copy_from_slice(&raw[..take]);
-    out
+/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+///
+/// It used to zero-pad, and that was a silent way of manufacturing a *valid*
+/// value from a corrupt one: a truncated `identity_id` padded with zeros still
+/// compares equal to itself, so the vault opened and every cert bound to an
+/// identity that never existed. A short blob is a corrupt row, and the caller
+/// is in a position to say so.
+fn to16(raw: &[u8]) -> Option<[u8; 16]> {
+    raw.try_into().ok()
 }
 
-fn to32(raw: &[u8]) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    let take = raw.len().min(32);
-    out[..take].copy_from_slice(&raw[..take]);
-    out
+/// A 32-byte key read out of a DB blob, or `None` if the blob is not 32 bytes.
+/// See [`to16`] for why this is not a pad.
+fn to32(raw: &[u8]) -> Option<[u8; 32]> {
+    raw.try_into().ok()
 }
 
 fn hex16(b: &[u8; 16]) -> String {
