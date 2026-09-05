@@ -117,6 +117,8 @@ them until code uses them.
 | `core.shutdown.start` | info | Shutdown initiated. |
 | `core.shutdown.ok` | info | Shutdown complete. |
 | `core.device.cert_rejected` | warn | A `device_cert` op was not applied; `reason` (`undecodable` / `names_another_device` / `binding`), `sender_h`, and `subject_h` when the cert names someone else. The delivery itself still succeeds — the envelope verified and the sender is a member — so without this the row keeps a NULL `d_d_pub`, the device is never a `key_envelope` recipient, and its peers' ops park forever with nothing said. |
+| `core.key.epoch_refused` | warn | A `key_envelope` named an epoch more than `MAX_EPOCH_LEAP` above this vault's live one and was not absorbed; `stream_h`, `epoch`, `live`. `MAX(epoch)` is what makes a key live, so absorbing an absurd one would strand rotation and redirect this device's own writes. |
+| `core.op.deferred_evicted` | warn | The parked-op buffer hit its cap and the oldest rows were dropped; `n`, `stream_h`. Ordinary traffic never reaches it: a legitimate park is released by the very next absorbed key. |
 
 ### `crypto` (sunrise-crypto)
 

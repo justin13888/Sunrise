@@ -121,6 +121,65 @@ const MAX_TREND_WEEKS: u32 = 104;
 /// vault cannot turn one keypress into a full-table sort.
 const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
+/// How far above this replica's live epoch an absorbed Stream key may sit.
+///
+/// `epoch` is a plain field of the signed envelope, so a member chooses it
+/// freely, and `current_epoch_tx` reads the live epoch as `MAX(epoch)`. Without
+/// a bound a single `key_envelope` at `u32::MAX` does two things at once:
+/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
+/// so rotation can never advance past it again, and every op this device seals
+/// from then on is sealed under a key only the sender holds — the victim goes
+/// dark to its own account, permanently, from one op.
+///
+/// The window can be this tight because a legitimate epoch is *walked*, never
+/// leapt. Each rotation raises one stream's epoch by exactly one and emits its
+/// `key_envelope` sealed under the meta epoch current at the time; a replica
+/// catching up absorbs the meta key for epoch n, drains the ops that key
+/// releases, and only then sees the envelopes for n+1. So the gap this has to
+/// tolerate is what can arrive out of order within one drain, not the number of
+/// rotations an account has ever performed. Sixty-four is far past that and far
+/// short of anything that would strand `mint_epoch`.
+///
+/// The residual is that a key genuinely more than 64 epochs ahead is refused
+/// and not retried, so ops sealed under it stay unreadable on this replica. It
+/// is logged (`core.key.epoch_refused`) rather than swallowed, because the only
+/// ways to reach it are a hostile sender and a bug.
+const MAX_EPOCH_LEAP: u32 = 64;
+
+/// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
+///
+/// A deferred op is one that arrived before the key that opens it, which is a
+/// real and ordinary race — but a *transient* one: the very next absorb of that
+/// key releases the whole bucket. So the honest population of one bucket is
+/// whatever a peer wrote in the gap between minting a key and its
+/// `key_envelope` reaching here, which is a burst, not a backlog. 256 covers a
+/// peer that wrote a full working session into the gap.
+const DEFERRED_PER_EPOCH_CAP: i64 = 256;
+
+/// How many ops may sit in `deferred_ops` across the whole vault.
+///
+/// A revocation rotates *every* stream at once, so several buckets can fill
+/// legitimately at the same moment; the total is sized for that rather than for
+/// one stream. 4096 is sixteen full buckets.
+///
+/// Both caps exist because `epoch` is attacker-chosen (see [`MAX_EPOCH_LEAP`])
+/// and `defer_op` is reached *before* anything about the payload is checked: a
+/// member could otherwise park bytes of its choosing on every peer in the
+/// account, at any `(stream, epoch)` it liked, with no ceiling. Overflow evicts
+/// the **oldest** rows, not the newest: a row that has waited longest is the
+/// one whose key is least likely to still be in flight, and evicting newest
+/// would let a flood freeze a bucket against every honest op behind it.
+const DEFERRED_TOTAL_CAP: i64 = 4096;
+
+/// How long a parked op is kept before a drain sweeps it away.
+///
+/// Nothing re-delivers the key for an op this old: the relay's op ring has long
+/// since evicted the `key_envelope` that would have released it, and no replica
+/// re-emits one on request. Keeping it is keeping ciphertext this device will
+/// never read. Thirty days is generous against every offline window a person
+/// actually has and still bounds a slow drip that never reaches either cap.
+const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -899,6 +958,13 @@ impl Engine {
     }
 
     /// Park an op whose Stream key has not arrived yet.
+    ///
+    /// Bounded by [`DEFERRED_PER_EPOCH_CAP`] and [`DEFERRED_TOTAL_CAP`]. This
+    /// runs before anything about the payload has been checked — the key
+    /// that would open it is precisely what is missing — so the only thing
+    /// standing between a member and unbounded storage on every peer is the
+    /// two caps. Overflow evicts oldest-first; see [`DEFERRED_TOTAL_CAP`] for
+    /// why that direction and not the other.
     fn defer_op(
         &self,
         db: &mut Db,
@@ -907,6 +973,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
         let now_ms = self.clock.now_ms();
+        let mut evicted = 0usize;
         db.with_tx(|tx| {
             tx.execute(
                 "INSERT OR IGNORE INTO deferred_ops
@@ -920,8 +987,36 @@ impl Engine {
                     now_ms
                 ],
             )?;
+            // `received_at_ms` alone does not order rows within one clock
+            // millisecond, so `op_id` breaks the tie and keeps the eviction
+            // total rather than arbitrary.
+            evicted += tx.execute(
+                "DELETE FROM deferred_ops WHERE op_id IN (
+                     SELECT op_id FROM deferred_ops
+                     WHERE stream_id = ?1 AND epoch = ?2
+                     ORDER BY received_at_ms DESC, op_id DESC
+                     LIMIT -1 OFFSET ?3
+                 )",
+                params![&env.stream_id[..], env.epoch, DEFERRED_PER_EPOCH_CAP],
+            )?;
+            evicted += tx.execute(
+                "DELETE FROM deferred_ops WHERE op_id IN (
+                     SELECT op_id FROM deferred_ops
+                     ORDER BY received_at_ms DESC, op_id DESC
+                     LIMIT -1 OFFSET ?1
+                 )",
+                params![DEFERRED_TOTAL_CAP],
+            )?;
             Ok(())
         })?;
+        if evicted > 0 {
+            tracing::warn!(
+                ev = "core.op.deferred_evicted",
+                n = evicted,
+                stream_h = hex_short(&env.stream_id),
+                "the parked-op buffer is full; the oldest entries were dropped"
+            );
+        }
         Ok(())
     }
 
@@ -955,6 +1050,16 @@ impl Engine {
             tx.execute(
                 "DELETE FROM deferred_ops WHERE stream_id = ? AND epoch = ?",
                 params![&stream_id[..], epoch],
+            )?;
+            // Sweep whatever else has aged out while we are here. A drain is
+            // the only moment this table is known to be changing, so it is the
+            // one place a prune costs nothing extra; see [`DEFERRED_TTL_MS`]
+            // for why a row this old is ciphertext nobody will ever open.
+            let cutoff = i64::try_from(self.clock.now_ms().saturating_sub(DEFERRED_TTL_MS))
+                .unwrap_or(i64::MAX);
+            tx.execute(
+                "DELETE FROM deferred_ops WHERE received_at_ms < ?",
+                params![cutoff],
             )?;
             Ok(())
         })?;
@@ -1007,6 +1112,26 @@ impl Engine {
                 // is confused or hostile; either way the key itself is what
                 // opens ops, and it is filed under its real id.
                 if stream_key_id(&key) != p.key_id {
+                    return Ok(Vec::new());
+                }
+                // An epoch far above this replica's live one is refused
+                // before it can be written. `MAX(epoch)` is what makes a key
+                // live, so absorbing an absurd one strands `mint_epoch` at the
+                // saturation point and redirects every op this device seals
+                // afterwards to a key nobody else holds. See
+                // [`MAX_EPOCH_LEAP`].
+                let live = self
+                    .keychain
+                    .current_epoch_tx(tx, &p.stream_id)?
+                    .unwrap_or(0);
+                if p.epoch > live.saturating_add(MAX_EPOCH_LEAP) {
+                    tracing::warn!(
+                        ev = "core.key.epoch_refused",
+                        stream_h = hex_short(&p.stream_id),
+                        epoch = p.epoch,
+                        live,
+                        "a key envelope names an epoch too far above this vault's own"
+                    );
                     return Ok(Vec::new());
                 }
                 let learned = self.keychain.absorb_stream_key(
@@ -11645,6 +11770,126 @@ mod tests {
         })
         .unwrap();
         assert_eq!(stored(&dbb, &c_id), own);
+    }
+
+    /// An absorbed epoch far above this vault's own is refused.
+    ///
+    /// `MAX(epoch)` is what makes a key live, so one `key_envelope` at
+    /// `u32::MAX` strands `mint_epoch` at its saturation point *and* redirects
+    /// every op this device seals afterwards to a key only the sender holds.
+    #[test]
+    fn a_key_envelope_far_above_the_live_epoch_is_refused() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        let a_id = ea.keychain.device_id();
+        let stream = [0x5c; 16];
+
+        let mut absorb = |epoch: u32, key_byte: u8| {
+            let key = StreamKey::from_bytes([key_byte; 32]);
+            let sealed = eb
+                .keychain
+                .seal_key_envelope(
+                    &eb.keychain.identity_dh_pub(),
+                    &stream,
+                    epoch,
+                    &key,
+                    eb.rng.as_ref(),
+                )
+                .unwrap();
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id: stream,
+                epoch,
+                recipient: Recipient::Identity(eb.keychain.identity_id()),
+                key_id: stream_key_id(&key),
+                hpke_ciphertext: sealed,
+            });
+            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, T0))
+                .unwrap()
+        };
+
+        assert_eq!(
+            absorb(1, 0xa1),
+            vec![(stream, 1)],
+            "an ordinary first epoch is absorbed"
+        );
+        assert_eq!(
+            absorb(1 + MAX_EPOCH_LEAP, 0xa2),
+            vec![(stream, 1 + MAX_EPOCH_LEAP)],
+            "the far edge of the window is still inside it"
+        );
+        assert!(
+            absorb(u32::MAX, 0xa3).is_empty(),
+            "and an absurd epoch is refused"
+        );
+        assert!(
+            eb.keychain.stream_keys_at(&stream, u32::MAX).is_empty(),
+            "the refused key is not written, so it cannot become the live epoch"
+        );
+    }
+
+    /// `deferred_ops` is bounded, and overflow evicts the oldest rows.
+    ///
+    /// Everything about a deferred op is unchecked — the key that would open it
+    /// is exactly what is missing — and `epoch` is a free field of the signed
+    /// envelope, so without a cap a member can park bytes of its choosing on
+    /// every peer in the account at any `(stream, epoch)` it likes, forever.
+    #[test]
+    fn the_parked_op_buffer_is_bounded() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let over = usize::try_from(DEFERRED_PER_EPOCH_CAP).unwrap() + 16;
+        let mut envs = Vec::with_capacity(over);
+        for i in 0..over {
+            set_clock(&ca, T0 + i as u64);
+            let res = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: format!("parked {i}"),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            envs.push(env_bytes(&dba, &res.op_id));
+        }
+        // B holds the vault-meta key but never the Inbox key, so every task op
+        // A wrote parks on B. The hand-over is after the writes because the
+        // first one is what mints the key at all.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        for (i, env) in envs.iter().enumerate() {
+            // `received_at_ms` is the *receiver's* reading, so it is B's clock
+            // that has to move for the rows to be orderable at all.
+            set_clock(&cb, T0 + i as u64);
+            assert!(eb.apply_remote_all(&mut dbb, env).unwrap().is_empty());
+        }
+        assert_eq!(
+            deferred_rows(&dbb),
+            DEFERRED_PER_EPOCH_CAP,
+            "the bucket is capped, not unbounded"
+        );
+
+        // Oldest-first eviction: what survives is the newest window, because a
+        // row that has waited longest is the one whose key is least likely to
+        // still be in flight.
+        let oldest: i64 = dbb
+            .conn()
+            .query_row("SELECT MIN(received_at_ms) FROM deferred_ops", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            oldest,
+            i64::try_from(T0).unwrap() + 16,
+            "the first 16 were the ones dropped"
+        );
     }
 
     /// Read the stored cursor for `(stream, device)`, or 0 if none.
