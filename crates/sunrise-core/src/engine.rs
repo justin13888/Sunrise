@@ -471,14 +471,20 @@ impl Engine {
         }
         let effective_at_ms = effective_at_ms.unwrap_or(now_ms);
         let op_id = self.fresh_op_id(now_ms);
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let hlc = self.lww_stamp(seq).hlc;
         let inner = encode_inner_op(&InnerOp::DeviceRevoke(DeviceRevokePayload {
             revoked_device_id: revoked,
             reason_code: reason,
             effective_at_ms,
         }))?;
 
+        // Read inside the transaction, and after the epoch below has been
+        // resolved. Resolving it can mint the vault-meta stream's own first key
+        // and emit `key_envelope` ops into this very stream, each taking a
+        // `seq`; a number read beforehand would already be spent by the time
+        // this op reached the log, and `ops` has a
+        // `UNIQUE(stream_id, device_id, seq)`. That is the bug `60ee61d`
+        // fixed for `emit_control_op`, and this is the same shape.
+        let mut seq = 0u64;
         db.with_tx(|tx| -> rusqlite::Result<()> {
             let known: i64 = tx.query_row(
                 "SELECT count(*) FROM devices WHERE device_id = ?",
@@ -492,6 +498,8 @@ impl Engine {
             // anything is minted, so it is the epoch the departing devices and
             // the remaining ones all still share.
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            seq = self.next_seq_tx(tx, &META_STREAM)?;
+            let hlc = self.hlc.send();
 
             // 1. The revocation itself, sealed under the old meta epoch like
             //    every other op in this transaction.
@@ -555,10 +563,14 @@ impl Engine {
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
         let stream_id = *stream.bytes();
-        let seq = self.next_seq(db, &META_STREAM)?;
         let mut minted = 0u32;
+        // Read inside the transaction, for the reason given in
+        // [`Self::revoke_device`]: resolving the meta epoch can emit ops into
+        // the very stream this number counts.
+        let mut seq = 0u64;
         db.with_tx(|tx| -> rusqlite::Result<()> {
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            seq = self.next_seq_tx(tx, &META_STREAM)?;
             let (epoch, key) =
                 self.keychain
                     .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
