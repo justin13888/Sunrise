@@ -7,9 +7,10 @@ status: accepted
 Operate the server without violating the E2EE guarantee.
 
 > **Implementation status.** What is built is the identifier-hashing surface
-> (`logging::account_h` / `id_h`), the hand-assembled request trace layer
-> (`logging::trace_layer`) with its redaction tests (in-module, in
-> `api/observe.rs`), and an in-process counter registry
+> (`logging::account_h` / `id_h`), the request-log observer
+> (`api::observe::RequestLog`) with its redaction tests — in-module in
+> `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
+> and an in-process counter registry
 > exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
 > kind, histograms, OTel tracing and sampling, the deep health check, alerting,
 > and the per-account audit log. Each section says which it is.
@@ -30,11 +31,11 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 24 `ev` names the relay emits, complete:
+The 25 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
-     Last extracted: 310e377 -->
+     Last extracted: c3c54ac -->
 
 ```
 srv.start                        srv.req.start
@@ -46,7 +47,7 @@ srv.stop                         srv.relay.fanout
 srv.stop.failed                  srv.relay.append_failed
                                  srv.relay.replay_failed
 srv.sync.negotiate_refused       srv.relay.cursor_gap
-srv.sync.session_open
+srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected
 srv.sync.stream_closed           srv.sync.refresh_identity_mismatch
 srv.sync.token_expired           srv.sync.refreshed
@@ -113,7 +114,7 @@ complete set the server emits today:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
-     Last extracted: 310e377 -->
+     Last extracted: c3c54ac -->
 
 ```
 sunrise_account_create_total
@@ -131,6 +132,7 @@ sunrise_push_apns_total          (LoggingProvider; never reached)
 sunrise_push_fcm_total           (LoggingProvider; never reached)
 sunrise_push_web_total           (LoggingProvider; never reached)
 sunrise_relay_append_failed_total
+sunrise_relay_batch_duplicate_total
 sunrise_relay_cursor_gap_total
 sunrise_sync_negotiate_refused_total
 sunrise_sync_refresh_total
@@ -138,13 +140,27 @@ sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-Twenty names, and four that earlier revisions of this file listed and the tree
-does not define: `sunrise_sync_token_expired_total`,
+Twenty-one names, and four that earlier revisions of this file listed and the
+tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
 `sunrise_sync_refresh_total` when sync moved to SSE
 ([ADR-0023](../11-adr/0023-sse-sync-transport.md)); the token *events* survive
 under `srv.sync.*` above, which is why the names look familiar.
+
+`sunrise_relay_batch_duplicate_total` is the counter for op-batch
+de-duplication. `POST /api/v1/sync/ops` keys on the client's `batch_id`: when
+the store reports that batch already stored for the stream, the handler
+increments this counter, logs `srv.relay.batch_duplicate`, publishes nothing to
+live subscribers, and re-acks with the batch's *original*
+`server_first_seen_ms` rather than a fresh one. It therefore counts re-submitted
+batches, which is the graphable form of reconnect churn — a client's batch
+counter restarts per session, so it cannot know which batches landed and
+re-sends the ones whose ack it lost. The
+[`srv.relay.batch_duplicate`](../10-cross-cutting/log-events.md) event is the
+per-stream, greppable form of the same fact; this is the fleet-level rate.
+Rising against a steady op rate means clients are losing acks and replaying —
+a transport problem rather than a load one.
 
 `/metrics` is mounted at the router root, and **only when the listener binds
 loopback** — a non-loopback bind withholds the route and logs
@@ -167,8 +183,9 @@ sunrise_db_query_seconds{op="…"}
 
 ### Label allowlist — NOT ENFORCED
 
-No metric carries a label today — `Metrics::add` takes a name and nothing else,
-and `render` merely passes a `{…}` in a name through verbatim — so the allowlist
+No metric carries a label today — `Metrics::add` takes a counter name and an
+increment and nothing else, with no label argument anywhere on the type, and
+`render` merely passes a `{…}` in a name through verbatim — so the allowlist
 is vacuously satisfied rather than checked. **The CI test named below does not
 exist**: there is no `crates/sunrise-server/tests/metric-label-safety.rs`. The
 allowlist is still the contract for the first metric that takes a label.
@@ -194,29 +211,53 @@ Forbidden labels include `account_id`, `stream_id`, `device_id`, `email`, `email
 `span_redactor`, no OTel exporter, no sampling rate, and no
 `tests/span-redaction.rs`.
 
-What exists is the redaction *at the source*, which is the stronger placement:
-`logging::trace_layer` assembles `tower_http`'s `TraceLayer` by hand so the span
-records the HTTP method and a **templated** target from
-`sunrise_log::templatize_path` — query dropped, opaque id segments replaced —
-and nothing else from the request ever reaches a field. That is deliberate
-rather than incidental: the stock `MakeSpan` records `http.uri`, which is where
-a bearer would sit if the `?access_token=` fallback existed.
+What exists is a request log that never reads a URI at all, which is a stronger
+placement than redacting one. `api::observe::RequestLog` implements
+`kynos::middleware::Observer<ServerState>` and is mounted with
+`.observe(observe::RequestLog)` in `api/mod.rs`. kynos hands the observer the
+**matched** `kynos::router::operation::Route` — the `paths` key the request
+resolved to, with its `{}` expressions intact — and the span records the HTTP
+method plus that template, rewritten to the log's `:id` spelling by
+`api::observe`'s private `templated` helper. Nothing else from the request
+reaches a field, and the concrete URI is not among the observer's arguments, so
+there is no query string to drop and no redaction step to forget. That
+structural placement is the point: a stock request log records the URI verbatim,
+which is where a bearer would sit if the `?access_token=` fallback existed, and
+a bearer reached this server's log that way once already.
+`sunrise_log::templatize_path` is the older mitigation — it strips the query and
+templates opaque segments out of a *raw* target — and it is still exported from
+`sunrise-log`, but nothing on this path calls it.
 
-> **`crates/sunrise-server/tests/logging.rs` no longer exists.** It did not
-> survive [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port, despite
-> [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3
-> declaring it MUST. `crates/sunrise-server/tests/` holds `oidc_verifier.rs` and
-> nothing else. What carries the guarantee today is `api/observe.rs`'s in-module
-> suite — `the_query_string_never_reaches_the_log`,
+> **`crates/sunrise-server/tests/logging.rs` exists again.** It did not survive
+> [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port, despite
+> [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3 and §11
+> declaring it a MUST; it was restored afterwards, so the guarantee now stands
+> at two levels. The integration file drives the *public* surface —
+> `ServerState::new` and `sunrise_server::build_service`, the assembly an
+> operator's deployment has — through
+> `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`,
+> `a_signed_request_that_is_refused_logs_no_signature_bytes`,
+> `the_request_records_carry_the_catalogued_shape`,
+> `healthy_traffic_is_silent_at_info`, and
+> `the_refusal_records_survive_redaction_and_carry_their_cause`. `api/observe.rs`
+> keeps its in-module suite over the same observer, reached through the
+> crate-private `api::testing::Client` —
+> `the_query_string_never_reaches_the_log`,
 > `an_opaque_path_segment_is_templated`,
 > `request_records_carry_status_and_latency`,
 > `every_server_field_survives_the_redaction_allowlist` — plus the structural
 > property that kynos hands the observer the matched `Route`, never the concrete
-> URI (`api/observe.rs:9-14`). Restoring the integration-level regression test is
-> a code change, not a documentation one.
+> URI (`api/observe.rs:9-14`). `crates/sunrise-server/tests/` holds `logging.rs`
+> and `oidc_verifier.rs`.
+>
+> [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3 and §11
+> still record the file as missing. Correcting them is outside this document.
 
-`docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` in this
-module with a `log-redaction` CI gate over the path.
+`docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` here.
+The `log-redaction` job in `.github/workflows/ci.yml` greps
+`\bplain[a-z_]*\.expose[[:space:]]*\(` over `crates/sunrise-server/src` — so
+both `api/observe.rs` and `logging/` are covered — along with every other crate
+that emits log records and any `crates/*/src/logging` module.
 
 The target — OTel-compatible tracing with a sampling rate (1% prod, 100%
 staging), span attributes scrubbed of user identifiers, spans covering
