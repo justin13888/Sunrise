@@ -53,13 +53,13 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
     /// the bad clock.
     fn observe(&self, received: Hlc) -> Result<(), HlcError>;
 
-    /// The current local reading, without advancing it.
+    /// The current local reading, without advancing it. Diagnostics only.
     ///
-    /// Two callers: diagnostics, and any comparison that must place a value
-    /// stamped by *another* device on this device's timeline without emitting
-    /// an op of its own -- `Engine::revocation_horizon_ms` is the one that
-    /// matters, because a revocation cut is a peer's HLC physical half and a
-    /// wall clock is not comparable with it.
+    /// Not a basis for comparing a value another device stamped. State is not
+    /// persisted (see [`MonotonicHlc`]), so this reads 0 after every restart
+    /// and a comparison built on it silently becomes a comparison against
+    /// nothing. Revocation used this for one revision and
+    /// `Engine::is_revoked` explains why it no longer does.
     fn peek(&self) -> Hlc;
 }
 

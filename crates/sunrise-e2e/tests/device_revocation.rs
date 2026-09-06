@@ -248,9 +248,17 @@ async fn a_revocation_converges_and_the_survivors_keep_syncing() {
     //    (waited on above).
     // 3. C's downlink is live and consuming A's ops from the revoking
     //    transaction itself: it has applied the `device_revoke`, which is
-    //    sealed under the *pre*-rotation meta epoch and is therefore the last
-    //    thing A emits that C can still open. C is neither disconnected nor
-    //    behind on the stream that carries the rotation.
+    //    sealed under the *pre*-rotation meta epoch and so is openable to C.
+    //    C is neither disconnected nor idle.
+    //
+    //    This is a liveness signal and not an ordering one. The rotation's
+    //    `key_envelope` ops are sealed under that *same* pre-rotation epoch
+    //    and are emitted after the revocation, so they are openable to C too
+    //    and C may or may not have reached them yet — "C has applied the
+    //    revocation" does not imply "C has applied everything the revoking
+    //    transaction wrote". What makes the negative below sound is not this
+    //    wait but the assertion itself, which asks what C *holds* rather than
+    //    what it has had time to receive.
     wait_revoked(&c, c_device, TIMEOUT).await;
 
     // Now the mechanism. `export_pairing_payload` is a vault's own statement of

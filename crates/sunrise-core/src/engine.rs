@@ -571,17 +571,12 @@ impl Engine {
             // which is precisely the divergence the register exists to prevent.
 
             // 2 + 3. Rotate everything, and seal each new epoch to every
-            //        *unrevoked* device. Two things hold that, and the second
-            //        is why the first is not enough. The register was written
-            //        above, so the anti-join in `emit_key_envelopes` sees it --
-            //        but only if the cut it wrote compares as "already past",
-            //        and `cut_ms` is `hlc.physical_ms` while the comparison
-            //        used to run against the `now_ms` read *before* this
-            //        transaction opened. So `revoked` is also passed down as an
-            //        unconditional exclusion: this transaction knows which
-            //        device it is revoking and does not need a clock to agree.
-            //        `hlc` goes with it so every *other* device's cut is
-            //        compared on the timeline it was written on.
+            //        *unrevoked* device. One mechanism holds that, and the
+            //        ordering above is what makes it sufficient: the register
+            //        row was written before the first mint, and
+            //        `emit_key_envelopes` excludes any device with a row. There
+            //        is no clock in that path and nothing for a skewed or
+            //        restarted one to get wrong.
             //
             //        The exclusion is not cosmetic, because the identity copy
             //        emitted alongside is no longer openable by a device
@@ -590,16 +585,7 @@ impl Engine {
                 let (epoch, key) =
                     self.keychain
                         .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
-                self.emit_key_envelopes(
-                    tx,
-                    &stream_id,
-                    epoch,
-                    &key,
-                    now_ms,
-                    hlc,
-                    Some(&revoked),
-                    Some(&seal_under),
-                )?;
+                self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))?;
             }
             Ok(())
         })
@@ -637,16 +623,7 @@ impl Engine {
                 self.keychain
                     .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
             minted = epoch;
-            self.emit_key_envelopes(
-                tx,
-                &stream_id,
-                epoch,
-                &key,
-                now_ms,
-                self.hlc.peek(),
-                None,
-                Some(&seal_under),
-            )
+            self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))
         })?;
         Ok(CommandResult::new(
             stream,
@@ -959,56 +936,55 @@ impl Engine {
         Err(EngineError::UnknownDevice)
     }
 
-    /// Whether `device_id` was revoked at or before `at_ms`, read from the
-    /// register.
+    /// Whether `device_id` is revoked: **is there a row**, and nothing else.
     ///
-    /// This was test-only for one pull request, with a note saying the `cfg`
-    /// would come off when the cut was given an effect. It has: the read half
-    /// of revocation calls it from [`Self::backfill_key_envelopes`], and the
-    /// same `cut_ms <= at_ms` comparison is inlined as an anti-join in
-    /// [`Self::emit_key_envelopes`], which needs it per row rather than per
-    /// call.
+    /// The read half of revocation calls this from
+    /// [`Self::backfill_key_envelopes`], and the same presence test is inlined
+    /// as an anti-join in [`Self::emit_key_envelopes`], which needs it per row
+    /// rather than per call.
     ///
-    /// `at_ms` must be on the same timeline as the register's cut, which is an
-    /// HLC physical half and **not** a wall clock. Production callers get it
-    /// from [`Self::revocation_horizon_ms`]; passing a bare `clock.now_ms()`
-    /// compares two unrelated timelines and fails open exactly where a
-    /// revoker's clock ran ahead. Tests pass a literal because they are naming
-    /// a point on that timeline directly.
+    /// # Why there is no time comparison here
+    ///
+    /// There was one — `cut_ms <= at_ms` — and it never decided anything except
+    /// wrongly. `cut_ms` is the revoking device's HLC physical half, so the
+    /// only right-hand side comparable with it is this device's own HLC
+    /// reading, which is at or above every peer stamp it has absorbed and
+    /// therefore at or above every cut it has recorded. In one process the test
+    /// is *always true*, which is fail-closed-on-presence written the long way.
+    ///
+    /// The one case where it did change an outcome is the case it got wrong.
+    /// [`MonotonicHlc`](crate::config::MonotonicHlc) is deliberately not
+    /// persisted, [`Engine::from_clock`] builds a fresh one at `Hlc::default()`,
+    /// and nothing primes it from the op log or the register at open. So after
+    /// any restart the HLC reads 0 while `cut_ms` rows survive, and the
+    /// comparison silently collapsed to the bare wall clock it was introduced
+    /// to replace — reopening the leak for every cut stamped ahead of local
+    /// time, which a peer inside `MAX_DRIFT_MS` produces routinely and a
+    /// backgrounded mobile app restarts into as a matter of course.
+    ///
+    /// So the row is the whole of it. `cut_ms` and `cut_logical` are untouched
+    /// and still load-bearing: they are the LWW discriminator deciding *which*
+    /// revocation wins when two race (see the `DeviceRevoke` arm of
+    /// [`Self::apply_control_op`]). They simply do not gate whether a recorded
+    /// revocation applies.
     ///
     /// This is the *local* half of a larger bound: the register is per-replica,
     /// so a device that has not yet applied the `device_revoke` op has no row
-    /// to read at all and will seal a new epoch to the revoked device however
-    /// correct this comparison is. Revocation propagates like every other op.
-    fn is_revoked_at(
+    /// to read at all and will seal a new epoch to the revoked device. That is
+    /// propagation, and no comparison could ever have closed it.
+    fn is_revoked(
         &self,
         conn: &rusqlite::Connection,
         device_id: &[u8; 16],
-        at_ms: u64,
     ) -> rusqlite::Result<bool> {
-        let revoked: Option<i64> = conn
+        let found: Option<i64> = conn
             .query_row(
-                "SELECT cut_ms FROM device_revocations WHERE device_id = ?",
+                "SELECT 1 FROM device_revocations WHERE device_id = ?",
                 params![&device_id[..]],
                 |r| r.get(0),
             )
-            .optional()?
-            .flatten();
-        Ok(revoked.is_some_and(|effective| u64::try_from(effective).unwrap_or(0) <= at_ms))
-    }
-
-    /// The right-hand side every revocation-cut comparison in this engine uses.
-    ///
-    /// A `cut_ms` is the revoking device's HLC physical half. This device's
-    /// wall clock is not comparable with it, and comparing them anyway is what
-    /// let a revoked device stay on the recipient list of its own revocation.
-    /// [`HlcClock::peek`] is this device's current causal reading -- already at
-    /// or above every peer stamp it has absorbed, `device_revoke` included --
-    /// and `max` with `now_ms` keeps it at or above the wall clock too, so the
-    /// horizon only ever moves forward relative to the old comparison and never
-    /// withholds a key the old one would have sent.
-    fn revocation_horizon_ms(&self, now_ms: u64) -> u64 {
-        self.hlc.peek().physical_ms.max(now_ms)
+            .optional()?;
+        Ok(found.is_some())
     }
 
     /// Park an op whose Stream key has not arrived yet.
@@ -3854,16 +3830,7 @@ impl Engine {
         let (epoch, key) = self
             .keychain
             .mint_epoch(tx, stream_id, self.rng.as_ref(), now_ms)?;
-        self.emit_key_envelopes(
-            tx,
-            stream_id,
-            epoch,
-            &key,
-            now_ms,
-            self.hlc.peek(),
-            None,
-            None,
-        )?;
+        self.emit_key_envelopes(tx, stream_id, epoch, &key, now_ms, None)?;
         Ok((epoch, key))
     }
 
@@ -3889,18 +3856,6 @@ impl Engine {
     /// [`Self::backfill_key_envelopes`] exists: a device certified after an
     /// epoch was minted would otherwise never receive it.
     ///
-    /// `at` is the HLC reading this mint emits under, and it is the *only*
-    /// right-hand side for the revocation comparison: a `cut_ms` is another
-    /// device's HLC physical half, so a wall clock is not comparable with it.
-    /// A caller that is emitting an op of its own passes the stamp it minted;
-    /// a caller that is not passes [`HlcClock::peek`], this device's current
-    /// causal reading.
-    ///
-    /// `excluded` names a device to drop from the list whatever the register
-    /// says. [`Self::revoke_device`] passes the device it is revoking, so the
-    /// rotation performed *by* a revocation cannot seal that revocation's
-    /// target in, on any clock.
-    ///
     /// `seal_under` chooses the epoch these ops are themselves sealed at; see
     /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
     /// epoch is", which is right for a first mint and wrong for a rotation.
@@ -3911,32 +3866,9 @@ impl Engine {
         epoch: u32,
         key: &StreamKey,
         now_ms: u64,
-        at: Hlc,
-        excluded: Option<&[u8; 16]>,
         seal_under: Option<&(u32, StreamKey)>,
     ) -> rusqlite::Result<()> {
         let key_id = stream_key_id(key);
-        // The right-hand side of the revocation comparison, and the whole of
-        // what puts both sides of it on one timeline.
-        //
-        // `cut_ms` is an HLC physical half -- the stamp the `device_revoke` op
-        // carried -- so comparing it against this device's wall clock compares
-        // two unrelated timelines. `at` is the HLC reading this mint emits
-        // under, and `at.physical_ms.max(now_ms)` is exactly the physical half
-        // the `key_envelope` ops below will themselves be stamped with, since
-        // `HlcClock::send` returns `max(state, now)`. The anti-join therefore
-        // asks "was this device's cut stamped at or before the stamp these
-        // envelopes carry" -- one timeline, and the causal question revocation
-        // actually poses.
-        //
-        // `now_ms` alone did not merely fail open here, it self-defeated.
-        // `revoke_device` reads `now_ms` *before* `BEGIN IMMEDIATE` and stamps
-        // the cut from `hlc.send()` *inside* it, so any millisecond of lock
-        // contention -- and, once `observe()` has absorbed a peer up to
-        // `MAX_DRIFT_MS` ahead, every subsequent revocation permanently --
-        // left `cut_ms > now_ms` and put the revoked device back on the
-        // recipient list of its own revocation.
-        let horizon_ms = at.physical_ms.max(now_ms);
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
@@ -3946,27 +3878,30 @@ impl Engine {
                 // stopped travelling in a `PairingPayload` there is no second
                 // copy for it to open instead.
                 //
-                // The comparison is `cut_ms <= horizon_ms`, and `horizon_ms`
-                // is the emitting HLC's physical half rather than a bare wall
-                // clock -- see the note above it for why that is the only
-                // form of this test that is not self-defeating.
+                // The presence of the row is the whole test -- there is no
+                // `cut_ms` comparison, and [`Self::is_revoked`] explains at
+                // length why a correct one is indistinguishable from this and
+                // an incorrect one silently collapses to a wall clock after a
+                // restart.
                 //
-                // What no comparison closes: the register is per-replica, so a
+                // This is also what the revoking transaction relies on for the
+                // device it is revoking: `revoke_device` writes the register
+                // before it mints anything, so by the time any seal in that
+                // transaction reaches this query the row is already here.
+                //
+                // What no test here closes: the register is per-replica, so a
                 // device that has not yet applied the `device_revoke` op has no
-                // row here to read at all and will seal this epoch to the
-                // revoked device however right the comparison is. Revocation
-                // propagates like every other op. The revoking replica itself
-                // does not depend on this query for the device it is revoking
-                // -- see `excluded` below.
+                // row to read and will seal this epoch to the revoked device.
+                // Revocation propagates like every other op.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
                  WHERE d.d_d_pub IS NOT NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM device_revocations r
-                       WHERE r.device_id = d.device_id AND r.cut_ms <= ?
+                       WHERE r.device_id = d.device_id
                    )",
             )?;
             let rows = stmt
-                .query_map(params![horizon_ms], |r| {
+                .query_map([], |r| {
                     Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3975,16 +3910,6 @@ impl Engine {
                     continue;
                 };
                 if id == self.keychain.device_id() {
-                    continue;
-                }
-                // The transaction that is revoking a device knows exactly which
-                // device that is, and needs no clock to say so. Time decides
-                // only what a *later* mint does about a cut somebody else
-                // recorded; the acute case -- the rotation the revocation
-                // itself performs -- is settled by identity, and settling it
-                // that way means no clock reading can put the revokee back on
-                // the list of the rotation that exists to remove it.
-                if excluded == Some(&id) {
                     continue;
                 }
                 if pubkey.len() != 32 {
@@ -4050,10 +3975,11 @@ impl Engine {
     /// race between however many devices are online, and absorption being
     /// idempotent is what makes that merely wasteful.
     ///
-    /// A revoked device is skipped, on the same cut test the recipient query
-    /// uses -- both take their right-hand side from
-    /// [`Self::revocation_horizon_ms`], so this route cannot readmit a device
-    /// the rotation just excluded. Without that, a revocation followed by the revoked
+    /// A revoked device is skipped, on the same presence test the recipient
+    /// query uses, so this route cannot readmit a device the rotation just
+    /// excluded. Without it, a revocation followed by the revoked device
+    /// republishing its own cert would hand back everything the revocation had
+    /// just rotated away. Without that, a revocation followed by the revoked
     /// device republishing its own cert would hand back everything the
     /// revocation had just rotated away.
     fn backfill_key_envelopes(
@@ -4066,7 +3992,7 @@ impl Engine {
         if *device_id == self.keychain.device_id() {
             return Ok(());
         }
-        if self.is_revoked_at(tx, device_id, self.revocation_horizon_ms(now_ms))? {
+        if self.is_revoked(tx, device_id)? {
             return Ok(());
         }
         for (stream_id, epoch) in Keychain::held_current_epochs_tx(tx)? {
@@ -12562,11 +12488,12 @@ mod tests {
             "and every column follows the winning op, not just the timestamp"
         );
 
-        // The effect converges with the row: both replicas make the same cut
-        // for the same op, so neither refuses what the other applies.
+        // The effect converges with the row. A recorded revocation is
+        // effective on both replicas -- there is no time test to disagree
+        // about -- and the columns they agree on above are what decide *which*
+        // of two racing revocations is the one on record.
         for (e, db) in [(&r1, &db1), (&r2, &db2)] {
-            assert!(e.is_revoked_at(db.conn(), &t, T0 + 9_000).unwrap());
-            assert!(!e.is_revoked_at(db.conn(), &t, T0 + 5_000).unwrap());
+            assert!(e.is_revoked(db.conn(), &t).unwrap());
         }
     }
 
@@ -12684,8 +12611,8 @@ mod tests {
             "a device must not be able to edit the register entry about itself"
         );
         assert!(
-            er.is_revoked_at(db.conn(), &a_id, T0 + 30_000).unwrap(),
-            "and it is still revoked across the window it tried to reopen"
+            er.is_revoked(db.conn(), &a_id).unwrap(),
+            "and it is still revoked: the row it tried to edit is what decides that"
         );
 
         // A revocation of A by anyone else still lands, so this is a check on
@@ -12732,9 +12659,7 @@ mod tests {
         // A is revoked before it writes anything, at a cut before every op
         // below — the strongest form of the premise.
         revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0);
-        assert!(eb
-            .is_revoked_at(dbb.conn(), &ea.keychain.device_id(), T0 + 60_000)
-            .unwrap());
+        assert!(eb.is_revoked(dbb.conn(), &ea.keychain.device_id()).unwrap());
 
         set_clock(&ca, T0 + 10_000);
         let task = ea
@@ -12862,7 +12787,7 @@ mod tests {
         .unwrap();
         // B is revoked at a cut at or before the moment its cert is applied.
         revoke(&ea, &mut dba, &ea, b_id, T0);
-        assert!(ea.is_revoked_at(dba.conn(), &b_id, T0).unwrap());
+        assert!(ea.is_revoked(dba.conn(), &b_id).unwrap());
 
         trust_at(&ea, &mut dba, &eb, T0);
         assert!(
@@ -12946,9 +12871,16 @@ mod tests {
     ///
     /// A frozen clock cannot detect this. `Engine::from_clock` derives the HLC
     /// from the same `Clock`, so `hlc.physical_ms == now_ms` by construction
-    /// and the comparison holds by coincidence. The `observe` below is what
+    /// and the comparison held by coincidence. The `observe` below is what
     /// breaks the coincidence, and it is an ordinary event: any peer whose
-    /// clock leads by any amount inside the drift gate causes it, permanently.
+    /// clock leads by any amount inside the drift gate causes it.
+    ///
+    /// The repair that survives is not a better comparison but no comparison:
+    /// a recorded row excludes, full stop. This test is kept because it is the
+    /// regression the original defect deserves — a cut stamped ahead of local
+    /// time must be effective — and it now passes for a reason no clock can
+    /// take away. See `a_recorded_cut_survives_a_restart` for the case that
+    /// killed the comparison outright.
     #[test]
     fn a_revoked_device_is_excluded_when_the_hlc_leads_the_wall_clock() {
         let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -13052,9 +12984,14 @@ mod tests {
         ea.hlc.observe(Hlc::at(cut)).unwrap();
         revoke(&ea, &mut dba, &ea, b_id, cut);
         assert!(
-            !ea.is_revoked_at(dba.conn(), &b_id, ea.clock.now_ms())
-                .unwrap(),
-            "on the wall clock this cut has not happened yet -- that is the whole hazard"
+            u64::try_from(revocation_row(&dba, &b_id).expect("the cut was recorded").0).unwrap()
+                > ea.clock.now_ms(),
+            "the premise: this cut sits ahead of the wall clock, which is what used to read \
+             as 'not revoked yet'"
+        );
+        assert!(
+            ea.is_revoked(dba.conn(), &b_id).unwrap(),
+            "and it is effective anyway, because the row is the whole test"
         );
 
         trust_at(&ea, &mut dba, &eb, T0);
@@ -13062,6 +12999,151 @@ mod tests {
             envelopes_to(&ea, &dba, &b_id).is_empty(),
             "a revoked device recovered its keys by re-sending its cert, because the cut was \
              compared against a wall clock instead of the timeline it was written on"
+        );
+    }
+
+    /// **A recorded cut survives a restart.** This is the case that took the
+    /// time comparison out entirely.
+    ///
+    /// Any comparison of `cut_ms` against a local reading needs a local reading
+    /// that is at or above every cut this replica has absorbed. The HLC is
+    /// exactly that *within one process* — and only there.
+    /// [`MonotonicHlc`](crate::config::MonotonicHlc) is deliberately not
+    /// persisted, [`Engine::from_clock`] builds a fresh one at `Hlc::default()`,
+    /// and `observe()` runs from one place: `apply_remote_all`. Nothing primes
+    /// the HLC from the op log or from `device_revocations` at open. So a
+    /// restart leaves the HLC reading 0 against `cut_ms` rows that survived,
+    /// and any horizon derived from it collapses to the bare wall clock.
+    ///
+    /// The scenario is ordinary rather than adversarial: a peer inside
+    /// `MAX_DRIFT_MS` writes a cut ahead of local time, and a backgrounded
+    /// mobile app is killed and reopened before local time catches up. The
+    /// revoked device then re-sends the cert it already holds and
+    /// `backfill_key_envelopes` seals it the current epoch of every stream —
+    /// without the revoked device having to restart, or do anything but wait.
+    ///
+    /// The second engine below is that restart: a new `Engine` over the *same*
+    /// database, which is what `Core::open` constructs.
+    #[test]
+    fn a_recorded_cut_survives_a_restart() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], clock.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // A cut 200 s ahead of the wall clock: inside `MAX_DRIFT_MS`, so an
+        // ordinary peer writes it and the drift gate admits it.
+        let cut = T0 + 200_000;
+        ea.hlc.observe(Hlc::at(cut)).unwrap();
+        revoke(&ea, &mut dba, &ea, b_id, cut);
+        drop(ea);
+
+        // The restart. Same database, same wall clock, brand-new HLC.
+        let ea2 = engine_random_keys(ROOT, [1u8; 32], clock.clone());
+        assert_eq!(
+            ea2.hlc.peek().physical_ms,
+            0,
+            "the premise: HLC state is not persisted, so a reopened engine starts at zero"
+        );
+        assert!(
+            u64::try_from(
+                revocation_row(&dba, &b_id)
+                    .expect("the cut is still recorded")
+                    .0
+            )
+            .unwrap()
+                > ea2.clock.now_ms(),
+            "and the persisted cut is still ahead of the wall clock"
+        );
+
+        // Every comparison that could have been built out of this engine's own
+        // state is now below the cut, so any of them would report "not revoked".
+        assert!(
+            ea2.is_revoked(dba.conn(), &b_id).unwrap(),
+            "a recorded revocation must not become ineffective because the process restarted"
+        );
+
+        // And the route that actually exploits it stays shut.
+        trust_at(&ea2, &mut dba, &eb, T0);
+        assert!(
+            envelopes_to(&ea2, &dba, &b_id).is_empty(),
+            "a revoked device recovered every key by re-sending its cert after the revoking \
+             device restarted"
+        );
+    }
+
+    /// The revocation's *own* transaction excludes the revokee even on the
+    /// path that mints the vault-meta stream's first epoch.
+    ///
+    /// `revoke_device` calls `ensure_stream_epoch(META)` to find the epoch its
+    /// ops are sealed under, and on an account whose meta stream has no key yet
+    /// that call **mints** one and emits a `key_envelope` per recipient. That
+    /// mint happens inside the revoking transaction and does not go through the
+    /// rotation loop, so it is a second, easily-missed way for the revoked
+    /// device to be handed a key by its own revocation.
+    ///
+    /// What makes it safe is ordering, and only ordering: the register row is
+    /// written before anything can mint, so the recipient query already sees it.
+    /// This test exists because that ordering is a property nothing else pins —
+    /// every other revocation test starts from a vault that already has a meta
+    /// key, so `ensure_stream_epoch` returns early and the mint never runs.
+    #[test]
+    fn the_first_meta_mint_inside_a_revocation_excludes_the_revokee() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        // Admit B and write nothing else, so the meta stream still has no key
+        // and the first mint will happen inside the revocation below.
+        trust(&ea, &mut dba, &eb);
+        let meta_keys: i64 = dba
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM stream_keys WHERE stream_id = ?",
+                params![&META_STREAM[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            meta_keys, 0,
+            "the premise: the vault-meta stream has no key yet, so revoking mints its first"
+        );
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, b_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            dba.conn()
+                .query_row(
+                    "SELECT count(*) FROM stream_keys WHERE stream_id = ?",
+                    params![&META_STREAM[..]],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                > 0,
+            "the revocation did mint the meta key, or this test proves nothing"
+        );
+        assert!(
+            envelopes_to(&ea, &dba, &b_id).is_empty(),
+            "the first meta mint inside a revocation sealed an envelope to the device the \
+             transaction exists to revoke"
         );
     }
 
@@ -13170,11 +13252,11 @@ mod tests {
 
         for (name, e, db) in [("X", &x, &dbx), ("Y", &y, &dby)] {
             assert!(
-                e.is_revoked_at(db.conn(), &a_id, T0 + 60_000).unwrap(),
+                e.is_revoked(db.conn(), &a_id).unwrap(),
                 "{name} lost the revocation of A"
             );
             assert!(
-                e.is_revoked_at(db.conn(), &b_id, T0 + 60_000).unwrap(),
+                e.is_revoked(db.conn(), &b_id).unwrap(),
                 "{name} lost the revocation of B"
             );
         }
@@ -13316,16 +13398,22 @@ mod tests {
         );
     }
 
-    /// A revocation whose cut landed in the past is **correctable**: revoking
-    /// again from a healthy device supersedes it, in either arrival order.
+    /// A revocation whose cut landed in the past is **superseded** by revoking
+    /// again from a healthy device, in either arrival order.
     ///
     /// A device that has not yet heard from a peer carries whatever HLC its own
     /// clock gives it, so a badly-set one can still emit a backdated cut — the
-    /// register does not prevent that. What it does is stop the damage being
-    /// permanent. Under the `MIN` join this replaces, the earliest cut won
-    /// forever: one op from one mis-set device refused its target's entire
-    /// history on every replica in the account, irreversibly. Under LWW the
-    /// later op wins, which is the whole reason for choosing it.
+    /// register does not prevent that. What LWW decides is which op is the one
+    /// on record: under the `MIN` join this replaces, the earliest cut won
+    /// forever and no later op could correct the record; under LWW the later op
+    /// wins, which is the whole reason for choosing it.
+    ///
+    /// What is *not* corrected is the fact of revocation. A recorded row is
+    /// effective whatever its `cut_ms` says (see [`Engine::is_revoked`]), so
+    /// revoking again replaces the cut, the author and the reason — it does not
+    /// un-revoke the device. Nothing in this engine ever did: the cut gated
+    /// which epochs a revoked device was sealed, never whether its past ops
+    /// were accepted, and a revoked device's writes are unbounded either way.
     #[test]
     fn a_backdated_revocation_is_superseded_by_a_healthy_one() {
         const YEAR_MS: u64 = 365 * 24 * 60 * 60 * 1000;
@@ -13344,9 +13432,10 @@ mod tests {
         // The damage: a device a year slow revokes T, and its cut refuses
         // everything T ever wrote.
         revoke(&r1, &mut db1, &mis_set, t, T0 - YEAR_MS);
-        assert!(
-            r1.is_revoked_at(db1.conn(), &t, T0 - YEAR_MS / 2).unwrap(),
-            "the premise: a backdated cut does refuse the target's history"
+        assert_eq!(
+            revocation_row(&db1, &t).unwrap().0,
+            i64::try_from(T0 - YEAR_MS).unwrap(),
+            "the premise: the mis-set device's backdated cut is the one on record"
         );
 
         // The repair, and the same two ops in the other order on a second
@@ -13366,9 +13455,14 @@ mod tests {
             "the healthy cut supersedes the backdated one"
         );
         for (e, db) in [(&r1, &db1), (&r2, &db2)] {
+            assert_eq!(
+                revocation_row(db, &t).unwrap().2.as_slice(),
+                &healthy.keychain.device_id()[..],
+                "and both replicas record the healthy device as the revoker"
+            );
             assert!(
-                !e.is_revoked_at(db.conn(), &t, T0 - YEAR_MS / 2).unwrap(),
-                "and the target's history stands again"
+                e.is_revoked(db.conn(), &t).unwrap(),
+                "the record is corrected, not withdrawn: T stays revoked"
             );
         }
     }
@@ -13440,7 +13534,7 @@ mod tests {
         // B has never seen A's cert when the revocation lands.
         revoke(&eb, &mut dbb, &eb, a_id, T0);
         assert!(
-            eb.is_revoked_at(dbb.conn(), &a_id, T0 + 1).unwrap(),
+            eb.is_revoked(dbb.conn(), &a_id).unwrap(),
             "the revocation must be durable without a devices row to update"
         );
         // And it does not invent one. Upserting into `devices` made every
@@ -13457,7 +13551,7 @@ mod tests {
         // leaves the revocation alone.
         trust(&eb, &mut dbb, &ea);
         assert!(
-            eb.is_revoked_at(dbb.conn(), &a_id, T0 + 1).unwrap(),
+            eb.is_revoked(dbb.conn(), &a_id).unwrap(),
             "the cert must not resurrect a revoked device"
         );
         assert_eq!(device_rows(&dbb), 1, "and it is one device, not two");
