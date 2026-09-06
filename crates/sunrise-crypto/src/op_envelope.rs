@@ -49,7 +49,7 @@
 //! — i.e. over `{1..10, 12}`.
 
 use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
-use crate::keys::{verify_ed25519, IdentitySigningKeyPair, StreamKey};
+use crate::keys::{verify_ed25519, DeviceSigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -267,7 +267,7 @@ fn sig_input_bytes(env: &OpEnvelope) -> Result<Vec<u8>, OpEnvelopeError> {
 /// CBOR encode failure (essentially impossible for v1 fields).
 pub fn sign_envelope(
     env: &mut OpEnvelope,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<(), OpEnvelopeError> {
     let input = sig_input_bytes(env)?;
     env.sig = device_signing.sign(&input);
@@ -297,7 +297,7 @@ pub fn encode_envelope(
     epoch: u32,
     nonce: [u8; AEAD_NONCE_LEN],
     stream_key: Option<&StreamKey>,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
     let env = OpEnvelope {
         v: u32::from(ENVELOPE_FORMAT_V),
@@ -329,7 +329,7 @@ pub fn encode_envelope(
 pub fn seal_envelope(
     mut env: OpEnvelope,
     stream_key: Option<&StreamKey>,
-    device_signing: &IdentitySigningKeyPair,
+    device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
     if env.aead_alg == AeadAlgId::None && env.epoch != 0 {
         return Err(OpEnvelopeError::InconsistentAead);
@@ -522,6 +522,40 @@ pub fn open_envelope(
     }
 }
 
+/// Decrypt an envelope's payload **without checking the sender's signature**.
+///
+/// There is exactly one legitimate caller, and it exists because of a genuine
+/// ordering problem rather than a convenience: a device publishing its own
+/// certificate for the first time is not yet in the receiver's device table, so
+/// the receiver has no `D_S_pub` to verify against until it has read the cert
+/// out of the payload. Every other caller must use [`open_envelope`].
+///
+/// What this still guarantees is not nothing. The payload is authenticated by
+/// the AEAD tag over an AAD that covers every envelope field, so a caller
+/// reaching this function knows the bytes were sealed under a Stream key it
+/// holds and have not been altered — it just does not yet know *which member*
+/// of the account sealed them. The caller must call [`verify_envelope`] with
+/// the key it recovers before acting on the contents; the doc comment on
+/// `Engine::self_authenticating_signer` states both checks and why neither
+/// alone is enough.
+///
+/// # Errors
+/// AEAD auth failure, or [`OpEnvelopeError::InconsistentAead`] for a
+/// signed-only envelope, which has no ciphertext and so no reason to be here.
+pub fn open_envelope_unverified(
+    env: &OpEnvelope,
+    stream_key: &StreamKey,
+) -> Result<Vec<u8>, OpEnvelopeError> {
+    match env.aead_alg {
+        AeadAlgId::None => Err(OpEnvelopeError::InconsistentAead),
+        AeadAlgId::XChaCha20Poly1305 => {
+            let aad = encode_aad(env)?;
+            aead_open_xchacha(stream_key.as_bytes(), &env.nonce, &env.payload, &aad)
+                .map_err(|_| OpEnvelopeError::AeadAuth)
+        }
+    }
+}
+
 /// Canonical Sunrise CBOR has no floats anywhere, so a float in an unknown
 /// envelope field is malformed rather than merely unfamiliar.
 fn contains_float_value(v: &ciborium::value::Value) -> bool {
@@ -613,13 +647,13 @@ struct _ReservedForFutureUse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::IdentitySigningKeyPair;
+    use crate::keys::DeviceSigningKeyPair;
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
-    fn fixed_signing() -> IdentitySigningKeyPair {
+    fn fixed_signing() -> DeviceSigningKeyPair {
         let mut rng = ChaCha20Rng::seed_from_u64(7);
-        IdentitySigningKeyPair::generate(&mut rng)
+        DeviceSigningKeyPair::generate(&mut rng)
     }
 
     fn fixed_stream_key() -> StreamKey {
@@ -795,7 +829,7 @@ mod tests {
 
     /// Build an envelope carrying an arbitrary `doc_schema_v`, the way a
     /// future build would.
-    fn envelope_at_doc_schema(doc_schema_v: u32, signing: &IdentitySigningKeyPair) -> Vec<u8> {
+    fn envelope_at_doc_schema(doc_schema_v: u32, signing: &DeviceSigningKeyPair) -> Vec<u8> {
         seal_envelope(
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),

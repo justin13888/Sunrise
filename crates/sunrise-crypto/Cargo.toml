@@ -16,6 +16,7 @@ workspace = true
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
 chacha20poly1305 = { workspace = true }
+hpke = { workspace = true }
 blake3 = { workspace = true }
 argon2 = { workspace = true }
 subtle = { workspace = true }

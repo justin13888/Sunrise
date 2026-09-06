@@ -37,10 +37,10 @@ import from `sunrise_cbor::version`.
 ```
 WIRE_PROTO_V      = 1
 ENVELOPE_FORMAT_V = 3
-DOC_SCHEMA_V      = 4
+DOC_SCHEMA_V      = 5
 DOC_SCHEMA_FLOOR  = 1
-CRYPTO_SUITE_V    = 1
-STORAGE_V         = 16
+CRYPTO_SUITE_V    = 2
+STORAGE_V         = 17
 ```
 
 Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants.

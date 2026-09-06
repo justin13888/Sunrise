@@ -97,8 +97,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | Event | Level | Meaning |
 |---|---|---|
 | `ui.start` | info | Client starting; `app_v` and the protocol versions. Emitted by `sunrise-cli`; the macOS app will emit the same name. |
-| `ui.pair.cert_exported` | info/warn | Dev cert export step of the two-vault demo; `result`. Never the path. |
-| `ui.pair.peer_trusted` | info/warn | Dev peer-trust step; `result`, `err_code` on failure. |
+| `ui.pair.payload_exported` | info/warn | Dev pairing-payload export step of the two-vault demo; `result`. Never the path. |
+| `ui.pair.payload_adopted` | info/warn | Dev pairing-payload adoption step, at `Core::open`; `result`, `err_code` on failure. |
 
 ---
 
@@ -124,6 +124,10 @@ them until code uses them.
 | `core.query.slow` | warn | Read query exceeded performance budgets p99. |
 | `core.shutdown.start` | info | Shutdown initiated. |
 | `core.shutdown.ok` | info | Shutdown complete. |
+| `core.device.cert_rejected` | warn | A `device_cert` op was not applied; `reason` (`undecodable` / `names_another_device` / `binding`), `sender_h`, and `subject_h` when the cert names someone else. The delivery itself still succeeds — the envelope verified and the sender is a member — so without this the row keeps a NULL `d_d_pub`, the device is never a `key_envelope` recipient, and its peers' ops park forever with nothing said. |
+| `core.device.revoke_refused` | warn | A `device_revoke` was not applied to the register; `reason` (`self`), `sender_h`. A device must not move its own cut: the register is last-writer-wins, so its own op would win and undo somebody else's revocation of it. |
+| `core.key.epoch_refused` | warn | A `key_envelope` named an epoch more than `MAX_EPOCH_LEAP` above this vault's live one and was not absorbed; `stream_h`, `epoch`, `live`. `MAX(epoch)` is what makes a key live, so absorbing an absurd one would strand rotation and redirect this device's own writes. |
+| `core.op.deferred_evicted` | warn | The parked-op buffer hit its cap and the oldest rows were dropped; `n`, `stream_h`. Ordinary traffic never reaches it: a legitimate park is released by the very next absorbed key. |
 
 ### `crypto` (sunrise-crypto)
 

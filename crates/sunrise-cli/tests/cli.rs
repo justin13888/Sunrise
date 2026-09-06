@@ -46,8 +46,8 @@ fn run(vault: &Path, args: &[&str]) -> Output {
         // Keep the relay out of it: subcommands are one-shot and offline.
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env_remove("SUNRISE_EXPORT_CERT_FILE")
-        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+        .env_remove("SUNRISE_PAIRING_FILE")
         .output()
         .expect("run sunrise")
 }
@@ -650,8 +650,8 @@ fn a_pre_multi_account_vault_is_refused_but_the_quoted_root_opens_it() {
             )
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_CERT_FILE")
-            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -694,8 +694,8 @@ fn an_explicit_root_opens_a_vault_with_no_keystore_at_all() {
             .env("SUNRISE_VAULT_ROOT", &hex)
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_CERT_FILE")
-            .env_remove("SUNRISE_TRUST_CERT_FILE")
+            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -988,52 +988,77 @@ fn id_of(o: &Output) -> String {
         .to_string()
 }
 
-/// `SUNRISE_EXPORT_CERT_FILE` is documented as writing this device's cert "on
-/// startup", for every subcommand.
+/// `SUNRISE_EXPORT_PAIRING_FILE` is documented as writing this device's pairing
+/// payload "on startup", for every subcommand.
 ///
 /// Regression: `run` used to open the vault with `SyncPlan::default()` and
 /// never build one from the environment, so the binary ignored all three
-/// cert/relay variables. The unit tests for `plan_from_env` passed the whole
+/// pairing/relay variables. The unit tests for `plan_from_env` passed the whole
 /// time — nothing called it.
 #[test]
-fn a_subcommand_exports_this_devices_cert_when_asked() {
+fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
     let dir = tempfile::tempdir().unwrap();
-    let cert = dir.path().join("device.cert");
+    let payload = dir.path().join("device.pairing");
 
-    let out = Command::new(bin())
+    // Run under a permissive umask, so 0600 is a property of the write and not
+    // of the environment the test happened to inherit. Under umask 077 this
+    // assertion passes with the fix reverted, which is what it did before.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg("umask 0; exec \"$0\" \"$@\"").arg(bin());
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = Command::new(bin());
+
+    let out = cmd
         .args(["inbox"])
         .env("SUNRISE_VAULT", dir.path())
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_EXPORT_CERT_FILE", &cert)
+        .env("SUNRISE_EXPORT_PAIRING_FILE", &payload)
         .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .env_remove("SUNRISE_PAIRING_FILE")
         .output()
         .expect("run sunrise");
 
     assert!(out.status.success(), "inbox failed: {out:?}");
-    let bytes = std::fs::read(&cert).expect("the cert must have been written");
-    assert!(!bytes.is_empty(), "an empty cert is not a cert");
+    let bytes = std::fs::read(&payload).expect("the payload must have been written");
+    assert!(!bytes.is_empty(), "an empty payload is not a payload");
+    // The payload is the whole account in the clear — `ID_S_priv`,
+    // `ID_D_priv`, the vault root and every Stream key — so it must not land at
+    // the process umask, which under the `umask 0` above would leave it 0666.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&payload).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
     // stdout stays the contract: the demo banner goes to stderr.
     assert!(
-        !stdout(&out).contains("exported device cert"),
+        !stdout(&out).contains("exported pairing payload"),
         "the startup banner must not pollute stdout"
     );
 }
 
-/// A peer cert named in the environment is trusted at startup, so the
+/// A pairing payload named in the environment is adopted at startup, so the
 /// two-replica walkthrough works from the binary and not only from the
 /// library.
+///
+/// It replaces the old cert-file exchange: since ADR-0024 two vaults sharing a
+/// root are two separate accounts, and joining one means adopting its identity
+/// and Stream keys when the vault is created.
 #[test]
-fn a_subcommand_trusts_a_peer_cert_when_asked() {
+fn a_subcommand_adopts_a_pairing_payload_when_asked() {
     let peer = tempfile::tempdir().unwrap();
-    let peer_cert = peer.path().join("peer.cert");
+    let peer_payload = peer.path().join("peer.pairing");
     let out = Command::new(bin())
         .args(["inbox"])
         .env("SUNRISE_VAULT", peer.path())
         .env("SUNRISE_KEYSTORE", keystore(peer.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_EXPORT_CERT_FILE", &peer_cert)
+        .env("SUNRISE_EXPORT_PAIRING_FILE", &peer_payload)
         .env_remove("SUNRISE_SYNC_URL")
         .output()
         .expect("run sunrise");
@@ -1045,17 +1070,17 @@ fn a_subcommand_trusts_a_peer_cert_when_asked() {
         .env("SUNRISE_VAULT", dir.path())
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_TRUST_CERT_FILE", &peer_cert)
+        .env("SUNRISE_PAIRING_FILE", &peer_payload)
         .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_EXPORT_CERT_FILE")
+        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
         .output()
         .expect("run sunrise");
 
-    assert!(out.status.success(), "trust failed: {out:?}");
+    assert!(out.status.success(), "adoption failed: {out:?}");
     let banner = String::from_utf8_lossy(&out.stderr);
     assert!(
-        banner.contains("trusted peer cert"),
-        "the peer cert was not trusted, stderr was {banner:?}"
+        banner.contains("adopted pairing payload"),
+        "the pairing payload was not adopted, stderr was {banner:?}"
     );
 }
 
@@ -1148,8 +1173,8 @@ fn ical_import_reads_stdin() {
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
         .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_EXPORT_CERT_FILE")
-        .env_remove("SUNRISE_TRUST_CERT_FILE")
+        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
+        .env_remove("SUNRISE_PAIRING_FILE")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

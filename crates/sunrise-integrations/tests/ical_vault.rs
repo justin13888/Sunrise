@@ -49,7 +49,10 @@ async fn open(dir: &std::path::Path) -> Core {
     );
     Core::open(
         cfg,
-        Unlock::DevicePaired(VaultRootKey::from_bytes([3u8; 32])),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes([3u8; 32]),
+            paired: None,
+        },
     )
     .await
     .expect("open vault")

@@ -71,13 +71,40 @@ Alongside it, the hierarchy the documents already specify is made real:
    it, which is what makes revocation meaningful.
 4. **`key_envelope` ops distribute Stream keys** by HPKE, sealing each
    `(stream_id, epoch)` key to a recipient's X25519 public key. Two recipient
-   classes, and the distinction is what makes both revocation and recovery work:
-   * to each **device**'s `ID_D`, so a device learns the epochs it is entitled to;
+   classes:
+   * to each **device**'s `D_D_pub`, so a device learns the epochs it is entitled to;
    * to the **identity**'s `ID_D`, so the recovery path can reach them.
-5. **Epochs are real.** Revoking a device mints a new epoch for every Stream it
-   could read and seals envelopes only to the remaining devices. The revoked
-   device keeps what it already had — unavoidable, and stated — and reads nothing
-   written afterwards.
+
+   The identity class is what makes **recovery** work. It is also why revocation
+   does not: every paired device is handed `ID_D_priv` at pairing, so a revoked
+   device opens the identity copy of every epoch minted after it was revoked.
+   The two goals are in direct tension here, and this ADR resolves it in
+   recovery's favour — see decision 5's scope note and
+   [#76](https://github.com/justin13888/Sunrise/issues/76).
+5. **Epochs are real.** `EPOCH` stops being a constant, so revoking a device can
+   mint a new epoch for every Stream it could read. The revoked device keeps
+   what it already had — unavoidable, and stated — and, as built, reads what
+   comes afterwards too: see the scope note below.
+
+   **Scope, as implemented: the machinery exists and enforces nothing.** A
+   `device_revoke` op is recorded and converged as an LWW register on the op's
+   own HLC, and no code consults it. Two enforcement claims were built here and
+   both removed. *Withholding new epoch keys* withholds nothing: every epoch is
+   also sealed to the identity so recovery can reach it, and pairing hands every
+   device `ID_D_priv`, so a revoked device opens the identity copy —
+   [#76](https://github.com/justin13888/Sunrise/issues/76). *Refusing a revoked
+   device's ops on a peer* freezes that peer's sync cursor for it while the
+   relay, which knows nothing of the revocation, goes on accepting its uploads;
+   within retention that latches a permanent data-loss warning on every device
+   in the account. Bounding writes needs the relay
+   ([#82](https://github.com/justin13888/Sunrise/issues/82) behind
+   [#80](https://github.com/justin13888/Sunrise/issues/80)); converging the
+   *effect* rather than the record is
+   [#78](https://github.com/justin13888/Sunrise/issues/78).
+
+   What this ADR delivers is the hierarchy that makes revocation **expressible**
+   — random per-`(stream, epoch)` keys, wrapped rather than derived — which is
+   the thing that was structurally impossible before. It is not revocation.
 6. **`stream_keys` becomes the read path.** `EPOCH` stops being a constant.
 
 ### What this fixes in `recovery.md`

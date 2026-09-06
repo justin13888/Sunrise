@@ -30,7 +30,7 @@ HKDF-SHA-256 is used **only** as the HPKE-internal KDF; it is not exposed at the
 
 Every algorithm above is frozen for v1, and most are live. Two rows describe capability that no code exercises, and one is narrower in practice than the row implies:
 
-* **HPKE has no consumer.** `hpke = "0.13"` is declared in `[workspace.dependencies]` and **no member `Cargo.toml` depends on it**, so it is not in `Cargo.lock`. Every role listed in its row — key envelopes, share grants, recovery upload, pairing transport — is unimplemented. [ADR-0024](../11-adr/0024-key-hierarchy.md) gives it its first dependent.
+* **HPKE has one consumer of four roles.** `sunrise-crypto` depends on `hpke` and `hpke_seal.rs` implements the single-shot Base construction; **key envelopes** use it. Share grants, recovery upload and pairing transport still do not — sharing is unbuilt, the recovery blob uses its own AEAD-under-Argon2id seal, and pairing's transport is Noise XX, not HPKE.
 * **Argon2id runs on one path, not two.** It is used only to stretch the recovery code in `crates/sunrise-crypto/src/recovery.rs`. There is no passphrase unlock: the vault root is 32 random bytes from a keystore, never derived (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)).
 * **Noise XX is implemented** in `crates/sunrise-pairing`, with the exact pattern string in `handshake.rs::NOISE_PARAMS`. Its relay transport is not; see [`pairing-and-onboarding.md`](./pairing-and-onboarding.md).
 
@@ -70,7 +70,7 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
 - All crypto goes through the leaf crate `sunrise-crypto`. App code MUST NOT call `chacha20poly1305`, `ed25519-dalek`, `hpke`, `snow`, `blake3`, `argon2`, etc., directly.
 - `sunrise-crypto` exposes typed wrappers (`StreamKey`, `OpEnvelope`, `VaultRootKey`, `RecoveryKey`, …). Identity and device key types MUST be distinct, so that an identity private key cannot be passed where a device private key is expected.
 
-  **Not true in code today.** `crates/sunrise-crypto/src/keys.rs` declares `pub type DeviceSigningKeyPair = IdentitySigningKeyPair;` and `pub type DeviceDhKeyPair = IdentityDhKeyPair;` — type *aliases*, not newtypes, so the two are the same type and the compiler enforces nothing. `crates/sunrise-core/src/keychain.rs` consequently stores the device signing key as an `IdentitySigningKeyPair`. [ADR-0024](../11-adr/0024-key-hierarchy.md) decision 1 makes them distinct types, which is what turns this bullet from an aspiration into a guarantee.
+  **True in code since [ADR-0024](../11-adr/0024-key-hierarchy.md).** `DeviceSigningKeyPair` and `DeviceDhKeyPair` are newtypes in `crates/sunrise-crypto/src/keys.rs`, not aliases of the identity types, so `DeviceCert::issue` cannot be handed a device key and `sign_envelope` cannot be handed an identity key. Both zeroize on drop and redact in `Debug`.
 - All key types implement zeroize-on-drop.
 - Versions are pinned in `Cargo.lock` and vendored at release.
 - `cargo-deny` and `cargo-audit` run in CI; new versions of crypto deps require explicit review by a designated reviewer (see `CODEOWNERS`).
@@ -111,8 +111,8 @@ The goal stands: two builds from the same commit with the same toolchain should 
   - Both whole op envelopes — signed-only and sealed — byte-exact, plus a round-trip-and-verify. **Implemented.**
   - Blob-chunk nonce/AAD vectors and one byte-exact sealed chunk. **Implemented.**
   - Per-Stream Merkle root init/step. **Implemented** — and these tests are the only callers of `merkle.rs`; see [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md).
-  - A canonical identity → device → Stream key derivation tree. **Not implemented**, and it cannot be until [ADR-0024](../11-adr/0024-key-hierarchy.md) makes identity and device keys distinct.
-  - A canonical HPKE single-shot ciphertext for each role. **Not implemented** — `hpke` has no consumer.
+  - A canonical identity → device → Stream key derivation tree. **Not applicable.** [ADR-0024](../11-adr/0024-key-hierarchy.md) removed the derivation it would have frozen: Stream keys are random per `(stream_id, epoch)` and reach a device through a `key_envelope`, so there is no tree to derive. What is frozen instead is `stream_key_id` — `derive_key("sunrise.stream_key_id.v1", stream_key, 8)` — as a KDF vector.
+  - A canonical HPKE single-shot ciphertext for each role. **Implemented for `key_envelope`** — `crypto-test-vectors`'s `key_envelope` module pins the recipient keypair, the Stream key, the info string and the sealed bytes, produced under a seeded RNG because HPKE encapsulation is randomised; the unconditional half opens it and checks `enc.len() == 32`. The other three roles have no implementation to freeze.
   - A canonical Argon2id derivation from a fixed recovery code. **Not implemented**; `recovery.rs` has round-trip tests but no frozen vector.
 - Tampering tests: every byte of a known envelope is flipped and the result must fail decode/verify.
 

@@ -22,26 +22,33 @@
 //! When the rendezvous lands, these same methods drive it — the state machine
 //! does not change, only who carries the bytes.
 //!
-//! # What is not carried yet
+//! # What crosses
 //!
-//! The spec's `PairingPayload` is a CBOR map of the identity keys, the
-//! per-stream key tables, a nickname and a platform. What moves here is the
-//! **32-byte vault root**, which is what `Core::open` needs and what
-//! `Core::export_vault_root_for_pairing` produces: every per-stream key is
-//! derived from it, so the receiving device reconstructs the same key schedule.
-//! The identity private keys are not sent, so the new device signs with its own
-//! device key and each side still has to accept the other's certificate via
-//! `Command::TrustDevice`. That is a real limitation and it is deliberate —
-//! sending a private identity key is not something to do speculatively.
+//! The spec's [`PairingPayload`](sunrise_pairing::PairingPayload): the account
+//! identity's key pair, every Stream key the sending device holds, the vault
+//! root, and the sender's nickname and platform. Sending the private identity
+//! keys was once described here as "not something to do speculatively", and
+//! that was right while the identity decrypted nothing. Under ADR-0024 it
+//! decrypts everything — `ID_D_priv` opens the identity-sealed half of every
+//! `key_envelope`, and `ID_S_priv` is what lets this device admit the *next*
+//! one. Withholding them would produce a device that can read today's content
+//! and can never admit another, which is the limitation this replaces rather
+//! than a property worth keeping.
+//!
+//! The channel is unchanged: Noise XX confirmed by a SAS both users read
+//! aloud, which is the same channel the vault root already travelled over, and
+//! the vault root was never the smaller secret.
 
 use std::sync::{Mutex, PoisonError};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use sunrise_pairing::{
-    account_email_hash, decode_qr_payload, encode_qr_payload, PairedChannel, PairingSession,
-    QrPayload, Role, MAGIC_V1_HEX,
+    account_email_hash, decode_pairing_payload, decode_qr_payload, encode_qr_payload,
+    PairedChannel, PairingSession, QrPayload, Role, MAGIC_V1_HEX,
 };
+
+use zeroize::Zeroize;
 
 use crate::BindingError;
 
@@ -294,7 +301,7 @@ impl DevicePairing {
         }
     }
 
-    /// Seal the vault root for the peer, on the existing device.
+    /// Seal the pairing payload for the peer, on the existing device.
     ///
     /// The result is base64url ciphertext. It is readable only by the device
     /// on the other end of the confirmed handshake — the relay, or the user's
@@ -302,55 +309,100 @@ impl DevicePairing {
     ///
     /// # Errors
     ///
-    /// [`BindingError::Pairing`] when the root is not 32 bytes, when the SAS
-    /// has not been confirmed, or when this device is the one being added.
-    pub fn seal_vault_root(&self, vault_root: Vec<u8>) -> Result<String, BindingError> {
-        if vault_root.len() != VAULT_ROOT_LEN {
-            return Err(BindingError::BadVaultRoot {
-                len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
-            });
-        }
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
+    /// this device is the one being added.
+    pub fn seal_pairing_payload(&self, payload: Vec<u8>) -> Result<String, BindingError> {
+        // Taken by value and wiped here rather than left to the caller.
+        // `PairingPayload` zeroizes itself on drop; its *encoding* is the same
+        // secret in serialized form and has no such courtesy, so the one place
+        // that is guaranteed to see the end of its life is the place that
+        // consumes it.
+        let mut payload = payload;
+        let out = self.seal_encoded(&payload);
+        payload.zeroize();
+        out
+    }
+
+    fn seal_encoded(&self, payload: &[u8]) -> Result<String, BindingError> {
         if self.role != PairingRole::ExistingDevice {
             return Err(BindingError::Pairing(
-                "only the existing device sends the vault root".into(),
+                "only the existing device sends the pairing payload".into(),
             ));
         }
         let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
         let channel = guard
             .as_mut()
             .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        let sealed = channel.send(&vault_root)?;
+        let sealed = channel.send(payload)?;
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
         Ok(URL_SAFE_NO_PAD.encode(sealed))
     }
 
-    /// Open the sealed vault root, on the new device.
+    /// Open the sealed pairing payload, on the new device.
+    ///
+    /// Returns both halves the caller needs and nothing more: the vault root,
+    /// which `SunriseCore::open` takes as its key, and the payload bytes to
+    /// hand back as `paired_bundle`. The identity private keys are inside the
+    /// bundle and are deliberately **not** broken out — a client has no use for
+    /// them, and a field on a Swift record is a field in whatever the app logs.
     ///
     /// # Errors
     ///
-    /// [`BindingError::Pairing`] when the SAS has not been confirmed or the
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, the
     /// ciphertext does not open — which is what a tampered or replayed frame
-    /// looks like — and [`BindingError::BadVaultRoot`] if what came out is not
-    /// 32 bytes.
-    pub fn open_vault_root(&self, sealed: String) -> Result<Vec<u8>, BindingError> {
+    /// looks like — or the payload does not decode, and
+    /// [`BindingError::BadVaultRoot`] if the root inside is not 32 bytes.
+    pub fn open_pairing_payload(&self, sealed: String) -> Result<PairedBundle, BindingError> {
         if self.role != PairingRole::NewDevice {
             return Err(BindingError::Pairing(
-                "only the new device receives the vault root".into(),
+                "only the new device receives the pairing payload".into(),
             ));
         }
-        let raw = decode_b64(&sealed, "sealed vault root")?;
+        let raw = decode_b64(&sealed, "sealed pairing payload")?;
         let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
         let channel = guard
             .as_mut()
             .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        let root = channel.receive(&raw)?;
-        if root.len() != VAULT_ROOT_LEN {
+        let bundle = channel.receive(&raw)?;
+        let payload =
+            decode_pairing_payload(&bundle).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        if payload.vault_root.len() != VAULT_ROOT_LEN {
             return Err(BindingError::BadVaultRoot {
-                len: u32::try_from(root.len()).unwrap_or(u32::MAX),
+                len: u32::try_from(payload.vault_root.len()).unwrap_or(u32::MAX),
             });
         }
+        let vault_root = payload.vault_root.to_vec();
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        Ok(root)
+        Ok(PairedBundle {
+            vault_root,
+            payload_bytes: bundle,
+        })
+    }
+}
+
+/// What a completed pairing hands the new device.
+///
+/// Both fields are **plaintext**. `payload_bytes` is the opened
+/// `PairingPayload` — `ID_S_priv`, `ID_D_priv`, the vault root and every Stream
+/// key in the account — and it was called `sealed_bundle` while nothing sealed
+/// it: the field is the output of `channel.receive`, which is where the sealing
+/// ends. A name that says "sealed" is the one thing that would make a caller
+/// comfortable logging it.
+///
+/// `Debug` is hand-written for the same reason `PairingPayload`'s is: the
+/// derive would print every one of those bytes, undoing at this seam the
+/// redaction the type it carries is careful about one crate over.
+#[derive(Clone, uniffi::Record)]
+pub struct PairedBundle {
+    /// The 32-byte vault root, for `SunriseCore::open`'s `vault_root`.
+    pub vault_root: Vec<u8>,
+    /// The opened payload bytes, for `SunriseCore::open`'s `paired_bundle`.
+    pub payload_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for PairedBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PairedBundle(<redacted>)")
     }
 }
 

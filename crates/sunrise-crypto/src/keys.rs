@@ -24,9 +24,22 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Identity signing keypair (Ed25519). The private half is `ID_S_priv`; the
 /// public half is `ID_S_pub`.
-#[derive(Debug)]
+///
+/// The zeroize is derived, not hand-written. The hand-written version did
+/// `let mut bytes = self.signing.to_bytes(); bytes.zeroize();`, which wipes the
+/// *copy* `to_bytes` just made and leaves the key itself untouched — a comment
+/// claiming belt-and-suspenders over an assignment that does nothing. What
+/// actually protects the seed is `ed25519_dalek::SigningKey`'s own `Drop`, and
+/// the derive is how that gets asserted at compile time instead of assumed.
+#[derive(ZeroizeOnDrop)]
 pub struct IdentitySigningKeyPair {
     signing: SigningKey,
+}
+
+impl core::fmt::Debug for IdentitySigningKeyPair {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("IdentitySigningKeyPair(<redacted>)")
+    }
 }
 
 impl IdentitySigningKeyPair {
@@ -69,15 +82,6 @@ impl IdentitySigningKeyPair {
     #[inline]
     pub const fn dalek(&self) -> &SigningKey {
         &self.signing
-    }
-}
-
-impl Drop for IdentitySigningKeyPair {
-    fn drop(&mut self) {
-        // `dalek::SigningKey` implements Zeroize on Drop in ≥2.x, but we add
-        // an explicit zeroize for belt-and-suspenders.
-        let mut bytes = self.signing.to_bytes();
-        bytes.zeroize();
     }
 }
 
@@ -127,10 +131,18 @@ impl IdentityDhKeyPair {
         }
     }
 
-    /// Public key bytes (32 B).
+    /// Public key bytes (`ID_D_pub`, 32 B).
     #[must_use]
     pub fn public_bytes(&self) -> [u8; 32] {
         XPublicKey::from(&self.secret).to_bytes()
+    }
+
+    /// Private scalar bytes (32 B). Zeroize the copy after consumption; the
+    /// only callers are the at-rest wrap, the recovery blob and the pairing
+    /// payload.
+    #[must_use]
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
     }
 
     /// Borrow the underlying X25519 secret. Used by HPKE / Noise.
@@ -140,11 +152,128 @@ impl IdentityDhKeyPair {
     }
 }
 
-/// Device signing keypair (Ed25519). Same shape as identity, different role.
-pub type DeviceSigningKeyPair = IdentitySigningKeyPair;
+/// Device signing keypair (Ed25519). The private half is `D_S_priv`; the
+/// public half is `D_S_pub`.
+///
+/// Same *shape* as [`IdentitySigningKeyPair`] and deliberately **not** an alias
+/// of it. `primitives.md` says one cannot be passed where the other is
+/// expected; while this was `pub type DeviceSigningKeyPair =
+/// IdentitySigningKeyPair` that claim was false in code, and the compiler
+/// happily signed a device cert with a device key — which is precisely the
+/// self-signature ADR-0024 removes. Two structs make the roles a type error
+/// rather than a review comment.
+///
+/// Zeroized on drop by the derive, for the reason given on
+/// [`IdentitySigningKeyPair`] — the hand-written `Drop` this replaces wiped a
+/// copy of the seed rather than the seed.
+#[derive(ZeroizeOnDrop)]
+pub struct DeviceSigningKeyPair {
+    signing: SigningKey,
+}
 
-/// Device DH keypair (X25519). Same shape as identity, different role.
-pub type DeviceDhKeyPair = IdentityDhKeyPair;
+impl core::fmt::Debug for DeviceSigningKeyPair {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("DeviceSigningKeyPair(<redacted>)")
+    }
+}
+
+impl DeviceSigningKeyPair {
+    /// Generate a fresh keypair using the supplied CSPRNG.
+    #[must_use]
+    pub fn generate<R: CryptoRngCore>(rng: &mut R) -> Self {
+        Self {
+            signing: SigningKey::generate(rng),
+        }
+    }
+
+    /// Reconstruct from a 32-byte secret seed.
+    #[must_use]
+    pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
+        Self {
+            signing: SigningKey::from_bytes(bytes),
+        }
+    }
+
+    /// Public verifying key bytes (`D_S_pub`, 32 B).
+    #[must_use]
+    pub fn public_bytes(&self) -> [u8; 32] {
+        self.signing.verifying_key().to_bytes()
+    }
+
+    /// Private seed bytes (32 B). Use [`Zeroize`] on the returned array
+    /// after consumption.
+    #[must_use]
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.signing.to_bytes()
+    }
+
+    /// Sign `msg`; returns 64 raw bytes.
+    #[must_use]
+    pub fn sign(&self, msg: &[u8]) -> [u8; 64] {
+        self.signing.sign(msg).to_bytes()
+    }
+
+    /// Borrow the underlying `dalek` `SigningKey`.
+    #[inline]
+    pub const fn dalek(&self) -> &SigningKey {
+        &self.signing
+    }
+}
+
+/// Device DH keypair (X25519). The private half is `D_D_priv`; the public half
+/// is `D_D_pub`, which is what a `key_envelope` op seals a Stream key to.
+///
+/// Distinct from [`IdentityDhKeyPair`] for the same reason the signing pair is:
+/// the two recipient classes in ADR-0024 decision 4 differ only by which key
+/// they name, and sealing to the wrong one is the difference between "a device
+/// can read this epoch" and "a revoked device can read this epoch".
+#[derive(ZeroizeOnDrop)]
+pub struct DeviceDhKeyPair {
+    secret: StaticSecret,
+}
+
+impl core::fmt::Debug for DeviceDhKeyPair {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("DeviceDhKeyPair(<redacted>)")
+    }
+}
+
+impl DeviceDhKeyPair {
+    /// Generate a fresh keypair.
+    #[must_use]
+    pub fn generate<R: CryptoRngCore>(rng: &mut R) -> Self {
+        Self {
+            secret: StaticSecret::random_from_rng(rng),
+        }
+    }
+
+    /// Reconstruct from a 32-byte scalar.
+    #[must_use]
+    pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
+        Self {
+            secret: StaticSecret::from(bytes),
+        }
+    }
+
+    /// Public key bytes (`D_D_pub`, 32 B).
+    #[must_use]
+    pub fn public_bytes(&self) -> [u8; 32] {
+        XPublicKey::from(&self.secret).to_bytes()
+    }
+
+    /// Private scalar bytes (32 B). Zeroize the copy after consumption; the
+    /// only callers are the at-rest wrap and the pairing payload.
+    #[must_use]
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
+    }
+
+    /// Borrow the underlying X25519 secret. Used by HPKE / Noise.
+    #[inline]
+    pub const fn dalek(&self) -> &StaticSecret {
+        &self.secret
+    }
+}
 
 /// Vault root key — 32 bytes used to derive at-rest encryption keys.
 ///
@@ -306,6 +435,27 @@ mod tests {
         assert_ne!(a, c);
     }
 
+    /// The type-level claim `primitives.md` makes, asserted the only way a
+    /// test can: this compiles only because the two are separate types with
+    /// separate constructors, and a `pub type` alias would make every one of
+    /// these lines interchangeable.
+    #[test]
+    fn device_and_identity_keys_are_distinct_types() {
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let id_s = IdentitySigningKeyPair::generate(&mut rng);
+        let d_s = DeviceSigningKeyPair::from_secret_bytes(&id_s.secret_bytes());
+        // Same seed, same public key — the shapes really are identical...
+        assert_eq!(id_s.public_bytes(), d_s.public_bytes());
+        // ...and a signature made by one verifies under the other's public
+        // key, which is exactly why only the *type* can keep the roles apart.
+        let msg = b"role separation is a type, not a convention";
+        assert!(verify_ed25519(&d_s.public_bytes(), msg, &id_s.sign(msg)));
+
+        let id_d = IdentityDhKeyPair::generate(&mut rng);
+        let d_d = DeviceDhKeyPair::from_secret_bytes(id_d.secret_bytes());
+        assert_eq!(id_d.public_bytes(), d_d.public_bytes());
+    }
+
     #[test]
     fn debug_does_not_leak() {
         let v = VaultRootKey::from_bytes([0u8; 32]);
@@ -314,5 +464,14 @@ mod tests {
         assert_eq!(format!("{s:?}"), "StreamKey(<redacted>)");
         let r = RecoveryKey::from_bytes([0u8; 32]);
         assert_eq!(format!("{r:?}"), "RecoveryKey(<redacted>)");
+        let mut rng = ChaCha20Rng::seed_from_u64(3);
+        let ds = DeviceSigningKeyPair::generate(&mut rng);
+        assert_eq!(format!("{ds:?}"), "DeviceSigningKeyPair(<redacted>)");
+        let dd = DeviceDhKeyPair::generate(&mut rng);
+        assert_eq!(format!("{dd:?}"), "DeviceDhKeyPair(<redacted>)");
+        let is = IdentitySigningKeyPair::generate(&mut rng);
+        assert_eq!(format!("{is:?}"), "IdentitySigningKeyPair(<redacted>)");
+        let idh = IdentityDhKeyPair::generate(&mut rng);
+        assert_eq!(format!("{idh:?}"), "IdentityDhKeyPair(<redacted>)");
     }
 }

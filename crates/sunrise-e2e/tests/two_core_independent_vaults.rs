@@ -38,7 +38,10 @@ fn cfg(dir: &std::path::Path) -> CoreConfig {
 }
 
 fn unlock(seed: u8) -> Unlock {
-    Unlock::DevicePaired(VaultRootKey::from_bytes([seed; 32]))
+    Unlock::DevicePaired {
+        root: VaultRootKey::from_bytes([seed; 32]),
+        paired: None,
+    }
 }
 
 #[tokio::test]

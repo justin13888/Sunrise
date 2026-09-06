@@ -136,18 +136,28 @@ with opposite consequences:
   migration that can help, because the bytes describe an operation this binary
   has no code for.
 
-Both [ADR-0024](../11-adr/0024-key-hierarchy.md) (`key_envelope`,
-`device_revoke`) and [ADR-0025](../11-adr/0025-integration-account-entity.md)
-(the `IntegrationAccount` family) add op families, so both are breaking changes
-to the op vocabulary. That is acceptable pre-1.0 under
+[ADR-0024](../11-adr/0024-key-hierarchy.md) has landed three of them —
+`key_envelope`, `device_revoke` and `device_cert`, at `DOC_SCHEMA_V = 5` — and
+[ADR-0025](../11-adr/0025-integration-account-entity.md) (the
+`IntegrationAccount` family) will add another, so both are breaking changes to
+the op vocabulary. That is acceptable pre-1.0 under
 [ADR-0018](../11-adr/0018-storage-baseline-reset.md), where no older build
 exists — and it is recorded here rather than discovered later, because after
 1.0 the same change needs a flag day.
 
+Migration `0017` is the storage half of the same ADR, and it is the one
+migration so far that **drops** rows rather than adding to them: `stream_keys`
+is re-keyed on `(stream_id, epoch, key_id)`, and the pre-0017 rows held keys
+*derived* from the vault root, which the new schedule does not use. They are
+not migrated because they do not need to be — `Keychain::open` recomputes the
+old derivation once, for exactly the streams that have ops sealed under it, and
+files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
+(the `identity` and `deferred_ops` tables, four columns on `devices`, one on
+`streams`) is additive and needs no backfill, on the 0016 precedent.
+
 ## Migration testing
 
-With three migrations in the list, `crates/sunrise-storage/src/db.rs` and
-`migrations.rs` assert:
+`crates/sunrise-storage/src/db.rs` and `migrations.rs` assert:
 
 - a fresh vault applies all of them and lands at `STORAGE_V`, with the tables
   the collapse was supposed to preserve and without the schema it was supposed
@@ -159,6 +169,10 @@ With three migrations in the list, `crates/sunrise-storage/src/db.rs` and
   those rows were already being displayed** — asserted by replaying 0013 and
   then 0014 by hand, because a fresh vault has no rows for a backfill to touch,
   which is precisely the case a fresh-vault test cannot cover;
+- 0017 creates `identity` and `deferred_ops`, re-keys `stream_keys` on
+  `(stream_id, epoch, key_id)`, and leaves that table **empty** — asserted by
+  replaying up to 0016, writing a pre-hierarchy key row by hand, then applying
+  0017, because the drop is the part a fresh-vault test cannot see;
 - migration ids strictly ascend, and `current_storage_v()` equals the
   `STORAGE_V` constant, so the list and the constant cannot drift apart.
 

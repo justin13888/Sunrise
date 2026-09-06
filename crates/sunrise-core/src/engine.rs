@@ -49,9 +49,10 @@
 
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::{Clock, HlcClock, Rng};
+use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
-use crate::keychain::Keychain;
+use crate::keychain::{EnvelopeRecipient, KeySource, Keychain};
 use crate::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
     QueryResult, StreamRow,
@@ -61,7 +62,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
-use sunrise_crypto::{decode_envelope, verify_envelope, DeviceCert};
+use sunrise_crypto::{
+    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope, DeviceCert,
+    StreamKey,
+};
 use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
@@ -80,7 +84,7 @@ use sunrise_domain::{
     SessionLength, SessionRecord, StreakOutcome, StreakRow, Stream, StreamColor, StreamDraft,
     StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, TaskTemplate, Trends,
     ValidationError, WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
-    DRIFT_WINDOW_WEEKS, POMODORO_MS, TREND_WEEKS,
+    DRIFT_WINDOW_WEEKS, INBOX_STREAM_BYTES, POMODORO_MS, TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef, Ulid};
 use sunrise_storage::{Db, OpLog, Outbox};
@@ -88,13 +92,22 @@ use thiserror::Error;
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///
-/// v1 routing: Stream lifecycle ops (create/update/delete) and all routine ops
-/// are logged under this meta stream, while task ops are logged under their
-/// owning Stream's id. The Inbox stream id is *also* all-zeros
-/// (`INBOX_STREAM_BYTES`), so inbox-task ops and meta ops share this id and its
-/// derived Stream key in v1. Accepted: meta and inbox coincide until a dedicated
-/// meta-stream id is introduced.
-const META_STREAM: [u8; 16] = [0u8; 16];
+/// Routing: Stream lifecycle ops (create/update/delete), all routine ops, review
+/// snapshots and the control op families are logged under this meta stream,
+/// while task ops are logged under their owning Stream's id.
+///
+/// It is an ordinary member of the rotation set: revoking a device mints a new
+/// epoch here as it does for every other stream, so the *shape* of the account
+/// rotates along with its contents rather than staying on a fixed key forever.
+///
+/// That is a property of the rotation, not a bound on a revoked device — this
+/// build seals every epoch to the account identity as well, and every paired
+/// device holds `ID_D_priv`, so a revoked device reads the new meta epoch like
+/// any other. Bounding it is `#76`.
+///
+/// The Inbox no longer shares this id: see
+/// [`sunrise_domain::INBOX_STREAM_BYTES`].
+pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
 
 /// Upper bound on the trend window a caller may ask for.
 ///
@@ -110,6 +123,88 @@ const MAX_TREND_WEEKS: u32 = 104;
 /// enough that ranking sees every plausible candidate, and bounded so a huge
 /// vault cannot turn one keypress into a full-table sort.
 const FOCUS_PLAN_SCAN_CAP: u32 = 512;
+
+/// How far above this replica's live epoch an absorbed Stream key may sit.
+///
+/// `epoch` is a plain field of the signed envelope, so a member chooses it
+/// freely, and `current_epoch_tx` reads the live epoch as `MAX(epoch)`. Without
+/// a bound a single `key_envelope` at `u32::MAX` does two things at once:
+/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
+/// so rotation can never advance past it again, and every op this device seals
+/// from then on is sealed under a key only the sender holds — the victim goes
+/// dark to its own account, permanently, from one op.
+///
+/// The window can be this tight because a legitimate epoch is *walked*, never
+/// leapt. Each rotation raises one stream's epoch by exactly one and emits its
+/// `key_envelope` sealed under the meta epoch current at the time; a replica
+/// catching up absorbs the meta key for epoch n, drains the ops that key
+/// releases, and only then sees the envelopes for n+1. So the gap this has to
+/// tolerate is what can arrive out of order within one drain, not the number of
+/// rotations an account has ever performed. Sixty-four is far past that and far
+/// short of anything that would strand `mint_epoch`.
+///
+/// The residual is that a key genuinely more than 64 epochs ahead is refused
+/// and not retried. The refusal is a dropped *payload*, not a dropped op: the
+/// envelope still enters `ops` and the cursor still advances past it, so the
+/// relay will not re-send it and nothing re-offers the key. Ops sealed under
+/// that `(stream, epoch)` therefore stay unreadable on this replica until the
+/// device is re-paired, which is what hands it every Stream key the inviting
+/// device holds. That is the recovery, and it is the same one that covers a
+/// device whose `deferred_ops` entry aged out.
+///
+/// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
+/// only ways to reach it are a hostile sender and a bug.
+const MAX_EPOCH_LEAP: u32 = 64;
+
+/// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
+///
+/// A deferred op is one that arrived before the key that opens it, which is a
+/// real and ordinary race — but a *transient* one: the very next absorb of that
+/// key releases the whole bucket. So the honest population of one bucket is
+/// whatever a peer wrote in the gap between minting a key and its
+/// `key_envelope` reaching here, which is a burst, not a backlog. 256 covers a
+/// peer that wrote a full working session into the gap.
+const DEFERRED_PER_EPOCH_CAP: i64 = 256;
+
+/// How many ops may sit in `deferred_ops` across the whole vault.
+///
+/// A revocation rotates *every* stream at once, so several buckets can fill
+/// legitimately at the same moment; the total is sized for that rather than for
+/// one stream. 4096 is sixteen full buckets.
+///
+/// Both caps exist because `epoch` is attacker-chosen (see [`MAX_EPOCH_LEAP`])
+/// and `defer_op` is reached *before* anything about the payload is checked: a
+/// member could otherwise park bytes of its choosing on every peer in the
+/// account, at any `(stream, epoch)` it liked, with no ceiling.
+///
+/// Overflow evicts the **oldest** rows. Both directions lose something, and it
+/// is worth being plain about which:
+///
+/// * *Oldest-first*, what this does: a flood of fresh junk at one
+///   `(stream, epoch)` pushes out the honest ops already waiting there.
+/// * *Newest-first*, the alternative: the flood's own first 256 rows occupy the
+///   bucket and every honest op arriving behind it is turned away instead.
+///
+/// Oldest-first wins on two counts. A row that has waited longest is the one
+/// whose key is least likely to still be in flight, so it is the cheapest to
+/// lose; and the bucket **self-heals** — ordinary traffic pushes the junk out
+/// again — where newest-first leaves it poisoned until the TTL sweeps it.
+///
+/// Either way an evicted op is recoverable, which is what makes this a
+/// tolerable trade at all: a deferred op never reached `ops` and never advanced
+/// the sync cursor, so the relay still counts it as undelivered and re-sends it
+/// on the next reconnect, by which time the key that opens it has almost
+/// certainly arrived.
+const DEFERRED_TOTAL_CAP: i64 = 4096;
+
+/// How long a parked op is kept before a drain sweeps it away.
+///
+/// Nothing re-delivers the key for an op this old: the relay's op ring has long
+/// since evicted the `key_envelope` that would have released it, and no replica
+/// re-emits one on request. Keeping it is keeping ciphertext this device will
+/// never read. Thirty days is generous against every offline window a person
+/// actually has and still bounds a slow drip that never reaches either cap.
+const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
@@ -145,12 +240,18 @@ pub enum EngineError {
     #[error("remote op invalid: {0}")]
     RemoteOpInvalid(String),
     /// A remote op envelope names a `device_id` that is not present in the
-    /// local `devices` table (never trusted via [`Command::TrustDevice`]).
+    /// local `devices` table.
+    ///
+    /// Since ADR-0024 a device becomes known by publishing its identity-signed
+    /// cert as a `DeviceCertPublish` op, not by a local `TrustDevice` command.
     ///
     /// Maps to [`sunrise_error::ErrorCode::SyncOpInvalid`] at the public API:
     /// the op decoded but failed a semantic (trust) check.
     #[error("remote op from unknown device")]
     UnknownDevice,
+    /// Keychain failure while resolving or absorbing a Stream key.
+    #[error("keychain: {0}")]
+    Keychain(String),
 }
 
 /// One command-application pipeline. Stateless; holds references to the
@@ -259,7 +360,10 @@ impl Engine {
             Command::AttachFile(d) => self.attach_file(db, d),
             Command::DetachFile(id) => self.detach_file(db, id),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
-            Command::TrustDevice { cert_cbor } => self.trust_device(db, &cert_cbor),
+            Command::RevokeDevice { device_id, reason } => {
+                self.revoke_device(db, device_id, reason)
+            }
+            Command::RotateStreamKey { stream } => self.rotate_stream_key(db, stream),
             Command::StartFocus(d) => self.start_focus(db, d),
             Command::EndFocus {
                 session,
@@ -339,53 +443,198 @@ impl Engine {
         }
     }
 
-    // ---- device trust + remote apply (receive half of sync) ----
+    // ---- device lifecycle + remote apply (receive half of sync) ----
 
-    /// Trust a peer device from its self-issued [`DeviceCert`] (canonical CBOR).
+    /// Record a device as revoked, and mint a new epoch for every stream it
+    /// could read.
     ///
-    /// Verifies the cert is well-formed and self-signed (v1: the issuing
-    /// identity key is the device signing key), then upserts `device_id`,
-    /// `cert_blob` (which carries `D_S_pub`), nickname, and platform into the
-    /// `devices` table. Emits **no op** — device trust is local state in v1.
-    fn trust_device(&self, db: &mut Db, cert_cbor: &[u8]) -> Result<CommandResult, EngineError> {
-        let cert = DeviceCert::from_cbor(cert_cbor)
-            .map_err(|e| EngineError::Invalid(format!("device cert decode: {e}")))?;
-        // Self-signed check: verify the cert against its own embedded signing
-        // pubkey, matching keychain issuance (`DeviceCert::issue(body, &signing)`
-        // where `signing` is the device key). Rejects tampered/foreign certs.
-        cert.verify(&cert.body.d_s_pub)
-            .map_err(|e| EngineError::Invalid(format!("device cert verify: {e}")))?;
-        let device_id = cert.body.device_id;
-        let cert_owned = cert_cbor.to_vec();
-        let nickname = cert.body.nickname.clone();
-        let platform = cert.body.platform.clone();
-        let created_at_ms = cert.body.created_at_ms;
+    /// **This bounds nothing about the revoked device.** It records a cut every
+    /// replica converges on, and rotates keys that are then sealed to the
+    /// revoked device along with everyone else. Reads are `#76`, writes are
+    /// `#82` behind `#80`, and converging the *effect* is `#78`. The rotation
+    /// is still worth doing — it is what makes a future epoch a different key
+    /// at all — but a caller must not read it as cutting anybody off.
+    ///
+    /// Three things happen in one transaction, and the order is the design:
+    ///
+    /// 1. The `DeviceRevoke` op is emitted and the revocation register is
+    ///    written, through the same [`Self::apply_control_op`] a remote op
+    ///    takes, so the local and remote paths cannot disagree.
+    /// 2. Every stream in the rotation set — the vault-meta stream and the
+    ///    Inbox included, not only user Streams — mints a fresh epoch.
+    /// 3. The `key_envelope` ops carrying those keys are sealed under the
+    ///    **pre-rotation** vault-meta epoch, because a device that has not yet
+    ///    received the new meta key cannot read an op sealed under it.
+    ///
+    /// The vault-meta stream is in the set so that the *shape* of the account —
+    /// its Streams, Contexts and Routines — rotates with its contents rather
+    /// than staying on one key forever. That matters for whoever implements
+    /// `#76`; it does not, on its own, stop anybody reading anything.
+    ///
+    /// What no rotation could ever do: the revoked device keeps every key it
+    /// already held, so it keeps everything it could already read. Rotation
+    /// bounds forward exposure at best, never backward — and today, not even
+    /// that.
+    fn revoke_device(
+        &self,
+        db: &mut Db,
+        device_id: EntityRef,
+        reason: RevokeReason,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let revoked = *device_id.bytes();
+        if revoked == self.keychain.device_id() {
+            return Err(EngineError::Invalid(
+                "a device cannot revoke itself: it would rotate every key away from the only \
+                 device holding them"
+                    .into(),
+            ));
+        }
+        let op_id = self.fresh_op_id(now_ms);
+        let revoke = InnerOp::DeviceRevoke(DeviceRevokePayload {
+            revoked_device_id: revoked,
+            reason_code: reason,
+        });
+        let inner = encode_inner_op(&revoke)?;
+
+        // Read inside the transaction, and after the epoch below has been
+        // resolved. Resolving it can mint the vault-meta stream's own first key
+        // and emit `key_envelope` ops into this very stream, each taking a
+        // `seq`; a number read beforehand would already be spent by the time
+        // this op reached the log, and `ops` has a
+        // `UNIQUE(stream_id, device_id, seq)`. That is the bug `60ee61d`
+        // fixed for `emit_control_op`, and this is the same shape.
+        let mut seq = 0u64;
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            // Upsert: re-trusting a known device refreshes its cert blob.
-            tx.execute(
-                "INSERT INTO devices
-                 (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms)
-                 VALUES (?, ?, ?, ?, ?, NULL)
-                 ON CONFLICT(device_id) DO UPDATE SET
-                    cert_blob = excluded.cert_blob,
-                    nickname = excluded.nickname,
-                    platform = excluded.platform",
-                params![
-                    &device_id[..],
-                    cert_owned,
-                    nickname,
-                    platform,
-                    created_at_ms
-                ],
+            let known: i64 = tx.query_row(
+                "SELECT count(*) FROM devices WHERE device_id = ?",
+                params![&revoked[..]],
+                |r| r.get(0),
             )?;
+            if known == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            // The epoch every rotation op is sealed under: read before
+            // anything is minted, so it is the epoch the departing devices and
+            // the remaining ones all still share.
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            seq = self.next_seq_tx(tx, &META_STREAM)?;
+            let hlc = self.hlc.send();
+
+            // 1. The revocation itself, sealed under the old meta epoch like
+            //    every other op in this transaction.
+            self.ops_insert_at(
+                tx,
+                &op_id,
+                &META_STREAM,
+                seq,
+                hlc,
+                &inner,
+                "device.revoke",
+                "device",
+                Some(&revoked),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+                seal_under.0,
+                &seal_under.1,
+            )?;
+            // The row is written by `apply_control_op` and by nothing else.
+            // A second writer here was a real defect and not a tidiness point:
+            // this one was an unconditional `UPDATE` while the remote path took
+            // a join, so a user revoking an already-revoked device on their own
+            // machine moved that machine's cut while every peer kept the
+            // other. The local device is then the only replica accepting a
+            // window of ops, which is precisely the divergence the register
+            // exists to prevent.
+            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
+
+            // 2 + 3. Rotate everything, and seal each new epoch to **every**
+            //        device — the revoked one included. That is not an
+            //        oversight: the epoch is sealed to the account identity as
+            //        well, and every paired device holds `ID_D_priv`, so
+            //        leaving it out of the device recipients withholds nothing.
+            //        See `Self::emit_key_envelopes` and issue #76. What the
+            //        rotation buys is that a *later* epoch is a different key
+            //        at all, which is the thing that was impossible before.
+            for stream_id in self.keychain.rotation_set(tx)? {
+                let (epoch, key) =
+                    self.keychain
+                        .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+                self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))?;
+            }
             Ok(())
+        })
+        .map_err(|e| match e {
+            sunrise_storage::DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows) => {
+                EngineError::NotFound(format!("device {}", hex_short(&revoked)))
+            }
+            other => EngineError::Storage(other),
+        })?;
+
+        Ok(CommandResult::new(device_id, None, op_id, seq))
+    }
+
+    /// Mint a new epoch for one Stream and distribute it.
+    ///
+    /// The narrow form of what [`Self::revoke_device`] does to everything: used
+    /// when a Stream key is believed exposed without a device being at fault,
+    /// and as the seam a share-revocation will hang off.
+    fn rotate_stream_key(
+        &self,
+        db: &mut Db,
+        stream: EntityRef,
+    ) -> Result<CommandResult, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let stream_id = *stream.bytes();
+        let mut minted = 0u32;
+        // Read inside the transaction, for the reason given in
+        // [`Self::revoke_device`]: resolving the meta epoch can emit ops into
+        // the very stream this number counts.
+        let mut seq = 0u64;
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            seq = self.next_seq_tx(tx, &META_STREAM)?;
+            let (epoch, key) =
+                self.keychain
+                    .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+            minted = epoch;
+            self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))
         })?;
         Ok(CommandResult::new(
-            EntityRef::new(EntityKind::Device, device_id),
+            stream,
             None,
             [0u8; 16],
-            0,
+            u64::from(minted).max(seq),
         ))
+    }
+
+    /// Publish this device's identity-signed cert so every replica can verify
+    /// its envelopes.
+    ///
+    /// Emitted by `Core::open` once per vault. It replaces the manual
+    /// `Command::TrustDevice` exchange, which accepted a cert from a caller if
+    /// it was self-signed — a check every cert passes, including a stranger's.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn publish_device_cert(&self, db: &mut Db) -> Result<(), EngineError> {
+        let now_ms = self.clock.now_ms();
+        let cert = self.keychain.cert_blob().to_vec();
+        let device_id = self.keychain.device_id();
+        let already: i64 = db.conn().query_row(
+            "SELECT count(*) FROM ops WHERE inner_kind = 'device.cert' AND device_id = ?",
+            params![&device_id[..]],
+            |r| r.get(0),
+        )?;
+        if already > 0 {
+            return Ok(());
+        }
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            self.emit_control_op(tx, &InnerOp::DeviceCertPublish(cert), now_ms, None)
+        })?;
+        Ok(())
     }
 
     /// Apply a remote op envelope: idempotent, entity-level last-writer-wins.
@@ -394,26 +643,31 @@ impl Engine {
     /// `BEGIN IMMEDIATE` transaction (after out-of-tx crypto verification):
     ///
     /// 1. `decode_envelope` — malformed bytes are rejected.
-    /// 2. Sender lookup — `envelope.device_id` must be a trusted (non-revoked)
-    ///    row in `devices`, else [`EngineError::UnknownDevice`].
+    /// 2. Sender lookup — `envelope.device_id` must be a device this vault has
+    ///    admitted, else [`EngineError::UnknownDevice`]. Revocation is **not**
+    ///    consulted, here or anywhere else on this path: the register is
+    ///    recorded and converged, and read by nothing.
     /// 3. `verify_envelope` against the stored device pubkey — a bad signature
     ///    is never applied.
-    /// 4. Decrypt under the shared Stream key (same derivation as the sender —
-    ///    the pairing model shares a vault root) and decode the inner op. A
-    ///    different vault root derives a different key and fails AEAD.
-    /// 5. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
-    ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
-    ///    op was already present (`changes() == 0`), return `Ok(None)` with no
-    ///    materialization and no event.
+    /// 4. Decrypt under the Stream key for the envelope's `(stream_id, epoch)`
+    ///    and decode the inner op. **No key is not an error**: the
+    ///    `key_envelope` op carrying it may not have arrived, so the op is
+    ///    parked in `deferred_ops` and this returns `Ok(vec![])` without
+    ///    reaching any step below. It is retried after every absorbed key.
     /// 5. Clock gate: the envelope's `hlc` is observed into this device's HLC.
     ///    A reading beyond `MAX_DRIFT_MS` in the future is refused outright —
     ///    see [`sunrise_cbor::hlc`].
-    /// 6. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
+    /// 6. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
+    ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
+    ///    op was already present (`changes() == 0`), return `Ok(None)` with no
+    ///    materialization and no event.
+    /// 7. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
     ///    is compared against the envelope's. The greater tuple wins. A winning
     ///    op performs the same materialized-row upsert the local path does and
     ///    stamps the row with the SENDER's values; a losing op keeps the row
     ///    but stays recorded in the op log.
-    /// 7. Advance `sync_cursors(stream_id, device_id)` to `max(seq)`.
+    /// 8. Advance `sync_cursors(stream_id, device_id)` over the contiguous
+    ///    applied prefix.
     ///
     /// Remote ops are **not** enqueued in the outbox: the relay fans out to
     /// peers, so re-broadcasting a received op would loop.
@@ -431,28 +685,85 @@ impl Engine {
         db: &mut Db,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, EngineError> {
+        Ok(self
+            .apply_remote_all(db, envelope_bytes)?
+            .into_iter()
+            .next())
+    }
+
+    /// [`Self::apply_remote`], returning **every** event the delivery produced.
+    ///
+    /// One envelope can produce more than one, and the case is not exotic: a
+    /// `key_envelope` op is itself silent, but absorbing the key it carries
+    /// releases every op that had been parked waiting for it. Those ops
+    /// materialize now, and a caller that broadcast only the first — or only
+    /// the envelope op's own `None` — would leave a screen showing a vault the
+    /// database no longer contains. [`crate::Core::apply_remote`] takes this
+    /// form for exactly that reason.
+    pub fn apply_remote_all(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         // a. Decode.
         let env = decode_envelope(envelope_bytes)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;
 
-        // b. Sender must be a trusted, non-revoked device.
-        let cert_blob = self
-            .lookup_device_cert(db, &env.device_id)?
-            .ok_or(EngineError::UnknownDevice)?;
-        let cert = DeviceCert::from_cbor(&cert_blob)
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
-        let d_s_pub = cert.body.d_s_pub;
+        // b. Sender must be a device this vault has admitted.
+        //
+        //    One family bypasses the lookup, because it is what *creates* the
+        //    row the lookup reads: a `DeviceCertPublish` op carries the
+        //    sender's own identity-signed cert, and is self-authenticating —
+        //    the envelope signature is checked against the cert's own
+        //    `d_s_pub`, and the cert against this vault's account identity. A
+        //    stranger's cert fails the second check however it is delivered,
+        //    which is exactly what `Command::TrustDevice` could not do.
+        //
+        //    A *revoked* device's row is found here like any other, and its op
+        //    is applied like any other. Revocation is recorded and converged by
+        //    this vault and enforced by nothing in it — see
+        //    [`Self::apply_control_op`] for what that means and where the
+        //    enforcement is tracked.
+        let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
+            Some(cert_blob) => {
+                let cert = DeviceCert::from_cbor(&cert_blob)
+                    .map_err(|e| EngineError::RemoteOpInvalid(format!("stored cert: {e}")))?;
+                cert.body.d_s_pub
+            }
+            None => self.self_authenticating_signer(db, envelope_bytes, &env)?,
+        };
 
         // c. Verify the signature before doing anything else.
         verify_envelope(&env, &d_s_pub)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("verify: {e}")))?;
 
-        // d. Decrypt under the shared Stream key and decode the inner op.
-        let stream_key = self.keychain.stream_key(&env.stream_id);
-        let inner_cbor = open_envelope(&env, &d_s_pub, Some(&stream_key))
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("open: {e}")))?;
-        let inner = decode_inner_op(&inner_cbor)
+        // d. Decrypt under whichever key at `(stream_id, epoch)` opens it. Two
+        //    devices can have minted that epoch concurrently, so this is a
+        //    short list rather than a single key, and the AEAD tag is what
+        //    picks — not a stored discriminator that could be lied about.
+        //
+        //    No key at all is NOT an error: the `key_envelope` op that carries
+        //    it may simply not have arrived yet, and the two have no ordering
+        //    guarantee across streams. Refusing would lose the op (the relay
+        //    does not redeliver), and a cursor barrier would stall the whole
+        //    stream. It is parked in `deferred_ops` and retried after every
+        //    absorbed key.
+        let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
+        if keys.is_empty() {
+            self.defer_op(db, envelope_bytes, &env)?;
+            return Ok(Vec::new());
+        }
+        let inner_cbor = keys
+            .iter()
+            .find_map(|k| open_envelope(&env, &d_s_pub, Some(k)).ok())
+            .ok_or_else(|| {
+                EngineError::RemoteOpInvalid(
+                    "no key at this (stream, epoch) opens the envelope".into(),
+                )
+            })?;
+        let mut inner = decode_inner_op(&inner_cbor)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
+        remap_legacy_inbox(&mut inner);
 
         // e. Clock gate. A reading far in OUR future is a broken or hostile
         //    clock; absorbing it would drag this device's HLC forward with the
@@ -480,6 +791,7 @@ impl Engine {
         let target_kind = inner.target_kind();
 
         let mut applied = false;
+        let mut absorbed: Vec<([u8; 16], u32)> = Vec::new();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             // e. Idempotence gate.
             OpLog::insert(
@@ -507,24 +819,507 @@ impl Engine {
                 return Ok(());
             }
             applied = true;
-            // f. LWW materialization.
-            materialize_remote(tx, &inner, &lww)?;
+            if inner.is_control() {
+                // f'. Control ops carry key material and trust, not entity
+                //     state. They have no row and no LWW contest; routing one
+                //     into `materialize_remote` would file it under `tasks`,
+                //     because that function's kind table ends in a `_ =>` arm.
+                absorbed = self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms)?;
+            } else {
+                // f. LWW materialization.
+                materialize_remote(tx, &inner, &lww)?;
+            }
             // g. Advance the sync cursor to the end of the contiguous prefix.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
             Ok(())
         })?;
 
         if !applied {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(match effect {
-            OpEffect::Create => DomainEvent::Created(target),
-            OpEffect::Update => DomainEvent::Updated(target),
-            OpEffect::Delete => DomainEvent::Deleted(target),
-        }))
+        let mut events = match effect {
+            OpEffect::Create => vec![DomainEvent::Created(target)],
+            OpEffect::Update => vec![DomainEvent::Updated(target)],
+            OpEffect::Delete => vec![DomainEvent::Deleted(target)],
+            // The control op itself changed nothing on screen. What it
+            // released might have.
+            OpEffect::Control => Vec::new(),
+        };
+        // A newly absorbed key may be the one a parked op was waiting for.
+        for (stream_id, epoch) in absorbed {
+            events.extend(self.drain_deferred(db, &stream_id, epoch)?);
+        }
+        Ok(events)
     }
 
-    /// Trusted device cert lookup (non-revoked). `None` = untrusted sender.
+    /// Recover the signing key for an op from a device this vault has never
+    /// seen, when — and only when — the op is that device publishing its own
+    /// identity-signed cert.
+    ///
+    /// Both checks matter. The envelope must be signed by the key the cert
+    /// names, which proves the sender holds `D_S_priv`; and the cert must
+    /// verify under *this vault's* `ID_S_pub` with an `identity_id` recomputed
+    /// from it, which proves the account admitted that device. Either one alone
+    /// is bypassable: without the first, anyone can replay someone else's cert;
+    /// without the second, any self-signed cert is accepted, which is precisely
+    /// the hole `Command::TrustDevice` had.
+    fn self_authenticating_signer(
+        &self,
+        db: &Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+    ) -> Result<[u8; 32], EngineError> {
+        let _ = envelope_bytes;
+        // The payload is only readable once we have a key for the stream, and
+        // we only have one if the sender is inside the account already. That is
+        // the point: the cert travels in the vault-meta stream, sealed under a
+        // key only members hold, so a stranger cannot even present one.
+        let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
+        for key in &keys {
+            // Verification is deferred to the caller, so open without checking
+            // the signature first — the payload is authenticated by the AEAD
+            // tag regardless, and the signature check follows immediately.
+            let Ok(inner_cbor) = open_envelope_unverified(env, key) else {
+                continue;
+            };
+            let Ok(InnerOp::DeviceCertPublish(cert_cbor)) = decode_inner_op(&inner_cbor) else {
+                continue;
+            };
+            let cert = DeviceCert::from_cbor(&cert_cbor)
+                .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
+            if cert.body.device_id != env.device_id {
+                return Err(EngineError::RemoteOpInvalid(
+                    "published cert names another device".into(),
+                ));
+            }
+            cert.verify_binding(
+                &self.keychain.identity_signing_pub(),
+                &self.keychain.identity_id(),
+            )
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
+            let _ = db;
+            return Ok(cert.body.d_s_pub);
+        }
+        Err(EngineError::UnknownDevice)
+    }
+
+    /// Whether `device_id` was revoked at or before `at_ms`, read from the
+    /// register.
+    ///
+    /// **Test-only, and that is the finding rather than an oversight.** Nothing
+    /// on any production path asks this question, because nothing acts on the
+    /// answer: this pull request records a revocation and converges it, and
+    /// enforces it nowhere. The only production reader of the register is
+    /// [`Self::query_device_list`], which reports whether a device is revoked
+    /// at all — not whether a particular op falls after the cut — and no client
+    /// reads that flag today either.
+    ///
+    /// It stays because the convergence tests are about the cut being a *time*,
+    /// and asserting that through this reads as what it is. If a later change
+    /// gives the cut an effect — reads are
+    /// [#76](https://github.com/justin13888/Sunrise/issues/76), writes are
+    /// [#82](https://github.com/justin13888/Sunrise/issues/82) behind
+    /// [#80](https://github.com/justin13888/Sunrise/issues/80) — this is the
+    /// function it will call, and the `cfg` comes off then.
+    #[cfg(test)]
+    fn is_revoked_at(
+        &self,
+        conn: &rusqlite::Connection,
+        device_id: &[u8; 16],
+        at_ms: u64,
+    ) -> rusqlite::Result<bool> {
+        let revoked: Option<i64> = conn
+            .query_row(
+                "SELECT cut_ms FROM device_revocations WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(revoked.is_some_and(|effective| u64::try_from(effective).unwrap_or(0) <= at_ms))
+    }
+
+    /// Park an op whose Stream key has not arrived yet.
+    ///
+    /// Bounded by [`DEFERRED_PER_EPOCH_CAP`] and [`DEFERRED_TOTAL_CAP`]. This
+    /// runs before anything about the payload has been checked — the key
+    /// that would open it is precisely what is missing — so the only thing
+    /// standing between a member and unbounded storage on every peer is the
+    /// two caps. Overflow evicts oldest-first; see [`DEFERRED_TOTAL_CAP`] for
+    /// why that direction and not the other.
+    fn defer_op(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+    ) -> Result<(), EngineError> {
+        let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
+        let now_ms = self.clock.now_ms();
+        let mut evicted = 0usize;
+        db.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO deferred_ops
+                 (op_id, stream_id, epoch, envelope, received_at_ms)
+                 VALUES (?, ?, ?, ?, ?)",
+                params![
+                    &op_id[..],
+                    &env.stream_id[..],
+                    env.epoch,
+                    envelope_bytes,
+                    now_ms
+                ],
+            )?;
+            // `received_at_ms` alone does not order rows within one clock
+            // millisecond, so `op_id` breaks the tie and keeps the eviction
+            // total rather than arbitrary.
+            evicted += tx.execute(
+                "DELETE FROM deferred_ops WHERE op_id IN (
+                     SELECT op_id FROM deferred_ops
+                     WHERE stream_id = ?1 AND epoch = ?2
+                     ORDER BY received_at_ms DESC, op_id DESC
+                     LIMIT -1 OFFSET ?3
+                 )",
+                params![&env.stream_id[..], env.epoch, DEFERRED_PER_EPOCH_CAP],
+            )?;
+            evicted += tx.execute(
+                "DELETE FROM deferred_ops WHERE op_id IN (
+                     SELECT op_id FROM deferred_ops
+                     ORDER BY received_at_ms DESC, op_id DESC
+                     LIMIT -1 OFFSET ?1
+                 )",
+                params![DEFERRED_TOTAL_CAP],
+            )?;
+            Ok(())
+        })?;
+        if evicted > 0 {
+            tracing::warn!(
+                ev = "core.op.deferred_evicted",
+                n_dropped = evicted,
+                stream_h = hex_short(&env.stream_id),
+                "the parked-op buffer is full; the oldest entries were dropped"
+            );
+        }
+        Ok(())
+    }
+
+    /// Re-apply every op parked against `(stream_id, epoch)`.
+    ///
+    /// Called after every absorbed key. A drained op takes the ordinary
+    /// `apply_remote` path, so it goes through the same trust, clock and LWW
+    /// gates it would have on first delivery; it is only its *arrival order*
+    /// that was wrong. The row is deleted before the retry so a permanently
+    /// unopenable op cannot make every subsequent absorb replay it forever.
+    fn drain_deferred(
+        &self,
+        db: &mut Db,
+        stream_id: &[u8; 16],
+        epoch: u32,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        let parked: Vec<Vec<u8>> = {
+            let mut stmt = db.conn().prepare(
+                "SELECT envelope FROM deferred_ops
+                 WHERE stream_id = ? AND epoch = ? ORDER BY received_at_ms",
+            )?;
+            let rows = stmt
+                .query_map(params![&stream_id[..], epoch], |r| r.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        // The age sweep runs on **every** absorbed key, not only on one that
+        // releases something. It used to sit past the early return below, so it
+        // ran only when this exact `(stream, epoch)` had rows parked — which is
+        // precisely the bucket about to be emptied anyway. A row ages out
+        // because nothing ever arrives for its bucket, so the one condition
+        // that reached the sweep was the one condition under which there was
+        // nothing to sweep. See [`DEFERRED_TTL_MS`] for why a row this old is
+        // ciphertext nobody will ever open.
+        let cutoff =
+            i64::try_from(self.clock.now_ms().saturating_sub(DEFERRED_TTL_MS)).unwrap_or(i64::MAX);
+        db.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM deferred_ops WHERE received_at_ms < ?",
+                params![cutoff],
+            )?;
+            Ok(())
+        })?;
+        if parked.is_empty() {
+            return Ok(Vec::new());
+        }
+        db.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM deferred_ops WHERE stream_id = ? AND epoch = ?",
+                params![&stream_id[..], epoch],
+            )?;
+            Ok(())
+        })?;
+        let mut events = Vec::new();
+        for envelope in parked {
+            // A drained op that still cannot be applied is dropped rather than
+            // failing the absorb that released it: the key arrived correctly,
+            // and one bad op must not undo that.
+            if let Ok(more) = self.apply_remote_all(db, &envelope) {
+                events.extend(more);
+            }
+        }
+        Ok(events)
+    }
+
+    /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys
+    /// this device newly learned, so the caller can drain their parked ops.
+    fn apply_control_op(
+        &self,
+        tx: &Transaction<'_>,
+        inner: &InnerOp,
+        sender: &[u8; 16],
+        hlc: Hlc,
+        now_ms: u64,
+    ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
+        match inner {
+            InnerOp::KeyEnvelope(p) => {
+                let recipient = match p.recipient {
+                    Recipient::Device(id) if id == self.keychain.device_id() => {
+                        EnvelopeRecipient::Device
+                    }
+                    // The identity copy is opened too. A device that already
+                    // holds the key learns nothing; one that was paired from a
+                    // recovery blob learns everything, and the alternative is a
+                    // second op family that says the same thing.
+                    Recipient::Identity(_) => EnvelopeRecipient::Identity,
+                    // Somebody else's copy. Retained in the log — the relay
+                    // fans out to every device — and simply not opened.
+                    Recipient::Device(_) => return Ok(Vec::new()),
+                };
+                let Ok(key) = self.keychain.open_key_envelope(
+                    recipient,
+                    &p.stream_id,
+                    p.epoch,
+                    &p.hpke_ciphertext,
+                ) else {
+                    return Ok(Vec::new());
+                };
+                // The `key_id` is a routing hint, so it is re-derived from the
+                // opened key rather than trusted. A mismatch means the sender
+                // is confused or hostile; either way the key itself is what
+                // opens ops, and it is filed under its real id.
+                if stream_key_id(&key) != p.key_id {
+                    return Ok(Vec::new());
+                }
+                // An epoch far above this replica's live one is refused
+                // before it can be written. `MAX(epoch)` is what makes a key
+                // live, so absorbing an absurd one strands `mint_epoch` at the
+                // saturation point and redirects every op this device seals
+                // afterwards to a key nobody else holds. See
+                // [`MAX_EPOCH_LEAP`].
+                let live = self
+                    .keychain
+                    .current_epoch_tx(tx, &p.stream_id)?
+                    .unwrap_or(0);
+                if p.epoch > live.saturating_add(MAX_EPOCH_LEAP) {
+                    tracing::warn!(
+                        ev = "core.key.epoch_refused",
+                        stream_h = hex_short(&p.stream_id),
+                        epoch = p.epoch,
+                        live_epoch = live,
+                        "a key envelope names an epoch too far above this vault's own"
+                    );
+                    return Ok(Vec::new());
+                }
+                let learned = self.keychain.absorb_stream_key(
+                    tx,
+                    &p.stream_id,
+                    p.epoch,
+                    &key,
+                    KeySource::Envelope,
+                    self.rng.as_ref(),
+                    now_ms,
+                )?;
+                Ok(if learned {
+                    vec![(p.stream_id, p.epoch)]
+                } else {
+                    Vec::new()
+                })
+            }
+            InnerOp::DeviceRevoke(p) => {
+                // The revocation row is an **LWW register** keyed on the op's
+                // own `(hlc, device_id)` — the same rule ADR-0014 resolves
+                // every other concurrent write in this engine with, rather than
+                // a bespoke one for this family.
+                //
+                // The cut is that same HLC. There is no `effective_at` field to
+                // pick a winner between, which is the point: see
+                // [`DeviceRevokePayload`] for the two bounds that could not be
+                // made to hold on an emitter-chosen one.
+                //
+                // Why LWW and not "earliest cut wins", which this arm briefly
+                // did: `MIN` converges, but it is **irreversible**. A cut that
+                // lands too far in the past — which a device with a slow clock
+                // produced through the ordinary command, no crafted input
+                // needed — could never be corrected, and it refuses its
+                // target's entire history on every replica. Under LWW a later
+                // revocation supersedes an earlier one, so a bad cut is fixed
+                // by revoking again from a healthy device.
+                //
+                // `logical` is in the key because an HLC is `(physical,
+                // logical)` and comparing physical alone would drop the half
+                // that orders two ops inside one millisecond. `revoked_by`
+                // breaks the remaining tie the way `LwwStamp` does, so
+                // `revoke_reason` and `revoked_by` follow the winning op
+                // instead of being order-dependent alongside a converged
+                // timestamp.
+                // A device cannot revoke itself, and cannot move its own
+                // cut. Register hygiene independent of any gate: a device that
+                // can rewrite its own row can push its cut forward and undo a
+                // revocation somebody else made of it, which is the one edit
+                // the register must never accept from the party it is about.
+                // `Command::RevokeDevice` refuses it locally for the separate
+                // reason that rotating every key away from the only device
+                // holding them is not a recoverable state; this is the remote
+                // half, and neither implies the other.
+                if p.revoked_device_id == *sender {
+                    tracing::warn!(
+                        ev = "core.device.revoke_refused",
+                        reason = "self",
+                        sender_h = hex_short(sender),
+                        "a device tried to move its own revocation cut"
+                    );
+                    return Ok(Vec::new());
+                }
+                let cut = i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX);
+                let logical = i64::from(hlc.logical);
+                // Its own table, keyed on the revoked device id, so a
+                // revocation naming a device this replica has never seen is
+                // durable without inventing one. That case is ordinary: the
+                // cert travels in the same stream with no ordering guarantee,
+                // and one parked in `deferred_ops` at meta epoch k drains after
+                // a revocation absorbed at k+1.
+                //
+                // Upserting into `devices` handled it and cost too much — every
+                // such op minted a row there, so revocations of ids nobody
+                // knows became phantom entries in the user's device list, and a
+                // phantom row also satisfied `revoke_device`'s "is this device
+                // known" guard, which would mint a fresh epoch for every stream
+                // in the account on the way to revoking a ghost.
+                tx.execute(
+                    "INSERT INTO device_revocations
+                     (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+                     VALUES (?4, ?1, ?2, ?3, ?5, ?6)
+                     ON CONFLICT(device_id) DO UPDATE SET
+                        cut_ms = ?1,
+                        cut_logical = ?2,
+                        revoked_by = ?3,
+                        reason = ?5,
+                        recorded_at_ms = ?6
+                     WHERE (?1, ?2, ?3) > (cut_ms, cut_logical, revoked_by)",
+                    params![
+                        cut,
+                        logical,
+                        &sender[..],
+                        &p.revoked_device_id[..],
+                        p.reason_code.as_str(),
+                        i64::try_from(now_ms).unwrap_or(i64::MAX),
+                    ],
+                )?;
+                Ok(Vec::new())
+            }
+            InnerOp::DeviceCertPublish(cert_cbor) => {
+                // Verified in `self_authenticating_signer` before we ever got
+                // here for an unknown sender; re-verified here because a known
+                // sender's op takes the ordinary path and could otherwise
+                // publish an unchecked cert for a third device.
+                //
+                // Every rejection below is logged rather than returned. The
+                // caller is `apply_remote`, which has already accepted the
+                // envelope — the signature verified and the sender is a member
+                // — so failing the whole delivery would put a well-formed op
+                // into the refusal path over a payload defect. But dropping it
+                // *silently* is how a `d_d_pub` stays NULL forever while the
+                // vault looks healthy: the device is never a `key_envelope`
+                // recipient, its peers' ops park in `deferred_ops`, and nothing
+                // anywhere says why.
+                let Ok(cert) = DeviceCert::from_cbor(cert_cbor) else {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "undecodable",
+                        sender_h = hex_short(sender),
+                        "a published device cert did not decode"
+                    );
+                    return Ok(Vec::new());
+                };
+                // A cert is published by the device it names, and by no one
+                // else. Without this, any member could rebind a sibling's
+                // `cert_blob` — and with it that sibling's `d_s_pub` and
+                // `d_d_pub` — through the `ON CONFLICT DO UPDATE` below: a
+                // converging denial of service on the sibling's future ops and
+                // a redirect of its future `key_envelope`s. The unknown-sender
+                // path in `self_authenticating_signer` has always made this
+                // check; the two paths now agree.
+                if cert.body.device_id != *sender {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "names_another_device",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        "a device published a cert naming another device"
+                    );
+                    return Ok(Vec::new());
+                }
+                if cert
+                    .verify_binding(
+                        &self.keychain.identity_signing_pub(),
+                        &self.keychain.identity_id(),
+                    )
+                    .is_err()
+                {
+                    tracing::warn!(
+                        ev = "core.device.cert_rejected",
+                        reason = "binding",
+                        sender_h = hex_short(sender),
+                        "a published device cert does not verify under this account identity"
+                    );
+                    return Ok(Vec::new());
+                }
+                tx.execute(
+                    "INSERT INTO devices
+                     (device_id, cert_blob, nickname, platform, created_at_ms,
+                      identity_id, d_d_pub)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(device_id) DO UPDATE SET
+                        cert_blob = excluded.cert_blob,
+                        nickname = excluded.nickname,
+                        platform = excluded.platform,
+                        identity_id = excluded.identity_id,
+                        d_d_pub = excluded.d_d_pub",
+                    params![
+                        &cert.body.device_id[..],
+                        cert_cbor,
+                        cert.body.nickname,
+                        cert.body.platform,
+                        i64::try_from(cert.body.created_at_ms).unwrap_or(i64::MAX),
+                        &cert.body.identity_id[..],
+                        &cert.body.d_d_pub[..],
+                    ],
+                )?;
+                Ok(Vec::new())
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// The stored cert for `device_id`, revoked or not. `None` = a device this
+    /// vault has never admitted.
+    ///
+    /// Membership is not consulted here and must not be: this answers "which
+    /// key verifies this signature", which is a fact about the device and not
+    /// about its standing. Filtering it on revocation once made revocation
+    /// retroactive — with the row hidden, every op from a revoked device fell
+    /// through to [`Self::self_authenticating_signer`], which knows only
+    /// `DeviceCertPublish`, and came back `UnknownDevice` whatever its HLC
+    /// said, including work the device did honestly months earlier.
+    ///
+    /// A revocation affects nothing on this path, or on any other: it is
+    /// recorded and converged, and **acted on** by no production code. The
+    /// register is read once outside tests — `Self::query_device_list` joins it
+    /// to report a flag — and nothing branches on the answer.
     fn lookup_device_cert(
         &self,
         db: &Db,
@@ -533,8 +1328,7 @@ impl Engine {
         let blob: Option<Vec<u8>> = db
             .conn()
             .query_row(
-                "SELECT cert_blob FROM devices
-                 WHERE device_id = ? AND revoked_at_ms IS NULL",
+                "SELECT cert_blob FROM devices WHERE device_id = ?",
                 params![&device_id[..]],
                 |r| r.get(0),
             )
@@ -1104,9 +1898,12 @@ impl Engine {
 
     fn delete_stream(&self, db: &mut Db, id: EntityRef) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Stream)?;
-        if id.bytes() == &[0u8; 16] {
+        // Compared against the Inbox's own id, not against sixteen zero bytes:
+        // those are the vault-meta stream now, and a guard that names the wrong
+        // constant is a guard that protects the wrong thing.
+        if id.bytes() == &INBOX_STREAM_BYTES || id.bytes() == &META_STREAM {
             return Err(EngineError::Invalid(
-                "cannot delete the inbox stream".into(),
+                "cannot delete the inbox or vault-meta stream".into(),
             ));
         }
         let now_ms = self.clock.now_ms();
@@ -2510,7 +3307,9 @@ impl Engine {
 
     fn query_device_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
-            "SELECT device_id, nickname, platform, revoked_at_ms IS NOT NULL FROM devices",
+            "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL
+             FROM devices d
+             LEFT JOIN device_revocations r ON r.device_id = d.device_id",
         )?;
         let rows = stmt.query_map([], |row| {
             let blob: Vec<u8> = row.get(0)?;
@@ -2697,14 +3496,20 @@ impl Engine {
 // ---- table operations ----
 
 impl Engine {
-    /// Seal `inner_op` into a real [`OpEnvelope`] and append it to the op log,
-    /// enqueue it in the outbox, and (forward-compat) persist the wrapped Stream
-    /// key — all inside the caller's transaction.
+    /// Seal `inner_op` into a real [`OpEnvelope`] under the routing stream's
+    /// **live** epoch and append it to the op log, enqueueing it in the outbox
+    /// — all inside the caller's transaction.
     ///
     /// `stream_id` is the op's *routing* stream (the meta stream for
-    /// Stream/routine ops; the owning Stream for task ops); it is bound into the
-    /// envelope and the outbox row. The signing device id is taken from the
-    /// keychain, so envelope `seq` is per `(stream_id, device_id)`.
+    /// Stream/routine/control ops; the owning Stream for task ops); it is bound
+    /// into the envelope and the outbox row. The signing device id is taken
+    /// from the keychain, so envelope `seq` is per `(stream_id, device_id)`.
+    ///
+    /// If the stream has no key yet this mints epoch 1 and emits the
+    /// `key_envelope` ops that give every other member of the account a copy —
+    /// see [`Self::ensure_stream_epoch`]. That is the whole reason a key can
+    /// never be minted silently: an epoch nobody was told about is an epoch
+    /// whose ops nobody else can read.
     #[allow(clippy::too_many_arguments)]
     fn ops_insert(
         &self,
@@ -2722,11 +3527,70 @@ impl Engine {
         received_at_ms: u64,
         deps: &[[u8; 16]],
     ) -> rusqlite::Result<()> {
+        let (epoch, key) = self.ensure_stream_epoch(tx, stream_id, hlc.physical_ms)?;
+        self.ops_insert_at(
+            tx,
+            op_id,
+            stream_id,
+            seq,
+            hlc,
+            inner_op,
+            inner_kind,
+            target_kind,
+            target_id,
+            applied_at_ms,
+            received_from,
+            received_at_ms,
+            deps,
+            epoch,
+            &key,
+        )
+    }
+
+    /// [`Self::ops_insert`] with the seal epoch chosen by the caller.
+    ///
+    /// A rotation needs this. The ops that *carry* the new keys have to be
+    /// sealed under the **old** epoch: a device that does not yet hold the new
+    /// key could not otherwise read the op that gives it one. Sealing them
+    /// under the new epoch would be a deadlock — and one that only shows up on
+    /// the second device, weeks later.
+    ///
+    /// A revoked device can read those rotation ops, because it still holds the
+    /// old epoch — and it can read the new keys too, because each envelope is
+    /// also sealed to the account identity and pairing hands every device
+    /// `ID_D_priv`. Bounding that is `#76`.
+    #[allow(clippy::too_many_arguments)]
+    fn ops_insert_at(
+        &self,
+        tx: &Transaction<'_>,
+        op_id: &[u8; 16],
+        stream_id: &[u8; 16],
+        seq: u64,
+        hlc: Hlc,
+        inner_op: &[u8],
+        inner_kind: &str,
+        target_kind: &str,
+        target_id: Option<&[u8; 16]>,
+        applied_at_ms: Option<u64>,
+        received_from: Option<&[u8; 16]>,
+        received_at_ms: u64,
+        deps: &[[u8; 16]],
+        epoch: u32,
+        stream_key: &StreamKey,
+    ) -> rusqlite::Result<()> {
         let device_id = self.keychain.device_id();
         let ts_ms = hlc.physical_ms;
         let envelope = self
             .keychain
-            .seal_op(*stream_id, seq, hlc, inner_op, self.rng.as_ref())
+            .seal_op_at(
+                *stream_id,
+                seq,
+                hlc,
+                inner_op,
+                self.rng.as_ref(),
+                epoch,
+                stream_key,
+            )
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
         if let Err(e) = OpLog::insert(
             tx,
@@ -2758,10 +3622,167 @@ impl Engine {
         // replay by those cursors — hands the device its entire own history
         // back on every reconnect for it to re-dedupe.
         upsert_sync_cursor(tx, stream_id, &device_id)?;
-        // Forward-compat: record the wrapped Stream key (idempotent).
-        self.keychain
-            .persist_stream_key(tx, stream_id, self.rng.as_ref(), ts_ms)?;
         Ok(())
+    }
+
+    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
+    /// every other member about it if the stream has none.
+    ///
+    /// The order inside the mint branch matters and is not incidental: the key
+    /// row is written **before** the `key_envelope` ops are emitted, because
+    /// emitting one is itself an `ops_insert` into the vault-meta stream, which
+    /// re-enters here. With the row already present the re-entry terminates
+    /// immediately; without it, minting the meta stream's own first key would
+    /// recurse forever.
+    fn ensure_stream_epoch(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        now_ms: u64,
+    ) -> rusqlite::Result<(u32, StreamKey)> {
+        if let Some(found) = self.keychain.current_stream_key_tx(tx, stream_id)? {
+            return Ok(found);
+        }
+        let (epoch, key) = self
+            .keychain
+            .mint_epoch(tx, stream_id, self.rng.as_ref(), now_ms)?;
+        self.emit_key_envelopes(tx, stream_id, epoch, &key, now_ms, None)?;
+        Ok((epoch, key))
+    }
+
+    /// Emit one `key_envelope` op per recipient for `(stream_id, epoch)`.
+    ///
+    /// Recipients are **every** device other than this one — which already
+    /// holds the key — plus the account identity, whose copy is what makes a
+    /// recovery with no surviving device restore readable content rather than
+    /// an empty vault.
+    ///
+    /// Revoked devices are **not** excluded, and the exclusion must not be
+    /// re-added here without reading `#76` first: the identity copy below is
+    /// sealed to a key every paired device holds, so dropping a revoked device
+    /// from the device recipients withholds nothing from it and only looks like
+    /// enforcement. `a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses`
+    /// fails if it comes back. See the block comment on the query itself.
+    ///
+    /// `seal_under` chooses the epoch these ops are themselves sealed at; see
+    /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
+    /// epoch is", which is right for a first mint and wrong for a rotation.
+    fn emit_key_envelopes(
+        &self,
+        tx: &Transaction<'_>,
+        stream_id: &[u8; 16],
+        epoch: u32,
+        key: &StreamKey,
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+    ) -> rusqlite::Result<()> {
+        let key_id = stream_key_id(key);
+        let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                // Deliberately **not** filtered on `device_revocations`. This
+                // pull request enforces nothing about revocation, and a filter
+                // here would be the loudest place to imply otherwise: every
+                // paired device holds `ID_D_priv`, and the identity recipient
+                // appended below seals the same key to all of them, so
+                // excluding a revoked device from the device recipients
+                // withholds nothing it cannot open through the identity copy.
+                // That is issue #76, and it is the reason this claim was
+                // removed rather than repaired.
+                "SELECT d.device_id, d.d_d_pub FROM devices d
+                 WHERE d.d_d_pub IS NOT NULL",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, pubkey) in rows {
+                let Some(id) = to16(&id) else {
+                    continue;
+                };
+                if id == self.keychain.device_id() {
+                    continue;
+                }
+                if pubkey.len() != 32 {
+                    continue;
+                }
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&pubkey);
+                recipients.push((Recipient::Device(id), pk));
+            }
+        }
+        recipients.push((
+            Recipient::Identity(self.keychain.identity_id()),
+            self.keychain.identity_dh_pub(),
+        ));
+
+        for (recipient, recipient_pub) in recipients {
+            let Ok(hpke_ciphertext) = self.keychain.seal_key_envelope(
+                &recipient_pub,
+                stream_id,
+                epoch,
+                key,
+                self.rng.as_ref(),
+            ) else {
+                // A device whose stored `d_d_pub` is not a usable X25519 point
+                // is skipped rather than failing the whole command: one corrupt
+                // row must not make the vault unwritable.
+                continue;
+            };
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id: *stream_id,
+                epoch,
+                recipient,
+                key_id,
+                hpke_ciphertext,
+            });
+            self.emit_control_op(tx, &inner, now_ms, seal_under)?;
+        }
+        Ok(())
+    }
+
+    /// Log one control op into the vault-meta stream.
+    ///
+    /// The epoch is resolved **before** the sequence number is read, and that
+    /// order is load-bearing. Resolving it can mint the vault-meta stream's own
+    /// first key, which emits `key_envelope` ops into this same stream; a `seq`
+    /// read before that happened would already be taken by the time this op
+    /// reached the log, and `ops` has a `UNIQUE(stream_id, device_id, seq)`.
+    /// The op would be ignored, and its outbox row would then fail its foreign
+    /// key — which is exactly how this was found.
+    fn emit_control_op(
+        &self,
+        tx: &Transaction<'_>,
+        inner: &InnerOp,
+        now_ms: u64,
+        seal_under: Option<&(u32, StreamKey)>,
+    ) -> rusqlite::Result<()> {
+        let blob = encode_inner_op(inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        let (epoch, key) = match seal_under {
+            Some((epoch, key)) => (*epoch, key.clone()),
+            None => self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?,
+        };
+        let op_id = self.fresh_op_id(now_ms);
+        let seq = self.next_seq_tx(tx, &META_STREAM)?;
+        let hlc = self.hlc.send();
+        self.ops_insert_at(
+            tx,
+            &op_id,
+            &META_STREAM,
+            seq,
+            hlc,
+            &blob,
+            inner.inner_kind(),
+            inner.target_kind(),
+            None,
+            Some(now_ms),
+            None,
+            now_ms,
+            &[],
+            epoch,
+            &key,
+        )
     }
 
     /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
@@ -2824,9 +3845,39 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
     out
 }
 
+/// The end of the run of `ops` seqs starting at `start`, or `start - 1` when
+/// `start` itself is absent.
+fn ops_run_end(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+    start: i64,
+) -> rusqlite::Result<i64> {
+    tx.query_row(
+        "SELECT CASE
+                  WHEN EXISTS (SELECT 1 FROM ops
+                               WHERE stream_id = ?1 AND device_id = ?2 AND seq = ?3)
+                  THEN (SELECT MIN(o.seq) FROM ops o
+                        WHERE o.stream_id = ?1 AND o.device_id = ?2 AND o.seq >= ?3
+                          AND NOT EXISTS (SELECT 1 FROM ops n
+                                          WHERE n.stream_id = ?1 AND n.device_id = ?2
+                                            AND n.seq = o.seq + 1))
+                  ELSE ?3 - 1
+                END",
+        params![&stream_id[..], &device_id[..], start],
+        |row| row.get(0),
+    )
+}
+
 /// Set `sync_cursors(stream_id, device_id)` to the end of the **contiguous**
 /// applied prefix — the largest `n` for which every seq `1..=n` from that
 /// device on that stream is in the op log.
+///
+/// A refused op is *not* decided and does not appear here. It was, briefly: an
+/// op refused for a revoked sender advanced this past it so the relay would
+/// stop resending. That made a reversible decision irreversible — the cut can
+/// rise as well as fall — so a refusal now leaves the cursor where it is and
+/// the op applies if it is resent under a corrected cut.
 ///
 /// A high-water mark would be wrong, and used to be what this wrote. Ops do
 /// arrive out of order: a dropped frame followed by a later one leaves the log
@@ -2836,31 +3887,12 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
 /// noticed. That is silent data loss produced by the very mechanism meant to
 /// prevent it, so the cursor has to mean "I have everything through n", which
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
-///
-/// Regressing the cursor is impossible: the prefix is a function of the op log,
-/// and rows are only ever inserted, so it can only grow.
 fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
 ) -> rusqlite::Result<()> {
-    // The prefix ends at the lowest present seq whose successor is absent —
-    // unless seq 1 itself is missing, in which case there is no prefix at all.
-    // `UNIQUE (stream_id, device_id, seq)` serves both scans.
-    let prefix: i64 = tx.query_row(
-        "SELECT CASE
-                  WHEN EXISTS (SELECT 1 FROM ops
-                               WHERE stream_id = ?1 AND device_id = ?2 AND seq = 1)
-                  THEN (SELECT COALESCE(MIN(o.seq), 0) FROM ops o
-                        WHERE o.stream_id = ?1 AND o.device_id = ?2
-                          AND NOT EXISTS (SELECT 1 FROM ops n
-                                          WHERE n.stream_id = ?1 AND n.device_id = ?2
-                                            AND n.seq = o.seq + 1))
-                  ELSE 0
-                END",
-        params![&stream_id[..], &device_id[..]],
-        |row| row.get(0),
-    )?;
+    let prefix = ops_run_end(tx, stream_id, device_id, 1)?;
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
          VALUES (?, ?, ?)
@@ -2982,11 +4014,72 @@ fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// with `deleted` set, so a winning delete replaces the whole row and a delete
 /// that overtakes its own create still materializes the tombstone (see
 /// [`crate::inner_op`] docs and ADR-0014).
+//
+// Two arms below have empty bodies and are deliberately not merged: the
+// append-only families and the control families are handled by different
+// guards earlier in the function, and spelling both out is what makes adding a
+// fifth family a compile-time decision rather than a silent fall-through.
+/// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
+/// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
+///
+/// Migration 0017 does exactly this to the local tables of a vault that
+/// upgrades. It cannot do it to the already-signed envelopes in `ops`, which
+/// still name the old id and cannot be rewritten without breaking their
+/// signatures. That is fine on the device that migrated, and not fine on a
+/// device paired *after* the upgrade: that device receives the legacy
+/// `([0u8; 16], 1)` key in its pairing payload, replays the whole history, and
+/// materializes those tasks under the id in the payload — which is the
+/// vault-meta stream id. `materialize_remote` would then `ensure_stream_row`
+/// the one stream that must never have a `streams` row, and the two replicas of
+/// one account would disagree about where the user's oldest tasks live.
+///
+/// Remapping here rather than refusing the ops is deliberate. Refusing would
+/// drop the user's pre-0017 Inbox on the new device while the migrated device
+/// kept it — permanent, silent divergence, and a data loss the user did not ask
+/// for. Remapping reproduces the migration's own rewrite at the only other
+/// place the same rows can be born, so both replicas land on the same state.
+///
+/// Only *entity* payloads are touched. A `key_envelope` naming the vault-meta
+/// stream at `[0u8; 16]` is naming it correctly and is left alone.
+///
+/// Delete at 1.0, with the rest of the 0017 legacy path.
+fn remap_legacy_inbox(inner: &mut InnerOp) {
+    fn fix(r: &mut EntityRef) {
+        if r.bytes() == &META_STREAM {
+            *r = EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES);
+        }
+    }
+    match inner {
+        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) | InnerOp::TaskDelete(t) => {
+            fix(&mut t.stream_id);
+        }
+        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) | InnerOp::RoutineDelete(r) => {
+            fix(&mut r.template.stream_id);
+        }
+        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
+            fix(&mut b.stream_id);
+        }
+        InnerOp::FocusStart(f) => fix(&mut f.stream_id),
+        _ => {}
+    }
+}
+
+#[allow(clippy::match_same_arms)]
 fn materialize_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    // A control op has no entity and must never reach the kind table below,
+    // whose `_ =>` arm would file anything it does not recognise under
+    // `tasks`. `apply_remote` routes them away before this is called; this is
+    // the belt to that braces, and it is a `debug_assert` rather than a silent
+    // return so a routing mistake surfaces in a test run instead of as a
+    // mysterious task row in production.
+    if inner.is_control() {
+        debug_assert!(false, "a control op reached the entity materializer");
+        return Ok(());
+    }
     let ts_ms = lww.hlc.physical_ms;
     // Focus ops never enter the LWW contest. Each writes one immutable record
     // keyed by the session's own id (start, end, and interruption in three
@@ -3150,6 +4243,10 @@ fn materialize_remote(
         | InnerOp::FocusEnd(_)
         | InnerOp::FocusInterrupt(_)
         | InnerOp::ReviewSnapshotCreate(_) => {}
+        // Unreachable: the guard at the top of this function returns before
+        // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
+        // fourth control family cannot be added without being considered here.
+        InnerOp::KeyEnvelope(_) | InnerOp::DeviceRevoke(_) | InnerOp::DeviceCertPublish(_) => {}
     }
     Ok(())
 }
@@ -4881,6 +5978,17 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
+/// Widen a stored blob back to a 16-byte id.
+/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+///
+/// Not a pad, for the reason given on `keychain::to16`. Its one non-test caller
+/// is [`Engine::emit_key_envelopes`], where a `devices` row whose id is the
+/// wrong length would otherwise be padded to `[0u8; 16]` and get a Stream key
+/// sealed to it.
+fn to16(raw: &[u8]) -> Option<[u8; 16]> {
+    raw.try_into().ok()
+}
+
 fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
@@ -4953,9 +6061,9 @@ impl Engine {
     ///
     /// A revoked device's past ops still happened, and a history that silently
     /// loses them the moment a laptop is de-authorized would be worse than no
-    /// history. Revocation stops *future* ops being accepted
-    /// ([`Self::lookup_device_cert`] filters there); it does not rewrite the
-    /// record.
+    /// history. Nothing filters on revocation anywhere on this path — not here
+    /// and not in [`Self::lookup_device_cert`], whose own doc explains why
+    /// membership is not a fact about which key verifies a signature.
     fn device_signing_keys(&self, db: &Db) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
         let mut keys = BTreeMap::new();
         keys.insert(
@@ -5018,8 +6126,11 @@ impl Engine {
     ) -> Option<InnerOp> {
         let env = decode_envelope(envelope).ok()?;
         let d_s_pub = keys.get(&env.device_id)?;
-        let stream_key = self.keychain.stream_key(&env.stream_id);
-        let inner = open_envelope(&env, d_s_pub, Some(&stream_key)).ok()?;
+        let inner = self
+            .keychain
+            .stream_keys_at(&env.stream_id, env.epoch)
+            .iter()
+            .find_map(|k| open_envelope(&env, d_s_pub, Some(k)).ok())?;
         decode_inner_op(&inner).ok()
     }
 
@@ -5416,6 +6527,11 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::AttachmentCreate(_)
         | InnerOp::AttachmentDelete(_)
         | InnerOp::FocusInterrupt(_)
+        // Control ops carry key material and trust, not work. A rotation is
+        // not something that happened to a Task.
+        | InnerOp::KeyEnvelope(_)
+        | InnerOp::DeviceRevoke(_)
+        | InnerOp::DeviceCertPublish(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }
@@ -6493,8 +7609,9 @@ mod tests {
         let env_bytes = OpLog::get_envelope(&db, &res.op_id).unwrap().unwrap();
         assert_eq!(&env_bytes[..2], b"SR", "envelope carries the magic prefix");
         let env = sunrise_crypto::decode_envelope(&env_bytes).unwrap();
-        // Inbox tasks route to the zero (meta) stream id.
-        assert_eq!(env.stream_id, [0u8; 16]);
+        // Inbox tasks route to the Inbox's own stream id, which since ADR-0024
+        // is no longer the vault-meta id.
+        assert_eq!(env.stream_id, INBOX_STREAM_BYTES);
         assert_eq!(env.device_id, e.keychain.device_id());
         assert_eq!(env.seq, res.seq);
 
@@ -10030,6 +11147,193 @@ mod tests {
         Engine::from_clock(clock, Arc::new(SystemRng), kc)
     }
 
+    /// Like [`engine_seeded`] but with **real random** Stream keys, so a key
+    /// this device does not hold is genuinely one it cannot open.
+    ///
+    /// Every other engine unit test derives its keys from the shared vault root
+    /// (see [`Keychain::for_test_seeded`]) precisely so two in-memory engines
+    /// can read each other with no relay to carry `key_envelope` ops. That is
+    /// the wrong world for the deferral path, whose whole subject is an op
+    /// arriving before the key that opens it.
+    fn engine_random_keys(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {
+        let kc = Arc::new(Keychain::for_test_random_keys(
+            VaultRootKey::from_bytes(root),
+            seed,
+        ));
+        Engine::from_clock(clock, Arc::new(SystemRng), kc)
+    }
+
+    /// Hand `receiver` the `(epoch, key)` `sender` holds for `stream_id`.
+    ///
+    /// This is what pairing does for real — the payload carries every Stream
+    /// key the inviting device holds — compressed into one call, because these
+    /// engines have no relay and no Noise channel between them.
+    fn hand_over_key(
+        receiver: &Engine,
+        rdb: &mut Db,
+        sender: &Engine,
+        sdb: &mut Db,
+        stream: &[u8; 16],
+    ) {
+        let (epoch, key) = sdb
+            .with_tx(|tx| sender.keychain.current_stream_key_tx(tx, stream))
+            .unwrap()
+            .expect("the sender holds a key for this stream");
+        rdb.with_tx(|tx| {
+            receiver.keychain.absorb_stream_key(
+                tx,
+                stream,
+                epoch,
+                &key,
+                KeySource::Pairing,
+                receiver.rng.as_ref(),
+                T0,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Every sealed `key.envelope` op `db` holds, oldest first.
+    ///
+    /// Not narrowed by stream: a control op is logged with no `target_id` (it
+    /// names no entity of its own), so which stream's key one carries is
+    /// visible only inside the sealed payload. The caller applies them all,
+    /// which is what a replica does anyway.
+    fn key_envelope_envs(db: &Db) -> Vec<Vec<u8>> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT op_id FROM ops
+                 WHERE inner_kind = 'key.envelope'
+                 ORDER BY rowid ASC",
+            )
+            .unwrap();
+        let ids: Vec<Vec<u8>> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ids.iter()
+            .map(|id| env_bytes(db, &to16(id).expect("op_id is 16 bytes")))
+            .collect()
+    }
+
+    fn deferred_rows(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM deferred_ops", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Apply a `device_revoke` for `target` declared at `hlc_ms`, through the
+    /// same code path the op takes when it arrives over sync.
+    ///
+    /// The cut *is* that HLC: there is no `effective_at` to pass, which is the
+    /// whole of decision 19.
+    fn revoke(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc_ms: u64) {
+        revoke_at(receiver, db, sender, target, Hlc::at(hlc_ms));
+    }
+
+    /// [`revoke`] with the declaring op's full HLC, logical half included, so a
+    /// test can put two revocations inside one millisecond.
+    fn revoke_at(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc: Hlc) {
+        let sender_id = sender.keychain.device_id();
+        let inner = InnerOp::DeviceRevoke(DeviceRevokePayload {
+            revoked_device_id: target,
+            reason_code: RevokeReason::Lost,
+        });
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms)
+                .map(|_| ())
+        })
+        .unwrap();
+    }
+
+    /// An op that arrives before the key that opens it is parked, not lost, and
+    /// the `key_envelope` op carrying that key releases it.
+    ///
+    /// The two halves are both assertions. Parking must be **silent**: no
+    /// event, no error, and no entity — a `RemoteOpInvalid` here would make the
+    /// driver treat a perfectly good op as a damaged frame and ask for a
+    /// resync it cannot be helped by. Draining must be **complete**: the
+    /// envelope op itself changes nothing on screen, so if the delivery did not
+    /// hand back the released op's event the screen would never learn about a
+    /// task the database now holds.
+    #[test]
+    fn an_op_that_arrives_before_its_key_is_parked_and_the_envelope_releases_it() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb);
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        // Each knows the other's identity-signed cert, so B knows A's key to
+        // verify with and A knows B's `D_D_pub` to seal an envelope to.
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        // A captures a task. This mints the Inbox key and the vault-meta key,
+        // and emits a `key_envelope` op per recipient for each.
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "buy milk".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        // B was paired, so it holds the vault-meta key and can read control
+        // ops. It was never told the Inbox key.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        assert!(
+            eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "the premise: B holds no Inbox key"
+        );
+
+        // The task op arrives first.
+        let create_env = create_env_for(&dba, task.bytes());
+        let events = eb.apply_remote_all(&mut dbb, &create_env).unwrap();
+        assert!(events.is_empty(), "parking is silent");
+        assert_eq!(deferred_rows(&dbb), 1, "and it is parked, not dropped");
+        assert!(
+            read_task(dbb.conn(), task.bytes()).unwrap().is_none(),
+            "nothing materialized from an op nobody could open"
+        );
+
+        // Re-delivery of the same op must not pile up a second row.
+        assert!(eb
+            .apply_remote_all(&mut dbb, &create_env)
+            .unwrap()
+            .is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "parking is idempotent on op id");
+
+        // Now A's `key_envelope` ops. One per (stream, recipient); the delivery
+        // that lands B's copy of the Inbox key is the one that releases the
+        // task, and the rest are silent.
+        let mut released = Vec::new();
+        let envs = key_envelope_envs(&dba);
+        assert!(!envs.is_empty(), "A emitted envelopes to seal to B at all");
+        for env in envs {
+            released.extend(eb.apply_remote_all(&mut dbb, &env).unwrap());
+        }
+        assert!(
+            matches!(released.as_slice(), [DomainEvent::Created(r)] if *r == task),
+            "the envelope op is silent; the op it released is not, got {released:?}"
+        );
+        assert_eq!(deferred_rows(&dbb), 0, "the park is emptied by the drain");
+        assert_eq!(
+            read_task_t(&eb, &dbb, task).title,
+            "buy milk",
+            "and the task is really there"
+        );
+    }
+
     fn set_clock(c: &FakeClock, v: u64) {
         *c.0.lock() = v;
     }
@@ -10062,15 +11366,33 @@ mod tests {
         }
     }
 
+    /// Put `sender` in `receiver`'s device list, through the same code path a
+    /// `device_cert` op takes when it arrives over sync.
+    ///
+    /// Replaces the old `Command::TrustDevice` submit. Trust is no longer
+    /// something a caller hands the engine — a device publishes its
+    /// identity-signed cert as an op — so a unit test with no relay applies
+    /// that op's effect directly.
+    ///
+    /// It carries no Stream keys, and does not need to: engine unit tests run
+    /// on [`Keychain::for_test_seeded`], whose keys are derived from the shared
+    /// vault root precisely so two in-memory engines can read each other with
+    /// no relay to carry `key_envelope` ops. See that constructor's docs.
     fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
-        receiver
-            .apply(
-                db,
-                Command::TrustDevice {
-                    cert_cbor: sender.keychain.cert_blob().to_vec(),
-                },
-            )
-            .unwrap();
+        let cert = sender.keychain.cert_blob().to_vec();
+        let sender_id = sender.keychain.device_id();
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(
+                    tx,
+                    &InnerOp::DeviceCertPublish(cert),
+                    &sender_id,
+                    Hlc::at(0),
+                    0,
+                )
+                .map(|_| ())
+        })
+        .unwrap();
     }
 
     const ROOT: [u8; 32] = [0x5a; 32];
@@ -10392,6 +11714,1096 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity), task_after_first);
         assert_eq!(op_count(&dbb), ops_after_first);
         assert_eq!(ops_after_first, 1, "exactly one remote op recorded");
+    }
+
+    /// A member cannot republish a *sibling's* cert under its own signature.
+    ///
+    /// `ON CONFLICT(device_id) DO UPDATE` overwrites `cert_blob` — and with it
+    /// the `d_s_pub` every one of that sibling's envelopes is verified against —
+    /// and `d_d_pub`, which is where its `key_envelope`s are sealed. Publishing
+    /// a cert for someone else is therefore a converging denial of service plus
+    /// a redirect of their key material, from one well-formed op.
+    #[test]
+    fn a_device_cannot_publish_a_cert_naming_another_device() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&eb, &mut dbb, &ec);
+
+        let stored = |db: &Db, id: &[u8; 16]| -> Vec<u8> {
+            db.conn()
+                .query_row(
+                    "SELECT cert_blob FROM devices WHERE device_id = ?",
+                    params![&id[..]],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let c_id = ec.keychain.device_id();
+        let before = stored(&dbb, &c_id);
+
+        // A issues a cert naming C, binding C's device id to **A's** DH key,
+        // and publishes it. Pairing hands every device `ID_S_priv`, so this
+        // cert verifies perfectly: the check that has to catch it is the one
+        // about *who sent it*, not the one about whether it is well formed.
+        let a_id = ea.keychain.device_id();
+        let cert = ea.keychain.issue_cert_for(
+            c_id,
+            ec.keychain.device_signing_pub(),
+            ea.keychain.device_dh_pub(),
+            T0,
+        );
+        dbb.with_tx(|tx| {
+            eb.apply_control_op(
+                tx,
+                &InnerOp::DeviceCertPublish(cert),
+                &a_id,
+                Hlc::at(T0),
+                T0,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(
+            stored(&dbb, &c_id),
+            before,
+            "A must not be able to rewrite C's row"
+        );
+        let d_d: Vec<u8> = dbb
+            .conn()
+            .query_row(
+                "SELECT d_d_pub FROM devices WHERE device_id = ?",
+                params![&c_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            d_d,
+            ec.keychain.device_dh_pub().to_vec(),
+            "and C's future key envelopes still go to C"
+        );
+
+        // C publishing its own cert is of course fine, and is how the row is
+        // written in the first place.
+        let own = ec.keychain.cert_blob().to_vec();
+        dbb.with_tx(|tx| {
+            eb.apply_control_op(
+                tx,
+                &InnerOp::DeviceCertPublish(own.clone()),
+                &c_id,
+                Hlc::at(T0),
+                T0,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        assert_eq!(stored(&dbb, &c_id), own);
+    }
+
+    /// An absorbed epoch far above this vault's own is refused.
+    ///
+    /// `MAX(epoch)` is what makes a key live, so one `key_envelope` at
+    /// `u32::MAX` strands `mint_epoch` at its saturation point *and* redirects
+    /// every op this device seals afterwards to a key only the sender holds.
+    #[test]
+    fn a_key_envelope_far_above_the_live_epoch_is_refused() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        let a_id = ea.keychain.device_id();
+        let stream = [0x5c; 16];
+
+        let mut absorb = |epoch: u32, key_byte: u8| {
+            let key = StreamKey::from_bytes([key_byte; 32]);
+            let sealed = eb
+                .keychain
+                .seal_key_envelope(
+                    &eb.keychain.identity_dh_pub(),
+                    &stream,
+                    epoch,
+                    &key,
+                    eb.rng.as_ref(),
+                )
+                .unwrap();
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id: stream,
+                epoch,
+                recipient: Recipient::Identity(eb.keychain.identity_id()),
+                key_id: stream_key_id(&key),
+                hpke_ciphertext: sealed,
+            });
+            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0))
+                .unwrap()
+        };
+
+        assert_eq!(
+            absorb(1, 0xa1),
+            vec![(stream, 1)],
+            "an ordinary first epoch is absorbed"
+        );
+        assert_eq!(
+            absorb(1 + MAX_EPOCH_LEAP, 0xa2),
+            vec![(stream, 1 + MAX_EPOCH_LEAP)],
+            "the far edge of the window is still inside it"
+        );
+        assert!(
+            absorb(u32::MAX, 0xa3).is_empty(),
+            "and an absurd epoch is refused"
+        );
+        assert!(
+            eb.keychain.stream_keys_at(&stream, u32::MAX).is_empty(),
+            "the refused key is not written, so it cannot become the live epoch"
+        );
+    }
+
+    /// `deferred_ops` is bounded, and overflow evicts the oldest rows.
+    ///
+    /// Everything about a deferred op is unchecked — the key that would open it
+    /// is exactly what is missing — and `epoch` is a free field of the signed
+    /// envelope, so without a cap a member can park bytes of its choosing on
+    /// every peer in the account at any `(stream, epoch)` it likes, forever.
+    #[test]
+    fn the_parked_op_buffer_is_bounded() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let over = usize::try_from(DEFERRED_PER_EPOCH_CAP).unwrap() + 16;
+        let mut envs = Vec::with_capacity(over);
+        for i in 0..over {
+            set_clock(&ca, T0 + i as u64);
+            let res = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: format!("parked {i}"),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            envs.push(env_bytes(&dba, &res.op_id));
+        }
+        // B holds the vault-meta key but never the Inbox key, so every task op
+        // A wrote parks on B. The hand-over is after the writes because the
+        // first one is what mints the key at all.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        for (i, env) in envs.iter().enumerate() {
+            // `received_at_ms` is the *receiver's* reading, so it is B's clock
+            // that has to move for the rows to be orderable at all.
+            set_clock(&cb, T0 + i as u64);
+            assert!(eb.apply_remote_all(&mut dbb, env).unwrap().is_empty());
+        }
+        assert_eq!(
+            deferred_rows(&dbb),
+            DEFERRED_PER_EPOCH_CAP,
+            "the bucket is capped, not unbounded"
+        );
+
+        // Oldest-first eviction: what survives is the newest window, because a
+        // row that has waited longest is the one whose key is least likely to
+        // still be in flight.
+        let oldest: i64 = dbb
+            .conn()
+            .query_row("SELECT MIN(received_at_ms) FROM deferred_ops", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            oldest,
+            i64::try_from(T0).unwrap() + 16,
+            "the first 16 were the ones dropped"
+        );
+    }
+
+    /// A pre-0017 op naming the Inbox by its old id — sixteen zero bytes, which
+    /// are also the vault-meta stream — materializes into the Inbox, not into a
+    /// `streams` row for the one stream that must never have one.
+    ///
+    /// Migration 0017 rewrites exactly these rows on a vault that upgrades. It
+    /// cannot rewrite the signed envelopes, so a device paired *after* the
+    /// upgrade replays that history and is the only other place the same rows
+    /// can be born.
+    #[test]
+    fn a_pre_0017_inbox_op_lands_in_the_inbox_not_the_vault_meta_stream() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "captured before the split".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // Rewrite the op's payload to name the Inbox the way a pre-0017 build
+        // did, and re-seal it: the signature covers the payload, so a legacy op
+        // has to be built rather than patched.
+        let env = env_bytes(&dba, &res.op_id);
+        let mut inner = decode_inner_op(&ea.keychain.open_op(&env).unwrap()).unwrap();
+        let InnerOp::TaskCreate(task) = &mut inner else {
+            panic!("expected a task.create");
+        };
+        task.stream_id = EntityRef::new(EntityKind::Stream, META_STREAM);
+        let meta_key = dba
+            .with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &META_STREAM))
+            .unwrap()
+            .expect("A holds the vault-meta key");
+        let legacy_env = ea
+            .keychain
+            .seal_op_at(
+                META_STREAM,
+                // A seq of its own in the vault-meta space, which is where a
+                // pre-0017 Inbox op was logged: the two shared an id.
+                900,
+                ea.hlc.send(),
+                &encode_inner_op(&inner).unwrap(),
+                ea.rng.as_ref(),
+                meta_key.0,
+                &meta_key.1,
+            )
+            .unwrap();
+
+        eb.apply_remote(&mut dbb, &legacy_env)
+            .expect("a legacy Inbox op still applies");
+        let stored: Vec<u8> = dbb
+            .conn()
+            .query_row(
+                "SELECT stream_id FROM tasks WHERE id = ?",
+                params![&res.entity.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            sunrise_domain::INBOX_STREAM_BYTES.to_vec(),
+            "the task belongs to the Inbox, which is where 0017 put it locally"
+        );
+        let meta_rows: i64 = dbb
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM streams WHERE stream_id = ?",
+                params![&META_STREAM[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            meta_rows, 0,
+            "and the vault-meta stream still has no `streams` row"
+        );
+    }
+
+    /// The whole revocation register a replica holds for `device`, or `None` if
+    /// it holds none.
+    ///
+    /// All four columns, because convergence on the timestamp alone would still
+    /// leave two replicas disagreeing about who did it and why.
+    type RevocationRow = (i64, i64, Vec<u8>, String);
+
+    fn revocation_row(db: &Db, device: &[u8; 16]) -> Option<RevocationRow> {
+        db.conn()
+            .query_row(
+                "SELECT cut_ms, cut_logical, revoked_by, reason
+                 FROM device_revocations WHERE device_id = ?",
+                params![&device[..]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    /// Two replicas, the same two revocation ops, opposite arrival orders, one
+    /// final state — the register, and the effect it has on a third device's
+    /// ops.
+    ///
+    /// The row is an LWW register on the declaring op's own `(hlc, device_id)`,
+    /// which is how ADR-0014 resolves every other concurrent write here. It
+    /// converges regardless of order, and — unlike the `MIN` join it replaces —
+    /// it is reversible: a later revocation supersedes an earlier one, so a cut
+    /// that landed wrong can be corrected by revoking again.
+    ///
+    /// `revoke_reason` and `revoked_by` are asserted alongside the timestamp on
+    /// purpose. Convergence on the cut alone would still leave two replicas
+    /// disagreeing about who did it and why, which is what the previous
+    /// `(cut, revoker)` tie-break left order-dependent.
+    #[test]
+    fn concurrent_revocations_converge_on_one_register_whatever_the_order() {
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let earlier = engine_seeded(ROOT, [2u8; 32], clock());
+        let later = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
+        let t = target.keychain.device_id();
+
+        // The same two ops. r1 sees the later one first; r2 sees it last.
+        revoke(&r1, &mut db1, &later, t, T0 + 9_000);
+        revoke(&r1, &mut db1, &earlier, t, T0 + 1_000);
+        revoke(&r2, &mut db2, &earlier, t, T0 + 1_000);
+        revoke(&r2, &mut db2, &later, t, T0 + 9_000);
+
+        let row1 = revocation_row(&db1, &t);
+        assert_eq!(
+            row1,
+            revocation_row(&db2, &t),
+            "arrival order decided nothing"
+        );
+        assert_eq!(
+            row1.as_ref().unwrap().0,
+            i64::try_from(T0).unwrap() + 9_000,
+            "the last writer wins, so a later revocation can correct an earlier one"
+        );
+        assert_eq!(
+            row1.as_ref().unwrap().2.as_slice(),
+            &later.keychain.device_id()[..],
+            "and every column follows the winning op, not just the timestamp"
+        );
+
+        // The effect converges with the row: both replicas make the same cut
+        // for the same op, so neither refuses what the other applies.
+        for (e, db) in [(&r1, &db1), (&r2, &db2)] {
+            assert!(e.is_revoked_at(db.conn(), &t, T0 + 9_000).unwrap());
+            assert!(!e.is_revoked_at(db.conn(), &t, T0 + 5_000).unwrap());
+        }
+    }
+
+    /// A parked op older than [`DEFERRED_TTL_MS`] is swept by the next drain.
+    ///
+    /// The caps are tested; the TTL was not, which left "a row this old is
+    /// ciphertext nobody will ever open" as a sentence rather than a property.
+    /// A drain is the only moment the table is known to be changing, so it is
+    /// where the sweep runs — and this is what fails if it stops running.
+    #[test]
+    fn a_parked_op_older_than_the_ttl_is_swept_by_the_next_drain() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+
+        // A writes to the Inbox. B holds the vault-meta key but never the
+        // Inbox key, so the op parks.
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "parked and forgotten".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        let envelopes_before = key_envelope_envs(&dba).len();
+        assert!(eb
+            .apply_remote_all(&mut dbb, &env_bytes(&dba, &task.op_id))
+            .unwrap()
+            .is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "the premise: it is parked");
+
+        // A month passes on B, and then some *other* key arrives — a fresh
+        // Stream A creates, whose key B does receive.
+        set_clock(&cb, T0 + DEFERRED_TTL_MS + 1);
+        set_clock(&ca, T0 + DEFERRED_TTL_MS + 1);
+        let stream = ea
+            .apply(
+                &mut dba,
+                Command::CreateStream(StreamDraft {
+                    name: "later".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "in the new stream".into(),
+                stream_id: Some(stream),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // Only the envelopes minted after the park, so B never learns the
+        // Inbox key and the row can only leave by being swept.
+        for env in key_envelope_envs(&dba).into_iter().skip(envelopes_before) {
+            let _ = eb.apply_remote_all(&mut dbb, &env);
+        }
+        assert!(
+            eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "B still has no Inbox key, so the row was not drained normally"
+        );
+        assert_eq!(
+            deferred_rows(&dbb),
+            0,
+            "an op parked past the TTL is swept by the next drain"
+        );
+        assert!(
+            read_task(dbb.conn(), task.entity.bytes())
+                .unwrap()
+                .is_none(),
+            "and it never materialized"
+        );
+    }
+
+    /// A device cannot move its own revocation cut.
+    ///
+    /// Register hygiene, independent of any gate: a device that can rewrite its
+    /// own row can push its cut forward and undo a revocation somebody else
+    /// made of it, and the register is last-writer-wins, so its op would win.
+    /// `Command::RevokeDevice` refuses self-revocation locally for a different
+    /// reason — rotating every key away from the only device holding them is
+    /// not a recoverable state — and neither check implies the other.
+    #[test]
+    fn a_device_cannot_move_its_own_revocation_cut() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut db = db_root(ROOT);
+        trust(&er, &mut db, &ea);
+        let a_id = ea.keychain.device_id();
+
+        // B revokes A.
+        revoke(&er, &mut db, &eb, a_id, T0);
+        let after_b = revocation_row(&db, &a_id).expect("B's revocation stands");
+
+        // A tries to move its own cut forward, which under last-writer-wins
+        // would otherwise supersede B's and un-revoke it for everything after.
+        revoke(&er, &mut db, &ea, a_id, T0 + 60_000);
+        assert_eq!(
+            revocation_row(&db, &a_id),
+            Some(after_b),
+            "a device must not be able to edit the register entry about itself"
+        );
+        assert!(
+            er.is_revoked_at(db.conn(), &a_id, T0 + 30_000).unwrap(),
+            "and it is still revoked across the window it tried to reopen"
+        );
+
+        // A revocation of A by anyone else still lands, so this is a check on
+        // the subject, not a freeze on the row.
+        revoke(&er, &mut db, &eb, a_id, T0 + 90_000);
+        assert_eq!(
+            revocation_row(&db, &a_id).unwrap().0,
+            i64::try_from(T0).unwrap() + 90_000
+        );
+    }
+
+    /// A revoked device's ops are applied, its keys are absorbed, and its
+    /// cursor advances — because **this pull request enforces nothing about
+    /// revocation**.
+    ///
+    /// This is a pin on a removal, and it is here because re-adding a gate is a
+    /// live hazard: six review rounds produced six defects and every one was a
+    /// gate interacting with something else. Refusing a device's ops freezes
+    /// its sync cursor while the relay keeps accepting its uploads, and
+    /// retention then latches a permanent data-loss warning on every peer.
+    /// Withholding its Stream key is worse: `defer_op` returns before the op
+    /// log, so every op behind it in that stream parks forever waiting on a key
+    /// that will never come. And neither withholds anything in the first place,
+    /// because every paired device holds `ID_D_priv` and the identity-sealed
+    /// copy of each epoch opens for all of them — issue #76.
+    ///
+    /// What revocation does here is recorded, converged and inert. Reads are
+    /// #76, writes are #82 behind #80, and converging the effect is #78.
+    /// Anyone re-adding enforcement in this layer should have to delete this.
+    #[test]
+    fn a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+
+        // A is revoked before it writes anything, at a cut before every op
+        // below — the strongest form of the premise.
+        revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0);
+        assert!(eb
+            .is_revoked_at(dbb.conn(), &ea.keychain.device_id(), T0 + 60_000)
+            .unwrap());
+
+        set_clock(&ca, T0 + 10_000);
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "written after the cut".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+
+        // B is given the vault-meta key, which is what lets it read control
+        // ops at all; every Stream key below still has to arrive by envelope.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+
+        // Its Stream keys are absorbed, so the op it sealed can be opened.
+        for env in key_envelope_envs(&dba) {
+            eb.apply_remote_all(&mut dbb, &env)
+                .expect("a revoked device's key envelope applies");
+        }
+        assert!(
+            !eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "the key it distributed was absorbed"
+        );
+
+        // And the op itself is applied, materialized, and passed by the cursor.
+        let env = env_bytes(&dba, &task.op_id);
+        let head = sunrise_cbor::decode_envelope_header(&env).unwrap();
+        eb.apply_remote(&mut dbb, &env)
+            .expect("a revoked device's op applies")
+            .expect("and produces its event");
+        assert_eq!(
+            read_task_t(&eb, &dbb, task.entity).title,
+            "written after the cut"
+        );
+        assert_eq!(
+            cursor_for(&dbb, &head.stream_id, &head.device_id),
+            1,
+            "the cursor advances, so nothing stalls and nothing replays forever"
+        );
+
+        // The other direction: a device revoked in *this* vault is still sealed
+        // to. Excluding it from `emit_key_envelopes` withholds nothing — the
+        // identity recipient appended alongside seals the same key, and every
+        // paired device holds `ID_D_priv` — so the filter would only look like
+        // enforcement. That is #76, and it is why the claim came out.
+        let before = key_envelope_envs(&dba).len();
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+        let sealed_to_b = key_envelope_envs(&dba)
+            .into_iter()
+            .skip(before)
+            .filter_map(|env| ea.keychain.open_op(&env).ok())
+            .filter_map(|cbor| decode_inner_op(&cbor).ok())
+            .any(|inner| {
+                matches!(
+                    inner,
+                    InnerOp::KeyEnvelope(p)
+                        if p.recipient == Recipient::Device(eb.keychain.device_id())
+                )
+            });
+        assert!(
+            sealed_to_b,
+            "the rotation still seals to the device it just revoked"
+        );
+    }
+
+    /// Revoking a device leaves `devices.revoked_at_ms` NULL, because the
+    /// register lives in `device_revocations` and that column is superseded.
+    ///
+    /// Migration 0017 says so in a comment. This makes it a fact: anything that
+    /// starts writing the old column again fails here rather than creating a
+    /// second, silently disagreeing source of truth.
+    #[test]
+    fn revocation_does_not_touch_the_superseded_devices_column() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let target = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            revocation_row(&dba, &target).is_some(),
+            "the register is where the revocation lives"
+        );
+        let legacy: Option<i64> = dba
+            .conn()
+            .query_row(
+                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
+                params![&target[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, None, "the 0013 column is superseded and unwritten");
+        // And the device list reads the register, not the dead column.
+        match ea.query(&dba, Query::DeviceList).unwrap() {
+            QueryResult::Devices(rows) => assert!(
+                rows.iter().find(|d| d.device_id == target).unwrap().revoked,
+                "the device list still shows it revoked"
+            ),
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
+    /// Two devices revoke each other, and both replicas end up holding both
+    /// revocations whichever order they see them in.
+    ///
+    /// This goes through `apply_remote` — real envelopes, the whole delivery
+    /// path — because the defect lived in a step the direct-`apply_control_op`
+    /// helpers skip entirely. The revocation gate refused *every* family from a
+    /// revoked sender, so a replica that applied B's revocation of A first then
+    /// refused A's revocation of B, and never learned of it: on that replica a
+    /// compromised device stays a member, silently, forever, while a replica
+    /// that saw them the other way round holds both.
+    #[test]
+    fn two_devices_revoking_each_other_converge_on_both_revocations() {
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], clock());
+        let eb = engine_seeded(ROOT, [2u8; 32], clock());
+        let x = engine_seeded(ROOT, [4u8; 32], clock());
+        let y = engine_seeded(ROOT, [5u8; 32], clock());
+        let (mut dba, mut dbb, mut dbx, mut dby) =
+            (db_root(ROOT), db_root(ROOT), db_root(ROOT), db_root(ROOT));
+        // Each of A and B knows the other, so each can revoke it; both replicas
+        // know both.
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+        for (e, db) in [(&x, &mut dbx), (&y, &mut dby)] {
+            trust(e, db, &ea);
+            trust(e, db, &eb);
+        }
+        let (a_id, b_id) = (ea.keychain.device_id(), eb.keychain.device_id());
+
+        // The crossing: each revokes the other, neither having seen the other's op.
+        let a_revokes_b = ea
+            .apply(
+                &mut dba,
+                Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, b_id),
+                    reason: RevokeReason::Compromised,
+                },
+            )
+            .unwrap();
+        let b_revokes_a = eb
+            .apply(
+                &mut dbb,
+                Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, a_id),
+                    reason: RevokeReason::Compromised,
+                },
+            )
+            .unwrap();
+        let env_ab = env_bytes(&dba, &a_revokes_b.op_id);
+        let env_ba = env_bytes(&dbb, &b_revokes_a.op_id);
+
+        // X sees B's op first; Y sees A's first.
+        x.apply_remote(&mut dbx, &env_ba).unwrap();
+        x.apply_remote(&mut dbx, &env_ab).unwrap();
+        y.apply_remote(&mut dby, &env_ab).unwrap();
+        y.apply_remote(&mut dby, &env_ba).unwrap();
+
+        for (name, e, db) in [("X", &x, &dbx), ("Y", &y, &dby)] {
+            assert!(
+                e.is_revoked_at(db.conn(), &a_id, T0 + 60_000).unwrap(),
+                "{name} lost the revocation of A"
+            );
+            assert!(
+                e.is_revoked_at(db.conn(), &b_id, T0 + 60_000).unwrap(),
+                "{name} lost the revocation of B"
+            );
+        }
+        assert_eq!(
+            revocation_row(&dbx, &a_id),
+            revocation_row(&dby, &a_id),
+            "and the two replicas agree about A"
+        );
+        assert_eq!(
+            revocation_row(&dbx, &b_id),
+            revocation_row(&dby, &b_id),
+            "and about B"
+        );
+    }
+
+    /// With an identical `(physical, logical)`, the higher revoker id wins —
+    /// the same direction `lww_wins` breaks a tie on `device`.
+    ///
+    /// Nothing pinned this. The register's third key is the only thing standing
+    /// between two revocations minted in the same logical instant and a pair of
+    /// replicas that disagree about who revoked and why.
+    #[test]
+    fn an_exact_tie_is_broken_by_the_higher_revoker_id() {
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let one = engine_seeded(ROOT, [2u8; 32], clock());
+        let two = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
+        let t = target.keychain.device_id();
+
+        // Device ids are derivations of a signing key, so which of the two is
+        // greater is not something the test gets to choose.
+        let (lower, higher) = if one.keychain.device_id() < two.keychain.device_id() {
+            (&one, &two)
+        } else {
+            (&two, &one)
+        };
+
+        let at = Hlc {
+            physical_ms: T0,
+            logical: 3,
+        };
+        revoke_at(&r1, &mut db1, lower, t, at);
+        revoke_at(&r1, &mut db1, higher, t, at);
+        revoke_at(&r2, &mut db2, higher, t, at);
+        revoke_at(&r2, &mut db2, lower, t, at);
+
+        assert_eq!(revocation_row(&db1, &t), revocation_row(&db2, &t));
+        assert_eq!(
+            revocation_row(&db1, &t).unwrap().2.as_slice(),
+            &higher.keychain.device_id()[..],
+            "an exact tie resolves upwards on the revoker id, as `lww_wins` does"
+        );
+    }
+
+    /// Two revocations inside one millisecond still converge, because the
+    /// register compares the HLC's logical half too.
+    #[test]
+    fn two_revocations_in_one_millisecond_converge_on_the_logical_half() {
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let a = engine_seeded(ROOT, [2u8; 32], clock());
+        let b = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
+        let t = target.keychain.device_id();
+
+        let lo = Hlc {
+            physical_ms: T0,
+            logical: 1,
+        };
+        let hi = Hlc {
+            physical_ms: T0,
+            logical: 7,
+        };
+        revoke_at(&r1, &mut db1, &a, t, hi);
+        revoke_at(&r1, &mut db1, &b, t, lo);
+        revoke_at(&r2, &mut db2, &b, t, lo);
+        revoke_at(&r2, &mut db2, &a, t, hi);
+
+        assert_eq!(revocation_row(&db1, &t), revocation_row(&db2, &t));
+        assert_eq!(
+            revocation_row(&db1, &t).unwrap().2.as_slice(),
+            &a.keychain.device_id()[..],
+            "the greater logical half wins, so a physical-only compare is not enough"
+        );
+    }
+
+    /// A wall clock that steps **backwards** does not move the cut, because the
+    /// cut is the op's HLC and `Hlc::send` takes `max(now, local)`.
+    ///
+    /// This is H2's second half, and it was reachable with no attacker at all:
+    /// the cut defaulted to the wall clock, so a ten-minute NTP step
+    /// back produced a revocation whose cut every peer refused as out of range
+    /// — the user was told the stolen laptop was revoked while no other replica
+    /// agreed and nothing said so.
+    #[test]
+    fn a_backward_clock_step_does_not_move_the_cut() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+
+        // Something happens, so this device's HLC is at T0.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before the step".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // The clock steps back ten minutes — twice `MAX_DRIFT_MS`.
+        set_clock(&ca, T0 - 10 * 60 * 1000);
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .unwrap();
+
+        let cut = revocation_row(&dba, &eb.keychain.device_id()).unwrap().0;
+        assert!(
+            cut >= i64::try_from(T0).unwrap(),
+            "the HLC is monotone, so the cut cannot follow the clock backwards: {cut}"
+        );
+    }
+
+    /// A revocation whose cut landed in the past is **correctable**: revoking
+    /// again from a healthy device supersedes it, in either arrival order.
+    ///
+    /// A device that has not yet heard from a peer carries whatever HLC its own
+    /// clock gives it, so a badly-set one can still emit a backdated cut — the
+    /// register does not prevent that. What it does is stop the damage being
+    /// permanent. Under the `MIN` join this replaces, the earliest cut won
+    /// forever: one op from one mis-set device refused its target's entire
+    /// history on every replica in the account, irreversibly. Under LWW the
+    /// later op wins, which is the whole reason for choosing it.
+    #[test]
+    fn a_backdated_revocation_is_superseded_by_a_healthy_one() {
+        const YEAR_MS: u64 = 365 * 24 * 60 * 60 * 1000;
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let mis_set = engine_seeded(ROOT, [2u8; 32], clock());
+        let healthy = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
+        let t = target.keychain.device_id();
+
+        // The damage: a device a year slow revokes T, and its cut refuses
+        // everything T ever wrote.
+        revoke(&r1, &mut db1, &mis_set, t, T0 - YEAR_MS);
+        assert!(
+            r1.is_revoked_at(db1.conn(), &t, T0 - YEAR_MS / 2).unwrap(),
+            "the premise: a backdated cut does refuse the target's history"
+        );
+
+        // The repair, and the same two ops in the other order on a second
+        // replica.
+        revoke(&r1, &mut db1, &healthy, t, T0);
+        revoke(&r2, &mut db2, &healthy, t, T0);
+        revoke(&r2, &mut db2, &mis_set, t, T0 - YEAR_MS);
+
+        assert_eq!(
+            revocation_row(&db1, &t),
+            revocation_row(&db2, &t),
+            "order decided nothing"
+        );
+        assert_eq!(
+            revocation_row(&db1, &t).unwrap().0,
+            i64::try_from(T0).unwrap(),
+            "the healthy cut supersedes the backdated one"
+        );
+        for (e, db) in [(&r1, &db1), (&r2, &db2)] {
+            assert!(
+                !e.is_revoked_at(db.conn(), &t, T0 - YEAR_MS / 2).unwrap(),
+                "and the target's history stands again"
+            );
+        }
+    }
+
+    /// The local command writes the same register the remote path does,
+    /// because it now *is* the remote path.
+    ///
+    /// There were two writers to these columns and only one took the join:
+    /// `apply_control_op` resolved concurrent revocations, while
+    /// `revoke_device` did a bare unconditional `UPDATE` that set neither the
+    /// HLC's logical half nor any guard. A device revoking one already revoked
+    /// therefore moved its own cut while every peer kept the other, and it was
+    /// then the only replica accepting a window of ops.
+    #[test]
+    fn a_local_revocation_writes_the_same_register_as_a_remote_one() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let target = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        // The register holds a full HLC and its sender, not half of one.
+        let row = revocation_row(&dba, &target).expect("the local command records it");
+        assert_eq!(row.0, i64::try_from(T0).unwrap());
+        assert_eq!(
+            row.2.as_slice(),
+            &ea.keychain.device_id()[..],
+            "the bare UPDATE this replaces wrote no HLC logical half and no \
+             guard, so the register compared against a default here and a real \
+             value on every other replica"
+        );
+
+        // And it participates in the register: a staler revocation arriving
+        // afterwards does not overwrite it.
+        let before = revocation_row(&dba, &target);
+        revoke(&ea, &mut dba, &ec, target, T0 - 5_000);
+        assert_eq!(
+            revocation_row(&dba, &target),
+            before,
+            "a local write outside the register would have been overwritten here"
+        );
+    }
+
+    /// A `device_revoke` naming a device whose cert has not arrived yet is
+    /// durable, and the cert does not resurrect it.
+    ///
+    /// Ordinary, not exotic: a cert parked in `deferred_ops` at meta epoch *k*
+    /// drains after a revocation absorbed at *k+1*. A bare
+    /// `UPDATE ... WHERE device_id = ?` matched no row and dropped the
+    /// revocation silently; `DeviceCertPublish` then created the row
+    /// **unrevoked**. Fail-open, and decided by delivery order.
+    #[test]
+    fn a_revocation_that_arrives_before_the_cert_survives_it() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        let a_id = ea.keychain.device_id();
+
+        // B has never seen A's cert when the revocation lands.
+        revoke(&eb, &mut dbb, &eb, a_id, T0);
+        assert!(
+            eb.is_revoked_at(dbb.conn(), &a_id, T0 + 1).unwrap(),
+            "the revocation must be durable without a devices row to update"
+        );
+        // And it does not invent one. Upserting into `devices` made every
+        // revocation of an unknown id a phantom entry in the user's device
+        // list, and a phantom row also satisfies `revoke_device`'s
+        // known-device guard.
+        assert_eq!(
+            device_rows(&dbb),
+            0,
+            "a revocation must not mint a device nobody has ever seen"
+        );
+
+        // A's cert arrives afterwards. It fills the identity columns in and
+        // leaves the revocation alone.
+        trust(&eb, &mut dbb, &ea);
+        assert!(
+            eb.is_revoked_at(dbb.conn(), &a_id, T0 + 1).unwrap(),
+            "the cert must not resurrect a revoked device"
+        );
+        assert_eq!(device_rows(&dbb), 1, "and it is one device, not two");
+    }
+
+    fn device_rows(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Revoking a device this vault has never seen is refused, and stays
+    /// refused however many revocations of unknown ids have gone past.
+    ///
+    /// The guard reads `devices`, so while a `device_revoke` upserted into that
+    /// table a revocation of any id at all made its target "known" — and
+    /// `revoke_device` mints a fresh epoch for every stream in the account
+    /// before it gets anywhere near checking anything else.
+    #[test]
+    fn revoking_a_device_the_vault_has_never_seen_is_refused() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+
+        let ghost = [0x9e; 16];
+        revoke(&ea, &mut dba, &eb, ghost, T0);
+        assert_eq!(device_rows(&dba), 1, "the ghost is not in the device list");
+
+        let err = ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, ghost),
+                reason: RevokeReason::Lost,
+            },
+        );
+        assert!(
+            matches!(err, Err(EngineError::NotFound(_))),
+            "revoking a ghost must not reach the rotation, got {err:?}"
+        );
+    }
+
+    /// A revocation is the first control op a fresh vault emits, so resolving
+    /// the vault-meta epoch mints that stream's own key mid-transaction and
+    /// emits `key_envelope` ops into the very stream whose `seq` the revocation
+    /// needs. A `seq` read before the transaction is already spent by then, and
+    /// `ops` has a `UNIQUE(stream_id, device_id, seq)`.
+    ///
+    /// This is the only shape that fires it: a vault that has already written
+    /// anything has a meta key, so nothing is minted and the stale read happens
+    /// to be right.
+    #[test]
+    fn a_revocation_on_a_vault_with_no_meta_key_yet_gets_its_own_seq() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        // `trust` writes the peer's row directly, so the vault-meta stream
+        // still holds no key and no op: exactly the premise.
+        trust(&ea, &mut dba, &eb);
+        assert_eq!(op_count(&dba), 0, "the premise: nothing written yet");
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .expect("revoking as the first act of a vault must work");
+
+        let revokes: i64 = dba
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE inner_kind = 'device.revoke'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(revokes, 1, "the revocation reached the op log");
+        // Every op in the meta stream has a distinct seq. A stale read would
+        // have collided with the `key_envelope` ops minting the epoch emitted.
+        let (rows, distinct): (i64, i64) = dba
+            .conn()
+            .query_row(
+                "SELECT COUNT(seq), COUNT(DISTINCT seq) FROM ops WHERE stream_id = ?",
+                params![&META_STREAM[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(rows > 1, "the epoch mint emitted envelopes alongside it");
+        assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
     }
 
     /// Read the stored cursor for `(stream, device)`, or 0 if none.
@@ -13434,20 +15846,8 @@ mod tests {
         let mut da = db_root([0x77; 32]);
         let mut dbb = db_root([0x77; 32]);
         // Mutual trust so envelopes verify.
-        ea.apply(
-            &mut da,
-            Command::TrustDevice {
-                cert_cbor: eb.keychain().cert_blob().to_vec(),
-            },
-        )
-        .unwrap();
-        eb.apply(
-            &mut dbb,
-            Command::TrustDevice {
-                cert_cbor: ea.keychain().cert_blob().to_vec(),
-            },
-        )
-        .unwrap();
+        trust(&ea, &mut da, &eb);
+        trust(&eb, &mut dbb, &ea);
 
         let task = task_with(&ea, &mut da, "cross-device", TaskDraft::default());
         let task_env = create_env_for(&da, task.bytes());

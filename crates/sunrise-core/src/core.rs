@@ -115,7 +115,7 @@ impl Core {
         let pid = std::process::id();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
-        let vault_root = unlock.into_root();
+        let (vault_root, paired) = unlock.into_parts();
         let db_path = cfg.vault_dir.join("vault.db");
         let mut db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
@@ -128,6 +128,7 @@ impl Core {
             vault_root,
             cfg.clock.as_ref(),
             cfg.rng.as_ref(),
+            paired.as_deref(),
         )?);
         let engine = Engine::new(
             cfg.clock.clone(),
@@ -135,6 +136,13 @@ impl Core {
             cfg.rng.clone(),
             keychain,
         );
+        // Announce this device to the account, once per vault. Before ADR-0024
+        // each side had to be handed the other's cert by hand
+        // (`Command::TrustDevice`), which accepted any self-signed cert and so
+        // could not distinguish a sibling from a stranger. The cert is now
+        // identity-signed and published as an op, so a device that pairs is
+        // known to every replica the moment its first ops arrive.
+        engine.publish_device_cert(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
         engine.apply(
@@ -210,25 +218,50 @@ impl Core {
 
     /// Apply a remote op envelope (the receive half of sync).
     ///
-    /// Locks the vault, applies the op via [`Engine::apply_remote`] (idempotent,
-    /// entity-level LWW), and broadcasts the resulting [`DomainEvent`] on
-    /// `changes()`. Returns `Ok(None)` for an idempotent re-receive. The sync
-    /// driver (next slice) calls this for every inbound envelope.
+    /// Locks the vault, applies the op via [`Engine::apply_remote_all`]
+    /// (idempotent, entity-level LWW), and broadcasts every resulting
+    /// [`DomainEvent`] on `changes()`. Returns `Ok(None)` for an idempotent
+    /// re-receive. The sync driver calls this for every inbound envelope.
+    ///
+    /// One envelope can produce several events: a `key_envelope` op is silent
+    /// in itself, but the key it carries releases every op that had been parked
+    /// waiting for it, and each of those materializes now. All of them are
+    /// broadcast; the first is returned, because the driver only needs to know
+    /// *whether* something landed and what kind it was.
     pub async fn apply_remote(
         &self,
         envelope_bytes: &[u8],
     ) -> Result<Option<DomainEvent>, CoreError> {
+        Ok(self
+            .apply_remote_all(envelope_bytes)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    /// [`Self::apply_remote`], handing back every event rather than the first.
+    ///
+    /// The sync driver needs all of them: a `Created` event naming a Stream is
+    /// what makes it subscribe to that Stream's channel, and after ADR-0024
+    /// such an event can arrive as the *second* thing one envelope produced —
+    /// a `key_envelope` op releasing a parked `stream.create`. A driver reading
+    /// only the first would never subscribe, and the Stream's tasks would never
+    /// arrive.
+    pub(crate) async fn apply_remote_all(
+        &self,
+        envelope_bytes: &[u8],
+    ) -> Result<Vec<DomainEvent>, CoreError> {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
-        let event = {
+        let events = {
             let mut db = self.db.lock();
-            self.engine.apply_remote(&mut db, envelope_bytes)?
+            self.engine.apply_remote_all(&mut db, envelope_bytes)?
         };
-        if let Some(ev) = &event {
+        for ev in &events {
             let _ = self.changes_tx.send(ev.clone());
         }
-        Ok(event)
+        Ok(events)
     }
 
     /// Run a read query.
@@ -506,20 +539,42 @@ impl Core {
     /// through an authenticated encrypted channel — `sunrise_pairing` provides
     /// one — and drop it immediately afterwards.
     ///
-    /// Pairing needs both halves: the new device opens its vault with this root
-    /// (so the two derive identical per-stream keys), and each side must then
-    /// accept the other's [`Self::device_cert`] via `Command::TrustDevice`
-    /// before either will apply the other's ops.
+    /// It is no longer sufficient on its own. Since ADR-0024 the root keys the
+    /// database and wraps secrets at rest, but it does not imply a single
+    /// Stream key: those are random and travel in
+    /// [`Self::export_pairing_payload`]. A device handed only this opens a
+    /// vault it cannot read.
     #[must_use]
     pub fn export_vault_root_for_pairing(&self) -> sunrise_crypto::keys::VaultRootKey {
         self.engine.keychain().export_vault_root_for_pairing()
     }
 
-    /// This device's self-issued cert (canonical CBOR). A peer passes it to
-    /// [`Command::TrustDevice`] to accept this device's ops.
+    /// Everything a device being paired needs: the account identity, every
+    /// Stream key this device holds, and the vault root.
+    ///
+    /// # Errors
+    /// Storage failures reading this device's labels.
+    pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+        let db = self.db.lock();
+        Ok(self.engine.keychain().export_pairing_payload(&db)?)
+    }
+
+    /// This device's identity-signed cert (canonical CBOR).
+    ///
+    /// Published automatically as a `device_cert` op at open, so peers learn it
+    /// through sync rather than through a manual trust command.
     #[must_use]
     pub fn device_cert(&self) -> Vec<u8> {
         self.engine.keychain().cert_blob().to_vec()
+    }
+
+    /// The account identity this vault belongs to.
+    ///
+    /// Anchored to `ID_S_pub` rather than to whichever device created the
+    /// vault, which is what makes a device cert something the *account* issued.
+    #[must_use]
+    pub fn identity_id(&self) -> [u8; 16] {
+        self.engine.keychain().identity_id()
     }
 
     /// This device's stable id.
@@ -538,9 +593,16 @@ impl Core {
         Ok(sunrise_storage::Outbox::pending_count(&db)?)
     }
 
-    /// Build the subscribe set: every known stream (the zero meta/inbox stream,
-    /// every stream we have ops for, and every declared stream) with its
-    /// per-`(device)` cursors from `sync_cursors`.
+    /// Build the subscribe set: every known stream — the vault-meta stream, the
+    /// Inbox, every stream we have ops for, and every declared stream — with
+    /// its per-`(device)` cursors from `sync_cursors`.
+    ///
+    /// Both fixed ids are seeded unconditionally. They are the two streams a
+    /// vault can hold ops for while having no row that names them: the meta
+    /// stream has no `streams` row at all, and the Inbox's row only appears
+    /// once a task lands in it. A subscribe set that omitted either would
+    /// silently never receive that stream's ops — including, since ADR-0024,
+    /// the `key_envelope` ops that carry its keys.
     /// The configured anti-entropy resync interval, when sync is configured.
     pub(crate) fn sync_resync_interval(&self) -> Option<std::time::Duration> {
         self.cfg.sync.as_ref().map(|s| s.resync_interval)
@@ -563,19 +625,24 @@ impl Core {
         let db = self.db.lock();
         let conn = db.conn();
         let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
-        streams.insert([0u8; 16]);
+        streams.insert(crate::engine::META_STREAM);
+        streams.insert(sunrise_domain::INBOX_STREAM_BYTES);
         {
             let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                streams.insert(to16(&row?));
+                if let Some(id) = to16(&row?) {
+                    streams.insert(id);
+                }
             }
         }
         {
             let mut stmt = conn.prepare("SELECT stream_id FROM streams WHERE deleted = 0")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                streams.insert(to16(&row?));
+                if let Some(id) = to16(&row?) {
+                    streams.insert(id);
+                }
             }
         }
         let mut entries = Vec::with_capacity(streams.len());
@@ -589,8 +656,11 @@ impl Core {
             let mut cursors = Vec::new();
             for row in rows {
                 let (dev, seq) = row?;
+                let Some(device_id) = to16(&dev) else {
+                    continue;
+                };
                 cursors.push(CursorEntry {
-                    device_id: to16(&dev),
+                    device_id,
                     last_applied_seq: u64::try_from(seq).unwrap_or(0),
                 });
             }
@@ -664,11 +734,16 @@ impl Drop for Core {
 }
 
 /// Left-pad / truncate a DB blob to a 16-byte id.
-fn to16(b: &[u8]) -> [u8; 16] {
-    let mut a = [0u8; 16];
-    let take = b.len().min(16);
-    a[..take].copy_from_slice(&b[..take]);
-    a
+/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+///
+/// Not a pad, for the reason given on `keychain::to16`: zero-padding turns a
+/// corrupt row into a valid-looking value, and the value it produces here is
+/// `[0u8; 16]` — the vault-meta stream — so one truncated blob would put a
+/// stranger's cursor on it. Every caller here is building a Subscribe frame,
+/// where a row that cannot name a stream or a device has nothing to contribute
+/// and is skipped.
+fn to16(b: &[u8]) -> Option<[u8; 16]> {
+    b.try_into().ok()
 }
 
 fn format_iso8601(ms: u64) -> String {
@@ -705,7 +780,10 @@ mod tests {
     }
 
     fn unlock() -> Unlock {
-        Unlock::DevicePaired(VaultRootKey::from_bytes([1u8; 32]))
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes([1u8; 32]),
+            paired: None,
+        }
     }
 
     #[tokio::test]
@@ -1045,17 +1123,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let device_id_first;
+        let pending_before_close;
         {
             let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+            // Not zero: opening a vault publishes this device's certificate and
+            // the identity-sealed copies of its first Stream keys, and those
+            // queue like any other op.
+            let announced = core.sync_pending().unwrap();
+            assert!(announced > 0, "the vault announces itself at open");
             core.submit(Command::CreateTask(TaskDraft {
                 title: "persisted".into(),
                 ..Default::default()
             }))
             .await
             .unwrap();
+            pending_before_close = core.sync_pending().unwrap();
             device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
                 QueryResult::SyncStatus(s) => {
-                    assert_eq!(s.outbox_pending, 1, "one op pending after submit");
+                    // Two more, not one: the first task in the Inbox also
+                    // mints that stream's key, and the `key_envelope` op
+                    // distributing it queues alongside the task.
+                    assert_eq!(
+                        u64::from(s.outbox_pending),
+                        announced + 2,
+                        "the task and the key that opens it are both pending"
+                    );
                     // Read the device id straight from the vault for comparison.
                     let db = core.db.lock();
                     db.conn()
@@ -1089,7 +1181,13 @@ mod tests {
             "same device id on reopen"
         );
         match core2.query(Query::SyncStatus).await.unwrap() {
-            QueryResult::SyncStatus(s) => assert_eq!(s.outbox_pending, 1),
+            // The outbox hydrates from the DB, so the reopened vault sees
+            // exactly what the first one left pending — announcement, key
+            // envelope and task alike. The reopen itself adds nothing: the
+            // certificate is published once per vault, not once per open.
+            QueryResult::SyncStatus(s) => {
+                assert_eq!(u64::from(s.outbox_pending), pending_before_close);
+            }
             _ => panic!("expected sync status"),
         }
         core2.close().await.unwrap();

@@ -87,8 +87,12 @@ pub struct KdfVector {
     pub out_32: [u8; 32],
 }
 
+/// Key material for the [`KDF_VECTORS`] `sunrise.stream_key_id.v1` entry: the
+/// bytes of the Stream key whose id is being derived.
+pub const KEY_ID_STREAM_KEY: [u8; 32] = [0x77; 32];
+
 /// `BLAKE3.derive_key` vectors covering distinct contexts and an empty input.
-pub const KDF_VECTORS: [KdfVector; 3] = [
+pub const KDF_VECTORS: [KdfVector; 4] = [
     KdfVector {
         context: "sunrise.identity_id.v1",
         key_material: b"key material",
@@ -103,6 +107,14 @@ pub const KDF_VECTORS: [KdfVector; 3] = [
         context: "sunrise.stream_key.v1",
         key_material: b"",
         out_32: hex("2ad1ddabad95f545528301b9913d266b8262bd8824fb03c70b6f1f9e0b61a2c5"),
+    },
+    // `stream_key_id` takes the first 8 bytes of this draw. It is frozen at
+    // the full 32 so the same assertion that checks the id also checks the
+    // XOF's prefix stability, which is what makes truncating to 8 safe.
+    KdfVector {
+        context: "sunrise.stream_key_id.v1",
+        key_material: &KEY_ID_STREAM_KEY,
+        out_32: hex("0225f744831f36228bfd0f683dd7623d3d7fddbd8a164299ab28e62b4f4bfc1e"),
     },
 ];
 
@@ -141,14 +153,19 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 4`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `4`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 5`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `5`, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
 /// re-frozen whenever `DOC_SCHEMA_V` moves. That is a doc-schema change, not a
 /// crypto change: the KDF, identity-id, stream-root and AEAD vectors carry no
 /// version field and never move for that reason.
+///
+/// The 4 → 5 re-freeze (ADR-0024) moved exactly 65 of these 185 bytes: the
+/// 64-byte Ed25519 signature at `[119..182]`, because field 12 is inside the
+/// signature input, and the field-12 byte itself at `[184]`. Everything before
+/// the signature is byte-identical.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
@@ -167,15 +184,24 @@ pub mod signed_only_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584091",
-        "4bf575f88c9e2e57f909369367577caa4f0af03aa740536ba180bf3bdf94",
-        "3a78a58c9b409b85fda3dd5a2242b68df87c401d8f859eed6d0def366fee",
-        "5ecc080c04",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404f",
+        "f1ce8497cc8d5c8042b3147745f537980c8ab8ee056cc1b63adfbd45675c",
+        "1f0746265249e8b1bee763edd41e91b6c881fce926af747647dbe4dd5e7e",
+        "a03b040c05",
     ));
 }
 
 /// `aead_alg = 1` envelope: payload sealed with XChaCha20-Poly1305 under a
 /// fixed stream key and a fixed nonce, so the ciphertext is reproducible.
+///
+/// The 4 → 5 re-freeze moved 81 of these 202 bytes: the 16-byte AEAD tag at
+/// `[117..132]`, the 64-byte signature at `[136..199]`, and the field-12 byte
+/// at `[201]`. The tag moves because the envelope's AAD is built by
+/// *exclusion* — every field but the payload and the signature, field 12
+/// included — so a document-schema bump re-authenticates the same ciphertext
+/// under a new AAD. The 23 ciphertext bytes at `[94..117]` are unchanged,
+/// which is the check that matters: the keystream, and therefore the key
+/// schedule and the nonce, did not move.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
@@ -196,10 +222,56 @@ pub mod sealed_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8d59a8d",
-        "bcff501f166c7591bc2c21d2880b58402efabc751a4bfa5c00b4dfcbab00",
-        "349ad4a5e0d1747565d5c8e0e18af2df9574c1bdc3c1630eac695543ee73",
-        "c308da546d35f28d836eca4e4a51fb3a2b5655070c04",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb83a965d",
+        "a6ed52b02282bcd99dd8a7847f0b5840028458e018abc5bd7d4bbab79f2d",
+        "d25e19b0e5b34fb74f09457d8eb9d0e9e5c11dc64296aa099a07671d8289",
+        "ee7ba47bd2b99a87510e2f6e65d131af0306780d0c05",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// HPKE key envelopes
+// ---------------------------------------------------------------------------
+
+/// A frozen `key_envelope` seal (ADR-0024, RFC 9180 Base /
+/// DHKEM(X25519,HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305).
+///
+/// HPKE is **randomised** — the ephemeral KEM key is drawn per seal — so unlike
+/// every other vector here this one is only reproducible against a stated
+/// CSPRNG state. [`SEALED`] is what `hpke_seal` produces from a
+/// `ChaCha20Rng::seed_from_u64(RNG_SEED)`, and the assertion that pins it says
+/// so. The unconditional half of the same test — that [`SEALED`] opens under
+/// [`RECIPIENT_SECRET`] to [`STREAM_KEY`], and that its first 32 bytes are the
+/// encapsulated key — needs no seed and holds against any implementation.
+///
+/// The point of freezing it at all is the same as for the blob-chunk nonce: the
+/// `info` string is not transmitted, so two implementations that build it
+/// differently each round-trip their own blobs perfectly and cannot read each
+/// other's.
+pub mod key_envelope {
+    /// X25519 secret of the recipient device (`D_D_priv`).
+    pub const RECIPIENT_SECRET: [u8; 32] = [0x66; 32];
+    /// The matching `D_D_pub`.
+    pub const RECIPIENT_PUBLIC: [u8; 32] =
+        super::hex("219e4d800da968d2a5fcb009c784f4746c7138edb9ee4844b739e830b05cf424");
+    /// The Stream key being distributed — the HPKE plaintext.
+    pub const STREAM_KEY: [u8; 32] = [0x77; 32];
+    /// Stream the key belongs to (shared with the envelope vectors).
+    pub const STREAM_ID: [u8; 16] = super::STREAM_ID;
+    /// Epoch the key belongs to.
+    pub const EPOCH: u32 = 3;
+    /// `"sunrise.hpke.key_envelope.v1" || stream_id || u32_be(epoch)`.
+    pub const INFO: [u8; 48] = super::hex(concat!(
+        "73756e726973652e68706b652e6b65795f656e76656c6f70652e76312222",
+        "222222222222222222222222222200000003",
+    ));
+    /// Seed for the `ChaCha20Rng` that reproduces [`SEALED`].
+    pub const RNG_SEED: u64 = 0x00C0_FFEE;
+    /// `enc(32) || ciphertext(32) || tag(16)`.
+    pub const SEALED: [u8; 80] = super::hex(concat!(
+        "9d31afc2db7b161fa2c7438771899f949e15caa6e3870378df111cc9fed017",
+        "644f3ccfa3801468d990e29f19482e660b166d5911fd6059b4630febc9430c",
+        "e2e0ef840f05b8491fad958192715ecf1629",
     ));
 }
 

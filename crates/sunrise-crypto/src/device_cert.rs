@@ -19,8 +19,10 @@
 //! }
 //! ```
 
+use crate::identity::identity_id_from_pub;
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair};
 use ciborium::value::{Integer, Value};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 const DEVICE_CERT_DOMAIN: &[u8] = b"sunrise.device_cert.v1";
@@ -68,6 +70,10 @@ pub enum DeviceCertError {
     /// Ed25519 signature verify failed.
     #[error("device cert signature verify failed")]
     SigVerify,
+    /// The cert's `identity_id` is not the one derived from the identity key
+    /// that signed it.
+    #[error("device cert identity_id does not match the signing identity")]
+    IdentityMismatch,
     /// Body validation failed (nickname length, etc.).
     #[error("device cert validation failed: {0}")]
     Validation(&'static str),
@@ -226,6 +232,40 @@ impl DeviceCert {
         Ok(())
     }
 
+    /// Verify the cert **and** that it names the identity that signed it.
+    ///
+    /// [`Self::verify`] alone answers "did `id_s_pub` sign this body?", which
+    /// leaves one thing open: `body.identity_id` is a field like any other, so
+    /// a holder of `ID_S_priv` can sign a body claiming to belong to somebody
+    /// else's identity, and a reader that only checks the signature accepts it.
+    /// The field is a *derivation* of `ID_S_pub`, so recomputing it is the
+    /// whole check — and doing it in constant time keeps a comparison that
+    /// runs on attacker-supplied bytes from leaking a prefix length.
+    ///
+    /// `expected_identity_id` is the identity this vault actually belongs to;
+    /// passing it separately means a cert that verifies under a *different*
+    /// well-formed identity is still refused, which is what makes
+    /// `DeviceCertPublish` safe to self-authenticate.
+    ///
+    /// # Errors
+    /// [`DeviceCertError::SigVerify`] on signature mismatch,
+    /// [`DeviceCertError::IdentityMismatch`] when the cert names another
+    /// identity.
+    pub fn verify_binding(
+        &self,
+        id_s_pub: &[u8; 32],
+        expected_identity_id: &[u8; 16],
+    ) -> Result<(), DeviceCertError> {
+        self.verify(id_s_pub)?;
+        let derived = identity_id_from_pub(id_s_pub);
+        let ok: bool = derived.ct_eq(&self.body.identity_id).into();
+        let matches_expected: bool = derived.ct_eq(expected_identity_id).into();
+        if !(ok && matches_expected) {
+            return Err(DeviceCertError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
     /// Encode to canonical CBOR `{ "body": ..., "sig": ... }` outer map.
     ///
     /// Map keys are integer ids 1 (body), 2 (sig).
@@ -269,7 +309,17 @@ impl DeviceCert {
             };
             match (id, v) {
                 (1, val) => {
-                    // Re-encode body and re-decode for canonical-form check.
+                    // Re-encoded only so `body_from_cbor` can read it: the
+                    // outer map has already been consumed into `Value`s, and
+                    // the body decoder takes bytes. This is **not** a
+                    // canonicity check — nothing here compares the re-encoding
+                    // against the bytes that arrived, so a body with unsorted
+                    // or non-minimal keys decodes exactly as a canonical one
+                    // does. The comment used to claim otherwise. Canonical CBOR
+                    // is unenforced across the whole inner-op surface (see the
+                    // note in `docs/03-crypto/data-encryption-format.md`), and
+                    // enforcing it here alone would reject certs this build's
+                    // own encoder emits.
                     let mut buf = Vec::new();
                     ciborium::ser::into_writer(&val, &mut buf)
                         .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
@@ -337,6 +387,56 @@ mod tests {
         let bytes = cert.to_cbor().unwrap();
         let back = DeviceCert::from_cbor(&bytes).unwrap();
         assert_eq!(back, cert);
+    }
+
+    /// A cert can verify and still be a lie about which identity it belongs
+    /// to: `identity_id` is a signed *field*, and only recomputing it from the
+    /// signing key catches a rewrite.
+    #[test]
+    fn verify_binding_catches_a_rewritten_identity_id() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let id_s_pub = identity.public_bytes();
+        let real_id = crate::identity::identity_id_from_pub(&id_s_pub);
+
+        let mut body = fixture([1u8; 32]);
+        body.identity_id = real_id;
+        let good = DeviceCert::issue(body.clone(), &identity).unwrap();
+        good.verify_binding(&id_s_pub, &real_id).unwrap();
+
+        // Same signer, a body claiming somebody else's identity.
+        body.identity_id = [0xaa; 16];
+        let liar = DeviceCert::issue(body, &identity).unwrap();
+        liar.verify(&id_s_pub).expect("the signature is genuine");
+        assert!(matches!(
+            liar.verify_binding(&id_s_pub, &real_id),
+            Err(DeviceCertError::IdentityMismatch)
+        ));
+    }
+
+    /// A well-formed cert from a *different* identity is refused even though it
+    /// verifies under its own key: the vault names the identity it trusts.
+    #[test]
+    fn verify_binding_refuses_another_identity() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let ours = IdentitySigningKeyPair::generate(&mut rng);
+        let theirs = IdentitySigningKeyPair::generate(&mut rng);
+        let our_id = crate::identity::identity_id_from_pub(&ours.public_bytes());
+        let their_pub = theirs.public_bytes();
+
+        let mut body = fixture([1u8; 32]);
+        body.identity_id = crate::identity::identity_id_from_pub(&their_pub);
+        let cert = DeviceCert::issue(body, &theirs).unwrap();
+        cert.verify_binding(&their_pub, &body_identity(&cert))
+            .unwrap();
+        assert!(matches!(
+            cert.verify_binding(&their_pub, &our_id),
+            Err(DeviceCertError::IdentityMismatch)
+        ));
+    }
+
+    fn body_identity(cert: &DeviceCert) -> [u8; 16] {
+        cert.body.identity_id
     }
 
     #[test]

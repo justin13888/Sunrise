@@ -21,7 +21,7 @@ use std::time::Duration;
 use sunrise_core::{Clock, Command, Core, SystemClock};
 use sunrise_domain::TaskDraft;
 use sunrise_e2e::{
-    canonical_tasks, open_synced_core, spawn_relay_with, trust_each_other, wait_live,
+    canonical_tasks, open_paired_core, open_synced_core, spawn_relay_with, wait_live,
     wait_pending_zero, wait_tasks_converge,
 };
 use sunrise_server::relay::RingCaps;
@@ -72,8 +72,7 @@ async fn a_returning_device_catches_up_past_the_ring_bound() {
 
     // Pair both devices, then take B away.
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
     create_task(&a, "before-b-leaves").await;
@@ -127,8 +126,7 @@ async fn a_relay_restart_does_not_lose_history() {
     // ---- First relay process. ----
     let (addr, relay) = spawn_relay_with(cfg(), |s| s).await;
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 

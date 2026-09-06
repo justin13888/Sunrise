@@ -114,12 +114,15 @@ and the relay has no part in pairing at all.** There is no pairing route in
 server's `Hello` response sets only `REQUIRED_CLIENT_BITS |
 REQUIRED_SERVER_BITS | SrvTokenRefresh`.
 
-What ships instead is a **manual two-file device-cert exchange**, driven by the
-CLI in `crates/sunrise-cli/src/livesync.rs`: `SUNRISE_EXPORT_CERT_FILE` writes
-this device's cert on startup and `SUNRISE_TRUST_CERT_FILE` reads a peer's and
-submits it as `Command::TrustDevice`. Both steps are best-effort — an
-unwritable or missing file is logged (`ui.pair.cert_exported`,
-`ui.pair.peer_trusted`), not fatal. The QR, Noise-XX handshake and SAS
+What ships instead is a **manual two-file pairing-payload exchange**, driven by
+the CLI in `crates/sunrise-cli/src/livesync.rs`: `SUNRISE_EXPORT_PAIRING_FILE`
+writes this device's `PairingPayload` on startup and `SUNRISE_PAIRING_FILE`
+reads one and hands it to `Core::open`. It is read *before* the vault opens,
+because since [ADR-0024](../11-adr/0024-key-hierarchy.md) the identity a vault
+belongs to is decided when the vault is created; a payload offered afterwards
+has nothing left to join. Both steps are best-effort — an unwritable or missing
+file is logged (`ui.pair.payload_exported`, `ui.pair.payload_adopted`), not
+fatal. The QR, Noise-XX handshake and SAS
 machinery in `crates/sunrise-pairing/` (`qr.rs`, `handshake.rs`, `sas.rs`) is
 built and tested but has no relay transport under it, so nothing routes a
 handshake between two devices yet. See

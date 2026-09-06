@@ -967,21 +967,14 @@ async fn handle_frame(
                 if let Ok(oe) = sunrise_crypto::decode_envelope(env) {
                     shared.note_peer(oe.device_id);
                 }
-                match core.apply_remote(env).await {
-                    Ok(Some(DomainEvent::Created(r))) if r.kind() == EntityKind::Stream => {
-                        // Newly-learned stream (StreamCreate): subscribe to
-                        // its channel so its task ops flow.
-                        let sid = *r.bytes();
-                        if subscribed.insert(sid) {
-                            if let Ok(frame) = encode_subscribe_one(sid) {
-                                pending_sends.push(frame);
-                            }
-                        }
+                match core.apply_remote_all(env).await {
+                    Ok(events) if !events.is_empty() => {
+                        subscribe_to_new_streams(&events, subscribed, pending_sends);
                         shared.mark_synced(core.now_ms());
                     }
-                    Ok(Some(_)) => shared.mark_synced(core.now_ms()),
-                    // Idempotent re-receive: nothing to do, nothing wrong.
-                    Ok(None) => {}
+                    // Idempotent re-receive, or an op parked awaiting its key:
+                    // nothing to do, nothing wrong.
+                    Ok(_) => {}
                     Err(e) => {
                         // An op that fails its own integrity checks was
                         // damaged in transit; an op from a device this vault
@@ -1192,6 +1185,34 @@ fn encode_subscribe_all(core: &Core) -> Result<Vec<u8>, ()> {
     encode_frame(MsgKind::Subscribe, FrameFlags::EMPTY, &bytes).map_err(|_| ())
 }
 
+/// Queue a `Subscribe` for every Stream a delivery just taught this device
+/// about, so that Stream's task ops start flowing.
+///
+/// Scanned across **every** event one delivery produced, not just the first: a
+/// `key_envelope` op releases whatever was parked waiting for its key, and a
+/// `stream.create` can be among them. A driver that read only the first event
+/// would never subscribe, and the Stream's tasks would never arrive.
+fn subscribe_to_new_streams(
+    events: &[DomainEvent],
+    subscribed: &mut HashSet<[u8; 16]>,
+    pending_sends: &mut Vec<Vec<u8>>,
+) {
+    for ev in events {
+        let DomainEvent::Created(r) = ev else {
+            continue;
+        };
+        if r.kind() != EntityKind::Stream {
+            continue;
+        }
+        let sid = *r.bytes();
+        if subscribed.insert(sid) {
+            if let Ok(frame) = encode_subscribe_one(sid) {
+                pending_sends.push(frame);
+            }
+        }
+    }
+}
+
 /// Whether an `apply_remote` failure means the bytes were damaged, as opposed
 /// to the op being well-formed but from a device this vault does not trust.
 fn is_corruption(e: &crate::core::CoreError) -> bool {
@@ -1277,7 +1298,10 @@ mod tests {
         Arc::new(
             Core::open(
                 make_cfg(dir),
-                Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)),
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
             )
             .await
             .unwrap(),
@@ -1290,9 +1314,15 @@ mod tests {
         let mut cfg = make_cfg(dir);
         cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_resync_interval(interval));
         Arc::new(
-            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
-                .await
-                .unwrap(),
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
         )
     }
 
@@ -1616,11 +1646,34 @@ mod tests {
 
     /// Create `titles.len()` tasks on device B's inbox and return
     /// `(B's cert, inbox stream id, sealed envelope per task in seq order)`.
-    async fn make_remote_tasks(titles: &[&str]) -> (Vec<u8>, [u8; 16], Vec<Vec<u8>>) {
+    /// A second device on the same account, reduced to what a test needs of
+    /// it: the pairing payload that makes the receiver a sibling, and the
+    /// vault-meta ops that announce it.
+    struct RemotePeer {
+        /// Encoded `PairingPayload` — the identity and every Stream key.
+        bundle: Vec<u8>,
+        /// The peer's vault-meta ops, which carry its `device_cert` op.
+        meta: ([u8; 16], Vec<Vec<u8>>),
+    }
+
+    /// Build a peer device's ops out of process, the way a real second device
+    /// would produce them.
+    ///
+    /// Before ADR-0024 this returned a certificate and the receiver trusted it
+    /// with one command, because a shared vault root already implied a shared
+    /// key schedule. It does not any more: two vaults on one root are two
+    /// accounts. So the peer hands over a real pairing payload, and its cert
+    /// reaches the receiver the way it reaches every other replica — as a
+    /// `device_cert` op in the vault-meta stream, self-authenticating against
+    /// the account identity.
+    async fn make_remote_tasks(titles: &[&str]) -> (RemotePeer, [u8; 16], Vec<Vec<u8>>) {
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(
             make_cfg(dir.path()),
-            Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)),
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes(ROOT),
+                paired: None,
+            },
         )
         .await
         .unwrap();
@@ -1632,14 +1685,78 @@ mod tests {
             .await
             .unwrap();
         }
-        let cert = core.device_cert();
+        let bundle =
+            sunrise_pairing::encode_pairing_payload(&core.export_pairing_payload().unwrap())
+                .unwrap();
         let groups = core.sync_outbox_grouped(&HashSet::new()).unwrap();
-        assert_eq!(groups.len(), 1, "all tasks land on the inbox stream");
-        let (stream, ops) = groups.into_iter().next().unwrap();
-        let envs: Vec<Vec<u8>> = ops.into_iter().map(|(_, env)| env).collect();
+        let mut meta: Option<([u8; 16], Vec<Vec<u8>>)> = None;
+        let mut tasks: Option<([u8; 16], Vec<Vec<u8>>)> = None;
+        for (stream, ops) in groups {
+            let envs: Vec<Vec<u8>> = ops.into_iter().map(|(_, env)| env).collect();
+            if stream == [0u8; 16] {
+                meta = Some((stream, envs));
+            } else {
+                tasks = Some((stream, envs));
+            }
+        }
+        let meta = meta.expect("the peer announced itself in the meta stream");
+        let (stream, envs) = tasks.expect("all tasks land on the inbox stream");
         core.close().await.unwrap();
         drop(dir);
-        (cert, stream, envs)
+        (RemotePeer { bundle, meta }, stream, envs)
+    }
+
+    /// Ack this vault's opening announcement out of band.
+    ///
+    /// A freshly opened vault is no longer empty. `Core::open` publishes this
+    /// device's identity-signed certificate and the identity-sealed copies of
+    /// the first Stream keys it mints, and those queue in the outbox like any
+    /// other op — which is the point: a peer that never receives them can
+    /// neither verify this device's envelopes nor recover its content.
+    ///
+    /// The tests below are about the driver's handling of *one* op the test
+    /// submitted, so the announcement is acked directly rather than counted.
+    /// `paired_devices_converge` and `device_revocation` in `sunrise-e2e` are
+    /// where the announcement travelling for real is asserted.
+    fn drain_announcement(core: &Core) {
+        let ids: Vec<[u8; 16]> = core
+            .sync_outbox_grouped(&std::collections::HashSet::new())
+            .unwrap()
+            .into_iter()
+            .flat_map(|(_, ops)| ops.into_iter().map(|(op_id, _)| op_id))
+            .collect();
+        core.sync_mark_acked(&ids).unwrap();
+    }
+
+    /// Open a core that is already a sibling of `peer`.
+    async fn open_arc_paired(dir: &Path, peer: &RemotePeer) -> Arc<Core> {
+        open_paired(make_cfg(dir), peer).await
+    }
+
+    /// [`open_arc_paired`] with an anti-entropy timer on a test timescale.
+    async fn open_arc_paired_with_resync(
+        dir: &Path,
+        peer: &RemotePeer,
+        interval: Duration,
+    ) -> Arc<Core> {
+        let mut cfg = make_cfg(dir);
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_resync_interval(interval));
+        open_paired(cfg, peer).await
+    }
+
+    async fn open_paired(cfg: CoreConfig, peer: &RemotePeer) -> Arc<Core> {
+        let payload = sunrise_pairing::decode_pairing_payload(&peer.bundle).unwrap();
+        Arc::new(
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: Some(Box::new(payload)),
+                },
+            )
+            .await
+            .unwrap(),
+        )
     }
 
     // ---- assertion helpers (event-driven, generous timeouts) ----
@@ -1703,9 +1820,15 @@ mod tests {
         let mut cfg = make_cfg(dir.path());
         cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
         let core = Arc::new(
-            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
-                .await
-                .unwrap(),
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
         );
 
         let mut status_rx = core.sync_status();
@@ -1756,9 +1879,15 @@ mod tests {
         );
         assert!(cfg.sync.is_none(), "the FFI seam opens with sync off");
         let core = Arc::new(
-            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
-                .await
-                .unwrap(),
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
         );
 
         core.sync_credential().set(Some("issued-after-open".into()));
@@ -1805,9 +1934,15 @@ mod tests {
         let mut cfg = make_cfg(dir.path());
         cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
         let core = Arc::new(
-            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
-                .await
-                .unwrap(),
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
         );
 
         let mut status_rx = core.sync_status();
@@ -1836,9 +1971,15 @@ mod tests {
         let mut cfg = make_cfg(dir.path());
         cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
         let core = Arc::new(
-            Core::open(cfg, Unlock::DevicePaired(VaultRootKey::from_bytes(ROOT)))
-                .await
-                .unwrap(),
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
         );
 
         let mut status_rx = core.sync_status();
@@ -1859,6 +2000,18 @@ mod tests {
     async fn on_connect_drains_pending_outbox_and_reaches_live() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
         core.submit(Command::CreateTask(TaskDraft {
             title: "pending".into(),
             ..Default::default()
@@ -1902,16 +2055,13 @@ mod tests {
     // ---- Test (b): inbound remote OpBatch materializes + advances cursor ----
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn inbound_remote_op_materializes_and_advances_cursor() {
-        let (cert_b, stream, envs) = make_remote_tasks(&["from B"]).await;
+        let (peer, stream, envs) = make_remote_tasks(&["from B"]).await;
         let dir = tempfile::tempdir().unwrap();
-        let core = open_arc(dir.path()).await;
-        core.submit(Command::TrustDevice { cert_cbor: cert_b })
-            .await
-            .unwrap();
+        let core = open_arc_paired(dir.path(), &peer).await;
 
         let mut changes = core.changes();
         let script = Script {
-            inject: vec![(stream, envs)],
+            inject: vec![peer.meta.clone(), (stream, envs)],
             close_after_subscribe: false,
             ..Default::default()
         };
@@ -1937,19 +2087,19 @@ mod tests {
     // ---- Test (c): duplicate inbound delivery is idempotent ----
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn duplicate_inbound_delivery_is_idempotent() {
-        let (cert_b, stream, envs) = make_remote_tasks(&["dup", "sentinel"]).await;
+        let (peer, stream, envs) = make_remote_tasks(&["dup", "sentinel"]).await;
         let dir = tempfile::tempdir().unwrap();
-        let core = open_arc(dir.path()).await;
-        core.submit(Command::TrustDevice { cert_cbor: cert_b })
-            .await
-            .unwrap();
+        let core = open_arc_paired(dir.path(), &peer).await;
 
         let mut changes = core.changes();
         // Deliver the first op twice (duplicate), then a distinct sentinel op.
         let dup = envs[0].clone();
         let sentinel = envs[1].clone();
         let script = Script {
-            inject: vec![(stream, vec![dup.clone(), dup, sentinel])],
+            inject: vec![
+                peer.meta.clone(),
+                (stream, vec![dup.clone(), dup, sentinel]),
+            ],
             close_after_subscribe: false,
             ..Default::default()
         };
@@ -1969,12 +2119,9 @@ mod tests {
     // ---- Test (d): transport drop → reconnect → convergence ----
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_after_drop_converges() {
-        let (cert_b, stream, envs) = make_remote_tasks(&["missed"]).await;
+        let (peer, stream, envs) = make_remote_tasks(&["missed"]).await;
         let dir = tempfile::tempdir().unwrap();
-        let core = open_arc(dir.path()).await;
-        core.submit(Command::TrustDevice { cert_cbor: cert_b })
-            .await
-            .unwrap();
+        let core = open_arc_paired(dir.path(), &peer).await;
 
         let mut changes = core.changes();
         // First connection drops right after Subscribe; the missed op only
@@ -1986,7 +2133,7 @@ mod tests {
                 ..Default::default()
             },
             Script {
-                inject: vec![(stream, envs)],
+                inject: vec![peer.meta.clone(), (stream, envs)],
                 close_after_subscribe: false,
                 ..Default::default()
             },
@@ -2007,6 +2154,18 @@ mod tests {
     async fn submit_while_live_pushes_without_reconnect() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
 
         let mut status_rx = core.sync_status();
         let (factory, server, mut batch_rx) = harness(vec![]);
@@ -2048,6 +2207,18 @@ mod tests {
     async fn unacked_batch_is_retransmitted_within_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_arc(dir.path()).await;
+        // Warm the vault before measuring. A fresh one is not quiet: opening
+        // it queues this device's announcement, and the first task in the
+        // Inbox mints that stream's key and queues the `key_envelope` op that
+        // distributes it. Both are real ops that must reach the relay; they
+        // are simply not what this test is about.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "warm-up".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        drain_announcement(&core);
 
         let mut status_rx = core.sync_status();
         let script = Script {
@@ -2100,18 +2271,15 @@ mod tests {
     // happened — a reconnect would show up as a second connect.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn loss_evidence_triggers_an_in_session_resync() {
-        let (cert_b, stream, envs) = make_remote_tasks(&["only on resync"]).await;
+        let (peer, stream, envs) = make_remote_tasks(&["only on resync"]).await;
         let dir = tempfile::tempdir().unwrap();
         // Long timer, so anything observed here came from the evidence path.
-        let core = open_arc_with_resync(dir.path(), Duration::from_secs(300)).await;
-        core.submit(Command::TrustDevice { cert_cbor: cert_b })
-            .await
-            .unwrap();
+        let core = open_arc_paired_with_resync(dir.path(), &peer, Duration::from_secs(300)).await;
 
         let script = Script {
             // Withholding this ack is what produces the loss evidence.
             swallow_first_batches: 1,
-            inject_on_resync: vec![(stream, envs)],
+            inject_on_resync: vec![peer.meta.clone(), (stream, envs)],
             ..Default::default()
         };
         let (factory, server, _batch_rx, subs) = harness_counting(vec![script]);
@@ -2148,15 +2316,12 @@ mod tests {
     // is the guarantee; evidence is only the latency optimisation.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resync_timer_fires_without_any_loss_evidence() {
-        let (cert_b, stream, envs) = make_remote_tasks(&["timer backstop"]).await;
+        let (peer, stream, envs) = make_remote_tasks(&["timer backstop"]).await;
         let dir = tempfile::tempdir().unwrap();
-        let core = open_arc_with_resync(dir.path(), Duration::from_millis(150)).await;
-        core.submit(Command::TrustDevice { cert_cbor: cert_b })
-            .await
-            .unwrap();
+        let core = open_arc_paired_with_resync(dir.path(), &peer, Duration::from_millis(150)).await;
 
         let script = Script {
-            inject_on_resync: vec![(stream, envs)],
+            inject_on_resync: vec![peer.meta.clone(), (stream, envs)],
             ..Default::default()
         };
         let (factory, server, _batch_rx, subs) = harness_counting(vec![script]);

@@ -187,7 +187,7 @@ struct VaultSwitchingTests {
         #expect(session.phase == .firstRun)
 
         let root = try VaultRoot.generate()
-        await session.adoptVaultRoot(root)
+        await session.adoptPairing(root: root, bundle: try PairingFixture.payload())
 
         #expect(session.phase == .unlocked)
         #expect(store.stored == root, "a root that was never persisted is unreadable next launch")
@@ -206,7 +206,10 @@ struct VaultSwitchingTests {
             appVersion: "test"
         )
         await session.start()
-        await session.adoptVaultRoot(Data(repeating: 3, count: 16))
+        await session.adoptPairing(
+            root: Data(repeating: 3, count: 16),
+            bundle: try PairingFixture.payload()
+        )
 
         #expect(store.stored == nil)
         if case .failed = session.phase {} else {
@@ -232,7 +235,10 @@ struct VaultSwitchingTests {
         await session.createVault()
         let key = store.stored
 
-        await session.adoptVaultRoot(try VaultRoot.generate())
+        await session.adoptPairing(
+            root: try VaultRoot.generate(),
+            bundle: try PairingFixture.payload()
+        )
         #expect(session.phase == .unlocked)
         #expect(store.stored == key, "the working key was left alone")
         await session.lock()

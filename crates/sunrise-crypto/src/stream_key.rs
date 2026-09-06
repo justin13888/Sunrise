@@ -14,6 +14,7 @@
 //! Stored as `nonce || ct_and_tag`.
 
 use crate::aead::{aead_open_xchacha, aead_seal_xchacha, AeadError, AEAD_NONCE_LEN};
+use crate::blake3_kdf::derive_key;
 use crate::keys::{StreamKey, VaultRootKey};
 use rand_core::CryptoRngCore;
 use thiserror::Error;
@@ -21,6 +22,29 @@ use thiserror::Error;
 const WRAP_AAD_PREFIX: &[u8] = b"sunrise.wrap.stream_key.v1";
 /// Length of a wrapped stream-key blob: nonce (24) + ciphertext (32) + tag (16).
 pub const WRAPPED_STREAM_KEY_LEN: usize = AEAD_NONCE_LEN + 32 + 16;
+
+/// Length of a stream-key id.
+///
+/// Eight bytes is a *disambiguator*, not a security boundary: it names which of
+/// the (at most a handful of) keys stored at one `(stream_id, epoch)` a row
+/// holds. Nothing authenticates on it — the AEAD tag decides which key actually
+/// opens an op — so a collision costs one wasted trial decrypt, and it is
+/// derived rather than random so two devices that receive the same key by
+/// different routes agree on the row it belongs in.
+pub const STREAM_KEY_ID_LEN: usize = 8;
+
+/// `key_id = BLAKE3.derive_key("sunrise.stream_key_id.v1", stream_key, 8)`.
+#[must_use]
+pub fn stream_key_id(key: &StreamKey) -> [u8; STREAM_KEY_ID_LEN] {
+    let bytes = derive_key(
+        "sunrise.stream_key_id.v1",
+        key.as_bytes(),
+        STREAM_KEY_ID_LEN,
+    );
+    let mut out = [0u8; STREAM_KEY_ID_LEN];
+    out.copy_from_slice(&bytes);
+    out
+}
 
 /// Errors produced by stream-key wrap/unwrap.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -133,6 +157,14 @@ mod tests {
             unwrap_stream_key(&vault, &wrapped, &[3u8; 16], 9),
             Err(StreamKeyWrapError::AuthFailed)
         );
+    }
+
+    #[test]
+    fn key_id_is_deterministic_and_key_dependent() {
+        let a = StreamKey::from_bytes([0x11; 32]);
+        let b = StreamKey::from_bytes([0x12; 32]);
+        assert_eq!(stream_key_id(&a), stream_key_id(&a));
+        assert_ne!(stream_key_id(&a), stream_key_id(&b));
     }
 
     #[test]

@@ -173,10 +173,24 @@ pub enum CoreCommand {
         /// Wall clock (epoch ms) to materialize against.
         now_ms: u64,
     },
-    /// Trust a peer device by its self-issued certificate (canonical CBOR).
-    TrustDevice {
-        /// The certificate.
-        cert_cbor: Vec<u8>,
+    /// Revoke a device and rotate every Stream key it could read.
+    ///
+    /// Replaces `TrustDevice`. Trust is no longer something a client hands the
+    /// core: a device publishes an identity-signed certificate as an op when it
+    /// first opens its vault, so the only device-list action left for a user is
+    /// taking one away.
+    /// The cut is the HLC of the op this emits rather than a value the caller
+    /// nominates, so there is nothing here to pass and nothing to get wrong.
+    RevokeDevice {
+        /// The device to revoke.
+        device_id: EntityRef,
+        /// Why, for the device list to show later.
+        reason: DeviceRevokeReason,
+    },
+    /// Mint a new epoch for one Stream and seal it to every current device.
+    RotateStreamKey {
+        /// The Stream to rotate.
+        stream: EntityRef,
     },
     /// Open a focus session on a task.
     StartFocus {
@@ -266,7 +280,11 @@ impl CoreCommand {
             Self::BindTask { block, task } => Command::BindTask { block, task },
             Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },
-            Self::TrustDevice { cert_cbor } => Command::TrustDevice { cert_cbor },
+            Self::RevokeDevice { device_id, reason } => Command::RevokeDevice {
+                device_id,
+                reason: reason.into(),
+            },
+            Self::RotateStreamKey { stream } => Command::RotateStreamKey { stream },
             Self::StartFocus {
                 task_id,
                 kind,
@@ -294,5 +312,33 @@ impl CoreCommand {
             Self::DetachFile { id } => Command::DetachFile(id),
             Self::SaveReviewSnapshot { draft } => Command::SaveReviewSnapshot(draft.into()),
         })
+    }
+}
+
+/// Why a device was revoked, across the seam.
+///
+/// Mirrored rather than re-exported so the Swift cases read as they do on
+/// screen; the exhaustive `From` below keeps it honest, because a variant added
+/// upstream fails this crate's build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DeviceRevokeReason {
+    /// Misplaced; may still turn up.
+    Lost,
+    /// Known to be in someone else's hands.
+    Stolen,
+    /// Deliberately retired by its owner.
+    Retired,
+    /// Believed to have had its keys extracted.
+    Compromised,
+}
+
+impl From<DeviceRevokeReason> for sunrise_core::RevokeReason {
+    fn from(r: DeviceRevokeReason) -> Self {
+        match r {
+            DeviceRevokeReason::Lost => Self::Lost,
+            DeviceRevokeReason::Stolen => Self::Stolen,
+            DeviceRevokeReason::Retired => Self::Retired,
+            DeviceRevokeReason::Compromised => Self::Compromised,
+        }
     }
 }

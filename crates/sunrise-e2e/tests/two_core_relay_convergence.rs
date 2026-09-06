@@ -28,7 +28,7 @@ use sunrise_domain::{
     WeekdaySet,
 };
 use sunrise_e2e::{
-    canonical_tasks, open_synced_core, spawn_relay, trust_each_other, wait_live, wait_pending_zero,
+    canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero,
     wait_streams_converge, wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
@@ -99,8 +99,7 @@ async fn two_core_relay_convergence() {
 
     // --- 1. Boot both cores, trust each other, reach Live. ---
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 
@@ -214,8 +213,7 @@ async fn routine_materialization_convergence() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock(now));
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 

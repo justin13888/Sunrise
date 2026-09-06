@@ -24,11 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sunrise_core::{Command, Core, Query, QueryResult, SystemClock};
-use sunrise_domain::TaskDraft;
+use sunrise_domain::{StreamDraft, TaskDraft};
 use sunrise_e2e::{
-    open_synced_core, spawn_relay, trust_each_other, wait_live, wait_tasks_converge,
+    open_paired_core, open_synced_core, spawn_relay, wait_live, wait_tasks_converge,
 };
-use sunrise_pairing::{PairingSession, Role};
+use sunrise_pairing::{decode_pairing_payload, encode_pairing_payload, PairingSession, Role};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -62,6 +62,58 @@ async fn create_task(core: &Core, title: &str) -> sunrise_id::EntityRef {
     .await
     .expect("create task")
     .entity
+}
+
+async fn create_stream(core: &Core, name: &str) -> sunrise_id::EntityRef {
+    core.submit(Command::CreateStream(StreamDraft {
+        name: name.into(),
+        ..Default::default()
+    }))
+    .await
+    .expect("create stream")
+    .entity
+}
+
+async fn create_task_in(core: &Core, stream: sunrise_id::EntityRef, title: &str) {
+    core.submit(Command::CreateTask(TaskDraft {
+        title: title.into(),
+        stream_id: Some(stream),
+        ..Default::default()
+    }))
+    .await
+    .expect("create task in stream");
+}
+
+/// Wait until `core` can read `n` tasks in `stream`.
+///
+/// Readable is the operative word: the ops arrive as ciphertext, and the only
+/// thing that turns them into rows is a `key_envelope` op having delivered that
+/// stream's key. A device that never received one sits at zero forever.
+async fn wait_stream_tasks(
+    core: &Core,
+    stream: sunrise_id::EntityRef,
+    n: usize,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let count = match core
+            .query(Query::StreamTasks(stream))
+            .await
+            .expect("stream tasks")
+        {
+            QueryResult::Tasks(t) | QueryResult::StreamTasks(t) => t.len(),
+            other => panic!("expected Tasks, got {other:?}"),
+        };
+        if count == n {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {n} tasks in the post-pairing stream (saw {count})"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn inbox_titles(core: &Core) -> Vec<String> {
@@ -115,50 +167,86 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         .into_channel(true)
         .expect("existing device channel");
 
-    // The existing device hands over the root through the encrypted channel.
-    let exported = core_a.export_vault_root_for_pairing();
-    let wire = existing_channel
-        .send(exported.as_bytes())
-        .expect("send vault root");
+    // The existing device hands over the whole pairing payload — the account
+    // identity, every Stream key, and the vault root — through the encrypted
+    // channel. Before ADR-0024 the root alone sufficed, because every Stream
+    // key was derived from it. It no longer is.
+    let payload = core_a
+        .export_pairing_payload()
+        .expect("export the pairing payload");
+    let id_s_priv = payload.id_s_priv;
+    let id_d_priv = payload.id_d_priv;
+    let a_stream_keys: Vec<[u8; 32]> = payload
+        .stream_keys
+        .values()
+        .flat_map(|epochs| epochs.values().copied())
+        .collect();
     assert!(
-        !wire.windows(32).any(|w| w == root_a),
-        "the vault root must not appear in the clear on the wire"
+        !a_stream_keys.is_empty(),
+        "A has minted at least the meta and inbox keys by now"
     );
+    let encoded = encode_pairing_payload(&payload).expect("encode the pairing payload");
+    let wire = existing_channel
+        .send(&encoded)
+        .expect("send pairing payload");
 
-    let received = new_channel.receive(&wire).expect("receive vault root");
-    let mut root_b = [0u8; 32];
-    root_b.copy_from_slice(&received);
+    // Nothing in the payload may appear in the clear on the wire. The vault
+    // root was the only secret this used to carry; now the identity private
+    // keys and every Stream key ride along, and each one is checked.
+    let mut secrets: Vec<[u8; 32]> = vec![root_a, id_s_priv, id_d_priv];
+    secrets.extend(a_stream_keys);
+    for secret in &secrets {
+        assert!(
+            !wire.windows(32).any(|w| w == secret),
+            "a secret from the pairing payload appeared in the clear on the wire"
+        );
+    }
+
+    let received = new_channel.receive(&wire).expect("receive pairing payload");
+    let payload_b = decode_pairing_payload(&received).expect("decode on the new device");
+    let root_b = payload_b.vault_root;
     assert_eq!(
         root_b, root_a,
         "the paired device must recover exactly the sending device's root"
     );
+    assert_eq!(
+        payload_b.identity_id,
+        core_a.identity_id(),
+        "the paired device joins the sending device's account, not a new one"
+    );
 
-    // ---- Device B opens its own vault with the transferred root ----
-    let core_b = open_synced_core(dir_b.path(), root_b, addr, clock.clone()).await;
+    // ---- Device B opens its own vault with the transferred payload ----
+    // No trust step: B's cert is signed by the account identity it just
+    // received, and it publishes that cert as an op at open. A device is
+    // trusted because the identity vouched for it — which is what makes
+    // revoking one meaningful.
+    let core_b = open_paired_core(dir_b.path(), &core_a, addr, clock.clone()).await;
     wait_live(&core_b, TIMEOUT).await;
 
-    // Pairing establishes the *key*; each side must still accept the other's
-    // device cert before it will apply the other's ops. The key alone is not
-    // authorisation — an op from an untrusted device is rejected before it is
-    // even decrypted.
-    trust_each_other(&core_a, &core_b).await;
-
-    // B's first subscribe replayed A's pre-pairing op while B still had an
-    // empty trust store, so that op was refused as `UnknownDevice` and the
-    // relay does not redeliver. Reconnecting replays the retained ring with
-    // trust in place. This is exactly what a real client does after completing
-    // a pair, and it doubles as a check that the vault lock is released on
+    // B's first subscribe replayed A's pre-pairing op while B had not yet seen
+    // A's `device_cert` op, so that op was refused as `UnknownDevice` and the
+    // relay does not redeliver. Reconnecting replays the retained ring with the
+    // cert in place. This is exactly what a real client does after completing a
+    // pair, and it doubles as a check that the vault lock is released on
     // shutdown and reacquirable — which it was not before the lock rewrite.
     core_b.shutdown().await;
     drop(core_b);
     let core_b = open_synced_core(dir_b.path(), root_b, addr, clock).await;
     wait_live(&core_b, TIMEOUT).await;
 
+    // The case envelopes now have to earn: a Stream created on A *after*
+    // pairing is readable on B, which can only happen if A's `key_envelope`
+    // op reached B and B absorbed the key.
+    let stream_after = create_stream(&core_a, "created after pairing").await;
+    create_task_in(&core_a, stream_after, "in the new stream").await;
+
     // ---- They converge, in both directions ----
     create_task(&core_b, "written on the paired device").await;
     create_task(&core_a, "written on the original device").await;
 
-    wait_tasks_converge(&core_a, &core_b, 3, TIMEOUT).await;
+    // Four, not three: `canonical_tasks` is the whole table, so the task in
+    // the post-pairing Stream counts alongside the three in the Inbox.
+    wait_tasks_converge(&core_a, &core_b, 4, TIMEOUT).await;
 
     let mut titles = inbox_titles(&core_b).await;
     titles.sort();
@@ -172,6 +260,8 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         "the paired device must see history from before it existed, and both \
          devices' later writes"
     );
+
+    wait_stream_tasks(&core_b, stream_after, 1, TIMEOUT).await;
 
     core_a.shutdown().await;
     core_b.shutdown().await;

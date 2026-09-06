@@ -71,7 +71,7 @@ final class SessionModel {
     private var location: VaultLocation
     private var rootStore: any VaultRootStore
     private let appVersion: String
-    private let openBridge: @Sendable (URL, Data, String) async throws -> CoreBridge
+    private let openBridge: @Sendable (URL, Data, String, Data?) async throws -> CoreBridge
     private let resolve: @Sendable (VaultDescriptor) throws -> VaultBinding
     /// Set when the app could not even work out where its vault goes. Checked
     /// first by `start`, so retrying reports the real cause rather than
@@ -83,8 +83,13 @@ final class SessionModel {
         rootStore: any VaultRootStore,
         appVersion: String,
         configurationError: String? = nil,
-        openBridge: @escaping @Sendable (URL, Data, String) async throws -> CoreBridge = {
-            try await CoreBridge.open(directory: $0, vaultRoot: $1, appVersion: $2)
+        openBridge: @escaping @Sendable (URL, Data, String, Data?) async throws -> CoreBridge = {
+            try await CoreBridge.open(
+                directory: $0,
+                vaultRoot: $1,
+                appVersion: $2,
+                pairedBundle: $3
+            )
         }
     ) {
         vaults = nil
@@ -102,8 +107,13 @@ final class SessionModel {
         vaults: VaultRegistry,
         appVersion: String,
         resolve: @escaping @Sendable (VaultDescriptor) throws -> VaultBinding,
-        openBridge: @escaping @Sendable (URL, Data, String) async throws -> CoreBridge = {
-            try await CoreBridge.open(directory: $0, vaultRoot: $1, appVersion: $2)
+        openBridge: @escaping @Sendable (URL, Data, String, Data?) async throws -> CoreBridge = {
+            try await CoreBridge.open(
+                directory: $0,
+                vaultRoot: $1,
+                appVersion: $2,
+                pairedBundle: $3
+            )
         }
     ) {
         self.vaults = vaults
@@ -212,7 +222,7 @@ final class SessionModel {
         }
     }
 
-    /// Take the vault root a completed pairing produced, and open with it.
+    /// Take what a completed pairing produced, and open with it.
     ///
     /// The counterpart to `createVault`, and the opposite of it in the way
     /// that matters: this root is not new, so it is the one thing that can
@@ -220,9 +230,15 @@ final class SessionModel {
     /// is the entire point of `LockReason.keyMissingForExistingVault` — the
     /// vault is here, the key is not, and pairing is how the key comes back.
     ///
+    /// `bundle` is the rest of what the pairing carried: the account identity
+    /// and every Stream key. It goes in on this open and only this one, because
+    /// the identity a vault belongs to is decided when the vault is created —
+    /// handing it over afterwards would have nothing left to join. Only the
+    /// root is stored; the bundle is spent here.
+    ///
     /// Refused from `.unlocked`, where there is a live core holding the lock
     /// and a root that is already working.
-    func adoptVaultRoot(_ root: Data) async {
+    func adoptPairing(root: Data, bundle: Data) async {
         guard phase != .unlocked else { return }
         guard root.count == VaultRoot.byteCount else {
             phase = .failed(VaultRootError.wrongLength(root.count).localizedDescription)
@@ -238,7 +254,7 @@ final class SessionModel {
             phase = .failed(error.localizedDescription)
             return
         }
-        await open(with: root)
+        await open(with: root, bundle: bundle)
     }
 
     /// Close the vault that is open and open another one.
@@ -291,9 +307,9 @@ final class SessionModel {
         await switchTo(vaults.add(name: name))
     }
 
-    private func open(with root: Data) async {
+    private func open(with root: Data, bundle: Data? = nil) async {
         do {
-            bridge = try await openBridge(location.directory, root, appVersion)
+            bridge = try await openBridge(location.directory, root, appVersion, bundle)
             phase = .unlocked
         } catch {
             phase = .failed(error.localizedDescription)
@@ -305,7 +321,7 @@ final class SessionModel {
     /// Lands on ``LockReason/lockedByUser`` rather than `.starting`, and the
     /// difference is the whole method. `.starting` is a *transient* phase —
     /// every other route into it (``start()``, ``switchTo(_:)``,
-    /// ``adoptVaultRoot(_:)``) drives itself out again on the same call — and
+    /// ``adoptPairing(root:bundle:)``) drives itself out again on the same call — and
     /// `RootView` renders it as a bare `ProgressView` whose
     /// `.task { await session.start() }` will not re-fire, because it is
     /// attached above the phase switch and fires once for the life of the

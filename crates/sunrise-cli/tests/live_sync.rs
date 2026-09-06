@@ -83,32 +83,17 @@ async fn tui_wiring_reaches_live_and_converges() {
 
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
-    let cert_a = dir_a.path().join("a.cert");
-    let cert_b = dir_b.path().join("b.cert");
+    let pairing_a = dir_a.path().join("a.pairing");
 
-    // B comes up first via the TUI path: export its cert, start sync. It does
-    // not have A's cert yet, so its trust list is empty for now.
-    let plan_b = SyncPlan {
-        sync: Some(SyncConfig::new(url.clone())),
-        export_cert: Some(cert_b.clone()),
-        trust_cert: None,
-    };
-    let (core_b, _log_b) = open_with_plan(
-        dir_b.path().to_path_buf(),
-        "0.1.0+test",
-        SHARED_ROOT,
-        &plan_b,
-    )
-    .await
-    .expect("open B");
-    assert!(cert_b.exists(), "B exported its cert on startup");
-
-    // A comes up via the same TUI path: trust B's cert (now on disk) and export
-    // its own. This is precisely the binary's startup sequence.
+    // A comes up first via the TUI path and exports its pairing payload — the
+    // account identity plus every Stream key. Before ADR-0024 this exchanged
+    // certificates, because a shared vault root already implied a shared key
+    // schedule; it does not any more, and two vaults on one root would be two
+    // separate accounts that can never read each other.
     let plan_a = SyncPlan {
         sync: Some(SyncConfig::new(url.clone())),
-        export_cert: Some(cert_a.clone()),
-        trust_cert: Some(cert_b.clone()),
+        export_pairing: Some(pairing_a.clone()),
+        adopt_pairing: None,
     };
     let (core_a, _log_a) = open_with_plan(
         dir_a.path().to_path_buf(),
@@ -118,15 +103,28 @@ async fn tui_wiring_reaches_live_and_converges() {
     )
     .await
     .expect("open A");
-    assert!(cert_a.exists(), "A exported its cert on startup");
+    assert!(
+        pairing_a.exists(),
+        "A exported its pairing payload on startup"
+    );
 
-    // Close the trust loop: B trusts A (the reverse file-exchange direction the
-    // human performs by restarting B with SUNRISE_TRUST_CERT_FILE=a.cert).
-    let a_cert = std::fs::read(&cert_a).unwrap();
-    core_b
-        .submit(Command::TrustDevice { cert_cbor: a_cert })
-        .await
-        .expect("B trusts A");
+    // B comes up as a second device on A's account by adopting that payload,
+    // which is the file-shuttled stand-in for the Noise channel. Neither side
+    // needs a trust command: B's certificate is signed by the account identity
+    // it just adopted, and it publishes that certificate as an op.
+    let plan_b = SyncPlan {
+        sync: Some(SyncConfig::new(url.clone())),
+        export_pairing: None,
+        adopt_pairing: Some(pairing_a.clone()),
+    };
+    let (core_b, _log_b) = open_with_plan(
+        dir_b.path().to_path_buf(),
+        "0.1.0+test",
+        SHARED_ROOT,
+        &plan_b,
+    )
+    .await
+    .expect("open B");
 
     // Both drivers reach Live against the real relay.
     wait_live(&core_a).await;

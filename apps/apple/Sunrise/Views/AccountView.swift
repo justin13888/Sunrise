@@ -197,9 +197,9 @@ struct AccountView: View {
         PairingModel(
             intent: .addAnotherDevice,
             relayURL: settings.relayURL.trimmed,
-            sealRoot: { [bridge = session.bridge] pairing in
+            sealPayload: { [bridge = session.bridge] pairing in
                 guard let bridge else { throw PairingUIError.noOpenVault }
-                return try await bridge.sendVaultRoot(to: pairing)
+                return try await bridge.sendPairingPayload(to: pairing)
             }
         )
     }

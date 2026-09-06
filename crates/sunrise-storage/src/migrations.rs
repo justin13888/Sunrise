@@ -52,6 +52,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_description_and_default_context",
         sql: include_str!("../migrations/0016_stream_description_and_default_context.sql"),
     },
+    Migration {
+        id: 17,
+        name: "key_hierarchy",
+        sql: include_str!("../migrations/0017_key_hierarchy.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

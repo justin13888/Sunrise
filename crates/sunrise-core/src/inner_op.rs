@@ -20,6 +20,12 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
+//! Three families are **control** ops rather than entities: `KeyEnvelope`,
+//! `DeviceRevoke` and `DeviceCertPublish` carry key material and trust, have no
+//! row and no last-writer-wins stamp, and are classed
+//! `OpEffect::Control` so the compiler keeps them out of the entity
+//! materializer. See [`crate::control_op`] and ADR-0024.
+//!
 //! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
 //! not a field-level delta. This is the accepted v1 approximation of the CRDT
 //! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
@@ -27,6 +33,7 @@
 //! its entity with `deleted` set, never a bare id — see [`InnerOp::TaskDelete`]
 //! and ADR-0014 for why a tombstone marker does not converge.
 
+use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload};
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
@@ -111,6 +118,23 @@ pub(crate) enum InnerOp {
     /// two devices reviewing the same week produce two records rather than a
     /// lost write.
     ReviewSnapshotCreate(Box<ReviewSnapshot>),
+    /// Distribute one `(stream_id, epoch)` Stream key to one recipient
+    /// (ADR-0024 decision 4). A **control** op: it has no entity and never
+    /// reaches the LWW materializer.
+    KeyEnvelope(KeyEnvelopePayload),
+    /// Record that a device is no longer a member of this account (ADR-0024
+    /// decision 5). Control op.
+    DeviceRevoke(DeviceRevokePayload),
+    /// Publish a device's identity-signed [`sunrise_crypto::DeviceCert`] as
+    /// canonical CBOR, so every replica can verify that device's envelopes.
+    ///
+    /// Replaces `Command::TrustDevice`, which took a cert straight from a
+    /// caller and accepted it if it was self-signed — which every cert is.
+    /// This op is **self-authenticating**: the receiver checks the envelope
+    /// signature against the cert's own `d_s_pub` and then checks the cert
+    /// against the account identity, so a stranger's cert cannot enter the
+    /// device list however it is delivered. Control op.
+    DeviceCertPublish(#[serde(with = "serde_bytes")] Vec<u8>),
 }
 
 /// The op's effect class, used to pick the materialization path and the emitted
@@ -123,6 +147,13 @@ pub(crate) enum OpEffect {
     Update,
     /// Entity tombstoned.
     Delete,
+    /// Not an entity at all: a control op carrying key material or trust.
+    ///
+    /// This variant exists so the compiler stops a control op reaching
+    /// `materialize_remote`, whose kind table ends in a `_ =>` arm that files
+    /// anything it does not recognise under `tasks`. A missing arm there is a
+    /// silent wrong-table write; a missing arm here is a build failure.
+    Control,
 }
 
 /// Inner-op CBOR codec errors.
@@ -158,6 +189,9 @@ impl InnerOp {
             Self::FocusEnd(_) => "focus.end",
             Self::FocusInterrupt(_) => "focus.interrupt",
             Self::ReviewSnapshotCreate(_) => "review.snapshot",
+            Self::KeyEnvelope(_) => "key.envelope",
+            Self::DeviceRevoke(_) => "device.revoke",
+            Self::DeviceCertPublish(_) => "device.cert",
         }
     }
 
@@ -173,6 +207,8 @@ impl InnerOp {
             Self::AttachmentCreate(_) | Self::AttachmentDelete(_) => "attachment",
             Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
             Self::ReviewSnapshotCreate(_) => "review_snapshot",
+            Self::KeyEnvelope(_) => "stream_key",
+            Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
         }
     }
 
@@ -189,6 +225,14 @@ impl InnerOp {
             Self::FocusEnd(f) => f.session_id,
             Self::FocusInterrupt(i) => i.session_id,
             Self::ReviewSnapshotCreate(r) => r.id,
+            // Control ops target no entity. The op log's `target_id` column is
+            // nullable and the engine passes `None` for these, so this arm is
+            // only reachable through a caller that asked for a ref it will not
+            // use; a stream-shaped ref over the stream id is the least
+            // misleading answer.
+            Self::KeyEnvelope(p) => EntityRef::new(EntityKind::Stream, p.stream_id),
+            Self::DeviceRevoke(p) => EntityRef::new(EntityKind::Device, p.revoked_device_id),
+            Self::DeviceCertPublish(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
         }
     }
 
@@ -216,6 +260,9 @@ impl InnerOp {
             | Self::RoutineDelete(_)
             | Self::BlockDelete(_)
             | Self::AttachmentDelete(_) => OpEffect::Delete,
+            Self::KeyEnvelope(_) | Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => {
+                OpEffect::Control
+            }
         }
     }
 
@@ -238,7 +285,20 @@ impl InnerOp {
                 EntityKind::FocusSession
             }
             Self::ReviewSnapshotCreate(_) => EntityKind::ReviewSnapshot,
+            Self::KeyEnvelope(_) => EntityKind::Stream,
+            Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
         }
+    }
+
+    /// Whether this op carries key material or trust rather than user data.
+    ///
+    /// Checked before materialization rather than inferred from the kind
+    /// string, so adding a family cannot forget it.
+    pub(crate) const fn is_control(&self) -> bool {
+        matches!(
+            self,
+            Self::KeyEnvelope(_) | Self::DeviceRevoke(_) | Self::DeviceCertPublish(_)
+        )
     }
 }
 

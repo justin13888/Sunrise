@@ -34,6 +34,7 @@ async fn open_core() -> (tempfile::TempDir, Arc<SunriseCore>) {
         dir.path().to_string_lossy().into_owned(),
         ROOT.to_vec(),
         "test".into(),
+        None,
     )
     .await
     .expect("vault opens");
@@ -220,6 +221,7 @@ async fn a_bad_vault_root_is_a_typed_error_not_a_panic() {
         dir.path().to_string_lossy().into_owned(),
         vec![1, 2, 3],
         "test".into(),
+        None,
     )
     .await
     .expect_err("three bytes is not a vault root");
@@ -1641,23 +1643,32 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
     old_device.confirm(true).expect("confirm");
     assert_eq!(new_device.step(), PairingStep::Confirmed);
 
-    // The existing device seals *its own* root — the key never crosses the
-    // seam — and the new one opens it.
+    // The existing device seals *its own* payload — the identity keys, every
+    // Stream key and the root — and none of it crosses the seam in the clear.
     let sealed = existing
-        .send_vault_root(old_device.clone())
-        .expect("seal the root");
-    let root = new_device.open_vault_root(sealed).expect("open");
-    assert_eq!(root.len(), 32);
+        .send_pairing_payload(old_device.clone())
+        .expect("seal the payload");
+    let bundle = new_device.open_pairing_payload(sealed).expect("open");
+    assert_eq!(bundle.vault_root.len(), 32);
+    assert!(
+        !bundle.payload_bytes.is_empty(),
+        "the bundle is what `open`'s `paired_bundle` takes"
+    );
     assert_eq!(new_device.step(), PairingStep::Finished);
 
-    // The proof that the root is the right one: the same vault opens under it,
-    // with the task only the first device ever saw.
+    // The proof that the payload is the right one: the same vault opens under
+    // it, with the task only the first device ever saw.
     let path = dir.path().to_string_lossy().into_owned();
     existing.shutdown().await;
     drop(existing);
-    let reopened = SunriseCore::open(path, root, "test".into())
-        .await
-        .expect("the transferred root opens the vault");
+    let reopened = SunriseCore::open(
+        path,
+        bundle.vault_root,
+        "test".into(),
+        Some(bundle.payload_bytes),
+    )
+    .await
+    .expect("the transferred payload opens the vault");
     assert_eq!(inbox_len(&reopened).await, 1);
 }
 
@@ -1687,7 +1698,7 @@ async fn rejecting_the_sas_ends_the_pairing() {
     ));
     assert_eq!(old_device.step(), PairingStep::Finished);
     assert!(matches!(
-        old_device.seal_vault_root(vec![1u8; 32]),
+        old_device.seal_pairing_payload(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
 }
@@ -1696,7 +1707,7 @@ async fn rejecting_the_sas_ends_the_pairing() {
 /// not go through a confirmation, and none to a confirmation before the
 /// transcript completes.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_root_cannot_move_before_the_sas_is_confirmed() {
+async fn the_payload_cannot_move_before_the_sas_is_confirmed() {
     use sunrise_core_bindings::DevicePairing;
 
     let new_device = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
@@ -1705,7 +1716,7 @@ async fn the_root_cannot_move_before_the_sas_is_confirmed() {
 
     assert!(matches!(new_device.sas(), Err(BindingError::Pairing(_))));
     assert!(matches!(
-        old_device.seal_vault_root(vec![1u8; 32]),
+        old_device.seal_pairing_payload(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
     assert!(matches!(
@@ -1737,7 +1748,7 @@ async fn a_qr_that_is_not_one_is_refused_at_the_door() {
 }
 
 /// The two sides are not interchangeable: only the device that holds the vault
-/// sends the root, and only the one being added receives it.
+/// sends the payload, and only the one being added receives it.
 #[tokio::test(flavor = "multi_thread")]
 async fn each_side_can_only_do_its_own_half() {
     use sunrise_core_bindings::DevicePairing;
@@ -1747,11 +1758,11 @@ async fn each_side_can_only_do_its_own_half() {
     let old_device = DevicePairing::accept(new_device.qr_payload().expect("qr")).expect("accept");
 
     assert!(matches!(
-        new_device.seal_vault_root(vec![1u8; 32]),
+        new_device.seal_pairing_payload(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
     assert!(matches!(
-        old_device.open_vault_root("AAAA".into()),
+        old_device.open_pairing_payload("AAAA".into()),
         Err(BindingError::Pairing(_))
     ));
 }

@@ -290,8 +290,11 @@ none, because it is the SAS.
   deliberately not the default action.
 - Two entry points: the first-run "pair with an existing device" branch, and a
   route out of `LockedView` when the vault exists but its key does not.
-- Only the 32-byte vault root crosses, not the full `PairingPayload` the crypto
-  spec describes, so each side still submits `Command::TrustDevice` separately.
+- The full `PairingPayload` crosses — the account identity, every Stream key
+  and the vault root — so the joining device is a member of the account rather
+  than a second account holding the same root. Its cert is signed by the
+  identity it just received and published as a `device_cert` op; there is no
+  separate trust step to forget.
 - The spec's 90-second SAS timeout is not implemented; there is an abort button
   instead.
 

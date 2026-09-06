@@ -43,6 +43,7 @@ sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-integrations = { workspace = true }
 sunrise-pairing = { workspace = true }
+zeroize = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 
 [dev-dependencies]

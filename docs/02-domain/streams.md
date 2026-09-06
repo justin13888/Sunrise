@@ -71,7 +71,7 @@ stated explicitly rather than left to be inferred from the CDDL:
 
 Built-in pseudo-stream:
 
-- `str_INBOX0000000000000000000000` — fixed ID; not user-creatable, not deletable, not editable. New unassigned tasks live here.
+- `str_0000076XBEE9MQ6S9ED5Q64VVR` — fixed ID; not user-creatable, not deletable, not editable. New unassigned tasks live here. The bytes are `00 00 00` followed by ASCII `sunrise.inbox`, which is readable in a hex dump and unreachable by ULID generation, whose first six bytes are a timestamp. It is deliberately **not** the vault-meta stream's sixteen zero bytes: the two shared an id until [ADR-0024](../11-adr/0024-key-hierarchy.md), which made every stream carry its own key and epoch and so made the collision a correctness problem rather than a tidiness one.
 
 ## Why one-level nesting only
 

@@ -109,22 +109,27 @@ final class PairingModel {
 
     private var pairing: DevicePairing?
     private let relayURL: String
-    /// Seals the open vault's root for a confirmed pairing. Absent on a Mac
-    /// with no open vault, which is every Mac taking `.addThisMac`.
-    private let sealRoot: ((DevicePairing) async throws -> String)?
-    /// Hands the opened root to the session. Absent in `.addAnotherDevice`,
-    /// where this Mac keeps the vault it already has.
-    private let adopt: ((Data) async -> Void)?
+    /// Seals the open vault's pairing payload for a confirmed pairing. Absent
+    /// on a Mac with no open vault, which is every Mac taking `.addThisMac`.
+    private let sealPayload: ((DevicePairing) async throws -> String)?
+    /// Hands the opened root **and** the bundle behind it to the session.
+    /// Absent in `.addAnotherDevice`, where this Mac keeps the vault it
+    /// already has.
+    ///
+    /// Two values rather than one because the root alone no longer opens an
+    /// account: since ADR-0024 the Stream keys are random, and they travel in
+    /// the bundle.
+    private let adopt: ((Data, Data) async -> Void)?
 
     init(
         intent: Intent,
         relayURL: String = "",
-        sealRoot: ((DevicePairing) async throws -> String)? = nil,
-        adopt: ((Data) async -> Void)? = nil
+        sealPayload: ((DevicePairing) async throws -> String)? = nil,
+        adopt: ((Data, Data) async -> Void)? = nil
     ) {
         self.intent = intent
         self.relayURL = relayURL
-        self.sealRoot = sealRoot
+        self.sealPayload = sealPayload
         self.adopt = adopt
         if intent == .addAnotherDevice {
             phase = .awaiting(Self.prompt(for: .code))
@@ -199,11 +204,11 @@ final class PairingModel {
             case .first, .second, .third:
                 try require().receiveMessage(message: text)
             case .root:
-                let root = try require().openVaultRoot(sealed: text)
+                let bundle = try require().openPairingPayload(sealed: text)
                 pasted = ""
                 phase = .working
                 syncSeamState()
-                await adopt?(root)
+                await adopt?(bundle.vaultRoot, bundle.payloadBytes)
                 pairing = nil
                 phase = .done(doneSummary)
                 syncSeamState()
@@ -322,12 +327,12 @@ extension PairingModel {
     }
 
     private func sealForPeer(_ session: DevicePairing) async {
-        guard let sealRoot else {
+        guard let sealPayload else {
             fail(with: PairingUIError.noOpenVault)
             return
         }
         do {
-            phase = .handOff(handOff(for: .root, text: try await sealRoot(session)))
+            phase = .handOff(handOff(for: .root, text: try await sealPayload(session)))
         } catch {
             fail(with: error)
         }

@@ -53,12 +53,25 @@ erase the evidence of its own theft.
 **Cryptographic revocation does not.** Under the implemented key schedule every
 paired device holds the vault root, and the root *is* the whole key schedule, so
 a revoked device that kept a copy of the ciphertext can still decrypt it.
-[ADR-0024](../11-adr/0024-key-hierarchy.md) is the slice that makes revocation
-real: per-`(stream, epoch)` random keys wrapped under the vault root and read
-from the `stream_keys` table, plus a `device_revoke` op family, so a revocation
-rotates to an epoch the revoked device cannot unwrap. It bumps `CRYPTO_SUITE_V`
-and `DOC_SCHEMA_V`. Until it lands, treat revocation as "cut off from the
-relay", not as "can no longer read".
+[ADR-0024](../11-adr/0024-key-hierarchy.md) has landed and makes revocation
+**expressible**, not real: per-`(stream, epoch)` random keys wrapped under the
+vault root and read from the `stream_keys` table, plus a `device_revoke` op
+family, so an epoch can be rotated to a different key at all. It bumps
+`CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
+
+It does **not** make a revoked device unable to unwrap the new epoch. Every
+epoch is sealed to the account identity as well as to each device, so recovery
+can reach it, and pairing hands every paired device `ID_D_priv` — so a revoked
+device opens the identity copy and reads straight through the rotation. Nor is
+its writing refused: no replica declines a revoked device's ops. Revocation is
+recorded and converged and enforced nowhere; reads are
+[#76](https://github.com/justin13888/Sunrise/issues/76), writes are
+[#82](https://github.com/justin13888/Sunrise/issues/82) behind
+[#80](https://github.com/justin13888/Sunrise/issues/80), and converging the
+*effect* is [#78](https://github.com/justin13888/Sunrise/issues/78). So continue
+to treat revocation as "cut off from the relay" rather than "can no longer
+read" — that advice was written for the period before ADR-0024 and is still the
+correct description of the shipped state.
 
 ### Cursor cleanup on device revoke — target state
 

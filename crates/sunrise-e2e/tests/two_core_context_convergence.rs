@@ -18,7 +18,7 @@ use std::time::Duration;
 use sunrise_core::{Clock, Command, ContextRow, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{ContextDraft, ContextPatch, TaskDraft};
 use sunrise_e2e::{
-    open_synced_core, spawn_relay, trust_each_other, wait_live, wait_tasks_converge,
+    open_paired_core, open_synced_core, spawn_relay, wait_live, wait_tasks_converge,
 };
 use sunrise_id::EntityRef;
 
@@ -123,8 +123,7 @@ async fn two_core_context_convergence() {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_synced_core(dir_b.path(), ROOT, addr, clock.clone()).await;
-    trust_each_other(&a, &b).await;
+    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
 

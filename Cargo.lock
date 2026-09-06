@@ -1045,6 +1045,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "hpke"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "chacha20poly1305",
+ "digest 0.10.7",
+ "generic-array",
+ "hkdf",
+ "hmac",
+ "rand_core 0.9.5",
+ "sha2",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2653,6 +2691,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde_json",
+ "sunrise-cbor",
  "sunrise-core",
  "sunrise-crypto",
  "sunrise-domain",
@@ -2691,6 +2730,7 @@ dependencies = [
  "sunrise-integrations",
  "sunrise-log",
  "sunrise-onboarding",
+ "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-server",
  "sunrise-sync",
@@ -2722,11 +2762,13 @@ dependencies = [
  "rand_core 0.6.4",
  "rusqlite",
  "serde",
+ "serde_bytes",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-pairing",
  "sunrise-storage",
  "sunrise-sync",
  "sunrise-wire-protocol",
@@ -2756,6 +2798,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]
@@ -2768,6 +2811,7 @@ dependencies = [
  "ciborium",
  "ed25519-dalek",
  "hex",
+ "hpke",
  "proptest",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
@@ -2914,13 +2958,17 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "ciborium",
  "hex",
  "serde",
  "serde_json",
  "snow",
+ "subtle",
  "sunrise-cbor",
+ "sunrise-crypto",
  "sunrise-error",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -3080,7 +3128,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

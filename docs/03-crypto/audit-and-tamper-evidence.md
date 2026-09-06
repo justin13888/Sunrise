@@ -13,7 +13,7 @@ The relay is untrusted but is in the message path. We need to detect: dropped op
 Concretely, none of the following exists:
 
 * **No root is persisted.** There is no column, no table, and no "highest-seen root per Stream", so §Rollback detection has nothing to compare against on reconnect.
-* **No checkpoint op.** All 21 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`) are domain CRUD; `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
+* **No checkpoint op.** Of the 24 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`), 21 are domain CRUD and the three [ADR-0024](../11-adr/0024-key-hierarchy.md) added carry keys and trust (`key_envelope`, `device_revoke`, `device_cert`). `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
 * **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:93`) is stamped at `crates/sunrise-server/src/api/sync.rs:419` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse.rs:435`. Nothing persists it and nothing orders by it. Per *op* it does not exist at all — the relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)`, parses only `EnvelopeHeader` (`{stream_id, device_id, seq}`) for routing, and emits no unsigned addendum. Since the amendment below removes the clamp, no ordering rule wants one.
 * **No fork or rollback detection, and no integrity indicator.** §Verifying checkpoints from peers, §Fork detection and §Per-vault Integrity indicator describe no code and no UI.
 

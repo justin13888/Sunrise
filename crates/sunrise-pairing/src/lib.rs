@@ -20,6 +20,7 @@
 #![allow(clippy::doc_markdown, clippy::missing_errors_doc)]
 
 pub mod handshake;
+pub mod payload;
 pub mod qr;
 pub mod rate_limit;
 pub mod sas;
@@ -27,6 +28,10 @@ pub mod sas;
 pub use handshake::{
     PairedChannel, PairingError, PairingSession, Role, StaticKeyPair, MAX_NOISE_MESSAGE,
     NOISE_PARAMS,
+};
+pub use payload::{
+    decode_pairing_payload, encode_pairing_payload, PairingPayload, PairingPayloadError,
+    MAX_PAIRING_PAYLOAD,
 };
 pub use qr::{decode_qr_payload, encode_qr_payload, QrPayload, QrPayloadError, MAGIC_V1_HEX};
 pub use rate_limit::{account_email_hash, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY};

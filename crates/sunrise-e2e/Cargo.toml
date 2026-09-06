@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 sunrise-core = { workspace = true }
+sunrise-pairing = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-server = { workspace = true }
 sunrise-crypto = { workspace = true }
@@ -30,7 +31,6 @@ rand_chacha = { workspace = true }
 rand_core = { workspace = true }
 
 [dev-dependencies]
-sunrise-pairing = { workspace = true }
 parking_lot = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3"

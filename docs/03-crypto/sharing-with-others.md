@@ -66,7 +66,7 @@ Owner triggers revoke. This is implemented as:
 2. Perform a Stream key rotation (see [`key-rotation.md`](./key-rotation.md)). The rotation re-wraps the new epoch for all sibling devices and remaining peers, **excluding** the revoked recipient.
 3. Nothing is asked of the relay. A revoked recipient stops receiving *readable* content because the epoch has rotated and no envelope is sealed to it under the new key; there is no relay-side grant check and no revocation error frame. The relay keeps forwarding whatever it is given, so a revoked recipient may still receive post-cutoff ciphertext it cannot open, and discards it locally on applying the `share_revoke`.
 
-The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (this is the same property as for revoked sibling devices). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.
+The revoked recipient retains historical decryption ability for ops that were created under the previous epoch (the same property this document's target state assumes for revoked sibling devices — note that *that* is also target state: revocation as implemented stops nothing, see [`key-rotation.md`](./key-rotation.md) §Revocation). UI states this explicitly: "Y will no longer receive new updates. Y still has the copy of the data they had at revocation time." Already-decrypted local copies persist; revocation is **not** a guarantee of forgetting, only of stopping new data flow.
 
 ## Share expiration
 

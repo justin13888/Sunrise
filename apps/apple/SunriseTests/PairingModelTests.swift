@@ -19,10 +19,11 @@ struct PairingModelTests {
     @MainActor
     final class Sink {
         var root: Data?
+        var bundle: Data?
     }
 
     private static let relay = "https://relay.example"
-    private static let vaultRoot = Data(repeating: 0xAB, count: 32)
+    private static let vaultRoot = PairingFixture.vaultRoot
 
     private func shownText(_ model: PairingModel) -> String? {
         guard case let .handOff(handOff) = model.phase else { return nil }
@@ -38,16 +39,19 @@ struct PairingModelTests {
     /// below's starting point but one.
     private func handshake(
         sink: Sink = Sink(),
-        sealRoot: ((DevicePairing) async throws -> String)? = { pairing in
-            try pairing.sealVaultRoot(vaultRoot: vaultRoot)
+        sealPayload: ((DevicePairing) async throws -> String)? = { pairing in
+            try pairing.sealPairingPayload(payload: PairingFixture.payload())
         }
     ) async throws -> (added: PairingModel, holder: PairingModel) {
         let added = PairingModel(
             intent: .addThisMac,
             relayURL: Self.relay,
-            adopt: { root in sink.root = root }
+            adopt: { root, bundle in
+                sink.root = root
+                sink.bundle = bundle
+            }
         )
-        let holder = PairingModel(intent: .addAnotherDevice, sealRoot: sealRoot)
+        let holder = PairingModel(intent: .addAnotherDevice, sealPayload: sealPayload)
 
         added.accountEmail = "someone@example.com"
         added.begin()
@@ -75,10 +79,10 @@ struct PairingModelTests {
         return (added, holder)
     }
 
-    /// The whole point: a vault root that started on one device ends up on the
-    /// other, and every leg in between was something a person could do.
+    /// The whole point: the pairing payload that started on one device ends up
+    /// on the other, and every leg in between was something a person could do.
     @Test
-    func theRootCrossesWhenBothUsersConfirmTheSameDigits() async throws {
+    func thePayloadCrossesWhenBothUsersConfirmTheSameDigits() async throws {
         let sink = Sink()
         let (added, holder) = try await handshake(sink: sink)
 
@@ -92,12 +96,16 @@ struct PairingModelTests {
         await added.confirm(matched: true)
         await holder.confirm(matched: true)
 
-        // The sealed root is the last thing the user carries.
+        // The sealed payload is the last thing the user carries.
         added.pasted = try #require(shownText(holder))
         await added.submit()
         holder.advance()
 
-        #expect(sink.root == Self.vaultRoot)
+        #expect(sink.root == Self.vaultRoot, "the root comes out of the payload")
+        #expect(
+            sink.bundle == (try PairingFixture.payload()),
+            "and the bundle behind it, which is what carries the Stream keys"
+        )
         if case .done = added.phase {} else { Issue.record("expected done, got \(added.phase)") }
         if case .done = holder.phase {} else { Issue.record("expected done, got \(holder.phase)") }
     }
@@ -208,7 +216,7 @@ struct PairingModelTests {
     /// producing a sealed blob that carries nothing.
     @Test
     func sharingWithNoOpenVaultFailsRatherThanSealingNothing() async throws {
-        let (added, holder) = try await handshake(sealRoot: nil)
+        let (added, holder) = try await handshake(sealPayload: nil)
 
         await added.confirm(matched: true)
         await holder.confirm(matched: true)

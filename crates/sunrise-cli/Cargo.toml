@@ -26,6 +26,7 @@ tracing = { workspace = true }
 sunrise-auth = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-core = { workspace = true }
+sunrise-pairing = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-domain = { workspace = true }
 sunrise-id = { workspace = true }
