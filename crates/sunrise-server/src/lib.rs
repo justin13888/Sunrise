@@ -2,16 +2,26 @@
 //!
 //! Implements the foundation of `docs/06-server/`. v1 ships:
 //!
-//! - REST endpoints under `/api/v1/`: account scaffolding, meta, health.
+//! - REST endpoints under `/api/v1/`: account and device lifecycle, blob 2PC,
+//!   meta, health.
+//! - The sync surface under `/api/v1/sync/`, an SSE stream downstream and typed
+//!   `POST`s upstream per
+//!   [ADR-0023](../../../../docs/11-adr/0023-sse-sync-transport.md):
+//!   `POST /sync/session` negotiates, `POST /sync/subscribe` declares the
+//!   streams, `GET /sync/events` fans out with `Last-Event-ID` resumption,
+//!   `POST /sync/ops` takes a batch and answers with an `Ack`, and
+//!   `POST /sync/session/refresh` renews the credential. There is no WebSocket:
+//!   it and `/sync`'s handshake frames went with ADR-0023, and fan-out,
+//!   cursor-filtered replay and the typed cursor gap all ship. See
+//!   [`api::sync`].
 //! - Self-host single-binary mode (`./sunrise-server -c sunrise.toml`).
-//! - WebSocket endpoint at `/sync` (handshake stub; OpBatch fanout
-//!   ships in Phase 17 once the engine in `sunrise-core` is wired).
 //! - OIDC token validation: the [`auth::TokenVerifier`] seam plus
 //!   [`auth::oidc::OidcVerifier`], a JWKS-backed implementation.
 //! - Account + device persistence in SQLite ([`store`]).
 //!
-//! The library is testable in isolation: [`build_router`] returns an
-//! `axum::Router` that integration tests can drive via tower::ServiceExt.
+//! The library is testable in isolation: [`build_service`] returns the built
+//! `kynos` [`Service`](kynos::router::service::Service) that integration tests
+//! drive in process.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
