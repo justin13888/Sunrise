@@ -54,7 +54,7 @@ Read from the tree rather than from a plan:
   simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
   `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
   a tap reaches the core.**
-- **`.github/workflows/ci.yml:114-158` gates `ios-app` no further than the
+- **`.github/workflows/ci.yml`'s `ios-app` job gates it no further than the
   workflow itself** — the job has no `if:` and no path filter, so it runs every
   time CI runs, which the triggers define as pushes to `master` and
   `v1-rewrite` (`:4-5`), pull requests targeting those two branches (`:6-7`),

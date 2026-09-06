@@ -364,7 +364,8 @@ Recorded because each presented as something other than what it was:
   [ADR-0027](../11-adr/0027-v1-self-host-first.md). iOS shared this bullet
   until [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and no longer does —
   `mise run apple-xcframework` builds its device and simulator slices,
-  `ci.yml:138` adds both targets to the pinned toolchain on every run, and the
+  `ci.yml`'s `Add the iOS slices to the pinned toolchain` step — in both the
+  `macos-app` and `ios-app` jobs — adds them on every run, and the
   app that links them is tested on the simulator.
 - **Stream sharing, Google Calendar, and the standalone `Note`** — the three
   capabilities [ADR-0020](../11-adr/0020-v1-must-demotions.md) removed from the
