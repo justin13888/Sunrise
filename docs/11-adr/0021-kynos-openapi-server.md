@@ -7,6 +7,11 @@
 **Forces** [ADR-0022](./0022-device-signature-canonical-json.md) (request signing)
 and [ADR-0023](./0023-sse-sync-transport.md) (sync transport).
 
+**Amended by:** [ADR-0026](./0026-msrv-bump.md) — the Consequences below say in
+the present tense that the workspace pins 1.88.0; it pins 1.91.1. The claim that
+mattered is unaffected: `spargen`'s floor is 1.88, which is below the new pin,
+so MSRV is still not a constraint this ADR imposes.
+
 ## Context
 
 The relay's HTTP surface had no machine-readable contract of any kind. Fourteen

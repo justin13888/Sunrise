@@ -6,16 +6,26 @@ status: accepted
 
 A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capable; installable; runs without a browser session-by-session.
 
-> **v1 status — WASM core deferred.** The architecture below is the *target*.
-> A gated spike (see [ADR 0012](../11-adr/0012-web-wasm-deferred.md)) found that
-> the only `rusqlite` line integrating `sqlite-wasm-rs` (`0.40`, via
-> `ffi-sqlite-wasm-rs`) requires Rust ≥ 1.91 (`libsqlite3-sys 0.38.1`'s
-> `cfg_select!`), above the workspace MSRV (1.88), and cannot build the native
-> SQLCipher stack unchanged — the spike's hard gate. **v1 web therefore ships the
-> `localStorage` stub** behind `apps/web/src/wasm.ts`'s `loadCore()` seam:
-> in-tab, **unencrypted**, no OPFS, no real `sunrise-core`. It exists so the PWA
-> shell renders for UI development. Revisit when the MSRV moves or a
-> wasm-capable `rusqlite` builds on the pinned toolchain.
+> **v1 status — WASM core deferred; the MSRV half of the blocker is cleared.**
+> The architecture below is the *target*. A gated spike (see
+> [ADR 0012](../11-adr/0012-web-wasm-deferred.md)) found that the only `rusqlite`
+> line integrating `sqlite-wasm-rs` (`0.40`, via `ffi-sqlite-wasm-rs`) requires
+> Rust ≥ 1.91 (`libsqlite3-sys 0.38.1`'s `cfg_select!`), which the then-pinned
+> MSRV of 1.88 could not compile — it failed on the **native**
+> `bundled-sqlcipher` build, before wasm was even attempted, which is the
+> spike's hard gate.
+>
+> [ADR-0026](../11-adr/0026-msrv-bump.md) has since moved the pin to **1.91.1**,
+> firing ADR-0012's own revisit trigger. That removes the reason the spike
+> stopped; it does not do the work the spike sized. What remains is the
+> `rusqlite` 0.31 → 0.40 swap across `sunrise-storage` and `sunrise-core` —
+> nine minor versions, 100+ call sites, and a wholesale change of the native
+> SQLite/SQLCipher stack — tracked as
+> [#52](https://github.com/justin13888/Sunrise/issues/52), still subject to the
+> same hard gate. **Until it lands, v1 web ships the `localStorage` stub**
+> behind `apps/web/src/wasm.ts`'s `loadCore()` seam: in-tab, **unencrypted**, no
+> OPFS, no real `sunrise-core`. It exists so the PWA shell renders for UI
+> development.
 >
 > Note also that even once the WASM path lands, `sqlite-wasm-rs` yields
 > **plaintext SQLite in OPFS** (no SQLCipher key pragmas on wasm) — a

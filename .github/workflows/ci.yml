@@ -31,6 +31,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # First, and before the cache is restored, because it is the cheapest
+      # failure in the file and everything after it assumes the answer.
+      #
+      # Installing `stable` above is deliberately not what gets asserted: every
+      # `rustc` below runs inside the checkout, where rust-toolchain.toml
+      # overrides the directory and rustup installs the pinned toolchain on
+      # first use. That override is the mechanism this job, `macos-app` and
+      # `ios-app` all depend on and none of them used to test. It lives here
+      # rather than in a job of its own so it runs on **both** matrix legs —
+      # the override is per-directory and per-machine, and macOS is where the
+      # iOS slices are added to it — and so it costs no second toolchain
+      # download.
+      - name: The four places that name the toolchain all name one version
+        # `rust-toolchain.toml` decides what CI and developers compile with;
+        # `rust-version` decides which MSRV-gated lints clippy applies and what
+        # a reader takes as the floor; the `Dockerfile`'s `ARG RUST_VERSION` is
+        # the compiler for every published server image, because
+        # `release.yml`'s image job passes only `VERSION` and `VCS_REF` as
+        # build-args and so takes that default. Drift between any two of them
+        # is silent, and it is the state this repository was in before
+        # ADR-0026, where five files disagreed about why 1.88 was pinned.
+        # ADR-0026 requires the three file literals byte-identical and the
+        # `rustc` a checkout resolves to match them, so equality is the whole
+        # check — there is nothing to parse loosely. Fail closed: an
+        # unreadable value is a failure, not a skipped comparison. The
+        # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
+        # carrying a trailing comment or quotes then matches nothing and is
+        # reported as unreadable, rather than being captured verbatim and
+        # reported as a version disagreement it is not.
+        run: |
+          set -euo pipefail
+          channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
+          rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
+          docker_version=$(sed -n 's/^ARG RUST_VERSION=\([^ #"]*\)$/\1/p' Dockerfile)
+          actual=$(rustc --version | cut -d' ' -f2)
+          echo "rust-toolchain.toml channel   : ${channel:-<none>}"
+          echo "Cargo.toml rust-version       : ${rust_version:-<none>}"
+          echo "Dockerfile ARG RUST_VERSION   : ${docker_version:-<none>}"
+          echo "rustc in the checkout         : ${actual:-<none>}"
+          for pair in "rust-toolchain.toml:$channel" "Cargo.toml:$rust_version" "Dockerfile:$docker_version" "rustc:$actual"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error::msrv: could not read the pinned version from ${pair%%:*}"
+              exit 1
+            fi
+          done
+          if [ "$channel" != "$rust_version" ] || [ "$channel" != "$docker_version" ] || [ "$channel" != "$actual" ]; then
+            echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
+            exit 1
+          fi
       - uses: Swatinem/rust-cache@v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -80,7 +129,7 @@ jobs:
       RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
-      # The toolchain file pins 1.88.0, which rustup installs on first use.
+      # The toolchain file pins 1.91.1, which rustup installs on first use.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # aarch64-apple-darwin is the host triple on this runner, but the
@@ -90,7 +139,7 @@ jobs:
       # This is a step rather than the action's `targets:` input, and the
       # difference is the whole bug it fixes: `targets:` is passed to
       # `rustup toolchain install stable`, so the slices land on *stable*, while
-      # rust-toolchain.toml overrides the working directory to 1.88.0 — which
+      # rust-toolchain.toml overrides the working directory to 1.91.1 — which
       # then has no iOS std and fails with `E0463: can't find crate for core`.
       # Run bare and in the repo, `rustup target add` obeys that same override,
       # so the slices land on the toolchain that actually does the build.
@@ -144,7 +193,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # As in `macos-app`, and for the reason spelled out there: a step rather
       # than the action's `targets:` input, so the slices land on the pinned
-      # 1.88.0 that rust-toolchain.toml selects rather than on stable.
+      # 1.91.1 that rust-toolchain.toml selects rather than on stable.
       - name: Add the iOS slices to the pinned toolchain
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: Install mise, XcodeGen and SwiftLint

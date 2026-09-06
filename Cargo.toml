@@ -6,7 +6,7 @@ exclude = ["legacy"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.91.1"
 license = "AGPL-3.0-only"
 authors = ["Sunrise contributors"]
 repository = "https://github.com/justin13888/Sunrise"
@@ -120,13 +120,6 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
 once_cell = { version = "1.20", default-features = false, features = ["std"] }
 parking_lot = { version = "0.12", default-features = false }
-# OS advisory file locking (flock / LockFileEx). Chosen over fs2 (unmaintained
-# since 2018) and fd-lock (guard borrows the lock, forcing a self-referential
-# struct). Wraps rustix + windows-sys, both already in the lock file, so this
-# adds no new transitive crates and keeps `forbid(unsafe_code)` intact.
-# Supersedable by std::fs::File::try_lock once MSRV reaches 1.89 — fs4's API is
-# a deliberate 1:1 mirror, so that migration is a find-and-replace.
-fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 arc-swap = { version = "1.7", default-features = false }
 bytes = { version = "1.12.1", default-features = false, features = ["std"] }
 # The generated relay client's runtime is written against these exact crates.

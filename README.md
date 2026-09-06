@@ -283,10 +283,13 @@ enabling automation mode". The iOS UI tests have no such requirement and run on
 every `mise run ios-app`.
 
 `apple-xcframework` builds the release slices, generates the Swift bindings from
-the built library, and packages the framework both apps link. The bindings
-generator lives in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with
-its own lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features
-pull a version requiring rustc 1.91, which would break the workspace's 1.88 pin.
+the built library, and packages the framework both apps link. The bindings generator lives
+in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
+lockfile. It is out there for feature unification, not MSRV: as a workspace
+member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
+build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
+20 extra third-party crates on every workspace build
+([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
 
 `out/` and `build/` are gitignored: the Swift is generated from the Rust on
 every build, so committing it would let the two drift. The `-run` tasks build
@@ -318,7 +321,7 @@ bun run --filter @sunrise/web build   # production build
 bun run --filter @sunrise/web preview # serve the production build
 ```
 
-> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is deferred on an MSRV blocker. Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is still deferred, but no longer on MSRV — [ADR-0026](docs/11-adr/0026-msrv-bump.md) moved the pin to 1.91.1 and fired ADR-0012's revisit trigger; what remains is the `rusqlite` 0.31 → 0.40 swap ([#52](https://github.com/justin13888/Sunrise/issues/52)). Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
 
 ### Common tasks
 
