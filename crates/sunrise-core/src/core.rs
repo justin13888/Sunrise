@@ -631,14 +631,18 @@ impl Core {
             let mut stmt = conn.prepare("SELECT DISTINCT stream_id FROM ops")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                streams.insert(to16(&row?));
+                if let Some(id) = to16(&row?) {
+                    streams.insert(id);
+                }
             }
         }
         {
             let mut stmt = conn.prepare("SELECT stream_id FROM streams WHERE deleted = 0")?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                streams.insert(to16(&row?));
+                if let Some(id) = to16(&row?) {
+                    streams.insert(id);
+                }
             }
         }
         let mut entries = Vec::with_capacity(streams.len());
@@ -652,8 +656,11 @@ impl Core {
             let mut cursors = Vec::new();
             for row in rows {
                 let (dev, seq) = row?;
+                let Some(device_id) = to16(&dev) else {
+                    continue;
+                };
                 cursors.push(CursorEntry {
-                    device_id: to16(&dev),
+                    device_id,
                     last_applied_seq: u64::try_from(seq).unwrap_or(0),
                 });
             }
@@ -727,11 +734,16 @@ impl Drop for Core {
 }
 
 /// Left-pad / truncate a DB blob to a 16-byte id.
-fn to16(b: &[u8]) -> [u8; 16] {
-    let mut a = [0u8; 16];
-    let take = b.len().min(16);
-    a[..take].copy_from_slice(&b[..take]);
-    a
+/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+///
+/// Not a pad, for the reason given on `keychain::to16`: zero-padding turns a
+/// corrupt row into a valid-looking value, and the value it produces here is
+/// `[0u8; 16]` — the vault-meta stream — so one truncated blob would put a
+/// stranger's cursor on it. Every caller here is building a Subscribe frame,
+/// where a row that cannot name a stream or a device has nothing to contribute
+/// and is skipped.
+fn to16(b: &[u8]) -> Option<[u8; 16]> {
+    b.try_into().ok()
 }
 
 fn format_iso8601(ms: u64) -> String {

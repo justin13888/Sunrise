@@ -3775,7 +3775,9 @@ impl Engine {
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (id, pubkey) in rows {
-                let id = to16(&id);
+                let Some(id) = to16(&id) else {
+                    continue;
+                };
                 if id == self.keychain.device_id() {
                     continue;
                 }
@@ -6087,11 +6089,14 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
 }
 
 /// Widen a stored blob back to a 16-byte id.
-fn to16(raw: &[u8]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    let take = raw.len().min(16);
-    out[..take].copy_from_slice(&raw[..take]);
-    out
+/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+///
+/// Not a pad, for the reason given on `keychain::to16`. Its one non-test caller
+/// is [`Engine::emit_key_envelopes`], where a `devices` row whose id is the
+/// wrong length would otherwise be padded to `[0u8; 16]` and get a Stream key
+/// sealed to it.
+fn to16(raw: &[u8]) -> Option<[u8; 16]> {
+    raw.try_into().ok()
 }
 
 fn hex_short(b: &[u8; 16]) -> String {
@@ -11319,7 +11324,9 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        ids.iter().map(|id| env_bytes(db, &to16(id))).collect()
+        ids.iter()
+            .map(|id| env_bytes(db, &to16(id).expect("op_id is 16 bytes")))
+            .collect()
     }
 
     fn deferred_rows(db: &Db) -> i64 {
