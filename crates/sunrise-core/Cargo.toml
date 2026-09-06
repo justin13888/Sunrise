@@ -15,7 +15,6 @@ workspace = true
 [dependencies]
 async-trait = { workspace = true }
 ciborium = { workspace = true }
-fs4 = { workspace = true }
 jiff = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }

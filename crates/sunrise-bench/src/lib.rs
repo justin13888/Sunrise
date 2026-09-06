@@ -135,7 +135,7 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
     };
     let a = word(rng);
     let b = word(rng);
-    let title = if i % 100 == 0 {
+    let title = if i.is_multiple_of(100) {
         format!("{a} {b} {RARE_WORD} {i}")
     } else {
         format!("{a} {b} task {i}")
@@ -162,7 +162,7 @@ fn synth_draft(i: usize, rng: &mut ChaCha8Rng) -> TaskDraft {
         None
     };
 
-    let priority = if rng.next_u32() % 4 == 0 {
+    let priority = if rng.next_u32().is_multiple_of(4) {
         Some(u8::try_from(rng.next_u32() % 5 + 1).expect("1..=5 fits u8"))
     } else {
         None

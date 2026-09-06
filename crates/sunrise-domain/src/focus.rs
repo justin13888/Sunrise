@@ -407,7 +407,7 @@ pub const fn break_after(work_sessions_done: u32) -> Segment {
     if work_sessions_done == 0 {
         return Segment::Work;
     }
-    if work_sessions_done % CYCLES_BEFORE_LONG_BREAK == 0 {
+    if work_sessions_done.is_multiple_of(CYCLES_BEFORE_LONG_BREAK) {
         Segment::LongBreak
     } else {
         Segment::ShortBreak
