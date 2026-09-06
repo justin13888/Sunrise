@@ -1151,6 +1151,24 @@ impl Engine {
                 // `revoke_reason` and `revoked_by` follow the winning op
                 // instead of being order-dependent alongside a converged
                 // timestamp.
+                // A device cannot revoke itself, and cannot move its own
+                // cut. Register hygiene independent of any gate: a device that
+                // can rewrite its own row can push its cut forward and undo a
+                // revocation somebody else made of it, which is the one edit
+                // the register must never accept from the party it is about.
+                // `Command::RevokeDevice` refuses it locally for the separate
+                // reason that rotating every key away from the only device
+                // holding them is not a recoverable state; this is the remote
+                // half, and neither implies the other.
+                if p.revoked_device_id == *sender {
+                    tracing::warn!(
+                        ev = "core.device.revoke_refused",
+                        reason = "self",
+                        sender_h = hex_short(sender),
+                        "a device tried to move its own revocation cut"
+                    );
+                    return Ok(Vec::new());
+                }
                 let cut = i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX);
                 let logical = i64::from(hlc.logical);
                 // Its own table, keyed on the revoked device id, so a
@@ -12116,50 +12134,47 @@ mod tests {
         );
     }
 
-    /// Revoking a device leaves `devices.revoked_at_ms` NULL, because the
-    /// register lives in `device_revocations` and that column is superseded.
+    /// A device cannot move its own revocation cut.
     ///
-    /// Migration 0017 says so in a comment. This makes it a fact: anything that
-    /// starts writing the old column again fails here rather than creating a
-    /// second, silently disagreeing source of truth.
+    /// Register hygiene, independent of any gate: a device that can rewrite its
+    /// own row can push its cut forward and undo a revocation somebody else
+    /// made of it, and the register is last-writer-wins, so its op would win.
+    /// `Command::RevokeDevice` refuses self-revocation locally for a different
+    /// reason — rotating every key away from the only device holding them is
+    /// not a recoverable state — and neither check implies the other.
     #[test]
-    fn revocation_does_not_touch_the_superseded_devices_column() {
+    fn a_device_cannot_move_its_own_revocation_cut() {
         let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let mut dba = db_root(ROOT);
-        trust(&ea, &mut dba, &eb);
-        let target = eb.keychain.device_id();
+        let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut db = db_root(ROOT);
+        trust(&er, &mut db, &ea);
+        let a_id = ea.keychain.device_id();
 
-        ea.apply(
-            &mut dba,
-            Command::RevokeDevice {
-                device_id: EntityRef::new(EntityKind::Device, target),
-                reason: RevokeReason::Lost,
-            },
-        )
-        .unwrap();
+        // B revokes A.
+        revoke(&er, &mut db, &eb, a_id, T0);
+        let after_b = revocation_row(&db, &a_id).expect("B's revocation stands");
 
-        assert!(
-            revocation_row(&dba, &target).is_some(),
-            "the register is where the revocation lives"
+        // A tries to move its own cut forward, which under last-writer-wins
+        // would otherwise supersede B's and un-revoke it for everything after.
+        revoke(&er, &mut db, &ea, a_id, T0 + 60_000);
+        assert_eq!(
+            revocation_row(&db, &a_id),
+            Some(after_b),
+            "a device must not be able to edit the register entry about itself"
         );
-        let legacy: Option<i64> = dba
-            .conn()
-            .query_row(
-                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
-                params![&target[..]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(legacy, None, "the 0013 column is superseded and unwritten");
-        // And the device list reads the register, not the dead column.
-        match ea.query(&dba, Query::DeviceList).unwrap() {
-            QueryResult::Devices(rows) => assert!(
-                rows.iter().find(|d| d.device_id == target).unwrap().revoked,
-                "the device list still shows it revoked"
-            ),
-            other => panic!("expected Devices, got {other:?}"),
-        }
+        assert!(
+            er.is_revoked_at(db.conn(), &a_id, T0 + 30_000).unwrap(),
+            "and it is still revoked across the window it tried to reopen"
+        );
+
+        // A revocation of A by anyone else still lands, so this is a check on
+        // the subject, not a freeze on the row.
+        revoke(&er, &mut db, &eb, a_id, T0 + 90_000);
+        assert_eq!(
+            revocation_row(&db, &a_id).unwrap().0,
+            i64::try_from(T0).unwrap() + 90_000
+        );
     }
 
     /// Two devices revoke each other, and both replicas end up holding both
