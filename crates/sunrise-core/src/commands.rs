@@ -200,13 +200,20 @@ pub enum Command {
     ///
     /// Emits a `device_revoke` op into the vault-meta stream and, in the same
     /// transaction, a fresh epoch plus `key_envelope` ops for every stream in
-    /// the rotation set — the vault-meta stream and the Inbox included. The
-    /// revoked device keeps what it already had; it reads nothing written
-    /// afterwards.
-    /// The cut is the HLC of the op this emits, not a value the caller
-    /// nominates: ops the device signed before it stand, ops at or after it are
-    /// refused by every replica. See [`crate::DeviceRevokePayload`] for why
-    /// there is no `effective_at` to pass.
+    /// the rotation set — the vault-meta stream and the Inbox included.
+    ///
+    /// # This does not cut the device off
+    ///
+    /// It records that the device was revoked, and every replica converges on
+    /// the same record. Nothing else follows from it: the revoked device goes
+    /// on reading (each epoch is sealed to the account identity, and pairing
+    /// hands every device `ID_D_priv`) and goes on writing (no replica refuses
+    /// its ops). A caller that needs a device actually cut off is waiting on
+    /// `#76` for reads and `#82`, behind `#80`, for writes.
+    ///
+    /// The cut recorded is the HLC of the op this emits, not a value the caller
+    /// nominates; see [`crate::DeviceRevokePayload`] for why there is no
+    /// `effective_at` to pass.
     RevokeDevice {
         /// The device to revoke.
         device_id: EntityRef,

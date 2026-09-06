@@ -74,10 +74,10 @@ Alongside it, the hierarchy the documents already specify is made real:
    classes, and the distinction is what makes both revocation and recovery work:
    * to each **device**'s `D_D_pub`, so a device learns the epochs it is entitled to;
    * to the **identity**'s `ID_D`, so the recovery path can reach them.
-5. **Epochs are real.** Revoking a device mints a new epoch for every Stream it
-   could read and seals envelopes only to the remaining devices. The revoked
-   device keeps what it already had — unavoidable, and stated — and reads nothing
-   written afterwards.
+5. **Epochs are real.** `EPOCH` stops being a constant, so revoking a device can
+   mint a new epoch for every Stream it could read. The revoked device keeps
+   what it already had — unavoidable, and stated — and, as built, reads what
+   comes afterwards too: see the scope note below.
 
    **Scope, as implemented: the machinery exists and enforces nothing.** A
    `device_revoke` op is recorded and converged as an LWW register on the op's

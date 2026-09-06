@@ -54,11 +54,21 @@ credentials. This ADR adds the model and no network fetching of any kind.**
   wrong granularity for revocation — rotating one Stream's key should not orphan
   an unrelated calendar authorization.
 * **Secrets ride as ordinary entity fields**, which is sufficient because ops are
-  already sealed under per-Stream keys. What makes that a real boundary rather
-  than a restatement is [ADR-0024](./0024-key-hierarchy.md): with epoch rotation
-  on revocation, a revoked device stops being able to read credentials written
-  afterwards. Under the derived-key model it could read everything forever, which
-  is why this ADR depends on that one rather than shipping beside it.
+  already sealed under per-Stream keys. What makes rotating them *possible* at
+  all is [ADR-0024](./0024-key-hierarchy.md): keys become random per
+  `(stream, epoch)` and wrapped, where the derived-key model let every device
+  that ever knew the vault root derive every key forever. That is why this ADR
+  depends on that one rather than shipping beside it.
+
+  **It does not follow that revoking a device cuts off its access to a connected
+  account.** ADR-0024 as implemented records a revocation and enforces nothing:
+  every epoch is also sealed to the account identity so recovery can reach it,
+  and pairing hands every device `ID_D_priv`, so a revoked device reads
+  credentials written after its revocation. Any integration whose threat model
+  needs otherwise is waiting on
+  [#76](https://github.com/justin13888/Sunrise/issues/76). *(Corrected from
+  outside this ADR's lane: the claim was false and its sibling in
+  `09-integrations/overview.md` had already been fixed.)*
 * **Only the durable half is synced.** The refresh token and the account's
   identity go in the entity; the short-lived access token stays device-local and
   is never written to an op. This is not only a secrecy argument — it is a

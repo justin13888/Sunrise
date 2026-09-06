@@ -161,7 +161,7 @@ pub enum KeychainError {
     #[error("corrupt vault row: {0} is not the right length")]
     CorruptRow(&'static str),
     /// A pre-ADR-0024 vault with more than one device row cannot be adopted:
-    /// see [`Keychain::adopt_legacy_vault`].
+    /// see `Keychain::adopt_legacy_vault`.
     #[error(
         "this vault predates the key hierarchy and holds {0} devices; adopting it would mint a \
          different account identity on each one and silently split the account. Re-pair the other \
@@ -255,7 +255,7 @@ impl Keychain {
     ///    account identity* (the payload carries `ID_S_priv`, which is what
     ///    makes that legitimate), and import every Stream key it carries.
     /// 3. **Pre-ADR-0024 vault** — a `local_identity` row with no `identity`
-    ///    row. [`Self::adopt_legacy_vault`] runs, once and idempotently.
+    ///    row. `Self::adopt_legacy_vault` runs, once and idempotently.
     /// 4. **Known vault** — load and unwrap, failing cleanly on a wrong root.
     ///
     /// # Errors

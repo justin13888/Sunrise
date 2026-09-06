@@ -11,15 +11,18 @@
 //!   what makes recovery restore readable content.
 //! - [`DeviceRevokePayload`] records that a device is no longer a member. The
 //!   op itself does not rotate anything; the emitter mints new epochs alongside
-//!   it. What the op does is make every *other* replica refuse the revoked
-//!   device's later ops, which is a fact that has to converge.
+//!   it. What the op does is put the same *record* on every replica — and
+//!   nothing more: no replica refuses a revoked device's ops or withholds a key
+//!   from it. Membership is a fact that has to converge whether or not anything
+//!   yet acts on it; acting on it is `#76` for reads and `#82`, behind `#80`,
+//!   for writes.
 //! - `DeviceCertPublish` carries a canonical-CBOR [`DeviceCert`] so a device
 //!   admitted by pairing becomes known to every replica without a manual
 //!   trust step. It replaces `Command::TrustDevice`, which accepted any
 //!   self-signed cert and so could not be revoked from.
 //!
 //! These are **not** entities. They have no row, no LWW stamp and no
-//! materialization: [`crate::inner_op::OpEffect::Control`] exists so the
+//! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
 //! compiler cannot route one into the entity materializer, where the `_ =>`
 //! catch-all in the kind table would have filed it as a task.
 //!
@@ -42,9 +45,11 @@ use serde::{Deserialize, Serialize};
 /// device must not try its own key against the identity's copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Recipient {
-    /// Sealed to a device's `D_D_pub`. The device learns the epochs it is
-    /// entitled to; a revoked device is simply not among the recipients of the
-    /// epochs minted after it was cut off.
+    /// Sealed to a device's `D_D_pub`, so the device learns the epochs it is
+    /// entitled to. Every device is a recipient, revoked or not: the epoch is
+    /// sealed to the account identity as well, and every paired device holds
+    /// `ID_D_priv`, so leaving a revoked device out of this list would withhold
+    /// nothing from it. See `#76`.
     Device(#[serde(with = "serde_bytes")] [u8; 16]),
     /// Sealed to the account identity's `ID_D_pub`. Opened by the recovery
     /// blob's `ID_D_priv`, so a recovery with no surviving device still reaches
@@ -77,10 +82,10 @@ pub struct KeyEnvelopePayload {
 
 /// Why a device was revoked.
 ///
-/// Recorded rather than inferred. The rotation is identical in every case — a
-/// revoked device keeps what it already had and reads nothing written
-/// afterwards — but the reason is what a device list has to show a user
-/// months later, and it is not recoverable from anything else in the log.
+/// Recorded rather than inferred. Nothing branches on it — the rotation is
+/// identical in every case, and so is the revocation, which is to say inert —
+/// but the reason is what a device list has to show a user months later, and it
+/// is not recoverable from anything else in the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RevokeReason {
     /// Misplaced; may still turn up.
@@ -123,11 +128,12 @@ impl RevokeReason {
 /// # There is no `effective_at` field, and that is the design
 ///
 /// The cut is the **HLC of the op that declares it**, read off the envelope by
-/// every replica rather than chosen by the emitter. Ops the revoked device
-/// signed before that HLC stand; ops at or after it are refused. A revocation
-/// that retroactively erased the device's history would be worse than none —
-/// a laptop being retired did not un-write the six months of work it did — so
-/// the cut is still a time, it is simply not a time anyone gets to nominate.
+/// every replica rather than chosen by the emitter. Nothing compares anything
+/// against it today — the register is inert, see [`Recipient::Device`] — but it
+/// is recorded as a *time* so that whatever eventually enforces it can let the
+/// device's earlier work stand. A revocation that retroactively erased that
+/// history would be worse than none: a laptop being retired did not un-write
+/// the six months of work it did.
 ///
 /// An `effective_at_ms` field was tried and removed. It was a plain field of
 /// the signed envelope, so it was the whole of a revocation's meaning and
