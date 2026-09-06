@@ -37,17 +37,26 @@
             "tailwindDirectives": true
         }
     },
-    // Anything under a `generated/` directory is written by a generator and
-    // drift-checked against the input that produced it, so it is not ours to
+    // **The convention.** A `generated/` directory -- lowercase, committed to
+    // the repository, and holding output that a CI drift gate regenerates and
+    // compares with `git diff --exit-code`. Files in one are written by a
+    // generator and are never edited by hand, so they are not ours to
     // *format*: `lefthook.yaml`'s pre-commit `biome check --write .` would
-    // otherwise rewrite a generated file, and the gate that regenerates it and
-    // runs `git diff --exit-code` would then fail with "stale; regenerate it"
-    // while naming the wrong cause.
+    // otherwise rewrite one, and that gate would then fail with "stale;
+    // regenerate it" while naming the wrong cause.
     //
-    // Two directories today, each with a generator and a CI job that checks it:
+    // Two directories today, each with a generator and the gate that checks it:
     //
     //   packages/sunrise-ui-tokens/generated/   `mise run tokens`    `tokens-current`
     //   schemas/generated/                      `mise run openapi`   `openapi-current`
+    //
+    // Committed and drift-gated is the whole membership test, and it is
+    // narrower than "generator output" on purpose. A gitignored build
+    // directory has no drift gate to fight and Biome never sees it anyway --
+    // `vcs.useIgnoreFile` above honours `.gitignore` -- so extending the rule
+    // to those would extend it to files it cannot affect. `apps/apple/Generated/`
+    // is exactly that case: written by `mise run macos-app`, gitignored, and
+    // not a member of this convention.
     //
     // The rule is the **directory**, not a list of filenames, and that is the
     // point of it. A generator's output shape is the generator's business:
@@ -58,6 +67,19 @@
     // still matches the generator, until an unrelated CI run goes red. Put
     // generated output in a `generated/` directory and it is covered on the
     // commit that introduces it, whatever wrote it.
+    //
+    // Two globs, `generated` and `Generated`, while the convention is the
+    // lowercase one. The capital is insurance, not a second spelling. Biome's
+    // globs are case-sensitive, the tree already spells one such directory
+    // `apps/apple/Generated/`, and a committed generated file put under that
+    // capitalization would miss a lowercase-only glob and be reformatted on
+    // the next `mise run fix` — reintroducing, silently, the deadlock this
+    // override exists to remove. Write `generated/`; the second glob catches
+    // the slip. It is two entries rather than one `[Gg]enerated` because
+    // Biome's glob dialect rejects character classes outright ("Character
+    // class `[]` are not supported"), and does so as a *configuration* error
+    // that stops every Biome invocation, not as a pattern that quietly
+    // matches nothing.
     //
     // Only the formatter is off. Parsing and linting stay on, and that half
     // matters: `tokens.css` is the one generated output with no other parser
@@ -73,7 +95,7 @@
     // distinction the directory now carries.
     "overrides": [
         {
-            "includes": ["**/generated/**"],
+            "includes": ["**/generated/**", "**/Generated/**"],
             "formatter": { "enabled": false }
         }
     ],
