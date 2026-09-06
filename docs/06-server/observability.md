@@ -35,6 +35,9 @@ The 25 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
+     `Last extracted` names the commit this block was last reconciled against —
+     NOT the commit that last changed the set. Diff that ref against HEAD over
+     the grepped path to see whether the set could have moved since.
      Last extracted: c3c54ac -->
 
 ```
@@ -114,6 +117,9 @@ complete set the server emits today:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
+     `Last extracted` names the commit this block was last reconciled against —
+     NOT the commit that last changed the set. Diff that ref against HEAD over
+     the grepped path to see whether the set could have moved since.
      Last extracted: c3c54ac -->
 
 ```
@@ -149,18 +155,36 @@ tree does not define: `sunrise_sync_token_expired_total`,
 under `srv.sync.*` above, which is why the names look familiar.
 
 `sunrise_relay_batch_duplicate_total` is the counter for op-batch
-de-duplication. `POST /api/v1/sync/ops` keys on the client's `batch_id`: when
-the store reports that batch already stored for the stream, the handler
-increments this counter, logs `srv.relay.batch_duplicate`, publishes nothing to
-live subscribers, and re-acks with the batch's *original*
-`server_first_seen_ms` rather than a fresh one. It therefore counts re-submitted
-batches, which is the graphable form of reconnect churn — a client's batch
-counter restarts per session, so it cannot know which batches landed and
-re-sends the ones whose ack it lost. The
-[`srv.relay.batch_duplicate`](../10-cross-cutting/log-events.md) event is the
-per-stream, greppable form of the same fact; this is the fleet-level rate.
-Rising against a steady op rate means clients are losing acks and replaying —
-a transport problem rather than a load one.
+de-duplication, and it gets commentary the other twenty do not because its key
+is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's **content**:
+`ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
+`PRIMARY KEY (account_h, stream_id, ops_h)` in `relay_batches`. When that
+content is already stored for the channel, the handler increments this counter,
+logs `srv.relay.batch_duplicate`, publishes nothing to live subscribers, and
+re-acks with the batch's *original* `server_first_seen_ms` rather than a fresh
+one.
+
+The client's `batch_id` is recorded beside the hash and echoed in the ack, but
+it is **deliberately not part of the key**. The client's counter restarts at 1
+on every reconnect, so keying on it would drop a later session's batch 1 as a
+duplicate *while acking it* — and an acked batch leaves the client's outbox.
+The schema comment on `relay_batches` names that outcome as silent data loss.
+Two consequences for whoever is reading a spike: do not expect it to correlate
+with client batch ids, because two different `batch_id`s carrying identical ops
+both land here; and do not "fix" the client to persist its counter across
+reconnects, because that is the change the key exists to prevent.
+
+So the counter measures re-submitted content, which is the graphable form of
+reconnect churn — a client that loses an ack re-drains its outbox and the relay
+absorbs the replay. Rising against a steady op rate is a transport problem
+rather than a load one. The
+[`srv.relay.batch_duplicate`](../10-cross-cutting/log-events.md) event carries
+the same fact per stream, for grepping; this is the fleet-level rate. One
+boundary worth knowing before trusting it as a total: `batch_ops_hash` returns
+`None` for an empty batch and `relay_append` skips the lookup entirely when
+`ops_h` is `None`, so **an empty batch is never de-duplicated and never
+increments this counter**. The number under-counts re-submissions by exactly
+that traffic.
 
 `/metrics` is mounted at the router root, and **only when the listener binds
 loopback** — a non-loopback bind withholds the route and logs
@@ -211,7 +235,7 @@ Forbidden labels include `account_id`, `stream_id`, `device_id`, `email`, `email
 `span_redactor`, no OTel exporter, no sampling rate, and no
 `tests/span-redaction.rs`.
 
-What exists is a request log that never reads a URI at all, which is a stronger
+What exists is a request log that never consults the URI, which is a better
 placement than redacting one. `api::observe::RequestLog` implements
 `kynos::middleware::Observer<ServerState>` and is mounted with
 `.observe(observe::RequestLog)` in `api/mod.rs`. kynos hands the observer the
@@ -219,11 +243,24 @@ placement than redacting one. `api::observe::RequestLog` implements
 resolved to, with its `{}` expressions intact — and the span records the HTTP
 method plus that template, rewritten to the log's `:id` spelling by
 `api::observe`'s private `templated` helper. Nothing else from the request
-reaches a field, and the concrete URI is not among the observer's arguments, so
-there is no query string to drop and no redaction step to forget. That
-structural placement is the point: a stock request log records the URI verbatim,
-which is where a bearer would sit if the `?access_token=` fallback existed, and
-a bearer reached this server's log that way once already.
+reaches a field.
+
+Be exact about how much of that is structural, because this is the paragraph the
+E2EE log promise rests on. `on_response` genuinely cannot leak a URI: it is
+handed a response, a route and an elapsed duration, and no request at all. But
+`on_request` is handed `&kynos::http::Request`, which is an `http::Request<Body>`
+and therefore one `.uri()` call away from the query string —
+`RequestLog::on_request` already reads `request.method()` off that same value.
+The URI is never consulted, and what holds it that way is the *tests*, not the
+type signature: `the_query_string_never_reaches_the_log` (`api/observe.rs`) and
+`a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`
+(`tests/logging.rs`) each drive a real `?access_token=` through and assert the
+sentinel never appears. Neither is redundant, and neither may be dropped on the
+grounds that the leak is impossible by construction. A stock request log records
+the URI verbatim, which is where a bearer would sit if the `?access_token=`
+fallback existed — and a bearer reached this server's log that way once already
+(`api/observe.rs:3-7`).
+
 `sunrise_log::templatize_path` is the older mitigation — it strips the query and
 templates opaque segments out of a *raw* target — and it is still exported from
 `sunrise-log`, but nothing on this path calls it.
@@ -251,7 +288,11 @@ templates opaque segments out of a *raw* target — and it is still exported fro
 > and `oidc_verifier.rs`.
 >
 > [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3 and §11
-> still record the file as missing. Correcting them is outside this document.
+> still record this file as missing, and its §6 allowlist table
+> (`logging.md:156`) still attributes the `endpoint` template to
+> `sunrise_log::templatize_path`, which the paragraph above establishes is not
+> what runs. Correcting all three is outside this document; issue #99 tracks
+> them.
 
 `docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` here.
 The `log-redaction` job in `.github/workflows/ci.yml` greps
