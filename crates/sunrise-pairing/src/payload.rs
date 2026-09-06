@@ -439,6 +439,46 @@ mod tests {
 
     /// ...and one just under the limit still encodes, so the bound is not so
     /// conservative that a realistic vault trips it.
+    /// A payload whose `ID_D` halves disagree is refused at decode.
+    ///
+    /// `ID_D_pub` is what every `key_envelope` is sealed to and `ID_D_priv` is
+    /// what opens it, so a mismatch produces a device that silently opens
+    /// nothing addressed to the identity — including, after a revocation, every
+    /// rotated Stream key — with nothing downstream able to say why. Both this
+    /// and the `identity_id` check are constant-time, which
+    /// `docs/03-crypto/pairing-and-onboarding.md` §7 has always claimed.
+    #[test]
+    fn a_payload_whose_identity_halves_disagree_is_refused() {
+        let mut p = payload(2, 1);
+        p.id_d_pub = [0x77; 32];
+        let bytes = encode_pairing_payload(&p).unwrap();
+        assert!(
+            matches!(
+                decode_pairing_payload(&bytes),
+                Err(PairingPayloadError::IdentityMismatch)
+            ),
+            "a public DH half that does not belong to its private one must not decode"
+        );
+
+        // The signing half is checked the same way, through `identity_id`.
+        let mut q = payload(2, 1);
+        q.identity_id = [0x88; 16];
+        let bytes = encode_pairing_payload(&q).unwrap();
+        assert!(matches!(
+            decode_pairing_payload(&bytes),
+            Err(PairingPayloadError::IdentityMismatch)
+        ));
+
+        // And the honest payload still round-trips, so the check is not simply
+        // refusing everything.
+        let good = payload(2, 1);
+        let bytes = encode_pairing_payload(&good).unwrap();
+        assert_eq!(
+            decode_pairing_payload(&bytes).unwrap().id_d_pub,
+            good.id_d_pub
+        );
+    }
+
     #[test]
     fn a_thousand_keys_still_fit() {
         let p = payload(500, 2);
