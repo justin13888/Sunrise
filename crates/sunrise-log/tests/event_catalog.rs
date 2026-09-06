@@ -13,24 +13,31 @@
 //! - every *field name* those events carry is on the redaction allowlist, so
 //!   the record the catalogue promises can reach a subscriber at all.
 //!
-//! # Why the file set is derived rather than walked
+//! # Why the file set is asked for rather than worked out
 //!
-//! Earlier versions walked `crates/*/src`, then every manifest directory, and
-//! pinned the result. Both were assertions about where code lives, and code
-//! does not have to live there: a `#[path = "../generated/planted.rs"]` module
-//! or an `include!` pulls a file into a shipped crate from anywhere, and
-//! `crates/sunrise-relay-client/src/lib.rs` already does exactly that with
-//! eleven thousand generated lines out of `target/`. A directory walk cannot
-//! see them, and pinning the walk's output only pinned the blind spot. It also
-//! fired on `cargo vendor`, on a `tests/fixtures` crate and on
-//! `--target-dir ./build` — and a gate that fires on ordinary work is a gate
-//! someone switches off.
+//! Earlier versions walked `crates/*/src`, then every manifest directory, then
+//! pinned the result, then took the crate roots from `cargo metadata` and
+//! followed the module graph from each. Every one of those was this file
+//! deciding for itself which bytes rustc would compile, and every one was
+//! wrong: a directory walk cannot see a `#[path]` module or an `include!`; the
+//! pinned walk fired on `cargo vendor` and a `tests/fixtures` crate; and the
+//! module-graph parser silently skipped `mod r#type;` and resolved `#[path]`
+//! against the wrong directory, shipping violations with every gate green.
 //!
-//! So the set is taken from `cargo metadata`, which is the compiler's own view:
-//! every shipped target and its root source file. From each root the **module
-//! graph** is followed through `mod` and `#[path]`. Tests, benches, examples
-//! and build scripts are excluded, which is the rule this file has always had —
-//! a fixture inventing its own event name does not have to be catalogued.
+//! So nothing here parses Rust's module grammar. The set of shipped targets
+//! comes from `cargo metadata`, and the set of files each one compiled comes
+//! from the **dep-info** rustc wrote beside the artefact — the compiler's own
+//! record of every file it read. That covers `#[path]`, raw identifiers,
+//! `include!` and generated code under `target/` at no cost, because rustc
+//! already knew. `crates/sunrise-relay-client`'s eleven thousand generated
+//! lines, which no walk could reach and which needed an argued exception under
+//! the old design, are simply in the set.
+//!
+//! The price is a dependency on build state, and it is paid openly:
+//! [`every_shipped_target_has_current_dep_info`] fails when dep-info is
+//! missing, unreadable, or older than a source it names. A gate that quietly
+//! covered less because `target/` was cleaned would be the same defect in
+//! build-system clothes.
 //!
 //! # What this gate does not see
 //!
@@ -38,44 +45,52 @@
 //! version of this file was a totality claim nobody had written down and so
 //! nobody could check:
 //!
-//! - **Anything that arrives by macro expansion.** The walk reads source, not
+//! - **Anything that arrives by macro expansion.** The scan reads source, not
 //!   expansions. A `macro_rules!` written here is covered, because its body is
-//!   source like any other — but an *external* macro that expands to an
-//!   `include!`, or to a `tracing::` call of its own, is invisible. A literal
-//!   `include!` is refused; one arriving through a macro is not seen at all.
+//!   source like any other — but an *external* macro that expands to a
+//!   `tracing::` call is invisible. Dep-info names the *file*; what the tokens
+//!   in it become is not recorded there.
 //! - **Code that is not part of a shipped target.** Tests, benches, examples
-//!   and build scripts are excluded from the file set on purpose: a fixture may
-//!   invent its own event names, and a `build.rs` runs at build time rather
-//!   than in the artefact whose logs an operator reads. Unit tests *inside* a
-//!   shipped `src/` file are scanned, because they are not separable from it.
+//!   and build scripts are outside the set on purpose: a fixture may invent its
+//!   own event names, and a `build.rs` runs at build time rather than in the
+//!   artefact whose logs an operator reads. Unit tests *inside* a shipped file
+//!   are scanned, because they are not separable from it — and the failure
+//!   messages say so, rather than calling a fixture "shipped code".
+//! - **Crates built outside the workspace.** `cargo test` never builds one, so
+//!   there is no dep-info to derive its sources from. Each is an argued entry
+//!   in [`BUILD_TOOLS`] with a guard, and a new one fails
+//!   [`every_out_of_workspace_target_is_a_guarded_build_tool`] until someone
+//!   argues it. Not one line of their source is read.
 //! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
 //!   names a second span site as the trigger to revisit — but nothing here
 //!   detects a second span site, so that trigger is a note, not an alarm. One
 //!   span exists today (`api/observe.rs`, `method` and `endpoint`, both
 //!   allowlisted and server-derived).
-//! - **A third-party action compiling a foreign manifest.** Such an
-//!   invocation lives in that action's repository, not this one, and nothing
-//!   here can reach it. What holds instead is that the `uses:` list is short
-//!   and reviewed.
+//! - **Build config this file does not know to read.** The build-config gates
+//!   read `.github/workflows/`, `.github/actions/`, `Dockerfile*` and the root
+//!   `mise.toml` — a hardcoded list, and so an assertion about where build
+//!   config lives, which is the class this file renounced for source. A nested
+//!   `mise.toml`, a `mise.local.toml`, a `.mise/config.toml` or a
+//!   `docker/Dockerfile` is read by neither the derivation nor the gate that
+//!   checks it.
+//! - **A third-party action compiling a foreign manifest.** Such an invocation
+//!   lives in that action's repository, not this one, and nothing here can
+//!   reach it. What holds instead is that the `uses:` list is short and
+//!   reviewed.
 //! - **A build reached through a script.** `.github/scripts/*` are invoked
 //!   bare today. Following them properly means following arbitrary shell and
 //!   Python; following them partly would report coverage that does not exist,
 //!   which is the exact defect this file keeps having to remove. So they are
 //!   not followed at all, and this paragraph is the record of that choice.
 //!
-//! Everything else the gate refuses rather than skips. Where the two are hard
-//! to tell apart, prefer reducing what this file *claims* over extending what
-//! it does.
+//! # Why the invocation scanner fails closed
 //!
-//! # Why both halves fail closed
-//!
-//! Every gate here reports what it cannot analyse rather than skipping it.
-//! Unread syntax and unreachable files are the same defect wearing different
-//! clothes: something is compiled into a shipped binary that no gate has seen.
-//! An `include!`, an unresolvable `#[path]`, a braced or bracketed invocation, a
-//! quoted or raw-identifier field name, a macro reached under another name —
-//! each is a named failure telling the author what to write instead, or to
-//! decide deliberately that this one is fine.
+//! The file set is a lookup now, but what an invocation *says* is still read
+//! here, and that scanner reports what it cannot analyse rather than skipping
+//! it. A braced or bracketed invocation, a quoted or raw-identifier field name,
+//! a macro reached under another name — each is a named failure telling the
+//! author what to write instead, or to decide deliberately that this one is
+//! fine.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -144,14 +159,22 @@ fn manifest_path_args(text: &str) -> Vec<String> {
     found
 }
 
-/// The workspace manifest plus every manifest the build config names beside it
-/// — the complete set these gates derive their file list from.
-fn derived_manifests() -> BTreeSet<PathBuf> {
+/// The workspace manifest plus every manifest the build config names beside it.
+///
+/// The one place this set is built. `metadata_documents` and
+/// `derived_manifests` each assembled it independently, and they have to agree
+/// or the gate blesses a manifest whose sources nobody reads.
+fn all_manifests() -> Vec<PathBuf> {
     let mut set = vec![workspace_root().join("Cargo.toml")];
     set.extend(extra_manifests());
     set.into_iter()
         .map(|p| p.canonicalize().unwrap_or(p))
         .collect()
+}
+
+/// [`all_manifests`] as a set, for membership tests.
+fn derived_manifests() -> BTreeSet<PathBuf> {
+    all_manifests().into_iter().collect()
 }
 
 /// Whether this build-config file is a container build.
@@ -178,7 +201,9 @@ fn build_config_files() -> Vec<(String, String)> {
     let mut files = Vec::new();
     let mut stack = vec![
         root.join(".github/workflows"),
-        // Composite actions run steps of their own, and were not read at all.
+        // Composite actions run steps of their own. No such directory exists
+        // today; it is listed so that adding one is covered on the first
+        // commit rather than the first review.
         root.join(".github/actions"),
     ];
     while let Some(dir) = stack.pop() {
@@ -230,9 +255,7 @@ fn metadata_documents() -> &'static Vec<serde_json::Value> {
     static META: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
     META.get_or_init(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-        let mut manifests = vec![workspace_root().join("Cargo.toml")];
-        manifests.extend(extra_manifests());
-        manifests
+        all_manifests()
             .into_iter()
             .map(|manifest| {
                 let out = Command::new(&cargo)
@@ -280,31 +303,6 @@ fn is_shipped_kind(kind: &str) -> bool {
     )
 }
 
-/// Every shipped target's root source file, from the compiler's own view.
-fn shipped_target_roots() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = Vec::new();
-    for pkg in packages() {
-        for target in pkg["targets"].as_array().expect("a package lists targets") {
-            let shipped = target["kind"]
-                .as_array()
-                .expect("a target lists kinds")
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .any(is_shipped_kind);
-            if shipped {
-                roots.push(PathBuf::from(
-                    target["src_path"]
-                        .as_str()
-                        .expect("a target has a src_path"),
-                ));
-            }
-        }
-    }
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
 // ---------------------------------------------------------------------------
 // Source normalisation
 // ---------------------------------------------------------------------------
@@ -312,10 +310,17 @@ fn shipped_target_roots() -> Vec<PathBuf> {
 /// One source in two aligned forms.
 ///
 /// Both are byte-for-byte the same length as the original, so an offset found
-/// in one indexes the other. `structural` has comments, `#[cfg(test)]` items
-/// and string *contents* blanked, which is what makes brace matching, argument
-/// splitting and word search safe. `literal` blanks the same regions but keeps
-/// string contents, which is where an event name is read from.
+/// in one indexes the other. `structural` has comments and string *contents*
+/// blanked, which is what makes brace matching, argument splitting and word
+/// search safe. `literal` blanks the same regions but keeps string contents,
+/// which is where an event name is read from.
+///
+/// `#[cfg(test)]` is *not* blanked. A scan for the end of the attributed item
+/// assumed a brace-balanced one, and on a struct field or an enum variant it
+/// ran on — measured, it blanked 130 lines of `api/sync.rs` and hid every
+/// `tracing::` call inside from every gate. Deleting it costs a constraint
+/// (a unit test in a shipped file must use allowlisted field names) that the
+/// workspace already met.
 struct Source {
     structural: String,
     literal: String,
@@ -469,53 +474,6 @@ fn normalise(text: &str) -> Source {
 // The module graph
 // ---------------------------------------------------------------------------
 
-/// Something a shipped crate compiles that the walk cannot follow.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Unresolved {
-    file: String,
-    what: String,
-}
-
-/// `include!`s that cannot be resolved statically, with the argument for each.
-///
-/// The gate fails closed on `include!`, so an entry here is a deliberate,
-/// argued exception — and every one carries a guard that fails if the argument
-/// stops holding. This is the same shape as `field.rs`'s `NOT_ENTITY_IDS`: an
-/// exception nobody can widen quietly.
-struct AllowedInclude {
-    /// The file holding the `include!`, relative to the workspace root.
-    file: &'static str,
-    /// Why the walk cannot follow it.
-    why: &'static str,
-    /// The package whose manifest must not gain a `tracing` dependency. Code
-    /// that cannot reach `tracing` cannot emit an event, so this is what makes
-    /// "the generated file logs nothing" an enforced fact rather than a
-    /// snapshot of today.
-    ///
-    /// # When this guard fails, resolve the include — never relax the guard
-    ///
-    /// The guard is a *dependency* check standing in for a *content* claim.
-    /// The moment the dependency appears, the claim it was proxying for is no
-    /// longer supported by anything, so relaxing the guard would leave an
-    /// exception whose justification had expired — which is the exact defect
-    /// this whole file exists to catch, sitting inside the gate itself.
-    ///
-    /// The fix is to make the include resolvable: run the build script from
-    /// the gate and read its output, or have spargen emit into the source tree
-    /// where the module walk can follow it. Either way the generated code gets
-    /// read like everything else, and the exception disappears rather than
-    /// being widened.
-    guarded_package: &'static str,
-}
-
-const ALLOWED_INCLUDES: &[AllowedInclude] = &[AllowedInclude {
-    file: "crates/sunrise-relay-client/src/lib.rs",
-    why: "`include!(concat!(env!(\"OUT_DIR\"), \"/api.rs\"))` — spargen's generated \
-          client, some eleven thousand lines compiled out of `target/`, whose path \
-          exists only while the build script that wrote it is running.",
-    guarded_package: "sunrise-relay-client",
-}];
-
 /// Whether `b` can appear inside a Rust identifier.
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
@@ -550,323 +508,238 @@ fn word_bang_hits(text: &str, word: &str) -> Vec<(usize, usize)> {
     hits
 }
 
-/// What the attribute block before a `mod` says about where it lives.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PathSpec {
-    /// No attribute mentions a path; the name resolves conventionally.
-    None,
-    /// Exactly one `#[path = "literal"]`, and nothing else mentions a path.
-    Literal(String),
-    /// Something in the block mentions a path this scanner will not interpret —
-    /// a `cfg_attr`, a second `path`, anything but the simple form.
-    Unresolvable(String),
+/// An out-of-workspace target that is a build tool rather than shipped code.
+///
+/// The gate's subject is code whose log output an operator reads. A crate
+/// outside the workspace is not automatically that, and `cargo test` never
+/// builds one, so there is no dep-info for it — deriving its file set is not
+/// possible from here and pretending otherwise would be the old defect again.
+///
+/// So each is an argued exception with a guard, the same shape as everything
+/// else here: code that cannot reach `tracing` cannot emit an event.
+struct BuildTool {
+    package: &'static str,
+    why: &'static str,
 }
 
-/// A `mod name;` declaration: the modules this file pulls in as other files.
-struct FileMod {
-    name: String,
-    /// Where the attribute block says the file is.
-    path: PathSpec,
-    /// Brace depth of the declaration. Anything but zero means it sits inside
-    /// an inline `mod`, which changes the directory the name resolves against —
-    /// a rule this walk does not implement and therefore refuses.
-    depth: i32,
-}
+const BUILD_TOOLS: &[BuildTool] = &[BuildTool {
+    package: "uniffi-bindgen",
+    why: "eleven lines calling `uniffi::uniffi_bindgen_main()`, quarantined from \
+          the workspace on purpose and driven only by `mise run apple-xcframework`. \
+          Its output is Swift source, not operator logs. Its own manifest says \
+          `Build tool only; never shipped`.",
+}];
 
-/// The `mod name;` declarations in one source.
-fn file_mods(src: &Source) -> Vec<FileMod> {
-    let bytes = src.structural.as_bytes();
+/// Every shipped target, as `(package, src_path, in the workspace)`.
+fn shipped_targets() -> Vec<(String, PathBuf, bool)> {
     let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-        let is_word_start = i == 0 || !is_ident_byte(bytes[i - 1]);
-        if is_word_start && src.structural[i..].starts_with("mod") {
-            let mut j = i + 3;
-            if bytes.get(j).copied().is_some_and(is_ident_byte) {
-                i += 1;
-                continue;
-            }
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            let name_start = j;
-            while bytes.get(j).copied().is_some_and(is_ident_byte) {
-                j += 1;
-            }
-            let name = src.structural[name_start..j].to_owned();
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if !name.is_empty() && bytes.get(j) == Some(&b';') {
-                out.push(FileMod {
-                    name,
-                    path: path_spec_before(src, i),
-                    depth,
-                });
-                i = j + 1;
-                continue;
+    for (doc, pkg) in metadata_documents().iter().flat_map(|d| {
+        d["packages"]
+            .as_array()
+            .expect("packages")
+            .iter()
+            .map(move |p| (d, p))
+    }) {
+        let members = doc["workspace_members"]
+            .as_array()
+            .expect("metadata lists workspace members");
+        let in_workspace = members.iter().any(|m| m == &pkg["id"])
+            && doc["workspace_root"].as_str() == Some(&workspace_root().display().to_string());
+        let name = pkg["name"].as_str().expect("a package name").to_owned();
+        for target in pkg["targets"].as_array().expect("a package lists targets") {
+            let shipped = target["kind"]
+                .as_array()
+                .expect("a target lists kinds")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(is_shipped_kind);
+            if shipped {
+                out.push((
+                    name.clone(),
+                    PathBuf::from(target["src_path"].as_str().expect("a src_path")),
+                    in_workspace,
+                ));
             }
         }
-        i += 1;
     }
+    out.sort();
+    out.dedup();
     out
 }
 
-/// The whole attribute block immediately before the item at `at`, as byte
-/// ranges in source order.
-///
-/// The *whole* block, not the nearest attribute. Inspecting only the nearest
-/// one made `#[path = "imp_unix.rs"] #[cfg(unix)] mod imp;` look like a plain
-/// `mod imp;` — refused for resolving to nothing, with no mention of the
-/// `#[path]` two lines up — and let `#[path = "…"] #[allow(…)] mod x;` through
-/// silently whenever a benign file sat at the default name.
-fn attribute_block_before(src: &Source, at: usize) -> Vec<(usize, usize)> {
-    let bytes = src.structural.as_bytes();
-    let mut j = at;
-    // `pub`, `pub(crate)` and friends sit between the block and the `mod`.
-    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
-        j -= 1;
-    }
-    let before_vis = j;
-    if j > 0 && bytes[j - 1] == b')' {
-        while j > 0 && bytes[j - 1] != b'(' {
-            j -= 1;
-        }
-        j = j.saturating_sub(1);
-    }
-    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
-        j -= 1;
-    }
-    let ident_end = j;
-    while j > 0 && is_ident_byte(bytes[j - 1]) {
-        j -= 1;
-    }
-    if &src.structural[j..ident_end] != "pub" {
-        j = before_vis;
-    }
-
-    let mut block = Vec::new();
-    loop {
-        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
-            j -= 1;
-        }
-        if j == 0 || bytes[j - 1] != b']' {
-            break;
-        }
-        let close = j - 1;
-        let mut depth = 0i32;
-        let mut k = close;
-        let open = loop {
-            match bytes[k] {
-                b']' => depth += 1,
-                b'[' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break Some(k);
-                    }
-                }
-                _ => {}
-            }
-            let Some(next) = k.checked_sub(1) else {
-                break None;
-            };
-            k = next;
-        };
-        let Some(open) = open else { break };
-        // A `#` before the `[`, or this is an index expression rather than an
-        // attribute and the block has ended.
-        if open == 0 || bytes[open - 1] != b'#' {
-            break;
-        }
-        block.push((open - 1, close + 1));
-        j = open - 1;
-    }
-    block.reverse();
-    block
+/// Cargo's `target/` directory, from cargo rather than by assumption.
+fn target_directory() -> PathBuf {
+    PathBuf::from(
+        metadata_documents()[0]["target_directory"]
+            .as_str()
+            .expect("metadata names the target directory"),
+    )
 }
 
-/// What the attribute block before `at` says about where the module lives.
-///
-/// Deliberately not an attribute-grammar parser. Anything mentioning a path
-/// that is not one plain `#[path = "literal"]` is refused by name: a
-/// `cfg_attr` that resolves per platform is exactly what this scanner cannot
-/// know, so it says so rather than guessing — and guessing is silent in
-/// whichever direction a decoy file at the default name happens to make it.
-fn path_spec_before(src: &Source, at: usize) -> PathSpec {
-    let mut literal = None;
-    let mut mentions = 0usize;
-    let mut offenders = Vec::new();
-    for (from, to) in attribute_block_before(src, at) {
-        let attr = &src.structural[from..to];
-        if !attr.contains("path") {
+/// One dep-info file: the sources rustc read, and the file's own timestamp.
+struct DepInfo {
+    deps: Vec<PathBuf>,
+    written: std::time::SystemTime,
+}
+
+/// Read one `.d`, returning every path on its dependency lines.
+fn read_dep_info(path: &Path) -> Option<DepInfo> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let written = std::fs::metadata(path).ok()?.modified().ok()?;
+    let root = workspace_root();
+    let mut deps = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') {
             continue;
         }
-        mentions += 1;
-        let simple = attr
-            .strip_prefix("#[")
-            .and_then(|a| a.strip_suffix(']'))
-            .map(str::trim)
-            .and_then(|a| a.strip_prefix("path"))
-            .map(str::trim_start)
-            .and_then(|a| a.strip_prefix('='))
-            .map(str::trim)
-            .is_some_and(|a| a.len() >= 2 && a.starts_with('"') && a.ends_with('"'));
-        if simple && mentions == 1 {
-            // The value is read out of the literal form, at the same offsets.
-            let lit = &src.literal[from..to];
-            let open = lit.find('"').expect("the structural form found one") + 1;
-            let end = lit[open..].find('"').map_or(lit.len(), |i| i + open);
-            literal = Some(lit[open..end].to_owned());
-        } else {
-            offenders.push(snippet(attr));
+        let Some((_, rhs)) = line.split_once(':') else {
+            continue;
+        };
+        for token in rhs.split_whitespace() {
+            let p = Path::new(token);
+            deps.push(if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            });
         }
     }
-    if mentions > 1 || !offenders.is_empty() {
-        let mut all = offenders;
-        if let Some(v) = literal {
-            all.push(format!("#[path = \"{v}\"]"));
-        }
-        return PathSpec::Unresolvable(all.join(" "));
-    }
-    literal.map_or(PathSpec::None, PathSpec::Literal)
+    (!deps.is_empty()).then_some(DepInfo { deps, written })
 }
 
-/// Every file the shipped targets compile, and everything the walk could not
-/// follow.
-#[allow(clippy::too_many_lines)]
-fn module_graph() -> (BTreeMap<String, String>, Vec<Unresolved>) {
+/// Every source a shipped workspace target compiled, and everything that made
+/// that question unanswerable.
+///
+/// This is the whole of the file set. It is not a parse of Rust's module
+/// grammar — that parser shipped two Criticals, silently skipping `mod r#type;`
+/// and resolving `#[path]` against the wrong directory — but a lookup of what
+/// the compiler recorded it had read. It covers `#[path]`, raw identifiers,
+/// `include!` and generated code under `target/` for the same reason and at the
+/// same cost: rustc already knew.
+fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
     let root = workspace_root();
     let mut files: BTreeMap<String, String> = BTreeMap::new();
-    let mut problems: Vec<Unresolved> = Vec::new();
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-    // `true` marks a crate root: its `mod` names resolve against its own
-    // directory rather than against a directory named after it.
-    let mut queue: Vec<(PathBuf, bool)> = shipped_target_roots()
-        .into_iter()
-        .map(|p| (p, true))
-        .collect();
+    let mut problems: Vec<String> = Vec::new();
 
-    while let Some((path, is_root)) = queue.pop() {
-        if !seen.insert(path.clone()) {
-            continue;
-        }
-        let rel_path = rel(&path, &root);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            problems.push(Unresolved {
-                file: rel_path,
-                what: "a source file cargo names but that cannot be read".to_owned(),
-            });
+    // Index every dep-info by the first source on its dependency line, which is
+    // the crate root rustc was given.
+    let mut by_root: BTreeMap<PathBuf, Vec<DepInfo>> = BTreeMap::new();
+    let mut stack = vec![target_directory()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let src = normalise(&text);
-
-        for (at, _) in word_bang_hits(&src.structural, "include") {
-            let line = src.structural[..at].lines().count();
-            problems.push(Unresolved {
-                file: rel_path.clone(),
-                what: format!(
-                    "an `include!` at line {line}, whose contents are compiled into this \
-                     crate but cannot be followed from the source tree"
-                ),
-            });
-        }
-
-        let dir = if is_root || path.file_name().is_some_and(|f| f == "mod.rs") {
-            path.parent().map(Path::to_path_buf)
-        } else {
-            path.parent()
-                .zip(path.file_stem())
-                .map(|(p, stem)| p.join(stem))
-        };
-        let Some(dir) = dir else {
-            problems.push(Unresolved {
-                file: rel_path.clone(),
-                what: "a source file with no parent directory".to_owned(),
-            });
-            files.insert(rel_path, text);
-            continue;
-        };
-
-        for m in file_mods(&src) {
-            if m.depth != 0 {
-                problems.push(Unresolved {
-                    file: rel_path.clone(),
-                    what: format!(
-                        "`mod {};` inside an inline module, which resolves against a \
-                         directory this walk does not track",
-                        m.name
-                    ),
-                });
-                continue;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "d") {
+                if let Some(info) = read_dep_info(&path) {
+                    if let Some(first) = info.deps.first().cloned() {
+                        by_root.entry(first).or_default().push(info);
+                    }
+                }
             }
-            let candidates = match &m.path {
-                PathSpec::None => vec![
-                    dir.join(format!("{}.rs", m.name)),
-                    dir.join(&m.name).join("mod.rs"),
-                ],
-                PathSpec::Literal(p) => vec![dir.join(p)],
-                PathSpec::Unresolvable(attrs) => {
-                    problems.push(Unresolved {
-                        file: rel_path.clone(),
-                        what: format!(
-                            "`mod {};` carries an attribute block naming a path this \
-                             scanner will not interpret ({attrs}). Write one plain \
-                             `#[path = \"literal\"]`, or bring the file into the module tree",
-                            m.name
-                        ),
-                    });
+        }
+    }
+
+    for (package, src_path, in_workspace) in shipped_targets() {
+        if !in_workspace {
+            // Covered by BUILD_TOOLS and its guard, checked separately.
+            continue;
+        }
+        let canonical = src_path.canonicalize().unwrap_or_else(|_| src_path.clone());
+        // The *newest* dep-info for this root, and only that one. Cargo keeps a
+        // `.d` per feature set and profile it has ever built, and an older one
+        // is stale by construction — treating those as current would leave the
+        // gate permanently red for something that is not a defect.
+        let info = by_root
+            .iter()
+            .filter(|(k, _)| k.canonicalize().unwrap_or_else(|_| (*k).clone()) == canonical)
+            .flat_map(|(_, v)| v.iter())
+            .max_by_key(|i| i.written);
+        let Some(info) = info else {
+            problems.push(format!(
+                "{package}: no dep-info for {}. Build the workspace first — \
+                 `cargo build --workspace --all-targets` — because this gate reads \
+                 what the compiler recorded rather than parsing the module tree",
+                rel(&src_path, &root)
+            ));
+            continue;
+        };
+        {
+            for dep in &info.deps {
+                if dep.extension().is_none_or(|e| e != "rs") {
                     continue;
                 }
-            };
-            match candidates.iter().find(|c| c.is_file()) {
-                Some(found) => queue.push((
-                    found.canonicalize().unwrap_or_else(|_| found.clone()),
-                    false,
-                )),
-                None => problems.push(Unresolved {
-                    file: rel_path.clone(),
-                    what: format!(
-                        "`mod {};`{} resolves to no file on disk (tried {})",
-                        m.name,
-                        match &m.path {
-                            PathSpec::Literal(p) => format!(" with `#[path = \"{p}\"]`"),
-                            _ => String::new(),
-                        },
-                        candidates
-                            .iter()
-                            .map(|c| rel(c, &root))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                }),
+                let Ok(meta) = std::fs::metadata(dep) else {
+                    problems.push(format!(
+                        "{package}: dep-info names {} but it is not on disk",
+                        rel(dep, &root)
+                    ));
+                    continue;
+                };
+                // Stale dep-info covers less than the code does, which is the
+                // same defect as a walk that could not reach a file.
+                if meta.modified().is_ok_and(|m| m > info.written) {
+                    problems.push(format!(
+                        "{package}: {} is newer than the dep-info naming it, so the \
+                         file set is out of date. Rebuild the workspace",
+                        rel(dep, &root)
+                    ));
+                    continue;
+                }
+                if let Ok(text) = std::fs::read_to_string(dep) {
+                    files.insert(rel(dep, &root), text);
+                }
             }
         }
-        files.insert(rel_path, text);
     }
     (files, problems)
 }
 
-fn graph() -> &'static (BTreeMap<String, String>, Vec<Unresolved>) {
-    static GRAPH: OnceLock<(BTreeMap<String, String>, Vec<Unresolved>)> = OnceLock::new();
-    GRAPH.get_or_init(module_graph)
+fn sources() -> &'static (BTreeMap<String, String>, Vec<String>) {
+    static SOURCES: OnceLock<(BTreeMap<String, String>, Vec<String>)> = OnceLock::new();
+    SOURCES.get_or_init(dep_info_sources)
 }
 
 /// Every shipped source, as `(path relative to the root, text)`.
 fn shipped_sources() -> Vec<(String, String)> {
-    let files = &graph().0;
-    assert!(!files.is_empty(), "found no shipped sources to scan");
-    files.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    sources()
+        .0
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // Invocation scanning
 // ---------------------------------------------------------------------------
+
+/// Whether the text ending where a level name begins qualifies it as
+/// `tracing::`.
+///
+/// One predicate, consumed by the field scan and by the path gate. They each
+/// carried their own copy, and the copies disagreed: `tracing :: warn!` — legal,
+/// fully qualified — was skipped by the scan *and* reported by the gate as a
+/// path that is not `tracing::`. Whitespace is allowed on both sides of the
+/// `::` because Rust allows it there.
+fn is_tracing_qualified(before: &str) -> bool {
+    let Some(head) = before.trim_end().strip_suffix("::") else {
+        return false;
+    };
+    let head = head.trim_end();
+    let Some(prefix) = head.strip_suffix("tracing") else {
+        return false;
+    };
+    // Not the tail of a longer path or identifier: `foo::tracing::` is not
+    // this crate's macro as far as this scanner can tell, so the path gate
+    // reports it rather than the field scan reading it.
+    !prefix
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
+}
 
 /// The level names, which are what both scans actually look for.
 ///
@@ -1136,8 +1009,7 @@ fn scan_source(text: &str) -> Vec<Scanned> {
     let mut out = Vec::new();
     for lvl in LEVELS {
         for (at, bang) in word_bang_hits(&src.structural, lvl) {
-            // `trim_end` because a qualified path may be split across lines.
-            if !src.structural[..at].trim_end().ends_with("tracing::") {
+            if !is_tracing_qualified(&src.structural[..at]) {
                 continue;
             }
             out.push(analyse(&src, bang, *lvl == "event"));
@@ -1215,78 +1087,6 @@ fn catalogued_events() -> BTreeSet<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_module_graph_resolves_completely() {
-    let allowed: BTreeMap<&str, &AllowedInclude> =
-        ALLOWED_INCLUDES.iter().map(|a| (a.file, a)).collect();
-    let mut refused = Vec::new();
-    for problem in &graph().1 {
-        if problem.what.starts_with("an `include!`") && allowed.contains_key(problem.file.as_str())
-        {
-            continue;
-        }
-        refused.push(format!("{}: {}", problem.file, problem.what));
-    }
-    assert!(
-        refused.is_empty(),
-        "these are compiled into a shipped crate but the module walk cannot reach \
-         them, so no gate in this file has read them. Bring the code into the \
-         module tree, or add an argued entry to ALLOWED_INCLUDES with a guard \
-         that fails when the argument stops holding:\n  {}",
-        refused.join("\n  ")
-    );
-}
-
-#[test]
-fn every_allowed_include_still_earns_its_exception() {
-    // An entry that no longer corresponds to a real `include!` would sit here
-    // widening the rule for nothing.
-    let problems = &graph().1;
-    for allowed in ALLOWED_INCLUDES {
-        assert!(
-            problems
-                .iter()
-                .any(|p| p.file == allowed.file && p.what.starts_with("an `include!`")),
-            "stale ALLOWED_INCLUDES entry: {} no longer holds an unresolvable \
-             `include!` ({})",
-            allowed.file,
-            allowed.why
-        );
-
-        // The guard. Code that cannot reach `tracing` cannot emit an event, so
-        // the day someone adds the dependency is the day this exception has to
-        // be argued again rather than inherited.
-        let package = packages()
-            .into_iter()
-            .find(|p| p["name"].as_str() == Some(allowed.guarded_package))
-            .unwrap_or_else(|| panic!("no package named {}", allowed.guarded_package));
-        // Normal dependencies only. A `tracing` under `[dev-dependencies]` or
-        // `[build-dependencies]` cannot reach the shipped artefact, so firing
-        // on one would demand a substantial refactor at a non-problem.
-        let logs = package["dependencies"]
-            .as_array()
-            .expect("a package lists dependencies")
-            .iter()
-            .any(|d| {
-                d["name"].as_str() == Some("tracing")
-                    && d["kind"].as_str().is_none_or(|k| k == "normal")
-            });
-        assert!(
-            !logs,
-            "{} now depends on `tracing`, so the generated code included by {} can \
-             emit events no gate here has read.\n\n\
-             Resolve the include — do not relax this guard. It is a dependency \
-             check standing in for a content claim, and that claim is now \
-             unsupported: an exception kept past the expiry of its own \
-             justification is the defect this file exists to catch. Make the \
-             include readable instead — run the build script here and scan its \
-             output, or have spargen emit into the source tree — and delete the \
-             ALLOWED_INCLUDES entry.",
-            allowed.guarded_package, allowed.file
-        );
-    }
-}
-
-#[test]
 fn every_manifest_the_build_config_names_exists() {
     // The out-of-workspace half of the file set is derived from `mise.toml`, so
     // a renamed or moved manifest must fail here rather than quietly shrink the
@@ -1301,41 +1101,102 @@ fn every_manifest_the_build_config_names_exists() {
 }
 
 #[test]
+fn every_shipped_target_has_current_dep_info() {
+    // The file set is a lookup of what the compiler recorded, so a missing or
+    // stale `.d` means the gate would silently cover less than the code does.
+    // That is the same defect as a walk that could not reach a file, wearing
+    // build-system clothes, so it fails rather than shrinking quietly.
+    let problems = &sources().1;
+    assert!(
+        problems.is_empty(),
+        "the compiler's own record of what these targets read is missing or out \
+         of date, so this gate cannot say which files it covers:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+#[test]
+fn every_out_of_workspace_target_is_a_guarded_build_tool() {
+    // `cargo test` never builds a crate outside the workspace, so there is no
+    // dep-info for one and no honest way to derive its file set from here.
+    // Each is therefore an argued exception with a guard: code that cannot
+    // reach `tracing` cannot emit an event.
+    let tools: BTreeMap<&str, &BuildTool> = BUILD_TOOLS.iter().map(|t| (t.package, t)).collect();
+    let mut unclaimed = Vec::new();
+    for (package, src_path, in_workspace) in shipped_targets() {
+        if in_workspace {
+            continue;
+        }
+        let Some(tool) = tools.get(package.as_str()) else {
+            unclaimed.push(format!("{package} ({})", rel(&src_path, &workspace_root())));
+            continue;
+        };
+        let logs = packages()
+            .into_iter()
+            .find(|p| p["name"].as_str() == Some(tool.package))
+            .and_then(|p| p["dependencies"].as_array())
+            .is_some_and(|deps| {
+                deps.iter().any(|d| {
+                    d["name"].as_str() == Some("tracing")
+                        && d["kind"].as_str().is_none_or(|k| k == "normal")
+                })
+            });
+        assert!(
+            !logs,
+            "{} now depends on `tracing`, so it can emit events no gate here has \
+             read — and being outside the workspace, there is no dep-info to \
+             derive its sources from. Either drop the dependency, or make it a \
+             workspace member so it is scanned like everything else. ({})",
+            tool.package, tool.why
+        );
+    }
+    assert!(
+        unclaimed.is_empty(),
+        "these are built outside the workspace, so this gate has no dep-info for \
+         them and does not read a line of their source. If a crate is shipped, \
+         make it a workspace member; if it is a build tool, add it to BUILD_TOOLS \
+         with the argument for why its logs are nobody's:\n  {}",
+        unclaimed.join("\n  ")
+    );
+}
+
+#[test]
 fn the_scan_reaches_what_cargo_compiles() {
-    // Derived, so there is nothing to pin — but a scan that silently found
-    // nothing would make every gate below vacuous.
-    let files = &graph().0;
-    // A floor against a broken scan, not against ordinary work. 181 files
-    // today; deleting a crate should not read as "the walk stopped working".
+    let files = &sources().0;
+    // A floor against a broken lookup, not against ordinary work.
     assert!(
         files.len() >= 50,
-        "expected at least 50 shipped sources, found {} — the module walk has \
-         stopped following something",
+        "expected at least 50 shipped sources, found {} — the dep-info lookup has \
+         stopped finding them",
         files.len()
     );
     for expected in [
         "crates/sunrise-server/src/api/sync.rs",
         "crates/sunrise-core/src/sync_driver.rs",
         "crates/sunrise-log/src/field.rs",
-        "tools/uniffi-bindgen/src/main.rs",
     ] {
         assert!(
             files.contains_key(expected),
-            "the module walk did not reach {expected}"
+            "the dep-info lookup did not reach {expected}"
         );
     }
+    // The diagnostic names files, never their contents: `{files:?}` on this map
+    // printed the whole codebase — 2.94 MB — which is a gate someone turns off.
+    let names: Vec<&String> = files.keys().collect();
     assert!(
-        !files.keys().any(|f| f.starts_with("legacy/")),
-        "`legacy` is not a workspace member and must not be scanned"
+        !names.iter().any(|f| f.starts_with("legacy/")),
+        "`legacy` is not a workspace member and must not be scanned: {names:?}"
     );
-    // Test-only sources are out of scope by design: a fixture may invent its
-    // own event names.
+    // An integration test is a target of its own and is out of scope. A
+    // `src/tests/mod.rs` is not one — it is part of the library, and reading
+    // `/tests/` anywhere in the path called that an integration test.
     assert!(
-        !files.keys().any(|f| f.contains("/tests/")),
-        "integration tests are not shipped code: {files:?}",
+        !names
+            .iter()
+            .any(|f| f.split('/').nth(2) == Some("tests") && f.starts_with("crates/")),
+        "integration tests are separate targets and are not shipped code: {names:?}"
     );
 }
-
 #[test]
 fn every_tracing_invocation_is_in_the_analysable_form() {
     let mut refused = Vec::new();
@@ -1368,11 +1229,14 @@ fn every_emitted_field_name_is_on_the_redaction_allowlist() {
     offenders.dedup();
     assert!(
         offenders.is_empty(),
-        "these field names are logged from shipped code but are not on the \
-         allowlist in crates/sunrise-log/src/field.rs. `RedactionLayer` refuses \
-         the *whole event* on the first one it sees — a panic under \
-         debug_assertions, a silent drop and a violations() bump in release — so \
-         each of these is a log record that can never exist:\n  {}",
+        "these field names are logged from a shipped source file but are not on \
+         the allowlist in crates/sunrise-log/src/field.rs. `RedactionLayer` \
+         refuses the *whole event* on the first one it sees — a panic under \
+         debug_assertions, a silent drop and a violations() bump in release.\n\n\
+         The scan covers `#[cfg(test)]` unit tests inside these files too, \
+         because they are not separable from the file that ships. If one of \
+         these is a unit test, it is not a production defect — use an \
+         allowlisted field name, or `_` the value out of the event:\n  {}",
         offenders.join("\n  ")
     );
 }
@@ -1388,7 +1252,13 @@ fn every_emitted_event_is_catalogued() {
     }
     assert!(
         undocumented.is_empty(),
-        "these events are emitted but not in docs/10-cross-cutting/log-events.md:\n  {}",
+        "these event names are emitted from a shipped source file but are not in \
+         docs/10-cross-cutting/log-events.md.\n\n\
+         The scan covers `#[cfg(test)]` unit tests inside those files. **Do not \
+         add a test fixture's event name to the catalogue** — it is the record \
+         of what an operator can see in production, and inventing entries for \
+         it is the exact dishonesty this file exists to prevent. A unit test \
+         that needs an event should reuse one already catalogued:\n  {}",
         undocumented.join("\n  ")
     );
 }
@@ -1423,12 +1293,8 @@ fn every_tracing_macro_is_called_by_its_full_path() {
         let src = normalise(&text);
         for lvl in LEVELS {
             for (at, _) in word_bang_hits(&src.structural, lvl) {
-                // `trim_end` because a qualified path may be split across
-                // lines; without it `tracing::` + newline + `warn!` was
-                // reported as a bare `warn!`, which is a misdiagnosis rather
-                // than a catch.
                 let before = src.structural[..at].trim_end();
-                if before.ends_with("tracing::") {
+                if is_tracing_qualified(before) {
                     continue;
                 }
                 if before.ends_with("::") {
@@ -1444,10 +1310,39 @@ fn every_tracing_macro_is_called_by_its_full_path() {
     assert!(
         aliased.is_empty(),
         "these reach a `tracing` macro by a name the field scan does not look \
-         for. Call them as `tracing::<level>!` so the gate can read their \
-         fields:\n  {}",
+         for, so its fields are checked by nothing. Call them as \
+         `tracing::<level>!`. This applies to `#[cfg(test)]` unit tests inside \
+         a shipped file as well, which the scan cannot separate from the file \
+         that ships:\n  {}",
         aliased.join("\n  ")
     );
+}
+
+/// Why this `use` statement would let an invocation escape the field scan, if
+/// it would.
+///
+/// The gate and the test that proves the gate both call this. They each had
+/// their own copy of the logic, which meant the gate had no test at all:
+/// breaking it left the suite green.
+fn tracing_import_problem(stmt: &str) -> Option<&'static str> {
+    let rest = stmt
+        .trim()
+        .strip_prefix("use ")?
+        .trim_start()
+        .trim_start_matches("::");
+    if !rest.starts_with("tracing") {
+        return None;
+    }
+    if rest
+        .trim_start_matches("tracing")
+        .trim_start()
+        .starts_with("as ")
+    {
+        return Some("renames the whole crate");
+    }
+    rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| LEVELS.contains(&tok))
+        .then_some("imports a level macro")
 }
 
 #[test]
@@ -1466,29 +1361,8 @@ fn the_tracing_macros_are_never_imported() {
                 continue;
             };
             let stmt = &cleaned[at..at + end];
-            let rest = stmt[4..].trim_start().trim_start_matches("::");
-            if !rest.starts_with("tracing") {
-                continue;
-            }
-            if rest
-                .trim_start_matches("tracing")
-                .trim_start()
-                .starts_with("as ")
-            {
-                imports.push(format!(
-                    "{rel_path}: `{}` renames the whole crate",
-                    snippet(stmt)
-                ));
-                continue;
-            }
-            if rest
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .any(|tok| LEVELS.contains(&tok))
-            {
-                imports.push(format!(
-                    "{rel_path}: `{}` imports a level macro",
-                    snippet(stmt)
-                ));
+            if let Some(why) = tracing_import_problem(stmt) {
+                imports.push(format!("{rel_path}: `{}` {why}", snippet(stmt)));
             }
         }
     }
@@ -1496,8 +1370,9 @@ fn the_tracing_macros_are_never_imported() {
         imports.is_empty(),
         "these import a `tracing` level macro (or the crate under another \
          name), which allows a bare or renamed invocation the field scan cannot \
-         see. Call the macros by their full `tracing::<level>!` path \
-         instead:\n  {}",
+         see. Call the macros by their full `tracing::<level>!` path instead — \
+         including inside a `#[cfg(test)]` module, which the scan cannot \
+         separate from the file that ships:\n  {}",
         imports.join("\n  ")
     );
 }
@@ -1679,54 +1554,6 @@ fn an_event_name_is_read_from_the_same_parse_as_its_fields() {
     );
 }
 
-/// The attribute block before a `mod`, which decides which file the walk reads
-/// next — or refuses to guess.
-#[test]
-fn the_module_walk_reads_the_whole_attribute_block() {
-    let spec = |src: &str| {
-        let source = normalise(src);
-        let at = source
-            .structural
-            .find("mod imp;")
-            .expect("the fixture declares a module");
-        path_spec_before(&source, at)
-    };
-
-    // Plain, and the only shape this scanner will act on.
-    assert_eq!(
-        spec("#[path = \"imp_unix.rs\"]\nmod imp;"),
-        PathSpec::Literal("imp_unix.rs".to_owned())
-    );
-    assert_eq!(spec("mod imp;"), PathSpec::None);
-
-    // Previously silent: only the nearest attribute was read, so the `#[path]`
-    // was missed and a benign file at the default name hid the real one.
-    assert_eq!(
-        spec("#[path = \"generated/imp.rs\"]\n#[allow(dead_code)]\nmod imp;"),
-        PathSpec::Literal("generated/imp.rs".to_owned())
-    );
-
-    // Previously a false positive: refused as "resolves to no file" without
-    // ever mentioning the `#[path]` two lines up.
-    assert_eq!(
-        spec("#[path = \"imp_unix.rs\"]\n#[cfg(unix)]\npub mod imp;"),
-        PathSpec::Literal("imp_unix.rs".to_owned())
-    );
-
-    // A path this scanner cannot resolve is named, not guessed at. Which file
-    // a `cfg_attr` selects depends on the target, which is not knowable here.
-    for src in [
-        "#[cfg_attr(target_os = \"macos\", path = \"imp_mac.rs\")]\nmod imp;",
-        "#[path = \"a.rs\"]\n#[cfg_attr(unix, path = \"b.rs\")]\nmod imp;",
-        "#[cfg(feature = \"x\")]\n#[path = \"a.rs\"]\n#[path = \"b.rs\"]\nmod imp;",
-    ] {
-        assert!(
-            matches!(spec(src), PathSpec::Unresolvable(_)),
-            "must refuse rather than guess: {src:?}"
-        );
-    }
-}
-
 #[test]
 fn an_aliased_macro_path_is_refused_by_the_path_gates() {
     for src in [
@@ -1739,24 +1566,28 @@ fn an_aliased_macro_path_is_refused_by_the_path_gates() {
             "the field scan cannot see {src:?} — which is why the path gates exist"
         );
     }
+    // Through the gate's own predicate, not a second copy of it. The copies
+    // were what let the gate be broken with the suite still green.
     for stmt in [
         "use tracing::warn;",
         "use tracing::{info, warn};",
         "use tracing::warn as wlog;",
         "use tracing as t;",
     ] {
-        let src = normalise(stmt);
-        let rest = src.structural[4..].trim_start().trim_start_matches("::");
-        let renames_crate = rest
-            .trim_start_matches("tracing")
-            .trim_start()
-            .starts_with("as ");
-        let imports_level = rest
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|tok| LEVELS.contains(&tok));
         assert!(
-            renames_crate || imports_level,
+            tracing_import_problem(stmt).is_some(),
             "{stmt:?} must be refused by the import gate"
+        );
+    }
+    // And it must not refuse the imports this workspace legitimately has.
+    for stmt in [
+        "use tracing::{Dispatch, Subscriber};",
+        "use tracing::field::{Field, Visit};",
+        "use tracing::Span;",
+    ] {
+        assert!(
+            tracing_import_problem(stmt).is_none(),
+            "{stmt:?} is not a level-macro import"
         );
     }
 }
