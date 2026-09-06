@@ -3724,10 +3724,13 @@ impl Engine {
     /// under the new epoch would be a deadlock — and one that only shows up on
     /// the second device, weeks later.
     ///
-    /// A revoked device can read those rotation ops, because it still holds the
-    /// old epoch — and it can read the new keys too, because each envelope is
-    /// also sealed to the account identity and pairing hands every device
-    /// `ID_D_priv`. Bounding that is `#76`.
+    /// A revoked device can read those rotation ops, because it still holds
+    /// the old epoch. It cannot read the keys inside them. Its own
+    /// `Recipient::Device` copy is not emitted — [`Self::emit_key_envelopes`]
+    /// drops it from the list — and the identity copy sealed alongside is no
+    /// longer openable by a device pairing admitted, because `PairingPayload`
+    /// stopped carrying `ID_D_priv`. That pair is `#76`, and it is the whole of
+    /// the read bound: either half alone is vacuous.
     #[allow(clippy::too_many_arguments)]
     fn ops_insert_at(
         &self,
