@@ -315,7 +315,7 @@ POST /sync/session          Authorization: Bearer <oidc_jwt>
                             X-Sunrise-Device + X-Sunrise-Device-Sig
   → 201 { session_id, wire_proto, crypto_suite, doc_schema_floor,
           capabilities, server_time_ms }      ← Hello::negotiate, unchanged
-  → 401, or 400 carrying the negotiation error's code
+  → 401, or 400 `VALIDATION_INVALID` whose message is the negotiation error
 
 POST /sync/subscribe        X-Sunrise-Session: <session_id>
   { streams: [ { stream_id, cursors: [ { device_id, last_applied_seq } ] } ] }
