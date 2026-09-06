@@ -448,33 +448,46 @@ impl Engine {
     /// Record a device as revoked, and mint a new epoch for every stream it
     /// could read.
     ///
-    /// **This bounds nothing about the revoked device.** It records a cut every
-    /// replica converges on, and rotates keys that are then sealed to the
-    /// revoked device along with everyone else. Reads are `#76`, writes are
-    /// `#82` behind `#80`, and converging the *effect* is `#78`. The rotation
-    /// is still worth doing — it is what makes a future epoch a different key
-    /// at all — but a caller must not read it as cutting anybody off.
+    /// **This bounds the revoked device's reads**, and queues the request that
+    /// bounds its writes. It records a cut every replica converges on, rotates
+    /// every stream in the rotation set, and seals the new epochs to everyone
+    /// *except* the device it just revoked — which is only meaningful because
+    /// `PairingPayload` no longer carries `ID_D_priv`, so there is no
+    /// identity-sealed copy for that device to open instead.
     ///
-    /// Three things happen in one transaction, and the order is the design:
+    /// It cannot bound what the device already had; no rotation can. And it
+    /// does not bound the account's *creator*, which keeps `ID_D_priv` until a
+    /// recovery blob exists to hold it — self-revocation is refused below, so
+    /// reaching that case means revoking the creator from another device.
     ///
-    /// 1. The `DeviceRevoke` op is emitted and the revocation register is
-    ///    written, through the same [`Self::apply_control_op`] a remote op
-    ///    takes, so the local and remote paths cannot disagree.
+    /// Four things happen in one transaction, and the order is the design:
+    ///
+    /// 0. The revocation register is written **first**, before anything can
+    ///    mint. `ensure_stream_epoch` below emits a `key_envelope` per
+    ///    recipient, and with an empty register the device this transaction
+    ///    exists to revoke would be one of them.
+    /// 1. The `DeviceRevoke` op is emitted, and the register write above goes
+    ///    through the same [`Self::apply_control_op`] a remote op takes, so
+    ///    the local and remote paths cannot disagree.
     /// 2. Every stream in the rotation set — the vault-meta stream and the
     ///    Inbox included, not only user Streams — mints a fresh epoch.
     /// 3. The `key_envelope` ops carrying those keys are sealed under the
     ///    **pre-rotation** vault-meta epoch, because a device that has not yet
     ///    received the new meta key cannot read an op sealed under it.
     ///
-    /// The vault-meta stream is in the set so that the *shape* of the account —
-    /// its Streams, Contexts and Routines — rotates with its contents rather
-    /// than staying on one key forever. That matters for whoever implements
-    /// `#76`; it does not, on its own, stop anybody reading anything.
+    /// 4. A row is queued in `relay_revocation_intents` for the sync driver to
+    ///    carry to the relay, which is what stops the device *writing*. It is a
+    ///    queue rather than a call because this command has to work offline —
+    ///    a device that is gone is the whole scenario.
+    ///
+    /// The vault-meta stream is in the rotation set so that the *shape* of the
+    /// account — its Streams, Contexts and Routines — rotates with its contents
+    /// rather than staying on one key forever, which is why a revoked device
+    /// stops seeing new Streams and Contexts and not merely new tasks.
     ///
     /// What no rotation could ever do: the revoked device keeps every key it
     /// already held, so it keeps everything it could already read. Rotation
-    /// bounds forward exposure at best, never backward — and today, not even
-    /// that.
+    /// bounds forward exposure, never backward.
     fn revoke_device(
         &self,
         db: &mut Db,
@@ -560,14 +573,12 @@ impl Engine {
             // local device is then the only replica accepting a window of ops,
             // which is precisely the divergence the register exists to prevent.
 
-            // 2 + 3. Rotate everything, and seal each new epoch to **every**
-            //        device — the revoked one included. That is not an
-            //        oversight: the epoch is sealed to the account identity as
-            //        well, and every paired device holds `ID_D_priv`, so
-            //        leaving it out of the device recipients withholds nothing.
-            //        See `Self::emit_key_envelopes` and issue #76. What the
-            //        rotation buys is that a *later* epoch is a different key
-            //        at all, which is the thing that was impossible before.
+            // 2 + 3. Rotate everything, and seal each new epoch to every
+            //        *unrevoked* device. The register was written above, so the
+            //        anti-join in `emit_key_envelopes` sees it -- and the
+            //        exclusion is not cosmetic, because the identity copy
+            //        emitted alongside is no longer openable by a device
+            //        pairing admitted.
             // The relay's half of the revocation, queued rather than called.
             // `revoke_device` has to work with no network -- a device that is
             // gone is the whole scenario -- so the call cannot be part of the
@@ -667,8 +678,14 @@ impl Engine {
     /// 1. `decode_envelope` — malformed bytes are rejected.
     /// 2. Sender lookup — `envelope.device_id` must be a device this vault has
     ///    admitted, else [`EngineError::UnknownDevice`]. Revocation is **not**
-    ///    consulted, here or anywhere else on this path: the register is
-    ///    recorded and converged, and read by nothing.
+    ///    consulted on this path, and that is deliberate rather than pending:
+    ///    refusing here is not convergent, because a replica that applied an op
+    ///    before the revocation arrived has no way to un-apply it and this
+    ///    engine has no projection rebuild. Two replicas with the same op set
+    ///    would disagree forever. What bounds a revoked device's writes is the
+    ///    relay refusing its uploads ([`Core::pending_relay_revocations`]);
+    ///    what a convergent peer-side check would need is
+    ///    [#82](https://github.com/justin13888/Sunrise/issues/82).
     /// 3. `verify_envelope` against the stored device pubkey — a bad signature
     ///    is never applied.
     /// 4. Decrypt under the Stream key for the envelope's `(stream_id, epoch)`
@@ -1369,10 +1386,14 @@ impl Engine {
     /// `DeviceCertPublish`, and came back `UnknownDevice` whatever its HLC
     /// said, including work the device did honestly months earlier.
     ///
-    /// A revocation affects nothing on this path, or on any other: it is
-    /// recorded and converged, and **acted on** by no production code. The
-    /// register is read once outside tests — `Self::query_device_list` joins it
-    /// to report a flag — and nothing branches on the answer.
+    /// A revocation affects nothing **on this path**, and that is the whole
+    /// point of the paragraph above: this answers "which key verifies this
+    /// signature", which is a fact about the device rather than its standing.
+    ///
+    /// It does affect other paths. [`Self::emit_key_envelopes`] will not seal
+    /// a new epoch to a revoked device and [`Self::backfill_key_envelopes`]
+    /// will not hand one its keys back, which together are what stop it reading
+    /// anything written after the cut.
     fn lookup_device_cert(
         &self,
         db: &Db,

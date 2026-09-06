@@ -60,15 +60,17 @@ credentials. This ADR adds the model and no network fetching of any kind.**
   that ever knew the vault root derive every key forever. That is why this ADR
   depends on that one rather than shipping beside it.
 
-  **It does not follow that revoking a device cuts off its access to a connected
-  account.** ADR-0024 as implemented records a revocation and enforces nothing:
-  every epoch is also sealed to the account identity so recovery can reach it,
-  and pairing hands every device `ID_D_priv`, so a revoked device reads
-  credentials written after its revocation. Any integration whose threat model
-  needs otherwise is waiting on
-  [#76](https://github.com/justin13888/Sunrise/issues/76). *(Corrected from
-  outside this ADR's lane: the claim was false and its sibling in
-  `09-integrations/overview.md` had already been fixed.)*
+  **Revoking a device does cut off its access to a connected account**, for a
+  device admitted by pairing. Every epoch is still sealed to the account
+  identity so recovery can reach it, but `ID_D_priv` no longer travels in a
+  `PairingPayload`, so a revoked device can open neither its own copy — it is
+  excluded from the recipient list — nor the identity's. The exception is the
+  device that *created* the account, which keeps `ID_D_priv` until the recovery
+  blob exists. *(This paragraph twice said the opposite of the tree: first that
+  revocation cut access when it did not, then that it did not once
+  [#76](https://github.com/justin13888/Sunrise/issues/76) was fixed. It is worth
+  re-reading against `03-crypto/key-rotation.md` §Revocation rather than
+  trusted.)*
 * **Only the durable half is synced.** The refresh token and the account's
   identity go in the entity; the short-lived access token stays device-local and
   is never written to an op. This is not only a secrecy argument — it is a

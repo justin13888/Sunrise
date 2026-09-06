@@ -1138,7 +1138,10 @@ impl Keychain {
     /// build one of these for any sibling and it verifies. That is what makes
     /// "the sender must be the device the cert names" a real check rather than
     /// a formality, and this is how the engine test builds the op that check
-    /// has to refuse. Tracked as the identity-rotation gap in issue #76.
+    /// has to refuse. The underlying gap -- every member can mint a valid cert,
+    /// so a revoked device can certify itself under a fresh id -- is not closed
+    /// by revocation and needs identity rotation; see
+    /// `docs/03-crypto/key-rotation.md` §Identity rotation.
     #[cfg(test)]
     pub(crate) fn issue_cert_for(
         &self,
@@ -1964,6 +1967,76 @@ mod tests {
             // Wrong epoch does not open.
             assert!(kc.open_key_envelope(recipient, &sid, 3, &sealed).is_err());
         }
+    }
+
+    /// A device admitted by pairing cannot open an identity-sealed envelope,
+    /// and survives a reopen still unable to.
+    ///
+    /// This is the half of `#76` that the recipient filter cannot express. The
+    /// filter decides who gets a `Recipient::Device` copy; this decides whether
+    /// the `Recipient::Identity` copy — which is emitted for *every* epoch,
+    /// because recovery depends on it — is a way around that filter. It was,
+    /// for as long as `PairingPayload` carried `ID_D_priv`.
+    ///
+    /// The reopen matters as much as the first open: the identity row is
+    /// written from what pairing supplied, so a paired device that persisted a
+    /// secret it was never given would get it back on the next unlock and the
+    /// property would hold for one session only.
+    #[test]
+    fn a_paired_device_cannot_open_the_identity_copy() {
+        let root = VaultRootKey::from_bytes([0x5e; 32]);
+
+        // The inviting device: it created the account, so it holds `ID_D_priv`
+        // and can open an identity-sealed envelope.
+        let mut inviter_db = db(&root);
+        let inviter = open(&mut inviter_db, &root);
+        let sid = [0x21; 16];
+        let key = StreamKey::from_bytes([0x64; 32]);
+        let sealed = inviter
+            .seal_key_envelope(&inviter.identity_dh_pub(), &sid, 4, &key, &SystemRng)
+            .unwrap();
+        assert_eq!(
+            inviter
+                .open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed)
+                .unwrap(),
+            key,
+            "the account's creator can still open the recovery copy"
+        );
+
+        // The paired device, opened from that device's own payload.
+        let payload = inviter.export_pairing_payload(&inviter_db).unwrap();
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&payload),
+        )
+        .unwrap();
+        assert_eq!(
+            paired.identity_dh_pub(),
+            inviter.identity_dh_pub(),
+            "it joined the same account, so it can still seal to the identity"
+        );
+        assert!(
+            matches!(
+                paired.open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed),
+                Err(KeychainError::IdentitySecretAbsent)
+            ),
+            "a paired device must not hold the identity's unwrapping key"
+        );
+
+        // And it did not quietly persist one to find again next time.
+        drop(paired);
+        let reopened = open(&mut paired_db, &root);
+        assert!(
+            matches!(
+                reopened.open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed),
+                Err(KeychainError::IdentitySecretAbsent)
+            ),
+            "nor recover it on the next unlock"
+        );
     }
 
     /// A vault written by the pre-ADR-0024 code path opens, gains an identity,

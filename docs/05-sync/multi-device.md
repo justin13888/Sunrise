@@ -59,19 +59,19 @@ vault root and read from the `stream_keys` table, plus a `device_revoke` op
 family, so an epoch can be rotated to a different key at all. It bumps
 `CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
 
-It does **not** make a revoked device unable to unwrap the new epoch. Every
-epoch is sealed to the account identity as well as to each device, so recovery
-can reach it, and pairing hands every paired device `ID_D_priv` — so a revoked
-device opens the identity copy and reads straight through the rotation. Nor is
-its writing refused: no replica declines a revoked device's ops. Revocation is
-recorded and converged and enforced nowhere; reads are
-[#76](https://github.com/justin13888/Sunrise/issues/76), writes are
-[#82](https://github.com/justin13888/Sunrise/issues/82) behind
-[#80](https://github.com/justin13888/Sunrise/issues/80), and converging the
-*effect* is [#78](https://github.com/justin13888/Sunrise/issues/78). So continue
-to treat revocation as "cut off from the relay" rather than "can no longer
-read" — that advice was written for the period before ADR-0024 and is still the
-correct description of the shipped state.
+A revoked device **cannot** unwrap the new epoch. Every epoch is still sealed
+to the account identity as well as to each device, so recovery can reach it, but
+a device admitted by pairing holds no `ID_D_priv` to open that copy with and is
+excluded from the device recipients — so the rotation is a real cut. Its writes
+are stopped at the relay, which is told out of band and then refuses its
+uploads. What is *not* done is a peer declining its ops: that is not convergent
+without a projection rebuild, so it is
+[#82](https://github.com/justin13888/Sunrise/issues/82), with
+[#78](https://github.com/justin13888/Sunrise/issues/78) for converging the
+*effect*. Two bounds remain — the account's creator keeps `ID_D_priv` until the
+recovery blob exists, and a revoked device keeps `ID_S_priv` and so can certify
+itself afresh — so do not yet treat revocation as an absolute cryptographic
+boundary. For everything an ordinary paired device can reach, it is one.
 
 ### Cursor cleanup on device revoke — target state
 

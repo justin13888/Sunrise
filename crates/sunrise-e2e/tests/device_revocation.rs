@@ -1,55 +1,63 @@
 //! Revoking a device, end to end, over a live relay.
 //!
-//! Three devices on one account: A invites B and C, then revokes C. Two things
-//! must follow, and this test asserts both:
+//! Three devices on one account: A invites B and C, then revokes C. Three
+//! things must follow, and this test asserts all three:
 //!
 //! - **The account keeps working.** Revocation mints a fresh epoch for every
 //!   stream in the rotation set — the vault-meta stream and the Inbox included,
-//!   not only user Streams — and seals each one to every device *and* to the
-//!   account identity. If any of that were wrong the surviving devices would go
-//!   dark, so B converging on a Stream and a Context created after the cut is
-//!   the assertion that rotation and redistribution actually work.
-//! - **Revocation is recorded and converged, and enforces nothing.** C is
-//!   marked revoked on every replica and keeps every capability it had. That is
-//!   the honest scope of this slice, and the assertions below are written to
-//!   the property that survives: the rotation reaches every device, so the
-//!   account keeps working across a revocation. It reaches C too.
+//!   not only user Streams — and seals each one to every *surviving* device and
+//!   to the account identity. If any of that were wrong the surviving devices
+//!   would go dark, so B converging on a Stream and a Context created after the
+//!   cut is the assertion that rotation and redistribution actually work.
+//! - **The revoked device cannot read past the cut.** C is sealed no envelope
+//!   for the new epochs, and there is no identity copy for it to open instead,
+//!   so the Stream and Context A creates afterwards never become readable on C.
+//! - **It keeps what it already had.** No rotation can take that back: C holds
+//!   every key it held, so the pre-revocation task stays readable on C
+//!   throughout. Revocation is forward-only and this is what that means.
 //!
-//! Both enforcement claims were built here and removed. Refusing a revoked
-//! device's ops freezes the refusing replica's sync cursor for it while the
-//! relay goes on accepting its uploads, and retention turns that into a
-//! permanent data-loss warning on every peer; withholding its Stream key parks
-//! every op behind it in that stream forever. And neither withholds anything,
-//! because pairing hands every device `ID_D_priv` and each epoch is sealed to
-//! the identity as well — so a revoked device opens the identity copy. Reads
-//! are #76, writes are #82 behind #80, and converging the effect is #78.
+//! # How the read bound is actually achieved
+//!
+//! Two mechanisms, and either one alone is vacuous — which is why an earlier
+//! slice shipped with neither and filed #76 rather than half of it.
+//!
+//! `key_envelope` ops are sealed to two recipient classes (ADR-0024 decision
+//! 4): each device's `D_D_pub`, and the account identity's `ID_D_pub`. The
+//! identity copy is what lets a recovery with no surviving device restore
+//! readable content rather than an empty vault (`docs/03-crypto/recovery.md`
+//! §8), so it cannot simply be dropped. While pairing also handed every device
+//! `ID_D_priv`, excluding C from the device recipients withheld nothing: C
+//! opened the identity copy and read straight through the rotation.
+//!
+//! So both moved together. `PairingPayload` no longer carries `ID_D_priv` — it
+//! exists only inside the recovery blob, behind the BIP-39 code — and
+//! `emit_key_envelopes` anti-joins the revocation register. Sealing needs only
+//! the public half, so the identity copy is still emitted and recovery still
+//! reaches every epoch; C simply cannot open it.
 //!
 //! # What this test deliberately does not assert, and why
 //!
-//! It does not assert that C fails to *read* what A wrote after the cut,
-//! because it does not. `key_envelope` ops are sealed to two recipient classes
-//! (ADR-0024 decision 4): each remaining device's `D_D_pub`, and the account
-//! identity's `ID_D_pub`. The identity copy is what lets a recovery with no
-//! surviving device restore readable content rather than an empty vault
-//! (`docs/03-crypto/recovery.md` §8). But pairing hands every device
-//! `ID_D_priv` (`docs/03-crypto/pairing-and-onboarding.md` §102-103), so a
-//! revoked device opens the identity-addressed envelope for every new epoch and
-//! reads straight through the rotation.
+//! It does not assert that C's *writes* are refused by B or by A. They are not,
+//! and that is a decision rather than a gap: refusing at apply time is not
+//! convergent, because a replica that applied an op before the revocation
+//! arrived cannot un-apply it and this engine has no projection rebuild. What
+//! bounds C's writes is the relay, which stops accepting its uploads once the
+//! revocation reaches it — so a peer never sees the op to refuse. A convergent
+//! peer-side check is #82.
 //!
-//! `docs/01-architecture/threat-model.md` §A3 names all three legs of the
-//! mitigation — revoke, rotate Stream keys, **rotate the identity key**. This
-//! slice builds the machinery for the first two and enforces neither. Until the
-//! third lands, forward secrecy against a revoked device is not achieved, and
-//! no test here should claim it is.
+//! It also does not assert forward secrecy against the *account creator*. That
+//! device, and one restored from the recovery code, hold `ID_D_priv` and can
+//! open the identity copy of any epoch. `Command::RevokeDevice` refuses to
+//! revoke the device it runs on, so this is only reachable by revoking the
+//! creator from another device; until the recovery blob is built there is
+//! nowhere else for that key to live. `docs/03-crypto/key-rotation.md`
+//! §Revocation states it.
 //!
-//! Separately, and for the same root cause: a revoked device still holds
-//! `ID_S_priv`, so it can issue itself a fresh, valid `DeviceCert` under a new
-//! device id. Revocation names a device, and the identity keys are what name
-//! devices.
-//!
-//! What rotation could never do, even complete: take back what C already had.
-//! C keeps every key it held and therefore everything it could already read,
-//! which is why the pre-revocation task stays readable on C throughout.
+//! Separately: a revoked device still holds `ID_S_priv`, so it can issue itself
+//! a fresh, valid `DeviceCert` under a new device id. Revocation names a
+//! device, and the identity keys are what name devices. What stands against it
+//! today is the relay, which will not accept a revoked device's upload of that
+//! cert.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
@@ -205,16 +213,37 @@ async fn a_revocation_converges_and_the_survivors_keep_syncing() {
     wait_tasks_converge(&a, &b, 2, TIMEOUT).await;
     wait_context(&b, "post-revocation", TIMEOUT).await;
 
-    // ---- What the revoked device keeps ----
+    // ---- What the revoked device keeps, and what it does not ----
     //
-    // Everything. Its pre-revocation content, plainly; and — since this slice
-    // enforces nothing — its ability to read and write what comes after too.
-    // The assertion here is the modest one that is true: revoking a device does
-    // not take away what it already had.
+    // Keeps: everything it already had. No rotation can take that back, and
+    // pretending otherwise would be the dishonest assertion here.
     assert!(
         task_titles(&c).await.contains(&"before the cut".to_owned()),
         "the pre-revocation task is still readable on the revoked device"
     );
+
+    // Does not keep: anything written after the cut. B has both tasks by now
+    // (`wait_tasks_converge` above), so the ops have been fanned out and C has
+    // had every chance the relay gives it. C is sealed no envelope for the new
+    // epochs and has no `ID_D_priv` to open the identity copy with, so the
+    // second task cannot materialize there.
+    //
+    // Given a generous settle: this is the assertion most worth being sure
+    // about, and a false pass here would be a claim that revocation works when
+    // it does not.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let c_titles = task_titles(&c).await;
+    assert!(
+        !c_titles.contains(&"after the cut".to_owned()),
+        "a revoked device must not read what was written after its cut; saw {c_titles:?}"
+    );
+    assert!(
+        !context_names(&c)
+            .await
+            .contains(&"post-revocation".to_owned()),
+        "nor anything in the vault-meta stream, which rotates with the rest"
+    );
+
     assert_eq!(
         task_titles(&a).await,
         task_titles(&b).await,
