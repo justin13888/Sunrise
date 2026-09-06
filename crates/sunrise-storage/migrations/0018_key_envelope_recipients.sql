@@ -24,6 +24,23 @@
 -- redundant round of envelopes the first time each device republishes its cert,
 -- and absorbing a key already held is a no-op — so the failure mode of being
 -- wrong here is bandwidth, never correctness.
+-- What this migration deliberately does **not** do: clear
+-- `identity.id_d_priv_wrapped`.
+--
+-- A device paired while STORAGE_V was 17 received `ID_D_priv` in its
+-- `PairingPayload` and wrapped it into that column. Upgrading does not take it
+-- away, so such a device keeps the identity's unwrapping key and revocation
+-- does not bound its reads -- the exact state #76 describes. Clearing the
+-- column unconditionally is not the fix: on the account's *creator* it is the
+-- only copy of `ID_D_priv` in existence, no recovery blob is produced by any
+-- code path yet, and the schema records nothing that distinguishes the two.
+-- Blanking it would trade a revocation gap for a permanently unrecoverable
+-- account.
+--
+-- STORAGE_V 17 was never released -- it merged the same day as this -- so the
+-- exposure is development vaults, and re-pairing them clears it. Anything that
+-- ships 17 to a user has to solve this properly first, by recording which
+-- device minted the identity.
 CREATE TABLE key_envelope_recipients (
     stream_id   BLOB    NOT NULL,
     epoch       INTEGER NOT NULL,

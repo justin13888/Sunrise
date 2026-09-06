@@ -570,18 +570,34 @@ impl Core {
     /// Everything a device being paired needs: the account identity, every
     /// Stream key this device holds, and the vault root.
     ///
+    /// **This writes.** Minting the base epochs emits `key_envelope` ops, so a
+    /// call on a never-written account leaves rows in the op log and the
+    /// outbox.
+    ///
     /// # Errors
-    /// Storage failures reading this device's labels.
+    /// Storage failures minting the base epochs or reading this device's
+    /// labels.
     pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
-        let mut db = self.db.lock();
-        // The payload carries the keys this device holds, so the base epochs
-        // have to exist before it is assembled. On an account that has never
-        // been written to they do not, and the resulting payload used to be
-        // empty -- which paired a device that could read nothing until it
-        // opened an identity-sealed envelope. That fallback is gone; see
-        // `Engine::ensure_base_epochs`.
-        self.engine.ensure_base_epochs(&mut db)?;
-        Ok(self.engine.keychain().export_pairing_payload(&db)?)
+        let payload = {
+            let mut db = self.db.lock();
+            // The payload carries the keys this device holds, so the base
+            // epochs have to exist before it is assembled. On an account that
+            // has never been written to they do not, and the resulting payload
+            // used to be empty -- which paired a device that could read nothing
+            // until it opened an identity-sealed envelope. That fallback is
+            // gone; see `Engine::ensure_base_epochs`.
+            self.engine.ensure_base_epochs(&mut db)?;
+            self.engine.keychain().export_pairing_payload(&db)?
+        };
+        // Same rule as `apply_remote_all`: the wake belongs to "the outbox
+        // grew", not to "the user did something". Minting above can queue
+        // `key_envelope` ops, and a driver that is not told about them leaves
+        // them unsent -- and will not leave `CatchingUp`, because `maybe_live`
+        // reads the outbox depth.
+        if self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        Ok(payload)
     }
 
     /// This device's identity-signed cert (canonical CBOR).

@@ -11,13 +11,16 @@ ADR adopts. **Bumps** `CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
 revocation and resolved it in recovery's favour, filing
 [#76](https://github.com/justin13888/Sunrise/issues/76). The tension was not
 real. Sealing a `key_envelope` to the identity needs only `ID_D_pub`, so
-`ID_D_priv` never had to travel in a `PairingPayload`; it no longer does, and
-lives only in the recovery blob. With that, excluding a revoked device from the
+`ID_D_priv` never had to travel in a `PairingPayload`; it no longer does. It
+stays on the account's creator, bound for the recovery blob that decision 5's
+scope note describes and that nothing yet writes. With that, excluding a revoked
+device from the
 recipient list withholds something for the first time, and both goals hold at
-once. Writes are bounded separately, at the relay
-([#80](https://github.com/justin13888/Sunrise/issues/80)), because the relay
-cannot read a `device_revoke` op and must not be able to. Decisions 4 and 5
-carry the details; `STORAGE_V` moves to 19 for the two tables this needed.
+once. Writes remain unbounded: the relay cannot read a `device_revoke` op and
+must not be able to, so it has to be told out of band, and it cannot be told
+today because it names devices by a ULID it minted and a vault knows no peer's
+([#80](https://github.com/justin13888/Sunrise/issues/80)). Decisions 4 and 5
+carry the details; `STORAGE_V` moves to 18 for the table this needed.
 
 ## Context
 
@@ -104,13 +107,14 @@ Alongside it, the hierarchy the documents already specify is made real:
    comes afterwards too: see the scope note below.
 
    **Scope, as amended: revocation bounds reads and writes, by two mechanisms
-   in two places.** Reads are bounded in the vault —
-   `emit_key_envelopes` anti-joins the revocation register, and there is no
-   identity copy for a paired device to open instead. Writes are bounded at the
-   relay, which is told out of band and then refuses the device's uploads. Peers
-   do **not** refuse a revoked device's ops: doing so at apply time is not
-   convergent, because a replica that applied one before the revocation arrived
-   cannot un-apply it and this engine has no projection rebuild
+   in two places.** Reads are bounded in the vault, on every replica that has
+   applied the revocation: `emit_key_envelopes` anti-joins the register, and
+   there is no identity copy for a paired device to open instead. Writes are
+   **not** bounded — the relay would have to be told out of band and cannot be
+   ([#80](https://github.com/justin13888/Sunrise/issues/80)) — and peers do not
+   refuse a revoked device's ops, because doing so at apply time is not
+   convergent: a replica that applied one before the revocation arrived cannot
+   un-apply it and this engine has no projection rebuild
    ([#82](https://github.com/justin13888/Sunrise/issues/82),
    [#78](https://github.com/justin13888/Sunrise/issues/78)).
 

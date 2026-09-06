@@ -63,9 +63,9 @@ A revoked device **cannot** unwrap the new epoch. Every epoch is still sealed
 to the account identity as well as to each device, so recovery can reach it, but
 a device admitted by pairing holds no `ID_D_priv` to open that copy with and is
 excluded from the device recipients — so the rotation is a real cut. Its writes
-are stopped at the relay, which is told out of band and then refuses its
-uploads. What is *not* done is a peer declining its ops: that is not convergent
-without a projection rebuild, so it is
+are **not** stopped: the relay would have to be told out of band and cannot be
+([#80](https://github.com/justin13888/Sunrise/issues/80)), and a peer declining
+its ops is not convergent without a projection rebuild, so that is
 [#82](https://github.com/justin13888/Sunrise/issues/82), with
 [#78](https://github.com/justin13888/Sunrise/issues/78) for converging the
 *effect*. Two bounds remain — the account's creator keeps `ID_D_priv` until the

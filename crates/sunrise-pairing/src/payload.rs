@@ -39,9 +39,12 @@
 //! field 6 hands it every Stream key the sender holds, which covers every
 //! epoch minted before it paired, and it is a `Recipient::Device` on every
 //! epoch minted after — sealed to its own `D_D_pub`, which a revocation can
-//! stop addressing. `ID_D_priv` survives in exactly one place, the recovery
-//! blob behind the BIP-39 code, which is what still lets a recovery with no
-//! surviving device restore readable content.
+//! stop addressing. `ID_D_priv` stays on the device that *created* the account
+//! and is destined for the recovery blob behind the BIP-39 code, which is what
+//! will let a recovery with no surviving device restore readable content. That
+//! blob is specified and not built — `seal_recovery_blob` has no production
+//! caller — so today the creator's vault is the only place the key exists, and
+//! revoking that one device does not bound its reads.
 //!
 //! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels
 //! and a paired device can still mint epochs for the identity. Asymmetric

@@ -194,9 +194,10 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
     // seed and every Stream key ride along, and each one is checked.
     //
     // `ID_D_priv` is deliberately not in this list, because it is no longer in
-    // the payload at all — `a_revoked_device_cannot_read_the_next_epoch` is
-    // what holds that, and checking here that an absent field does not appear
-    // on the wire would pass whatever happened.
+    // the payload at all. Checking that an absent field does not appear on the
+    // wire would pass whatever happened; what holds its absence is
+    // `sunrise_core::keychain`'s `a_paired_device_cannot_open_the_identity_copy`
+    // and `sunrise-e2e`'s own `device_revocation` test.
     let mut secrets: Vec<[u8; 32]> = vec![root_a, id_s_priv];
     secrets.extend(a_stream_keys);
     for secret in &secrets {

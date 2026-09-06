@@ -766,7 +766,20 @@ impl Keychain {
 
     // ---- Stream keys ----
 
-    /// Every `(stream_id, epoch)` this device holds a key for, sorted.
+    /// The **current** epoch of each stream this device holds a key for.
+    ///
+    /// `MAX(epoch)` per stream, not every epoch. A backfill exists to close the
+    /// window between "an epoch was minted" and "the minter had heard of this
+    /// device", and that window only ever contains current epochs: a device
+    /// paired earlier received every older epoch in field 6 of its
+    /// `PairingPayload`, and one paired later will receive them the same way.
+    /// Sending all of them would re-send, as ops, keys the payload had already
+    /// delivered — `S x E x D` sealed control ops on the first cert publication
+    /// of every new device, retained in `ops` forever. This is `S x D`.
+    ///
+    /// It also bounds how long a wrongly-recorded `key_envelope_recipients` row
+    /// can suppress a backfill: the next rotation of that stream mints a new
+    /// epoch, which is a key this table has no row for.
     ///
     /// Read from `stream_keys` rather than the in-memory cache so that a key
     /// absorbed inside the caller's own open transaction is included: the cache
@@ -777,11 +790,11 @@ impl Keychain {
     /// Sorted so that two devices running the same backfill emit the same
     /// envelopes in the same order, which keeps a diff of two vaults' op logs
     /// readable.
-    pub(crate) fn held_epochs_tx(
+    pub(crate) fn held_current_epochs_tx(
         tx: &rusqlite::Transaction<'_>,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         let mut stmt = tx.prepare(
-            "SELECT DISTINCT stream_id, epoch FROM stream_keys ORDER BY stream_id, epoch",
+            "SELECT stream_id, MAX(epoch) FROM stream_keys GROUP BY stream_id ORDER BY stream_id",
         )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
