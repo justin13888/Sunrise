@@ -53,14 +53,13 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 fn emitted_events() -> BTreeSet<(String, String)> {
     let mut found = BTreeSet::new();
     for (rel, text) in shipped_sources() {
+        // Comments are blanked rather than skipped by their first token. Prose
+        // that *names* an event is not an emission, and a comment can sit at
+        // the end of a line of code as easily as at the start of its own:
+        // `…); // paired with ev = "srv.other.phantom"` used to invent an event
+        // that then had to be catalogued.
+        let text = strip_comments(&text);
         for line in text.lines() {
-            // Skip comments, the same way `.github/scripts/grep-gate.sh` does:
-            // prose that *names* an event — this crate's own doc comments, for
-            // one — is not an emission.
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-                continue;
-            }
             for (idx, _) in line.match_indices("ev = \"") {
                 let rest = &line[idx + "ev = \"".len()..];
                 let Some(end) = rest.find('"') else { continue };
@@ -181,23 +180,51 @@ fn the_scan_actually_finds_events() {
 // naming the form and asking for the plain one. If a site ever genuinely needs
 // one, this gate failing is the right place to have that conversation.
 
-/// The macros this scanner reads, fully qualified.
+/// The level names, which are what both scans actually look for.
 ///
+/// A fixed `"tracing::warn!"` needle would be wrong twice over: Rust allows
+/// whitespace and a newline between a macro path and its `!`, and the path
+/// itself is checked separately so that an invocation reaching the macro under
+/// any other name is reported rather than missed.
 /// [`every_tracing_macro_is_called_by_its_full_path`] and
-/// [`the_tracing_macros_are_never_imported`] are what make this list
-/// sufficient: between them, no invocation can reach `tracing` by a name that
-/// is not on it.
-const MACROS: &[&str] = &[
-    "tracing::trace!",
-    "tracing::debug!",
-    "tracing::info!",
-    "tracing::warn!",
-    "tracing::error!",
-    "tracing::event!",
-];
-
-/// The level names, without the `tracing::` qualifier.
+/// [`the_tracing_macros_are_never_imported`] are what make the qualified form
+/// the only one that can exist.
 const LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "event"];
+
+/// Whether `b` can appear inside a Rust identifier.
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Every whole-word occurrence of `word` followed — across any whitespace — by
+/// a `!`, as `(start of the word, index of the bang)`.
+///
+/// The whitespace tolerance is the point. `tracing::warn !(…)` and
+/// `tracing::warn` + newline + `!(…)` are both legal, both record their fields,
+/// and both are invisible to a scanner looking for the literal `warn!`.
+fn word_bang_hits(text: &str, word: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut hits = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(word) {
+        let at = from + rel;
+        from = at + word.len();
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let mut j = at + word.len();
+        if bytes.get(j).copied().is_some_and(is_ident_byte) {
+            continue;
+        }
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b'!') {
+            hits.push((at, j));
+        }
+    }
+    hits
+}
 
 /// What the scanner made of one invocation.
 #[derive(Debug, PartialEq, Eq)]
@@ -274,6 +301,19 @@ fn shipped_sources() -> Vec<(String, String)> {
 /// off the end of the file. `export.rs` and `config.rs` both hold `'"'` and
 /// `')'` char literals, so those need the same treatment.
 fn strip_noise(text: &str) -> String {
+    strip(text, true)
+}
+
+/// The source with comment bodies blanked and string contents *kept*.
+///
+/// The event-name scan reads `ev = "…"` out of the literal, so it cannot use
+/// the blanking form — but it still has to lose comments, or a trailing
+/// `// … ev = "srv.other.phantom"` becomes an event that must be catalogued.
+fn strip_comments(text: &str) -> String {
+    strip(text, false)
+}
+
+fn strip(text: &str, blank_strings: bool) -> String {
     let src: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -302,7 +342,11 @@ fn strip_noise(text: &str) -> String {
                             break;
                         }
                     }
-                    out.push(if src[i] == '\n' { '\n' } else { ' ' });
+                    out.push(if blank_strings && src[i] != '\n' {
+                        ' '
+                    } else {
+                        src[i]
+                    });
                     i += 1;
                 }
                 continue;
@@ -313,11 +357,15 @@ fn strip_noise(text: &str) -> String {
             i += 1;
             while i < src.len() && src[i] != '"' {
                 if src[i] == '\\' {
-                    out.push(' ');
+                    out.push(if blank_strings { ' ' } else { src[i] });
                     i += 1;
                 }
                 if i < src.len() {
-                    out.push(if src[i] == '\n' { '\n' } else { ' ' });
+                    out.push(if blank_strings && src[i] != '\n' {
+                        ' '
+                    } else {
+                        src[i]
+                    });
                     i += 1;
                 }
             }
@@ -440,6 +488,14 @@ fn after_string_literal(arg: &str) -> Option<&str> {
     None
 }
 
+/// Whether `arg` is a `concat!(…)` call, the one macro `tracing` accepts where
+/// the message literal goes.
+fn is_concat_call(arg: &str) -> bool {
+    word_bang_hits(arg, "concat")
+        .first()
+        .is_some_and(|&(at, _)| at == 0)
+}
+
 /// A short, single-line form of an argument, for a failure message.
 fn snippet(arg: &str) -> String {
     let flat = arg.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -513,6 +569,14 @@ fn fields_of(body: &str, takes_level: bool) -> Scanned {
                 _ => {}
             }
         }
+        // `concat!` expands to a string literal, so it is legal where the
+        // message goes and declares no field. Refusing it would be a refusal
+        // that misdiagnoses — telling the author to write plain field pairs
+        // when field pairs were never the problem — and a gate that
+        // misdiagnoses is one people learn to work around.
+        if eq.is_none() && is_concat_call(arg) {
+            break;
+        }
         let name = match eq {
             Some(k) => chars[..k].iter().collect::<String>().trim().to_owned(),
             // Shorthand: `field`, `%field`, `?field`.
@@ -535,7 +599,11 @@ fn fields_of(body: &str, takes_level: bool) -> Scanned {
     Scanned::Fields(names)
 }
 
-/// Every `tracing::*!` invocation in `text`, analysed.
+/// Every fully-qualified `tracing::*!` invocation in `text`, analysed.
+///
+/// An invocation reached by any other path is not skipped quietly — it is
+/// [`every_tracing_macro_is_called_by_its_full_path`]'s to report, because the
+/// fields of a macro this scanner cannot name are fields it cannot read.
 fn scan_source(text: &str) -> Vec<Scanned> {
     let cleaned = strip_noise(text);
     assert!(
@@ -543,30 +611,48 @@ fn scan_source(text: &str) -> Vec<Scanned> {
         "non-ASCII survived comment and string blanking, so the scanner's byte \
          offsets would not line up with its char offsets"
     );
-    let bytes = cleaned.as_bytes();
     let mut out = Vec::new();
-    for mac in MACROS {
-        let mut from = 0;
-        while let Some(hit) = cleaned[from..].find(mac) {
-            let after = from + hit + mac.len();
-            from = after;
-            let mut j = after;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if bytes.get(j) != Some(&b'(') {
+    for lvl in LEVELS {
+        for (at, bang) in word_bang_hits(&cleaned, lvl) {
+            if !cleaned[..at].ends_with("tracing::") {
                 continue;
             }
-            let Some(end) = matching_paren(bytes, j) else {
-                out.push(Scanned::Unanalysable(
-                    "an invocation whose argument list does not close".to_owned(),
-                ));
-                continue;
-            };
-            out.push(fields_of(&cleaned[j + 1..end], *mac == "tracing::event!"));
+            out.push(analyse(&cleaned, bang, *lvl == "event"));
         }
     }
     out
+}
+
+/// The invocation whose `!` is at `bang`.
+///
+/// `!` may be followed by `(`, `[` or `{` — all three are legal and all three
+/// record their fields. Only the first is read, and the other two are
+/// *refused*: skipping them, which is what this did, is a gate that fails open
+/// on a shape the compiler is perfectly happy with.
+fn analyse(cleaned: &str, bang: usize, takes_level: bool) -> Scanned {
+    let bytes = cleaned.as_bytes();
+    let mut j = bang + 1;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    match bytes.get(j) {
+        Some(b'(') => matching_paren(bytes, j).map_or_else(
+            || {
+                Scanned::Unanalysable(
+                    "an invocation whose argument list does not close".to_owned(),
+                )
+            },
+            |end| fields_of(&cleaned[j + 1..end], takes_level),
+        ),
+        Some(&d @ (b'[' | b'{')) => Scanned::Unanalysable(format!(
+            "an invocation delimited by `{}…{}` rather than `(…)`, which this scanner does not read",
+            d as char,
+            if d == b'[' { ']' } else { '}' }
+        )),
+        _ => Scanned::Unanalysable(
+            "an invocation with no argument list this scanner can find".to_owned(),
+        ),
+    }
 }
 
 /// Every field name logged from shipped sources, with its file.
@@ -633,11 +719,7 @@ fn every_tracing_macro_is_called_by_its_full_path() {
     for (rel, text) in shipped_sources() {
         let cleaned = strip_noise(&text);
         for lvl in LEVELS {
-            let needle = format!("{lvl}!");
-            let mut from = 0;
-            while let Some(hit) = cleaned[from..].find(&needle) {
-                let at = from + hit;
-                from = at + needle.len();
+            for (at, _) in word_bang_hits(&cleaned, lvl) {
                 let before = &cleaned[..at];
                 if before.ends_with("tracing::") {
                     continue;
@@ -645,15 +727,15 @@ fn every_tracing_macro_is_called_by_its_full_path() {
                 match before.chars().next_back() {
                     // Reached through some other path.
                     Some(':') => aliased.push(format!(
-                        "{rel}: a `…::{needle}` that is not `tracing::{needle}`"
+                        "{rel}: a `…::{lvl}!` that is not `tracing::{lvl}!`"
                     )),
-                    // Part of a longer identifier — an unrelated macro. An
-                    // *alias* of a tracing macro can only get its name from a
-                    // `use`, which `the_tracing_macros_are_never_imported`
+                    // A bare invocation. `word_bang_hits` already refuses a hit
+                    // that is the tail of a longer identifier, so an unrelated
+                    // macro whose name merely ends in a level does not land
+                    // here; an *alias* of a tracing macro can only get its name
+                    // from a `use`, which `the_tracing_macros_are_never_imported`
                     // refuses outright.
-                    Some(c) if c.is_ascii_alphanumeric() || c == '_' => {}
-                    // A bare invocation.
-                    _ => aliased.push(format!("{rel}: a bare `{needle}`")),
+                    _ => aliased.push(format!("{rel}: a bare `{lvl}!`")),
                 }
             }
         }
@@ -716,32 +798,141 @@ fn the_tracing_macros_are_never_imported() {
     );
 }
 
+/// Every source root the gates scan, pinned exactly.
+///
+/// A floor (`len() >= 24`) only catches roots *disappearing*. Pinning the set
+/// catches one appearing too, which is the direction that matters: a new crate
+/// fails this test until someone adds it here, and adding it is the moment to
+/// notice it now has to keep its log vocabulary on the allowlist.
+const SOURCE_ROOTS: &[&str] = &[
+    "crates/sunrise-auth/src",
+    "crates/sunrise-bench/src",
+    "crates/sunrise-cbor/src",
+    "crates/sunrise-cli/src",
+    "crates/sunrise-client-core/src",
+    "crates/sunrise-core/src",
+    "crates/sunrise-core-bindings/src",
+    "crates/sunrise-crypto/src",
+    "crates/sunrise-crypto-test-vectors/src",
+    "crates/sunrise-domain/src",
+    "crates/sunrise-e2e/src",
+    "crates/sunrise-error/src",
+    "crates/sunrise-http-sig/src",
+    "crates/sunrise-id/src",
+    "crates/sunrise-integrations/src",
+    "crates/sunrise-log/src",
+    "crates/sunrise-onboarding/src",
+    "crates/sunrise-pairing/src",
+    "crates/sunrise-relay-client/src",
+    "crates/sunrise-server/src",
+    "crates/sunrise-storage/src",
+    "crates/sunrise-sync/src",
+    "crates/sunrise-wire-protocol/src",
+    "tools/uniffi-bindgen/src",
+];
+
+/// Every directory in the repository holding a `Cargo.toml`, pinned exactly.
+///
+/// [`SOURCE_ROOTS`] alone cannot see a crate the *walk* cannot reach — one
+/// nested past the depth cutoff, or one with a `[lib] path` and no `src/`.
+/// This is the independent check: it finds manifests by a deeper, layout-blind
+/// walk, so such a crate changes this set and fails here even though it never
+/// reaches the scan.
+const MANIFEST_DIRS: &[&str] = &[
+    "",
+    "crates/sunrise-auth",
+    "crates/sunrise-bench",
+    "crates/sunrise-cbor",
+    "crates/sunrise-cli",
+    "crates/sunrise-client-core",
+    "crates/sunrise-core",
+    "crates/sunrise-core-bindings",
+    "crates/sunrise-crypto",
+    "crates/sunrise-crypto-test-vectors",
+    "crates/sunrise-domain",
+    "crates/sunrise-e2e",
+    "crates/sunrise-error",
+    "crates/sunrise-http-sig",
+    "crates/sunrise-id",
+    "crates/sunrise-integrations",
+    "crates/sunrise-log",
+    "crates/sunrise-onboarding",
+    "crates/sunrise-pairing",
+    "crates/sunrise-relay-client",
+    "crates/sunrise-server",
+    "crates/sunrise-storage",
+    "crates/sunrise-sync",
+    "crates/sunrise-wire-protocol",
+    "tools/uniffi-bindgen",
+];
+
+/// Directories holding a `Cargo.toml`, found without the layout assumptions
+/// [`source_roots`] makes.
+fn manifest_dirs_deep(dir: &Path, depth: usize, root: &Path, out: &mut BTreeSet<String>) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || matches!(name.as_ref(), "legacy" | "target" | "node_modules") {
+            continue;
+        }
+        if path.join("Cargo.toml").is_file() {
+            out.insert(
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+        }
+        manifest_dirs_deep(&path, depth + 1, root, out);
+    }
+}
+
 #[test]
-fn the_scan_covers_every_crate_in_the_repository() {
-    // The walk finds manifests rather than assuming `crates/*`, and this is
-    // what proves it: `tools/uniffi-bindgen` sits outside the workspace, so a
-    // scan hardcoded to the workspace members would silently skip it.
+fn the_scan_covers_exactly_the_crates_in_the_repository() {
+    // The walk finds manifests rather than assuming `crates/*`, which is what
+    // reaches `tools/uniffi-bindgen`: it sits outside the workspace, so a scan
+    // hardcoded to the workspace members would silently skip it.
     let root = workspace_root();
-    let rel: BTreeSet<String> = source_roots()
+    let found: BTreeSet<String> = source_roots()
         .iter()
         .map(|p| p.strip_prefix(&root).unwrap_or(p).display().to_string())
         .collect();
-    assert!(
-        rel.contains("crates/sunrise-server/src"),
-        "the walk lost the workspace crates: {rel:?}"
+    let pinned: BTreeSet<String> = SOURCE_ROOTS.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(
+        found, pinned,
+        "the set of scanned source roots changed. A new crate must be added to \
+         SOURCE_ROOTS deliberately — that is the moment its log vocabulary comes \
+         under these gates."
     );
     assert!(
-        rel.contains("tools/uniffi-bindgen/src"),
-        "the walk does not reach crates outside the workspace: {rel:?}"
+        !found.iter().any(|p| p.starts_with("legacy/")),
+        "`legacy` is excluded from the workspace and from this scan: {found:?}"
     );
-    assert!(
-        rel.len() >= 24,
-        "expected at least 24 crate source roots, found {}: {rel:?}",
-        rel.len()
-    );
-    assert!(
-        !rel.iter().any(|p| p.starts_with("legacy/")),
-        "`legacy` is excluded from the workspace and from this scan: {rel:?}"
+}
+
+#[test]
+fn no_crate_hides_from_the_walk() {
+    let root = workspace_root();
+    let mut found = BTreeSet::new();
+    found.insert(String::new());
+    manifest_dirs_deep(&root, 0, &root, &mut found);
+    let pinned: BTreeSet<String> = MANIFEST_DIRS.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(
+        found, pinned,
+        "the set of Cargo manifests in the repository changed. If this is a new \
+         crate, check that `source_roots` actually reaches it — a manifest past \
+         the depth cutoff, or one with a `[lib] path` and no `src/`, is a crate \
+         these gates would not scan."
     );
 }
 
@@ -849,6 +1040,60 @@ fn the_field_scanner_refuses_the_forms_it_cannot_read() {
         why(r#"tracing::info!(ev = "x", some.call(1) + 2, "m");"#)
             .contains("neither `ident = value` nor a bare field name"),
         "an unreadable argument must be refused"
+    );
+}
+
+/// The three shapes that reached `event_enabled` through a door no gate
+/// watched: whitespace before the bang, a newline before the bang, and a
+/// non-paren delimiter. Each compiles, each records its fields, and each
+/// previously scanned as nothing at all.
+#[test]
+fn the_field_scanner_refuses_a_bang_it_cannot_reach_the_usual_way() {
+    // Whitespace and a newline between the path and its `!`. These are read
+    // rather than refused: the scan simply has to find them.
+    for src in [
+        r#"tracing::warn !(ev = "srv.x", task_title = %t, "m");"#,
+        "tracing::warn\n    !(ev = \"srv.x\", task_title = %t, \"m\");",
+    ] {
+        assert_eq!(
+            scan_source(src),
+            vec![Scanned::Fields(
+                ["ev", "task_title"].map(str::to_owned).to_vec()
+            )],
+            "a bang reached across whitespace must still be scanned: {src:?}"
+        );
+    }
+
+    // A non-paren delimiter is legal and records its fields; this scanner does
+    // not read it, so it says so instead of skipping it.
+    for (src, delim) in [
+        (
+            r#"tracing::warn![ev = "srv.x", task_title = %t, "m"];"#,
+            "`[…]`",
+        ),
+        (
+            r#"tracing::warn!{ev = "srv.x", task_title = %t, "m"}"#,
+            "`{…}`",
+        ),
+    ] {
+        match scan_source(src).pop().expect("one invocation") {
+            Scanned::Unanalysable(why) => assert!(
+                why.contains(delim) && why.contains("rather than `(…)`"),
+                "expected a delimiter refusal naming {delim}, got: {why}"
+            ),
+            Scanned::Fields(f) => panic!("expected a refusal, got fields {f:?}"),
+        }
+    }
+}
+
+/// `concat!` is legal where the message goes and declares no field, so it must
+/// be read as the message rather than refused as an unreadable argument.
+#[test]
+fn a_concat_message_is_not_mistaken_for_a_field() {
+    assert_eq!(
+        scan_source(r#"tracing::info!(ev = "srv.x", concat!("event ", "stream ended"));"#),
+        vec![Scanned::Fields(vec!["ev".to_owned()])],
+        "a `concat!` message declares no field and is not an unreadable argument"
     );
 }
 
