@@ -747,6 +747,16 @@ impl Engine {
         //     forever and the relay would replay it, and everything after it,
         //     on every reconnect.
         if self.is_revoked_at(db, &env.device_id, env.hlc.physical_ms)? {
+            // An op this replica has already applied is a re-delivery, not a
+            // refusal: it is in `ops`, it is materialized, and the answer to
+            // seeing it again is the same silence any other re-receive gets.
+            // The idempotence gate proper lives at step e, past the decrypt,
+            // and this refusal sits ahead of it — so without this check a
+            // replay would both write a `refused_ops` row for an op that is in
+            // `ops` and turn `Ok(None)` into `Err(DeviceRevoked)`.
+            if self.already_applied(db, &env)? {
+                return Ok(Vec::new());
+            }
             self.record_refusal(db, &env, "device revoked")?;
             return Err(EngineError::DeviceRevoked);
         }
@@ -959,6 +969,27 @@ impl Engine {
             .optional()?
             .flatten();
         Ok(revoked.is_some_and(|effective| u64::try_from(effective).unwrap_or(0) <= at_ms))
+    }
+
+    /// Whether this replica has already recorded `env` in its op log.
+    ///
+    /// The same identity the idempotence gate at step e uses, asked early
+    /// enough to keep a re-delivery out of the refusal path.
+    fn already_applied(
+        &self,
+        db: &Db,
+        env: &sunrise_crypto::OpEnvelope,
+    ) -> Result<bool, EngineError> {
+        let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
+        let found: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM ops WHERE op_id = ?",
+                params![&op_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     /// Record that this replica will never apply `env`, so the sync cursor can
@@ -12403,6 +12434,66 @@ mod tests {
             .unwrap();
         assert!(rows > 1, "the epoch mint emitted envelopes alongside it");
         assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
+    }
+
+    fn refused_rows(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM refused_ops", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A re-delivery of an op this replica already applied is silence, not a
+    /// refusal — even once the sender is revoked with a cut below that op.
+    ///
+    /// The refusal sits at step c2, ahead of the idempotence gate at step e, so
+    /// without an explicit check a replay would write a `refused_ops` entry for
+    /// an op that is in `ops` and materialized, and answer `Err(DeviceRevoked)`
+    /// where every other re-receive answers `Ok(None)`.
+    #[test]
+    fn a_replay_of_an_already_applied_op_is_not_a_refusal() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca);
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "applied before anyone revoked anything".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+        eb.apply_remote(&mut dbb, &env).unwrap().expect("applied");
+
+        // A revocation whose cut sits below that op's HLC — which the `MIN`
+        // join makes reachable, since the cut only ever moves earlier.
+        revoke_at(
+            &eb,
+            &mut dbb,
+            &eb,
+            ea.keychain.device_id(),
+            T0 - 1_000,
+            T0 + 1_000,
+        );
+        assert!(eb
+            .is_revoked_at(&dbb, &ea.keychain.device_id(), T0)
+            .unwrap());
+
+        assert!(
+            eb.apply_remote(&mut dbb, &env).unwrap().is_none(),
+            "a re-receive is idempotent silence, not a refusal"
+        );
+        assert_eq!(refused_rows(&dbb), 0, "and nothing was recorded against it");
+        assert_eq!(
+            read_task_t(&eb, &dbb, res.entity).title,
+            "applied before anyone revoked anything",
+            "the op it already applied is untouched"
+        );
     }
 
     /// Read the stored cursor for `(stream, device)`, or 0 if none.
