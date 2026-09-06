@@ -12,7 +12,7 @@
 //! ```cddl
 //! PairingPayload = {
 //!     1: bstr .size 32,   ; ID_S_priv
-//!     2: bstr .size 32,   ; ID_D_priv
+//!     ; 2 was ID_D_priv. Burned, never reused -- see below.
 //!     3: bstr .size 32,   ; ID_S_pub
 //!     4: bstr .size 32,   ; ID_D_pub
 //!     5: bstr .size 16,   ; identity_id
@@ -23,25 +23,45 @@
 //! }
 //! ```
 //!
-//! # Why the identity private keys travel at all
+//! # Why `ID_S_priv` travels and `ID_D_priv` does not
 //!
-//! `core-bindings/src/pairing.rs` used to say sending a private identity key is
-//! "not something to do speculatively", and that was right while the identity
-//! decrypted nothing. It decrypts everything now: `ID_D_priv` opens the
-//! identity-sealed half of every `key_envelope`, and `ID_S_priv` is what lets a
-//! device issue certs for the *next* device it pairs. A pairing that withheld
-//! them would produce a device that can read today's content and can never
-//! admit another one — which is the limitation this replaces, not a security
-//! property.
+//! The two identity private keys look symmetric and are not, and the asymmetry
+//! is the whole of what makes revocation bound a device's reads.
 //!
-//! The channel they travel over is the Noise XX transport confirmed by a SAS
+//! `ID_D_priv` is the X25519 scalar that opens the identity-sealed copy of
+//! every `key_envelope`. Field 2 used to carry it, and that is what made
+//! revocation unenforceable (`#76`): a revoked device dropped from a new
+//! epoch's recipient list simply opened the identity copy instead, because
+//! pairing had handed it the identity's own unwrapping key. Every device
+//! holding it meant no device could be excluded from anything.
+//!
+//! It does not travel now. A device gets the keys it needs two other ways:
+//! field 6 hands it every Stream key the sender holds, which covers every
+//! epoch minted before it paired, and it is a `Recipient::Device` on every
+//! epoch minted after — sealed to its own `D_D_pub`, which a revocation can
+//! stop addressing. `ID_D_priv` survives in exactly one place, the recovery
+//! blob behind the BIP-39 code, which is what still lets a recovery with no
+//! surviving device restore readable content.
+//!
+//! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels
+//! and a paired device can still mint epochs for the identity. Asymmetric
+//! cryptography is doing real work here: the device can address the recovery
+//! path without being able to walk it.
+//!
+//! `ID_S_priv` does still travel, because it is what lets a device issue a
+//! `device_cert` for the *next* device it pairs, and a pairing that withheld it
+//! would produce a device that can never admit another one. That it is on every
+//! device — a revoked one included — is why a cert names its issuer and is
+//! refused when that issuer was revoked at the cert's own HLC; see
+//! `sunrise_crypto::device_cert`.
+//!
+//! The channel it travels over is the Noise XX transport confirmed by a SAS
 //! both users read aloud. That is the same channel the vault root already used,
 //! and the vault root was never the smaller secret.
 
 use std::collections::BTreeMap;
 use subtle::ConstantTimeEq;
 use sunrise_crypto::identity_id_from_pub;
-use sunrise_crypto::keys::IdentityDhKeyPair;
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -88,15 +108,14 @@ pub enum PairingPayloadError {
 
 /// Everything the existing device hands the new one.
 ///
-/// Zeroized on drop: it holds the vault root, both identity private keys and
+/// Zeroized on drop: it holds the vault root, the identity signing seed and
 /// every Stream key in the account — the single most sensitive value this
-/// codebase ever materializes.
+/// codebase ever materializes. It does **not** hold `ID_D_priv`; see the
+/// module docs for why that one stays in the recovery blob.
 #[derive(Clone)]
 pub struct PairingPayload {
     /// `ID_S_priv`, the identity Ed25519 seed.
     pub id_s_priv: [u8; 32],
-    /// `ID_D_priv`, the identity X25519 scalar.
-    pub id_d_priv: [u8; 32],
     /// `ID_S_pub`.
     pub id_s_pub: [u8; 32],
     /// `ID_D_pub`.
@@ -124,7 +143,6 @@ impl Zeroize for PairingPayload {
     /// first and only then dropped.
     fn zeroize(&mut self) {
         self.id_s_priv.zeroize();
-        self.id_d_priv.zeroize();
         self.id_s_pub.zeroize();
         self.id_d_pub.zeroize();
         self.identity_id.zeroize();
@@ -188,7 +206,6 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
 
     let map = vec![
         (int(1), Value::Bytes(p.id_s_priv.to_vec())),
-        (int(2), Value::Bytes(p.id_d_priv.to_vec())),
         (int(3), Value::Bytes(p.id_s_pub.to_vec())),
         (int(4), Value::Bytes(p.id_d_pub.to_vec())),
         (int(5), Value::Bytes(p.identity_id.to_vec())),
@@ -230,7 +247,6 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     };
 
     let mut id_s_priv: Option<[u8; 32]> = None;
-    let mut id_d_priv: Option<[u8; 32]> = None;
     let mut id_s_pub: Option<[u8; 32]> = None;
     let mut id_d_pub: Option<[u8; 32]> = None;
     let mut identity_id: Option<[u8; 16]> = None;
@@ -245,7 +261,12 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
         };
         match (i128::from(i), v) {
             (1, Value::Bytes(b)) => id_s_priv = Some(arr32(&b, "id_s_priv")?),
-            (2, Value::Bytes(b)) => id_d_priv = Some(arr32(&b, "id_d_priv")?),
+            // Key 2 was `ID_D_priv` and is burned. A sender old enough to
+            // still emit it is refused rather than tolerated: accepting the
+            // field and dropping it would leave the operator believing a
+            // revocation binds when the peer that paired still holds the key
+            // that unbinds it. Falling through to the unknown-key arm below is
+            // deliberate.
             (3, Value::Bytes(b)) => id_s_pub = Some(arr32(&b, "id_s_pub")?),
             (4, Value::Bytes(b)) => id_d_pub = Some(arr32(&b, "id_d_pub")?),
             (5, Value::Bytes(b)) => identity_id = Some(arr16(&b, "identity_id")?),
@@ -286,7 +307,6 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
 
     let payload = PairingPayload {
         id_s_priv: id_s_priv.ok_or(PairingPayloadError::BadField("id_s_priv"))?,
-        id_d_priv: id_d_priv.ok_or(PairingPayloadError::BadField("id_d_priv"))?,
         id_s_pub: id_s_pub.ok_or(PairingPayloadError::BadField("id_s_pub"))?,
         id_d_pub: id_d_pub.ok_or(PairingPayloadError::BadField("id_d_pub"))?,
         identity_id: identity_id.ok_or(PairingPayloadError::BadField("identity_id"))?,
@@ -307,13 +327,17 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     // but a documented property that the code does not have is worse than
     // either having it or not claiming it, and the fix is one call.
     let id_ok = identity_id_from_pub(&payload.id_s_pub).ct_eq(&payload.identity_id);
-    // `ID_D_pub` is what every `key_envelope` is sealed to, and `ID_D_priv` is
-    // what opens it. A payload whose two halves disagree produces a device that
-    // silently opens nothing the identity was addressed on — including, after a
-    // revocation, every rotated Stream key. Nothing downstream would say why.
-    let dh_pub = IdentityDhKeyPair::from_secret_bytes(payload.id_d_priv).public_bytes();
-    let dh_ok = dh_pub.ct_eq(&payload.id_d_pub);
-    if !bool::from(id_ok & dh_ok) {
+    // `ID_D_pub` used to be checked against the `ID_D_priv` beside it. With the
+    // private half gone there is nothing to recompute it from, and no check
+    // here can establish that the public key is the account's: a receiver
+    // holding only public material cannot tell a real `ID_D_pub` from any other
+    // valid X25519 point. What stands behind it is the channel — Noise XX,
+    // SAS-confirmed — which is the same thing that stands behind `ID_S_priv`
+    // and the vault root in the same message. A wrong `ID_D_pub` here does not
+    // expose anything; it produces epochs the recovery blob cannot open, which
+    // is a recovery failure and is the reason `identity_id` is still checked
+    // below.
+    if !bool::from(id_ok) {
         return Err(PairingPayloadError::IdentityMismatch);
     }
     Ok(payload)
@@ -336,14 +360,17 @@ fn arr16(b: &[u8], what: &'static str) -> Result<[u8; 16], PairingPayloadError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_crypto::keys::IdentitySigningKeyPair;
+    use sunrise_crypto::keys::{IdentityDhKeyPair, IdentitySigningKeyPair};
 
     fn payload(streams: u32, epochs: u32) -> PairingPayload {
         let signing = IdentitySigningKeyPair::from_secret_bytes(&[0x21; 32]);
         let id_s_pub = signing.public_bytes();
-        // The decoder recomputes both public halves from their private ones, so
-        // the fixture has to be a real key pair rather than two chosen
-        // constants — which is the whole point of the check.
+        // `id_s_pub` is still recomputed from its private half by the decoder,
+        // so that one has to be a real pair. `id_d_pub` no longer has a private
+        // half in the payload to be checked against, but it is kept a real
+        // X25519 point here rather than a constant: a fixture that is not a
+        // valid point would pass this codec and fail the first time anything
+        // sealed to it.
         let id_d_pub = IdentityDhKeyPair::from_secret_bytes([0x22; 32]).public_bytes();
         let mut stream_keys = BTreeMap::new();
         for s in 0..streams {
@@ -357,7 +384,6 @@ mod tests {
         }
         PairingPayload {
             id_s_priv: [0x21; 32],
-            id_d_priv: [0x22; 32],
             id_s_pub,
             id_d_pub,
             identity_id: identity_id_from_pub(&id_s_pub),
@@ -374,7 +400,6 @@ mod tests {
         let bytes = encode_pairing_payload(&p).unwrap();
         let back = decode_pairing_payload(&bytes).unwrap();
         assert_eq!(back.id_s_priv, p.id_s_priv);
-        assert_eq!(back.id_d_priv, p.id_d_priv);
         assert_eq!(back.id_s_pub, p.id_s_pub);
         assert_eq!(back.id_d_pub, p.id_d_pub);
         assert_eq!(back.identity_id, p.identity_id);
@@ -447,28 +472,26 @@ mod tests {
         assert_eq!(decode_pairing_payload(&bytes).unwrap().key_count(), 1000);
     }
 
-    /// A payload whose `ID_D` halves disagree is refused at decode.
+    /// `identity_id` is checked against `ID_S_pub`, and `ID_D_pub` is **not**
+    /// checked at all — which is a statement about what a receiver can know,
+    /// not an omission.
     ///
-    /// `ID_D_pub` is what every `key_envelope` is sealed to and `ID_D_priv` is
-    /// what opens it, so a mismatch produces a device that silently opens
-    /// nothing addressed to the identity — including, after a revocation, every
-    /// rotated Stream key — with nothing downstream able to say why. Both this
-    /// and the `identity_id` check are constant-time, which
-    /// `docs/03-crypto/pairing-and-onboarding.md` §7 has always claimed.
+    /// This test used to assert both halves. It could, because the payload
+    /// carried `ID_D_priv` and the decoder recomputed `ID_D_pub` from it. With
+    /// the private half gone (`#76`) there is nothing to recompute from: a
+    /// receiver holding only public material cannot distinguish the account's
+    /// real `ID_D_pub` from any other valid X25519 point, and no check written
+    /// here could. What stands behind the field is the Noise XX channel and the
+    /// SAS both users read aloud, which is the same thing that stands behind
+    /// `ID_S_priv` and the vault root in the same message.
+    ///
+    /// The consequence of a wrong `ID_D_pub` is bounded and is not disclosure:
+    /// it seals epochs to a key the recovery blob cannot open, so the account
+    /// becomes unrecoverable rather than readable by a stranger. That is why
+    /// `identity_id` — which *is* checkable, and which decides whose account
+    /// this device joins — keeps its constant-time check.
     #[test]
-    fn a_payload_whose_identity_halves_disagree_is_refused() {
-        let mut p = payload(2, 1);
-        p.id_d_pub = [0x77; 32];
-        let bytes = encode_pairing_payload(&p).unwrap();
-        assert!(
-            matches!(
-                decode_pairing_payload(&bytes),
-                Err(PairingPayloadError::IdentityMismatch)
-            ),
-            "a public DH half that does not belong to its private one must not decode"
-        );
-
-        // The signing half is checked the same way, through `identity_id`.
+    fn a_payload_whose_identity_id_does_not_match_its_signing_key_is_refused() {
         let mut q = payload(2, 1);
         q.identity_id = [0x88; 16];
         let bytes = encode_pairing_payload(&q).unwrap();
@@ -484,6 +507,33 @@ mod tests {
         assert_eq!(
             decode_pairing_payload(&bytes).unwrap().id_d_pub,
             good.id_d_pub
+        );
+    }
+
+    /// A payload carrying the burned key 2 is refused, not tolerated.
+    ///
+    /// Key 2 was `ID_D_priv`. A sender still emitting it is a build from before
+    /// revocation bounded reads, and pairing with it would produce a device
+    /// holding the identity's unwrapping key — exactly the state `#76` is
+    /// about. Silently ignoring the field would leave the operator believing a
+    /// later revocation binds when the device it paired can still open every
+    /// rotated epoch.
+    #[test]
+    fn a_payload_still_carrying_the_burned_id_d_priv_is_refused() {
+        let good = payload(2, 1);
+        let bytes = encode_pairing_payload(&good).unwrap();
+        let mut v: ciborium::value::Value =
+            ciborium::de::from_reader(bytes.as_slice()).expect("decode to a cbor map");
+        let ciborium::value::Value::Map(entries) = &mut v else {
+            panic!("a pairing payload is a map");
+        };
+        entries.push((int(2), ciborium::value::Value::Bytes(vec![0x22; 32])));
+        let mut with_key_2 = Vec::new();
+        ciborium::ser::into_writer(&v, &mut with_key_2).expect("re-encode");
+
+        assert!(
+            decode_pairing_payload(&with_key_2).is_err(),
+            "a payload carrying ID_D_priv must not decode"
         );
     }
 

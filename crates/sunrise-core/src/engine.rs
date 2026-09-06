@@ -514,12 +514,23 @@ impl Engine {
             if known == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+            let hlc = self.hlc.send();
+            // The register goes first, before anything can mint a key.
+            //
+            // `ensure_stream_epoch` below can mint the vault-meta stream's
+            // first epoch, and minting emits a `key_envelope` per recipient. If
+            // the register were still empty at that moment, the device this
+            // transaction exists to revoke would be one of those recipients and
+            // would receive a key minted by its own revocation. Ordering the
+            // write first is the whole fix; nothing downstream needs the
+            // register to be absent.
+            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
+
             // The epoch every rotation op is sealed under: read before
             // anything is minted, so it is the epoch the departing devices and
             // the remaining ones all still share.
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
             seq = self.next_seq_tx(tx, &META_STREAM)?;
-            let hlc = self.hlc.send();
 
             // 1. The revocation itself, sealed under the old meta epoch like
             //    every other op in this transaction.
@@ -540,15 +551,14 @@ impl Engine {
                 seal_under.0,
                 &seal_under.1,
             )?;
-            // The row is written by `apply_control_op` and by nothing else.
-            // A second writer here was a real defect and not a tidiness point:
-            // this one was an unconditional `UPDATE` while the remote path took
-            // a join, so a user revoking an already-revoked device on their own
-            // machine moved that machine's cut while every peer kept the
-            // other. The local device is then the only replica accepting a
-            // window of ops, which is precisely the divergence the register
-            // exists to prevent.
-            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
+            // The row is written by `apply_control_op` and by nothing else --
+            // it ran above, before the first mint. A second writer here was a
+            // real defect and not a tidiness point: this one was an
+            // unconditional `UPDATE` while the remote path took a join, so a
+            // user revoking an already-revoked device on their own machine
+            // moved that machine's cut while every peer kept the other. The
+            // local device is then the only replica accepting a window of ops,
+            // which is precisely the divergence the register exists to prevent.
 
             // 2 + 3. Rotate everything, and seal each new epoch to **every**
             //        device — the revoked one included. That is not an
@@ -906,22 +916,19 @@ impl Engine {
     /// Whether `device_id` was revoked at or before `at_ms`, read from the
     /// register.
     ///
-    /// **Test-only, and that is the finding rather than an oversight.** Nothing
-    /// on any production path asks this question, because nothing acts on the
-    /// answer: this pull request records a revocation and converges it, and
-    /// enforces it nowhere. The only production reader of the register is
-    /// [`Self::query_device_list`], which reports whether a device is revoked
-    /// at all — not whether a particular op falls after the cut — and no client
-    /// reads that flag today either.
+    /// This was test-only for one pull request, with a note saying the `cfg`
+    /// would come off when the cut was given an effect. It has: the read half
+    /// of revocation calls it from [`Self::backfill_key_envelopes`], and the
+    /// same `cut_ms <= at_ms` comparison is inlined as an anti-join in
+    /// [`Self::emit_key_envelopes`], which needs it per row rather than per
+    /// call.
     ///
-    /// It stays because the convergence tests are about the cut being a *time*,
-    /// and asserting that through this reads as what it is. If a later change
-    /// gives the cut an effect — reads are
-    /// [#76](https://github.com/justin13888/Sunrise/issues/76), writes are
-    /// [#82](https://github.com/justin13888/Sunrise/issues/82) behind
-    /// [#80](https://github.com/justin13888/Sunrise/issues/80) — this is the
-    /// function it will call, and the `cfg` comes off then.
-    #[cfg(test)]
+    /// `at_ms` is a wall-clock reading, not an HLC. The register's cut is an
+    /// HLC's physical half, so a peer far enough ahead can write a cut this
+    /// call reads as "not yet revoked". That direction is the safe one — it
+    /// withholds nothing from a device that is still a member — and a rotation
+    /// happens in the same transaction as the revocation anyway, so the epoch a
+    /// skewed cut lets through is superseded immediately.
     fn is_revoked_at(
         &self,
         conn: &rusqlite::Connection,
@@ -1078,6 +1085,7 @@ impl Engine {
             InnerOp::KeyEnvelope(p) => {
                 let recipient = match p.recipient {
                     Recipient::Device(id) if id == self.keychain.device_id() => {
+                        record_envelope_recipient(tx, &p.stream_id, p.epoch, &id, now_ms)?;
                         EnvelopeRecipient::Device
                     }
                     // The identity copy is opened too. A device that already
@@ -1086,8 +1094,15 @@ impl Engine {
                     // second op family that says the same thing.
                     Recipient::Identity(_) => EnvelopeRecipient::Identity,
                     // Somebody else's copy. Retained in the log — the relay
-                    // fans out to every device — and simply not opened.
-                    Recipient::Device(_) => return Ok(Vec::new()),
+                    // fans out to every device — and not opened. It *is*
+                    // recorded first: this is how a device learns that some
+                    // other device has already sealed this epoch to that
+                    // recipient, which is what stops every replica emitting the
+                    // same backfill envelope.
+                    Recipient::Device(other) => {
+                        record_envelope_recipient(tx, &p.stream_id, p.epoch, &other, now_ms)?;
+                        return Ok(Vec::new());
+                    }
                 };
                 let Ok(key) = self.keychain.open_key_envelope(
                     recipient,
@@ -1299,6 +1314,32 @@ impl Engine {
                         &cert.body.d_d_pub[..],
                     ],
                 )?;
+                // The device is a member as of this line, so anything this
+                // vault holds and it does not is now a gap it cannot close by
+                // itself: `ID_D_priv` used to be its way out and is gone.
+                //
+                // Failing the whole delivery over a backfill would be wrong --
+                // the cert is valid and belongs in `devices` whatever happens
+                // next -- but swallowing the error would leave the gap open
+                // with nothing said, which is the failure mode this arm's own
+                // comment above warns about. So it is logged and the cert
+                // stands; the next cert publication retries it, and
+                // `key_envelope_recipients` means the retry emits only what is
+                // still missing.
+                if let Err(e) = self.backfill_key_envelopes(
+                    tx,
+                    &cert.body.device_id,
+                    &cert.body.d_d_pub,
+                    now_ms,
+                ) {
+                    tracing::warn!(
+                        ev = "core.device.backfill_failed",
+                        reason = "storage",
+                        subject_h = hex_short(&cert.body.device_id),
+                        cause = %e,
+                        "could not seal held stream keys to a newly certified device"
+                    );
+                }
                 Ok(Vec::new())
             }
             _ => Ok(Vec::new()),
@@ -3634,6 +3675,33 @@ impl Engine {
     /// re-enters here. With the row already present the re-entry terminates
     /// immediately; without it, minting the meta stream's own first key would
     /// recurse forever.
+    /// Mint the account's base epochs if they do not exist yet, so that a
+    /// pairing payload assembled next carries them.
+    ///
+    /// A payload is built from the keys this device *holds*, and a vault that
+    /// has never written anything holds none — so a device paired from a
+    /// freshly created account used to receive an empty `stream_keys` map. That
+    /// was survivable only because it could open the identity-sealed copy of
+    /// every `key_envelope` with the `ID_D_priv` the payload also carried.
+    /// Neither is true now: without the vault-meta key a paired device cannot
+    /// read a single control op, so it cannot even learn the keys it is
+    /// missing, and it sits in `CatchingUp` forever parking everything.
+    ///
+    /// The Inbox is minted alongside because it is the one stream every account
+    /// has whether or not the user has made any of their own.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn ensure_base_epochs(&self, db: &mut Db) -> Result<(), EngineError> {
+        let now_ms = self.clock.now_ms();
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            self.ensure_stream_epoch(tx, &INBOX_STREAM_BYTES, now_ms)?;
+            Ok(())
+        })
+        .map_err(EngineError::Storage)
+    }
+
     fn ensure_stream_epoch(
         &self,
         tx: &Transaction<'_>,
@@ -3652,17 +3720,25 @@ impl Engine {
 
     /// Emit one `key_envelope` op per recipient for `(stream_id, epoch)`.
     ///
-    /// Recipients are **every** device other than this one — which already
-    /// holds the key — plus the account identity, whose copy is what makes a
-    /// recovery with no surviving device restore readable content rather than
-    /// an empty vault.
+    /// Recipients are every **unrevoked** device other than this one — which
+    /// already holds the key — plus the account identity, whose copy is what
+    /// makes a recovery with no surviving device restore readable content
+    /// rather than an empty vault.
     ///
-    /// Revoked devices are **not** excluded, and the exclusion must not be
-    /// re-added here without reading `#76` first: the identity copy below is
-    /// sealed to a key every paired device holds, so dropping a revoked device
-    /// from the device recipients withholds nothing from it and only looks like
-    /// enforcement. `a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses`
-    /// fails if it comes back. See the block comment on the query itself.
+    /// The exclusion of revoked devices is load-bearing here in a way it was
+    /// not when `#76` was filed. It was vacuous then because the identity copy
+    /// was sealed to `ID_D_pub` while pairing handed every device `ID_D_priv`:
+    /// a device dropped from the recipient list opened the identity copy
+    /// instead and lost nothing. `ID_D_priv` no longer travels in a
+    /// `PairingPayload` — it exists only inside the recovery blob, behind the
+    /// BIP-39 code — so the identity copy is now openable by the recovery-code
+    /// holder alone, and dropping a device from this list is the whole of what
+    /// stops it reading the epoch.
+    ///
+    /// The consequence for an unrevoked device is that this list is now the
+    /// *only* way it learns an epoch minted after it paired, which is why
+    /// [`Self::backfill_key_envelopes`] exists: a device certified after an
+    /// epoch was minted would otherwise never receive it.
     ///
     /// `seal_under` chooses the epoch these ops are themselves sealed at; see
     /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
@@ -3680,20 +3756,27 @@ impl Engine {
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
-                // Deliberately **not** filtered on `device_revocations`. This
-                // pull request enforces nothing about revocation, and a filter
-                // here would be the loudest place to imply otherwise: every
-                // paired device holds `ID_D_priv`, and the identity recipient
-                // appended below seals the same key to all of them, so
-                // excluding a revoked device from the device recipients
-                // withholds nothing it cannot open through the identity copy.
-                // That is issue #76, and it is the reason this claim was
-                // removed rather than repaired.
+                // The anti-join against `device_revocations` is the read half
+                // of revocation. A device with a recorded cut gets no envelope
+                // for any epoch minted at or after it, and since `ID_D_priv`
+                // stopped travelling in a `PairingPayload` there is no second
+                // copy for it to open instead.
+                //
+                // The comparison is `cut_ms <= now_ms`, matching
+                // [`Self::is_revoked_at`], so a cut in the future — which a
+                // peer's clock skew can produce — does not withhold a key from
+                // a device that is still a member. Rotation on revoke means the
+                // epoch a skewed cut lets through is superseded within the same
+                // transaction anyway.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
-                 WHERE d.d_d_pub IS NOT NULL",
+                 WHERE d.d_d_pub IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM device_revocations r
+                       WHERE r.device_id = d.device_id AND r.cut_ms <= ?
+                   )",
             )?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map(params![now_ms], |r| {
                     Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3738,6 +3821,80 @@ impl Engine {
                 hpke_ciphertext,
             });
             self.emit_control_op(tx, &inner, now_ms, seal_under)?;
+            if let Recipient::Device(id) = recipient {
+                record_envelope_recipient(tx, stream_id, epoch, &id, now_ms)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit the `key_envelope` ops `device_id` is missing, and no others.
+    ///
+    /// Called when a `device_cert` is applied. Before `#76` this did not need
+    /// to exist: a device left out of an epoch's recipient list opened the
+    /// identity copy instead, so the gap between "an epoch was minted" and
+    /// "the minter had heard of this device" closed itself. It does not close
+    /// itself any more, and the gap is not rare — creating a Stream mints its
+    /// first epoch, so a Stream created on one device while a second device's
+    /// cert was still in flight would be unreadable on that second device
+    /// permanently.
+    ///
+    /// Every device that applies the cert runs this, and that is deliberate:
+    /// picking one emitter would mean picking a device that might be offline.
+    /// The cost of the redundancy is bounded by `key_envelope_recipients` —
+    /// the first emitter's ops carry the index rows with them, so a device
+    /// applying those ops before it applies the cert emits nothing — and by
+    /// absorption being idempotent when the redundancy does happen.
+    ///
+    /// A revoked device is skipped, on the same `cut_ms <= now_ms` test the
+    /// recipient query uses. Without that, a revocation followed by the revoked
+    /// device republishing its own cert would hand back everything the
+    /// revocation had just rotated away.
+    fn backfill_key_envelopes(
+        &self,
+        tx: &Transaction<'_>,
+        device_id: &[u8; 16],
+        device_pub: &[u8; 32],
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        if *device_id == self.keychain.device_id() {
+            return Ok(());
+        }
+        if self.is_revoked_at(tx, device_id, now_ms)? {
+            return Ok(());
+        }
+        for (stream_id, epoch) in Keychain::held_epochs_tx(tx)? {
+            let already: i64 = tx.query_row(
+                "SELECT count(*) FROM key_envelope_recipients
+                 WHERE stream_id = ? AND epoch = ? AND recipient = ?",
+                params![&stream_id[..], epoch, &device_id[..]],
+                |r| r.get(0),
+            )?;
+            if already > 0 {
+                continue;
+            }
+            let keys = self.keychain.stream_keys_at(&stream_id, epoch);
+            let Some(key) = keys.first() else {
+                continue;
+            };
+            let Ok(hpke_ciphertext) = self.keychain.seal_key_envelope(
+                device_pub,
+                &stream_id,
+                epoch,
+                key,
+                self.rng.as_ref(),
+            ) else {
+                continue;
+            };
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id,
+                epoch,
+                recipient: Recipient::Device(*device_id),
+                key_id: stream_key_id(key),
+                hpke_ciphertext,
+            });
+            self.emit_control_op(tx, &inner, now_ms, None)?;
+            record_envelope_recipient(tx, &stream_id, epoch, device_id, now_ms)?;
         }
         Ok(())
     }
@@ -3847,6 +4004,28 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
 
 /// The end of the run of `ops` seqs starting at `start`, or `start - 1` when
 /// `start` itself is absent.
+/// Note that `recipient` has been sent the key for `(stream_id, epoch)`.
+///
+/// `INSERT OR IGNORE`: two devices can back-fill the same recipient
+/// concurrently, and both will record it. The row is a *hint* — being absent
+/// costs a redundant envelope, and being present when the envelope never
+/// arrived is the one failure that matters, which is why it is only ever
+/// written alongside an op that carries the key, never on its own.
+fn record_envelope_recipient(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    epoch: u32,
+    recipient: &[u8; 16],
+    now_ms: u64,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO key_envelope_recipients
+         (stream_id, epoch, recipient, recorded_at_ms) VALUES (?, ?, ?, ?)",
+        params![&stream_id[..], epoch, &recipient[..], now_ms],
+    )?;
+    Ok(())
+}
+
 fn ops_run_end(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
@@ -11395,6 +11574,40 @@ mod tests {
         .unwrap();
     }
 
+    /// [`trust`] at a chosen wall clock, for tests that care when the cert
+    /// landed relative to a revocation cut.
+    fn trust_at(receiver: &Engine, db: &mut Db, sender: &Engine, now_ms: u64) {
+        let cert = sender.keychain.cert_blob().to_vec();
+        let sender_id = sender.keychain.device_id();
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(
+                    tx,
+                    &InnerOp::DeviceCertPublish(cert),
+                    &sender_id,
+                    Hlc::at(now_ms),
+                    now_ms,
+                )
+                .map(|_| ())
+        })
+        .unwrap();
+    }
+
+    /// The `(stream, epoch)` pairs `db`'s owner has sealed to `recipient`.
+    fn envelopes_to(engine: &Engine, db: &Db, recipient: &[u8; 16]) -> Vec<([u8; 16], u32)> {
+        key_envelope_envs(db)
+            .into_iter()
+            .filter_map(|env| engine.keychain.open_op(&env).ok())
+            .filter_map(|cbor| decode_inner_op(&cbor).ok())
+            .filter_map(|inner| match inner {
+                InnerOp::KeyEnvelope(p) if p.recipient == Recipient::Device(*recipient) => {
+                    Some((p.stream_id, p.epoch))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     const ROOT: [u8; 32] = [0x5a; 32];
     const T0: u64 = 1_700_000_000_000;
 
@@ -12210,26 +12423,27 @@ mod tests {
         );
     }
 
-    /// A revoked device's ops are applied, its keys are absorbed, and its
-    /// cursor advances — because **this pull request enforces nothing about
-    /// revocation**.
+    /// A revoked device's ops still **apply** at a receiving replica, and its
+    /// cursor still advances.
     ///
-    /// This is a pin on a removal, and it is here because re-adding a gate is a
-    /// live hazard: six review rounds produced six defects and every one was a
-    /// gate interacting with something else. Refusing a device's ops freezes
+    /// This half is deliberately not a gate, and it is not the write bound.
+    /// The write bound is the relay, which stops accepting the device's
+    /// uploads the moment `revoke_device` reaches it — so a peer never sees the
+    /// op to refuse in the first place.
+    ///
+    /// Refusing here instead is a live hazard, and six review rounds produced
+    /// six defects that were all this shape. Refusing a device's ops freezes
     /// its sync cursor while the relay keeps accepting its uploads, and
     /// retention then latches a permanent data-loss warning on every peer.
-    /// Withholding its Stream key is worse: `defer_op` returns before the op
-    /// log, so every op behind it in that stream parks forever waiting on a key
-    /// that will never come. And neither withholds anything in the first place,
-    /// because every paired device holds `ID_D_priv` and the identity-sealed
-    /// copy of each epoch opens for all of them — issue #76.
+    /// Refusing at apply time is also not convergent: a replica that applied an
+    /// op before the revocation arrived cannot un-apply it, and there is no
+    /// projection rebuild in this engine to make it, so two replicas with the
+    /// same op set would disagree forever. That is #78, and #82 is where a
+    /// convergent form belongs.
     ///
-    /// What revocation does here is recorded, converged and inert. Reads are
-    /// #76, writes are #82 behind #80, and converging the effect is #78.
-    /// Anyone re-adding enforcement in this layer should have to delete this.
+    /// What *is* enforced here is reads, and that is the test below.
     #[test]
-    fn a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses() {
+    fn a_revoked_devices_ops_still_apply_at_the_replica() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
         let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
         let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -12287,36 +12501,154 @@ mod tests {
             1,
             "the cursor advances, so nothing stalls and nothing replays forever"
         );
+    }
 
-        // The other direction: a device revoked in *this* vault is still sealed
-        // to. Excluding it from `emit_key_envelopes` withholds nothing — the
-        // identity recipient appended alongside seals the same key, and every
-        // paired device holds `ID_D_priv` — so the filter would only look like
-        // enforcement. That is #76, and it is why the claim came out.
+    /// A device certified *after* an epoch was minted still receives that
+    /// epoch's key.
+    ///
+    /// This is the gap dropping `ID_D_priv` from `PairingPayload` opens, and it
+    /// is not a corner: minting happens when a Stream is created, so a Stream
+    /// made on one device while another device's cert was still in flight would
+    /// have been unreadable on that device permanently. The identity copy used
+    /// to absorb this silently.
+    #[test]
+    fn a_device_certified_after_an_epoch_was_minted_is_backfilled() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        // A mints the vault-meta and Inbox epochs while it has never heard of
+        // B, so B is on no recipient list.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "written before B was known".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(
+            envelopes_to(&ea, &dba, &b_id).is_empty(),
+            "B cannot have been sealed to before A had its cert"
+        );
+        let held = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
+        assert!(
+            held.len() >= 2,
+            "the capture minted at least the meta and Inbox epochs"
+        );
+
+        // B's cert arrives.
+        trust_at(&ea, &mut dba, &eb, T0);
+
+        let mut sealed = envelopes_to(&ea, &dba, &b_id);
+        sealed.sort_unstable();
+        let mut want = held;
+        want.sort_unstable();
+        assert_eq!(
+            sealed, want,
+            "every epoch A holds must be sealed to B once its cert lands"
+        );
+
+        // And it is not done twice: a second publication of the same cert
+        // emits nothing, because `key_envelope_recipients` already has the row.
+        let before = envelopes_to(&ea, &dba, &b_id).len();
+        trust_at(&ea, &mut dba, &eb, T0 + 1);
+        assert_eq!(
+            envelopes_to(&ea, &dba, &b_id).len(),
+            before,
+            "a re-published cert must not re-send every key"
+        );
+    }
+
+    /// A revoked device that republishes its cert is **not** backfilled.
+    ///
+    /// Without this the read half would be trivially undone: revocation
+    /// rotates every key away, and the device then asks for all of them back
+    /// by re-sending the cert it already had.
+    #[test]
+    fn a_revoked_device_is_not_backfilled_by_republishing_its_cert() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        // B is revoked at a cut at or before the moment its cert is applied.
+        revoke(&ea, &mut dba, &ea, b_id, T0);
+        assert!(ea.is_revoked_at(dba.conn(), &b_id, T0).unwrap());
+
+        trust_at(&ea, &mut dba, &eb, T0);
+        assert!(
+            envelopes_to(&ea, &dba, &b_id).is_empty(),
+            "a revoked device must not recover its keys by re-sending its cert"
+        );
+    }
+
+    /// The read half of revocation: a rotation seals **no** device envelope to
+    /// the device it just revoked, and there is no identity copy that device
+    /// could open instead.
+    ///
+    /// Both halves are asserted, because either alone is vacuous. Excluding the
+    /// device from the recipient list withholds nothing while a `PairingPayload`
+    /// hands it `ID_D_priv` — that was #76, and it is why the exclusion was
+    /// removed rather than repaired. Dropping `ID_D_priv` from the payload
+    /// withholds nothing while the device is still on the recipient list. The
+    /// property only exists when both are true at once.
+    #[test]
+    fn a_revoked_device_gets_no_key_for_an_epoch_minted_after_its_cut() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let b_id = eb.keychain.device_id();
+
         let before = key_envelope_envs(&dba).len();
         ea.apply(
             &mut dba,
             Command::RevokeDevice {
-                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                device_id: EntityRef::new(EntityKind::Device, b_id),
                 reason: RevokeReason::Lost,
             },
         )
         .unwrap();
-        let sealed_to_b = key_envelope_envs(&dba)
+        let minted: Vec<InnerOp> = key_envelope_envs(&dba)
             .into_iter()
             .skip(before)
             .filter_map(|env| ea.keychain.open_op(&env).ok())
             .filter_map(|cbor| decode_inner_op(&cbor).ok())
-            .any(|inner| {
-                matches!(
-                    inner,
-                    InnerOp::KeyEnvelope(p)
-                        if p.recipient == Recipient::Device(eb.keychain.device_id())
-                )
-            });
+            .collect();
         assert!(
-            sealed_to_b,
-            "the rotation still seals to the device it just revoked"
+            !minted.is_empty(),
+            "the revocation rotated something, or this test proves nothing"
+        );
+
+        assert!(
+            !minted.iter().any(|inner| matches!(
+                inner,
+                InnerOp::KeyEnvelope(p) if p.recipient == Recipient::Device(b_id)
+            )),
+            "the rotation sealed a device envelope to the device it just revoked"
+        );
+
+        // The identity copy is still emitted -- recovery depends on it -- and
+        // is exactly what the revoked device can no longer open, because
+        // `PairingPayload` no longer carries `ID_D_priv`. `Identity::dh_secret`
+        // is `None` on every device pairing admitted, so the type system is
+        // what holds this rather than a runtime check.
+        assert!(
+            minted.iter().any(|inner| matches!(
+                inner,
+                InnerOp::KeyEnvelope(p) if matches!(p.recipient, Recipient::Identity(_))
+            )),
+            "the identity copy must survive: it is the recovery path"
         );
     }
 

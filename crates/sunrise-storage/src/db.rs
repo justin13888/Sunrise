@@ -539,8 +539,12 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         Db::apply_pragmas(&conn).unwrap();
         let tx = conn.transaction().unwrap();
-        // Everything up to and including 0016.
-        for m in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        // Everything up to and including 0016. Selected by id, not by
+        // position: `MIGRATIONS[..len - 1]` meant "everything but 0017" only
+        // while 0017 happened to be last, and silently became "everything but
+        // 0018" -- which re-ran 0017 against a schema it had already migrated
+        // -- the first time a migration was appended.
+        for m in MIGRATIONS.iter().filter(|m| m.id <= 16) {
             tx.execute_batch(m.sql).unwrap();
         }
         tx.execute(
@@ -557,8 +561,14 @@ mod tests {
         )
         .unwrap();
 
-        tx.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1].sql)
-            .unwrap();
+        tx.execute_batch(
+            MIGRATIONS
+                .iter()
+                .find(|m| m.id == 17)
+                .expect("0017 is registered")
+                .sql,
+        )
+        .unwrap();
 
         for table in [
             "identity",

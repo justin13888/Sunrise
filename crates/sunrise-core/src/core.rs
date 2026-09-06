@@ -254,12 +254,30 @@ impl Core {
         if *self.closed.lock() {
             return Err(CoreError::Closed);
         }
-        let events = {
+        let (events, pending) = {
             let mut db = self.db.lock();
-            self.engine.apply_remote_all(&mut db, envelope_bytes)?
+            let events = self.engine.apply_remote_all(&mut db, envelope_bytes)?;
+            // Read under the same lock the apply ran in, so the count cannot
+            // miss a row this apply just wrote.
+            let pending = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
+            (events, pending)
         };
         for ev in &events {
             let _ = self.changes_tx.send(ev.clone());
+        }
+        // Applying a *remote* op can leave *local* outbox rows behind: a
+        // `device_cert` arriving makes this device seal the Stream keys it
+        // holds to the newly certified one (`Engine::backfill_key_envelopes`).
+        //
+        // The driver only ever learned about new outbox rows from
+        // `Self::submit`, so those rows sat there un-sent — and because
+        // `maybe_live` will not leave `CatchingUp` while the outbox is
+        // non-empty, a device that back-filled during catch-up never reached
+        // `Live` at all. The wake belongs to "the outbox grew", not to "the
+        // user did something", which is why it is here rather than only in
+        // `submit`.
+        if pending > 0 && self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
         }
         Ok(events)
     }
@@ -555,7 +573,14 @@ impl Core {
     /// # Errors
     /// Storage failures reading this device's labels.
     pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
-        let db = self.db.lock();
+        let mut db = self.db.lock();
+        // The payload carries the keys this device holds, so the base epochs
+        // have to exist before it is assembled. On an account that has never
+        // been written to they do not, and the resulting payload used to be
+        // empty -- which paired a device that could read nothing until it
+        // opened an identity-sealed envelope. That fallback is gone; see
+        // `Engine::ensure_base_epochs`.
+        self.engine.ensure_base_epochs(&mut db)?;
         Ok(self.engine.keychain().export_pairing_payload(&db)?)
     }
 

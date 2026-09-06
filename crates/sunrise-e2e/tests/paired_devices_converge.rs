@@ -175,7 +175,6 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         .export_pairing_payload()
         .expect("export the pairing payload");
     let id_s_priv = payload.id_s_priv;
-    let id_d_priv = payload.id_d_priv;
     let a_stream_keys: Vec<[u8; 32]> = payload
         .stream_keys
         .values()
@@ -191,9 +190,14 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         .expect("send pairing payload");
 
     // Nothing in the payload may appear in the clear on the wire. The vault
-    // root was the only secret this used to carry; now the identity private
-    // keys and every Stream key ride along, and each one is checked.
-    let mut secrets: Vec<[u8; 32]> = vec![root_a, id_s_priv, id_d_priv];
+    // root was the only secret this used to carry; now the identity signing
+    // seed and every Stream key ride along, and each one is checked.
+    //
+    // `ID_D_priv` is deliberately not in this list, because it is no longer in
+    // the payload at all — `a_revoked_device_cannot_read_the_next_epoch` is
+    // what holds that, and checking here that an absent field does not appear
+    // on the wire would pass whatever happened.
+    let mut secrets: Vec<[u8; 32]> = vec![root_a, id_s_priv];
     secrets.extend(a_stream_keys);
     for secret in &secrets {
         assert!(
