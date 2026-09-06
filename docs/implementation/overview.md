@@ -417,7 +417,7 @@ carried over from an earlier revision.
 |---|---|
 | `mise run rust-test` | **1335 passed**, 0 failed, 3 ignored |
 | `cargo test -p sunrise-cli` | **77 passed** — 48 in `tests/`, 29 in-crate |
-| `cargo test --workspace --doc` | 0 doc tests |
+| `mise run rust-doctest` (`cargo test --workspace --doc -- --skip relative_uri`) | 2 passed (sunrise-log); the 18 kynos-generated `relative_uri` items are skipped by name — #58, #60 |
 | `mise run macos-app` | **477 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
 | `mise run rust-fmt-check` | clean |
 | `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
