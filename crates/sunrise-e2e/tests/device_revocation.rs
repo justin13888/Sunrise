@@ -9,9 +9,10 @@
 //!   any of that were wrong the *surviving* device would go dark, so B
 //!   converging on a Stream and a Context created after the cut is the
 //!   assertion that rotation and redistribution actually work.
-//! - **The revoked device cannot write.** An op C signs at or after
-//!   `effective_at_ms` is refused by every replica that has applied the
-//!   revocation, so C cannot go on mutating the account it was cut out of.
+//! - **The revoked device cannot write.** An op C signs at or after the cut is
+//!   refused by every replica that has applied the revocation, so C cannot go
+//!   on mutating the account it was cut out of. The cut is the HLC of the
+//!   `device_revoke` op itself; there is no `effective_at` anybody nominates.
 //!
 //! # What this test deliberately does not assert, and why
 //!
@@ -164,12 +165,11 @@ async fn a_revoked_device_cannot_write_and_the_survivors_keep_syncing() {
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
     wait_tasks_converge(&a, &c, 1, TIMEOUT).await;
 
-    // The cut. `effective_at_ms: None` means "now".
+    // The cut, which is the HLC of the op this emits.
     let c_device = c.device_id();
     a.submit(Command::RevokeDevice {
         device_id: EntityRef::new(EntityKind::Device, c_device),
         reason: RevokeReason::Lost,
-        effective_at_ms: None,
     })
     .await
     .expect("revoke C");
@@ -244,8 +244,8 @@ async fn wait_title(core: &Core, title: &str, timeout: Duration) {
     }
 }
 
-/// `effective_at_ms` is a **time**, and an op signed before it still applies on
-/// a replica that has already recorded the revocation.
+/// The cut is a **time**, and an op signed before it still applies on a replica
+/// that has already recorded the revocation.
 ///
 /// The scenario is the ordinary one, not an exotic one: C does a morning's work
 /// on a laptop, the laptop goes offline, the user revokes it from another
@@ -253,18 +253,13 @@ async fn wait_title(core: &Core, title: &str, timeout: Duration) {
 /// afterwards. Dropping them would throw away honest work the user never asked
 /// to lose, and would leave the replicas permanently disagreeing about it.
 ///
-/// The cut is placed a minute ahead rather than staging an offline window,
-/// which makes the ordering deterministic: C is already marked revoked on B —
-/// `wait_revoked` proves it — before C writes anything at all, so the op is
-/// unambiguously delivered *after* the revocation and unambiguously signed
-/// *before* the cut. Nothing but the `effective_at_ms` comparison can let it
-/// through.
-///
-/// Before this was fixed, `lookup_device_cert` filtered `revoked_at_ms IS NULL`
-/// and the row simply vanished for a revoked device, so every family except
-/// `device_cert` came back `UnknownDevice` whatever its HLC said, and
-/// `is_revoked_at` — the only place `effective_at_ms` is read — was unreachable
-/// for all twenty domain families.
+/// C's op is written *before* the revocation is submitted and delivered after
+/// it — the sleep is what makes the ordering real rather than assumed, and C's
+/// HLC is stamped when it writes, not when the op arrives. Before this was
+/// fixed, `lookup_device_cert` filtered `revoked_at_ms IS NULL` and the row
+/// simply vanished for a revoked device, so every family except `device_cert`
+/// came back `UnknownDevice` whatever its HLC said, and `is_revoked_at` — the
+/// only place the cut is read — was unreachable for all twenty domain families.
 #[tokio::test]
 async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
     let (addr, _relay) = spawn_relay().await;
@@ -284,24 +279,32 @@ async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
     wait_tasks_converge(&a, &c, 1, TIMEOUT).await;
 
-    // The cut is in the future, so everything C signs from here until then is
-    // pre-cut work.
-    let cut = a.now_ms() + 60_000;
+    // C writes, and its op carries C's HLC from this moment.
+    create_task(&c, "signed before the cut").await;
+    wait_title(&b, "signed before the cut", TIMEOUT).await;
+
+    // Only then is C revoked, so the cut — the revocation op's own HLC — is
+    // strictly later than the op above.
     let c_device = c.device_id();
     a.submit(Command::RevokeDevice {
         device_id: EntityRef::new(EntityKind::Device, c_device),
         reason: RevokeReason::Retired,
-        effective_at_ms: Some(cut),
     })
     .await
     .expect("revoke C");
     wait_revoked(&b, c_device, TIMEOUT).await;
 
-    // C writes only now — after B has the revocation, and still before the cut.
-    create_task(&c, "signed before the cut").await;
-    wait_title(&b, "signed before the cut", TIMEOUT).await;
-    wait_title(&a, "signed before the cut", TIMEOUT).await;
-
+    // The pre-cut work stands on every replica, and B's copy is not withdrawn
+    // by the revocation arriving after it.
+    tokio::time::sleep(SETTLE).await;
+    for (name, core) in [("A", &a), ("B", &b)] {
+        assert!(
+            task_titles(core)
+                .await
+                .contains(&"signed before the cut".to_owned()),
+            "{name} dropped work the revoked device did before the cut"
+        );
+    }
     assert_eq!(
         task_titles(&a).await,
         task_titles(&b).await,

@@ -77,6 +77,14 @@ ALTER TABLE devices ADD COLUMN identity_id BLOB;
 ALTER TABLE devices ADD COLUMN d_d_pub BLOB;
 ALTER TABLE devices ADD COLUMN revoked_by BLOB;
 ALTER TABLE devices ADD COLUMN revoke_reason TEXT;
+-- The revocation row is an LWW register on the declaring op's own
+-- `(hlc, device_id)`: `revoked_at_ms` is that HLC's physical half — which is
+-- also the cut — and this is its logical half. Comparing the physical alone
+-- would drop the part that orders two ops inside one millisecond, and
+-- `revoked_by` breaks the remaining tie, so all three revocation columns follow
+-- the winning op rather than converging on the timestamp while the other two
+-- stay decided by arrival order.
+ALTER TABLE devices ADD COLUMN revoked_hlc_logical INTEGER;
 
 -- --- the Inbox stops sharing the vault-meta stream id ---
 -- Pre-0017 the Inbox was sixteen zero bytes, which is also the vault-meta
@@ -104,44 +112,3 @@ WHERE EXISTS (
 UPDATE tasks SET stream_id = X'00000073756E726973652E696E626F78'
 WHERE stream_id = X'00000000000000000000000000000000';
 
--- --- ops this replica has permanently decided not to apply ---
--- The sync cursor is the *contiguous applied prefix* of `(stream_id,
--- device_id)` seqs, computed from `ops`, and the relay replays from it. An op
--- that is refused never reaches `ops`, so without this table the prefix stops
--- one short of it forever: the relay re-sends that op and every op after it on
--- every reconnect, none of them ever advancing anything.
---
--- A refusal is recorded here only when it is *permanent and converged* — the
--- op's signature verified, so the bytes are known intact, and the decision is a
--- function of state every replica shares. An op refused because its bytes did
--- not decode or verify is NOT recorded: those bytes may have been damaged in
--- transit, and the replay is the only thing that would ever repair them.
---
--- One row per `(stream_id, device_id)`, holding a *range*, rather than one row
--- per refused op. That is not only compression, it is the shape of the fact:
---
--- * `seq` and `hlc` are both minted per op on the emitting device, and both are
---   strictly increasing there, so for one `(stream_id, device_id)` the seq
---   order *is* the HLC order;
--- * the only permanent refusal is "revoked at or after the cut", which is a
---   comparison against that HLC;
--- * the cut only ever moves earlier (`apply_control_op` takes the `MIN` of the
---   cuts it has seen), so an op refused once is refused forever.
---
--- Refusals are therefore contiguous from the first refused seq onward, and any
--- seq between two refused ones would be refused too if it ever arrived. The
--- unbounded alternative was a real defect and not a stylistic one: a revoked
--- device keeps its relay credentials — `Command::RevokeDevice` does not call
--- `DELETE /api/v1/devices/{id}` — so it goes on uploading, and every op it
--- signs would otherwise become a permanent row on every peer.
-CREATE TABLE refused_ops (
-    stream_id       BLOB NOT NULL,
-    device_id       BLOB NOT NULL,
-    -- The lowest and highest seq refused for this pair. Everything between
-    -- them is refused, whether or not it has been delivered.
-    from_seq        INTEGER NOT NULL,
-    through_seq     INTEGER NOT NULL,
-    reason          TEXT NOT NULL,
-    refused_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY (stream_id, device_id)
-);

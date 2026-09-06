@@ -203,22 +203,37 @@ const DEFERRED_TOTAL_CAP: i64 = 4096;
 /// actually has and still bounds a slow drip that never reaches either cap.
 const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
-/// How far ahead of the op that declares it a revocation's cut may sit.
+/// Why an op was permanently refused, for [`Engine::record_refusal`].
 ///
-/// `effective_at_ms` is a plain field of the signed envelope, and since the cut
-/// became a real time comparison it is also the whole of a revocation's
-/// meaning. Unbounded, `u64::MAX` is a permanent immunity: the first
-/// revocation to land sets the cut, [`Engine::apply_control_op`] takes the
-/// earliest of the cuts it has seen, and no realistic HLC ever reaches it, so
-/// every later genuine revocation converges onto a value that refuses nothing.
+/// Closed, and deliberately small. Advancing the sync cursor over an op tells
+/// the relay never to send it again, which is only safe when the decision is
+/// **permanent** — this replica will never apply it however long it waits — and
+/// **converged** — every replica that sees the same ops reaches it too. Two
+/// refusals in this engine look similar and qualify for neither, so there is no
+/// variant for them and no `&str` to smuggle them in through:
 ///
-/// Seven days rather than something tighter because a forward-dated cut is a
-/// documented feature, not an oddity: `docs/03-crypto/key-rotation.md` §Device
-/// key rotation emits a `device_revoke` for the *old* device key at
-/// `now + 24h`, which is the overlap window that keeps a rotating device
-/// working while its new cert propagates. Seven days covers that with room and
-/// still refuses anything whose purpose could only be immunity.
-const REVOKE_CUT_AHEAD_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// * a decode or signature failure: those bytes may have been damaged in
+///   transit, and the relay's replay is the only thing that would repair them;
+/// * "no key at this `(stream, epoch)` opens it": two devices can mint one
+///   epoch concurrently, so the key may still be in a `key_envelope` op on its
+///   way. That op is parked in `deferred_ops` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalReason {
+    /// The sender was revoked with a cut at or before this op's HLC.
+    ///
+    /// Permanent because the cut is a comparison against the op's own reading,
+    /// which never changes, and converged because every replica holds the same
+    /// revocation ops and resolves them with the same register.
+    DeviceRevoked,
+}
+
+impl RefusalReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeviceRevoked => "device_revoked",
+        }
+    }
+}
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
 #[derive(Debug, Error)]
@@ -383,11 +398,9 @@ impl Engine {
             Command::AttachFile(d) => self.attach_file(db, d),
             Command::DetachFile(id) => self.detach_file(db, id),
             Command::MaterializeRoutines { now_ms } => self.materialize_routines(db, now_ms),
-            Command::RevokeDevice {
-                device_id,
-                reason,
-                effective_at_ms,
-            } => self.revoke_device(db, device_id, reason, effective_at_ms),
+            Command::RevokeDevice { device_id, reason } => {
+                self.revoke_device(db, device_id, reason)
+            }
             Command::RotateStreamKey { stream } => self.rotate_stream_key(db, stream),
             Command::StartFocus(d) => self.start_focus(db, d),
             Command::EndFocus {
@@ -498,7 +511,6 @@ impl Engine {
         db: &mut Db,
         device_id: EntityRef,
         reason: RevokeReason,
-        effective_at_ms: Option<u64>,
     ) -> Result<CommandResult, EngineError> {
         let now_ms = self.clock.now_ms();
         let revoked = *device_id.bytes();
@@ -509,29 +521,12 @@ impl Engine {
                     .into(),
             ));
         }
-        let effective_at_ms = effective_at_ms.unwrap_or(now_ms);
-        // Validated here as well as on apply, and against a *tighter* window,
-        // so that a cut this device emits is one every replica will accept.
-        // `Hlc::send` takes `max(now, local)`, and the clock gate keeps the
-        // local reading within `MAX_DRIFT_MS` of `now`, so an
-        // `effective_at_ms` in `now ..= now + REVOKE_CUT_AHEAD_MS` is inside
-        // the apply-side window whatever the envelope's HLC turns out to be.
-        // The caller reaches this from `Command::RevokeDevice`, whose
-        // `effective_at_ms: Option<u64>` is otherwise unchecked all the way out
-        // to the Swift seam.
-        if effective_at_ms < now_ms || effective_at_ms > now_ms + REVOKE_CUT_AHEAD_MS {
-            return Err(EngineError::Invalid(format!(
-                "a revocation takes effect from now onwards: effective_at_ms must be between now \
-                 ({now_ms}) and {} days ahead of it, not {effective_at_ms}",
-                REVOKE_CUT_AHEAD_MS / (24 * 60 * 60 * 1000)
-            )));
-        }
         let op_id = self.fresh_op_id(now_ms);
-        let inner = encode_inner_op(&InnerOp::DeviceRevoke(DeviceRevokePayload {
+        let revoke = InnerOp::DeviceRevoke(DeviceRevokePayload {
             revoked_device_id: revoked,
             reason_code: reason,
-            effective_at_ms,
-        }))?;
+        });
+        let inner = encode_inner_op(&revoke)?;
 
         // Read inside the transaction, and after the epoch below has been
         // resolved. Resolving it can mint the vault-meta stream's own first key
@@ -576,17 +571,15 @@ impl Engine {
                 seal_under.0,
                 &seal_under.1,
             )?;
-            tx.execute(
-                "UPDATE devices
-                 SET revoked_at_ms = ?, revoked_by = ?, revoke_reason = ?
-                 WHERE device_id = ?",
-                params![
-                    i64::try_from(effective_at_ms).unwrap_or(i64::MAX),
-                    &self.keychain.device_id()[..],
-                    reason.as_str(),
-                    &revoked[..],
-                ],
-            )?;
+            // The row is written by `apply_control_op` and by nothing else.
+            // A second writer here was a real defect and not a tidiness point:
+            // this one was an unconditional `UPDATE` while the remote path took
+            // a join, so a user revoking an already-revoked device on their own
+            // machine moved that machine's cut while every peer kept the
+            // other. The local device is then the only replica accepting a
+            // window of ops, which is precisely the divergence the register
+            // exists to prevent.
+            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
 
             // 2 + 3. Rotate everything, telling only the devices that remain.
             for stream_id in self.keychain.rotation_set(tx)? {
@@ -780,7 +773,7 @@ impl Engine {
             if self.already_applied(db, &env)? {
                 return Ok(Vec::new());
             }
-            self.record_refusal(db, &env, "device revoked")?;
+            self.record_refusal(db, &env, RefusalReason::DeviceRevoked)?;
             return Err(EngineError::DeviceRevoked);
         }
 
@@ -871,8 +864,7 @@ impl Engine {
                 //     state. They have no row and no LWW contest; routing one
                 //     into `materialize_remote` would file it under `tasks`,
                 //     because that function's kind table ends in a `_ =>` arm.
-                absorbed =
-                    self.apply_control_op(tx, &inner, &env.device_id, env.hlc.physical_ms, now_ms)?;
+                absorbed = self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms)?;
             } else {
                 // f. LWW materialization.
                 materialize_remote(tx, &inner, &lww)?;
@@ -951,17 +943,21 @@ impl Engine {
         Err(EngineError::UnknownDevice)
     }
 
-    /// Whether `device_id` was revoked with an effect time at or before
-    /// `at_ms`, which is the envelope's own HLC reading.
+    /// Whether `device_id` was revoked at or before `at_ms`, which is the
+    /// envelope's own HLC reading.
     ///
-    /// The comparison is against a timestamp the *sender* chose and signed, so
-    /// this is a **convergence** boundary rather than a cryptographic one: a
-    /// revoked device that can still reach a peer can date an op below the cut
-    /// and have it applied. Only the direction is constrained — the clock gate
-    /// in step e refuses a reading in this device's future, so the lie can only
-    /// ever be backwards, into a past this device already agrees existed.
+    /// The cut is the HLC of the `device_revoke` op itself — not a field
+    /// anybody nominated — so both sides of this comparison are HLC readings
+    /// the emitting devices merged rather than wall-clock values they chose.
     ///
-    /// Closing it is a *transport* question, not a comparison this function
+    /// It is still a **convergence** boundary and not a cryptographic one: a
+    /// revoked device that can still reach a peer can stamp an op with a
+    /// reading below the cut and have it applied. Only the direction is
+    /// constrained — the clock gate in step e refuses a reading in this
+    /// device's future, so the lie can only ever be backwards, into a past this
+    /// device already agrees existed.
+    ///
+    /// Closing that is a *transport* question, not a comparison this function
     /// could make. `DELETE /api/v1/devices/{id}` makes the relay refuse the
     /// device's signed uploads and its sync sessions outright, and nothing at
     /// all reaches a peer after that. `Command::RevokeDevice` does not call it:
@@ -970,12 +966,11 @@ impl Engine {
     /// and wiring the two together is its own change.
     ///
     /// The residual is written down in `docs/01-architecture/threat-model.md`
-    /// §A3 together with the reason it is the right trade. The alternative —
-    /// treating revocation as retroactive, which is what filtering the cert
-    /// lookup on `revoked_at_ms` amounted to — throws away honest work a user
-    /// did yesterday on the laptop they revoked today. That is a worse and far
-    /// more likely failure than a backdating attacker who, by construction,
-    /// already had to be reachable and is already inside the account.
+    /// §A3, together with the sharper limit this cannot reach at all:
+    /// revocation converges the *cut* and not the *effect*. An op already
+    /// applied when the revocation arrives is never re-examined, so two
+    /// replicas that agree exactly on this row can still hold different task
+    /// tables, depending only on which op each saw first.
     fn is_revoked_at(
         &self,
         db: &Db,
@@ -1018,59 +1013,43 @@ impl Engine {
     /// Record that this replica will never apply `env`, so the sync cursor can
     /// move past it.
     ///
-    /// Only for refusals that are **permanent and converged**: the envelope's
-    /// signature has verified, so the bytes are known intact, and the reason is
-    /// a function of state every replica shares. Two refusals deliberately do
-    /// not qualify:
+    /// There is no refusal *table*. The sync cursor already is the durable
+    /// record of "everything through n is decided", and a permanent refusal
+    /// decides exactly one seq — so a refusal of `cursor + 1` advances the
+    /// cursor by one and everything else needs no storage at all. That is
+    /// exact where a stored range was interpolated: a range claimed every seq
+    /// between its ends was decided, which held only while the cut moved in one
+    /// direction, and under an LWW register it does not.
     ///
-    /// * a decode or signature failure — those bytes may have been damaged in
-    ///   transit, and the relay's replay is the only thing that would ever
-    ///   repair them;
-    /// * "no key at this `(stream, epoch)` opens it" — two devices can mint one
-    ///   epoch concurrently (D-7), so the key that opens it may still be in a
-    ///   `key_envelope` op on its way. Recording that as decided would turn a
-    ///   late key into permanent data loss.
+    /// A refusal of a seq beyond `cursor + 1` is simply not recorded. The
+    /// cursor stalls at the hole, the relay re-sends from there, and the range
+    /// closes itself as the intervening ops arrive — the same self-healing the
+    /// cursor already does for a hole in `ops`, and the same cost.
     ///
-    /// Stored as one **range** per `(stream_id, device_id)` rather than one row
-    /// per op: `seq` and `hlc` are both strictly increasing on the emitting
-    /// device, so for one pair the seq order is the HLC order, and the only
-    /// permanent refusal is a comparison against that HLC whose cut only ever
-    /// moves earlier. Refusals are therefore contiguous from the first one
-    /// onward. Without that compression a revoked device — which keeps its
-    /// relay credentials, since `Command::RevokeDevice` never calls
-    /// `DELETE /api/v1/devices/{id}` — turns every op it goes on signing into a
-    /// permanent row on every peer, which is the same unbounded-growth defect
-    /// [`DEFERRED_TOTAL_CAP`] exists to prevent one table over.
+    /// `reason` is a closed enum rather than a string on purpose: the cursor
+    /// advance is only sound for refusals that are permanent and converged, and
+    /// a typed reason is what stops a future caller passing
+    /// `"could not decrypt"` and silently telling the relay to stop resending
+    /// bytes that a late key would have opened. See [`RefusalReason`].
     fn record_refusal(
         &self,
         db: &mut Db,
         env: &sunrise_crypto::OpEnvelope,
-        reason: &str,
+        reason: RefusalReason,
     ) -> Result<(), EngineError> {
-        let now_ms = self.clock.now_ms();
+        let seq = i64::try_from(env.seq).unwrap_or(i64::MAX);
         db.with_tx(|tx| {
-            tx.execute(
-                "INSERT INTO refused_ops
-                 (stream_id, device_id, from_seq, through_seq, reason, refused_at_ms)
-                 VALUES (?1, ?2, ?3, ?3, ?4, ?5)
-                 ON CONFLICT(stream_id, device_id) DO UPDATE SET
-                    from_seq = MIN(from_seq, excluded.from_seq),
-                    through_seq = MAX(through_seq, excluded.through_seq),
-                    reason = excluded.reason,
-                    refused_at_ms = excluded.refused_at_ms",
-                params![
-                    &env.stream_id[..],
-                    &env.device_id[..],
-                    i64::try_from(env.seq).unwrap_or(i64::MAX),
-                    reason,
-                    now_ms
-                ],
-            )?;
-            // The refusal is what unblocks the prefix, so the cursor is
-            // recomputed inside the same transaction that recorded it.
-            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
+            advance_sync_cursor(tx, &env.stream_id, &env.device_id, Some(seq))?;
             Ok(())
         })?;
+        tracing::debug!(
+            ev = "core.op.refused",
+            reason = reason.as_str(),
+            stream_h = hex_short(&env.stream_id),
+            device_h = hex_short(&env.device_id),
+            seq = env.seq,
+            "an op this replica will never apply"
+        );
         Ok(())
     }
 
@@ -1199,7 +1178,7 @@ impl Engine {
         tx: &Transaction<'_>,
         inner: &InnerOp,
         sender: &[u8; 16],
-        hlc_ms: u64,
+        hlc: Hlc,
         now_ms: u64,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         match inner {
@@ -1268,77 +1247,65 @@ impl Engine {
                 })
             }
             InnerOp::DeviceRevoke(p) => {
-                // The cut is bounded against the op's own HLC before it is
-                // allowed to mean anything.
+                // The revocation row is an **LWW register** keyed on the op's
+                // own `(hlc, device_id)` — the same rule ADR-0014 resolves
+                // every other concurrent write in this engine with, rather than
+                // a bespoke one for this family.
                 //
-                // A revocation says "from now": it is emitted by a device that
-                // has just decided another one is gone, so its cut belongs
-                // beside the reading it was signed with. Below that reading it
-                // would reach backwards and invalidate work the revoked device
-                // did honestly — which `MIN` below would let a single op do to
-                // an account's whole history. Far above it, it is an immunity:
-                // `u64::MAX` sets a cut no HLC reaches and, because `MIN`
-                // converges on the earliest, every later genuine revocation
-                // lands on it and refuses nothing. See [`REVOKE_CUT_AHEAD_MS`]
-                // for why the forward window is a week rather than a minute.
+                // The cut is that same HLC. There is no `effective_at` field to
+                // pick a winner between, which is the point: see
+                // [`DeviceRevokePayload`] for the two bounds that could not be
+                // made to hold on an emitter-chosen one.
                 //
-                // `MAX_DRIFT_MS` backwards, because that is exactly the gap an
-                // honest emitter produces: `effective_at_ms` defaults to the
-                // local wall clock while the envelope carries a merged HLC,
-                // which the clock gate lets run that far ahead of it.
-                let floor = hlc_ms.saturating_sub(sunrise_cbor::hlc::MAX_DRIFT_MS);
-                let ceiling = hlc_ms.saturating_add(REVOKE_CUT_AHEAD_MS);
-                if p.effective_at_ms < floor || p.effective_at_ms > ceiling {
-                    tracing::warn!(
-                        ev = "core.device.revoke_refused",
-                        reason = "cut_out_of_range",
-                        target_h = hex_short(&p.revoked_device_id),
-                        effective_at_ms = p.effective_at_ms,
-                        hlc_ms,
-                        "a device_revoke's cut is not close enough to the op that declares it"
-                    );
-                    return Ok(Vec::new());
-                }
-                // The **earliest** cut wins, and every revocation is applied
-                // rather than only the first to arrive.
+                // Why LWW and not "earliest cut wins", which this arm briefly
+                // did: `MIN` converges, but it is **irreversible**. A cut that
+                // lands too far in the past — which a device with a slow clock
+                // produced through the ordinary command, no crafted input
+                // needed — could never be corrected, and it refuses its
+                // target's entire history on every replica. Under LWW a later
+                // revocation supersedes an earlier one, so a bad cut is fixed
+                // by revoking again from a healthy device.
                 //
-                // `WHERE revoked_at_ms IS NULL` was first-writer-wins, which
-                // was harmless while any non-NULL value untrusted the device
-                // outright and is not now that the column is compared against
-                // an HLC: the first revocation to land would be the only one
-                // that ever did, so two honest concurrent revocations with
-                // different cuts would resolve by arrival order and two
-                // replicas holding identical op sets would disagree about
-                // which ops stand.
-                //
-                // `MIN` over `(effective_at_ms, revoked_by)` is a join —
-                // commutative, associative, idempotent — so the row is a
-                // function of the *set* of revocation ops applied and not of
-                // their order. `revoked_by` is in the key so that two cuts at
-                // the same millisecond still pick the same winner everywhere,
-                // rather than leaving those two columns order-dependent while
-                // the timestamp converges. It is also safe-directional: the cut
-                // only ever moves earlier, so an op refused once stays refused.
-                let effective = i64::try_from(p.effective_at_ms).unwrap_or(i64::MAX);
+                // `logical` is in the key because an HLC is `(physical,
+                // logical)` and comparing physical alone would drop the half
+                // that orders two ops inside one millisecond. `revoked_by`
+                // breaks the remaining tie the way `LwwStamp` does, so
+                // `revoke_reason` and `revoked_by` follow the winning op
+                // instead of being order-dependent alongside a converged
+                // timestamp.
+                let cut = i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX);
+                let logical = i64::from(hlc.logical);
+                // Upserted, not updated. A `device_revoke` can legitimately
+                // arrive before the `DeviceCertPublish` that creates the row —
+                // across streams there is no ordering, and a cert parked in
+                // `deferred_ops` at meta epoch k drains after a revocation
+                // absorbed at k+1. A bare `UPDATE` dropped it silently and the
+                // cert then created the row **unrevoked**: fail-open, and
+                // decided by delivery order. The placeholder carries an empty
+                // `cert_blob`, which `lookup_device_cert` treats as "no cert
+                // yet"; the cert op fills the identity columns in and leaves
+                // the revocation columns alone.
                 tx.execute(
-                    "UPDATE devices
-                     SET revoked_by = CASE
-                             WHEN revoked_at_ms IS NULL
-                               OR ?1 < revoked_at_ms
-                               OR (?1 = revoked_at_ms AND (revoked_by IS NULL OR ?2 < revoked_by))
-                             THEN ?2 ELSE revoked_by END,
-                         revoke_reason = CASE
-                             WHEN revoked_at_ms IS NULL
-                               OR ?1 < revoked_at_ms
-                               OR (?1 = revoked_at_ms AND (revoked_by IS NULL OR ?2 < revoked_by))
-                             THEN ?3 ELSE revoke_reason END,
-                         revoked_at_ms = MIN(COALESCE(revoked_at_ms, ?1), ?1)
-                     WHERE device_id = ?4",
+                    "INSERT INTO devices
+                     (device_id, cert_blob, nickname, platform, created_at_ms,
+                      revoked_at_ms, revoked_hlc_logical, revoked_by, revoke_reason)
+                     VALUES (?4, X'', '', '', ?5, ?1, ?2, ?3, ?6)
+                     ON CONFLICT(device_id) DO UPDATE SET
+                        revoked_at_ms = ?1,
+                        revoked_hlc_logical = ?2,
+                        revoked_by = ?3,
+                        revoke_reason = ?6
+                     WHERE revoked_at_ms IS NULL
+                        OR (?1, ?2, ?3) > (revoked_at_ms,
+                                           COALESCE(revoked_hlc_logical, 0),
+                                           COALESCE(revoked_by, X''))",
                     params![
-                        effective,
+                        cut,
+                        logical,
                         &sender[..],
-                        p.reason_code.as_str(),
                         &p.revoked_device_id[..],
+                        i64::try_from(now_ms).unwrap_or(i64::MAX),
+                        p.reason_code.as_str(),
                     ],
                 )?;
                 Ok(Vec::new())
@@ -1446,7 +1413,13 @@ impl Engine {
         let blob: Option<Vec<u8>> = db
             .conn()
             .query_row(
-                "SELECT cert_blob FROM devices WHERE device_id = ?",
+                // `length(cert_blob) > 0` skips the placeholder row a
+                // `device_revoke` writes when it arrives before the cert that
+                // names its target. That row records the revocation and nothing
+                // else; there is no key in it to verify anything against, so
+                // the sender is correctly still unknown until its cert lands.
+                "SELECT cert_blob FROM devices
+                 WHERE device_id = ? AND length(cert_blob) > 0",
                 params![&device_id[..]],
                 |r| r.get(0),
             )
@@ -3969,25 +3942,9 @@ fn ops_run_end(
     )
 }
 
-/// The `(from_seq, through_seq)` this replica has permanently refused for
-/// `(stream_id, device_id)`, if any.
-fn refused_range(
-    tx: &Transaction<'_>,
-    stream_id: &[u8; 16],
-    device_id: &[u8; 16],
-) -> rusqlite::Result<Option<(i64, i64)>> {
-    tx.query_row(
-        "SELECT from_seq, through_seq FROM refused_ops
-         WHERE stream_id = ? AND device_id = ?",
-        params![&stream_id[..], &device_id[..]],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
-}
-
 /// Set `sync_cursors(stream_id, device_id)` to the end of the **contiguous**
-/// applied prefix — the largest `n` for which every seq `1..=n` from that
-/// device on that stream is in the op log.
+/// decided prefix — the largest `n` for which every seq `1..=n` from that
+/// device on that stream is either in the op log or permanently refused.
 ///
 /// A high-water mark would be wrong, and used to be what this wrote. Ops do
 /// arrive out of order: a dropped frame followed by a later one leaves the log
@@ -3997,35 +3954,54 @@ fn refused_range(
 /// noticed. That is silent data loss produced by the very mechanism meant to
 /// prevent it, so the cursor has to mean "I have everything through n", which
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
-///
-/// Regressing the cursor is impossible: the prefix is a function of the op log
-/// and the refusal log, and rows are only ever inserted into either, so it can
-/// only grow.
 fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
 ) -> rusqlite::Result<()> {
-    // The prefix is the run of *decided* seqs starting at 1, where decided is
-    // "applied, or permanently refused". The union is the whole point: a
-    // refused op never reaches `ops`, so a prefix read from `ops` alone would
-    // stop one short of it forever — the relay filters its replay by this
-    // number, so it would re-send that op and everything after it on every
-    // reconnect, none of it ever advancing anything. The cursor means "do not
-    // send me this again", and a refusal is exactly that.
-    //
-    // Refusals are held as one range per pair rather than one row per op (see
-    // [`Engine::record_refusal`]), so the walk is: the run of ops from 1; then,
-    // if the refused range begins at or before the next missing seq, over that
-    // range; then the run of ops again. At most one range exists per pair, so
-    // this terminates in two steps rather than looping.
-    let mut prefix = ops_run_end(tx, stream_id, device_id, 1)?;
-    if let Some((from, through)) = refused_range(tx, stream_id, device_id)? {
-        if from <= prefix.saturating_add(1) && through > prefix {
-            prefix = through;
-            prefix = ops_run_end(tx, stream_id, device_id, prefix.saturating_add(1))?;
-        }
+    advance_sync_cursor(tx, stream_id, device_id, None)
+}
+
+/// [`upsert_sync_cursor`], optionally deciding one further seq by refusal.
+///
+/// The stored cursor is the seed rather than a value to recompute from
+/// scratch, and that is what lets a refusal be durable without a table of its
+/// own: an op this replica refused is not in `ops` and never will be, so a
+/// prefix recomputed from `ops` alone would forget it and stall there forever
+/// — the relay filters replay by this number, so it would re-send that op and
+/// everything after it on every reconnect, none of it ever advancing anything.
+/// Seeding from the stored value keeps the decision without storing the op.
+///
+/// Nothing is lost by seeding: the stored value only ever got where it is by
+/// being justified, either by a run of `ops` or by a refusal, and the upsert
+/// takes `MAX`, so the cursor cannot regress either way.
+///
+/// A `refused` seq beyond `prefix + 1` is ignored rather than remembered. It
+/// would be a claim about seqs this replica has not decided, which is the
+/// interpolation a stored range made and could not justify once the revocation
+/// cut stopped being monotone.
+fn advance_sync_cursor(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+    refused: Option<i64>,
+) -> rusqlite::Result<()> {
+    let stored: i64 = tx
+        .query_row(
+            "SELECT last_applied_seq FROM sync_cursors
+             WHERE stream_id = ? AND device_id = ?",
+            params![&stream_id[..], &device_id[..]],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+
+    let mut prefix = stored.max(ops_run_end(tx, stream_id, device_id, 1)?);
+    if refused == Some(prefix.saturating_add(1)) {
+        prefix = prefix.saturating_add(1);
     }
+    prefix = ops_run_end(tx, stream_id, device_id, prefix.saturating_add(1))?.max(prefix);
+
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
          VALUES (?, ?, ?)
@@ -11358,46 +11334,26 @@ mod tests {
             .unwrap()
     }
 
-    /// Apply a `device_revoke` for `target`, effective at `effective_at_ms`,
-    /// through the same code path the op takes when it arrives over sync.
+    /// Apply a `device_revoke` for `target` declared at `hlc_ms`, through the
+    /// same code path the op takes when it arrives over sync.
     ///
-    /// The declaring op's HLC is `effective_at_ms` too, which is what an
-    /// honest emitter produces and what the cut's bounds are measured against.
-    fn revoke(
-        receiver: &Engine,
-        db: &mut Db,
-        sender: &Engine,
-        target: [u8; 16],
-        effective_at_ms: u64,
-    ) {
-        revoke_at(
-            receiver,
-            db,
-            sender,
-            target,
-            effective_at_ms,
-            effective_at_ms,
-        );
+    /// The cut *is* that HLC: there is no `effective_at` to pass, which is the
+    /// whole of decision 19.
+    fn revoke(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc_ms: u64) {
+        revoke_at(receiver, db, sender, target, Hlc::at(hlc_ms));
     }
 
-    /// [`revoke`] with the declaring op's HLC chosen separately from the cut.
-    fn revoke_at(
-        receiver: &Engine,
-        db: &mut Db,
-        sender: &Engine,
-        target: [u8; 16],
-        effective_at_ms: u64,
-        hlc_ms: u64,
-    ) {
+    /// [`revoke`] with the declaring op's full HLC, logical half included, so a
+    /// test can put two revocations inside one millisecond.
+    fn revoke_at(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc: Hlc) {
         let sender_id = sender.keychain.device_id();
         let inner = InnerOp::DeviceRevoke(DeviceRevokePayload {
             revoked_device_id: target,
             reason_code: RevokeReason::Lost,
-            effective_at_ms,
         });
         db.with_tx(|tx| {
             receiver
-                .apply_control_op(tx, &inner, &sender_id, hlc_ms, effective_at_ms)
+                .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms)
                 .map(|_| ())
         })
         .unwrap();
@@ -11536,7 +11492,13 @@ mod tests {
         let sender_id = sender.keychain.device_id();
         db.with_tx(|tx| {
             receiver
-                .apply_control_op(tx, &InnerOp::DeviceCertPublish(cert), &sender_id, 0, 0)
+                .apply_control_op(
+                    tx,
+                    &InnerOp::DeviceCertPublish(cert),
+                    &sender_id,
+                    Hlc::at(0),
+                    0,
+                )
                 .map(|_| ())
         })
         .unwrap();
@@ -12023,8 +11985,14 @@ mod tests {
             T0,
         );
         dbb.with_tx(|tx| {
-            eb.apply_control_op(tx, &InnerOp::DeviceCertPublish(cert), &a_id, T0, T0)
-                .map(|_| ())
+            eb.apply_control_op(
+                tx,
+                &InnerOp::DeviceCertPublish(cert),
+                &a_id,
+                Hlc::at(T0),
+                T0,
+            )
+            .map(|_| ())
         })
         .unwrap();
         assert_eq!(
@@ -12050,8 +12018,14 @@ mod tests {
         // written in the first place.
         let own = ec.keychain.cert_blob().to_vec();
         dbb.with_tx(|tx| {
-            eb.apply_control_op(tx, &InnerOp::DeviceCertPublish(own.clone()), &c_id, T0, T0)
-                .map(|_| ())
+            eb.apply_control_op(
+                tx,
+                &InnerOp::DeviceCertPublish(own.clone()),
+                &c_id,
+                Hlc::at(T0),
+                T0,
+            )
+            .map(|_| ())
         })
         .unwrap();
         assert_eq!(stored(&dbb, &c_id), own);
@@ -12089,7 +12063,7 @@ mod tests {
                 key_id: stream_key_id(&key),
                 hpke_ciphertext: sealed,
             });
-            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, T0, T0))
+            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0))
                 .unwrap()
         };
 
@@ -12260,38 +12234,43 @@ mod tests {
         );
     }
 
-    /// The `(revoked_at_ms, revoked_by, revoke_reason)` triple a replica holds
-    /// for `device`. The whole triple, because convergence on the timestamp
-    /// alone would still leave two replicas disagreeing about who did it.
-    fn revocation_row(
-        db: &Db,
-        device: &[u8; 16],
-    ) -> (Option<i64>, Option<Vec<u8>>, Option<String>) {
+    /// The whole revocation register a replica holds for `device`:
+    /// `(revoked_at_ms, revoked_hlc_logical, revoked_by, revoke_reason)`.
+    ///
+    /// All four, because convergence on the timestamp alone would still leave
+    /// two replicas disagreeing about who did it and why.
+    type RevocationRow = (Option<i64>, Option<i64>, Option<Vec<u8>>, Option<String>);
+
+    fn revocation_row(db: &Db, device: &[u8; 16]) -> RevocationRow {
         db.conn()
             .query_row(
-                "SELECT revoked_at_ms, revoked_by, revoke_reason FROM devices WHERE device_id = ?",
+                "SELECT revoked_at_ms, revoked_hlc_logical, revoked_by, revoke_reason
+                 FROM devices WHERE device_id = ?",
                 params![&device[..]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap()
     }
 
     /// Two replicas, the same two revocation ops, opposite arrival orders, one
-    /// final state — and it is the **earliest** cut, not the first to land.
+    /// final state — the register, and the effect it has on a third device's
+    /// ops.
     ///
-    /// `WHERE revoked_at_ms IS NULL` made this first-writer-wins. That was
-    /// harmless while any non-NULL value untrusted the device outright, and is
-    /// not now that the column is compared against an envelope's HLC: the first
-    /// revocation to arrive would be the only one that ever applied, so these
-    /// two replicas would hold different cuts, refuse different ops, and one
-    /// would write a permanent `refused_ops` row the other never would. That
-    /// falsifies the property `record_refusal` is built on — that a refusal is
-    /// a function of state every replica shares.
+    /// The row is an LWW register on the declaring op's own `(hlc, device_id)`,
+    /// which is how ADR-0014 resolves every other concurrent write here. It
+    /// converges regardless of order, and — unlike the `MIN` join it replaces —
+    /// it is reversible: a later revocation supersedes an earlier one, so a cut
+    /// that landed wrong can be corrected by revoking again.
+    ///
+    /// `revoke_reason` and `revoked_by` are asserted alongside the timestamp on
+    /// purpose. Convergence on the cut alone would still leave two replicas
+    /// disagreeing about who did it and why, which is what the previous
+    /// `(effective_at_ms, revoked_by)` tie-break left order-dependent.
     #[test]
-    fn concurrent_revocations_converge_on_the_earliest_cut_whatever_the_order() {
+    fn concurrent_revocations_converge_on_one_register_whatever_the_order() {
         let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
         let target = engine_seeded(ROOT, [1u8; 32], clock());
-        let sooner = engine_seeded(ROOT, [2u8; 32], clock());
+        let earlier = engine_seeded(ROOT, [2u8; 32], clock());
         let later = engine_seeded(ROOT, [3u8; 32], clock());
         let r1 = engine_seeded(ROOT, [4u8; 32], clock());
         let r2 = engine_seeded(ROOT, [5u8; 32], clock());
@@ -12301,10 +12280,10 @@ mod tests {
         trust(&r2, &mut db2, &target);
         let t = target.keychain.device_id();
 
-        // The same two ops. r1 sees the later cut first; r2 sees it last.
+        // The same two ops. r1 sees the later one first; r2 sees it last.
         revoke(&r1, &mut db1, &later, t, T0 + 9_000);
-        revoke(&r1, &mut db1, &sooner, t, T0 + 1_000);
-        revoke(&r2, &mut db2, &sooner, t, T0 + 1_000);
+        revoke(&r1, &mut db1, &earlier, t, T0 + 1_000);
+        revoke(&r2, &mut db2, &earlier, t, T0 + 1_000);
         revoke(&r2, &mut db2, &later, t, T0 + 9_000);
 
         let row1 = revocation_row(&db1, &t);
@@ -12315,103 +12294,257 @@ mod tests {
         );
         assert_eq!(
             row1.0,
-            Some(i64::try_from(T0).unwrap() + 1_000),
-            "the earliest cut wins, not the one that landed first"
+            Some(i64::try_from(T0).unwrap() + 9_000),
+            "the last writer wins, so a later revocation can correct an earlier one"
         );
         assert_eq!(
-            row1.1.as_deref(),
-            Some(&sooner.keychain.device_id()[..]),
-            "and the columns that say who did it follow the winning cut"
+            row1.2.as_deref(),
+            Some(&later.keychain.device_id()[..]),
+            "and every column follows the winning op, not just the timestamp"
         );
 
-        // Which is the point: both replicas now make the same cut for the same
-        // op, so neither can refuse what the other applies.
+        // The effect converges with the row: both replicas make the same cut
+        // for the same op, so neither refuses what the other applies.
         for (e, db) in [(&r1, &db1), (&r2, &db2)] {
-            assert!(e.is_revoked_at(db, &t, T0 + 5_000).unwrap());
-            assert!(!e.is_revoked_at(db, &t, T0 + 500).unwrap());
+            assert!(e.is_revoked_at(db, &t, T0 + 9_000).unwrap());
+            assert!(!e.is_revoked_at(db, &t, T0 + 5_000).unwrap());
         }
     }
 
-    /// A cut far from the op that declares it is refused, so no revocation can
-    /// immunise a device and none can reach backwards over its whole history.
-    ///
-    /// `u64::MAX` is the attack the `MIN` join would otherwise open: it sets a
-    /// cut no realistic HLC reaches, and because the earliest cut wins every
-    /// later genuine revocation converges onto it and refuses nothing. A cut of
-    /// 0 is the mirror image — with `MIN`, one op retroactively invalidating
-    /// everything a device ever wrote.
+    /// Two revocations inside one millisecond still converge, because the
+    /// register compares the HLC's logical half too.
     #[test]
-    fn a_revocation_cut_far_from_its_own_op_is_refused() {
-        let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let sender = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let target = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let mut db = db_root(ROOT);
-        trust(&er, &mut db, &target);
+    fn two_revocations_in_one_millisecond_converge_on_the_logical_half() {
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let a = engine_seeded(ROOT, [2u8; 32], clock());
+        let b = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
         let t = target.keychain.device_id();
 
-        for cut in [u64::MAX, 0, T0 + REVOKE_CUT_AHEAD_MS + 1, T0 - 86_400_000] {
-            revoke_at(&er, &mut db, &sender, t, cut, T0);
-            assert_eq!(
-                revocation_row(&db, &t).0,
-                None,
-                "a cut of {cut} against an op at {T0} must not land"
-            );
-        }
+        let lo = Hlc {
+            physical_ms: T0,
+            logical: 1,
+        };
+        let hi = Hlc {
+            physical_ms: T0,
+            logical: 7,
+        };
+        revoke_at(&r1, &mut db1, &a, t, hi);
+        revoke_at(&r1, &mut db1, &b, t, lo);
+        revoke_at(&r2, &mut db2, &b, t, lo);
+        revoke_at(&r2, &mut db2, &a, t, hi);
 
-        // The documented forward case still works: `key-rotation.md` §Device
-        // key rotation revokes the old key at `now + 24h`.
-        revoke_at(&er, &mut db, &sender, t, T0 + 24 * 60 * 60 * 1000, T0);
+        assert_eq!(revocation_row(&db1, &t), revocation_row(&db2, &t));
         assert_eq!(
-            revocation_row(&db, &t).0,
-            Some(i64::try_from(T0).unwrap() + 24 * 60 * 60 * 1000)
+            revocation_row(&db1, &t).2.as_deref(),
+            Some(&a.keychain.device_id()[..]),
+            "the greater logical half wins, so a physical-only compare is not enough"
         );
-        // And a genuine, nearer cut still lowers it afterwards.
-        revoke_at(&er, &mut db, &sender, t, T0 + 1_000, T0 + 1_000);
-        assert!(er.is_revoked_at(&db, &t, T0 + 2_000).unwrap());
     }
 
-    /// `Command::RevokeDevice` validates the cut too, against a tighter window
-    /// than apply uses, so a device never emits a revocation its peers refuse.
-    /// The field is `Option<u64>` and unchecked from `commands.rs` out to the
-    /// Swift seam.
+    /// A wall clock that steps **backwards** does not move the cut, because the
+    /// cut is the op's HLC and `Hlc::send` takes `max(now, local)`.
+    ///
+    /// This is H2's second half, and it was reachable with no attacker at all:
+    /// `effective_at_ms` defaulted to the wall clock, so a ten-minute NTP step
+    /// back produced a revocation whose cut every peer refused as out of range
+    /// — the user was told the stolen laptop was revoked while no other replica
+    /// agreed and nothing said so.
     #[test]
-    fn a_revoke_command_refuses_a_cut_that_is_not_from_now_onwards() {
-        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    fn a_backward_clock_step_does_not_move_the_cut() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let mut dba = db_root(ROOT);
         trust(&ea, &mut dba, &eb);
-        let peer = EntityRef::new(EntityKind::Device, eb.keychain.device_id());
 
-        for cut in [
-            Some(0),
-            Some(T0 - 1),
-            Some(u64::MAX),
-            Some(T0 + REVOKE_CUT_AHEAD_MS + 1),
-        ] {
-            let err = ea.apply(
-                &mut dba,
-                Command::RevokeDevice {
-                    device_id: peer,
-                    reason: RevokeReason::Lost,
-                    effective_at_ms: cut,
-                },
-            );
-            assert!(
-                matches!(err, Err(EngineError::Invalid(_))),
-                "cut {cut:?} should have been refused, got {err:?}"
-            );
-        }
+        // Something happens, so this device's HLC is at T0.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before the step".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
 
-        // The ordinary call — "now" — is accepted.
+        // The clock steps back ten minutes — twice `MAX_DRIFT_MS`.
+        set_clock(&ca, T0 - 10 * 60 * 1000);
         ea.apply(
             &mut dba,
             Command::RevokeDevice {
-                device_id: peer,
-                reason: RevokeReason::Lost,
-                effective_at_ms: None,
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Stolen,
             },
         )
-        .expect("a revocation effective now is the whole point");
+        .unwrap();
+
+        let cut = revocation_row(&dba, &eb.keychain.device_id()).0.unwrap();
+        assert!(
+            cut >= i64::try_from(T0).unwrap(),
+            "the HLC is monotone, so the cut cannot follow the clock backwards: {cut}"
+        );
+    }
+
+    /// A revocation whose cut landed in the past is **correctable**: revoking
+    /// again from a healthy device supersedes it, in either arrival order.
+    ///
+    /// A device that has not yet heard from a peer carries whatever HLC its own
+    /// clock gives it, so a badly-set one can still emit a backdated cut — the
+    /// register does not prevent that. What it does is stop the damage being
+    /// permanent. Under the `MIN` join this replaces, the earliest cut won
+    /// forever: one op from one mis-set device refused its target's entire
+    /// history on every replica in the account, irreversibly. Under LWW the
+    /// later op wins, which is the whole reason for choosing it.
+    #[test]
+    fn a_backdated_revocation_is_superseded_by_a_healthy_one() {
+        const YEAR_MS: u64 = 365 * 24 * 60 * 60 * 1000;
+        let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+        let target = engine_seeded(ROOT, [1u8; 32], clock());
+        let mis_set = engine_seeded(ROOT, [2u8; 32], clock());
+        let healthy = engine_seeded(ROOT, [3u8; 32], clock());
+        let r1 = engine_seeded(ROOT, [4u8; 32], clock());
+        let r2 = engine_seeded(ROOT, [5u8; 32], clock());
+        let mut db1 = db_root(ROOT);
+        let mut db2 = db_root(ROOT);
+        trust(&r1, &mut db1, &target);
+        trust(&r2, &mut db2, &target);
+        let t = target.keychain.device_id();
+
+        // The damage: a device a year slow revokes T, and its cut refuses
+        // everything T ever wrote.
+        revoke(&r1, &mut db1, &mis_set, t, T0 - YEAR_MS);
+        assert!(
+            r1.is_revoked_at(&db1, &t, T0 - YEAR_MS / 2).unwrap(),
+            "the premise: a backdated cut does refuse the target's history"
+        );
+
+        // The repair, and the same two ops in the other order on a second
+        // replica.
+        revoke(&r1, &mut db1, &healthy, t, T0);
+        revoke(&r2, &mut db2, &healthy, t, T0);
+        revoke(&r2, &mut db2, &mis_set, t, T0 - YEAR_MS);
+
+        assert_eq!(
+            revocation_row(&db1, &t),
+            revocation_row(&db2, &t),
+            "order decided nothing"
+        );
+        assert_eq!(
+            revocation_row(&db1, &t).0,
+            Some(i64::try_from(T0).unwrap()),
+            "the healthy cut supersedes the backdated one"
+        );
+        for (e, db) in [(&r1, &db1), (&r2, &db2)] {
+            assert!(
+                !e.is_revoked_at(db, &t, T0 - YEAR_MS / 2).unwrap(),
+                "and the target's history stands again"
+            );
+        }
+    }
+
+    /// The local command writes the same register the remote path does,
+    /// because it now *is* the remote path.
+    ///
+    /// There were two writers to these columns and only one took the join:
+    /// `apply_control_op` resolved concurrent revocations, while
+    /// `revoke_device` did a bare unconditional `UPDATE` that set neither the
+    /// HLC's logical half nor any guard. A device revoking one already revoked
+    /// therefore moved its own cut while every peer kept the other, and it was
+    /// then the only replica accepting a window of ops.
+    #[test]
+    fn a_local_revocation_writes_the_same_register_as_a_remote_one() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let target = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        // The register holds a full HLC and its sender, not half of one.
+        let row = revocation_row(&dba, &target);
+        assert_eq!(row.0, Some(i64::try_from(T0).unwrap()));
+        assert!(
+            row.1.is_some(),
+            "the bare UPDATE never wrote the logical half, so the register \
+             compared against a NULL here and a value on every other replica"
+        );
+        assert_eq!(row.2.as_deref(), Some(&ea.keychain.device_id()[..]));
+
+        // And it participates in the register: a staler revocation arriving
+        // afterwards does not overwrite it.
+        let before = revocation_row(&dba, &target);
+        revoke(&ea, &mut dba, &ec, target, T0 - 5_000);
+        assert_eq!(
+            revocation_row(&dba, &target),
+            before,
+            "a local write outside the register would have been overwritten here"
+        );
+    }
+
+    /// A `device_revoke` naming a device whose cert has not arrived yet is
+    /// durable, and the cert does not resurrect it.
+    ///
+    /// Ordinary, not exotic: a cert parked in `deferred_ops` at meta epoch *k*
+    /// drains after a revocation absorbed at *k+1*. A bare
+    /// `UPDATE ... WHERE device_id = ?` matched no row and dropped the
+    /// revocation silently; `DeviceCertPublish` then created the row
+    /// **unrevoked**. Fail-open, and decided by delivery order.
+    #[test]
+    fn a_revocation_that_arrives_before_the_cert_survives_it() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        let a_id = ea.keychain.device_id();
+
+        // B has never seen A's cert when the revocation lands.
+        revoke(&eb, &mut dbb, &eb, a_id, T0);
+        assert!(
+            eb.is_revoked_at(&dbb, &a_id, T0 + 1).unwrap(),
+            "the revocation must be durable without a devices row to update"
+        );
+
+        // The placeholder is not a cert: A is still an unknown sender, because
+        // there is no key in that row to verify anything against.
+        let res = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "after the cut".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let env = env_bytes(&dba, &res.op_id);
+        assert!(eb.apply_remote(&mut dbb, &env).is_err());
+
+        // Now A's cert arrives. It fills the identity columns in and leaves the
+        // revocation alone.
+        trust(&eb, &mut dbb, &ea);
+        assert!(
+            eb.is_revoked_at(&dbb, &a_id, T0 + 1).unwrap(),
+            "the cert must not resurrect a revoked device"
+        );
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &env),
+            Err(EngineError::DeviceRevoked)
+        ));
     }
 
     /// A revocation is the first control op a fresh vault emits, so resolving
@@ -12438,7 +12571,6 @@ mod tests {
             Command::RevokeDevice {
                 device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
                 reason: RevokeReason::Stolen,
-                effective_at_ms: None,
             },
         )
         .expect("revoking as the first act of a vault must work");
@@ -12466,15 +12598,18 @@ mod tests {
         assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
     }
 
-    /// A revoked device that keeps uploading costs its peers **one** row, not
-    /// one per op, and the cursor still walks past every one of them.
+    /// A revoked device that keeps uploading costs its peers **no storage at
+    /// all**, and its ops still stop coming back.
     ///
     /// It does keep uploading: `Command::RevokeDevice` never calls
     /// `DELETE /api/v1/devices/{id}`, so nothing takes its relay credentials
-    /// away. One row per refused op was the same unbounded-growth defect
-    /// `deferred_ops` is capped against.
+    /// away. A row per refused op was unbounded growth; a stored *range* was
+    /// bounded but interpolated, and the interpolation was justified on a cut
+    /// that only ever moved earlier — which an LWW register does not. The sync
+    /// cursor already means "everything through n is decided", so a refusal of
+    /// `n + 1` is recorded by advancing it and nothing else is stored.
     #[test]
-    fn a_revoked_devices_refusals_cost_one_row_however_many_ops_it_sends() {
+    fn a_revoked_devices_refusals_advance_the_cursor_and_store_nothing() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
         let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -12518,33 +12653,81 @@ mod tests {
         }
 
         assert_eq!(
-            refused_rows(&dbb),
-            1,
-            "twenty refusals are one contiguous range, not twenty rows"
-        );
-        assert_eq!(
             cursor_for(&dbb, &stream, &device),
             21,
-            "and the cursor still passes all of them, so the relay stops resending"
+            "the cursor passes all of them, so the relay stops resending"
         );
-
-        // The range is what it says it is.
-        let (from, through): (i64, i64) = dbb
-            .conn()
-            .query_row(
-                "SELECT from_seq, through_seq FROM refused_ops
-                 WHERE stream_id = ? AND device_id = ?",
-                params![&stream[..], &device[..]],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!((from, through), (2, 21));
+        assert_eq!(
+            op_count(&dbb),
+            1,
+            "and not one of the twenty entered the op log"
+        );
     }
 
-    fn refused_rows(db: &Db) -> i64 {
-        db.conn()
-            .query_row("SELECT COUNT(*) FROM refused_ops", [], |r| r.get(0))
-            .unwrap()
+    /// A refusal beyond the next undecided seq is not recorded, so the cursor
+    /// never claims a seq this replica has not decided.
+    ///
+    /// That claim is what a stored range made by interpolating between its
+    /// ends. It held only while the revocation cut moved in one direction, and
+    /// under an LWW register a later revocation can move it the other way — at
+    /// which point an interpolated seq would have been applicable after all,
+    /// and the cursor had already told the relay to stop sending it.
+    #[test]
+    fn a_refusal_past_the_next_undecided_seq_does_not_move_the_cursor() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        let mut envs = Vec::new();
+        for i in 0..3u64 {
+            set_clock(&ca, T0 + 1_000 + i);
+            let res = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: format!("seq {}", i + 1),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            envs.push(env_bytes(&dba, &res.op_id));
+        }
+        let head = sunrise_cbor::decode_envelope_header(&envs[0]).unwrap();
+        let (stream, device) = (head.stream_id, head.device_id);
+
+        revoke(&eb, &mut dbb, &eb, device, T0);
+
+        // Seq 3 is refused first. Seqs 1 and 2 are still undecided, so the
+        // cursor must not move: claiming 3 would strand them.
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &envs[2]),
+            Err(EngineError::DeviceRevoked)
+        ));
+        assert_eq!(cursor_for(&dbb, &stream, &device), 0);
+
+        // They arrive; the prefix closes over all three at once.
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &envs[0]),
+            Err(EngineError::DeviceRevoked)
+        ));
+        assert_eq!(cursor_for(&dbb, &stream, &device), 1);
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &envs[1]),
+            Err(EngineError::DeviceRevoked)
+        ));
+        assert_eq!(cursor_for(&dbb, &stream, &device), 2);
+        assert!(matches!(
+            eb.apply_remote(&mut dbb, &envs[2]),
+            Err(EngineError::DeviceRevoked)
+        ));
+        assert_eq!(
+            cursor_for(&dbb, &stream, &device),
+            3,
+            "the re-send of seq 3 closes the prefix; nothing was interpolated"
+        );
     }
 
     /// A re-delivery of an op this replica already applied is silence, not a
@@ -12575,16 +12758,10 @@ mod tests {
         let env = env_bytes(&dba, &res.op_id);
         eb.apply_remote(&mut dbb, &env).unwrap().expect("applied");
 
-        // A revocation whose cut sits below that op's HLC — which the `MIN`
-        // join makes reachable, since the cut only ever moves earlier.
-        revoke_at(
-            &eb,
-            &mut dbb,
-            &eb,
-            ea.keychain.device_id(),
-            T0 - 1_000,
-            T0 + 1_000,
-        );
+        // A revocation declared at the same reading the op carries: the cut is
+        // the revoking op's own HLC, and `is_revoked_at` is "at or after", so
+        // that op would be refused if it turned up again.
+        revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0);
         assert!(eb
             .is_revoked_at(&dbb, &ea.keychain.device_id(), T0)
             .unwrap());
@@ -12593,7 +12770,6 @@ mod tests {
             eb.apply_remote(&mut dbb, &env).unwrap().is_none(),
             "a re-receive is idempotent silence, not a refusal"
         );
-        assert_eq!(refused_rows(&dbb), 0, "and nothing was recorded against it");
         assert_eq!(
             read_task_t(&eb, &dbb, res.entity).title,
             "applied before anyone revoked anything",

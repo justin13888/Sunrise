@@ -203,14 +203,15 @@ pub enum Command {
     /// the rotation set — the vault-meta stream and the Inbox included. The
     /// revoked device keeps what it already had; it reads nothing written
     /// afterwards.
+    /// The cut is the HLC of the op this emits, not a value the caller
+    /// nominates: ops the device signed before it stand, ops at or after it are
+    /// refused by every replica. See [`crate::DeviceRevokePayload`] for why
+    /// there is no `effective_at` to pass.
     RevokeDevice {
         /// The device to revoke.
         device_id: EntityRef,
         /// Why, for the device list to show later.
         reason: RevokeReason,
-        /// From when. `None` means now. Ops the device signed before this
-        /// stand; ops at or after it are refused by every replica.
-        effective_at_ms: Option<u64>,
     },
     /// Mint a new epoch for one Stream and seal it to every current device.
     ///

@@ -179,13 +179,13 @@ pub enum CoreCommand {
     /// core: a device publishes an identity-signed certificate as an op when it
     /// first opens its vault, so the only device-list action left for a user is
     /// taking one away.
+    /// The cut is the HLC of the op this emits rather than a value the caller
+    /// nominates, so there is nothing here to pass and nothing to get wrong.
     RevokeDevice {
         /// The device to revoke.
         device_id: EntityRef,
         /// Why, for the device list to show later.
         reason: DeviceRevokeReason,
-        /// From when, in epoch milliseconds. `None` means now.
-        effective_at_ms: Option<u64>,
     },
     /// Mint a new epoch for one Stream and seal it to every current device.
     RotateStreamKey {
@@ -280,14 +280,9 @@ impl CoreCommand {
             Self::BindTask { block, task } => Command::BindTask { block, task },
             Self::UnbindTask { block, task } => Command::UnbindTask { block, task },
             Self::MaterializeRoutines { now_ms } => Command::MaterializeRoutines { now_ms },
-            Self::RevokeDevice {
-                device_id,
-                reason,
-                effective_at_ms,
-            } => Command::RevokeDevice {
+            Self::RevokeDevice { device_id, reason } => Command::RevokeDevice {
                 device_id,
                 reason: reason.into(),
-                effective_at_ms,
             },
             Self::RotateStreamKey { stream } => Command::RotateStreamKey { stream },
             Self::StartFocus {

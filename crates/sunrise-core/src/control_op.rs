@@ -119,6 +119,32 @@ impl RevokeReason {
 }
 
 /// A device is no longer a member of this account.
+///
+/// # There is no `effective_at` field, and that is the design
+///
+/// The cut is the **HLC of the op that declares it**, read off the envelope by
+/// every replica rather than chosen by the emitter. Ops the revoked device
+/// signed before that HLC stand; ops at or after it are refused. A revocation
+/// that retroactively erased the device's history would be worse than none —
+/// a laptop being retired did not un-write the six months of work it did — so
+/// the cut is still a time, it is simply not a time anyone gets to nominate.
+///
+/// An `effective_at_ms` field was tried and removed. It was a plain field of
+/// the signed envelope, so it was the whole of a revocation's meaning and
+/// entirely emitter-controlled, and no bound on it survived contact:
+///
+/// * bounding it *ahead* of the op's HLC left a window in which a cut could be
+///   parked far enough forward to refuse nothing;
+/// * bounding it *behind* had nothing to anchor to. `Hlc::observe` refuses
+///   readings from the future only; the past is unbounded by design, and
+///   nothing re-bounds a device's own HLC when its wall clock moves. A device
+///   more than a few minutes slow emits, through the ordinary command with no
+///   crafted input at all, a cut far enough in the past to refuse its target's
+///   entire history.
+///
+/// The op's own HLC has neither problem: it is monotone, it is merged from
+/// every peer this device has heard from rather than read off the wall clock,
+/// and the clock gate already refuses one too far ahead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceRevokePayload {
     /// The device being revoked.
@@ -126,14 +152,6 @@ pub struct DeviceRevokePayload {
     pub revoked_device_id: [u8; 16],
     /// Why.
     pub reason_code: RevokeReason,
-    /// From when. Ops the revoked device signed with an HLC at or after this
-    /// are refused; earlier ones stand.
-    ///
-    /// A revocation that retroactively erased the device's history would be
-    /// worse than none: a laptop being retired did not un-write the six months
-    /// of work it did. The cut is at a time, and the time is recorded so every
-    /// replica makes the same cut.
-    pub effective_at_ms: u64,
 }
 
 #[cfg(test)]
@@ -188,7 +206,6 @@ mod tests {
         let p = DeviceRevokePayload {
             revoked_device_id: [6u8; 16],
             reason_code: RevokeReason::Stolen,
-            effective_at_ms: 1_700_000_000_000,
         };
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&p, &mut buf).unwrap();
