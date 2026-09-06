@@ -1000,7 +1000,19 @@ fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("device.pairing");
 
-    let out = Command::new(bin())
+    // Run under a permissive umask, so 0600 is a property of the write and not
+    // of the environment the test happened to inherit. Under umask 077 this
+    // assertion passes with the fix reverted, which is what it did before.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg("umask 0; exec \"$0\" \"$@\"").arg(bin());
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = Command::new(bin());
+
+    let out = cmd
         .args(["inbox"])
         .env("SUNRISE_VAULT", dir.path())
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
@@ -1015,8 +1027,8 @@ fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
     let bytes = std::fs::read(&payload).expect("the payload must have been written");
     assert!(!bytes.is_empty(), "an empty payload is not a payload");
     // The payload is the whole account in the clear — `ID_S_priv`,
-    // `ID_D_priv`, the vault root and every Stream key — so it must not land
-    // at the process umask, which on a default 022 would leave it 0644.
+    // `ID_D_priv`, the vault root and every Stream key — so it must not land at
+    // the process umask, which under the `umask 0` above would leave it 0666.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
