@@ -1094,6 +1094,23 @@ impl Engine {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
+        // The age sweep runs on **every** absorbed key, not only on one that
+        // releases something. It used to sit past the early return below, so it
+        // ran only when this exact `(stream, epoch)` had rows parked — which is
+        // precisely the bucket about to be emptied anyway. A row ages out
+        // because nothing ever arrives for its bucket, so the one condition
+        // that reached the sweep was the one condition under which there was
+        // nothing to sweep. See [`DEFERRED_TTL_MS`] for why a row this old is
+        // ciphertext nobody will ever open.
+        let cutoff =
+            i64::try_from(self.clock.now_ms().saturating_sub(DEFERRED_TTL_MS)).unwrap_or(i64::MAX);
+        db.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM deferred_ops WHERE received_at_ms < ?",
+                params![cutoff],
+            )?;
+            Ok(())
+        })?;
         if parked.is_empty() {
             return Ok(Vec::new());
         }
@@ -1101,16 +1118,6 @@ impl Engine {
             tx.execute(
                 "DELETE FROM deferred_ops WHERE stream_id = ? AND epoch = ?",
                 params![&stream_id[..], epoch],
-            )?;
-            // Sweep whatever else has aged out while we are here. A drain is
-            // the only moment this table is known to be changing, so it is the
-            // one place a prune costs nothing extra; see [`DEFERRED_TTL_MS`]
-            // for why a row this old is ciphertext nobody will ever open.
-            let cutoff = i64::try_from(self.clock.now_ms().saturating_sub(DEFERRED_TTL_MS))
-                .unwrap_or(i64::MAX);
-            tx.execute(
-                "DELETE FROM deferred_ops WHERE received_at_ms < ?",
-                params![cutoff],
             )?;
             Ok(())
         })?;
