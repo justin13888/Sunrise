@@ -196,8 +196,26 @@ mod tests {
     ///
     /// The suffix rule is worth keeping literal, so its exceptions are listed
     /// one by one rather than pattern-matched: each has to be argued for by
-    /// hand, which is the point of the rule.
+    /// hand, which is the point of the rule. What stops the list being a
+    /// loophole is [`entity_ids_implied_by_hashes`] — an exception may not name
+    /// something the allowlist has already called an entity.
     const NOT_ENTITY_IDS: &[&str] = &["batch_id"];
+
+    /// The `_id` names the allowlist's own `_h` entries forbid.
+    ///
+    /// §6 bans full ids and admits a truncated hash in their place, so every
+    /// `x_h` on the list is a standing statement that `x_id` is an entity
+    /// identifier. Deriving the forbidden set from that, rather than listing a
+    /// few names by hand, is what makes the rule hold for entities nobody has
+    /// thought of yet: `op_id`, `session_id` and `frame_id` become forbidden
+    /// the moment their hashes are admitted, with no one having to remember.
+    fn entity_ids_implied_by_hashes() -> Vec<String> {
+        ALLOWED
+            .iter()
+            .filter_map(|n| n.strip_suffix("_h"))
+            .map(|stem| format!("{stem}_id"))
+            .collect()
+    }
 
     #[test]
     fn no_raw_identifier_keys_on_the_allowlist() {
@@ -215,19 +233,37 @@ mod tests {
     }
 
     #[test]
-    fn the_id_carve_out_is_not_a_loophole() {
-        // A carve-out for a name that is not on the list would quietly widen
-        // the rule the next time someone added that name.
+    fn the_id_carve_out_cannot_admit_an_entity() {
+        let forbidden = entity_ids_implied_by_hashes();
+        assert!(
+            forbidden.len() >= 9,
+            "the allowlist's `_h` entries went missing: {forbidden:?}"
+        );
+
         for name in NOT_ENTITY_IDS {
+            // A carve-out for a name that is not on the list would quietly
+            // widen the rule the next time someone added that name.
             assert!(
                 ALLOWED.contains(name),
                 "stale carve-out {name:?}: not on the allowlist"
             );
+            // And an exception may not name something the allowlist has
+            // already declared an entity by admitting its hash. This is the
+            // half a hand-written list of leaks could not enforce: adding
+            // `stream_id` to both this array and `ALLOWED` used to pass.
+            assert!(
+                !forbidden.contains(&(*name).to_owned()),
+                "carve-out {name:?} is an entity id — the allowlist admits its \
+                 `_h` hash, which is the reason the raw id is banned"
+            );
         }
-        // And the shapes the rule exists to catch stay caught.
-        for leak in ["task_id", "device_id", "person_id", "account_id"] {
-            assert!(!NOT_ENTITY_IDS.contains(&leak), "{leak:?} is an entity id");
-            assert!(!is_allowed(leak), "{leak:?} must never be allowlisted");
+
+        // Nothing the `_h` entries forbid may be on the list at all.
+        for id in &forbidden {
+            assert!(
+                !is_allowed(id),
+                "{id:?} is an entity id: the allowlist admits its `_h` hash"
+            );
         }
     }
 
