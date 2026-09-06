@@ -16,7 +16,7 @@ struct CalendarView: View {
                 NoteBanner(text: note) { model.dismissNote() }
             }
             if let error = model.errorMessage {
-                NoteBanner(text: error) { }
+                NoteBanner(text: error) { model.dismissError() }
             }
             Divider()
             grid

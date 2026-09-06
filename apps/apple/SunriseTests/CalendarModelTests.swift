@@ -267,4 +267,44 @@ struct CalendarModelTests {
         #expect(model.conflicts.count == 1)
         await vault.bridge.shutdown()
     }
+
+    /// The note banner's Dismiss closes it, and nothing else has to happen
+    /// first.
+    @Test
+    func dismissingTheNoteClearsIt() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+
+        model.keepBoth()
+        #expect(model.note != nil)
+
+        model.dismissNote()
+
+        #expect(model.note == nil)
+        await vault.bridge.shutdown()
+    }
+
+    /// **The regression test for a Dismiss button wired to nothing.**
+    ///
+    /// The error banner is drawn from `errorMessage`, which the model
+    /// otherwise clears only on the next successful write — so without a
+    /// dismissal of its own the visible ✕ does nothing and the banner reads as
+    /// permanent until some unrelated calendar action happens to succeed.
+    @Test
+    func dismissingTheErrorClearsIt() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+
+        // Refused by the domain: a block must end strictly after it starts.
+        await model.createBlock(
+            fromMs: hour(model, 9), toMs: hour(model, 9), title: "Nothing at all", kind: .zoned
+        )
+        #expect(model.rows.isEmpty)
+        #expect(model.errorMessage != nil)
+
+        model.dismissError()
+
+        #expect(model.errorMessage == nil)
+        await vault.bridge.shutdown()
+    }
 }
