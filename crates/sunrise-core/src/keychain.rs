@@ -692,6 +692,38 @@ impl Keychain {
         self.identity.dh_pub
     }
 
+    /// Whether this vault holds `ID_D_priv`, the account identity's X25519
+    /// secret — and therefore, today, whether it holds the **only** copy.
+    ///
+    /// True on exactly one device per account: the one that created it.
+    /// `Keychain::create` mints the identity there and keeps `dh_secret`;
+    /// every device admitted by pairing gets `dh_secret: None`, because
+    /// `PairingPayload` stopped carrying the key (that is the whole of the #76
+    /// read bound — see [`sunrise_pairing::payload`]).
+    ///
+    /// **The consequence, which nothing else in the tree states:** the second
+    /// copy is supposed to be the recovery blob, and the recovery blob is not
+    /// built — `seal_recovery_blob` has no production caller. So while this
+    /// returns `true`, this device's vault is the only place `ID_D_priv`
+    /// exists. If it is lost, the key is gone permanently: every
+    /// `Recipient::Identity` copy in the op log becomes unopenable forever, and
+    /// no recovery feature shipped afterwards can retrieve it, because there is
+    /// nothing left to seal a blob from. Before `ID_D_priv` was dropped from
+    /// the pairing payload, any surviving paired device could have produced
+    /// that blob later; now none can.
+    ///
+    /// Callers should surface this, not act on it. It is a disclosure about
+    /// what the user's backup situation actually is, not a capability check —
+    /// and it stops being an alarming answer the moment the recovery blob
+    /// ships, at which point this method still answers "does this device hold
+    /// the key" and no longer implies "solely".
+    ///
+    /// See `docs/03-crypto/recovery.md` §Implementation status.
+    #[must_use]
+    pub fn holds_only_copy_of_identity_key(&self) -> bool {
+        self.identity.dh_secret.is_some()
+    }
+
     /// The identity-signed device cert bytes (canonical CBOR).
     #[must_use]
     pub fn cert_blob(&self) -> &[u8] {
@@ -2050,6 +2082,49 @@ mod tests {
             ),
             "nor recover it on the next unlock"
         );
+    }
+
+    /// The sole-copy condition is *observable*, on the device it applies to and
+    /// on the ones it does not.
+    ///
+    /// Dropping `ID_D_priv` from `PairingPayload` moved the account identity's
+    /// unwrapping key from "on every device" to "on exactly one", and the
+    /// second copy it is supposed to have — the recovery blob — is not built.
+    /// So for every vault created from now on there is a window in which one
+    /// machine holds a key that cannot be reconstructed from anywhere else, and
+    /// nothing in the tree said so. A caller cannot warn about a condition it
+    /// cannot ask about, which is what this pins.
+    #[test]
+    fn only_the_account_creator_holds_the_identity_key() {
+        let root = VaultRootKey::from_bytes([0x6f; 32]);
+        let mut creator_db = db(&root);
+        let creator = open(&mut creator_db, &root);
+        assert!(
+            creator.holds_only_copy_of_identity_key(),
+            "the account's creator holds `ID_D_priv`, and today holds the only copy"
+        );
+
+        let payload = creator.export_pairing_payload(&creator_db).unwrap();
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&payload),
+        )
+        .unwrap();
+        assert!(
+            !paired.holds_only_copy_of_identity_key(),
+            "a paired device holds no copy at all, so it cannot hold the only one"
+        );
+
+        // And the answer survives a reopen on both sides: it is a property of
+        // what the vault stores, not of how it was constructed this session.
+        drop(creator);
+        drop(paired);
+        assert!(open(&mut creator_db, &root).holds_only_copy_of_identity_key());
+        assert!(!open(&mut paired_db, &root).holds_only_copy_of_identity_key());
     }
 
     /// A vault written by the pre-ADR-0024 code path opens, gains an identity,
