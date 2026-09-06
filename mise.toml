@@ -213,10 +213,11 @@ xcodebuild test \\
 
 # Generate the Xcode project, build the iOS app, and run its tests.
 #
-# The tests are `SunriseTests/` — the *same* sources the macOS bundle compiles,
-# built a second time against the iOS app. That is the whole claim this task
-# makes: not that the iOS app builds, but that it behaves the way the Mac does
-# everywhere the two share a model.
+# The unit tests are `SunriseTests/` — the *same* sources the macOS bundle
+# compiles, built a second time against the iOS app. That is the core claim
+# this task makes: not that the iOS app builds, but that it behaves the way the
+# Mac does everywhere the two share a model. The UI tests it also runs are
+# below.
 [tasks.ios-app]
 description = "Generate the Xcode project, build the iOS app, and run its tests"
 depends = ["apple-xcframework"]
@@ -226,6 +227,18 @@ run = """
 set -euo pipefail
 xcodegen generate --quiet
 swiftlint lint --strict --quiet --config .swiftlint.yml
+# No `-only-testing`: the `SunriseiOS` scheme's test targets run whole, so this
+# runs `SunriseiOSUITests` entire — the tab-shell and sidebar suites, and
+# `ScreenshotWalkTests` with them. Deliberate, not an oversight. The walk costs
+# about a minute inside a job budgeted for sixty, and this task is the only
+# thing that runs it in CI: `apple-shots` needs machine grants a runner has
+# not got. See the note on `ScreenshotWalkTests` for what the walk covers.
+#
+# If that minute ever stops being worth it, the lever is
+# `-skip-testing:SunriseiOSUITests/ScreenshotWalkTests` on the command below —
+# not `-only-testing`, which would drop the rest of the UI suite with it, and
+# not deleting the suite.
+#
 # Signed, unlike the macOS build, and it has to be. iOS gates the Keychain
 # on an application-identifier entitlement, which only exists on a signed
 # binary — with `CODE_SIGNING_ALLOWED=NO` every `SecItemAdd` returns
@@ -379,6 +392,66 @@ xcrun simctl install "$ios_sim" "$app"
 xcrun simctl launch "$ios_sim" "$bundle_id"
 echo
 echo "To start again from first run:  xcrun simctl uninstall '$ios_sim' $bundle_id"
+"""
+
+[tasks.apple-shots]
+description = "Walk every screen on both apps and write one PNG per screen to out/shots"
+depends = ["apple-xcframework"]
+shell = "bash -c"
+run = """
+set -euo pipefail
+# The macOS half is an XCUITest, so it needs both of the grants `macos-uitest`
+# documents — and the second one bites here in a way it does not there. The
+# automation grant is keyed to the *app bundle path*, and these tasks build
+# into `out/dd`, so a fresh clone or a new worktree is a new path and raises
+# the prompt again. Unattended, it fails with "Timed out while enabling
+# automation mode" after about three minutes.
+#
+# The iOS half needs neither. Failing here rather than producing half a walk
+# is the more useful answer.
+if ! DevToolsSecurity -status | grep -q enabled; then
+  echo "developer mode is off; run: sudo DevToolsSecurity -enable" >&2
+  exit 1
+fi
+echo "note: the first macOS run from this checkout raises an automation prompt." >&2
+echo "      accept it, or the macOS half times out after ~3 minutes." >&2
+root="$PWD"
+# `-resultBundlePath` refuses to overwrite, and a stale bundle beside a fresh
+# one is worse than no bundle at all.
+rm -rf out/shots
+mkdir -p out/shots
+cd apps/apple
+xcodegen generate --quiet
+
+# `SunriseUITests` has a scheme of its own because the target is
+# `skipped: true` in `Sunrise` — see the note on `macos-uitest`.
+xcodebuild test \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseUITests \\
+  -destination 'platform=macOS,arch=arm64' \\
+  -only-testing:SunriseUITests/ScreenshotWalkTests \\
+  -resultBundlePath "$root/out/shots/macos.xcresult" \\
+  -quiet
+
+xcodebuild test \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseiOS \\
+  -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -only-testing:SunriseiOSUITests/ScreenshotWalkTests \\
+  -resultBundlePath "$root/out/shots/ios.xcresult" \\
+  -quiet \\
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+
+cd "$root"
+# The attachments come out under generated filenames; the manifest carries the
+# names the tests set. A directory of UUIDs is not a design review.
+for platform in macos ios; do
+  xcrun xcresulttool export attachments \\
+    --path "out/shots/$platform.xcresult" \\
+    --output-path "out/shots/$platform" >/dev/null
+  .github/scripts/name-shots.py "out/shots/$platform"
+done
+echo "out/shots/macos/*.png and out/shots/ios/*.png"
 """
 
 # --- Mutation testing ---
