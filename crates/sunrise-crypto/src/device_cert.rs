@@ -42,7 +42,12 @@ pub struct DeviceCertInner {
     pub identity_id: [u8; 16],
     /// Cert creation time (ms since epoch).
     pub created_at_ms: u64,
-    /// Human-readable nickname (1..64 chars UTF-8).
+    /// Human-readable nickname, 1..=64 **bytes** of UTF-8 (not characters).
+    ///
+    /// The CDDL above says `tstr .size (1..64)`, and `.size` on a CDDL `tstr`
+    /// bounds bytes; `sunrise-server` enforces the same bound as
+    /// `MAX_NICKNAME_BYTES` with the message "nickname must be 1..=64 bytes".
+    /// A character bound here would mint certs the service refuses.
     pub nickname: String,
     /// Platform string (e.g., "macos15", "ios18", "linux-x86_64").
     pub platform: String,
@@ -466,20 +471,30 @@ mod tests {
     // that has to be decoded to be understood.
     // ---------------------------------------------------------------------
 
-    /// The eight body fields of [`fixture`], in the shape `body_to_cbor`
-    /// emits, as an editable list.
+    /// The body fields of [`fixture`] as an editable list, **decoded from
+    /// `body_to_cbor`'s own output** rather than retyped here.
+    ///
+    /// Retyping the encoder's key-id layout would let the two drift: renumber a
+    /// field in production and these tests would keep sending the old id, which
+    /// the in-range arm refuses as `BadField("body field shape")` — the very
+    /// error the width tests assert, so all of them would pass while measuring
+    /// nothing. Deriving the map means a renumbering moves the tests with it.
     fn body_fields() -> Vec<(i64, Value)> {
-        let body = fixture([1u8; 32]);
-        vec![
-            (1, Value::Integer(body.v.into())),
-            (2, Value::Bytes(body.device_id.to_vec())),
-            (3, Value::Bytes(body.d_s_pub.to_vec())),
-            (4, Value::Bytes(body.d_d_pub.to_vec())),
-            (5, Value::Bytes(body.identity_id.to_vec())),
-            (6, Value::Integer(body.created_at_ms.into())),
-            (7, Value::Text(body.nickname)),
-            (8, Value::Text(body.platform)),
-        ]
+        let encoded = body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes");
+        let decoded: Value =
+            ciborium::de::from_reader(encoded.as_slice()).expect("its own output decodes");
+        let Value::Map(map) = decoded else {
+            panic!("body_to_cbor emits a map")
+        };
+        map.into_iter()
+            .map(|(k, v)| match k {
+                Value::Integer(i) => (
+                    i64::try_from(i128::from(i)).expect("body field ids are small integers"),
+                    v,
+                ),
+                other => panic!("body_to_cbor emits integer keys, got {other:?}"),
+            })
+            .collect()
     }
 
     fn encode_fields(fields: Vec<(i64, Value)>) -> Vec<u8> {
@@ -503,12 +518,37 @@ mod tests {
         encode_fields(fields)
     }
 
+    /// Deriving [`body_fields`] from the encoder means a renumbering of the
+    /// body's CBOR key ids moves the tests with it — which is the point, but it
+    /// also means no width test would notice the renumbering. The key ids are a
+    /// wire contract (the CDDL at the top of this file), so pin them here
+    /// rather than leave the numbering unasserted anywhere in the crate.
+    #[test]
+    fn the_body_carries_exactly_the_eight_cddl_key_ids() {
+        let ids: Vec<i64> = body_fields().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            "the device-cert body's key ids are a wire contract; renumbering one \
+             breaks every peer that already speaks this format"
+        );
+    }
+
     /// Anchors every test below it: each wrong-width body differs from this one
     /// in exactly one field, so a refusal there is attributable to the width
     /// and to nothing else about how these bodies are built.
     #[test]
     fn the_unmodified_field_map_decodes_to_the_fixture() {
-        let decoded = body_from_cbor(&encode_fields(body_fields())).expect("well-formed body");
+        let rebuilt = encode_fields(body_fields());
+        // The editable map is the encoder's own output, so re-encoding it must
+        // reproduce those bytes exactly. This is what stops the tests below
+        // drifting from the encoder they exist to test.
+        assert_eq!(
+            rebuilt,
+            body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes"),
+            "the editable field map no longer reproduces body_to_cbor's output"
+        );
+        let decoded = body_from_cbor(&rebuilt).expect("well-formed body");
         assert_eq!(decoded, fixture([1u8; 32]));
     }
 
@@ -605,6 +645,73 @@ mod tests {
             body_from_cbor(&bytes),
             Err(DeviceCertError::Validation("nickname length"))
         ));
+    }
+
+    // The bound is on BYTES, not characters. With ASCII nicknames the two
+    // readings are indistinguishable, so `"x".repeat(n)` alone leaves
+    // `len()` silently reinterpretable as `chars().count()`. A three-byte
+    // character separates them: 22 of them are 66 bytes but only 22
+    // characters, so the byte reading refuses what the character reading
+    // waves through. Getting this wrong is not academic — `sunrise-server`
+    // refuses a nickname over 64 *bytes*
+    // (`crates/sunrise-server/src/api/devices.rs`, `MAX_NICKNAME_BYTES`), so a
+    // character bound here would mint a validly signed cert on the pairing
+    // path that the service then rejects.
+    /// U+65E5, three bytes in UTF-8.
+    const MULTIBYTE: &str = "\u{65e5}";
+
+    #[test]
+    fn a_multibyte_nickname_of_63_bytes_is_accepted() {
+        let nickname = MULTIBYTE.repeat(21);
+        assert_eq!((nickname.len(), nickname.chars().count()), (63, 21));
+
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let mut body = fixture([1u8; 32]);
+        body.nickname = nickname.clone();
+        let cert = DeviceCert::issue(body, &identity).expect("63 bytes is inside the bound");
+        let back = DeviceCert::from_cbor(&cert.to_cbor().expect("encodes")).expect("decodes");
+        assert_eq!(back.body.nickname, nickname);
+
+        assert_eq!(
+            body_from_cbor(&body_cbor_with(7, Value::Text(nickname.clone())))
+                .expect("63 bytes is inside the bound")
+                .nickname,
+            nickname
+        );
+    }
+
+    /// The falsifier for the unit: 66 bytes but only 22 characters, so this is
+    /// refused under the byte bound the CDDL and `sunrise-server` both state,
+    /// and accepted under a character bound.
+    #[test]
+    fn a_multibyte_nickname_of_66_bytes_is_refused_though_it_is_only_22_characters() {
+        let nickname = MULTIBYTE.repeat(22);
+        assert_eq!((nickname.len(), nickname.chars().count()), (66, 22));
+        assert!(
+            nickname.chars().count() <= 64,
+            "the character count must stay inside the bound, or this proves nothing"
+        );
+
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let mut body = fixture([1u8; 32]);
+        body.nickname = nickname.clone();
+        assert!(
+            matches!(
+                DeviceCert::issue(body, &identity),
+                Err(DeviceCertError::Validation("nickname length"))
+            ),
+            "body_to_cbor must bound the nickname in bytes, not characters"
+        );
+
+        assert!(
+            matches!(
+                body_from_cbor(&body_cbor_with(7, Value::Text(nickname))),
+                Err(DeviceCertError::Validation("nickname length"))
+            ),
+            "body_from_cbor must bound the nickname in bytes, not characters"
+        );
     }
 
     #[test]
