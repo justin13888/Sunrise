@@ -310,9 +310,11 @@ under `/api/v1/` and all in `crates/sunrise-server/src/api/sync.rs`. There is no
 upgrade and no handshake frame on the wire; the exchange below is what replaced
 them under [ADR-0023](../11-adr/0023-sse-sync-transport.md).
 
-`schemas/generated/openapi.v1.json` is authoritative for the exact request and
-response shapes, generated from the handlers themselves; this section describes
-the order they happen in and why, which a generated reference does not carry.
+[`../06-server/api.md`](../06-server/api.md) is where the OpenAPI description
+lives and is authoritative for the exact request and response shapes; this
+section owns the order they happen in and why, which a generated reference does
+not carry. The path is named there and nowhere else, so a move cannot leave two
+documents disagreeing about it.
 
 ```
 POST /sync/session          Authorization: Bearer <oidc_jwt>
