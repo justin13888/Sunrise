@@ -305,14 +305,18 @@ parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
 
-Five typed operations and one stream, all under `/api/v1/` and all in
-`crates/sunrise-server/src/api/sync.rs`. There is no upgrade and no handshake
-frame on the wire; the exchange below is what replaced them under
-[ADR-0023](../11-adr/0023-sse-sync-transport.md).
+Five typed operations, one of them a stream — four `POST`s and a `GET`, all
+under `/api/v1/` and all in `crates/sunrise-server/src/api/sync.rs`. There is no
+upgrade and no handshake frame on the wire; the exchange below is what replaced
+them under [ADR-0023](../11-adr/0023-sse-sync-transport.md).
+
+`schemas/generated/openapi.v1.json` is authoritative for the exact request and
+response shapes, generated from the handlers themselves; this section describes
+the order they happen in and why, which a generated reference does not carry.
 
 ```
 POST /sync/session          Authorization: Bearer <oidc_jwt>
-                            X-Sunrise-Device + X-Sunrise-Device-Sig
+                            X-Sunrise-Device, X-Sunrise-Device-Sig, Date
   → 201 { session_id, wire_proto, crypto_suite, doc_schema_floor,
           capabilities, server_time_ms }      ← Hello::negotiate, unchanged
   → 401, or 400 `VALIDATION_INVALID` whose message is the negotiation error
@@ -329,7 +333,7 @@ GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
                                    event carrying `id: <relay_frames.id>`
   ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
   ← data: {"kind":"ops", …}        live frames as peers publish them, no `id:`
-  ← :sunrise                       a comment every 15 s — what replaced Ping
+  ← : sunrise                      a comment every 15 s — what replaced Ping
   ← data: {"kind":"closed", …}     terminal; the body ends after it
 
 POST /sync/ops              X-Sunrise-Session
@@ -347,7 +351,13 @@ than modelling them as a frame.
 Every operation carries the bearer and, where `require_device_sig` is on, the
 [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) device binding —
 `GET /sync/events` included, signed over the request parts because it has no
-body. The stream is the one long-lived thing on the surface, so it re-checks on
+body. The binding is **three** headers, not two: `X-Sunrise-Device`,
+`X-Sunrise-Device-Sig` and `Date`, the last of them inside the signature so it
+cannot be adjusted in flight. `DeviceSig` declares all three
+(`crates/sunrise-server/src/api/signed.rs`) and a binding offered without `Date`
+is refused with `AUTH_DEVICE_SIG_INVALID`, so sending only the two
+`X-Sunrise-` headers earns a `401` rather than an unsigned-but-accepted
+request. The stream is the one long-lived thing on the surface, so it re-checks on
 a `device_recheck_ms` timer what every other route checks per request: the
 session's deadline and the device's active row. It emits `closed` with
 `AUTH_TOKEN_EXPIRED` or `AUTH_DEVICE_REVOKED` rather than outliving either.
