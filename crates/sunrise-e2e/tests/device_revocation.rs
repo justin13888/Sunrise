@@ -67,7 +67,7 @@ use std::time::Duration;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, RevokeReason, SystemClock};
 use sunrise_domain::{ContextDraft, StreamDraft, TaskDraft};
 use sunrise_e2e::{
-    canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live,
+    canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live, wait_pending_zero,
     wait_tasks_converge,
 };
 use sunrise_id::{EntityKind, EntityRef};
@@ -222,16 +222,74 @@ async fn a_revocation_converges_and_the_survivors_keep_syncing() {
         "the pre-revocation task is still readable on the revoked device"
     );
 
-    // Does not keep: anything written after the cut. B has both tasks by now
-    // (`wait_tasks_converge` above), so the ops have been fanned out and C has
-    // had every chance the relay gives it. C is sealed no envelope for the new
-    // epochs and has no `ID_D_priv` to open the identity copy with, so the
-    // second task cannot materialize there.
+    // Does not keep: anything written after the cut.
     //
-    // Given a generous settle: this is the assertion most worth being sure
-    // about, and a false pass here would be a claim that revocation works when
-    // it does not.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // This assertion used to be a bare `sleep(2s)`, which is not an assertion
+    // about revocation at all: it passes when the bound holds and equally when
+    // C is merely slow, disconnected, or has not been served yet. Three
+    // event-driven facts replace the delay, and then the negative is asserted
+    // against key material rather than against elapsed time.
+    //
+    // 1. A has nothing left to send: every op it emitted after the cut has been
+    //    accepted by the relay rather than sitting in a local outbox.
+    wait_pending_zero(&a, TIMEOUT).await;
+    // 2. The relay fanned those ops out — B has both tasks and the Context
+    //    (waited on above).
+    // 3. C's downlink is live and consuming A's ops from the revoking
+    //    transaction itself: it has applied the `device_revoke`, which is
+    //    sealed under the *pre*-rotation meta epoch and is therefore the last
+    //    thing A emits that C can still open. C is neither disconnected nor
+    //    behind on the stream that carries the rotation.
+    wait_revoked(&c, c_device, TIMEOUT).await;
+
+    // Now the mechanism. `export_pairing_payload` is a vault's own statement of
+    // every Stream key it holds, so this asks the question revocation is
+    // actually about — does C hold the key — instead of asking whether two
+    // seconds were enough. A slow device still holds no key it was never sent,
+    // and a dead one fails the positive half below.
+    let held_b = b
+        .export_pairing_payload()
+        .expect("the surviving device exports what it holds");
+    let held_c = c
+        .export_pairing_payload()
+        .expect("the revoked device exports what it holds");
+    let new_stream = *stream.bytes();
+    assert!(
+        held_b.stream_keys.contains_key(&new_stream),
+        "the survivor holds the post-cut Stream's key, or the next assertion is vacuous"
+    );
+    assert!(
+        !held_c.stream_keys.contains_key(&new_stream),
+        "the revoked device holds a key for a Stream minted after its cut"
+    );
+
+    // And on the streams both devices know, C is behind by exactly the
+    // rotation: every epoch C holds B holds too, and B holds at least one
+    // epoch C does not — the one the revocation minted. Asserting the
+    // direction as well as the gap is what stops this passing because C
+    // received nothing at all.
+    let mut c_is_behind_somewhere = false;
+    for (stream_id, epochs) in &held_c.stream_keys {
+        let c_max = *epochs
+            .keys()
+            .next_back()
+            .expect("a stream in the payload has at least one epoch");
+        let b_max = *held_b
+            .stream_keys
+            .get(stream_id)
+            .and_then(|e| e.keys().next_back())
+            .expect("the survivor holds every stream the revoked device does");
+        assert!(
+            c_max <= b_max,
+            "the revoked device is ahead of a survivor on stream {stream_id:?}: {c_max} > {b_max}"
+        );
+        c_is_behind_somewhere |= c_max < b_max;
+    }
+    assert!(
+        c_is_behind_somewhere,
+        "the rotation minted no epoch the revoked device was denied"
+    );
+
     let c_titles = task_titles(&c).await;
     assert!(
         !c_titles.contains(&"after the cut".to_owned()),
