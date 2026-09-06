@@ -305,23 +305,72 @@ parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
 
+Five typed operations and one stream, all under `/api/v1/` and all in
+`crates/sunrise-server/src/api/sync.rs`. There is no upgrade and no handshake
+frame on the wire; the exchange below is what replaced them under
+[ADR-0023](../11-adr/0023-sse-sync-transport.md).
+
 ```
-Client opens WS upgrade with Authorization: Bearer <oidc_jwt> + X-Sunrise-Device
-Server validates token + device → 101 Switching Protocols (or 401 / Close)
-Client → Hello → Server → HelloAck
-Client → Subscribe(streams)
-Server → OpBatch ... (retained frames, replayed verbatim)
-Server → StreamUpdate{CaughtUp(stream_id)} (backlog for that stream is drained)
-Server → OpBatch(...) live frames as they arrive from peers
-Client → OpBatch (locally generated ops) ← Ack (server echoes after persisting)
-…
-Client → Close (or socket close)
+POST /sync/session          Authorization: Bearer <oidc_jwt>
+                            X-Sunrise-Device + X-Sunrise-Device-Sig
+  → 201 { session_id, wire_proto, crypto_suite, doc_schema_floor,
+          capabilities, server_time_ms }      ← Hello::negotiate, unchanged
+  → 401, or 400 carrying the negotiation error's code
+
+POST /sync/subscribe        X-Sunrise-Session: <session_id>
+  { streams: [ { stream_id, cursors: [ { device_id, last_applied_seq } ] } ] }
+  → 204. Replaces the session's stream set; takes effect on the next
+    GET /sync/events.
+
+GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
+  ← data: {"kind":"gap", …}        only where the cursor predates retention,
+                                   always before that stream's replay
+  ← data: {"kind":"ops", …}        retained frames, replayed verbatim, each
+                                   event carrying `id: <relay_frames.id>`
+  ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
+  ← data: {"kind":"ops", …}        live frames as peers publish them, no `id:`
+  ← :sunrise                       a comment every 15 s — what replaced Ping
+  ← data: {"kind":"closed", …}     terminal; the body ends after it
+
+POST /sync/ops              X-Sunrise-Session
+  { stream_id, batch_id, ops: [ base64 OpEnvelope, … ] }
+  → 200 { batch_id, stream_id, server_first_seen_ms }   ← the Ack
+
+POST /sync/session/refresh  X-Sunrise-Session
+  { token }  → 200 { expires_at_ms }
 ```
 
-Replay and live fan-out are the **same** frame kind: the relay republishes
+The event kind is a field of the JSON `data:` payload, not the SSE `event:`
+name, and `SseTransport` drops comments before they reach the driver rather
+than modelling them as a frame.
+
+Every operation carries the bearer and, where `require_device_sig` is on, the
+[ADR-0022](../11-adr/0022-device-signature-canonical-json.md) device binding —
+`GET /sync/events` included, signed over the request parts because it has no
+body. The stream is the one long-lived thing on the surface, so it re-checks on
+a `device_recheck_ms` timer what every other route checks per request: the
+session's deadline and the device's active row. It emits `closed` with
+`AUTH_TOKEN_EXPIRED` or `AUTH_DEVICE_REVOKED` rather than outliving either.
+`RELAY_STORAGE_UNAVAILABLE` is the third close reason — a durable-log read that
+failed — and it is deliberately **not** followed by `caught_up`, because a
+client would record a completeness it has no basis for. A session whose
+credential is about to lapse renews it with `POST /sync/session/refresh`, which
+must name the same principal and the same device; the open stream keeps running.
+
+**Resumption is `Last-Event-ID`, and it does not replace the cursors.** Replayed
+`ops` events carry the relay's durable per-channel id, so a reconnect that
+presents the last id it saw resumes after that frame instead of replaying the
+retained backlog from the start. The two statements differ: `Last-Event-ID` says
+"I *received* everything up to here", a `Subscribe` cursor says "I have
+*applied* everything up to here", and they diverge exactly when delivery
+succeeded and application did not. The stricter one wins — re-sending
+`Subscribe` clears the client's resume point (`crates/sunrise-sync/src/sse.rs`),
+so the recovery path cannot resume past the ops it exists to fetch.
+
+Replay and live fan-out carry the **same** frame bytes: the relay republishes
 retained and live frames byte-for-byte, so a client cannot tell them apart from
-the header and does not need to. `CaughtUp` on `StreamUpdate` is the only
-boundary marker, and it is per-stream.
+the frame and does not need to. `caught_up` is the only boundary marker, and it
+is per-stream.
 
 ## Cursors
 
@@ -416,7 +465,7 @@ that needs an ADR.
 ## Security at the protocol layer
 
 - Wrapped in TLS 1.3.
-- Connection auth is an OIDC bearer token validated at WS upgrade; see [`../06-server/auth.md`](../06-server/auth.md).
+- Connection auth is an OIDC bearer token, presented as `Authorization: Bearer …` and validated on **every** operation — session open, subscribe, ops, refresh and the event stream — and re-checked on a timer inside an open stream; see [`../06-server/auth.md`](../06-server/auth.md).
 - Op envelopes are independently authenticated (signed by the originating device's `D_S_priv`) and encrypted at the application layer. Protocol-layer auth is for connection access only; content trust comes from the envelope signatures, which the server cannot forge regardless of token compromise.
 
 ## Self-host vs managed
