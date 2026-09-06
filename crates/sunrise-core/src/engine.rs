@@ -1146,6 +1146,34 @@ impl Engine {
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         match inner {
             InnerOp::KeyEnvelope(p) => {
+                // The epoch bound runs first, ahead of the recipient match,
+                // because the third-party arm below writes a
+                // `key_envelope_recipients` row and returns before any other
+                // check in this arm can run. An epoch far above this replica's
+                // live one is refused before it can be written anywhere.
+                //
+                // Two distinct harms, one bound. `MAX(epoch)` is what makes a
+                // key live, so *absorbing* an absurd epoch strands `mint_epoch`
+                // at the saturation point and redirects every op this device
+                // seals afterwards to a key nobody else holds. And *recording*
+                // an absurd epoch tells `backfill_key_envelopes` that a device
+                // nobody has served already holds that epoch's key, so it emits
+                // nothing and the device is left unable to read the stream. See
+                // [`MAX_EPOCH_LEAP`].
+                let live = self
+                    .keychain
+                    .current_epoch_tx(tx, &p.stream_id)?
+                    .unwrap_or(0);
+                if p.epoch > live.saturating_add(MAX_EPOCH_LEAP) {
+                    tracing::warn!(
+                        ev = "core.key.epoch_refused",
+                        stream_h = hex_short(&p.stream_id),
+                        epoch = p.epoch,
+                        live_epoch = live,
+                        "a key envelope names an epoch too far above this vault's own"
+                    );
+                    return Ok(Vec::new());
+                }
                 let recipient = match p.recipient {
                     Recipient::Device(id) if id == self.keychain.device_id() => {
                         EnvelopeRecipient::Device
@@ -1162,18 +1190,36 @@ impl Engine {
                     // which is what stops every replica emitting the same
                     // backfill envelope.
                     //
-                    // This is a claim the recorder cannot check. It holds no
-                    // key to open the ciphertext with, so a member emitting a
+                    // This is a claim the recorder cannot check: it holds no
+                    // key to open the ciphertext with. A member emitting a
                     // `key_envelope` full of garbage addressed to a third
-                    // device would suppress that device's backfill for that
-                    // `(stream, epoch)`. What bounds the damage is that
-                    // `backfill_key_envelopes` only ever fills the *current*
-                    // epoch of each stream: the next rotation mints a new
-                    // epoch, which is a new key in this table, so a suppressed
-                    // backfill is corrected by the next rotation rather than
-                    // being permanent. A member who can do this can also read
-                    // everything already (`threat-model.md` §A3), so this is a
-                    // nuisance bound rather than a confidentiality one.
+                    // device suppresses that device's backfill for that
+                    // `(stream, epoch)` -- `backfill_key_envelopes` finds a
+                    // row, emits nothing, and the device holds no key, so its
+                    // ops park in `deferred_ops` until `DEFERRED_TTL_MS` drops
+                    // them with nothing surfacing. The harm is a withhold, not
+                    // a leak.
+                    //
+                    // What bounds it is the `MAX_EPOCH_LEAP` check above, which
+                    // now runs before this row is written. Two bounds this
+                    // comment used to claim were not bounds and are gone:
+                    //
+                    // * "the next rotation corrects it, because that is a new
+                    //   epoch this table has no row for" -- false while any
+                    //   epoch could be claimed. Rows filed for e+1, e+2, ...
+                    //   poison rotations that have not happened yet, and the
+                    //   correction never arrives.
+                    // * "a member who can do this can read everything already"
+                    //   -- false for exactly the member class revocation now
+                    //   creates. A revoked device's reads are bounded by the
+                    //   rotation and its writes are bounded by nothing (see
+                    //   [`Self::apply_remote`] step 2), so it can file these
+                    //   rows and cannot read what they withhold.
+                    //
+                    // The residual is a claim inside the leap window, which is
+                    // corrected by the first rotation past `live +
+                    // MAX_EPOCH_LEAP`. Closing it outright would need the
+                    // recorder to verify a ciphertext it holds no key for.
                     Recipient::Device(other) => {
                         record_envelope_recipient(tx, &p.stream_id, p.epoch, &other, now_ms)?;
                         return Ok(Vec::new());
@@ -1194,26 +1240,6 @@ impl Engine {
                 if stream_key_id(&key) != p.key_id {
                     return Ok(Vec::new());
                 }
-                // An epoch far above this replica's live one is refused
-                // before it can be written. `MAX(epoch)` is what makes a key
-                // live, so absorbing an absurd one strands `mint_epoch` at the
-                // saturation point and redirects every op this device seals
-                // afterwards to a key nobody else holds. See
-                // [`MAX_EPOCH_LEAP`].
-                let live = self
-                    .keychain
-                    .current_epoch_tx(tx, &p.stream_id)?
-                    .unwrap_or(0);
-                if p.epoch > live.saturating_add(MAX_EPOCH_LEAP) {
-                    tracing::warn!(
-                        ev = "core.key.epoch_refused",
-                        stream_h = hex_short(&p.stream_id),
-                        epoch = p.epoch,
-                        live_epoch = live,
-                        "a key envelope names an epoch too far above this vault's own"
-                    );
-                    return Ok(Vec::new());
-                }
                 let learned = self.keychain.absorb_stream_key(
                     tx,
                     &p.stream_id,
@@ -1226,10 +1252,12 @@ impl Engine {
                 // Recorded *here*, and not where the recipient was matched.
                 // Everything between the two is a way for this envelope to be
                 // refused — an unopenable ciphertext, a `key_id` that does not
-                // re-derive, an epoch past `MAX_EPOCH_LEAP` — and a row written
-                // before those runs would say "this device has the key" about a
-                // key it declined. Nothing re-sends against a row that is
-                // already there, so that mistake is not self-correcting.
+                // re-derive — and a row written before those runs would say
+                // "this device has the key" about a key it declined. Nothing
+                // re-sends against a row that is already there, so that mistake
+                // is not self-correcting. (The epoch bound is the exception: it
+                // runs at the top of this arm, because the third-party arm
+                // records and returns before reaching here.)
                 record_envelope_recipient(
                     tx,
                     &p.stream_id,
@@ -12241,6 +12269,74 @@ mod tests {
         assert!(
             eb.keychain.stream_keys_at(&stream, u32::MAX).is_empty(),
             "the refused key is not written, so it cannot become the live epoch"
+        );
+    }
+
+    /// A third party's recipient claim is bounded in epoch before it is
+    /// recorded.
+    ///
+    /// The `Recipient::Device(other)` arm files a `key_envelope_recipients`
+    /// row on another device's word alone — it holds no key for that
+    /// ciphertext, so nothing about the claim is checkable — and that row is
+    /// what `backfill_key_envelopes` reads to decide a device already has the
+    /// key. Unbounded, it is a way to make a *future* epoch undeliverable:
+    /// file rows for e+1..e+k, wait for the rotation that reaches one, and the
+    /// backfill finds a row, emits nothing, and leaves a device with no key
+    /// while its ops park in `deferred_ops` until the TTL drops them with
+    /// nothing surfacing.
+    #[test]
+    fn a_third_party_envelope_claim_is_bounded_in_epoch() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        let a_id = ea.keychain.device_id();
+        let victim = [0x77u8; 16];
+        let stream = [0x5d; 16];
+
+        // The bytes are garbage on purpose. This path never opens them, which
+        // is precisely why the claim needs a bound that does not depend on
+        // opening them.
+        let claim = |db: &mut Db, epoch: u32| {
+            let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+                stream_id: stream,
+                epoch,
+                recipient: Recipient::Device(victim),
+                key_id: [0u8; 8],
+                hpke_ciphertext: vec![0u8; 48],
+            });
+            db.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0))
+                .unwrap();
+        };
+        let filed = |db: &Db, epoch: u32| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM key_envelope_recipients
+                     WHERE stream_id = ? AND epoch = ? AND recipient = ?",
+                    params![&stream[..], epoch, &victim[..]],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+
+        // This vault holds no key for the stream, so its live epoch is 0.
+        claim(&mut dbb, MAX_EPOCH_LEAP);
+        assert_eq!(
+            filed(&dbb, MAX_EPOCH_LEAP),
+            1,
+            "the far edge of the window is still inside it"
+        );
+
+        claim(&mut dbb, MAX_EPOCH_LEAP + 1);
+        assert_eq!(
+            filed(&dbb, MAX_EPOCH_LEAP + 1),
+            0,
+            "a claim one epoch past the window must not be recorded"
+        );
+        claim(&mut dbb, u32::MAX);
+        assert_eq!(
+            filed(&dbb, u32::MAX),
+            0,
+            "and an absurd epoch must not poison every rotation this account will ever do"
         );
     }
 
