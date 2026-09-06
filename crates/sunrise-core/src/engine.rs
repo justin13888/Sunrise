@@ -96,11 +96,14 @@ use thiserror::Error;
 /// snapshots and the control op families are logged under this meta stream,
 /// while task ops are logged under their owning Stream's id.
 ///
-/// It is an ordinary member of the rotation set. Revoking a device mints a new
-/// epoch here as it does for every other stream, so a revoked device stops
-/// seeing Streams created after it was cut off — not only their tasks. Leaving
-/// vault-meta on a fixed epoch would have left the metadata readable forever,
-/// which is exactly the claim ADR-0025's credential story rests on.
+/// It is an ordinary member of the rotation set: revoking a device mints a new
+/// epoch here as it does for every other stream, so the *shape* of the account
+/// rotates along with its contents rather than staying on a fixed key forever.
+///
+/// That is a property of the rotation, not a bound on a revoked device — this
+/// build seals every epoch to the account identity as well, and every paired
+/// device holds `ID_D_priv`, so a revoked device reads the new meta epoch like
+/// any other. Bounding it is `#76`.
 ///
 /// The Inbox no longer shares this id: see
 /// [`sunrise_domain::INBOX_STREAM_BYTES`].
@@ -442,29 +445,36 @@ impl Engine {
 
     // ---- device lifecycle + remote apply (receive half of sync) ----
 
-    /// Revoke a device: mint a new epoch for every stream it could read, seal
-    /// the new keys to the devices that remain, and record the revocation as an
-    /// op so every replica makes the same cut.
+    /// Record a device as revoked, and mint a new epoch for every stream it
+    /// could read.
+    ///
+    /// **This bounds nothing about the revoked device.** It records a cut every
+    /// replica converges on, and rotates keys that are then sealed to the
+    /// revoked device along with everyone else. Reads are `#76`, writes are
+    /// `#82` behind `#80`, and converging the *effect* is `#78`. The rotation
+    /// is still worth doing — it is what makes a future epoch a different key
+    /// at all — but a caller must not read it as cutting anybody off.
     ///
     /// Three things happen in one transaction, and the order is the design:
     ///
-    /// 1. The `DeviceRevoke` op is emitted and the local `devices` row is
-    ///    marked, so nothing after this point treats the device as a recipient.
+    /// 1. The `DeviceRevoke` op is emitted and the revocation register is
+    ///    written, through the same [`Self::apply_control_op`] a remote op
+    ///    takes, so the local and remote paths cannot disagree.
     /// 2. Every stream in the rotation set — the vault-meta stream and the
     ///    Inbox included, not only user Streams — mints a fresh epoch.
     /// 3. The `key_envelope` ops carrying those keys are sealed under the
     ///    **pre-rotation** vault-meta epoch, because a device that has not yet
     ///    received the new meta key cannot read an op sealed under it.
     ///
-    /// The vault-meta stream being in the set is what makes this more than
-    /// theatre. Leaving it on a fixed epoch would let a revoked device keep
-    /// reading every Stream, Context and Routine created afterwards — the
-    /// *shape* of the account, indefinitely — while only its task content went
-    /// dark.
+    /// The vault-meta stream is in the set so that the *shape* of the account —
+    /// its Streams, Contexts and Routines — rotates with its contents rather
+    /// than staying on one key forever. That matters for whoever implements
+    /// `#76`; it does not, on its own, stop anybody reading anything.
     ///
-    /// What revocation cannot do, and does not pretend to: the revoked device
-    /// keeps every key it already held, so it keeps everything it could already
-    /// read. Rotation bounds forward exposure, never backward.
+    /// What no rotation could ever do: the revoked device keeps every key it
+    /// already held, so it keeps everything it could already read. Rotation
+    /// bounds forward exposure at best, never backward — and today, not even
+    /// that.
     fn revoke_device(
         &self,
         db: &mut Db,
@@ -628,8 +638,8 @@ impl Engine {
     /// 1. `decode_envelope` — malformed bytes are rejected.
     /// 2. Sender lookup — `envelope.device_id` must be a device this vault has
     ///    admitted, else [`EngineError::UnknownDevice`]. Revocation is **not**
-    ///    consulted, here or anywhere else on this path: see
-    ///    [`Self::apply_control_op`].
+    ///    consulted, here or anywhere else on this path: the register is
+    ///    recorded and converged, and read by nothing.
     /// 3. `verify_envelope` against the stored device pubkey — a bad signature
     ///    is never applied.
     /// 4. Decrypt under the Stream key for the envelope's `(stream_id, epoch)`
@@ -893,9 +903,9 @@ impl Engine {
     /// on any production path asks this question, because nothing acts on the
     /// answer: this pull request records a revocation and converges it, and
     /// enforces it nowhere. The only production reader of the register is
-    /// [`Self::query_device_list`], which asks whether a device is revoked at
-    /// all so the UI can say so — not whether a particular op falls after the
-    /// cut.
+    /// [`Self::query_device_list`], which reports whether a device is revoked
+    /// at all — not whether a particular op falls after the cut — and no client
+    /// reads that flag today either.
     ///
     /// It stays because the convergence tests are about the cut being a *time*,
     /// and asserting that through this reads as what it is. If a later change
@@ -1297,9 +1307,11 @@ impl Engine {
     /// retroactive — with the row hidden, every op from a revoked device fell
     /// through to [`Self::self_authenticating_signer`], which knows only
     /// `DeviceCertPublish`, and came back `UnknownDevice` whatever its HLC
-    /// said, including work the device did honestly months earlier. What a
-    /// revocation does affect is in [`Self::apply_control_op`]: a revoked
-    /// device is not sealed to, and a key it offers is not absorbed.
+    /// said, including work the device did honestly months earlier.
+    ///
+    /// A revocation affects nothing on this path, or on any other: it is
+    /// recorded and converged by [`Self::apply_control_op`] and consulted by no
+    /// production code at all.
     fn lookup_device_cert(
         &self,
         db: &Db,
@@ -3536,9 +3548,9 @@ impl Engine {
     /// the second device, weeks later.
     ///
     /// A revoked device can read those rotation ops, because it still holds the
-    /// old epoch. It learns that a rotation happened and learns nothing else:
-    /// each envelope's payload is HPKE-sealed to a recipient's `D_D_pub`, and
-    /// the revoked device is not among them.
+    /// old epoch — and it can read the new keys too, because each envelope is
+    /// also sealed to the account identity and pairing hands every device
+    /// `ID_D_priv`. Bounding that is `#76`.
     #[allow(clippy::too_many_arguments)]
     fn ops_insert_at(
         &self,
@@ -3632,10 +3644,17 @@ impl Engine {
 
     /// Emit one `key_envelope` op per recipient for `(stream_id, epoch)`.
     ///
-    /// Recipients are every non-revoked device other than this one — which
-    /// already holds the key — plus the account identity, whose copy is what
-    /// makes a recovery with no surviving device restore readable content
-    /// rather than an empty vault.
+    /// Recipients are **every** device other than this one — which already
+    /// holds the key — plus the account identity, whose copy is what makes a
+    /// recovery with no surviving device restore readable content rather than
+    /// an empty vault.
+    ///
+    /// Revoked devices are **not** excluded, and the exclusion must not be
+    /// re-added here without reading `#76` first: the identity copy below is
+    /// sealed to a key every paired device holds, so dropping a revoked device
+    /// from the device recipients withholds nothing from it and only looks like
+    /// enforcement. `a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses`
+    /// fails if it comes back. See the block comment on the query itself.
     ///
     /// `seal_under` chooses the epoch these ops are themselves sealed at; see
     /// [`Self::ops_insert_at`]. `None` means "whatever the meta stream's live
@@ -6034,9 +6053,9 @@ impl Engine {
     ///
     /// A revoked device's past ops still happened, and a history that silently
     /// loses them the moment a laptop is de-authorized would be worse than no
-    /// history. Revocation stops *future* ops being accepted
-    /// ([`Self::lookup_device_cert`] filters there); it does not rewrite the
-    /// record.
+    /// history. Nothing filters on revocation anywhere on this path — not here
+    /// and not in [`Self::lookup_device_cert`], whose own doc explains why
+    /// membership is not a fact about which key verifies a signature.
     fn device_signing_keys(&self, db: &Db) -> Result<BTreeMap<[u8; 16], [u8; 32]>, EngineError> {
         let mut keys = BTreeMap::new();
         keys.insert(
@@ -12291,6 +12310,52 @@ mod tests {
             sealed_to_b,
             "the rotation still seals to the device it just revoked"
         );
+    }
+
+    /// Revoking a device leaves `devices.revoked_at_ms` NULL, because the
+    /// register lives in `device_revocations` and that column is superseded.
+    ///
+    /// Migration 0017 says so in a comment. This makes it a fact: anything that
+    /// starts writing the old column again fails here rather than creating a
+    /// second, silently disagreeing source of truth.
+    #[test]
+    fn revocation_does_not_touch_the_superseded_devices_column() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let target = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            revocation_row(&dba, &target).is_some(),
+            "the register is where the revocation lives"
+        );
+        let legacy: Option<i64> = dba
+            .conn()
+            .query_row(
+                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
+                params![&target[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, None, "the 0013 column is superseded and unwritten");
+        // And the device list reads the register, not the dead column.
+        match ea.query(&dba, Query::DeviceList).unwrap() {
+            QueryResult::Devices(rows) => assert!(
+                rows.iter().find(|d| d.device_id == target).unwrap().revoked,
+                "the device list still shows it revoked"
+            ),
+            other => panic!("expected Devices, got {other:?}"),
+        }
     }
 
     /// Two devices revoke each other, and both replicas end up holding both
