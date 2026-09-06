@@ -9,7 +9,8 @@
 //!
 //! This checks the two things that actually matter:
 //!
-//! - every event name emitted from shipped code is grammatical and catalogued;
+//! - every event name emitted from a shipped target is grammatical and
+//!   catalogued;
 //! - every *field name* those events carry is on the redaction allowlist, so
 //!   the record the catalogue promises can reach a subscriber at all.
 //!
@@ -39,6 +40,13 @@
 //! covered less because `target/` was cleaned would be the same defect in
 //! build-system clothes.
 //!
+//! There is a **fourth** condition it does not detect, and it is the one that
+//! is live: a dep-info can be perfectly current and still describe a *narrower
+//! configuration* than the tree contains. `.d` records what one build compiled
+//! under one set of features and one target platform, not what the crate holds.
+//! Nothing here notices, so the set can be silently narrow while every gate is
+//! green. See conditional compilation in the list below.
+//!
 //! # What this gate does not see
 //!
 //! Enumerated rather than implied, because the failure mode of every earlier
@@ -50,20 +58,38 @@
 //!   source like any other — but an *external* macro that expands to a
 //!   `tracing::` call is invisible. Dep-info names the *file*; what the tokens
 //!   in it become is not recorded there.
-//! - **Code that is not part of a shipped target.** Tests, benches, examples
-//!   and build scripts are outside the set on purpose: a fixture may invent its
-//!   own event names, and a `build.rs` runs at build time rather than in the
-//!   artefact whose logs an operator reads. Unit tests *inside* a shipped file
-//!   are scanned, because they are not separable from it — and the failure
-//!   messages say so, rather than calling a fixture "shipped code".
+//! - **Anything not compiled by the build that wrote the newest `.d`.** This
+//!   is the live gap, and it is not a boundary case. A module behind
+//!   `#[cfg(feature = "…")]` or `#[cfg(target_os = "…")]` **ships**, and is
+//!   absent from the dep-info of any build that did not enable it. The
+//!   instance here is `crates/sunrise-sync/src/sse.rs`, behind
+//!   `#[cfg(feature = "sse")]` — off by default, enabled by `sunrise-bench`,
+//!   `sunrise-cli`, `sunrise-core-bindings` and `sunrise-e2e`, and *not* by
+//!   `sunrise-core`. After an ordinary `cargo build -p sunrise-core` the
+//!   newest `sunrise_sync-*.d` names five files and not `sse.rs`, which this
+//!   pull request itself edits.
 //!
-//!   A whole file behind `#[cfg(test)]` — `sunrise-server`'s `api/testing.rs`
-//!   is the one here — sits on the boundary, and which side it lands on
-//!   depends on whether the newest dep-info came from a `cargo build` or a
-//!   `cargo test`. That is harmless in the direction that matters: a file that
-//!   ships is compiled by *every* build of its target and so is always in the
-//!   set, while one that never ships may drift in and out. Shipped coverage is
-//!   exact; the drift only ever adds.
+//!   So the same tree gives different answers depending on which cargo command
+//!   last wrote a `.d`. `mise run rust-test` produces the wide set, which is
+//!   why CI is on the safe side; a developer who last ran `cargo build
+//!   --workspace` is on the narrow one. A shipped file **can** escape the set,
+//!   and nothing here reports it: a `.d` can be current — passing every
+//!   condition above — and still describe a narrower configuration than the
+//!   tree contains. There is no claim of exactness to make here, and the
+//!   sentence that used to make one was wrong.
+//! - **Code that is not part of a shipped target.** Benches, examples and
+//!   build scripts are outside the set on purpose: a `build.rs` runs at build
+//!   time rather than in the artefact whose logs an operator reads. Note that
+//!   [`is_shipped_kind`] admits any `lib`, so `sunrise-e2e`, `sunrise-bench`
+//!   and `sunrise-crypto-test-vectors` *are* scanned despite existing only to
+//!   support tests — the phrase "shipped source file" in the failure messages
+//!   is loose for those three.
+//!
+//!   A unit test written inside a shipped file is scanned, because it is not
+//!   separable from the file. A whole file behind `#[cfg(test)] mod x;` is a
+//!   different thing and follows the rule above it: `sunrise-server`'s
+//!   `api/testing.rs` is in the set or not according to whether the newest
+//!   dep-info came from a `cargo build` or a `cargo test`.
 //! - **Crates built outside the workspace.** `cargo test` never builds one, so
 //!   there is no dep-info to derive its sources from. Each is an argued entry
 //!   in [`BUILD_TOOLS`] with a guard, and a new one fails
@@ -1257,7 +1283,8 @@ fn every_emitted_field_name_is_on_the_redaction_allowlist() {
     offenders.dedup();
     assert!(
         offenders.is_empty(),
-        "these field names are logged from a shipped source file but are not on \
+        "these field names are logged from a file compiled into a workspace \
+         library or binary, but are not on \
          the allowlist in crates/sunrise-log/src/field.rs. `RedactionLayer` \
          refuses the *whole event* on the first one it sees — a panic under \
          debug_assertions, a silent drop and a violations() bump in release.\n\n\
@@ -1280,7 +1307,8 @@ fn every_emitted_event_is_catalogued() {
     }
     assert!(
         undocumented.is_empty(),
-        "these event names are emitted from a shipped source file but are not in \
+        "these event names are emitted from a file compiled into a workspace \
+         library or binary, but are not in \
          docs/10-cross-cutting/log-events.md.\n\n\
          The scan covers `#[cfg(test)]` unit tests inside those files. **Do not \
          add a test fixture's event name to the catalogue** — it is the record \
