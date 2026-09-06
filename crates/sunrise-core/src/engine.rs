@@ -1295,9 +1295,9 @@ impl Engine {
                 }
                 tx.execute(
                     "INSERT INTO devices
-                     (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms,
+                     (device_id, cert_blob, nickname, platform, created_at_ms,
                       identity_id, d_d_pub)
-                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(device_id) DO UPDATE SET
                         cert_blob = excluded.cert_blob,
                         nickname = excluded.nickname,
@@ -1323,14 +1323,15 @@ impl Engine {
     /// The stored cert for `device_id`, revoked or not. `None` = a device this
     /// vault has never admitted.
     ///
-    /// Deliberately **not** filtered on `revoked_at_ms`. Filtering here is what
-    /// made a revocation retroactive: with the row hidden, every op from a
-    /// revoked device fell through to [`Self::self_authenticating_signer`],
-    /// which knows only `DeviceCertPublish`, and so came back `UnknownDevice`
-    /// whatever its HLC said — including work the device did honestly, months
-    /// before anyone revoked it. The cut is a *time*, and the comparison that
-    /// applies it lives in [`Self::is_revoked_at`], one step further on, where
-    /// the envelope's HLC is available to compare against.
+    /// Membership is not consulted here and must not be: this answers "which
+    /// key verifies this signature", which is a fact about the device and not
+    /// about its standing. Filtering it on revocation once made revocation
+    /// retroactive — with the row hidden, every op from a revoked device fell
+    /// through to [`Self::self_authenticating_signer`], which knows only
+    /// `DeviceCertPublish`, and came back `UnknownDevice` whatever its HLC
+    /// said, including work the device did honestly months earlier. What a
+    /// revocation does affect is in [`Self::apply_control_op`]: a revoked
+    /// device is not sealed to, and a key it offers is not absorbed.
     fn lookup_device_cert(
         &self,
         db: &Db,

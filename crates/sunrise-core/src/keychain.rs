@@ -1431,9 +1431,9 @@ fn insert_device_row(
 ) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO devices
-         (device_id, cert_blob, nickname, platform, created_at_ms, revoked_at_ms,
+         (device_id, cert_blob, nickname, platform, created_at_ms,
           identity_id, d_d_pub)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
         params![
             &device_id[..],
             cert_blob,
