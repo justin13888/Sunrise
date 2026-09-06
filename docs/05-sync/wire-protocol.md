@@ -319,8 +319,9 @@ documents disagreeing about it.
 ```
 POST /sync/session          Authorization: Bearer <oidc_jwt>
                             X-Sunrise-Device, X-Sunrise-Device-Sig, Date
-  → 201 { session_id, wire_proto, crypto_suite, doc_schema_floor,
-          capabilities, server_time_ms }      ← Hello::negotiate, unchanged
+  → 201 { session_id, server_app_v, wire_proto, crypto_suite,
+          doc_schema_floor, capabilities, server_time_ms }
+        Location: /api/v1/sync/events         ← Hello::negotiate, unchanged
   → 401, or 400 `VALIDATION_INVALID` whose message is the negotiation error
 
 POST /sync/subscribe        X-Sunrise-Session: <session_id>
@@ -389,7 +390,7 @@ states the precedence). Only `after_id == 0` — a first connection — replays 
 the cursors do not cover.
 
 **Cursor gaps are reported either way.** The `relay_evicted` watermark check runs
-on the cursors regardless of `after_id` (`relay_log.rs:302-325`), so a resumed
+on the cursors regardless of `after_id` (`relay_log.rs:303-326`), so a resumed
 stream still learns that ops it never received have aged out.
 
 The two statements are not interchangeable, which is why the precedence matters:
