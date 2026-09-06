@@ -113,13 +113,17 @@ By default, every device gets every Stream. Exceptions:
 
 Ops for unsubscribed Streams are not delivered; if the user later subscribes, the server backfills.
 
-## Device limits — target state
+## Device limits
 
-*Not enforced.* `Store::active_device_count` exists and is reported as
-`device_count` on the account resource, but nothing compares it to a threshold;
-device registration never refuses. The intent:
+**There is no device cap, and none is planned for v1.**
+`Store::active_device_count` exists and is reported as `device_count` on the
+account resource, but nothing compares it to a threshold and device registration
+never refuses. Earlier revisions named a soft limit of 10 and a hard limit of 50;
+those were plan-tier numbers sourced from `billing.md`, and
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) removes per-account quotas from
+v1 entirely.
 
-- Soft limit: 10 devices per identity.
-- Hard limit: 50 devices per identity.
-
-Beyond that, the user is asked to revoke unused devices. Reason: cursor tracking and key-envelope re-wrapping costs are O(devices) — a cost that only becomes real with ADR-0024's per-device key envelopes.
+What remains true is the cost curve a future cap would answer to: cursor tracking
+and key-envelope re-wrapping are O(devices), a cost that only becomes real with
+[ADR-0024](../11-adr/0024-key-hierarchy.md)'s per-device key envelopes. A cap, if
+one is ever wanted, is that ADR's consequence rather than a billing lever.

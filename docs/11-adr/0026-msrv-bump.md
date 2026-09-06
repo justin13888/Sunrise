@@ -4,7 +4,8 @@
 
 **Amends:** [ADR-0012](./0012-web-wasm-deferred.md) (its revisit trigger has
 fired), [ADR-0019](./0019-swiftui-macos-client.md) (the stated reason for the
-`uniffi-bindgen` quarantine).
+`uniffi-bindgen` quarantine), [ADR-0021](./0021-kynos-openapi-server.md) (one
+present-tense statement of the old pin).
 
 ## Context
 
@@ -103,7 +104,8 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
   `camino`), and resolver 2 unifies features per package across one cargo
   invocation, so the seam crate would compile against a `uniffi` carrying the
   whole binding generator. Measured: 21 packages live in that directory's
-  lockfile and nowhere else in the tree.
+  lockfile and nowhere else in the tree — 20 third-party dependencies, plus the
+  generator crate itself.
 * **The five stale explanations are corrected.** The claim in
   `tools/uniffi-bindgen/Cargo.toml`, `crates/sunrise-core-bindings/Cargo.toml`,
   `mise.toml`, `README.md` and `docs/01-architecture/dependencies.md` — that
@@ -127,25 +129,37 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
 * **Three clippy sites changed, no `allow` added.** Raising `rust-version` turns
   on MSRV-gated lints, which is a real cost of any bump and the reason to prefer
   the lowest workable number.
-* **The number is now asserted rather than repeated.** A new `msrv` job in
-  `.github/workflows/ci.yml` requires `rust-toolchain.toml`'s `channel`, the
-  root `Cargo.toml`'s `rust-version`, and the `rustc` a checkout actually
-  resolves to be one string. That last check also proves the toolchain-file
-  override takes effect at all — an assumption the `rust`, `macos-app` and
-  `ios-app` jobs already depended on and none of them tested.
+* **The number is now asserted rather than repeated.** The first step of the
+  `rust` job in `.github/workflows/ci.yml` requires four values to be one
+  string: `rust-toolchain.toml`'s `channel`, the root `Cargo.toml`'s
+  `rust-version`, the `Dockerfile`'s `ARG RUST_VERSION`, and the `rustc` a
+  checkout actually resolves. That last comparison also proves the
+  toolchain-file override takes effect at all — an assumption the `rust`,
+  `macos-app` and `ios-app` jobs already depended on and none of them tested.
+  It sits inside the `rust` job rather than in a job of its own so that it runs
+  on both matrix legs (the override is per-directory and per-machine, and macOS
+  is where the iOS slices are added to it) and costs no second toolchain
+  download. It fails closed: a value that cannot be read is a failure, not a
+  skipped comparison.
 * **The `Dockerfile`'s `ARG RUST_VERSION` moves to 1.91.1**
   (`rust:1.91.1-slim-bookworm` is published) and the three CI comments naming
-  1.88.0 name 1.91.1. The Dockerfile is deliberately **not** covered by the
-  `msrv` job: it is not built in CI, and a docker build to check one `ARG` would
-  cost minutes to guard a line a reader can see.
+  1.88.0 name 1.91.1. **The `ARG` is covered by the assertion above**, and it
+  has to be: `release.yml`'s `image` job builds this Dockerfile passing only
+  `VERSION` and `VCS_REF` as build-args, so the `ARG`'s default is the compiler
+  for every published server image. An earlier draft of this ADR excluded it on
+  the grounds that the Dockerfile is not built in CI and that checking it would
+  need a docker build costing minutes. Both halves were wrong — it *is* built,
+  by the release workflow, and checking it costs one `sed` line against the
+  file, not a build.
 * **1.88 still appears in the tree, and every remaining mention is historical**
   — ADR-0012, ADR-0019 and ADR-0021's bodies, and the "it used to be" clauses in
   the manifests this change rewrote. ADR bodies are records of a decision at a
   moment; editing them to agree with today is how a ledger stops being worth
   reading (see [ADR-0020](./0020-v1-must-demotions.md)'s addendum). ADR-0021's
   "MSRV is unaffected: the workspace pins 1.88.0 and `spargen` needs 1.88" is
-  such a record; `spargen`'s floor is below the new pin, so nothing it asserted
-  has broken.
+  such a record, and the only one phrased in the present tense, so it gets the
+  same one-line `Amended by` header as 0012 and 0019 rather than a body edit.
+  `spargen`'s floor is below the new pin, so nothing it asserted has broken.
 
 ## What would force revisiting this
 
@@ -159,7 +173,10 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
 3. **#52 landing.** Once `rusqlite` 0.40 is in, `libsqlite3-sys` 0.38.1's
    `cfg_select!` becomes a real compile-time dependency on 1.91 rather than a
    prospective one, and this pin stops being reversible even in principle.
-4. **A second toolchain appearing.** The `msrv` job asserts one number in three
-   places. A cross-compilation or a nightly-only job that needs a different
-   toolchain would need that job extended rather than bypassed, or the assertion
-   silently stops meaning what it says.
+4. **A second toolchain appearing.** The assertion in the `rust` job requires
+   one number in four places. A cross-compilation or a nightly-only job that
+   needs a different toolchain would need that step extended rather than
+   bypassed, or the assertion silently stops meaning what it says. The same
+   applies to a fifth place naming the version: if one appears, it joins the
+   step, because a pin that is asserted in four files and free in the fifth is
+   the exact failure this bullet exists to prevent.

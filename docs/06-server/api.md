@@ -4,7 +4,7 @@ status: accepted
 
 # Server API
 
-Two surfaces: the **sync protocol** (over WebSocket; spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
+Two surfaces: the **sync protocol** (an SSE stream downstream and typed `POST`s upstream, per [ADR-0023](../11-adr/0023-sse-sync-transport.md); payloads spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
 
 > **This document is no longer authoritative about shapes.**
 > [`schemas/openapi.v1.json`](../../schemas/openapi.v1.json) is, per
@@ -80,6 +80,12 @@ AccountCreateRequest { email, identity_signing_pub, identity_dh_pub, recovery_bl
 AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
+`AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
+provisioning (`crates/sunrise-server/src/store.rs:268`) and nothing updates it or
+reads it for a decision. It is retained for wire compatibility, not because it
+means anything — there are no plan tiers in v1
+([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
+
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
 the account `identity_id`; `GET /api/v1/devices` is where device metadata comes
 from. `POST /accounts` neither chooses nor returns a new account id: the account
@@ -118,13 +124,16 @@ routes that would emit them do not exist. The codes `codes` actually defines are
 `AUTH_DEVICE_SIG_INVALID`, `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`,
 `VALIDATION_INVALID`, `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`,
 `BLOB_NOT_FOUND`, `RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. An
-oversized body is rejected by `tower_http`'s `RequestBodyLimitLayer` at
-`[server] max_body_bytes` (default 2 MiB) with a bare `413` and no Sunrise error
-envelope — well below the 10 MiB cap this section assumes.
+oversized body is rejected by kynos's own `middleware::limits::BodySize`, mounted
+at `[server] max_body_bytes` (default 2 MiB), which answers `413` — and, unlike
+the `tower-http` layer it replaces, contributes that response to every operation
+it covers in the OpenAPI description, so the API no longer rejects payloads it
+claims to accept. The limit is still well below the 10 MiB cap this section
+assumes.
 
 ### Identity discovery (for sharing) — NOT IMPLEMENTED
 
-Neither route below is mounted; there is no `routes/identities.rs`. Sharing
+Neither route below is mounted; there is no `api/identities.rs`. Sharing
 depends on discovery, and [`../11-adr/0024-key-hierarchy.md`](../11-adr/0024-key-hierarchy.md)
 makes the point in the other direction: under the derived-key model there is no
 unit smaller than "everything" to grant, so discovery would have had nothing to
@@ -171,7 +180,7 @@ as revoked rather than as absent.
 
 Three consequences are observable and tested:
 
-- **A device cannot revoke itself.** `routes/devices.rs` refuses a `DELETE`
+- **A device cannot revoke itself.** `api/devices.rs` refuses a `DELETE`
   whose target is the caller's own bound device with `403 AUTH_DEVICE_NOT_OWNER`.
   A device that can revoke itself is a device a thief can use to erase the
   evidence; signing out locally is a key wipe, not a server call.
@@ -225,7 +234,7 @@ it is the **content address** of bytes the server has not seen yet.
 | GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
 
 Every route is authenticated and device-bound like the rest of the REST API —
-`routes/blobs.rs` runs the full `authenticate` pipeline on all four. `init`
+`api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
 answers `200`, a chunk `PUT` answers `204`, and `finalize` answers `200`.
 Alongside the hash checks, `init` and `finalize` enforce
 `1 <= chunk_count <= 4096`, `1 <= chunk_bytes <= 1 MiB`, and a
@@ -285,7 +294,7 @@ period — so it lands with the GC slice rather than as a bare unlink.
 
 ### Sharing — NOT IMPLEMENTED
 
-No `routes/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
+No `api/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
 `/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
 [ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
 derived-key model there is no key unit smaller than the whole vault to grant,
@@ -312,7 +321,7 @@ The `share_envelope` is opaque to the server.
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
 | GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise | **NOT IMPLEMENTED** |
 
-`MetaResponse` (`routes/meta.rs`) is:
+`MetaResponse` (`api/meta.rs`) is:
 
 ```
 { server_app_v, wire_proto_supported: [uint], crypto_suite_supported: [uint],
@@ -374,9 +383,9 @@ not as anything a client can receive.
 ## Rate limits — NOT IMPLEMENTED
 
 There is no rate-limiting middleware anywhere in `crates/sunrise-server`. The
-only `tower-http` layers `build_router` mounts are `CorsLayer`,
-`RequestBodyLimitLayer` and the hand-assembled trace layer; nothing counts
-requests per IP, per account, or per token. An unauthenticated caller can hit
+only middleware `api/mod.rs` mounts is kynos's `Cors` and `BodySize`, plus the
+`RequestLog` observer in `api/observe.rs`; nothing counts requests per IP, per
+account, or per token. An unauthenticated caller can hit
 `/api/v1/meta`, `/api/v1/health` and `/metrics` at whatever rate the socket
 allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
 `401`s.
@@ -384,11 +393,16 @@ allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
 The target, when it is built:
 
 Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
-Per-account: see [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md).
+
+Per-account limiting is **out of v1** — it presupposes per-account accounting
+that does not exist ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
+The design of record for it is
+[`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md),
+which is `proposed`.
 
 ## Why so few endpoints?
 
-Most "API" calls in a typical app — CRUD on tasks — are *not* server API calls in Sunrise. They're local commands that produce ops, which sync via the WebSocket transport as opaque envelopes. The REST surface is intentionally minimal.
+Most "API" calls in a typical app — CRUD on tasks — are *not* server API calls in Sunrise. They're local commands that produce ops, which sync as opaque envelopes over `POST /sync/ops` and back down the event stream. The REST surface is intentionally minimal.
 
 ## Endpoint availability by deployment
 

@@ -174,4 +174,4 @@ Apple Watch / Wear OS (when shipped): start/stop focus, see timer. No editing.
 
 ## States
 
-Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract). (Focus mode itself is never "empty" — it shows an idle screen when no task is selected.)
+Empty / loading / error states follow the three-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#three-state-view-contract). (Focus mode itself is never "empty" — it shows an idle screen when no task is selected.)

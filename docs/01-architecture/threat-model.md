@@ -78,7 +78,7 @@ status: accepted
 **Reference scrubbing semantics.** Cross-stream reference scrubbing happens at **op-emit time** by the owner's device:
 
 - Cross-stream references can only be **created** by the owner. The UI ensures this — non-owner editors do not have ids for entities outside the shared Stream, so they cannot author such a reference in the first place.
-- The owner's device knows which Streams each recipient cohort can read (from `share_grant` records). Any reference to an entity in a Stream the cohort cannot read becomes `{kind: "redacted", reason: "private_ref"}` in the encrypted-for-cohort envelope. The owner retains the original (unscrubbed) form locally.
+- The owner's device knows which Streams each recipient cohort can read (from `share_grant` records). Any reference to an entity in a Stream the cohort cannot read becomes `{kind: "redacted", reason: "private_ref", placeholder_text: "—"}` in the encrypted-for-cohort envelope. The owner retains the original (unscrubbed) form locally.
 - Scrubbing is **per-recipient-cohort**, not retroactive. If a cohort gains access to a previously-private Stream, prior ops they received remain redacted; new ops include the previously-private references unredacted.
 
 ### A6: Malicious dependency / supply chain

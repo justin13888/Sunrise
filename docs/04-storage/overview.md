@@ -14,12 +14,11 @@ These are bundled into a single **Vault** directory.
 
 ```
 $VAULT/
-├── meta.json           # vault id, schema version, encryption metadata, no secrets
-├── vault.db            # SQLite (SQLCipher), holds ops + materialized state + FTS index
-├── blobs/
-│   ├── 0a/0a3f.../     # content-addressed encrypted chunks
-│   └── …
-└── tmp/                # staging area for incoming sync batches
+├── vault.db                        # SQLite (SQLCipher): ops + materialized state + FTS index
+├── core.lock                       # single-writer lock
+├── core.lock.owner                 # pid//owner of the held lock
+└── blobs/
+    └── 0a/0a3f…/<chunk_idx>.bin    # ciphertext chunks, keyed by 16-byte blob_id
 ```
 
 ## Why one SQLite for both ops and state
@@ -43,8 +42,8 @@ The op envelope is encrypted (per [`../03-crypto/data-encryption-format.md`](../
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/sunrise/<account>/` |
 | Windows | `%LOCALAPPDATA%\Sunrise\<account>\` |
 | iOS | App container `Library/Sunrise/` (excluded from iCloud, included in iOS device backup if user opts in) |
-| Android | `Context.filesDir/sunrise/<account>/` (private) |
-| Web | OPFS root + per-origin IndexedDB; same logical structure |
+| Android *(post-v1, [ADR-0027](../11-adr/0027-v1-self-host-first.md))* | `Context.filesDir/sunrise/<account>/` (private) |
+| Web *(deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md))* | OPFS root + per-origin IndexedDB; same logical structure |
 | CLI | `$SUNRISE_VAULT`, default `~/.sunrise/vault` |
 
 ## Multi-account

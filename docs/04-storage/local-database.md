@@ -31,9 +31,10 @@ All multi-row writes are wrapped in a single `BEGIN IMMEDIATE … COMMIT`. Reads
 > **The schema itself lives in
 > [`crates/sunrise-storage/migrations/0013_baseline.sql`](../../crates/sunrise-storage/migrations/0013_baseline.sql),
 > and that file is the source of truth**, together with the migrations appended
-> after it — today just
-> [`0014_stream_sort_order.sql`](../../crates/sunrise-storage/migrations/0014_stream_sort_order.sql),
-> which adds `streams.sort_order`. The baseline is a collapse, not a sequence
+> after it, listed in
+> [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/)
+> — four files today, the baseline plus three. Naming them here is what rotted
+> last time; the directory is the list. The baseline is a collapse, not a sequence
 > ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and it carries the
 > design rationale for each table on the table. This section describes the
 > *shape and the reasons*; it deliberately does not restate every column, because
@@ -194,11 +195,13 @@ sqlcipher_raw_key = BLAKE3.derive_key(
 )   // 32 bytes; passed to SQLCipher as a 64-char hex blob via PRAGMA key
 ```
 
-Using a pre-derived key bypasses SQLCipher's internal PBKDF2 (we already gated entry through Argon2id at unlock); we set `PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512` and `PRAGMA kdf_iter = 1` since the input is already a uniformly random 32-byte key.
+Using a pre-derived key bypasses SQLCipher's internal PBKDF2: we set `PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512` and `PRAGMA kdf_iter = 1`.
+
+**What `kdf_iter = 1` rests on, precisely.** It rests on the input already being a uniformly random 32-byte key — not on a prior Argon2id gate, because there is no passphrase unlock. `Unlock::Passphrase` exists as a variant (`crates/sunrise-core/src/unlock.rs:11`) and **no caller constructs it**; every `Core::open` in the tree passes `Unlock::DevicePaired`. The root is generated once at random per vault and held by the OS: `SecRandomCopyBytes` into the login Keychain on macOS, or a `0600` key file in the CLI's keystore (`crates/sunrise-cli/src/vault.rs:20-28`). A second device gets it by pairing, not by the user retyping anything. Argon2id does appear in `sunrise-crypto`, but for the **recovery** key derived from the BIP-39 seed (`crates/sunrise-crypto/src/recovery.rs`), which is a different path.
 
 The choice of AES here is a deliberate divergence from XChaCha20-Poly1305 used elsewhere; rationale:
 
-- SQLCipher's AES-CBC + HMAC mode is shipped as a single audited library on every supported platform (including iOS, Android, WASM via `wa-sqlite`).
+- SQLCipher's AES-CBC + HMAC mode is shipped as a single audited library on every platform v1 targets. (The WASM story would go through `wa-sqlite`, which nothing in the tree builds — the web core is deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md).)
 - Page-level encryption inside SQLite has its own design (per-page IVs, MAC over `(page_no, ciphertext)`). Replacing the cipher would mean shipping a custom SQLCipher fork, which is outside our maintenance budget.
 - The vault DB at rest is protected by the OS keystore and the application unlock; the cipher choice here is defense-in-depth, not the primary trust boundary.
 

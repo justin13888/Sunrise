@@ -142,12 +142,19 @@ When sharing, only Persons with linked cryptographic identities can be granted a
 > ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); each entity spec's
 > §Merge mapping is the shipped behaviour.
 
-Each domain entity maps to a CRDT subtree. See [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md). Briefly:
+**Target state, none of it implemented.** ADR-0003 is superseded by
+[ADR-0014](../11-adr/0014-entity-level-lww-merge.md): v1 merges at entity
+granularity with LWW in SQLite and ships **no CRDT library**, so no entity maps
+to a CRDT subtree today and none of the per-field types below exists. The
+deferred design is [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)
+(`proposed`); the rules actually in force are
+[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md). Read
+the list in the conditional:
 
-- Entities are *maps* keyed by ID.
-- Each entity is itself a map of fields.
-- Lists (e.g. an ordered child-task list) are CRDT lists (RGA-flavored).
-- Sets (e.g. contexts on a task) are observed-remove sets.
-- Counters (e.g. routine streak) are PN-counters.
+- Entities would be *maps* keyed by ID.
+- Each entity would itself be a map of fields.
+- Lists (e.g. an ordered child-task list) would be CRDT lists (RGA-flavored).
+- Sets (e.g. contexts on a task) would be observed-remove sets.
+- Counters (e.g. routine streak) would be PN-counters.
 
-This maps directly into Loro's data model (see [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md)) — **target state**. ADR-0003 is superseded by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md): v1 merges at entity granularity with LWW in SQLite and ships no CRDT library.
+That model is Loro's (see [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md)), and `loro` is in no `Cargo.toml` in the workspace.

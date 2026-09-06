@@ -6,15 +6,20 @@ status: accepted
 
 A binary, length-prefixed message framing over a reliable byte stream, implemented in `crates/sunrise-wire-protocol/`.
 
-> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaces the transport under
-> this protocol.** Sync moves to an SSE stream downstream and typed `POST`
-> operations upstream; the WebSocket this document describes is the current
-> implementation, not the settled design (see [`transports.md`](./transports.md)).
-> The **payload types and their canonical CBOR encoding survive the move
-> unchanged** — `Hello::negotiate`, the capability bitfield and the frozen
-> fixtures all carry over. What does not survive is the frame header below:
-> magic, versions, `msg_kind`, flags and length are subsumed by HTTP framing and
-> SSE event types, and the zstd flag is retired with them.
+> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the transport under
+> this protocol, and the move has landed.** Sync is an SSE stream downstream and
+> typed `POST` operations upstream; the WebSocket this document was written
+> against is gone (see [`transports.md`](./transports.md)). The **payload types
+> and their canonical CBOR encoding survived unchanged** — `Hello::negotiate`,
+> the capability bitfield and the frozen fixtures all carried over. The frame
+> header below did not survive on the wire: magic, versions, `msg_kind`, flags
+> and length are subsumed by HTTP framing and SSE event types. It survives
+> *inside the client*, because `SseTransport` is the seam — the sync driver
+> still hands it whole encoded frames and still reads whole encoded frames back
+> — and it survives on the relay's own storage, which appends the rebuilt
+> `OpBatch` frame verbatim and streams those same bytes out again. So the
+> layout below still describes real bytes; it no longer describes a wire
+> protocol two peers speak to each other.
 
 ## Frame layout
 
@@ -43,10 +48,17 @@ non-canonical input and trailing garbage, which is what makes
 `CRYPTO_NON_CANONICAL_CBOR` enforceable rather than aspirational.
 
 The rule covers **all** payloads including the handshake. `Hello` and
-`HelloAck` are the exception in the tree, not in the contract: the server reads
-`Hello` with `ciborium::de::from_reader` and writes `HelloAck` with
-`ciborium::ser::into_writer` (`crates/sunrise-server/src/ws.rs`), bypassing the
-canonicality check every other payload gets.
+`HelloAck` are the exception in the tree, not in the contract, and after
+[ADR-0023](../11-adr/0023-sse-sync-transport.md) the exception is entirely
+client-side: `crates/sunrise-core/src/sync_driver.rs` encodes the `Hello` frame
+with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
+`ciborium::de::from_reader` and writes the `HelloAck` frame the same way
+(`crates/sunrise-sync/src/sse.rs:320-366`). Both bypass the canonicality check
+every other payload gets. The server sees neither frame — `POST /sync/session`
+takes a typed body and rebuilds a `Hello` from its fields
+(`crates/sunrise-server/src/api/sync.rs`) — so the handshake's two hops through
+`ciborium` now happen on one side of the wire, between the driver and the
+adapter that speaks HTTP for it.
 
 **Closing it is a wire-format change, and it is deliberately deferred to
 [ADR-0023](../11-adr/0023-sse-sync-transport.md)'s transport move.** `Hello`'s
@@ -101,20 +113,27 @@ Compression is per-frame, optional. Scope is the `payload` only.
 
 **zstd is implemented and never enabled.** `encode_frame` and `decode_frame`
 both handle `FrameFlags::ZSTD` and the round trip is unit-tested, but
-**no call site outside those tests ever sets the bit** — not `ws.rs`, not the
-sync driver. Every frame on the wire today is uncompressed. ADR-0023 retires the
-flag with the frame header rather than carrying it forward unused, so the
-"SHOULD compress" rule above describes a policy no build has ever executed.
+**no call site outside those tests ever sets the bit** — every `encode_frame`
+call in the server, in `SseTransport` and in the sync driver passes
+`FrameFlags::EMPTY`. Every frame on the wire today is uncompressed. ADR-0023
+retires the flag with the frame header rather than carrying it forward unused,
+so the "SHOULD compress" rule above describes a policy no build has ever
+executed.
 
 ## Message catalog
 
-The OIDC access token is carried as an `Authorization: Bearer …` header on the WebSocket upgrade request. The server validates the token before accepting `Hello` and uses `X-Sunrise-Device` to bind the connection to a registered device row. There is no separate Auth message.
+The OIDC access token is carried as an `Authorization: Bearer …` header on every
+sync request — `POST /sync/session` and each operation after it. The server
+validates the token before running `Hello::negotiate` and uses `X-Sunrise-Device`
+to bind the session to a registered device row. There is no separate Auth
+message.
 
-A `?access_token=` query parameter, for browsers that cannot set a header on an
-upgrade, is **not implemented**: no route reads one. The only code that knows
-the name is redaction — `crates/sunrise-log/src/field.rs` and the server's
-request logging strip it from logged URLs so that adding it later cannot leak a
-bearer into a log line. Treat it as reserved, not available.
+A `?access_token=` query parameter, for browsers that cannot set a header, is
+**not implemented**: no route reads one. What keeps it from becoming a logged
+bearer if it ever is added is the server's request log
+(`crates/sunrise-server/src/api/observe.rs`), which is handed the matched route
+rather than the request's URI and so has no query string in reach of it at all.
+Treat the parameter as reserved, not available.
 
 ### Message kinds (canonical)
 
@@ -225,7 +244,7 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 ### Partial OpBatch on disconnect
 
-The server **buffers** each inbound OpBatch until the full frame is received and CBOR-validates. A disconnect mid-frame discards the partial buffer; nothing is persisted. The relay never *applies* anything — it decodes the payload only far enough to read `stream_id` and the cleartext per-device heads, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
+A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
 Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 
@@ -234,6 +253,8 @@ Client-side: an outbound OpBatch is held in the persistent outbox until the serv
 The relay dedups on the **content** of a batch's ops instead: a domain-separated BLAKE3 over the op count and each op's length and bytes, scoped to `(account, stream)` and remembered exactly as long as the frame it named survives retention. A batch already in that window is not stored and not fanned out again, and is answered with a `200` carrying the **original** `server_first_seen_ms` — the field says "first seen", and a re-send is the only thing a client that lost an ack can do. An empty batch is exempt: it carries no content to be the same as, so three empty batches are three events.
 
 The key is the **whole batch**, which bounds what "already seen" can mean. Two of the three re-send shapes are covered: a retransmit inside a session replays the encoded frame verbatim, and a reconnect that adds nothing to the outbox re-sends the same ops. An **active** client is not. The client batches every unacked op for a stream into one frame with no size cap (`Core::sync_outbox_grouped`), so a user who edits between a lost `Ack` and the reconnect makes session 2 send `[O1, O2]` where session 1 sent `[O1]`. Those are two different batches by content: the second is stored, and `O1` lands twice. Re-applying it is harmless — ops are idempotent — but the relay pays the disk and fan-out cost. A per-op key would close this and is tracked separately; it needs a retention rule of its own, because forgetting an op id is precisely what lets a legitimate replay through.
+
+Relay dedup sits on top of the **receiver's**, which is the one correctness rests on and whose key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` (`OpLog::insert`, `crates/sunrise-storage/src/oplog.rs`), which the receive path calls and then gates on `tx.changes() == 0` (`applied` in `crates/sunrise-core/src/engine.rs`), so a second copy materializes nothing and raises no event. For received ops the op id is derived from exactly `(stream_id, device_id, seq)` (`remote_op_id`); a locally authored op carries a random ULID. The two constraints are independent and both load-bearing: the primary key dedups a re-received remote op, and `UNIQUE(stream_id, device_id, seq)` is what drops a device's own history when the relay hands it back on reconnect. That is why the uncovered re-send shape above costs disk and fan-out rather than correctness.
 
 ### OpBatch and Ack payloads
 
@@ -244,7 +265,7 @@ independent canonical encoder reproduces the same bytes.
 ```cddl
 OpBatch = {
   ops:       [* bstr],   ; opaque OpEnvelope bytes, one CBOR byte string each
-  batch_id:  uint,       ; client-generated idempotency key for the batch
+  batch_id:  uint,       ; client-generated correlation id for the batch
   stream_id: bstr .size 16,
 }
 
@@ -259,7 +280,7 @@ Three differences from what this section used to claim, all of them
 consequential:
 
 - **`batch_id` is a `uint`, not a `bstr`.** It is not a ULID; the client mints
-  a `u64` idempotency key.
+  a `u64` correlation id — see above for what is and is not deduped.
 - **`ops` is a flat array of byte strings**, not an array of maps. There is no
   per-op `server_first_seen_ms` on the wire.
 - **`stream_id` is present on both payloads.** A batch targets exactly one
@@ -269,10 +290,18 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock`. This is **not** part of the signed envelope, and it rides on the
-`Ack` — **once per batch**, not once per op. Receivers persist it; it is the
-value used for clock-skew clamping in
-[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md).
+relay_clock` (`crates/sunrise-server/src/api/sync.rs:419`). This is **not** part
+of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
+per op.
+
+It is **advisory only**: a per-batch timestamp a client may use for a clock-skew
+UI hint. It MUST NOT influence merge order, Merkle fold order, or whether an op
+is accepted — the fold order lost its clamp under
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) precisely because a relay input
+into it was a hole (see
+[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
+§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse.rs:435`
+parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
 
@@ -396,4 +425,4 @@ The protocol is identical. Self-host operators may disable certain endpoints (pu
 
 ## Error model
 
-Errors are *terminal* (server sends `Error` then `Close`) or *recoverable* (server sends `Error` for a specific Subscribe but keeps the connection open). Client retries with exponential backoff bounded at 60 s with jitter (start 500 ms, cap 60 s, jitter ±20%).
+Errors are *terminal* (server sends `Error` then `Close`) or *recoverable* (server sends `Error` for a specific Subscribe but keeps the connection open). A client that reconnects after either does so on the one retry policy this system has, stated once in [`offline-queue.md`](./offline-queue.md) §Backoff: five jittered delays of 100, 200, 400, 800 and 1600 ms, then a flat 30 s, then the cycle again, forever. Earlier revisions of this line published a second set of numbers (start 500 ms, cap 60 s) that matched no code; there is one policy, in `crates/sunrise-sync/src/backoff.rs`, and duplicating its constants here is how the two drifted apart.

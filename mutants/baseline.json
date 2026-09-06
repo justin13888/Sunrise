@@ -1,0 +1,21 @@
+{
+    "_comment": "Mutation-coverage floors per crate, compared by .github/scripts/mutants-gate.py. The floor ratchets: a run may hold or improve it and may not fall below it. `target_caught_pct` is what docs/10-cross-cutting/testing.md requires for release sign-off, and it is the destination rather than the floor \u2014 a gate that failed from day one would be switched off in a week. Record a new floor with `mise run mutants-baseline --expect-shards sunrise-sync=1` locally, naming the crates and shard counts the run actually covered, or `mutants-gate.py <outcomes...> --update --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1` from a nightly's artifacts, in a commit that says what was added to earn it. The shard counts are not optional: `--update` banks whatever it is handed, so without them one shard of a crate becomes that crate's floor. Pass `--allow-partial` instead only when a floor covering just what ran is what you actually want. Every crate the run scores must appear here: the gate fails on a crate it measured and has no floor for, because a crate scored against nothing is a crate it is not protecting. `sunrise-domain` and `sunrise-core` are deliberately absent rather than seeded with a placeholder \u2014 a full pass over them is hours, so their floors are recorded from the first nightly run's artifacts, and until then the gate says so out loud.",
+    "crates": {
+        "sunrise-crypto": {
+            "caught": 200,
+            "caught_pct": 78.43,
+            "missed": 55,
+            "timeout": 0,
+            "unviable": 41
+        },
+        "sunrise-sync": {
+            "caught": 25,
+            "caught_pct": 27.17,
+            "missed": 66,
+            "timeout": 1,
+            "unviable": 2
+        }
+    },
+    "schema_version": 1,
+    "target_caught_pct": 90.0
+}

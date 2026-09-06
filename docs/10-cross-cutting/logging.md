@@ -55,8 +55,8 @@ next to the envelope:
   "timestamp": "2026-05-08T12:34:56.789Z",
   "level":     "INFO",
   "message":   "relay session opened",
-  "ev":        "srv.ws.connect",
-  "target":    "sunrise_server::ws",
+  "ev":        "srv.sync.session_open",
+  "target":    "sunrise_server::api::sync",
   "account_h": "a3f9c1d2",
   "wire_v":    1,
   "span":      { "name": "http.request", "method": "GET", "endpoint": "/api/v1/health" }
@@ -244,8 +244,12 @@ Alongside it:
 - `crates/sunrise-log/tests/record_schema.rs` — live records validate against
   `schemas/log-record.v1.json`, and every top-level key is either the fixed
   envelope or an allowlisted context key.
-- `crates/sunrise-server/tests/logging.rs` — real requests through the real
-  router: no `?access_token=`, no full entity ids, every field allowlisted.
+- `crates/sunrise-server/src/api/observe.rs` (in-module) — real requests through
+  the real router: no `?access_token=`, no full entity ids, every field
+  allowlisted. **This replaces `crates/sunrise-server/tests/logging.rs`, which
+  §6.3 declares a MUST and which does not exist**: it did not survive
+  [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port. Restoring the
+  integration-level test is open work.
 
 **Not implemented:** the custom `sunrise::log_plaintext` clippy lint (a
 type-aware lint needs a `dylint` driver, and `Plain<T>` having no `Value` impl
@@ -361,7 +365,7 @@ one global dispatcher.
 | `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
 | `crates/sunrise-log/tests/event_catalog.rs` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
-| `crates/sunrise-server/tests/logging.rs` | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted, healthy traffic silent at `info`. |
+| `crates/sunrise-server/src/api/observe.rs` (in-module) | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted. Stands in for `tests/logging.rs`, which §6.3 requires and which no longer exists. |
 | `crates/sunrise-cli/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
 
 **Removed: the per-package conformance triple.** The original §11 asked every

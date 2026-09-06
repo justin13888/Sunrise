@@ -170,7 +170,7 @@ away from being a plaintext handle.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Reserved for a v2 transport fallback; unused in v1. ADR-0005 chose a WebSocket and ADR-0023 replaced it: v1 is an SSE stream downstream and typed `POST`s upstream, with no second transport to fall back to. |
+| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused in v1. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
 ### `srv` (auth outcome and push)
 

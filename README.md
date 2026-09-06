@@ -15,7 +15,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
-- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical client is a native SwiftUI macOS app ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)); iOS, Android and Web are deferred.
+- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every pull request into `master` or `v1-rewrite`. Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
 - **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
 
@@ -23,8 +23,8 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace of 21 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
-- **Clients**: two ship in v1 — the `sunrise` CLI, and a native SwiftUI **macOS app** (`apps/apple`) that links the core through UniFFI (`crates/sunrise-core-bindings`) and is built, linted and tested in CI. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
+- **Rust core** (`crates/`): a Cargo workspace of 23 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
+- **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a deferred PWA stub. `packages/sunrise-ui-tokens` compiles the design tokens from TOML into CSS, TypeScript, Swift and Rust — both Apple targets compile the Swift one, so a stream's colour is now decided in one place for every client ([ADR-0029](docs/11-adr/0029-design-token-pipeline.md)).
 
 ### Project structure
 
@@ -51,7 +51,8 @@ apps/
   apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
-  sunrise-ui/  Shared UI tokens, consumed only by the deferred web app
+  sunrise-ui-tokens/  TOML design tokens → CSS / TS / Swift / Rust — see ADR-0029
+  sunrise-ui/         Names the generated tokens for the web app
 schemas/       Versioned JSON schemas
 docs/          Design source of truth: product, architecture, domain, crypto, sync, ADRs + implementation notes
 ```
@@ -144,7 +145,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26`. Its status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit), where **every MUST in both shipping columns is now met** — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job, on every push to `master` or `v1-rewrite` and every pull request into them. It is held to the matrix's iOS column at **SHOULD** level rather than MUST ([ADR-0028](docs/11-adr/0028-ios-is-a-v1-client.md)) — 23 SHOULDs, 21 of them met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit), where **every MUST is met** in the two MUST-carrying columns, macOS and the CLI — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -230,34 +231,71 @@ cargo run -p sunrise-cli -- login     # opens a browser, waits on a loopback red
 
 > The server reads `sunrise.toml` (`-c <path>` → `$SUNRISE_CONFIG` → `./sunrise.toml` → `/etc/sunrise/sunrise.toml`); with no config it runs on defaults, which bind loopback in single-tenant mode with an in-memory store. Setting `[auth] oidc_issuer` + `oidc_client_id` installs the JWKS verifier. See `docs/06-server/self-hosting.md`.
 
-#### 5. macOS client
+#### 5. Apple clients (macOS + iOS)
+
+**To actually see an app on screen, use a `-run` task.** Everything else here
+builds or tests; nothing else launches anything, which is the single most common
+way to conclude these apps do not work.
 
 ```bash
-mise run apple-xcframework    # cargo build → uniffi-bindgen → lipo → SunriseCore.xcframework
-mise run macos-app            # + xcodegen, swiftlint --strict, xcodebuild test
-mise run macos-open           # open the generated project in Xcode
-mise run macos-uitest         # the XCUITest target, which macos-app does not run
+mise run macos-run            # build the macOS app and open it
+mise run ios-run              # build the iOS app and launch it on the simulator
 ```
 
-`mise run macos-app` is exactly what CI runs on `macos-26`. Note that the UI test
-target is `skipped: true` in the `Sunrise` scheme, so `mise run macos-uitest` — which
-has a scheme of its own, because `-only-testing` cannot select a skipped
-testable — is the only thing that drives the real window, and it runs on a
-developer machine only. It needs **two** one-time grants, not one:
+Both take a minute or two the first time (`apple-xcframework` runs first) and
+seconds after that. `macos-run` optionally takes a scratch-vault directory, which
+opens a throwaway vault and an in-memory key store instead of your real one — so
+a demo, or a walk through first-run, touches nothing you care about:
+
+```bash
+mise run macos-run /tmp/sunrise-demo
+```
+
+`ios-run` starts from a fresh vault whenever the app is not installed; to get
+back there, `xcrun simctl uninstall 'iPhone 17 Pro' dev.sunrise.SunriseiOS`.
+
+> If you go looking for the product yourself, launch the bundle with `open`, not
+> by executing `Sunrise.app/Contents/MacOS/Sunrise`. Running the binary directly
+> starts the process without registering it as a foreground app: it runs, opens
+> no window, and looks exactly like a hang.
+
+The rest of the Apple tasks, and what each one does *not* do:
+
+| Task | What it does | Launches the app? |
+| --- | --- | --- |
+| `mise run apple-xcframework` | cargo build → uniffi-bindgen → lipo → `SunriseCore.xcframework` | no |
+| `mise run macos-run` | + xcodegen, xcodebuild build, `open` | **yes** |
+| `mise run ios-run` | + xcodegen, xcodebuild build, `simctl install` + `launch` | **yes** |
+| `mise run macos-app` | + xcodegen, swiftlint `--strict`, `xcodebuild test` | no — tests only |
+| `mise run ios-app` | the same against the iOS simulator | no — tests only |
+| `mise run apple-app` | `macos-app` then `ios-app`, sequentially | no |
+| `mise run macos-open` / `ios-open` | generate the project and open Xcode | no — Xcode's ⌘R does |
+| `mise run macos-uitest` | the XCUITest target, which `macos-app` does not run | it drives one |
+
+`mise run macos-app` and `mise run ios-app` are exactly what CI runs on
+`macos-26`, across its two jobs. Note that the macOS UI test target is
+`skipped: true` in the `Sunrise` scheme, so `mise run macos-uitest` — which has a
+scheme of its own, because `-only-testing` cannot select a skipped testable — is
+the only thing that drives the real macOS window, and it runs on a developer
+machine only. It needs **two** one-time grants, not one:
 `sudo DevToolsSecurity -enable`, and then accepting the automation prompt the
 runner raises the first time. Without the second it fails with "Timed out while
-enabling automation mode".
+enabling automation mode". The iOS UI tests have no such requirement and run on
+every `mise run ios-app`.
 
 `apple-xcframework` builds the release slices, generates the Swift bindings from
-the built library, and packages the framework the app links. The bindings generator lives
+the built library, and packages the framework both apps link. The bindings generator lives
 in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
 lockfile. It is out there for feature unification, not MSRV: as a workspace
 member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
 build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
-21 extra crates on every workspace build ([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
+20 extra third-party crates on every workspace build
+([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
 
 `out/` and `build/` are gitignored: the Swift is generated from the Rust on
-every build, so committing it would let the two drift.
+every build, so committing it would let the two drift. The `-run` tasks build
+into `out/dd` rather than Xcode's default DerivedData, so the product has a path
+you can name.
 
 #### 6. Benchmarks (manual)
 
@@ -304,7 +342,10 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run rust-test`         | Run the Rust test suite                                |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
 | `mise run apple-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
+| `mise run macos-run`         | Build the macOS app and **open it**                    |
+| `mise run ios-run`           | Build the iOS app and **launch it on the simulator**   |
 | `mise run macos-app`         | Build, SwiftLint `--strict` and test the macOS app     |
+| `mise run ios-app`           | The same against the iOS simulator                     |
 | `mise run validate`          | Full local validation: Biome CI + typecheck + coverage |
 
 ### Git hooks

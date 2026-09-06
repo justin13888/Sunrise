@@ -78,7 +78,7 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 writes always carry an idempotency key (`batch_id`), so they are eligible; writes without an idempotency key never auto-retry.
+Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
 
