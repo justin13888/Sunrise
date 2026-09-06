@@ -199,8 +199,13 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
             .export_pairing_payload()
             .map_err(|e| e.to_string())
             .and_then(|p| sunrise_pairing::encode_pairing_payload(&p).map_err(|e| e.to_string()))
-            .and_then(|bytes| write_private(path, &bytes).map_err(|e| e.to_string()))
-        {
+            // Owner-only, and not at the process umask: this is the whole
+            // account in the clear — `ID_S_priv`, `ID_D_priv`, the vault root
+            // and every Stream key — so it is strictly more sensitive than the
+            // vault root `vault.rs` already refuses to write that way.
+            .and_then(|bytes| {
+                crate::private_file::write_private(path, &bytes).map_err(|e| e.to_string())
+            }) {
             Ok(()) => {
                 tracing::info!(
                     ev = "ui.pair.payload_exported",
@@ -357,42 +362,6 @@ pub async fn open_with_plan(
     let mut log = preamble;
     log.extend(apply_plan(&core, plan));
     Ok((core, log))
-}
-
-/// Write `bytes` to `path` owner-only, with the mode set **at creation**.
-///
-/// The pairing payload is the whole account in the clear — `ID_S_priv`,
-/// `ID_D_priv`, the vault root and every Stream key this device holds — so it
-/// is strictly more sensitive than the vault root `vault.rs` already refuses to
-/// write at the process umask. `std::fs::write` would have created it
-/// world-readable on a permissive umask, and even a chmod afterwards leaves a
-/// window in which it is not. Same rule and same reason as
-/// `crate::vault::write_private` and `sunrise_auth::FileStore`.
-#[cfg(unix)]
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    // No mode bits to set; a Windows client should not be using the file
-    // stand-in at all.
-    std::fs::write(path, bytes)
 }
 
 #[cfg(test)]

@@ -412,40 +412,19 @@ fn read_hex_line<const N: usize>(path: &Path) -> Result<Option<[u8; N]>, VaultEr
     })
 }
 
-/// Create/replace `path` with owner-only permissions, the mode set **at
-/// creation** so the secret is never briefly world-readable — the same rule,
-/// and the same reason, as `sunrise_auth::FileStore`.
-#[cfg(unix)]
+/// Write one newline-terminated line to `path`, owner-only.
+///
+/// The permission work is [`crate::private_file::write_private`], which the
+/// pairing-payload export shares; this only adds the trailing newline every
+/// vault file here carries and maps the error into [`VaultError`].
 fn write_private(path: &Path, line: &str) -> Result<(), VaultError> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let io = |source| VaultError::Io {
+    let mut body = String::with_capacity(line.len() + 1);
+    body.push_str(line);
+    body.push('\n');
+    crate::private_file::write_private(path, body.as_bytes()).map_err(|source| VaultError::Io {
         path: path.to_path_buf(),
         source,
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(io)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(io)?;
-    f.write_all(line.as_bytes()).map_err(io)?;
-    f.write_all(b"\n").map_err(io)?;
-    f.sync_all().map_err(io)?;
-    drop(f);
-    std::fs::rename(&tmp, path).map_err(io)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, line: &str) -> Result<(), VaultError> {
-    // No mode bits to set. A Windows client should be using the OS credential
-    // store, exactly as `sunrise_auth::FileStore` says.
-    write_line(path, line)
+    })
 }
 
 fn write_line(path: &Path, line: &str) -> Result<(), VaultError> {
