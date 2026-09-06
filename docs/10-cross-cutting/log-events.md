@@ -9,9 +9,18 @@ catalogue: adding a new `ev` value requires a one-line entry here so analysts
 can `grep` for meaning.
 
 That rule is **enforced**, not aspirational.
-`crates/sunrise-log/tests/event_catalog.rs` scans every `ev = "…"` literal in
-`crates/*/src` and fails if one is missing from this file, or if a name in
-either place violates the grammar in [`logging.md`](./logging.md) §3.
+`crates/sunrise-log/tests/event_catalog.rs` reads every `tracing::*!` call in
+shipped source and fails if an event it emits is missing from this file, or if
+a name in either place violates the grammar in [`logging.md`](./logging.md) §3.
+The file set is not a directory walk: it comes from `cargo metadata` plus the
+dep-info the compiler wrote, so a module reached by `#[path]`, a raw-identifier
+module and generated code under `target/` are all covered. That test's module
+doc enumerates what it does **not** see.
+
+Do not add an event name here to satisfy that test when the emission is a
+`#[cfg(test)]` unit test inside a shipped file. This catalogue is the record of
+what an operator can see in production; a test that needs an event should reuse
+a name already listed.
 
 The **Implemented** tables below are what the workspace emits today. The
 **Reserved** tables are names held for surfaces that do not log yet; they are

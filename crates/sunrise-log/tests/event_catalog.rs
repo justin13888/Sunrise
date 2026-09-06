@@ -56,6 +56,14 @@
 //!   artefact whose logs an operator reads. Unit tests *inside* a shipped file
 //!   are scanned, because they are not separable from it — and the failure
 //!   messages say so, rather than calling a fixture "shipped code".
+//!
+//!   A whole file behind `#[cfg(test)]` — `sunrise-server`'s `api/testing.rs`
+//!   is the one here — sits on the boundary, and which side it lands on
+//!   depends on whether the newest dep-info came from a `cargo build` or a
+//!   `cargo test`. That is harmless in the direction that matters: a file that
+//!   ships is compiled by *every* build of its target and so is always in the
+//!   set, while one that never ships may drift in and out. Shipped coverage is
+//!   exact; the drift only ever adds.
 //! - **Crates built outside the workspace.** `cargo test` never builds one, so
 //!   there is no dep-info to derive its sources from. Each is an argued entry
 //!   in [`BUILD_TOOLS`] with a guard, and a new one fails
@@ -471,7 +479,7 @@ fn normalise(text: &str) -> Source {
 }
 
 // ---------------------------------------------------------------------------
-// The module graph
+// The file set
 // ---------------------------------------------------------------------------
 
 /// Whether `b` can appear inside a Rust identifier.
@@ -1123,6 +1131,7 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
     // reach `tracing` cannot emit an event.
     let tools: BTreeMap<&str, &BuildTool> = BUILD_TOOLS.iter().map(|t| (t.package, t)).collect();
     let mut unclaimed = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     for (package, src_path, in_workspace) in shipped_targets() {
         if in_workspace {
             continue;
@@ -1131,6 +1140,7 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
             unclaimed.push(format!("{package} ({})", rel(&src_path, &workspace_root())));
             continue;
         };
+        seen.insert(package.clone());
         let logs = packages()
             .into_iter()
             .find(|p| p["name"].as_str() == Some(tool.package))
@@ -1157,6 +1167,24 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
          make it a workspace member; if it is a build tool, add it to BUILD_TOOLS \
          with the argument for why its logs are nobody's:\n  {}",
         unclaimed.join("\n  ")
+    );
+
+    // Without this the guard above is vacuous: an entry whose target has left
+    // the metadata — the build config stopped naming its manifest, say — is
+    // checked by nothing, and a carve-out kept past the expiry of its own
+    // justification is the defect this whole file exists to catch. The same
+    // check `ALLOWED_INCLUDES` carried before dep-info made it unnecessary.
+    let stale: Vec<&str> = BUILD_TOOLS
+        .iter()
+        .map(|t| t.package)
+        .filter(|p| !seen.contains(*p))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these BUILD_TOOLS entries name no out-of-workspace target this run \
+         found, so their guards ran on nothing. Either the build config stopped \
+         naming the manifest — in which case the crate is now unscanned by a \
+         different route — or the entry is dead and should be deleted: {stale:?}"
     );
 }
 

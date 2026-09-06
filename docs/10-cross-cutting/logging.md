@@ -236,8 +236,11 @@ Alongside it:
 
 - `crates/sunrise-log/tests/redaction.rs` — property tests over both defences
   above, asserting on the bytes a sink received.
-- `crates/sunrise-log/tests/event_catalog.rs` — every `ev` literal in shipped
-  source is grammatical and catalogued in [`log-events.md`](./log-events.md).
+- `crates/sunrise-log/tests/event_catalog.rs` — every event name emitted from
+  shipped source is grammatical and catalogued in
+  [`log-events.md`](./log-events.md), and every **field name** those events
+  carry is on the §6 allowlist, so the record the catalogue promises can reach
+  a subscriber at all.
 - `crates/sunrise-log/tests/record_schema.rs` — live records validate against
   `schemas/log-record.v1.json`, and every top-level key is either the fixed
   envelope or an allowlisted context key.
@@ -256,8 +259,10 @@ ADR-0010's Bun server does not exist).
 
 The catalogue lives in [`log-events.md`](./log-events.md), split into what is
 **implemented** and what is **reserved**. It is the contract, and it is checked:
-`crates/sunrise-log/tests/event_catalog.rs` fails if any `ev` literal in
-`crates/*/src` is missing from it.
+`crates/sunrise-log/tests/event_catalog.rs` fails if any event emitted from
+shipped source is missing from it. Which files count is taken from
+`cargo metadata` and the compiler's own dep-info rather than from a directory
+walk.
 
 Implemented today: `sunrise-server` (startup, request lifecycle, auth outcome,
 WebSocket session, relay fan-out), `sunrise-storage` (migrations),
@@ -354,7 +359,7 @@ one global dispatcher.
 | Test | What it holds |
 |---|---|
 | `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
-| `crates/sunrise-log/tests/event_catalog.rs` | Every `ev` literal in `crates/*/src` is grammatical and catalogued. |
+| `crates/sunrise-log/tests/event_catalog.rs` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
 | `crates/sunrise-server/tests/logging.rs` | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted, healthy traffic silent at `info`. |
 | `crates/sunrise-cli/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
