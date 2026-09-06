@@ -24,7 +24,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
 - **Rust core** (`crates/`): a Cargo workspace of 23 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
-- **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a deferred PWA stub, and `packages/` holds shared UI tokens for it.
+- **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a deferred PWA stub. `packages/sunrise-ui-tokens` compiles the design tokens from TOML into CSS, TypeScript, Swift and Rust — both Apple targets compile the Swift one, so a stream's colour is now decided in one place for every client ([ADR-0029](docs/11-adr/0029-design-token-pipeline.md)).
 
 ### Project structure
 
@@ -51,7 +51,8 @@ apps/
   apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
   web/         Web PWA (React + Vite) — deferred, see ADR-0012
 packages/
-  sunrise-ui/  Shared UI tokens, consumed only by the deferred web app
+  sunrise-ui-tokens/  TOML design tokens → CSS / TS / Swift / Rust — see ADR-0029
+  sunrise-ui/         Names the generated tokens for the web app
 schemas/       Versioned JSON schemas
 docs/          Design source of truth: product, architecture, domain, crypto, sync, ADRs + implementation notes
 ```

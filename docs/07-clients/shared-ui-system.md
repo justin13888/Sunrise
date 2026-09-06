@@ -8,44 +8,198 @@ A pragmatic cross-platform design system: shared *tokens* and *patterns*; per-pl
 
 ## Tokens
 
-> **Status: one 40-line TypeScript file, consumed by the deferred web app and
-> nothing else.** The token pipeline below — `packages/sunrise-ui-tokens/`, its
-> TOML sources, and a `build.ts` emitting `tokens.css` / `.swift` / `.kt` /
-> `.rs` — was specified here and never built. No such directory, script or
-> generated file exists. The colour, motion, typography and radius tables under
-> [Specified, not built](#tokens-specified-not-built) are kept because they are
-> still the intended palette; they are not describing anything that runs.
-> [#29](https://github.com/justin13888/Sunrise/issues/29) tracks the gap.
+Tokens live in `packages/sunrise-ui-tokens/tokens/` as TOML, and
+`packages/sunrise-ui-tokens/build.ts` compiles them into one file per target:
 
-What exists is `packages/sunrise-ui/src/tokens.ts`, hand-written, re-exported
-verbatim by `src/index.ts`, and holding four constants:
+```
+packages/sunrise-ui-tokens/
+├── tokens/
+│   ├── color/
+│   │   ├── light.toml
+│   │   └── dark.toml
+│   ├── motion.toml
+│   ├── spacing.toml
+│   ├── radius.toml
+│   └── type.toml
+├── build.ts
+└── generated/
+    ├── tokens.css      → apps/web, via `import "@sunrise/ui-tokens/css"`
+    ├── tokens.ts       → packages/sunrise-ui re-exports it
+    ├── tokens.swift    → both Apple app targets compile it
+    └── tokens.rs       → no consumer yet; see below
+```
 
-| Export | Contents |
+Run `mise run tokens` after editing any TOML file. **The generated files are
+committed**, because the two builds that need them most cannot produce them:
+Xcode has neither Bun nor mise on `PATH`. Three gates keep the committed files
+honest — `packages/sunrise-ui-tokens/test/drift.test.ts` (which `mise run test`
+runs, and `lefthook.yaml` runs on pre-push), `mise run tokens-check` (which
+additionally compiles and rustfmt-checks `tokens.rs`), and a `tokens-current`
+CI job. [ADR-0029](../11-adr/0029-design-token-pipeline.md) records why the
+outputs are committed rather than generated at build time, why `tokens.rs` is
+an `include!`-ready file rather than a crate, and why the spacing scale below
+supersedes the one `packages/sunrise-ui` used to carry.
+
+**`tokens.kt` is not emitted.** There is no Android target to compile it and no
+Kotlin consumer to read it; it lands with the Android client, not before.
+
+### Consumers
+
+| Target | What reads it |
 |---|---|
-| `colors` | The eight `StreamColor` tints, as hex: `slate` `#475569`, `rose` `#e11d48`, `amber` `#d97706`, `emerald` `#059669`, `sky` `#0284c7`, `indigo` `#4f46e5`, `violet` `#7c3aed`, `pink` `#db2777` |
-| `spacing` | `xs` 4, `sm` 8, `md` 16, `lg` 24, `xl` 32 |
-| `radii` | `sm` 4, `md` 8, `lg` 12 |
-| `taskStateGlyph` | `todo` `[ ]`, `in_progress` `[·]`, `done` `[x]`, `cancelled` `[/]` |
+| Web | `apps/web/src/main.tsx` imports `@sunrise/ui-tokens/css`, so the custom properties and both media queries are in the bundle. `packages/sunrise-ui` re-exports the typed object as `colors`, `spacing`, `radii`, `typography`, `motion`, `theme` and `taskStateGlyph` |
+| macOS / iOS | `apps/apple/project.yml` adds `tokens.swift` to both app targets. `apps/apple/Sunrise/Design/Tokens.swift` is the hand-written adapter: it resolves light/dark through `@Environment(\.colorScheme)` and Reduce Motion through `@Environment(\.accessibilityReduceMotion)`, and it is the one place a `StreamColor` becomes a `Color` |
+| Rust | Nothing, yet. `tokens.rs` is an `include!`-ready const module — the CLI is specified as plain text with no colour ([`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)), and the shared core does not decide presentation ([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)), so there is no consumer to write. It is compiled and rustfmt-checked by `mise run tokens-check` so the first one inherits a working file |
 
-There is no surface palette — no `bg`, `fg`, `muted`, `accent`, `border`,
-`danger`, `warning`, `success` or `info`, and no dark set. There are no motion
-or typography tokens. `spacing` has five steps and not six: the `md = 12` and
-`lg = 16` the table below specifies are `md = 16` and `lg = 24` in the file,
-with no `xxl`, so a client following the specified scale and a client importing
-the real one disagree at every step above `sm`.
+### Color
 
-The `colors` keys are the file's own `StreamColor` type and mirror
-`StreamColor` in `crates/sunrise-domain/src/stream.rs`, which the file's header
-comment names as the thing to stay in sync with. Nothing enforces that: the
-Rust enum and the TypeScript object are two hand-maintained lists.
+Colour is semantic, not raw: a client asks for `accent`, never for a blue.
+Light and dark carry identical key sets, and
+`packages/sunrise-ui-tokens/test/invariants.test.ts` fails if they stop doing
+so.
 
-**The package has one consumer and it is deferred.** `apps/web` imports
-`taskStateGlyph` and nothing else — not `colors`, not `spacing`, not `radii` —
-and `apps/web` is the `localStorage` stub [ADR-0012](../11-adr/0012-web-wasm-deferred.md)
-left in place of a real client. The Apple apps are Swift and consume none of it;
-they carry their own values. So no shipping client reads a shared token today,
-which is why the drift above has cost nothing yet and why it will cost
-something the moment a second consumer appears.
+**That is not yet true of the Apple clients.** They reach `Surface.*` through
+`Sunrise/Design/Tokens.swift`, and nothing in production calls it: every accent
+in `apps/apple` is `Color.accentColor`, and there is no asset catalog anywhere
+under `apps/apple`, so that is the user's OS accent preference rather than
+`accent` from this table. Migrating those call sites is scoped out of the
+pipeline's own change deliberately — see
+[ADR-0029](../11-adr/0029-design-token-pipeline.md) §Consequences.
+
+```toml
+# tokens/color/light.toml
+[surface]
+bg          = "#fbfbfa"
+fg          = "#1a1a1a"
+muted       = "#6e6e73"
+accent      = "#2563eb"
+accent_text = "#ffffff"
+border      = "#e5e5e7"
+danger      = "#dc2626"
+warning     = "#d97706"
+success     = "#059669"
+info        = "#0891b2"
+```
+
+```toml
+# tokens/color/dark.toml — symmetrical, with brightness inversions
+[surface]
+bg          = "#0f0f10"
+fg          = "#fafafa"
+muted       = "#9ca3af"
+accent      = "#60a5fa"
+accent_text = "#0f0f10"
+border      = "#27272a"
+danger      = "#f87171"
+warning     = "#fbbf24"
+success     = "#34d399"
+info        = "#22d3ee"
+```
+
+Contrast is asserted rather than intended: body text on background clears AAA
+(7:1), and both muted text and `accent_text`-on-`accent` clear AA (4.5:1), in
+both themes — which is what makes
+[`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
+§Color and contrast a test rather than a wish.
+
+**Stream tints are eight named values, not a ramp generated from `accent`.**
+This supersedes the earlier `stream-1..stream-12` specification. `StreamColor`
+in `crates/sunrise-domain/src/stream.rs` is a serde-stable eight-variant enum
+whose lowercase names are persisted in the vault and read back by a lossy
+parser, so renumbering the palette would be a storage-format change rather than
+a design change. The `[stream]` table in each theme is keyed on those names,
+and `test/invariants.test.ts` reads `StreamColor::as_str` out of the Rust and
+fails when the two lists diverge:
+
+```toml
+# tokens/color/light.toml
+[stream]
+slate   = "#475569"
+rose    = "#e11d48"
+amber   = "#d97706"
+emerald = "#059669"
+sky     = "#0284c7"
+indigo  = "#4f46e5"
+violet  = "#7c3aed"
+pink    = "#db2777"
+```
+
+The dark set is the same eight names, lifted: `#94a3b8`, `#fb7185`, `#fbbf24`,
+`#34d399`, `#38bdf8`, `#818cf8`, `#a78bfa`, `#f472b6`.
+
+### Motion
+
+```toml
+# tokens/motion.toml
+[fast]
+duration_ms = 120
+easing = [0.2, 0.0, 0.0, 1.0]   # out
+```
+
+`med` is 220 ms and `slow` 360 ms, both on `[0.4, 0.0, 0.2, 1.0]` (in-out);
+`linear` is 0 ms on `[0.0, 0.0, 1.0, 1.0]`.
+
+Easing is four cubic-Bézier control points rather than a `cubic-bezier(...)`
+string, so that only the CSS emitter has to know CSS. The two abscissae are
+range-checked to `[0, 1]`, because a `cubic-bezier()` outside that is invalid
+at computed-value time and a browser drops the declaration without saying so;
+the ordinates are left free, which is what lets a curve overshoot.
+
+`[reduced]` is the no-motion policy — `duration_ms = 0`, enforced by the
+loader — and it is what every other duration collapses to: the emitted CSS
+carries a `prefers-reduced-motion: reduce` block, and the Swift adapter returns
+`nil` instead of an `Animation`. It carries **no** `easing`, and the loader
+rejects one written there: a curve over zero milliseconds is not observable, so
+the field could never matter and could always be wrong.
+
+### Spacing (4 px base)
+
+```toml
+# tokens/spacing.toml
+xs  = 4
+sm  = 8
+md  = 12
+lg  = 16
+xl  = 24
+xxl = 32
+```
+
+Six steps, and this is the scale that won: `packages/sunrise-ui/src/tokens.ts`
+carried a five-step one (`md` 16, `lg` 24, `xl` 32, no `xxl`) and now
+re-exports this instead. Avoid one-off pixel values.
+
+### Radius
+
+```toml
+# tokens/radius.toml
+sm   = 4
+md   = 8
+lg   = 12
+pill = 9999
+```
+
+### Typography
+
+```toml
+# tokens/type.toml
+size_xs   = 11
+size_sm   = 13
+size_base = 15
+size_lg   = 17
+size_xl   = 22
+size_2xl  = 28
+weight_regular  = 400
+weight_medium   = 500
+weight_semibold = 600
+weight_bold     = 700
+line_tight  = 1.25
+line_normal = 1.5
+```
+
+- macOS uses the OS system font (SF).
+- Web uses `system-ui` / `Inter` fallback.
+- No font *family* is a token: each platform uses its own system face, which is
+  a rendering choice rather than a shared value.
 
 ## Three-state view contract
 
@@ -81,7 +235,7 @@ user-visible), is the likeliest place both come back together.
 | Reviews | "Not enough data yet — come back in a week." | (none) |
 | Focus | (focus mode never empty; uses idle screen) | — |
 
-Per-view illustrations were specified as living in `packages/sunrise-ui-shared/illustrations/`. **That package does not exist**, and neither does any shared illustration asset; the only package under `packages/` that any client imports is `packages/sunrise-ui`, described under [Tokens](#tokens). Each client draws its own empty state ([#29](https://github.com/justin13888/Sunrise/issues/29)).
+Per-view illustrations were specified as living in `packages/sunrise-ui-shared/illustrations/`. **That package still does not exist**, and neither does any shared illustration asset — the token pipeline under [Tokens](#tokens) closed the other half of [#29](https://github.com/justin13888/Sunrise/issues/29) and left this one open. `packages/` holds `sunrise-ui-tokens` and `sunrise-ui`, and neither carries an image. Each client draws its own empty state.
 
 ## Pattern catalog
 
@@ -137,118 +291,3 @@ A small custom icon set (~40 icons) shipped as SVG → rendered platform-native:
 - The actual rendering library. Native components, native idioms.
 - Animation choices beyond motion tokens. iOS feels like iOS.
 - Navigation transitions. Each platform owns its idiom.
-
-## Tokens (specified, not built)
-
-> **None of this section exists.** No `packages/sunrise-ui-tokens/` directory,
-> no TOML sources, no `build.ts`, and no generated `tokens.css` / `tokens.swift`
-> / `tokens.kt` / `tokens.rs`. It is the intended design, kept as such.
-> [#29](https://github.com/justin13888/Sunrise/issues/29) tracks it. What ships
-> is described under [Tokens](#tokens) above, and where the two disagree — the
-> spacing scale in particular — the file is what a build actually gets.
-
-Tokens live in `packages/sunrise-ui-tokens/tokens/`. A build script at
-`packages/sunrise-ui-tokens/build.ts` emits per-target outputs (`tokens.css`,
-`tokens.swift`, `tokens.kt`, `tokens.rs`). The TOML files below are the intended
-source of truth.
-
-```
-sunrise-tokens/
-├── color/
-│   ├── light.toml
-│   └── dark.toml
-├── motion.toml
-├── spacing.toml
-├── radius.toml
-└── type.toml
-```
-
-### Color (v1 values)
-
-```toml
-# color/light.toml
-[surface]
-bg          = "#FBFBFA"
-fg          = "#1A1A1A"
-muted       = "#6E6E73"
-accent      = "#2563EB"
-accent_text = "#FFFFFF"
-border      = "#E5E5E7"
-danger      = "#DC2626"
-warning     = "#D97706"
-success     = "#059669"
-info        = "#0891B2"
-```
-
-```toml
-# color/dark.toml — symmetrical, with brightness inversions
-bg          = "#0F0F10"
-fg          = "#FAFAFA"
-muted       = "#9CA3AF"
-accent      = "#60A5FA"
-accent_text = "#0F0F10"
-border      = "#27272A"
-danger      = "#F87171"
-warning     = "#FBBF24"
-success     = "#34D399"
-info        = "#22D3EE"
-```
-
-Color is semantic, not raw. Stream tints (`stream-1..stream-12`) palette is generated from `accent` per the build script. No hardcoded hex anywhere in client code. Light + dark modes; AA contrast minimum on text vs surface (AAA where feasible).
-
-### Motion
-
-```toml
-# motion.toml
-fast   = { duration_ms = 120, easing = "cubic-bezier(0.2, 0, 0, 1)" }   # out
-med    = { duration_ms = 220, easing = "cubic-bezier(0.4, 0, 0.2, 1)" } # inout
-slow   = { duration_ms = 360, easing = "cubic-bezier(0.4, 0, 0.2, 1)" }
-linear = { easing = "linear" }
-```
-
-Reduced-motion preference disables transitions altogether.
-
-### Spacing (4 px base)
-
-```toml
-# spacing.toml
-xs  = 4
-sm  = 8
-md  = 12
-lg  = 16
-xl  = 24
-xxl = 32
-```
-
-Avoid one-off pixel values.
-
-### Radius
-
-```toml
-# radius.toml
-sm   = 4
-md   = 8
-lg   = 12
-pill = 9999
-```
-
-### Typography
-
-```toml
-# type.toml — Inter base; SF on Apple, Roboto on Android
-size_xs   = 11
-size_sm   = 13
-size_base = 15
-size_lg   = 17
-size_xl   = 22
-size_2xl  = 28
-weight_regular  = 400
-weight_medium   = 500
-weight_semibold = 600
-weight_bold     = 700
-line_tight  = 1.25
-line_normal = 1.5
-```
-
-- macOS uses the OS system font (SF).
-- Web uses `system-ui` / `Inter` fallback.

@@ -1,0 +1,20 @@
+{
+    "name": "@sunrise/ui-tokens",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "main": "generated/tokens.ts",
+    "types": "generated/tokens.ts",
+    "exports": {
+        ".": "./generated/tokens.ts",
+        "./css": "./generated/tokens.css"
+    },
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "build": "bun run build.ts"
+    },
+    "devDependencies": {
+        "smol-toml": "^1.8.0",
+        "typescript": "~5.8.3"
+    }
+}

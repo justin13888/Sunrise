@@ -325,23 +325,11 @@ extension StreamListRow: Identifiable {}
 extension ContextListRow: Identifiable {}
 
 extension StreamColor {
-    /// The swatch for a stream's colour.
-    ///
-    /// The *names* are the domain's — `slate`, `rose`, `emerald` — and this
-    /// only decides what each one looks like on this platform, which is a
-    /// rendering choice and nothing more.
-    var tint: Color {
-        switch self {
-        case .slate: .gray
-        case .rose: .pink
-        case .amber: .orange
-        case .emerald: .green
-        case .sky: .cyan
-        case .indigo: .indigo
-        case .violet: .purple
-        case .pink: Color(red: 0.95, green: 0.45, blue: 0.7)
-        }
-    }
+    // `tint` moved to `Sunrise/Design/Tokens.swift`. It was eight system-colour
+    // aliases plus one raw `Color(red:green:blue:)`, which made this the only
+    // place in the Apple app that decided a stream's colour — and made it
+    // decide a different palette from the one `packages/sunrise-ui` gave the
+    // web app under the same eight names. It is now the generated token set.
 
     /// What the picker calls it.
     var label: String {

@@ -1,39 +1,57 @@
 /**
  * Shared design tokens for Sunrise client UIs.
- * Per `spec/07-clients/shared-ui-system.md`. Stay in sync with the
- * Stream color palette in `crates/sunrise-domain/src/stream.rs::StreamColor`.
+ *
+ * Every value here is generated from `packages/sunrise-ui-tokens/tokens/*.toml`
+ * by `mise run tokens`; this file only decides what `@sunrise/ui` calls them.
+ * Editing a colour means editing the TOML — `mise run tokens-check` and
+ * `packages/sunrise-ui-tokens/test/drift.test.ts` both fail otherwise.
+ *
+ * The stream palette is keyed on `StreamColor` in
+ * `crates/sunrise-domain/src/stream.rs`. That used to be a comment asking a
+ * reader to keep two hand-written lists in step; it is now
+ * `packages/sunrise-ui-tokens/test/invariants.test.ts`, which reads the Rust
+ * and fails when the two diverge.
+ *
+ * `spacing` is the six-step scale, so `md` is 12 and not 16 — see
+ * `docs/11-adr/0029-design-token-pipeline.md` for why the doc's scale won over
+ * the five-step one this file used to carry.
  */
 
-export const colors = {
-    slate: "#475569",
-    rose: "#e11d48",
-    amber: "#d97706",
-    emerald: "#059669",
-    sky: "#0284c7",
-    indigo: "#4f46e5",
-    violet: "#7c3aed",
-    pink: "#db2777",
-} as const;
+import { color } from "@sunrise/ui-tokens";
 
+/**
+ * Spacing (px), corner radii (px), type, motion, and the ASCII task glyphs,
+ * straight off the generated set.
+ */
+export {
+    motion,
+    radii,
+    spacing,
+    taskStateGlyph,
+    typography,
+} from "@sunrise/ui-tokens";
+
+/**
+ * The eight Stream tints, light theme.
+ *
+ * Light-only because that is what `colors` has always meant to its consumer.
+ * `theme.dark.stream` is the dark set; a client that renders both reads
+ * `theme` instead.
+ */
+export const colors = color.light.stream;
+
+/** A Stream's colour name — the `StreamColor` variants, exactly. */
 export type StreamColor = keyof typeof colors;
 
-export const spacing = {
-    xs: 4,
-    sm: 8,
-    md: 16,
-    lg: 24,
-    xl: 32,
-} as const;
-
-export const radii = {
-    sm: 4,
-    md: 8,
-    lg: 12,
-} as const;
-
-export const taskStateGlyph = {
-    todo: "[ ]",
-    in_progress: "[·]",
-    done: "[x]",
-    cancelled: "[/]",
-} as const;
+/**
+ * Both themes, whole: `theme.light.surface.bg`, `theme.dark.stream.rose`.
+ *
+ * The nesting is `theme -> light | dark -> surface | stream`, and the export is
+ * named for the outer level rather than an inner one — `surface.light.surface`
+ * read like a mistake because it was one.
+ *
+ * The `surface` half is entirely new: there was no `bg`, `fg`, `muted`,
+ * `accent`, `border`, `danger`, `warning`, `success` or `info` here before, and
+ * no dark theme at all.
+ */
+export const theme = color;

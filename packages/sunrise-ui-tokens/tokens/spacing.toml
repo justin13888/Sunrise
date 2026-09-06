@@ -1,0 +1,12 @@
+# Spacing scale, 4 px base, per docs/07-clients/shared-ui-system.md §Spacing.
+#
+# Six steps, not five. This supersedes the five-step scale that
+# packages/sunrise-ui/src/tokens.ts carried by hand (md 16, lg 24, xl 32, no
+# xxl); see docs/11-adr/0029-design-token-pipeline.md for why the doc's scale
+# won. Values are pixels, and every emitter treats them as such.
+xs = 4
+sm = 8
+md = 12
+lg = 16
+xl = 24
+xxl = 32

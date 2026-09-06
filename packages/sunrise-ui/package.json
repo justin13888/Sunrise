@@ -12,6 +12,9 @@
     "scripts": {
         "typecheck": "tsc --noEmit"
     },
+    "dependencies": {
+        "@sunrise/ui-tokens": "workspace:*"
+    },
     "devDependencies": {
         "typescript": "~5.8.3"
     }

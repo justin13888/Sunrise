@@ -21,6 +21,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@sunrise/ui": "workspace:*",
+        "@sunrise/ui-tokens": "workspace:*",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
       },
@@ -36,7 +37,18 @@
     "packages/sunrise-ui": {
       "name": "@sunrise/ui",
       "version": "0.1.0",
+      "dependencies": {
+        "@sunrise/ui-tokens": "workspace:*",
+      },
       "devDependencies": {
+        "typescript": "~5.8.3",
+      },
+    },
+    "packages/sunrise-ui-tokens": {
+      "name": "@sunrise/ui-tokens",
+      "version": "0.1.0",
+      "devDependencies": {
+        "smol-toml": "^1.8.0",
         "typescript": "~5.8.3",
       },
     },
@@ -387,6 +399,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.0.0", "", {}, "sha512-m2bOd0f2RT9k8QJx1JN85cZYyH1RqFBdlwtkSlf4tBDYLCiiZnv1fIIwacK6cqwXavOydf0NPToMQgpKq+dVlA=="],
 
     "@sunrise/ui": ["@sunrise/ui@workspace:packages/sunrise-ui"],
+
+    "@sunrise/ui-tokens": ["@sunrise/ui-tokens@workspace:packages/sunrise-ui-tokens"],
 
     "@sunrise/web": ["@sunrise/web@workspace:apps/web"],
 
@@ -845,6 +859,8 @@
     "sirv": ["sirv@3.0.2", "", { "dependencies": { "@polka/url": "^1.0.0-next.24", "mrmime": "^2.0.0", "totalist": "^3.0.0" } }, "sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g=="],
 
     "smob": ["smob@1.6.2", "", {}, "sha512-RQsvleCbF8cVHEv+xuDGaA4pOizFqJ0GgjtMSRo6oP8pnN7WsigHgVGey6aILRBKv4W2YOMHLqbKdnB6hpB9fw=="],
+
+    "smol-toml": ["smol-toml@1.8.0", "", {}, "sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ=="],
 
     "source-map": ["source-map@0.8.0-beta.0", "", { "dependencies": { "whatwg-url": "^7.0.0" } }, "sha512-2ymg6oRBpebeZi9UUNsgQ89bhx01TcTkmNTGnNO88imTmbSgy4nfujrgVEFKWpMTEGA11EDkTt7mqObTPdigIA=="],
 
