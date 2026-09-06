@@ -45,9 +45,19 @@ pub struct DeviceCertInner {
     /// Human-readable nickname, 1..=64 **bytes** of UTF-8 (not characters).
     ///
     /// The CDDL above says `tstr .size (1..64)`, and `.size` on a CDDL `tstr`
-    /// bounds bytes; `sunrise-server` enforces the same bound as
-    /// `MAX_NICKNAME_BYTES` with the message "nickname must be 1..=64 bytes".
-    /// A character bound here would mint certs the service refuses.
+    /// bounds bytes. `sunrise-server` applies the same 64-byte *upper* bound to
+    /// the `nickname` field of a device-registration request
+    /// (`MAX_NICKNAME_BYTES`), so a character bound here would let a client
+    /// build a cert naming a nickname its own registration call cannot carry.
+    ///
+    /// The *lower* bounds deliberately differ, and this is not the same bound:
+    /// this codec refuses only `""`, because a cert is a wire object and
+    /// whitespace is a valid `tstr`, while the server additionally refuses an
+    /// all-whitespace nickname as a presentation rule on its request field.
+    ///
+    /// The server never parses or verifies the cert — it stores it as opaque
+    /// text — so nothing downstream re-checks these bytes. This decoder is the
+    /// only thing standing behind them.
     pub nickname: String,
     /// Platform string (e.g., "macos15", "ios18", "linux-x86_64").
     pub platform: String,
@@ -459,11 +469,15 @@ mod tests {
     // ---------------------------------------------------------------------
     // Field-width guards.
     //
-    // The CDDL at the top of this file fixes four of the body fields at an
-    // exact byte width, and `body_from_cbor` enforces each with a match guard
-    // on `b.len()`. A guard that stopped guarding would not fail any test that
-    // only ever feeds it well-formed certs, so the tests below feed it the one
-    // thing that tells the two apart: a body identical to a good one except
+    // The CDDL at the top of this file fixes **five** fields at an exact byte
+    // width, and every one is enforced by a match guard on `b.len()`: four in
+    // the body — `device_id` and `identity_id` at 16, `D_S_pub` and `D_D_pub`
+    // at 32 — in `body_from_cbor`, and the 64-byte `sig` of the outer map in
+    // `DeviceCert::from_cbor`. All five are pinned below.
+    //
+    // A guard that stopped guarding would not fail any test that only ever
+    // feeds it well-formed certs, so the tests below feed it the one thing
+    // that tells the two apart: a certificate identical to a good one except
     // that a single field is the wrong width.
     //
     // The bodies are built as `Value::Map`s rather than by editing encoded
@@ -518,13 +532,17 @@ mod tests {
         encode_fields(fields)
     }
 
-    /// Deriving [`body_fields`] from the encoder means a renumbering of the
-    /// body's CBOR key ids moves the tests with it — which is the point, but it
-    /// also means no width test would notice the renumbering. The key ids are a
-    /// wire contract (the CDDL at the top of this file), so pin them here
-    /// rather than leave the numbering unasserted anywhere in the crate.
+    /// Pins the ids **`body_to_cbor` emits**, and only those: [`body_fields`]
+    /// is derived from the encoder, so this observes the encoding side alone.
+    /// The decoder's own numbering is already pinned by the eight tests that
+    /// decode a body and assert what came back.
+    ///
+    /// Deriving [`body_fields`] means a renumbering moves the tests with it —
+    /// which is the point, but it also means no width test would notice one.
+    /// The key ids are a wire contract (the CDDL at the top of this file), so
+    /// pin them rather than leave the numbering unasserted in the crate.
     #[test]
-    fn the_body_carries_exactly_the_eight_cddl_key_ids() {
+    fn body_to_cbor_emits_exactly_the_eight_cddl_key_ids() {
         let ids: Vec<i64> = body_fields().into_iter().map(|(id, _)| id).collect();
         assert_eq!(
             ids,
@@ -539,16 +557,7 @@ mod tests {
     /// and to nothing else about how these bodies are built.
     #[test]
     fn the_unmodified_field_map_decodes_to_the_fixture() {
-        let rebuilt = encode_fields(body_fields());
-        // The editable map is the encoder's own output, so re-encoding it must
-        // reproduce those bytes exactly. This is what stops the tests below
-        // drifting from the encoder they exist to test.
-        assert_eq!(
-            rebuilt,
-            body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes"),
-            "the editable field map no longer reproduces body_to_cbor's output"
-        );
-        let decoded = body_from_cbor(&rebuilt).expect("well-formed body");
+        let decoded = body_from_cbor(&encode_fields(body_fields())).expect("well-formed body");
         assert_eq!(decoded, fixture([1u8; 32]));
     }
 
@@ -599,6 +608,48 @@ mod tests {
             body_from_cbor(&bytes),
             Err(DeviceCertError::BadField("body field shape"))
         ));
+    }
+
+    /// The outer `{1: body, 2: sig}` map [`DeviceCert::to_cbor`] emits, with
+    /// the signature at `width` bytes instead of 64.
+    fn outer_cbor_with_sig_of(width: usize) -> Vec<u8> {
+        let encoded = body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes");
+        let body: Value =
+            ciborium::de::from_reader(encoded.as_slice()).expect("its own output decodes");
+        let map = vec![
+            (Value::Integer(Integer::from(1)), body),
+            (
+                Value::Integer(Integer::from(2)),
+                Value::Bytes(vec![0xab; width]),
+            ),
+        ];
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("outer map encodes");
+        out
+    }
+
+    /// The fifth length guard, and the only one on a **public** entry point.
+    ///
+    /// `sunrise-core` feeds `DeviceCert::from_cbor` certificates published by
+    /// *other* devices on the `DeviceCertPublish` path, and that caller handles
+    /// a refusal by warning and returning — so a guard that stopped guarding
+    /// would not merely mis-parse, it would turn an expected `Err` into a
+    /// `copy_from_slice` panic on the op-apply path.
+    #[test]
+    fn a_signature_at_any_width_but_64_is_refused() {
+        // The control: at the right width this map shape decodes, so a refusal
+        // below is the signature width and not the way the map is built.
+        DeviceCert::from_cbor(&outer_cbor_with_sig_of(64)).expect("a 64-byte signature decodes");
+
+        for n in [0, 63, 65] {
+            match DeviceCert::from_cbor(&outer_cbor_with_sig_of(n)) {
+                Err(DeviceCertError::BadField("device cert outer")) => {}
+                other => panic!(
+                    "a {n}-byte signature (the CDDL fixes it at 64): expected \
+                     Err(BadField(\"device cert outer\")), got {other:?}"
+                ),
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -712,6 +763,22 @@ mod tests {
             ),
             "body_from_cbor must bound the nickname in bytes, not characters"
         );
+    }
+
+    /// The encoder half of the bound's lower end. Without it `DeviceCert::issue`
+    /// mints and signs a cert that its own decoder refuses — a valid-looking
+    /// artefact no peer can read, discovered only at read time on the pairing
+    /// path.
+    #[test]
+    fn an_empty_nickname_is_refused_by_the_encoder() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let mut body = fixture([1u8; 32]);
+        body.nickname = String::new();
+        assert!(matches!(
+            DeviceCert::issue(body, &identity),
+            Err(DeviceCertError::Validation("nickname length"))
+        ));
     }
 
     #[test]
