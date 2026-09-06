@@ -127,7 +127,7 @@ device_certs = vault_meta.device_certs[envelope.device_id]   // 1..N records
 candidate    = device_certs
                 .filter(c => c.created_at_ms <= envelope.ts_ms)
                 .filter(c => no device_revoke r exists with r.device_id = envelope.device_id
-                             AND r.effective_at_ms <= envelope.ts_ms)
+                             AND r.cut_ms <= envelope.ts_ms)   // cut = r's own HLC
                 .max_by_key(c => c.created_at_ms)
 if candidate.is_none(): reject CRYPTO_DEVICE_NOT_TRUSTED
 verify with candidate.D_S_pub
@@ -181,7 +181,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | Kind | `aead_alg` | Payload sketch |
 |---|---|---|
 | `device_cert` | 1 | The `DeviceCert` map (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)) |
-| `device_revoke` | 1 | `{ revoked_device_id, reason_code, effective_at }` |
+| `device_revoke` | 1 | `{ revoked_device_id, reason_code }` — the cut is the op's own HLC, so there is no `effective_at` field |
 | `key_envelope` | 1 | `{ stream_id, epoch, recipient, key_id, hpke_ciphertext }` |
 | `share_grant` | 0 | `{ stream_id, epoch, recipient_identity_id, role, expires_at?, hpke_ciphertext, identity_sig }` |
 | `share_revoke` | 0 | `{ stream_id, recipient_identity_id, effective_at }` |
@@ -215,7 +215,6 @@ KeyEnvelopePayload = {
 DeviceRevokePayload = {
     "revoked_device_id" => bstr .size 16,
     "reason_code" => "Lost" / "Stolen" / "Retired" / "Compromised",
-    "effective_at_ms" => uint,
 }
 ```
 
