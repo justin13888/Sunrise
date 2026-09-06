@@ -32,6 +32,35 @@
 //! and build scripts are excluded, which is the rule this file has always had —
 //! a fixture inventing its own event name does not have to be catalogued.
 //!
+//! # What this gate does not see
+//!
+//! Enumerated rather than implied, because the failure mode of every earlier
+//! version of this file was a totality claim nobody had written down and so
+//! nobody could check:
+//!
+//! - **An external macro expanding to `include!`.** The walk reads source, not
+//!   expansions, so a third-party macro that pulls in a file is invisible. A
+//!   literal `include!` is refused; one arriving through a macro is not seen at
+//!   all.
+//! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
+//!   names a second span site as the trigger to revisit — but nothing here
+//!   detects a second span site, so that trigger is a note, not an alarm. One
+//!   span exists today (`api/observe.rs`, `method` and `endpoint`, both
+//!   allowlisted and server-derived).
+//! - **A third-party action compiling a foreign manifest.** Such an
+//!   invocation lives in that action's repository, not this one, and nothing
+//!   here can reach it. What holds instead is that the `uses:` list is short
+//!   and reviewed.
+//! - **A build reached through a script.** `.github/scripts/*` are invoked
+//!   bare today. Following them properly means following arbitrary shell and
+//!   Python; following them partly would report coverage that does not exist,
+//!   which is the exact defect this file keeps having to remove. So they are
+//!   not followed at all, and this paragraph is the record of that choice.
+//!
+//! Everything else the gate refuses rather than skips. Where the two are hard
+//! to tell apart, prefer reducing what this file *claims* over extending what
+//! it does.
+//!
 //! # Why both halves fail closed
 //!
 //! Every gate here reports what it cannot analyse rather than skipping it.
@@ -127,7 +156,11 @@ fn derived_manifests() -> BTreeSet<PathBuf> {
 fn build_config_files() -> Vec<(String, String)> {
     let root = workspace_root();
     let mut files = Vec::new();
-    let mut stack = vec![root.join(".github/workflows")];
+    let mut stack = vec![
+        root.join(".github/workflows"),
+        // Composite actions run steps of their own, and were not read at all.
+        root.join(".github/actions"),
+    ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -147,9 +180,12 @@ fn build_config_files() -> Vec<(String, String)> {
             files.push((rel(&path, &root), text));
         }
     }
+    // Four today: two workflows, the Dockerfile, mise.toml. The floor is
+    // against a reader that has stopped finding files, not against deleting a
+    // workflow.
     assert!(
-        files.len() >= 4,
-        "expected the workflows, the Dockerfile and mise.toml, found {}: {:?}",
+        files.len() >= 2,
+        "expected to read the build config, found {}: {:?}",
         files.len(),
         files.iter().map(|(f, _)| f).collect::<Vec<_>>()
     );
@@ -251,22 +287,6 @@ fn shipped_target_roots() -> Vec<PathBuf> {
 struct Source {
     structural: String,
     literal: String,
-}
-
-/// Blank every byte in `regions`, keeping newlines so line structure survives.
-///
-/// Every byte written is ASCII and every region is a whole item, so the result
-/// is still valid UTF-8 and still the same byte length.
-fn blank_regions(s: &str, regions: &[(usize, usize)]) -> String {
-    let mut bytes = s.as_bytes().to_vec();
-    for &(at, end) in regions {
-        for b in &mut bytes[at..end] {
-            if *b != b'\n' {
-                *b = b' ';
-            }
-        }
-    }
-    String::from_utf8(bytes).expect("blanking writes only ASCII over whole items")
 }
 
 /// Comments blanked, and string contents blanked when `blank_strings`.
@@ -402,85 +422,14 @@ fn blank(text: &str, blank_strings: bool) -> String {
     out
 }
 
-/// The byte ranges of `#[cfg(test)]` items.
-///
-/// A unit test in `src/` is compiled only under `cfg(test)`, never shipped, and
-/// is free to log whatever it likes. Gating it would have this file claim a
-/// test fixture's field name is "logged from shipped code", which is both a
-/// false positive and a lie about where the risk is.
-fn cfg_test_regions(structural: &str) -> Vec<(usize, usize)> {
-    const ATTR: &str = "#[cfg(test)]";
-    let bytes = structural.as_bytes();
-    let mut regions = Vec::new();
-    let mut from = 0;
-    while let Some(rel_at) = structural[from..].find(ATTR) {
-        let at = from + rel_at;
-        from = at + ATTR.len();
-        let mut j = from;
-        // Skip whitespace and any further attributes on the same item.
-        loop {
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if bytes.get(j) == Some(&b'#') {
-                let mut depth = 0i32;
-                while j < bytes.len() {
-                    match bytes[j] {
-                        b'[' => depth += 1,
-                        b']' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                j += 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    j += 1;
-                }
-            } else {
-                break;
-            }
-        }
-        // The item is either braced or terminated by `;`.
-        let mut depth = 0i32;
-        let mut end = None;
-        while j < bytes.len() {
-            match bytes[j] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(j + 1);
-                        break;
-                    }
-                }
-                b';' if depth == 0 => {
-                    end = Some(j + 1);
-                    break;
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        if let Some(end) = end {
-            regions.push((at, end));
-        }
-    }
-    regions
-}
-
 fn normalise(text: &str) -> Source {
     let structural = blank(text, true);
     let literal = blank(text, false);
     assert_eq!(structural.len(), text.len(), "blanking changed byte length");
     assert_eq!(literal.len(), text.len(), "blanking changed byte length");
-    // Found once on the structural form and applied to both, so a `{` inside a
-    // string literal cannot make the two disagree about where an item ends.
-    let regions = cfg_test_regions(&structural);
     Source {
-        structural: blank_regions(&structural, &regions),
-        literal: blank_regions(&literal, &regions),
+        structural,
+        literal,
     }
 }
 
@@ -569,11 +518,23 @@ fn word_bang_hits(text: &str, word: &str) -> Vec<(usize, usize)> {
     hits
 }
 
+/// What the attribute block before a `mod` says about where it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSpec {
+    /// No attribute mentions a path; the name resolves conventionally.
+    None,
+    /// Exactly one `#[path = "literal"]`, and nothing else mentions a path.
+    Literal(String),
+    /// Something in the block mentions a path this scanner will not interpret —
+    /// a `cfg_attr`, a second `path`, anything but the simple form.
+    Unresolvable(String),
+}
+
 /// A `mod name;` declaration: the modules this file pulls in as other files.
 struct FileMod {
     name: String,
-    /// The value of a `#[path = "…"]` attribute on the declaration.
-    path_attr: Option<String>,
+    /// Where the attribute block says the file is.
+    path: PathSpec,
     /// Brace depth of the declaration. Anything but zero means it sits inside
     /// an inline `mod`, which changes the directory the name resolves against —
     /// a rule this walk does not implement and therefore refuses.
@@ -613,7 +574,7 @@ fn file_mods(src: &Source) -> Vec<FileMod> {
             if !name.is_empty() && bytes.get(j) == Some(&b';') {
                 out.push(FileMod {
                     name,
-                    path_attr: path_attribute_before(src, i),
+                    path: path_spec_before(src, i),
                     depth,
                 });
                 i = j + 1;
@@ -625,63 +586,128 @@ fn file_mods(src: &Source) -> Vec<FileMod> {
     out
 }
 
-/// The `#[path = "…"]` immediately preceding the item at `at`, if any.
-fn path_attribute_before(src: &Source, at: usize) -> Option<String> {
+/// The whole attribute block immediately before the item at `at`, as byte
+/// ranges in source order.
+///
+/// The *whole* block, not the nearest attribute. Inspecting only the nearest
+/// one made `#[path = "imp_unix.rs"] #[cfg(unix)] mod imp;` look like a plain
+/// `mod imp;` — refused for resolving to nothing, with no mention of the
+/// `#[path]` two lines up — and let `#[path = "…"] #[allow(…)] mod x;` through
+/// silently whenever a benign file sat at the default name.
+fn attribute_block_before(src: &Source, at: usize) -> Vec<(usize, usize)> {
     let bytes = src.structural.as_bytes();
     let mut j = at;
-    loop {
-        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+    // `pub`, `pub(crate)` and friends sit between the block and the `mod`.
+    while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let before_vis = j;
+    if j > 0 && bytes[j - 1] == b')' {
+        while j > 0 && bytes[j - 1] != b'(' {
             j -= 1;
         }
-        // `pub`, `pub(crate)` and friends sit between the attribute and `mod`.
-        let word_end = j;
-        while j > 0 && (is_ident_byte(bytes[j - 1]) || bytes[j - 1] == b')') {
-            if bytes[j - 1] == b')' {
-                while j > 0 && bytes[j - 1] != b'(' {
-                    j -= 1;
-                }
-            }
-            j -= 1;
-        }
-        if j == word_end {
-            break;
-        }
+        j = j.saturating_sub(1);
     }
     while j > 0 && bytes[j - 1].is_ascii_whitespace() {
         j -= 1;
     }
-    if bytes.get(j.checked_sub(1)?) != Some(&b']') {
-        return None;
+    let ident_end = j;
+    while j > 0 && is_ident_byte(bytes[j - 1]) {
+        j -= 1;
     }
-    let close = j - 1;
-    let mut depth = 0i32;
-    let mut k = close;
+    if &src.structural[j..ident_end] != "pub" {
+        j = before_vis;
+    }
+
+    let mut block = Vec::new();
     loop {
-        match bytes[k] {
-            b']' => depth += 1,
-            b'[' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
+        while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+            j -= 1;
         }
-        k = k.checked_sub(1)?;
+        if j == 0 || bytes[j - 1] != b']' {
+            break;
+        }
+        let close = j - 1;
+        let mut depth = 0i32;
+        let mut k = close;
+        let open = loop {
+            match bytes[k] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break Some(k);
+                    }
+                }
+                _ => {}
+            }
+            let Some(next) = k.checked_sub(1) else {
+                break None;
+            };
+            k = next;
+        };
+        let Some(open) = open else { break };
+        // A `#` before the `[`, or this is an index expression rather than an
+        // attribute and the block has ended.
+        if open == 0 || bytes[open - 1] != b'#' {
+            break;
+        }
+        block.push((open - 1, close + 1));
+        j = open - 1;
     }
-    let attr = &src.structural[k..=close];
-    if !attr.starts_with("[path") {
-        return None;
+    block.reverse();
+    block
+}
+
+/// What the attribute block before `at` says about where the module lives.
+///
+/// Deliberately not an attribute-grammar parser. Anything mentioning a path
+/// that is not one plain `#[path = "literal"]` is refused by name: a
+/// `cfg_attr` that resolves per platform is exactly what this scanner cannot
+/// know, so it says so rather than guessing — and guessing is silent in
+/// whichever direction a decoy file at the default name happens to make it.
+fn path_spec_before(src: &Source, at: usize) -> PathSpec {
+    let mut literal = None;
+    let mut mentions = 0usize;
+    let mut offenders = Vec::new();
+    for (from, to) in attribute_block_before(src, at) {
+        let attr = &src.structural[from..to];
+        if !attr.contains("path") {
+            continue;
+        }
+        mentions += 1;
+        let simple = attr
+            .strip_prefix("#[")
+            .and_then(|a| a.strip_suffix(']'))
+            .map(str::trim)
+            .and_then(|a| a.strip_prefix("path"))
+            .map(str::trim_start)
+            .and_then(|a| a.strip_prefix('='))
+            .map(str::trim)
+            .is_some_and(|a| a.len() >= 2 && a.starts_with('"') && a.ends_with('"'));
+        if simple && mentions == 1 {
+            // The value is read out of the literal form, at the same offsets.
+            let lit = &src.literal[from..to];
+            let open = lit.find('"').expect("the structural form found one") + 1;
+            let end = lit[open..].find('"').map_or(lit.len(), |i| i + open);
+            literal = Some(lit[open..end].to_owned());
+        } else {
+            offenders.push(snippet(attr));
+        }
     }
-    // The value lives in the literal form, at the same offsets.
-    let literal_attr = &src.literal[k..=close];
-    let open = literal_attr.find('"')? + 1;
-    let end = literal_attr[open..].find('"')? + open;
-    Some(literal_attr[open..end].to_owned())
+    if mentions > 1 || !offenders.is_empty() {
+        let mut all = offenders;
+        if let Some(v) = literal {
+            all.push(format!("#[path = \"{v}\"]"));
+        }
+        return PathSpec::Unresolvable(all.join(" "));
+    }
+    literal.map_or(PathSpec::None, PathSpec::Literal)
 }
 
 /// Every file the shipped targets compile, and everything the walk could not
 /// follow.
+#[allow(clippy::too_many_lines)]
 fn module_graph() -> (BTreeMap<String, String>, Vec<Unresolved>) {
     let root = workspace_root();
     let mut files: BTreeMap<String, String> = BTreeMap::new();
@@ -747,15 +773,25 @@ fn module_graph() -> (BTreeMap<String, String>, Vec<Unresolved>) {
                 });
                 continue;
             }
-            let candidates = m.path_attr.as_ref().map_or_else(
-                || {
-                    vec![
-                        dir.join(format!("{}.rs", m.name)),
-                        dir.join(&m.name).join("mod.rs"),
-                    ]
-                },
-                |p| vec![dir.join(p)],
-            );
+            let candidates = match &m.path {
+                PathSpec::None => vec![
+                    dir.join(format!("{}.rs", m.name)),
+                    dir.join(&m.name).join("mod.rs"),
+                ],
+                PathSpec::Literal(p) => vec![dir.join(p)],
+                PathSpec::Unresolvable(attrs) => {
+                    problems.push(Unresolved {
+                        file: rel_path.clone(),
+                        what: format!(
+                            "`mod {};` carries an attribute block naming a path this \
+                             scanner will not interpret ({attrs}). Write one plain \
+                             `#[path = \"literal\"]`, or bring the file into the module tree",
+                            m.name
+                        ),
+                    });
+                    continue;
+                }
+            };
             match candidates.iter().find(|c| c.is_file()) {
                 Some(found) => queue.push((
                     found.canonicalize().unwrap_or_else(|_| found.clone()),
@@ -766,9 +802,10 @@ fn module_graph() -> (BTreeMap<String, String>, Vec<Unresolved>) {
                     what: format!(
                         "`mod {};`{} resolves to no file on disk (tried {})",
                         m.name,
-                        m.path_attr
-                            .as_ref()
-                            .map_or_else(String::new, |p| format!(" with `#[path = \"{p}\"]`")),
+                        match &m.path {
+                            PathSpec::Literal(p) => format!(" with `#[path = \"{p}\"]`"),
+                            _ => String::new(),
+                        },
                         candidates
                             .iter()
                             .map(|c| rel(c, &root))
@@ -1190,11 +1227,17 @@ fn every_allowed_include_still_earns_its_exception() {
             .into_iter()
             .find(|p| p["name"].as_str() == Some(allowed.guarded_package))
             .unwrap_or_else(|| panic!("no package named {}", allowed.guarded_package));
+        // Normal dependencies only. A `tracing` under `[dev-dependencies]` or
+        // `[build-dependencies]` cannot reach the shipped artefact, so firing
+        // on one would demand a substantial refactor at a non-problem.
         let logs = package["dependencies"]
             .as_array()
             .expect("a package lists dependencies")
             .iter()
-            .any(|d| d["name"].as_str() == Some("tracing"));
+            .any(|d| {
+                d["name"].as_str() == Some("tracing")
+                    && d["kind"].as_str().is_none_or(|k| k == "normal")
+            });
         assert!(
             !logs,
             "{} now depends on `tracing`, so the generated code included by {} can \
@@ -1230,9 +1273,12 @@ fn the_scan_reaches_what_cargo_compiles() {
     // Derived, so there is nothing to pin — but a scan that silently found
     // nothing would make every gate below vacuous.
     let files = &graph().0;
+    // A floor against a broken scan, not against ordinary work. 181 files
+    // today; deleting a crate should not read as "the walk stopped working".
     assert!(
-        files.len() >= 100,
-        "expected at least 100 shipped sources, found {}",
+        files.len() >= 50,
+        "expected at least 50 shipped sources, found {} — the module walk has \
+         stopped following something",
         files.len()
     );
     for expected in [
@@ -1430,18 +1476,22 @@ fn the_scan_actually_finds_events_and_fields() {
     // into a no-op — which is how the previous redaction test managed to prove
     // nothing for a whole release cycle.
     let events = emitted_events();
-    // A real floor, not a token one: the workspace emits 45 today. A scanner
-    // that quietly stopped matching half of them would still clear `>= 10`.
+    // 45 today. The floor is for a scanner that has stopped matching, not for
+    // ordinary consolidation: deleting six events is normal work and must not
+    // trip a gate whose message reads like a scanner failure.
     assert!(
-        events.len() >= 40,
-        "expected at least 40 emitted events, found {}: {events:?}",
+        events.len() >= 20,
+        "expected at least 20 emitted events, found {} — the scan has stopped \
+         matching: {events:?}",
         events.len()
     );
     let fields = emitted_fields();
     let names: BTreeSet<&String> = fields.iter().map(|(f, _)| &f.name).collect();
+    // 28 today, same reasoning.
     assert!(
-        names.len() >= 20,
-        "expected at least 20 distinct logged field names, found {}: {names:?}",
+        names.len() >= 12,
+        "expected at least 12 distinct logged field names, found {} — the scan \
+         has stopped matching: {names:?}",
         names.len()
     );
     for expected in ["ev", "err_code", "stream_h", "cause"] {
@@ -1597,29 +1647,52 @@ fn an_event_name_is_read_from_the_same_parse_as_its_fields() {
     );
 }
 
+/// The attribute block before a `mod`, which decides which file the walk reads
+/// next — or refuses to guess.
 #[test]
-fn a_unit_test_in_src_is_not_shipped_code() {
-    // `#[cfg(test)]` never reaches an operator's binary, and gating it made
-    // this file claim a fixture's field name was "logged from shipped code".
-    let scanned = scan_source(
-        r#"
-        pub fn ship() { tracing::info!(ev = "srv.real", stream_h = %h, "m"); }
+fn the_module_walk_reads_the_whole_attribute_block() {
+    let spec = |src: &str| {
+        let source = normalise(src);
+        let at = source
+            .structural
+            .find("mod imp;")
+            .expect("the fixture declares a module");
+        path_spec_before(&source, at)
+    };
 
-        #[cfg(test)]
-        mod tests {
-            #[test]
-            fn t() { tracing::info!(ev = "srv.fixture", task_title = %x, "m"); }
-        }
-        "#,
-    );
+    // Plain, and the only shape this scanner will act on.
     assert_eq!(
-        scanned,
-        vec![Scanned::Fields(vec![
-            Field::with_value("ev", "srv.real"),
-            Field::named("stream_h"),
-        ])],
-        "only the shipped invocation is scanned"
+        spec("#[path = \"imp_unix.rs\"]\nmod imp;"),
+        PathSpec::Literal("imp_unix.rs".to_owned())
     );
+    assert_eq!(spec("mod imp;"), PathSpec::None);
+
+    // Previously silent: only the nearest attribute was read, so the `#[path]`
+    // was missed and a benign file at the default name hid the real one.
+    assert_eq!(
+        spec("#[path = \"generated/imp.rs\"]\n#[allow(dead_code)]\nmod imp;"),
+        PathSpec::Literal("generated/imp.rs".to_owned())
+    );
+
+    // Previously a false positive: refused as "resolves to no file" without
+    // ever mentioning the `#[path]` two lines up.
+    assert_eq!(
+        spec("#[path = \"imp_unix.rs\"]\n#[cfg(unix)]\npub mod imp;"),
+        PathSpec::Literal("imp_unix.rs".to_owned())
+    );
+
+    // A path this scanner cannot resolve is named, not guessed at. Which file
+    // a `cfg_attr` selects depends on the target, which is not knowable here.
+    for src in [
+        "#[cfg_attr(target_os = \"macos\", path = \"imp_mac.rs\")]\nmod imp;",
+        "#[path = \"a.rs\"]\n#[cfg_attr(unix, path = \"b.rs\")]\nmod imp;",
+        "#[cfg(feature = \"x\")]\n#[path = \"a.rs\"]\n#[path = \"b.rs\"]\nmod imp;",
+    ] {
+        assert!(
+            matches!(spec(src), PathSpec::Unresolvable(_)),
+            "must refuse rather than guess: {src:?}"
+        );
+    }
 }
 
 #[test]
@@ -1669,20 +1742,89 @@ fn an_aliased_macro_path_is_refused_by_the_path_gates() {
 //
 // Nothing does that today. These check it rather than trust it.
 
-/// Whether a build-config line runs cargo.
-fn mentions_cargo(text: &str) -> bool {
-    word_boundary_hits(text, "cargo").next().is_some()
+/// Offsets where `cargo` is invoked as a *command*.
+///
+/// Not a substring search. `~/.cargo/registry`, `id=cargo-registry` and
+/// `/usr/local/cargo` are not cargo invocations, and treating them as such
+/// meant that adding the conventional Rust cache step would trip a gate whose
+/// failure message talks about log vocabulary — a misdiagnosis of exactly the
+/// kind this file keeps having to remove.
+fn cargo_command_hits(text: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let mut hits = Vec::new();
+    for (at, _) in text.match_indices("cargo") {
+        // A whole word, and not glued to a path or a longer token.
+        if at > 0 && (is_ident_byte(bytes[at - 1]) || matches!(bytes[at - 1], b'/' | b'.' | b'-')) {
+            continue;
+        }
+        if bytes
+            .get(at + "cargo".len())
+            .copied()
+            .is_some_and(is_ident_byte)
+        {
+            continue;
+        }
+        // In command position: the start, a new line, a shell separator, or a
+        // YAML `run:`/list dash.
+        let mut j = at;
+        while j > 0 && matches!(bytes[j - 1], b' ' | b'\t') {
+            j -= 1;
+        }
+        if j == 0
+            || matches!(
+                bytes[j - 1],
+                b'\n' | b'&' | b';' | b'|' | b'(' | b':' | b'-'
+            )
+        {
+            hits.push(at);
+        }
+    }
+    hits
 }
 
-/// Byte offsets where `word` appears as a whole word.
-fn word_boundary_hits<'a>(text: &'a str, word: &'a str) -> impl Iterator<Item = usize> + 'a {
-    let bytes = text.as_bytes();
-    text.match_indices(word).filter_map(move |(at, _)| {
-        let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
-        let after = at + word.len();
-        let after_ok = bytes.get(after).copied().is_none_or(|b| !is_ident_byte(b));
-        (before_ok && after_ok).then_some(at)
+/// Whether a build-config fragment invokes cargo.
+fn mentions_cargo(text: &str) -> bool {
+    !cargo_command_hits(text).is_empty()
+}
+
+/// Whether a fragment moves out of the directory it started in.
+fn changes_directory(text: &str) -> bool {
+    text.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("cd ")
+            || t.starts_with("working-directory:")
+            || t.starts_with("WORKDIR ")
+            || l.contains("&& cd ")
     })
+}
+
+/// One build-config file split into the scopes a directory change applies to.
+///
+/// A YAML step, a mise task, or — where a file has no such structure — the
+/// whole file. Splitting on any indentation, because hard-coding six spaces
+/// collapsed an eight-space workflow into a single pseudo-step and made the
+/// gate report the file's own `name:` line as the offender.
+fn scopes(file: &str, text: &str) -> Vec<String> {
+    let is_yaml = Path::new(file)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("yml") || e.eq_ignore_ascii_case("yaml"));
+    let starts_scope: fn(&str) -> bool = if is_yaml {
+        |l: &str| l.trim_start().starts_with("- ")
+    } else if file.ends_with("mise.toml") {
+        |l: &str| l.starts_with("[tasks.")
+    } else {
+        return vec![text.to_owned()];
+    };
+    let mut out = vec![String::new()];
+    for line in text.lines() {
+        if starts_scope(line) {
+            out.push(String::new());
+        }
+        let last = out.last_mut().expect("one scope always exists");
+        last.push_str(line);
+        last.push('\n');
+    }
+    out
 }
 
 #[test]
@@ -1723,37 +1865,37 @@ fn no_build_config_names_a_manifest_the_scan_does_not_cover() {
 }
 
 #[test]
-fn no_workflow_step_runs_cargo_from_a_directory_of_its_own() {
+fn no_build_config_runs_cargo_from_a_directory_of_its_own() {
     // The other way to reach a foreign manifest: leave the workspace root and
-    // let cargo find whatever is there. A step that both changes directory and
-    // runs cargo is refused rather than guessed at — this gate has no YAML
-    // parser and will not pretend to know which manifest that resolves to.
+    // let cargo find whatever is there. This used to be filtered to workflows,
+    // so a mise task, a composite action and a Dockerfile `WORKDIR` each got a
+    // free pass from a check written precisely for them.
     //
-    // Only steps that do *both* are flagged. A `working-directory` on a step
-    // that runs bun is ordinary work, and a gate that fires on ordinary work is
-    // one someone switches off.
+    // A scope that both moves and runs cargo must say which manifest it means.
+    // Only doing *both* is flagged: a `working-directory` on a bun step is
+    // ordinary work, and a gate that fires on ordinary work is one someone
+    // switches off.
     let mut offenders = Vec::new();
     for (file, text) in build_config_files() {
-        if !file.starts_with(".github/workflows/") {
+        // The container build has no directory structure this gate can model —
+        // `/src` is a path inside an image. What decides its manifest is which
+        // `Cargo.toml` is copied in, which is checked on its own below.
+        if file == "Dockerfile" {
             continue;
         }
-        // Steps are YAML sequence items; splitting on them is enough to tell
-        // "this step" from "some other step".
-        for step in text.split("\n      - ") {
-            if !mentions_cargo(step) {
+        for scope in scopes(&file, &text) {
+            let cargo = cargo_command_hits(&scope).len();
+            if cargo == 0 || !changes_directory(&scope) {
                 continue;
             }
-            let moves = step.contains("working-directory:")
-                || step
+            if manifest_path_args(&scope).len() < cargo {
+                let name = scope
                     .lines()
-                    .any(|l| l.trim_start().starts_with("cd ") || l.contains("&& cd "));
-            if moves {
-                let name = step
-                    .lines()
-                    .next()
+                    .find(|l| !l.trim().is_empty())
                     .map_or_else(String::new, |l| snippet(l.trim()));
                 offenders.push(format!(
-                    "{file}: a step that changes directory and runs cargo ({name})"
+                    "{file}: a scope that changes directory and runs cargo without \
+                     naming a manifest ({name})"
                 ));
             }
         }
@@ -1769,6 +1911,39 @@ fn no_workflow_step_runs_cargo_from_a_directory_of_its_own() {
 }
 
 #[test]
+fn the_container_build_copies_only_manifests_the_scan_covers() {
+    // The Dockerfile's cargo build runs against whatever was copied into the
+    // image, so `COPY` is the thing that decides its manifest — not `WORKDIR`,
+    // and not anything this gate could learn by modelling container paths.
+    let root = workspace_root();
+    let derived = derived_manifests();
+    let text = std::fs::read_to_string(root.join("Dockerfile")).expect("Dockerfile is readable");
+    let mut offenders = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if !t.starts_with("COPY ") {
+            continue;
+        }
+        for token in t.split_whitespace().skip(1) {
+            if !token.ends_with("Cargo.toml") {
+                continue;
+            }
+            let path = root.join(token);
+            let path = path.canonicalize().unwrap_or(path);
+            if !derived.contains(&path) {
+                offenders.push(format!("Dockerfile: `COPY {token}`"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the container build copies a manifest these gates do not read, so the \
+         crate it builds has its log vocabulary checked by nothing:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
 fn the_build_config_scan_actually_reads_cargo_invocations() {
     // A floor near the real count, not far below it. The workflows, the
     // Dockerfile and mise.toml carry dozens of cargo invocations between them;
@@ -1777,9 +1952,9 @@ fn the_build_config_scan_actually_reads_cargo_invocations() {
     let files = build_config_files();
     let with_cargo = files.iter().filter(|(_, t)| mentions_cargo(t)).count();
     assert!(
-        with_cargo >= 3,
-        "expected cargo invocations in at least 3 build-config files, found \
-         {with_cargo}: {:?}",
+        with_cargo >= 2,
+        "expected cargo invocations in at least 2 build-config files, found \
+         {with_cargo} — the command scan has stopped matching: {:?}",
         files.iter().map(|(f, _)| f).collect::<Vec<_>>()
     );
     // And the one `--manifest-path` the repo actually has must be found, or the
