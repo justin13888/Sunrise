@@ -450,4 +450,169 @@ mod tests {
             Err(DeviceCertError::Validation(_))
         ));
     }
+
+    // ---------------------------------------------------------------------
+    // Field-width guards.
+    //
+    // The CDDL at the top of this file fixes four of the body fields at an
+    // exact byte width, and `body_from_cbor` enforces each with a match guard
+    // on `b.len()`. A guard that stopped guarding would not fail any test that
+    // only ever feeds it well-formed certs, so the tests below feed it the one
+    // thing that tells the two apart: a body identical to a good one except
+    // that a single field is the wrong width.
+    //
+    // The bodies are built as `Value::Map`s rather than by editing encoded
+    // bytes, so each test states the field it changed instead of a byte offset
+    // that has to be decoded to be understood.
+    // ---------------------------------------------------------------------
+
+    /// The eight body fields of [`fixture`], in the shape `body_to_cbor`
+    /// emits, as an editable list.
+    fn body_fields() -> Vec<(i64, Value)> {
+        let body = fixture([1u8; 32]);
+        vec![
+            (1, Value::Integer(body.v.into())),
+            (2, Value::Bytes(body.device_id.to_vec())),
+            (3, Value::Bytes(body.d_s_pub.to_vec())),
+            (4, Value::Bytes(body.d_d_pub.to_vec())),
+            (5, Value::Bytes(body.identity_id.to_vec())),
+            (6, Value::Integer(body.created_at_ms.into())),
+            (7, Value::Text(body.nickname)),
+            (8, Value::Text(body.platform)),
+        ]
+    }
+
+    fn encode_fields(fields: Vec<(i64, Value)>) -> Vec<u8> {
+        let map = fields
+            .into_iter()
+            .map(|(id, v)| (Value::Integer(Integer::from(id)), v))
+            .collect();
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("body map encodes");
+        out
+    }
+
+    /// [`body_fields`] with the one field `id` carrying `value` instead.
+    fn body_cbor_with(id: i64, value: Value) -> Vec<u8> {
+        let mut fields = body_fields();
+        let slot = fields
+            .iter_mut()
+            .find(|(k, _)| *k == id)
+            .expect("the field id under test is one of the eight");
+        slot.1 = value;
+        encode_fields(fields)
+    }
+
+    /// Anchors every test below it: each wrong-width body differs from this one
+    /// in exactly one field, so a refusal there is attributable to the width
+    /// and to nothing else about how these bodies are built.
+    #[test]
+    fn the_unmodified_field_map_decodes_to_the_fixture() {
+        let decoded = body_from_cbor(&encode_fields(body_fields())).expect("well-formed body");
+        assert_eq!(decoded, fixture([1u8; 32]));
+    }
+
+    /// Wrong widths for a field the CDDL fixes at `width`: empty, one short,
+    /// one long. Each must be refused by the guard rather than truncated,
+    /// zero-extended, or (with the guard gone) panicked over inside
+    /// `copy_from_slice`.
+    fn assert_every_wrong_width_is_refused(id: i64, width: usize) {
+        for n in [0, width - 1, width + 1] {
+            let bytes = body_cbor_with(id, Value::Bytes(vec![0xab; n]));
+            match body_from_cbor(&bytes) {
+                Err(DeviceCertError::BadField("body field shape")) => {}
+                other => panic!(
+                    "body field {id} at {n} bytes (the CDDL fixes it at {width}): expected \
+                     Err(BadField(\"body field shape\")), got {other:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn device_id_at_any_width_but_16_is_refused() {
+        assert_every_wrong_width_is_refused(2, 16);
+    }
+
+    #[test]
+    fn d_s_pub_at_any_width_but_32_is_refused() {
+        assert_every_wrong_width_is_refused(3, 32);
+    }
+
+    #[test]
+    fn d_d_pub_at_any_width_but_32_is_refused() {
+        assert_every_wrong_width_is_refused(4, 32);
+    }
+
+    #[test]
+    fn identity_id_at_any_width_but_16_is_refused() {
+        assert_every_wrong_width_is_refused(5, 16);
+    }
+
+    /// A 32-byte value in a 16-byte field is the confusion a guard exists to
+    /// stop: without it the decode would take the first 16 bytes of a public
+    /// key and call them a device id.
+    #[test]
+    fn a_public_key_sized_value_is_not_a_device_id() {
+        let bytes = body_cbor_with(2, Value::Bytes(vec![0xcd; 32]));
+        assert!(matches!(
+            body_from_cbor(&bytes),
+            Err(DeviceCertError::BadField("body field shape"))
+        ));
+    }
+
+    // ---------------------------------------------------------------------
+    // The nickname bound.
+    //
+    // `tstr .size (1..64)` makes 64 the longest admissible nickname, and both
+    // `body_to_cbor` and `body_from_cbor` spell that as `len() > 64`. A
+    // nickname of exactly 64 bytes is the single input where `>` and `>=`
+    // disagree, so it is the only input that pins the comparison.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_nickname_of_exactly_64_bytes_encodes() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let mut body = fixture([1u8; 32]);
+        body.nickname = "x".repeat(64);
+        assert_eq!(body.nickname.len(), 64, "the boundary this test exists for");
+
+        let cert = DeviceCert::issue(body.clone(), &identity)
+            .expect("64 bytes is inside the bound, not outside it");
+        let back = DeviceCert::from_cbor(&cert.to_cbor().expect("encodes")).expect("decodes");
+        assert_eq!(back.body.nickname, body.nickname);
+        back.verify(&identity.public_bytes())
+            .expect("a longest-legal nickname still verifies");
+    }
+
+    #[test]
+    fn a_nickname_of_exactly_64_bytes_decodes() {
+        let nickname = "x".repeat(64);
+        let bytes = body_cbor_with(7, Value::Text(nickname.clone()));
+        assert_eq!(
+            body_from_cbor(&bytes)
+                .expect("64 bytes is inside the bound")
+                .nickname,
+            nickname
+        );
+    }
+
+    #[test]
+    fn a_nickname_of_65_bytes_is_refused_by_the_decoder() {
+        let bytes = body_cbor_with(7, Value::Text("x".repeat(65)));
+        assert!(matches!(
+            body_from_cbor(&bytes),
+            Err(DeviceCertError::Validation("nickname length"))
+        ));
+    }
+
+    #[test]
+    fn an_empty_nickname_is_refused_by_the_decoder() {
+        let bytes = body_cbor_with(7, Value::Text(String::new()));
+        assert!(matches!(
+            body_from_cbor(&bytes),
+            Err(DeviceCertError::Validation("nickname length"))
+        ));
+    }
 }
