@@ -106,11 +106,14 @@ Alongside it, the hierarchy the documents already specify is made real:
    what it already had — unavoidable, and stated — and, as built, reads what
    comes afterwards too: see the scope note below.
 
-   **Scope, as amended: revocation bounds reads and writes, by two mechanisms
-   in two places.** Reads are bounded in the vault, on every replica that has
+   **Scope, as amended: revocation bounds reads. It does not bound writes.**
+   Reads are bounded in the vault, on every replica that has
    applied the revocation: `emit_key_envelopes` anti-joins the register, and
    there is no identity copy for a paired device to open instead. Writes are
-   **not** bounded — the relay would have to be told out of band and cannot be
+   **not** bounded — an earlier slice of this work queued a relay request and
+   it was reverted, because `DELETE /api/v1/devices/{device_id}` names the
+   relay's own ULID for a device and a vault knows only its 16-byte device id,
+   so the client has no id to send
    ([#80](https://github.com/justin13888/Sunrise/issues/80)) — and peers do not
    refuse a revoked device's ops, because doing so at apply time is not
    convergent: a replica that applied one before the revocation arrived cannot

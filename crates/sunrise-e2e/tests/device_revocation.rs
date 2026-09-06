@@ -40,10 +40,14 @@
 //! It does not assert that C's *writes* are refused by B or by A. They are not,
 //! and that is a decision rather than a gap: refusing at apply time is not
 //! convergent, because a replica that applied an op before the revocation
-//! arrived cannot un-apply it and this engine has no projection rebuild. What
-//! bounds C's writes is the relay, which stops accepting its uploads once the
-//! revocation reaches it — so a peer never sees the op to refuse. A convergent
-//! peer-side check is #82.
+//! arrived cannot un-apply it and this engine has no projection rebuild.
+//!
+//! Nor is anything else bounding them. **A revoked device's writes are
+//! unbounded today.** The relay would have to be told out of band and cannot
+//! be: `DELETE /api/v1/devices/{device_id}` names the relay's own ULID for a
+//! device and a vault knows only its 16-byte device id, so there is no id to
+//! put in the request (#80). A convergent peer-side check is #82. Revocation
+//! is a read boundary and only a read boundary.
 //!
 //! It also does not assert forward secrecy against the *account creator*. That
 //! device, and one restored from the recovery code, hold `ID_D_priv` and can
@@ -53,11 +57,18 @@
 //! nowhere else for that key to live. `docs/03-crypto/key-rotation.md`
 //! §Revocation states it.
 //!
-//! Separately: a revoked device still holds `ID_S_priv`, so it can issue itself
-//! a fresh, valid `DeviceCert` under a new device id. Revocation names a
-//! device, and the identity keys are what name devices. What stands against it
-//! today is the relay, which will not accept a revoked device's upload of that
-//! cert.
+//! Separately, and **unmitigated**: a revoked device still holds `ID_S_priv`,
+//! so it can issue itself a fresh, valid `DeviceCert` under a new device id.
+//! Revocation names a device, and the identity keys are what name devices.
+//! `self_authenticating_signer` admits that cert, applying it runs
+//! `backfill_key_envelopes`, and the fresh id is sealed the current epoch of
+//! every stream — so revocation is undone in one round trip and nothing today
+//! stands in the way. Two things would: identity rotation, which is what makes
+//! a revoked device's `ID_S_priv` stop signing valid certs at all
+//! (`docs/03-crypto/key-rotation.md` §Identity rotation, unbuilt), and
+//! refusing to backfill a device id first seen in a cert whose signer is
+//! already revoked, which is narrower and does not need the identity to move.
+//! Neither is built.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 

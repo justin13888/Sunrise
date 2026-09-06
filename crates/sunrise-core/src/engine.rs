@@ -448,8 +448,10 @@ impl Engine {
     /// Record a device as revoked, and mint a new epoch for every stream it
     /// could read.
     ///
-    /// **This bounds the revoked device's reads**, and queues the request that
-    /// bounds its writes. It records a cut every replica converges on, rotates
+    /// **This bounds the revoked device's reads, and nothing else.** Nothing
+    /// queues anything, and nothing bounds its writes — see
+    /// [`Self::apply_remote`] step 2 for why the relay cannot be told and why
+    /// peers do not refuse. It records a cut every replica converges on, rotates
     /// every stream in the rotation set, and seals the new epochs to everyone
     /// *except* the device it just revoked — which is only meaningful because
     /// `PairingPayload` no longer carries `ID_D_priv`, so there is no
@@ -12695,10 +12697,13 @@ mod tests {
     /// A revoked device's ops still **apply** at a receiving replica, and its
     /// cursor still advances.
     ///
-    /// This half is deliberately not a gate, and it is not the write bound.
-    /// The write bound is the relay, which stops accepting the device's
-    /// uploads the moment `revoke_device` reaches it — so a peer never sees the
-    /// op to refuse in the first place.
+    /// This half is deliberately not a gate, and there is no write bound
+    /// elsewhere for it to defer to. Nothing bounds a revoked device's writes
+    /// today: the relay would have to be told out of band and cannot be,
+    /// because `DELETE /api/v1/devices/{device_id}` names the **relay's** id
+    /// for a device — a ULID it minted at registration — while a vault knows
+    /// only its own 16-byte device id and no peer's relay id
+    /// ([#80](https://github.com/justin13888/Sunrise/issues/80)).
     ///
     /// Refusing here instead is a live hazard, and six review rounds produced
     /// six defects that were all this shape. Refusing a device's ops freezes
