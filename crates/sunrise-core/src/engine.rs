@@ -12280,6 +12280,221 @@ mod tests {
         }
     }
 
+    /// A parked op older than [`DEFERRED_TTL_MS`] is swept by the next drain.
+    ///
+    /// The caps are tested; the TTL was not, which left "a row this old is
+    /// ciphertext nobody will ever open" as a sentence rather than a property.
+    /// A drain is the only moment the table is known to be changing, so it is
+    /// where the sweep runs — and this is what fails if it stops running.
+    #[test]
+    fn a_parked_op_older_than_the_ttl_is_swept_by_the_next_drain() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+
+        // A writes to the Inbox. B holds the vault-meta key but never the
+        // Inbox key, so the op parks.
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "parked and forgotten".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        let envelopes_before = key_envelope_envs(&dba).len();
+        assert!(eb
+            .apply_remote_all(&mut dbb, &env_bytes(&dba, &task.op_id))
+            .unwrap()
+            .is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "the premise: it is parked");
+
+        // A month passes on B, and then some *other* key arrives — a fresh
+        // Stream A creates, whose key B does receive.
+        set_clock(&cb, T0 + DEFERRED_TTL_MS + 1);
+        set_clock(&ca, T0 + DEFERRED_TTL_MS + 1);
+        let stream = ea
+            .apply(
+                &mut dba,
+                Command::CreateStream(StreamDraft {
+                    name: "later".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "in the new stream".into(),
+                stream_id: Some(stream),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // Only the envelopes minted after the park, so B never learns the
+        // Inbox key and the row can only leave by being swept.
+        for env in key_envelope_envs(&dba).into_iter().skip(envelopes_before) {
+            let _ = eb.apply_remote_all(&mut dbb, &env);
+        }
+        assert!(
+            eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "B still has no Inbox key, so the row was not drained normally"
+        );
+        assert_eq!(
+            deferred_rows(&dbb),
+            0,
+            "an op parked past the TTL is swept by the next drain"
+        );
+        assert!(
+            read_task(dbb.conn(), task.entity.bytes())
+                .unwrap()
+                .is_none(),
+            "and it never materialized"
+        );
+    }
+
+    /// A revoked device's `key_envelope` op is **refused**, while its
+    /// `device_revoke` op is admitted. That asymmetry is decision 28, and this
+    /// is what makes it fail rather than merely read.
+    ///
+    /// The two families are exempted from the revocation gate for different
+    /// reasons, and only one of them applies to keys. A revocation is a claim
+    /// about the *world* — "this device is gone" — which any member may make,
+    /// and gating it on the claimant's own membership is what let two crossed
+    /// revocations diverge permanently. Distributing a Stream key is not a
+    /// claim, it is an **exercise of authority the cut has withdrawn**: a
+    /// revoked device handing out keys after its own cut is worse than one
+    /// writing tasks, and it is the single thing revocation exists to stop.
+    ///
+    /// `is_revocation_control` has one call site and one `matches!`, so
+    /// widening it to `KeyEnvelope` — which reads like fixing an inconsistency
+    /// — costs one word. Anyone with a real case for that should have to
+    /// delete this assertion, and read this comment on the way.
+    #[test]
+    fn a_revoked_device_may_still_revoke_but_may_not_hand_out_keys() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&ea, &mut dba, &ec);
+        trust(&eb, &mut dbb, &ea);
+        trust(&eb, &mut dbb, &ec);
+
+        // A writes, which mints the Inbox key and emits the envelopes that
+        // carry it. B is given only the vault-meta key, so it can read control
+        // ops but holds no Inbox key of its own.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "mints the inbox key".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        let envelopes = key_envelope_envs(&dba);
+        assert!(!envelopes.is_empty(), "A emitted key envelopes at all");
+
+        // A is revoked, at a cut at or before everything above.
+        revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0);
+
+        // Its key envelopes are refused, and B learns no key from them.
+        for env in &envelopes {
+            assert!(
+                matches!(
+                    eb.apply_remote(&mut dbb, env),
+                    Err(EngineError::DeviceRevoked)
+                ),
+                "a revoked device must not distribute Stream keys"
+            );
+        }
+        assert!(
+            eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "and nothing it sent was absorbed"
+        );
+
+        // Its revocations are not refused: A revoking C still reaches B.
+        set_clock(&ca, T0 + 1_000);
+        let revoke_c = ea
+            .apply(
+                &mut dba,
+                Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, ec.keychain.device_id()),
+                    reason: RevokeReason::Compromised,
+                },
+            )
+            .unwrap();
+        eb.apply_remote(&mut dbb, &env_bytes(&dba, &revoke_c.op_id))
+            .expect("a revoked device may still say another device is gone");
+        assert!(
+            eb.is_revoked_at(&dbb, &ec.keychain.device_id(), T0 + 2_000)
+                .unwrap(),
+            "the claim about the world lands even though its author is revoked"
+        );
+    }
+
+    /// Revoking a device leaves `devices.revoked_at_ms` NULL, because the
+    /// register lives in `device_revocations` and that column is superseded.
+    ///
+    /// Migration 0017 says so in a comment. This makes it a fact: anything that
+    /// starts writing the old column again fails here rather than creating a
+    /// second, silently disagreeing source of truth.
+    #[test]
+    fn revocation_does_not_touch_the_superseded_devices_column() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let target = eb.keychain.device_id();
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            revocation_row(&dba, &target).is_some(),
+            "the register is where the revocation lives"
+        );
+        let legacy: Option<i64> = dba
+            .conn()
+            .query_row(
+                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
+                params![&target[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, None, "the 0013 column is superseded and unwritten");
+        // And the device list reads the register, not the dead column.
+        match ea.query(&dba, Query::DeviceList).unwrap() {
+            QueryResult::Devices(rows) => assert!(
+                rows.iter().find(|d| d.device_id == target).unwrap().revoked,
+                "the device list still shows it revoked"
+            ),
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     /// Two devices revoke each other, and both replicas end up holding both
     /// revocations whichever order they see them in.
     ///
