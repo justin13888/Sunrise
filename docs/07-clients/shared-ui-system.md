@@ -8,7 +8,136 @@ A pragmatic cross-platform design system: shared *tokens* and *patterns*; per-pl
 
 ## Tokens
 
-Tokens live in `packages/sunrise-ui-tokens/tokens/`. A build script at `packages/sunrise-ui-tokens/build.ts` emits per-target outputs (`tokens.css`, `tokens.swift`, `tokens.kt`, `tokens.rs`). The TOML files below are the implementation source of truth.
+> **Status: one 40-line TypeScript file, consumed by the deferred web app and
+> nothing else.** The token pipeline below — `packages/sunrise-ui-tokens/`, its
+> TOML sources, and a `build.ts` emitting `tokens.css` / `.swift` / `.kt` /
+> `.rs` — was specified here and never built. No such directory, script or
+> generated file exists. The colour, motion, typography and radius tables under
+> [Specified, not built](#tokens-specified-not-built) are kept because they are
+> still the intended palette; they are not describing anything that runs.
+> [#29](https://github.com/justin13888/Sunrise/issues/29) tracks the gap.
+
+What exists is `packages/sunrise-ui/src/tokens.ts`, hand-written, re-exported
+verbatim by `src/index.ts`, and holding four constants:
+
+| Export | Contents |
+|---|---|
+| `colors` | The eight `StreamColor` tints, as hex: `slate` `#475569`, `rose` `#e11d48`, `amber` `#d97706`, `emerald` `#059669`, `sky` `#0284c7`, `indigo` `#4f46e5`, `violet` `#7c3aed`, `pink` `#db2777` |
+| `spacing` | `xs` 4, `sm` 8, `md` 16, `lg` 24, `xl` 32 |
+| `radii` | `sm` 4, `md` 8, `lg` 12 |
+| `taskStateGlyph` | `todo` `[ ]`, `in_progress` `[·]`, `done` `[x]`, `cancelled` `[/]` |
+
+There is no surface palette — no `bg`, `fg`, `muted`, `accent`, `border`,
+`danger`, `warning`, `success` or `info`, and no dark set. There are no motion
+or typography tokens. `spacing` has five steps and not six: the `md = 12` and
+`lg = 16` the table below specifies are `md = 16` and `lg = 24` in the file,
+with no `xxl`, so a client following the specified scale and a client importing
+the real one disagree at every step above `sm`.
+
+The `colors` keys are the file's own `StreamColor` type and mirror
+`StreamColor` in `crates/sunrise-domain/src/stream.rs`, which the file's header
+comment names as the thing to stay in sync with. Nothing enforces that: the
+Rust enum and the TypeScript object are two hand-maintained lists.
+
+**The package has one consumer and it is deferred.** `apps/web` imports
+`taskStateGlyph` and nothing else — not `colors`, not `spacing`, not `radii` —
+and `apps/web` is the `localStorage` stub [ADR-0012](../11-adr/0012-web-wasm-deferred.md)
+left in place of a real client. The Apple apps are Swift and consume none of it;
+they carry their own values. So no shipping client reads a shared token today,
+which is why the drift above has cost nothing yet and why it will cost
+something the moment a second consumer appears.
+
+## Four-state view contract
+
+Every view MUST implement four states. This is the canonical table; per-view files reference this section rather than duplicating it.
+
+| State | Trigger | Visual | Action |
+|---|---|---|---|
+| `loading` | Initial vault read or async fetch in flight > 200 ms | Skeleton placeholder of 3 list rows; no spinner unless > 1 s, then small inline spinner; no modal. | None auto; user can navigate away. |
+| `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
+| `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
+| `conflict` | Merge applied a conflict-resolution rule the user might want to review. | Toast notification (5 s) + entry in Reviews → Recent Conflicts. | Tap toast → opens conflict-detail view. |
+
+### Per-view empty-state copy
+
+| View | Empty copy | Empty action |
+|---|---|---|
+| Today | "Nothing scheduled for today. Add a task or take it easy." | "Add a task" |
+| Inbox | "Inbox zero. Capture something quickly with ⌘N." | "Capture" |
+| Stream | "No tasks in <stream> yet." | "Add task" |
+| Calendar | "No blocks for this week." | "Add block" |
+| Search | "No results for '<query>'." | "Clear search" |
+| Reviews | "Not enough data yet — come back in a week." | (none) |
+| Focus | (focus mode never empty; uses idle screen) | — |
+
+Per-view illustrations were specified as living in `packages/sunrise-ui-shared/illustrations/`. **That package does not exist**, and neither does any shared illustration asset; the only package under `packages/` that any client imports is `packages/sunrise-ui`, described under [Tokens](#tokens). Each client draws its own empty state ([#29](https://github.com/justin13888/Sunrise/issues/29)).
+
+## Pattern catalog
+
+Patterns are described once and implemented natively per platform:
+
+| Pattern | Behavior |
+|---|---|
+| **Quick capture sheet** | Single text field; `Esc` cancels; `Enter` commits and clears; modifier `Cmd/Ctrl+Enter` commits and closes |
+| **Task row** | Checkbox + title + meta row (stream tint, due/scheduled, contexts); right-side actions on hover/long-press |
+| **Stream chip** | Color dot + name; consistent across all surfaces |
+| **Today header** | Date + day-of-week + a count summary |
+| **Detail pane** | Slides in from trailing edge; never modal blocking; closes with `Esc` |
+| **Empty state** | See "Four-state view contract" above |
+
+## Component implementations
+
+Deferred clients (iOS, Android, Web) keep their rows so the shape is recorded
+for when they are scheduled; only macOS ships today.
+
+| Pattern | macOS | iOS *(deferred)* | Android *(deferred)* | Web *(deferred)* |
+|---|---|---|---|---|
+| Task row | SwiftUI `TaskRow` | SwiftUI `TaskRow` | Compose `TaskRow()` | React `<TaskRow>` |
+| Quick capture | Borderless window | Sheet | BottomSheet | Modal |
+| Detail pane | Sliding panel | NavigationStack push | NavigationCompose push | Sliding panel |
+
+## Density
+
+Three densities: `comfortable`, `default`, `compact`. User-selectable. Defaults:
+
+- macOS: `default`.
+- iOS / Android: `comfortable`.
+- Web: `default`.
+
+## Iconography
+
+A small custom icon set (~40 icons) shipped as SVG → rendered platform-native:
+
+- macOS / iOS: SF Symbols where available, custom otherwise.
+- Android: Material symbols where available.
+- Web: same SVG.
+
+## Accessibility
+
+- Every interactive element has a programmatic name.
+- Color is never the *only* signal (icons + text accompany).
+- All flows reachable by keyboard / VoiceOver / TalkBack.
+- See [`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md).
+
+## What is not shared
+
+- The actual rendering library. Native components, native idioms.
+- Animation choices beyond motion tokens. iOS feels like iOS.
+- Navigation transitions. Each platform owns its idiom.
+
+## Tokens (specified, not built)
+
+> **None of this section exists.** No `packages/sunrise-ui-tokens/` directory,
+> no TOML sources, no `build.ts`, and no generated `tokens.css` / `tokens.swift`
+> / `tokens.kt` / `tokens.rs`. It is the intended design, kept as such.
+> [#29](https://github.com/justin13888/Sunrise/issues/29) tracks it. What ships
+> is described under [Tokens](#tokens) above, and where the two disagree — the
+> spacing scale in particular — the file is what a build actually gets.
+
+Tokens live in `packages/sunrise-ui-tokens/tokens/`. A build script at
+`packages/sunrise-ui-tokens/build.ts` emits per-target outputs (`tokens.css`,
+`tokens.swift`, `tokens.kt`, `tokens.rs`). The TOML files below are the intended
+source of truth.
 
 ```
 sunrise-tokens/
@@ -110,81 +239,3 @@ line_normal = 1.5
 
 - macOS uses the OS system font (SF).
 - Web uses `system-ui` / `Inter` fallback.
-
-## Four-state view contract
-
-Every view MUST implement four states. This is the canonical table; per-view files reference this section rather than duplicating it.
-
-| State | Trigger | Visual | Action |
-|---|---|---|---|
-| `loading` | Initial vault read or async fetch in flight > 200 ms | Skeleton placeholder of 3 list rows; no spinner unless > 1 s, then small inline spinner; no modal. | None auto; user can navigate away. |
-| `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
-| `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
-| `conflict` | Merge applied a conflict-resolution rule the user might want to review. | Toast notification (5 s) + entry in Reviews → Recent Conflicts. | Tap toast → opens conflict-detail view. |
-
-### Per-view empty-state copy
-
-| View | Empty copy | Empty action |
-|---|---|---|
-| Today | "Nothing scheduled for today. Add a task or take it easy." | "Add a task" |
-| Inbox | "Inbox zero. Capture something quickly with ⌘N." | "Capture" |
-| Stream | "No tasks in <stream> yet." | "Add task" |
-| Calendar | "No blocks for this week." | "Add block" |
-| Search | "No results for '<query>'." | "Clear search" |
-| Reviews | "Not enough data yet — come back in a week." | (none) |
-| Focus | (focus mode never empty; uses idle screen) | — |
-
-Per-view illustrations live in `packages/sunrise-ui-shared/illustrations/`.
-
-## Pattern catalog
-
-Patterns are described once and implemented natively per platform:
-
-| Pattern | Behavior |
-|---|---|
-| **Quick capture sheet** | Single text field; `Esc` cancels; `Enter` commits and clears; modifier `Cmd/Ctrl+Enter` commits and closes |
-| **Task row** | Checkbox + title + meta row (stream tint, due/scheduled, contexts); right-side actions on hover/long-press |
-| **Stream chip** | Color dot + name; consistent across all surfaces |
-| **Today header** | Date + day-of-week + a count summary |
-| **Detail pane** | Slides in from trailing edge; never modal blocking; closes with `Esc` |
-| **Empty state** | See "Four-state view contract" above |
-
-## Component implementations
-
-Deferred clients (iOS, Android, Web) keep their rows so the shape is recorded
-for when they are scheduled; only macOS ships today.
-
-| Pattern | macOS | iOS *(deferred)* | Android *(deferred)* | Web *(deferred)* |
-|---|---|---|---|---|
-| Task row | SwiftUI `TaskRow` | SwiftUI `TaskRow` | Compose `TaskRow()` | React `<TaskRow>` |
-| Quick capture | Borderless window | Sheet | BottomSheet | Modal |
-| Detail pane | Sliding panel | NavigationStack push | NavigationCompose push | Sliding panel |
-
-## Density
-
-Three densities: `comfortable`, `default`, `compact`. User-selectable. Defaults:
-
-- macOS: `default`.
-- iOS / Android: `comfortable`.
-- Web: `default`.
-
-## Iconography
-
-A small custom icon set (~40 icons) shipped as SVG → rendered platform-native:
-
-- macOS / iOS: SF Symbols where available, custom otherwise.
-- Android: Material symbols where available.
-- Web: same SVG.
-
-## Accessibility
-
-- Every interactive element has a programmatic name.
-- Color is never the *only* signal (icons + text accompany).
-- All flows reachable by keyboard / VoiceOver / TalkBack.
-- See [`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md).
-
-## What is not shared
-
-- The actual rendering library. Native components, native idioms.
-- Animation choices beyond motion tokens. iOS feels like iOS.
-- Navigation transitions. Each platform owns its idiom.

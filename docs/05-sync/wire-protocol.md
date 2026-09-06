@@ -6,15 +6,20 @@ status: accepted
 
 A binary, length-prefixed message framing over a reliable byte stream, implemented in `crates/sunrise-wire-protocol/`.
 
-> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaces the transport under
-> this protocol.** Sync moves to an SSE stream downstream and typed `POST`
-> operations upstream; the WebSocket this document describes is the current
-> implementation, not the settled design (see [`transports.md`](./transports.md)).
-> The **payload types and their canonical CBOR encoding survive the move
-> unchanged** — `Hello::negotiate`, the capability bitfield and the frozen
-> fixtures all carry over. What does not survive is the frame header below:
-> magic, versions, `msg_kind`, flags and length are subsumed by HTTP framing and
-> SSE event types, and the zstd flag is retired with them.
+> **[ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the transport under
+> this protocol, and the move has landed.** Sync is an SSE stream downstream and
+> typed `POST` operations upstream; the WebSocket this document was written
+> against is gone (see [`transports.md`](./transports.md)). The **payload types
+> and their canonical CBOR encoding survived unchanged** — `Hello::negotiate`,
+> the capability bitfield and the frozen fixtures all carried over. The frame
+> header below did not survive on the wire: magic, versions, `msg_kind`, flags
+> and length are subsumed by HTTP framing and SSE event types. It survives
+> *inside the client*, because `SseTransport` is the seam — the sync driver
+> still hands it whole encoded frames and still reads whole encoded frames back
+> — and it survives on the relay's own storage, which appends the rebuilt
+> `OpBatch` frame verbatim and streams those same bytes out again. So the
+> layout below still describes real bytes; it no longer describes a wire
+> protocol two peers speak to each other.
 
 ## Frame layout
 
@@ -43,10 +48,17 @@ non-canonical input and trailing garbage, which is what makes
 `CRYPTO_NON_CANONICAL_CBOR` enforceable rather than aspirational.
 
 The rule covers **all** payloads including the handshake. `Hello` and
-`HelloAck` are the exception in the tree, not in the contract: the server reads
-`Hello` with `ciborium::de::from_reader` and writes `HelloAck` with
-`ciborium::ser::into_writer` (`crates/sunrise-server/src/ws.rs`), bypassing the
-canonicality check every other payload gets.
+`HelloAck` are the exception in the tree, not in the contract, and after
+[ADR-0023](../11-adr/0023-sse-sync-transport.md) the exception is entirely
+client-side: `crates/sunrise-core/src/sync_driver.rs` encodes the `Hello` frame
+with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
+`ciborium::de::from_reader` and writes the `HelloAck` frame the same way
+(`crates/sunrise-sync/src/sse.rs:320-366`). Both bypass the canonicality check
+every other payload gets. The server sees neither frame — `POST /sync/session`
+takes a typed body and rebuilds a `Hello` from its fields
+(`crates/sunrise-server/src/api/sync.rs`) — so the handshake's two hops through
+`ciborium` now happen on one side of the wire, between the driver and the
+adapter that speaks HTTP for it.
 
 **Closing it is a wire-format change, and it is deliberately deferred to
 [ADR-0023](../11-adr/0023-sse-sync-transport.md)'s transport move.** `Hello`'s
@@ -101,20 +113,27 @@ Compression is per-frame, optional. Scope is the `payload` only.
 
 **zstd is implemented and never enabled.** `encode_frame` and `decode_frame`
 both handle `FrameFlags::ZSTD` and the round trip is unit-tested, but
-**no call site outside those tests ever sets the bit** — not `ws.rs`, not the
-sync driver. Every frame on the wire today is uncompressed. ADR-0023 retires the
-flag with the frame header rather than carrying it forward unused, so the
-"SHOULD compress" rule above describes a policy no build has ever executed.
+**no call site outside those tests ever sets the bit** — every `encode_frame`
+call in the server, in `SseTransport` and in the sync driver passes
+`FrameFlags::EMPTY`. Every frame on the wire today is uncompressed. ADR-0023
+retires the flag with the frame header rather than carrying it forward unused,
+so the "SHOULD compress" rule above describes a policy no build has ever
+executed.
 
 ## Message catalog
 
-The OIDC access token is carried as an `Authorization: Bearer …` header on the WebSocket upgrade request. The server validates the token before accepting `Hello` and uses `X-Sunrise-Device` to bind the connection to a registered device row. There is no separate Auth message.
+The OIDC access token is carried as an `Authorization: Bearer …` header on every
+sync request — `POST /sync/session` and each operation after it. The server
+validates the token before running `Hello::negotiate` and uses `X-Sunrise-Device`
+to bind the session to a registered device row. There is no separate Auth
+message.
 
-A `?access_token=` query parameter, for browsers that cannot set a header on an
-upgrade, is **not implemented**: no route reads one. The only code that knows
-the name is redaction — `crates/sunrise-log/src/field.rs` and the server's
-request logging strip it from logged URLs so that adding it later cannot leak a
-bearer into a log line. Treat it as reserved, not available.
+A `?access_token=` query parameter, for browsers that cannot set a header, is
+**not implemented**: no route reads one. What keeps it from becoming a logged
+bearer if it ever is added is the server's request log
+(`crates/sunrise-server/src/api/observe.rs`), which is handed the matched route
+rather than the request's URI and so has no query string in reach of it at all.
+Treat the parameter as reserved, not available.
 
 ### Message kinds (canonical)
 
@@ -222,9 +241,9 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 ### Partial OpBatch on disconnect
 
-The server **buffers** each inbound OpBatch until the full frame is received and CBOR-validates. A disconnect mid-frame discards the partial buffer; nothing is persisted. The relay never *applies* anything — it decodes the payload only far enough to read `stream_id` and the cleartext per-device heads, appends the frame bytes verbatim to the durable relay log, and only then acks (`handle_op_batch` in `crates/sunrise-server/src/ws.rs`). Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
+A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
-Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent; `batch_id` is the idempotency key the server dedups on. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
+Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. **`batch_id` correlates an `Ack` with the batch that earned it; nothing dedups on it.** The relay appends every batch it accepts to the relay log unconditionally — `relay_append` in `crates/sunrise-server/src/relay_log.rs` inserts the frame without consulting anything already stored (it also stamps `relay_frame_heads` and runs `evict()`), and `relay_frames` has no `batch_id` column to consult — and `POST /sync/ops` echoes the value straight back (`crates/sunrise-server/src/api/sync.rs`), so a re-sent batch is relayed a second time. Deduplication is the **receiver's**, and its key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` (`OpLog::insert`, `crates/sunrise-storage/src/oplog.rs:53`), which the receive path calls and then gates on `tx.changes() == 0` (`crates/sunrise-core/src/engine.rs:485`, `:505`), so a second copy materializes nothing and raises no event. For received ops the op id is derived from exactly `(stream_id, device_id, seq)` (`remote_op_id`); a locally authored op carries a random ULID. So the two constraints are independent and both load-bearing: the primary key dedups a re-received remote op, and `UNIQUE(stream_id, device_id, seq)` is what drops a device's own history when the relay hands it back on reconnect (the engine's own gate comment names both). Re-sending is therefore safe, but it is not free: the re-sent portion of the outbox is appended to the relay log again, and the log's per-channel age and size bounds are what absorb it, so the cost lands as a shorter replay window rather than as unbounded growth. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 
 ### OpBatch and Ack payloads
 
@@ -235,7 +254,7 @@ independent canonical encoder reproduces the same bytes.
 ```cddl
 OpBatch = {
   ops:       [* bstr],   ; opaque OpEnvelope bytes, one CBOR byte string each
-  batch_id:  uint,       ; client-generated idempotency key for the batch
+  batch_id:  uint,       ; client-generated correlation id for the batch
   stream_id: bstr .size 16,
 }
 
@@ -250,7 +269,7 @@ Three differences from what this section used to claim, all of them
 consequential:
 
 - **`batch_id` is a `uint`, not a `bstr`.** It is not a ULID; the client mints
-  a `u64` idempotency key.
+  a `u64` correlation id — see above for what is and is not deduped.
 - **`ops` is a flat array of byte strings**, not an array of maps. There is no
   per-op `server_first_seen_ms` on the wire.
 - **`stream_id` is present on both payloads.** A batch targets exactly one

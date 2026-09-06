@@ -7,6 +7,11 @@
 **Replaces:** the Tauri 2 + React desktop specification formerly in
 [`docs/07-clients/desktop.md`](../07-clients/desktop.md).
 
+**Amended (2026-09):** the decision stands; one of its revisiting triggers has
+since fired. iOS shipped as a second product from the same sources, which is
+the outcome trigger 1 asked for a spike to establish. It transfers no MUST and
+reopens nothing. See the **Amendment** at the end of this file.
+
 ## Context
 
 Three client stories were live in the tree at once, and only one of them was
@@ -177,9 +182,37 @@ any of them wrong produces a crash rather than a compile error:
 
 1. **iOS shipping.** The spike proved macOS only. An iOS slice needs its own
    spike before it is planned, not after.
+
+   **Amended:** this happened. `apps/apple` now builds a second product,
+   `SunriseiOS`, from the same `Sunrise/` sources plus an `iOS/` directory for
+   the surfaces a phone has and a Mac does not; CI runs it as its own
+   `ios-app` job, compiling the shared `SunriseTests/` suite against the iOS
+   product a second time and running `SunriseiOSUITests` on the simulator. The
+   seam held — the iOS app links the same `sunrise-core-bindings` xcframework
+   — which is the thing the spike existed to establish. **It does not make iOS
+   a v1 client:** the parity MUSTs are still macOS's, and no MUST has been
+   transferred. What is settled is that a second Apple platform costs UI work
+   and not a second core, which is what would have forced revisiting this ADR
+   had it gone the other way.
 2. **A second desktop platform becoming a requirement.** SwiftUI does not go
    there, and that is the point at which a cross-platform toolkit is worth
    re-costing — with the shared core intact either way.
 3. **The CLI ceasing to be enough for headless use.** If capture-and-review over
    SSH stops covering the researcher persona, the answer is a better CLI, not a
    second interactive client.
+
+## Amendment (2026-09): iOS shipped, and the seam held
+
+Trigger 1 under
+[What would force revisiting this](#what-would-force-revisiting-this) fired:
+`apps/apple` now builds `SunriseiOS` alongside the macOS product, from
+the same `Sunrise/` sources over the same `sunrise-core-bindings` xcframework,
+with its own CI job. That trigger is recorded in place rather than restated
+here — it carries the detail.
+
+What it means for this ADR is the short version: a second Apple platform cost
+UI work and not a second core, so the seam this decision was mostly about is
+the part that was proven. The v1 parity MUSTs remain macOS's
+([`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)), and iOS
+carries none of them. Nothing in the Decision, the seam, or what we give up
+changes.
