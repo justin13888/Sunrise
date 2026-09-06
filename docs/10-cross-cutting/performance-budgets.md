@@ -91,8 +91,23 @@ All platforms: ≤100ms p95.
 
 ## Regression policy
 
-- Any benchmark exceeding budget by >5% is a P1; merge gate.
-- "Hard cap" violations on the user's path block release.
+- **As specified:** any benchmark exceeding budget by >5% is a P1 and blocks
+  merge via a required check, and a "Hard cap" violation on the user's path
+  blocks release.
+- **As built:** the `bench-regression` job in `ci.yml` runs on `schedule` and
+  `workflow_dispatch` only — never on a pull request — carries
+  `continue-on-error: true`, and compares against `bench/baseline.json` with a
+  **60%** tolerance rather than 5%. It reports; it blocks nothing, and no
+  automated check enforces the hard caps in the table above.
+- The job's own comment records why: measured on the shared runner, the same
+  binary against its own recorded baseline swings +270% (`ws_handshake`) and
+  −39% (`submit_create_task`) from scheduling noise and a short measurement
+  window alone. A gate that red-lights on noise is ignored within a week, and
+  then it protects nothing. The 5% figure assumes the dedicated hardware named
+  under "Calibration cadence" below, which the project does not have yet.
+- Until it does, a budget regression is something a human notices in the
+  nightly report, not something that stops a merge or a release. Tracked in
+  [#33](https://github.com/justin13888/Sunrise/issues/33).
 
 ## Calibration cadence
 
