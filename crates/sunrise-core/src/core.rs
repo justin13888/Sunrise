@@ -613,6 +613,95 @@ impl Core {
     }
 
     /// Count of unacked outbox rows (DB truth).
+    /// Devices this vault has revoked and not yet told the relay about.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn pending_relay_revocations(&self) -> Result<Vec<[u8; 16]>, CoreError> {
+        let db = self.db.lock();
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT device_id FROM relay_revocation_intents ORDER BY created_at_ms ASC")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect())
+    }
+
+    /// Forget an intent the relay has confirmed.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn clear_relay_revocation(&self, device_id: [u8; 16]) -> Result<(), CoreError> {
+        let db = self.db.lock();
+        db.conn().execute(
+            "DELETE FROM relay_revocation_intents WHERE device_id = ?",
+            rusqlite::params![&device_id[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Record that an attempt was made and refused, so a relay that keeps
+    /// saying no is visible rather than retried in silence.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub(crate) fn note_relay_revocation_attempt(
+        &self,
+        device_id: [u8; 16],
+        now_ms: u64,
+    ) -> Result<u64, CoreError> {
+        let db = self.db.lock();
+        db.conn().execute(
+            "UPDATE relay_revocation_intents
+             SET attempts = attempts + 1, last_attempt_ms = ?
+             WHERE device_id = ?",
+            rusqlite::params![i64::try_from(now_ms).unwrap_or(i64::MAX), &device_id[..]],
+        )?;
+        let attempts: i64 = db.conn().query_row(
+            "SELECT attempts FROM relay_revocation_intents WHERE device_id = ?",
+            rusqlite::params![&device_id[..]],
+            |r| r.get(0),
+        )?;
+        Ok(u64::try_from(attempts).unwrap_or(0))
+    }
+
+    /// Queue a relay revocation without going through `Command::RevokeDevice`.
+    ///
+    /// Test-only. The command refuses a device this vault has never admitted,
+    /// which is the right rule and makes the driver's own tests -- which have
+    /// no second device to admit -- unable to reach the queue at all.
+    #[cfg(test)]
+    pub(crate) fn queue_relay_revocation_for_test(
+        &self,
+        device_id: [u8; 16],
+    ) -> Result<(), CoreError> {
+        let db = self.db.lock();
+        db.conn().execute(
+            "INSERT OR IGNORE INTO relay_revocation_intents (device_id, created_at_ms)
+             VALUES (?, ?)",
+            rusqlite::params![&device_id[..], 1_i64],
+        )?;
+        Ok(())
+    }
+
+    /// How many times the relay has refused this revocation. Test-only.
+    #[cfg(test)]
+    pub(crate) fn relay_revocation_attempts_for_test(
+        &self,
+        device_id: [u8; 16],
+    ) -> Result<i64, CoreError> {
+        let db = self.db.lock();
+        Ok(db.conn().query_row(
+            "SELECT attempts FROM relay_revocation_intents WHERE device_id = ?",
+            rusqlite::params![&device_id[..]],
+            |r| r.get(0),
+        )?)
+    }
+
     pub(crate) fn sync_pending(&self) -> Result<u64, CoreError> {
         let db = self.db.lock();
         Ok(sunrise_storage::Outbox::pending_count(&db)?)

@@ -563,6 +563,32 @@ impl Transport for SseTransport {
         self.buf.clear();
         Ok(())
     }
+
+    async fn revoke_device(&mut self, device_id: [u8; 16]) -> Result<(), TransportError> {
+        let (status, body) = self
+            .call(
+                "DELETE",
+                &format!("/api/v1/devices/{}", hex::encode(device_id)),
+                None,
+            )
+            .await?;
+        // 404 is success. The route answers it for a device this account does
+        // not have, and a device the relay has already forgotten -- or never
+        // registered, which is every device on a self-hosted relay that has not
+        // been bootstrapped -- is exactly the state the caller wants. Retrying
+        // it forever would keep the intent queued on the one outcome that is
+        // already correct.
+        if status.is_success() || status.as_u16() == 404 {
+            return Ok(());
+        }
+        Err(TransportError::Server {
+            code: "AUTH_DEVICE_REVOKE_FAILED",
+            message: format!(
+                "relay refused the revocation: {status} {}",
+                String::from_utf8_lossy(&body)
+            ),
+        })
+    }
 }
 
 /// Everything that is a malformed exchange rather than an unreachable one.

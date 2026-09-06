@@ -82,4 +82,4 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// `17` is migration `0017_key_hierarchy.sql`: the `identity` table, the
 /// re-keyed `stream_keys`, `deferred_ops`, and the device/revocation columns
 /// ADR-0024 needs.
-pub const STORAGE_V: u16 = 18;
+pub const STORAGE_V: u16 = 19;
