@@ -184,3 +184,36 @@ final class TabShellUITests: SunriseUITestCase {
         )
     }
 }
+
+/// The sidebar's add controls, by **name** rather than by identifier.
+///
+/// Deliberately not a test of the identifier. The two are separate
+/// accessibility attributes, and a control findable only by identifier is
+/// findable by this suite and silent to VoiceOver — which is the half of the
+/// original defect that a test asserting on identifiers would have missed.
+///
+/// It runs here rather than in the macOS suite because `BrowseSidebar` is
+/// shared: iOS renders it as the Browse tab, and a simulator runner needs none
+/// of the machine grants a macOS XCUITest does. The claim is about the view,
+/// so the cheaper platform to make it on is the right one.
+@MainActor
+final class SidebarAddButtonTests: SunriseUITestCase {
+    func testTheAddControlsCarryNamesAndNotOnlyIdentifiers() throws {
+        createVault()
+        app.tabBars.buttons["Browse"].tap()
+
+        // On iOS the two actions are a toolbar menu rather than a bottom bar:
+        // the space under an iPhone list belongs to the tab bar. Open it, then
+        // assert on the items inside.
+        let add = app.buttons["sidebar.add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10), "Browse offers an Add menu")
+        add.tap()
+
+        for name in ["New stream", "New context"] {
+            XCTAssertTrue(
+                app.buttons[name].waitForExistence(timeout: 10),
+                "\(name) is in the accessibility tree under its own name"
+            )
+        }
+    }
+}
