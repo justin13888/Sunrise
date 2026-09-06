@@ -268,8 +268,15 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             // still emit it is refused rather than tolerated: accepting the
             // field and dropping it would leave the operator believing a
             // revocation binds when the peer that paired still holds the key
-            // that unbinds it. Falling through to the unknown-key arm below is
-            // deliberate.
+            // that unbinds it.
+            //
+            // Having no arm here is what refuses it, and the arm that catches
+            // it is the **reserved-range** one -- `(1..=9)` -- not the
+            // unknown-key `_` arm after it. That distinction is the whole
+            // guard: field 2 is inside the reserved range, so it errors; the
+            // `_` arm ignores what it catches, so if field 2 ever reached it
+            // the payload would decode with the burned key silently dropped
+            // and `#76` would be reopened. See the note on that arm.
             (3, Value::Bytes(b)) => id_s_pub = Some(arr32(&b, "id_s_pub")?),
             (4, Value::Bytes(b)) => id_d_pub = Some(arr32(&b, "id_d_pub")?),
             (5, Value::Bytes(b)) => identity_id = Some(arr16(&b, "identity_id")?),
@@ -299,6 +306,19 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             (7, Value::Text(s)) => nickname = Some(s),
             (8, Value::Text(s)) => platform = Some(s),
             (9, Value::Bytes(b)) => vault_root = Some(arr32(&b, "vault_root")?),
+            // The reserved range: every field this version defines, plus the
+            // burned field 2. A value in it that matched none of the arms
+            // above is either the wrong CBOR shape for a field we know or the
+            // burned key itself, and both are errors rather than things to
+            // ignore.
+            //
+            // The upper bound moves when a field is added -- a future field 10
+            // needs `(1..=10)`. The **lower** bound and field 2's membership do
+            // not move: shrinking the range past 2, or special-casing 2 into
+            // the ignore arm, makes a payload carrying `ID_D_priv` decode
+            // successfully with the key dropped, which is exactly the state
+            // `#76` was filed about.
+            // `a_payload_still_carrying_the_burned_id_d_priv_is_refused` pins it.
             (id, _) if (1..=9).contains(&id) => {
                 return Err(PairingPayloadError::BadField("field shape"));
             }
