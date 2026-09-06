@@ -15,7 +15,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
 - **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
-- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every pull request. Android and Web are deferred.
+- **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every pull request into `master` or `v1-rewrite`. Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
 - **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
 
@@ -145,7 +145,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job, on every pull request and every push to `master`. It is held to the matrix's iOS column at **SHOULD** level rather than MUST ([ADR-0028](docs/11-adr/0028-ios-is-a-v1-client.md)) — 23 SHOULDs, 21 of them met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit), where **every MUST is met** in the two MUST-carrying columns, macOS and the CLI — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note (v1 rewrite):** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job, on every push to `master` or `v1-rewrite` and every pull request into them. It is held to the matrix's iOS column at **SHOULD** level rather than MUST ([ADR-0028](docs/11-adr/0028-ios-is-a-v1-client.md)) — 23 SHOULDs, 21 of them met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every v1 requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#v1-status-audit), where **every MUST is met** in the two MUST-carrying columns, macOS and the CLI — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is deferred by decision, see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -284,10 +284,13 @@ enabling automation mode". The iOS UI tests have no such requirement and run on
 every `mise run ios-app`.
 
 `apple-xcframework` builds the release slices, generates the Swift bindings from
-the built library, and packages the framework both apps link. The bindings
-generator lives in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with
-its own lockfile pinning `cargo-platform` to 0.3.2 — UniFFI's default features
-pull a version requiring rustc 1.91, which would break the workspace's 1.88 pin.
+the built library, and packages the framework both apps link. The bindings generator lives
+in `tools/uniffi-bindgen`, **outside** the Cargo workspace, with its own
+lockfile. It is out there for feature unification, not MSRV: as a workspace
+member it would ask `uniffi` for the `cli` feature, and resolver 2 would then
+build `sunrise-core-bindings` against a `uniffi` carrying the whole generator —
+20 extra third-party crates on every workspace build
+([ADR-0026](docs/11-adr/0026-msrv-bump.md)).
 
 `out/` and `build/` are gitignored: the Swift is generated from the Rust on
 every build, so committing it would let the two drift. The `-run` tasks build
@@ -319,7 +322,7 @@ bun run --filter @sunrise/web build   # production build
 bun run --filter @sunrise/web preview # serve the production build
 ```
 
-> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is deferred on an MSRV blocker. Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
+> **Stub caveat (by decision — [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md)):** the web Core is a `localStorage`-backed stub (`apps/web/src/wasm.ts`) mirroring the real Core's surface behind a `loadCore()` seam. The WASM `sunrise-core` build is still deferred, but no longer on MSRV — [ADR-0026](docs/11-adr/0026-msrv-bump.md) moved the pin to 1.91.1 and fired ADR-0012's revisit trigger; what remains is the `rusqlite` 0.31 → 0.40 swap ([#52](https://github.com/justin13888/Sunrise/issues/52)). Use the web app for UI/PWA-shell QA only — it does **not** exercise real persistence, merge, or crypto. Data lives in browser storage; clear it via DevTools to reset.
 
 ### Common tasks
 

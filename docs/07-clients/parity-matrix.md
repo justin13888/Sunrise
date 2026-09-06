@@ -145,13 +145,13 @@ around it is recorded in the cells below and in
 | Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
 | Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet |
-| Drag-and-drop | met | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built — the window is a sidebar plus one detail pane, so a grid and a task list are never both on screen and the gesture has no two surfaces to connect |
+| Drag-and-drop | met *(seven of eight cells)* | seven of the eight rows in [interaction-patterns.md](./interaction-patterns.md#drag-and-drop-matrix)'s matrix: task → stream, task → context, task → calendar block, block move/resize on the grid, task → task reorder, stream reorder, file → attachments. The eighth (Calendar block → Task) is not built, and what is missing is two modifiers rather than a layout: `BlockChip` is not `.draggable` and `TaskListView`'s drop only reorders. The write it would issue exists and is tested — `TaskListModel.bind(_:to:)` → `Command::BindTask` |
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
 | Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
-| iCal import / export | met | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
+| iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
 | OS automation (App Intents) | met | six intents + `AppShortcutsProvider` + `TaskEntity`/`EntityStringQuery`; `IntentVault` counted lease |
@@ -190,12 +190,12 @@ menu item flickering as tasks come and go would explain less.
 |---|---|---|
 | Read/write tasks | met | `capture` (`CreateTask`), `edit <id>… <tokens>` (`UpdateTask`, plus `PromoteToStream` when the line carries `#stream`), `defer` (`DeferTask`), `done` (`CompleteTask`), `drop` (`DeleteTask`), `retitle <id> <text>…` (`UpdateTask` with a title patch). Retitle is its own verb rather than an `edit` token because a title is free text that will eventually contain a `#` or a `!`, and inside the annotate grammar a bare word would be ambiguous between title text and a malformed token — which would force `edit` to weaken its rule that one bad token rejects the whole line. The one field still unwritable is a Task's `body`, which is the CLI's *Notes* row, and that is a MAY |
 | Streams, contexts, routines (read + capture) | met | `streams`, `contexts`, `routines`; `#stream` / `@context` resolve **existing** entities in `capture` and warn on an unknown one. Reordering streams is the one write: `streams move <x> before <y>\|last` → `UpdateStream { sort_order }`. The CLI still mints no Stream, Context or Routine — the row asks for read + capture, and that is what it is |
-| Today / Inbox / Stream views (list form) | met | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
+| Today / Inbox / Stream views (list form) | met *(today, no context filter)* | `today` (`Query::Today`), `inbox` (`Query::Inbox`), `stream <id\|name>` (`Query::StreamTasks`), and `context <id\|name>` (`Query::ContextTasks`) beside it. Both resolvers take an id, an exact name or a unique prefix, and fail loudly rather than printing an empty list. `today` cannot yet be filtered by context, though `Query::Today` takes the list |
 | Focus mode (`next`, `focus <id>`) | met | `next`, `focus <id>`, bare `focus`, and `focus end [--done]` (`EndFocus`). End resolves the session through `Query::RunningFocusSessions` rather than taking an `fcs_` id, because neither `focus` nor `next` ever prints one — and it closes every running session, since two devices can each mint a valid one |
 | Search (FTS) | met *(plain-text half)* | `sunrise search <query>…` — the same literal-AND FTS query the app issues; the operator grammar is [#28](https://github.com/justin13888/Sunrise/issues/28) |
 | Quick capture (`sunrise capture`) | met | the full token syntax, same parser as every other surface |
-| Multi-account (`SUNRISE_VAULT`) | met | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
-| iCal import / export | met | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
+| Multi-account (`SUNRISE_VAULT`) | met *(0600 on unix only)* | each vault directory mints its own 32-byte root from the injected RNG on first open and keeps it in the keystore (`SUNRISE_KEYSTORE`), one mode-0600 file per vault, **outside** the vault directory; `vaults` lists them. Two vaults share no SQLCipher key and no Stream keys. Still no passphrase — the root is random and something local holds it |
+| iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
 
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
@@ -235,10 +235,10 @@ it is the record of what a user can actually reach on a phone.
 | Search (FTS) | met *(plain-text half)* | the `.search`-role tab (`VaultTabs.swift:90-92`) → the shared `SearchView`. It issues the identical literal-AND FTS query the Mac does and inherits the identical narrowness ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | **unmet** | `SavedViewsModel` is built by the shared `VaultModels` and the shell even loads it (`VaultTabs.swift:456`) — but `SavedViewsMenu` is instantiated in exactly one place in the tree, `macOS/VaultWindow.swift:89`. A working, tested model with no iOS surface |
 | Keyboard navigation | met *(list keymap)* | `onKeyChord(scope: .list…)` on the shared `TaskListView` (`:118`) — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. **Nothing above it**: `onKeyChord` is applied in that one place in the whole tree, so every `.application`-scoped chord (`Keymap.swift:177-199`) reaches a user only through the Mac's `Commands` scene, and the palette and the cheat sheet are handed inert closures (`VaultTabs.swift:283-288`) |
-| Drag-and-drop | met | the same seven of eight cells macOS has, from shared files with no platform fork: `.draggable` on the row (`TaskRowView.swift:74`), drops on stream and context rows (`BrowseSidebar.swift:175`, `:218`), on task rows (`TaskListView.swift:192`), on the calendar grid (`CalendarView.swift:221`) and on the attachments pane (`AttachmentsView.swift:32`), plus `ForEach.onMove` for stream order (`BrowseSidebar.swift:45`). The gesture is a long-press drag rather than a click-drag. The eighth cell (Calendar block → Task) is unreachable for the same reason as on the Mac, and more so: a tab shell shows one screen at a time |
-| Quick capture (system surface) | met | a **Capture** toolbar button on every screen (`VaultTabs.swift:318-324`), routed to the inline bar where the list has one and to the sheet where it does not (`:339-362`, `:471-498`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:198-201`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
+| Drag-and-drop | met *(six of eight cells)* | six of the eight cells, from shared files with no platform fork. `.draggable` on the task row (`TaskRowView.swift:74`) is the source for three of them — stream and context rows accept it (`BrowseSidebar.swift:175`, `:218`) and other task rows accept it for reorder (`TaskListView.swift:192`). The other three need no task drag: stream order is `ForEach.onMove` (`BrowseSidebar.swift:45`), files drop onto the attachments pane (`AttachmentsView.swift:32`), and a block moves and resizes inside the grid by its own gestures (`BlockChip`, `CalendarView.swift:408`, `:445`). The gesture is a long-press drag rather than a click-drag. Two cells are **No**. *Calendar block → Task* is unbuilt on both platforms (`BlockChip` carries no `.draggable`; `TaskListView`'s drop only reorders). *Task → Calendar block* — a **Yes** on macOS — fails on iOS for reach: the grid's `dropDestination` (`CalendarView.swift:221`) is shared and built, and `accept(items:at:)` (`:312`) takes `tsk_` payloads only, so it serves this cell and no other — but no iOS screen shows a task row and the grid together, no `Tab` carries a `dropDestination`, and nothing configures spring-loading. Whether a drag *held* across a tab switch would bridge them is a runtime question no reading of the tree settles ([#72](https://github.com/justin13888/Sunrise/issues/72)), and it is what would overturn this cell. Of the six, *File → Task* needs iPad multitasking ([`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix)) |
+| Quick capture (system surface) | met | a **Capture** toolbar button on all five tab roots and on every pushed task list (`VaultTabs.swift:318-324`, attached at `:74`, `:84`, `:137`, `:146`, `:161`, `:225`; the six other pushed destinations at `:227-238` carry none, because a `.toolbar` on a `NavigationStack` root is not inherited by a `navigationDestination`), routed to the inline bar where the list has one and to the sheet where it does not (`:339-362`, `:471-498`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:198-201`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`VaultTabs.swift:454`); the category, its three buttons and the response delegate are one shared file (`NotificationCenterClient.swift:60-105`); Settings asks for authorization (`VaultTabs.swift:374`) |
-| Multi-account | met | More → Settings (`VaultTabs.swift:364-386`) → the vault picker → `SessionModel.switchTo`, teardown before reopen (`AccountView.swift:131-145`) |
+| Multi-account | met | More → Settings (`VaultTabs.swift:364-386`) → the vault picker (`AccountView.swift:131-145`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:183`); teardown before reopen is in the method itself — `await bridge?.shutdown()` then re-point (`SessionModel.swift:257`, `:269-272`) |
 | Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field (`:233-240`), reached from Settings → **Add a device…** (`AccountView.swift:159`) and from `LockedView` (`:62`). **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS |
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
 | iCal import / export | **unmet** | the picker-driven `importIcal()` / `exportIcal(_:)` are inside `#if os(macOS)` (`Sunrise/Ical/AppSurfaces+Ical.swift:52-75`), the `IcalSurfaces` modifier is applied only at `macOS/VaultWindow.swift:141`, and the File menu items live in `macOS/AppCommands.swift:104-118`. The URL-taking halves and `CoreBridge.importIcal` / `.exportIcal` are shared and have no iOS caller — the same shape as saved views |
@@ -266,8 +266,15 @@ over:
 
 - **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
   or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
-  block → Task gesture, which the shipped layout cannot express. Print covers
-  four surfaces and skips two by decision. Search reaches FTS5 on tasks only,
+  block → Task gesture — unbuilt rather than inexpressible: the block chip is
+  not a drag source and the task row's drop only reorders. iCal is windowed on
+  the way out and lossy on the way in: export offers Today and This Week and no
+  Stream scope, because a day and a week are the only Block windows the core
+  has, and import drops `RRULE`, `DESCRIPTION` and `LOCATION` — `Block` has no
+  field to hold them — so a recurring event lands as a single occurrence. Every
+  loss raises a notice rather than passing silently, but the round-trip the
+  mapping rules describe does not exist yet. Print covers four surfaces and
+  skips two by decision. Search reaches FTS5 on tasks only,
   as a literal AND of quoted terms: every operator
   [search.md](../08-features/search.md) specifies is currently matched as a
   literal word, and the by-kind grouping does not exist.
@@ -276,6 +283,11 @@ over:
   rather than a gap. Streams, Contexts and Routines can be listed and (for
   Streams) reordered, but none can be created, renamed, archived or deleted;
   the row asks for *read + capture*, and that is what it has.
+  `ical export` takes the same windows and no Stream scope — `today`, `day`,
+  `week` — and `ical import` drops `RRULE`, `DESCRIPTION` and `LOCATION` for
+  the same missing `Block` fields, so a recurring event imports as one
+  occurrence with a notice against it. Both halves are the seam's, so the CLI
+  is narrow here in exactly the way the app is.
   `Query::Today`'s context filter has no flag. The mode-0600 keystore guarantee
   is `#[cfg(unix)]`; elsewhere the file is written with default permissions.
   `search` issues the same query the app does, so it inherits the same
@@ -289,12 +301,26 @@ over:
   `onKeyChord` is applied in exactly one place in the tree; an iPad that draws
   a system menu bar therefore gets only the system's own items, since the
   `Commands` scene that would fill it is under `macOS/`. *File → Task* drag is
-  iPad-only, because dragging in from another app needs two apps on screen.
+  iPad-only, because dragging in from another app needs two apps on screen —
+  and *Task → Calendar block*, a drag macOS has, is **No** here: its two ends
+  are shared and unguarded but no screen shows them together, and the target
+  declares no `UIApplicationSupportsMultipleScenes`, so there is no second
+  window to span either. What the tree cannot settle is whether a drag held
+  across a tab switch would bridge them — a runtime question tracked as
+  [#72](https://github.com/justin13888/Sunrise/issues/72) and recorded in
+  [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix) as
+  the thing that would overturn the cell. Search and *Pairing — scan QR* are
+  narrow here in exactly the way they are on the Mac, and neither narrowness is
+  iOS's: the literal-AND FTS query is the seam's, while the absent camera
+  scanner is shared SwiftUI rather than anything in the core. See the macOS
+  note above.
 
   Two further things are narrow that no row is about, and they are worth
   naming here rather than losing. **The shared sheets are Mac-shaped**: seven
-  fixed frames that an iOS user can reach, none behind an `#if` and every one
-  wider than an iPhone — 520 points on the settings `Form` (`AccountView`,
+  unconditional `.frame(width:)` calls the tab shell can put on screen, every
+  one wider than the `iPhone 17 Pro` the UI tests run on (about 402 points
+  portrait; the narrowest of the seven is 420) — 520 points on the settings
+  `Form` (`AccountView`,
   `AccountView.swift:101`), 560×520 on the pairing sheet (`PairingView`,
   `PairingView.swift:25`), 460 on the task editor (`TaskEditorView`,
   `TaskEditorView.swift:97`), 440 on the routine editor (`RoutineEditorView`,
@@ -341,12 +367,53 @@ never has to be re-derived from scratch to find out what it covered.
   table lying ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)).
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
   qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
-  `met *(list keymap)*`, `met *(frontmost only)*` — discharges the row's
-  requirement. The qualifier names which part of the specified capability is
-  reachable, and it is repeated under
+  `met *(list keymap)*`, `met *(frontmost only)*`,
+  `met *(seven of eight cells)*`, `met *(six of eight cells)*`,
+  `met *(windowed, no round-trip)*`, `met *(0600 on unix only)*`,
+  `met *(today, no context filter)*` — discharges the row's requirement. The
+  qualifier names which part of the specified capability is reachable, and it
+  is repeated under
   [What is still narrow](#what-is-still-narrow) so the narrowness never has to
   be re-derived. A qualifier is **not** a *partial*: *partial* means a user
   cannot complete the row's core action.
+
+  **A qualifier attaches wherever a row's reach falls short of the full
+  capability, in any column.** It is not an iOS device: a MUST-carrying column
+  takes one on the same terms, and a row that reaches seven of eight cells is
+  scoped exactly as much as one that reaches six. Leaving the better-served
+  column bare would make the qualifier read as a mark of the weaker client
+  rather than as the scope note it is.
+
+  **The set is bounded by what is already written down.** A qualifier is owed
+  wherever the audit above or [What is still narrow](#what-is-still-narrow)
+  already records a shortfall for that row. That is a finite list anyone can
+  check against the notes, and it is deliberately not an obligation to go
+  hunting for shortfalls nobody has recorded — an unrecorded narrowness is a
+  gap in the notes first, and gets a qualifier when it is written down. Two
+  things sit outside the set. A scope the row's own **title** already carries
+  needs no second copy in the verdict: *Streams, contexts, routines (read +
+  capture)* names its bound, and the note saying the CLI mints no Stream is
+  measuring against the capability rather than against that row. A title
+  parenthetical covers only what it says, though — *Today / Inbox / Stream
+  views (list form)* names the output shape, so the missing `today` context
+  filter is a different shortfall and still earns its qualifier. And a recorded
+  shortfall with **no verdict cell** cannot carry a qualifier at all: the
+  audits grade the macOS and CLI MUSTs and the iOS SHOULDs, so a narrowness
+  belonging to a capability this column grades at any *other* level has nothing
+  to attach to and stays in prose. The test is mechanical — find the capability
+  in the requirement table above, and if its mark in that column is not the one
+  that column's audit grades, there is no cell to qualify. Among the ones
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the 23-MUST audit
+  has no line for; the CLI's unwritable Task `body`, which belongs to its
+  *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
+  *Read/write tasks* — in whose cell that gap is recorded — is bare; and on
+  iOS the **MAY**s the audit keeps in prose rather than in the table —
+  *Watch app*, *Mouse* and *Print / PDF export*. No count is given because the
+  set grows every time a narrowness is written down against a capability the
+  audits do not grade. Outside the mechanism altogether are the
+  two items under [What is still narrow](#what-is-still-narrow) that no row is
+  about — the Mac-shaped sheets and the copy that says "Mac" — which belong to
+  no capability at any level.
 
 ## What the CLI is and is not
 

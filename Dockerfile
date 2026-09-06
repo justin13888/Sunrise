@@ -30,7 +30,7 @@
 
 # Must match `rust-toolchain.toml`. The pin there is a reproducibility floor,
 # and an image that silently built on something else would defeat it.
-ARG RUST_VERSION=1.88.0
+ARG RUST_VERSION=1.91.1
 ARG DEBIAN_SUITE=bookworm
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ WORKDIR /src
 # `.cargo/config.toml` is *not* copied. Everything in it is an empty
 # `[target.*]` placeholder except `[net] git-fetch-with-cli = true`, which needs
 # a `git` binary the slim image does not carry — and needs it for nothing: the
-# lock file has no git dependencies and cargo 1.88 reads the crates.io index
+# lock file has no git dependencies and cargo 1.91 reads the crates.io index
 # over sparse HTTP. Copying it would mean installing git to satisfy a setting
 # that changes no behaviour here.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./

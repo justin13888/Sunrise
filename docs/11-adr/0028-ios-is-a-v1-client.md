@@ -3,8 +3,10 @@
 **Status:** accepted
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
-(one new column, 31 cells, plus an audit section and two hard rules — the
-iOS regression rule and the definition of a qualified *met*) and
+(one new column, 31 cells, plus an audit section, two hard rules — the iOS
+regression rule and the definition of a qualified *met* — and five verdicts in
+the MUST-carrying columns regraded to qualified *met*s under that definition)
+and
 [`./0019-swiftui-macos-client.md`](./0019-swiftui-macos-client.md) (revisit
 trigger 1).
 
@@ -52,14 +54,27 @@ Read from the tree rather than from a plan:
   simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
   `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
   a tap reaches the core.**
-- **`.github/workflows/ci.yml:114-158` gates `ios-app` no further than the
+- **`.github/workflows/ci.yml`'s `ios-app` job gates it no further than the
   workflow itself** — the job has no `if:` and no path filter, so it runs every
   time CI runs, which the triggers define as pushes to `master` and
   `v1-rewrite` (`:4-5`), pull requests targeting those two branches (`:6-7`),
-  the 04:00 UTC nightly (`:8-10`) and manual dispatch (`:11`). Not every push
-  to every branch: a branch with no open pull request builds nothing. It runs
-  on the same pinned `macos-26` image the macOS job uses, adding both iOS Rust
-  slices to the pinned toolchain first (`:138`).
+  the 04:00 UTC nightly (`:8-10`) and manual dispatch (`:11`). The two
+  `branches:` filters match different things — `push` matches the ref that was
+  pushed, `pull_request` matches the **base** the request targets — and both
+  are narrower than "every push and every pull request": a push to a feature
+  branch matches neither list, and a pull request stacked on another feature
+  branch is filtered out on its base, as the one carrying this ADR was, based
+  on `docs-51-architecture-freeze`. The other two triggers carry no `branches:`
+  key, and only one of them is unconstrained for it: GitHub fires a `schedule`
+  on the repository's **default branch** alone, and this repository's default
+  is `master`, so the 04:00 nightly builds `master` and nothing else — bounded
+  by GitHub's rule rather than by this file. `workflow_dispatch` is the one
+  that will build any ref on request. So
+  the two `branches:` lists do not by themselves describe what CI does
+  automatically: the nightly is automatic too, and constrained elsewhere. It
+  runs on the same pinned `macos-26`
+  image the macOS job uses, adding both iOS Rust slices to the pinned toolchain
+  first (`:138`).
 - **`apps/apple/iOS/` is 647 lines** of shell — a five-tab `TabView` with
   `.tabViewStyle(.sidebarAdaptable)` so a phone gets a tab bar and an iPad a
   sidebar from one declaration — over the same `apps/apple/Sunrise/` views the
@@ -75,19 +90,46 @@ scheduled, its column is filled in and the fill-in is the commitment"**.
 
 Put together, a column of `—` under a `*deferred*` header states that nothing
 whatsoever is required of this client. For a client that is scheduled, built,
-run in CI on every pull request, and the *only* one whose UI tests execute,
-that is not a placeholder — it is a false statement, and it is the one that
-makes it impossible to say that any iOS behaviour has regressed. Four open
-issues
+run in CI on every pull request into `master` or `v1-rewrite`, and the *only*
+one whose UI tests execute, that is not a placeholder — it is a false
+statement, and it is the one that makes it impossible to say that any iOS
+behaviour has regressed. Four open issues
 ([#14](https://github.com/justin13888/Sunrise/issues/14),
 [#31](https://github.com/justin13888/Sunrise/issues/31),
 [#40](https://github.com/justin13888/Sunrise/issues/40) and
-[#12](https://github.com/justin13888/Sunrise/issues/12)) already target iOS
-surfaces and have no row anywhere to attach to.
+[#42](https://github.com/justin13888/Sunrise/issues/42)) already target iOS
+surfaces and have no row to attach to. For two of them that is exactly what the
+dash column costs: widgets and the platform surfaces `mobile-ios.md` specifies
+are iOS behaviour this table currently requires nothing of, and filling the
+column is what gives them somewhere to land. The other two do not land, and
+both are worth naming as exceptions rather than counted as wins. **#40** —
+`sunrise://focus` and `sunrise://share` unparsed — gains visibility and not a
+row: the matrix grades no URL scheme in any column, which is why the
+Consequences below say it is "unchanged and now visible". **#42** is the same
+shape one layer down: the vault root's Keychain accessibility class,
+`Keychain.swift:62`, measured against
+[`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §OS keystore
+(`:185-188`). It targets an iOS surface, but the row it lacks is missing from
+**every** column — the matrix grades no key storage anywhere, and the constant
+is shared, so macOS is affected identically. Filling the iOS column gives
+neither a home, and this ADR adds neither row.
 
-The same rules also say a cell marked N/A may only be revisited with an ADR,
-and the *Lock screen / home screen widget* row currently marks every column
-N/A. Filling in the iOS column touches that cell, so it needs this record.
+**What makes this an ADR is not the N/A rule.** The rules do say a cell marked
+N/A may only be revisited with a record, but no such cell is revisited here.
+On the base revision the widget row's six cells read
+`N/A | N/A | — | — | — | —` under `macOS | CLI | iOS | Android | Web | TUI`:
+the iOS cell this ADR fills was a dash, and the two N/A cells beside it stay
+exactly where they are — Decision 3 below says so outright. What forces the
+record is
+[ADR-0019](./0019-swiftui-macos-client.md)'s own revisit trigger, quoted above:
+it fired, its amendment declined to draw the conclusion, and answering a
+question another ADR raised and left open is what this directory is for. The
+requirement levels in 31 cells change, the column header has to cite
+something, and Decision 5 adds a rule to the matrix's own §Hard rules
+([`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md#hard-rules)),
+which is a change to the table's standing terms and wants a reason on the
+record. What the matrix keeps in [`../11-adr/`](../11-adr/) is narrower — the
+reason an N/A or a *deferred* mark moved — and neither moves here.
 
 ## Decision
 
@@ -108,10 +150,16 @@ and it carries no MUSTs until an iOS release ships.**
      status item (`macOS/SunriseMacApp.swift:63`) — a persistent, glanceable
      surface outside the app's own window. iOS has no status-item equivalent;
      the nearest thing is a widget, which is its own row. (An iPad that draws a
-     system menu bar gets only the system's own items, because the `Commands`
-     scene that would populate it lives in `macOS/AppCommands.swift` and the
-     iOS target does not compile it. That is a keyboard-navigation narrowness,
-     recorded there, not a second menu-bar row.)
+     system menu bar gets only the system's own items. The `.commands { … }`
+     scene modifier that would populate it is at
+     `macOS/SunriseMacApp.swift:30-61`; `macOS/AppCommands.swift` holds the
+     `View`s it hangs in those menus — `AppMenuItems`, `CommandMenuItem`,
+     `NewMenuItems`, `IcalMenuItems`, `PrintMenuItems`, `GoMenuItems` — and
+     declares no `Commands`-conforming type, as nothing in the tree does. The
+     `SunriseiOS` target's `sources:` are `Sunrise` and `iOS`
+     (`project.yml:160-164`), so it compiles neither file. That is a
+     keyboard-navigation narrowness, recorded there, not a second menu-bar
+     row.)
    - ***deferred*** four times: the three [ADR-0020](./0020-v1-must-demotions.md)
      capabilities (both sharing rows and Google Calendar) inherit their
      capability-level deferral unchanged, and **Lock screen / home screen
@@ -146,8 +194,9 @@ and it carries no MUSTs until an iOS release ships.**
 
 **Leave iOS deferred.** Rejected as false by the file's own definition:
 *deferred* is "specified, not scheduled for v1", and iOS is built and tested
-on every pull request. The matrix additionally forbids using *deferred* "to
-make this table agree with the code after the fact"; leaving it in place would
+on every pull request into `master` or `v1-rewrite`. The matrix additionally
+forbids using *deferred* "to make this table agree with the code after the
+fact"; leaving it in place would
 be that same failure pointed the other way — keeping the table disagreeing with
 the code because moving it is work.
 
@@ -176,7 +225,7 @@ requirement level stops meaning anything.
 
 **MAY for every row.** Rejected: it says less than the tree already proves. MAY
 means "future". A capability that a UI test drives on a simulator in CI on
-every pull request is not future.
+every pull request into `master` or `v1-rewrite` is not future.
 
 **SHOULD.** Chosen. It is the only mark that is true of a client which ships,
 is tested, and has not been released.
@@ -191,12 +240,33 @@ is tested, and has not been released.
   the matrix's own "the marks are requirement levels, not status" callout
   draws.
 
-- **Four qualified verdicts**, and the matrix now defines the vocabulary for
+- **Five qualified verdicts**, and the matrix now defines the vocabulary for
   them: search is `met *(plain-text half)*` (it inherits the macOS FTS
   narrowness, [#28](https://github.com/justin13888/Sunrise/issues/28)),
   keyboard navigation is `met *(list keymap)*`, pairing-scan is
-  `met *(paste half)*` (no camera scanner exists on **either** platform), and
-  background sync is `met *(frontmost only)*`.
+  `met *(paste half)*` (no camera scanner exists on **either** platform),
+  background sync is `met *(frontmost only)*`, and drag-and-drop is
+  `met *(six of eight cells)*` — iOS reaches six of the eight cells in
+  [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)'s
+  matrix where macOS reaches seven, *Task → Calendar block* being a **No** here
+  because no iOS screen shows a task row and the grid together, no `Tab` carries
+  a `dropDestination` and nothing configures spring-loading — with one link in
+  that argument left open, and tracked: whether a drag *held* across a tab
+  switch bridges the two is a runtime question no reading of the tree settles
+  ([#72](https://github.com/justin13888/Sunrise/issues/72)), and it is what
+  would turn the cell back into a **Yes**. The same definition then applies to
+  the MUST-carrying columns, swept over the rows whose shortfall the audit or
+  the narrow notes record — the iCal narrowness being written into those notes
+  as part of this change, since its substance sat in
+  [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md) and the
+  bound admits only the matrix's own records. Five rows: macOS drag-and-drop
+  `met *(seven of eight cells)*` and macOS iCal `met *(windowed, no
+  round-trip)*`; the CLI's `today` view (`met *(today, no context filter)*`),
+  multi-account (`met *(0600 on unix only)*`) and iCal. Seven of eight is a
+  scope note as much as six is, and a rule the table visibly broke in its
+  better-served columns would stop being a rule. **Every one stays a met**: the
+  23 macOS MUSTs and the 9 CLI MUSTs are all still met, because a qualifier
+  scopes a verdict rather than demoting it.
 
 - **[#14](https://github.com/justin13888/Sunrise/issues/14) gains a cell.** The
   widgets row's iOS cell is where widget work now lands. Grepping `apps/apple`
@@ -249,13 +319,29 @@ is tested, and has not been released.
   block draft sheet 420 (`BlockDraftSheetView`, `:35`), the block editor 460
   (`BlockEditorView`, `:155`) and the conflict adjuster 620
   (`AdjustBlocksView`, `:280`) — all wider than an iPhone, none behind an
-  `#if`. That is the whole set: the remaining oversized frames in shared files
-  are either unreachable from the tab shell (`Views/IcalView.swift:35`, behind
-  the `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
+  `#if`. The reference for "an iPhone" is the device the UI tests actually run
+  on: the `iPhone 17 Pro` simulator `mise.toml` pins as `ios_sim` (`:46`, and
+  [`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §Run it), about
+  402 points wide in portrait against a narrowest-of-the-seven of 420. The
+  bound is sensitive to that choice and the number is not a law of nature — on
+  a 440-point Pro Max only five of the seven are still too wide, and on an
+  iPad none of them is. Those seven are every fixed width over that reference
+  that the tab shell can put on screen — the tree holds plenty of narrower ones
+  (`TaskListView.swift:276`, `StreamEditorView.swift:77`, `ReviewView.swift:353`
+  at 380; `CalendarView.swift:44` at 140), and a frame that fits is not a
+  defect. Two further things the sentence does not claim. It is not every
+  oversized frame in a shared file: the rest are either unreachable from the
+  tab shell (`Views/IcalView.swift:35`, behind the
+  `IcalSurfaces` modifier applied only at `macOS/VaultWindow.swift:141`;
   `Keyboard/CommandPaletteView.swift:20` and `:182`, behind a palette iOS hands
   an inert closure at `iOS/VaultTabs.swift:286`) or already guarded
-  (`Views/QuickCaptureView.swift:88-91`). Multi-account and first-run pairing
-  are graded **met** because the capability is reachable; the width is recorded
+  (`Views/QuickCaptureView.swift:88-91`). And it does not count `minWidth:`
+  floors, which are not fixed widths: `Views/AttachmentsView.swift:31` sets one
+  at 420, shared and unguarded on a surface graded **met**, but its only
+  instantiation is `Views/TaskEditorView.swift:93` — inside the task editor,
+  whose fixed 460 at `:97` is already in the list — so it widens nothing the
+  list does not already carry. Multi-account and first-run pairing are graded
+  **met** because the capability is reachable; the width is recorded
   under *What is still narrow* rather than allowed to sink a verdict it does
   not change.
 
@@ -272,3 +358,37 @@ is tested, and has not been released.
   `08-features/{keyboard,inbox-and-capture}.md`,
   `01-architecture/{overview,shared-core}.md`, `02-domain/notes.md`,
   `implementation/overview.md` and the README. No code changes.
+
+## What would force revisiting this
+
+1. **An iOS release shipping.** Everything above is levelled on there being no
+   release yet: SHOULD is chosen because this is a client that ships, is tested
+   and has *not* been released; the regression rule is weakened for that exact
+   reason (Decision 5); and Decision 6 already reserves promotion to MUST
+   parity for its own record. Cutting a release fires all three at once, and
+   the re-entry point is that promotion ADR, not an edit to this one.
+2. **`ios-app` ceasing to prove that a tap reaches the core.** The case against
+   *deferred* and against MAY is evidential — a UI test drives the shell on a
+   simulator in CI on every pull request into `master` or `v1-rewrite`. Delete
+   the job, put an `if:` or a path filter on it, or mark `SunriseiOSUITests`
+   `skipped: true` the way the macOS scheme marks its own
+   (`project.yml:319`), and every row here falls back to "it compiles", which
+   this file says is not evidence.
+3. **A widget, share or watch extension target appearing in `project.yml`.**
+   Decision 3 defers the widget row, and grades *Watch app* MAY, on the
+   strength of there being no such target — today `targets:` declares six, all
+   applications and test bundles, with `aggregateTargets:` adding `SunriseFFI`
+   (`project.yml:50-51`). One landing moves the widget row off
+   *deferred*, and the macOS and CLI cells on that row **are** N/A, so unlike
+   this ADR that edit does meet the N/A rule and needs its own record.
+4. **The shared tree ceasing to be shared.** SHOULD is assigned by reachability
+   from the shipped shell over one `Sunrise/`, and ADR-0019's surviving claim
+   is that a second Apple platform cost UI work and not a second core. Rows
+   starting to fork behind `#if os(iOS)`, or an iOS-only model growing beside a
+   shared one, would make reachability a per-platform measurement and this
+   column a second implementation rather than a second shell.
+5. **The audit going stale anyway.** Decision 5 traded an ADR gate for an
+   obligation on the pull request that regresses a row, on the argument that a
+   record of decision per SHOULD would price the rule out of being followed. If
+   green rows outlive the surfaces behind them, that trade was wrong and the
+   rule should be re-cut at MUST strength.

@@ -1,9 +1,25 @@
 [toolchain]
-# Pinned for reproducible builds. Bumped from 1.87.0 to 1.88.0 for ratatui
-# 0.28's transitive `instability`/`darling`; ratatui is gone (ADR-0019) but the
-# pin stays — it is a reproducibility floor, not a dependency workaround, and
-# dropping back would be an unforced change. Any further bump requires an ADR
-# and a CI matrix update.
-channel = "1.88.0"
+# Pinned for reproducible builds. Raised from 1.88.0 to 1.91.1 by ADR-0026
+# (`docs/11-adr/0026-msrv-bump.md`); 1.91 is the lowest release that discharges
+# all three of the floors this workspace had accumulated:
+#
+# - `cargo-platform` 0.3.3 requires rustc 1.91. It is what forced
+#   `tools/uniffi-bindgen` to carry a lockfile pinning 0.3.2 — ADR-0019's
+#   quarantine. The version pin is gone; the quarantine stays, on
+#   feature-unification grounds (see that tool's manifest).
+# - `libsqlite3-sys` 0.38.1 uses `cfg_select!`, stable since 1.91. That was
+#   ADR-0012's stated blocker on the `rusqlite` 0.40 swap the WASM core needs;
+#   the trigger has now fired and the swap itself is tracked as #52.
+# - `std::fs::File::try_lock` is stable since 1.89. `crates/sunrise-core`'s
+#   vault lock used the `fs4` crate purely to stand in for it; that dependency
+#   is now gone.
+#
+# The patch level is pinned exactly. `rust-version` in the root `Cargo.toml` and
+# `ARG RUST_VERSION` in the `Dockerfile` are kept byte-identical to `channel`,
+# and the first step of CI's `rust` job asserts all four: the toolchain file,
+# `rust-version`, the Dockerfile's `ARG RUST_VERSION`, and the `rustc` a
+# checkout actually resolves to. Any further bump requires an ADR and a CI
+# update.
+channel = "1.91.1"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"

@@ -102,46 +102,102 @@ they cannot honour.
 
 Android and Web are omitted; see [`parity-matrix.md`](./parity-matrix.md).
 The iOS column is not a second implementation: every modifier below sits in a
-shared file with no platform fork, so what changes is the gesture — a
-long-press drag where the Mac has a click-drag.
+shared file with no platform fork. Three things still differ. The gesture is a
+long-press drag where the Mac has a click-drag. One cell splits outright —
+*Task → Calendar block* is a **Yes** on macOS and a **No** on iOS — which is
+not about the gesture at all, but about which surfaces the shell can put in
+front of a user at once. And one is narrowed rather than lost: *File → Task* is
+a plain **Yes** on the Mac and iPad-only on iOS, because dragging a file in
+from another app needs two apps on screen. The gesture is the whole of the
+first difference; the other two are set out below.
 
 | From → To | macOS | iOS | CLI |
 |---|---|---|---|
 | Task → Stream | Yes | Yes | N/A |
 | Task → Context | Yes | Yes | N/A |
-| Task → Calendar block | Yes | Yes | N/A |
+| Task → Calendar block | Yes | **No** — see below | N/A |
 | Calendar block → Task | **No** — see below | **No** — see below | N/A |
 | Calendar block → Calendar (move / resize) | Yes | Yes | N/A |
 | File → Task (attach) | Yes | Yes *(iPad)* | N/A |
 | Task → Task (reorder) | Yes | Yes | N/A |
 | Stream → Stream (reorder) | Yes | Yes | N/A |
 
-**Calendar block → Task is the one cell not built, and it is a layout
-consequence rather than a missing write.** The macOS window is a sidebar plus a
-*single* detail pane, so the calendar grid and a task list are never on screen
-at the same time; the gesture has no two surfaces to drag between. The write it
-would perform exists and is tested — `TaskListModel.bind(_:to:)`, the same
-`Command::BindTask` the grid's own drop issues — so a future layout that puts a
-list beside the grid makes the cell reachable without new core work. Until then
+**Calendar block → Task is No in both columns, and what is missing is the two
+modifiers, not a layout that could hold them.** A Block is not a drag
+source: `BlockChip` (`CalendarView.swift:358-457`) carries a tap
+(`:407`), a move gesture (`:408`) and a context menu (`:410`), and no
+`.draggable` — the only `.draggable` in the whole tree is the task row's
+(`TaskRowView.swift:74`). A task row is not a drop target for one either:
+`TaskListView.swift:192` is a `dropDestination` that reorders and does nothing
+else, returning `model.reorder(moved, before: task.id)` and declining outright
+in Today and in Search. The write the cell would perform exists and is tested —
+`TaskListModel.bind(_:to:)` (`TaskListModel.swift:179`) issuing the same
+`Command::BindTask` (`crates/sunrise-core/src/commands.rs:157`) the grid's own
+drop issues — so building it is UI work with no core work behind it. Until then
 a Block is bound to a Task from the grid side, by dropping the task onto it.
 
-**On iOS the same cell is unreachable for a stronger version of the same
-reason.** The shell is a tab bar, and the calendar and a task list are on two
-different tabs: they are not merely never co-resident in one window, they
-cannot be on screen together at all. *File → Task* is the other qualified iOS
-cell, and that one is the platform's doing rather than the app's — the drop
-target is shared and unconditional, but dragging a file in from another app
-needs two apps on screen, which is iPad multitasking.
+**The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
+in the shell presents them together.** The drag source (`TaskRowView.swift:74`)
+and the grid's drop target (`CalendarView.swift:221`, into `accept(items:at:)`
+at `:312`) are shared, unguarded and compiled into `SunriseiOS` — this cell
+fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
+(`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
+iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination
+that replaces the list on the same stack. The tab is not the boundary and it
+would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:212`) is
+attached to the Today and the Browse stacks alike (`:136`, `:144`), so the grid
+can be pushed onto the very stack a task list is on — it just arrives *instead
+of* the list, not beside it. Three things the tree establishes: no iOS screen
+shows a task row and the grid together, no `Tab` carries a `dropDestination`,
+and nothing configures spring-loading. Nothing in the tree shows a path that
+completes the gesture, and that is what the **No** records.
 
-Every other cell is live in `apps/apple`, and in both products at once: every
-file named here is under `Sunrise/`, which compiles into the Mac app and the
-iOS app alike. `TaskRowView` is `.draggable`, and the
-drop targets are the sidebar's stream and context rows (`BrowseSidebar`), the
-task rows themselves (`TaskListView`, which declines the drop in Today and in
-Search because the core ranks those lists), the calendar grid and its block
-chips (`CalendarView`), and the attachments pane (`AttachmentsView`). Stream
-reorder is `ForEach.onMove` writing `Stream.sort_order` through the core, so it
-syncs; task reorder is per-device, per [§Reorder](#reorder) above.
+**One path this file cannot settle, and it is the one that would overturn the
+verdict.** On iOS and iPadOS a drag session survives navigation — an item held
+under one finger stays held while a second finger taps a tab — and that needs
+neither spring-loading nor a second scene. If a task row held that way reaches
+the Calendar tab and lands on the grid's `dropDestination`, the cell is a
+**Yes** and the paragraph above is wrong about the consequence, though not
+about any of its three facts. Reading the source cannot decide it: the question
+is what UIKit delivers to a drop target across a tab change at runtime, not
+what the tree declares, and nobody has run it. It is tracked as
+[#72](https://github.com/justin13888/Sunrise/issues/72). The verdict stays **No** on the
+evidence that exists — a completable path has to be shown, not merely left
+open — but it is the cheapest of these cells to overturn, and it takes a
+simulator rather than another grep.
+
+**The other way out would be a second window, and that one the tree does
+close.** It is also what separates this cell from *File → Task*. A second
+Sunrise window would put a list beside the grid, but this app cannot vend one:
+`iOS/SunriseiOSApp.swift:23-24` declares a single `WindowGroup`, and multiple
+windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
+`UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
+has no checked-in plist at all — its Info.plist is generated
+(`project.yml:192-203`, `GENERATE_INFOPLIST_FILE: YES` at `:181`) from three
+`properties` (`CFBundleURLTypes` and the two version keys) and three
+`INFOPLIST_KEY_` settings (`UILaunchScreen_Generation`, and the two
+`UISupportedInterfaceOrientations`, `:182-190`). Neither key appears in any of
+them, or anywhere in `apps/apple`; absent, `UIApplicationSupportsMultipleScenes`
+takes its default of `NO`, so iPadOS grants the app one scene and there is no
+second window to drag into. *File → Task* is qualified to the iPad for the
+complementary reason: it needs a second **app** — Files beside Sunrise in Split
+View — which asks nothing of this app's own scene support. One window each is
+exactly what Split View hands out.
+
+Every file named above is under `Sunrise/`, so every modifier this section
+names compiles into the Mac app and the iOS app alike — what differs between
+the columns is which of them a user can bring together on one screen, not
+which of them exist.
+`TaskRowView` is `.draggable`, and it is accepted by the sidebar's stream and
+context rows (`BrowseSidebar`) and by other task rows (`TaskListView`, which
+declines the drop in Today and in Search because the core ranks those lists).
+The attachments pane takes files (`AttachmentsView`), and a block moves and
+resizes within the grid by its own gestures rather than by a drop. The grid's
+own `dropDestination` serves exactly one cell — *Task → Calendar block*, since
+`accept(items:at:)` takes `tsk_` payloads only — so it is evidence for that
+cell and for no other. Stream reorder is `ForEach.onMove` writing
+`Stream.sort_order` through the core, so it syncs; task reorder is per-device,
+per [§Reorder](#reorder) above.
 
 ### Drag-and-drop UX tokens
 
