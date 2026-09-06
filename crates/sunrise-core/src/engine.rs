@@ -141,9 +141,16 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// short of anything that would strand `mint_epoch`.
 ///
 /// The residual is that a key genuinely more than 64 epochs ahead is refused
-/// and not retried, so ops sealed under it stay unreadable on this replica. It
-/// is logged (`core.key.epoch_refused`) rather than swallowed, because the only
-/// ways to reach it are a hostile sender and a bug.
+/// and not retried. The refusal is a dropped *payload*, not a dropped op: the
+/// envelope still enters `ops` and the cursor still advances past it, so the
+/// relay will not re-send it and nothing re-offers the key. Ops sealed under
+/// that `(stream, epoch)` therefore stay unreadable on this replica until the
+/// device is re-paired, which is what hands it every Stream key the inviting
+/// device holds. That is the recovery, and it is the same one that covers a
+/// device whose `deferred_ops` entry aged out.
+///
+/// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
+/// only ways to reach it are a hostile sender and a bug.
 const MAX_EPOCH_LEAP: u32 = 64;
 
 /// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
@@ -165,10 +172,26 @@ const DEFERRED_PER_EPOCH_CAP: i64 = 256;
 /// Both caps exist because `epoch` is attacker-chosen (see [`MAX_EPOCH_LEAP`])
 /// and `defer_op` is reached *before* anything about the payload is checked: a
 /// member could otherwise park bytes of its choosing on every peer in the
-/// account, at any `(stream, epoch)` it liked, with no ceiling. Overflow evicts
-/// the **oldest** rows, not the newest: a row that has waited longest is the
-/// one whose key is least likely to still be in flight, and evicting newest
-/// would let a flood freeze a bucket against every honest op behind it.
+/// account, at any `(stream, epoch)` it liked, with no ceiling.
+///
+/// Overflow evicts the **oldest** rows. Both directions lose something, and it
+/// is worth being plain about which:
+///
+/// * *Oldest-first*, what this does: a flood of fresh junk at one
+///   `(stream, epoch)` pushes out the honest ops already waiting there.
+/// * *Newest-first*, the alternative: the flood's own first 256 rows occupy the
+///   bucket and every honest op arriving behind it is turned away instead.
+///
+/// Oldest-first wins on two counts. A row that has waited longest is the one
+/// whose key is least likely to still be in flight, so it is the cheapest to
+/// lose; and the bucket **self-heals** — ordinary traffic pushes the junk out
+/// again — where newest-first leaves it poisoned until the TTL sweeps it.
+///
+/// Either way an evicted op is recoverable, which is what makes this a
+/// tolerable trade at all: a deferred op never reached `ops` and never advanced
+/// the sync cursor, so the relay still counts it as undelivered and re-sends it
+/// on the next reconnect, by which time the key that opens it has almost
+/// certainly arrived.
 const DEFERRED_TOTAL_CAP: i64 = 4096;
 
 /// How long a parked op is kept before a drain sweeps it away.
