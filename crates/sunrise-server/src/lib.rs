@@ -20,8 +20,7 @@
 //! - Account + device persistence in SQLite ([`store`]).
 //!
 //! The library is testable in isolation: [`build_service`] returns the built
-//! `kynos` [`Service`](kynos::router::service::Service) that integration tests
-//! drive in process.
+//! `kynos` [`Service`] that integration tests drive in process.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
