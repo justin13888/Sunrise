@@ -10,11 +10,15 @@ status: accepted
 > `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
 > discriminators in `crates/sunrise-wire-protocol/src/messages.rs` and that is
 > all: there is no payload type for either, no server handler, and no client
-> emitter. `handle_inbound` in `crates/sunrise-server/src/ws.rs` ends in
-> `_ => true`, so a beacon sent today is **silently dropped** — not refused,
-> not logged. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined and is not in
-> `REQUIRED_CLIENT_BITS`. There is no presence channel, no ACL check on one, and
-> no "last activity" tracking.
+> emitter. Since [ADR-0023](../11-adr/0023-sse-sync-transport.md) there is not
+> even a frame to send one on — the socket's catch-all inbound dispatch is gone
+> with the socket, and the five sync operations
+> (`crates/sunrise-server/src/api/sync.rs`) are typed one per purpose, so a
+> beacon has no route that would accept it. It is now unreachable rather than
+> silently dropped, which is a smaller gap than it sounds: neither state has a
+> handler behind it. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined and is
+> not in `REQUIRED_CLIENT_BITS`. There is no presence channel, no ACL check on one,
+> and no "last activity" tracking.
 >
 > **Presence is specified as UNENCRYPTED, and that is a deliberate choice, not
 > an oversight** — see the Implementation section: device ids and timestamps are
