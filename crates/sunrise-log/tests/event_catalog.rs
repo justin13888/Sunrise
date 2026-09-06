@@ -448,6 +448,20 @@ struct AllowedInclude {
     /// that cannot reach `tracing` cannot emit an event, so this is what makes
     /// "the generated file logs nothing" an enforced fact rather than a
     /// snapshot of today.
+    ///
+    /// # When this guard fails, resolve the include — never relax the guard
+    ///
+    /// The guard is a *dependency* check standing in for a *content* claim.
+    /// The moment the dependency appears, the claim it was proxying for is no
+    /// longer supported by anything, so relaxing the guard would leave an
+    /// exception whose justification had expired — which is the exact defect
+    /// this whole file exists to catch, sitting inside the gate itself.
+    ///
+    /// The fix is to make the include resolvable: run the build script from
+    /// the gate and read its output, or have spargen emit into the source tree
+    /// where the module walk can follow it. Either way the generated code gets
+    /// read like everything else, and the exception disappears rather than
+    /// being widened.
     guarded_package: &'static str,
 }
 
@@ -1122,8 +1136,14 @@ fn every_allowed_include_still_earns_its_exception() {
         assert!(
             !logs,
             "{} now depends on `tracing`, so the generated code included by {} can \
-             emit events no gate here has read. Either drop the dependency or \
-             resolve the include.",
+             emit events no gate here has read.\n\n\
+             Resolve the include — do not relax this guard. It is a dependency \
+             check standing in for a content claim, and that claim is now \
+             unsupported: an exception kept past the expiry of its own \
+             justification is the defect this file exists to catch. Make the \
+             include readable instead — run the build script here and scan its \
+             output, or have spargen emit into the source tree — and delete the \
+             ALLOWED_INCLUDES entry.",
             allowed.guarded_package, allowed.file
         );
     }
