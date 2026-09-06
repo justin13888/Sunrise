@@ -174,7 +174,29 @@ with **no trailing newline**, and sends the detached Ed25519 signature as
   produce a signature that verifies.
 
 **`Date` is checked against the server's injected clock inside ±300 s**
-(`MAX_CLOCK_SKEW_SECS`), which is the replay window.
+(`MAX_CLOCK_SKEW_SECS`), which is the replay window. A `Date` outside it is
+answered `401 AUTH_DEVICE_SIG_INVALID` — the same code an unverifiable
+signature gets, and deliberately *not* `AUTH_TOKEN_INVALID`: the bearer is
+fine, and a client told otherwise refreshes it into the identical refusal
+forever. The two ways a client measures the skew it must correct are
+`POST /sync/session`'s `server_time_ms` field and the `Date` header on any
+response.
+
+That code is emitted once `X-Sunrise-Device` has resolved to an active row on
+the authenticated account. Every rejection upstream of that lookup — no bearer,
+a bearer that did not verify, an account that did not resolve, a device id that
+is not on this account — stays `401 AUTH_TOKEN_INVALID`, because a finer answer
+there would let an unauthenticated caller enumerate which devices an account
+has.
+
+The one pre-lookup exception is an **incomplete binding** under
+`require_device_sig`, which names the signature. `verify_bytes` reads
+`X-Sunrise-Device` and `X-Sunrise-Device-Sig` together, so a request missing
+either one takes this path as surely as one missing both. It discloses nothing
+about the account: `GET /meta`'s `device_binding_required` already tells every
+caller the server demands a binding. What it does disclose is that the *bearer*
+is valid — an invalid one is refused before reaching this code — which is
+recorded on `ApiError::device_sig_invalid` and tracked separately.
 
 **Request bodies reject unknown fields** (`serde(deny_unknown_fields)`). This is
 the load-bearing half: a signature over a re-serialisation verifies only if the

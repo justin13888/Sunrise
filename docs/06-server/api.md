@@ -121,19 +121,15 @@ The `recovery_blob` is stored opaquely. The server does not validate its interna
 implemented**: neither constant exists in `error.rs`'s `codes` module, and the
 routes that would emit them do not exist. The codes `codes` actually defines are
 `AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
-`AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`, `VALIDATION_INVALID`,
-`BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`, `BLOB_NOT_FOUND` and
-`RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. There is no
-`AUTH_DEVICE_SIG_INVALID`: **every device-binding failure collapses to
-`401 AUTH_TOKEN_INVALID`**, which `api/signed.rs` states as the intent — an
-absent binding where one is required, a device that is not an active row on the
-account, a missing or stale `Date`, and a signature that does not verify are one
-rejection on the wire and four distinguishable lines in the server's log. An
+`AUTH_DEVICE_SIG_INVALID`, `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`,
+`VALIDATION_INVALID`, `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`,
+`BLOB_NOT_FOUND`, `RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. An
 oversized body is rejected by kynos's own `middleware::limits::BodySize`, mounted
 at `[server] max_body_bytes` (default 2 MiB), which answers `413` — and, unlike
-the layer it replaces, contributes that response to every operation it covers in
-the OpenAPI description, so the API no longer rejects payloads it claims to
-accept. The limit is still well below the 10 MiB cap this section assumes.
+the `tower-http` layer it replaces, contributes that response to every operation
+it covers in the OpenAPI description, so the API no longer rejects payloads it
+claims to accept. The limit is still well below the 10 MiB cap this section
+assumes.
 
 ### Identity discovery (for sharing) — NOT IMPLEMENTED
 
@@ -221,7 +217,8 @@ DeviceMeta = {
 | 400 | `VALIDATION_*` | Bad CBOR, wrong field type, invalid `device_pub_*`. | No. |
 | 401 | `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` | See Account errors. | See Account errors. |
 | 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
-| 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device-Sig` present but unverifiable, no `Date` header alongside it, or `Date` outside `MAX_CLOCK_SKEW_SECS` (±300 s). Also returned when `require_device_sig` is set and the header is absent, and when the named device is not an active row on the account. Deliberately indistinguishable from a bad bearer: the difference is useful to the server's log and to nobody else. | No (re-sign with a correct clock). |
+| 401 | `AUTH_DEVICE_SIG_INVALID` | The caller **is** an active device of this account and its `header_sig_v2` binding still did not check out: an unverifiable `X-Sunrise-Device-Sig`, no `Date` header alongside it, or a `Date` outside ±300 s. Also returned, before any device lookup, when `require_device_sig` is set and the caller did not present a **complete** binding — `X-Sunrise-Device` and `X-Sunrise-Device-Sig` are read together, so either one missing takes this path, not only both — which `GET /meta`'s `device_binding_required` already advertises. | No — re-sign with a correct clock. Never refresh the bearer; it was not the problem. |
+| 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
 | 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. | No. |
 
 ### Blobs
@@ -372,13 +369,16 @@ The envelope `ApiError` actually renders carries two members and no
 
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
-### Quota responses
+### Quota responses — REMOVED FROM v1
 
-There are none. No quota response exists on the typed surface and none is
-planned for v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
-`sunrise-error`'s shared catalogue (`codes.toml`) still *declares*
-`AUTH_QUOTA_EXCEEDED` and `STORAGE_QUOTA_EXCEEDED`; nothing produces either, and
-removing them is a code change, filed separately.
+There are none, and there is no longer a code to build them from. ADR-0027
+takes per-account quotas out of v1; `AUTH_QUOTA_EXCEEDED` and
+`STORAGE_QUOTA_EXCEEDED` are gone from `sunrise-error`'s `codes.toml` and their
+ids (203, 300) are burned. Nothing counts storage, ops, or devices against a
+plan, and the `429`/`202` pair this section used to specify — a hard cap over
+110% and a soft warning inside the grace window — is described in
+[`billing.md`](./billing.md) as the shape a future quota surface would take,
+not as anything a client can receive.
 
 ## Rate limits — NOT IMPLEMENTED
 

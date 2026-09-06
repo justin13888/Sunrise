@@ -46,8 +46,14 @@ pub enum Capability {
     SrvRelayPair,
     /// `5` Server provides Google Calendar OAuth proxy.
     SrvIntegrationGcal,
-    /// `6` Server enforces Stripe-backed quotas.
-    SrvBillingStripe,
+    //
+    // Bit 6 was `SrvBillingStripe`, "server enforces Stripe-backed quotas".
+    // ADR-0027 takes per-account quotas out of v1, so the *name* is retired —
+    // but the *position* is not freed. A peer that ever set bit 6 asserted the
+    // Stripe meaning, and handing that position to something else would make
+    // an old peer's honest claim read as a new one. Nothing is renumbered; 6
+    // stays a hole, pinned by `the_retired_billing_bit_leaves_a_hole_at_six`.
+    //
     /// `7` Server accepts opt-in diagnostic bundles.
     SrvDiagnosticUpload,
     /// `8` Server accepts `0x12 RefreshToken` in a live session and answers
@@ -99,7 +105,7 @@ impl Capability {
             Self::SrvBlobPresign => 3,
             Self::SrvRelayPair => 4,
             Self::SrvIntegrationGcal => 5,
-            Self::SrvBillingStripe => 6,
+            // 6 is reserved; see the enum.
             Self::SrvDiagnosticUpload => 7,
             Self::SrvTokenRefresh => 8,
             Self::CliEntityLww => 32,
@@ -149,6 +155,60 @@ mod tests {
         assert_eq!(Capability::CliHlcTimestamps.bit(), 33);
         assert_eq!(Capability::CliForwardCompat.bit(), 34);
         assert_eq!(Capability::CliFts5PorterEn.bit(), 35);
+    }
+
+    /// Every capability the enum still names, kept exhaustive by the `match`
+    /// in [`the_retired_billing_bit_leaves_a_hole_at_six`]: adding a variant
+    /// stops that compiling until it is listed here too.
+    const EVERY_CAPABILITY: [Capability; 14] = [
+        Capability::SrvPushApns,
+        Capability::SrvPushFcm,
+        Capability::SrvPushWeb,
+        Capability::SrvBlobPresign,
+        Capability::SrvRelayPair,
+        Capability::SrvIntegrationGcal,
+        Capability::SrvDiagnosticUpload,
+        Capability::SrvTokenRefresh,
+        Capability::CliEntityLww,
+        Capability::CliHlcTimestamps,
+        Capability::CliForwardCompat,
+        Capability::CliFts5PorterEn,
+        Capability::CliPresenceBeacons,
+        Capability::CliDiagnosticMode,
+    ];
+
+    /// Bit 6 named `SRV_BILLING_STRIPE` until ADR-0027 took quotas out of v1.
+    /// Retiring the name is a documentation fix; reissuing the position would
+    /// be a wire break, because a peer that set bit 6 meant the old thing. So
+    /// the hole is asserted, not merely left.
+    #[test]
+    fn the_retired_billing_bit_leaves_a_hole_at_six() {
+        for c in EVERY_CAPABILITY {
+            // Exhaustive on purpose: a variant added to `Capability` fails to
+            // compile here until it is listed in `EVERY_CAPABILITY` above,
+            // which is the moment to check it did not take bit 6.
+            match c {
+                Capability::SrvPushApns
+                | Capability::SrvPushFcm
+                | Capability::SrvPushWeb
+                | Capability::SrvBlobPresign
+                | Capability::SrvRelayPair
+                | Capability::SrvIntegrationGcal
+                | Capability::SrvDiagnosticUpload
+                | Capability::SrvTokenRefresh
+                | Capability::CliEntityLww
+                | Capability::CliHlcTimestamps
+                | Capability::CliForwardCompat
+                | Capability::CliFts5PorterEn
+                | Capability::CliPresenceBeacons
+                | Capability::CliDiagnosticMode => {}
+            }
+            assert_ne!(c.bit(), 6, "{c:?} took the retired Stripe position");
+        }
+        // The neighbours are unmoved, so the hole is a hole rather than a
+        // silent renumbering of everything above it.
+        assert_eq!(Capability::SrvIntegrationGcal.bit(), 5);
+        assert_eq!(Capability::SrvDiagnosticUpload.bit(), 7);
     }
 
     #[test]

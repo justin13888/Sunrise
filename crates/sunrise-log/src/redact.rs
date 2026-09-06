@@ -40,11 +40,21 @@
 //! `sunrise_server::build_router`, which records a
 //! [`crate::field::templatize_path`] target instead.
 //!
-//! **Spans are not gated.** `on_new_span` has no veto, and a span cannot be
-//! rewritten once created. Sunrise spans are created only by this workspace's
-//! own `#[instrument(skip_all, fields(…))]` sites with allowlisted names; the
-//! `Plain<T>` type-level guarantee still applies to span fields, and the
+//! **Spans are not gated, by design.** `on_new_span` has no veto and a span
+//! cannot be rewritten once created, so this layer implements `event_enabled`
+//! and nothing else, and makes no claim whatever about span fields.
+//!
+//! What stands behind the span vocabulary is not this layer but its size. The
+//! workspace creates exactly one span — `http.request`, in
+//! `sunrise_server::api::observe` — carrying `method` and `endpoint`, both on
+//! [`crate::field::ALLOWED`] and both server-derived (`endpoint` is a
+//! [`crate::field::templatize_path`] route, never a raw target). The
+//! `Plain<T>` type-level guarantee still applies to span fields and the
 //! `.expose()` CI gate still covers the modules that build them.
+//!
+//! This is the one part of the field-vocabulary story with no gate under it:
+//! `sunrise-log`'s `event_catalog` test scans `tracing::*!` events and not
+//! `*_span!`. A second span site is the point at which that is worth fixing.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

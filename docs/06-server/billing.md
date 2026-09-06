@@ -55,11 +55,18 @@ per-channel 30-day / 256 MiB retention bounds. `Store::active_device_count`
 exists and is reported in `AccountInfo`, but nothing compares it to a device
 cap.
 
+There is also no longer a code to report a breach with. ADR-0027 takes
+per-account quotas out of v1, so `AUTH_QUOTA_EXCEEDED` and
+`STORAGE_QUOTA_EXCEEDED` were removed from `crates/sunrise-error/codes.toml`
+and their ids (203, 300) are burned. The table below therefore describes the
+*shape* a quota surface would take, not a wire contract: building it starts
+with allocating new codes.
+
 | Phase | Behavior |
 |---|---|
 | Within plan | Writes accepted; no warning. |
 | 100% – 110% (hard cap = 110%) | Writes accepted; in-app banner shown; emails at 100% and 105%; responses carry `X-Sunrise-Quota-Warning: true` and HTTP `202 Accepted` with `quota_used_ratio` in the body. |
-| > 110% | New writes return `429 AUTH_QUOTA_EXCEEDED` with `Retry-After: <seconds-until-period-end>`; reads continue. |
+| > 110% | New writes return `429` with `Retry-After: <seconds-until-period-end>`; reads continue. |
 | Day 8 of overage | Existing writes still rejected; account marked `quota_locked` in DB. User must upgrade or delete. |
 
 The 7-day soft-grace window covers transient overages before the hard cap engages.

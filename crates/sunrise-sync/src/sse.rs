@@ -161,6 +161,15 @@ impl SseTransport {
     }
 
     /// Turn a non-2xx into the typed error the driver branches on.
+    ///
+    /// The relay's own code wins wherever it is one this build knows. It was
+    /// parsed out of the problem document and then thrown away for a status
+    /// map, which flattened every `401` to `AUTH_TOKEN_INVALID` — so a client
+    /// told "your signature is stale, fix your clock" heard "your bearer is
+    /// bad" and refreshed a token that was never the problem. The status map
+    /// stays as the fallback for a code this build does not know and for a body
+    /// that carries none, which is what keeps an older client working against a
+    /// newer relay.
     fn refuse(status: hyper::StatusCode, body: &[u8]) -> TransportError {
         // The problem document carries the stable code as an extension member,
         // which is exactly what a client is meant to switch on.
@@ -172,12 +181,14 @@ impl SseTransport {
                     .map(ToOwned::to_owned)
             })
             .unwrap_or_else(|| status.as_str().to_owned());
+        let by_status = match status.as_u16() {
+            401 | 403 => "AUTH_TOKEN_INVALID",
+            503 => "RELAY_STORAGE_UNAVAILABLE",
+            _ => "SYNC_OP_INVALID",
+        };
         TransportError::Server {
-            code: match status.as_u16() {
-                401 | 403 => "AUTH_TOKEN_INVALID",
-                503 => "RELAY_STORAGE_UNAVAILABLE",
-                _ => "SYNC_OP_INVALID",
-            },
+            code: sunrise_error::ErrorCode::from_wire_str(&code)
+                .map_or(by_status, sunrise_error::ErrorCode::as_str),
             message: format!("{status}: {code}"),
         }
     }
@@ -607,7 +618,7 @@ fn error_frame(code: sunrise_error::ErrorCode, reason: &str) -> Result<Vec<u8>, 
 #[cfg(test)]
 mod tests {
     use super::SseTransport;
-    use crate::transport::Transport;
+    use crate::transport::{Transport, TransportError};
 
     /// Compile-time assertion that this still fits the driver's transport slot.
     #[test]
@@ -626,5 +637,35 @@ mod tests {
             format!("{err}").contains("session"),
             "expected a session complaint, got {err}"
         );
+    }
+
+    fn code_of(err: &TransportError) -> &'static str {
+        match err {
+            TransportError::Server { code, .. } => code,
+            other => panic!("expected a server refusal, got {other}"),
+        }
+    }
+
+    /// The regression: a `401` whose body names a code this build knows keeps
+    /// that code. Flattening it to the status map is what left a client
+    /// refreshing a bearer to cure a clock.
+    #[test]
+    fn a_typed_code_survives_the_status_map() {
+        let body = br#"{"type":"https://sunrise.app/problems/unauthenticated","status":401,"code":"AUTH_DEVICE_SIG_INVALID"}"#;
+        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, body);
+        assert_eq!(code_of(&err), "AUTH_DEVICE_SIG_INVALID");
+    }
+
+    /// And the fallback still holds, so a relay that answers with a code this
+    /// build has never heard of — or with no body at all — is still classified
+    /// rather than dropped on the floor.
+    #[test]
+    fn an_untyped_401_still_maps_to_the_token_code() {
+        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, b"");
+        assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+
+        let unknown = br#"{"status":401,"code":"AUTH_SOMETHING_FROM_THE_FUTURE"}"#;
+        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, unknown);
+        assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
     }
 }

@@ -26,8 +26,9 @@
 //!
 //! The driver is transport-agnostic: it takes a [`TransportFactory`] closure
 //! that yields a fresh [`Box<dyn Transport>`] per connection attempt. The
-//! production WebSocket factory (built on `sunrise_sync::WsTransport`) and the
-//! in-process loopback used by the tests are both just factories.
+//! production SSE factory (built on `sunrise_sync::SseTransport`,
+//! `crates/sunrise-sync/src/sse.rs`) and the in-process loopback used by the
+//! tests are both just factories.
 //!
 //! # Recovering inside a session
 //!
@@ -359,9 +360,14 @@ impl SyncShared {
 
 /// In-flight (sent, not yet acked) outbox batch.
 ///
-/// Keeps the encoded frame so it can be sent again: without it "retry" would
-/// mean re-reading and re-encoding the outbox, which would produce a *different*
-/// `batch_id` and defeat the relay's idempotency key.
+/// Keeps the encoded frame so it can be sent again *byte for byte*. Without it
+/// "retry" would mean re-reading the outbox, which is not the same operation:
+/// `Core::sync_outbox_grouped` returns whatever is unacked *now*, so a re-read
+/// picks up ops enqueued since and mints a fresh `batch_id`. That is a new
+/// batch, not a retransmit — the relay dedups on the ops' content, so a
+/// re-partitioned batch is stored again, and the `Ack` comes back under a
+/// number the client is no longer waiting on. `batch_id` is an ack correlator
+/// and not an idempotency key (`docs/05-sync/wire-protocol.md`).
 struct InflightBatch {
     op_ids: Vec<[u8; 16]>,
     frame: Vec<u8>,
@@ -490,17 +496,44 @@ pub(crate) async fn run(
             }
             Err(e) => {
                 // "The client isn't syncing" is the single most common
-                // support question, and this is the line that answers it:
-                // the relay is unreachable, here is what the socket said.
-                tracing::warn!(
-                    ev = "sync.session.error",
-                    err_code = "SYNC_CONNECT_FAILED",
-                    err_kind = "transient",
-                    retryable = true,
-                    result = "failed",
-                    cause = %e,
-                    "relay connect failed"
-                );
+                // support question, and these are the lines that answer it:
+                // the relay is unreachable, here is what it said.
+                //
+                // `err_code` describes the *error*, not what the driver does
+                // next. A device-signature refusal is permanent — reconnecting
+                // re-presents the same wrong clock or the same wrong key — and
+                // the driver still backs off and retries, because the only
+                // alternative is a new `SyncState` variant and the Swift
+                // presentation switches on that set exhaustively. Naming the
+                // code here is what lets an operator tell "the relay is down"
+                // from "this device will never connect" without that change.
+                match &e {
+                    TransportError::Server { code, .. }
+                        if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
+                    {
+                        tracing::warn!(
+                            ev = "sync.session.error",
+                            err_code = %ErrorCode::AuthDeviceSigInvalid,
+                            err_kind = "permanent",
+                            retryable = false,
+                            result = "failed",
+                            cause = %e,
+                            "relay refused this device's signature; check the clock, not the token"
+                        );
+                    }
+                    // `SYNC_CONNECT_FAILED` used to sit here and is in no
+                    // catalogue: nothing could map it, and a client switching
+                    // on codes saw a string that does not exist.
+                    _ => tracing::warn!(
+                        ev = "sync.session.error",
+                        err_code = %ErrorCode::SyncNetworkUnavailable,
+                        err_kind = "transient",
+                        retryable = true,
+                        result = "failed",
+                        cause = %e,
+                        "relay connect failed"
+                    ),
+                }
                 if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
                     break;
                 }

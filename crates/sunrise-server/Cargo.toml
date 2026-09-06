@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Sunrise sync relay server (REST + WebSocket, OIDC, self-host SQLite)"
+description = "Sunrise sync relay server (REST + SSE relay, OIDC, self-host SQLite)"
 
 [lib]
 path = "src/lib.rs"

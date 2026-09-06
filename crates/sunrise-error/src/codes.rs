@@ -36,12 +36,17 @@ pub enum ErrorCode {
     AuthTokenExpired,
     /// Device cert was revoked.
     AuthDeviceRevoked,
-    /// Per-account quota exhausted.
-    AuthQuotaExceeded,
+    /// A `header_sig_v2` device binding was present, resolved to an active
+    /// device on the authenticated account, and still did not check out — a
+    /// bad signature, an absent `Date`, or one outside the ±300 s replay
+    /// window. Never emitted for a caller whose device did not resolve: that
+    /// would make the code an account/device enumeration oracle.
+    AuthDeviceSigInvalid,
+    // `AuthQuotaExceeded` (203) and `StorageQuotaExceeded` (300) were removed
+    // with ADR-0027, which takes per-account quotas out of v1; nothing ever
+    // emitted either. Both ids stay burned in `codes.toml`.
 
     // Storage
-    /// Local storage full.
-    StorageQuotaExceeded,
     /// The vault is already open — another process holds the OS lock on
     /// `core.lock`, or another `Core` in this process holds it.
     StorageVaultLocked,
@@ -126,8 +131,7 @@ impl ErrorCode {
             Self::AuthTokenInvalid => "AUTH_TOKEN_INVALID",
             Self::AuthTokenExpired => "AUTH_TOKEN_EXPIRED",
             Self::AuthDeviceRevoked => "AUTH_DEVICE_REVOKED",
-            Self::AuthQuotaExceeded => "AUTH_QUOTA_EXCEEDED",
-            Self::StorageQuotaExceeded => "STORAGE_QUOTA_EXCEEDED",
+            Self::AuthDeviceSigInvalid => "AUTH_DEVICE_SIG_INVALID",
             Self::StorageVaultLocked => "STORAGE_VAULT_LOCKED",
             Self::StorageVTooNew => "STORAGE_V_TOO_NEW",
             Self::StorageVTooOld => "STORAGE_V_TOO_OLD",
@@ -176,7 +180,7 @@ impl ErrorCode {
             | Self::ValidationBlockedByCycle
             | Self::ValidationField
             | Self::AuthTokenInvalid
-            | Self::StorageQuotaExceeded
+            | Self::AuthDeviceSigInvalid
             | Self::StorageVTooNew
             | Self::StorageVTooOld
             | Self::CryptoRecoveryBlobInvalid
@@ -199,7 +203,6 @@ impl ErrorCode {
             | Self::RelayGrantRevoked => ErrorKind::Permanent,
             // Transient
             Self::AuthTokenExpired
-            | Self::AuthQuotaExceeded
             | Self::StorageVaultLocked
             | Self::SyncNetworkUnavailable
             | Self::RelayStorageUnavailable
@@ -214,7 +217,6 @@ impl ErrorCode {
         matches!(
             self,
             Self::AuthTokenExpired
-                | Self::AuthQuotaExceeded
                 | Self::StorageVaultLocked
                 | Self::SyncNetworkUnavailable
                 | Self::RelayStorageUnavailable
@@ -224,7 +226,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 38] {
+    pub const fn all() -> [Self; 37] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -235,8 +237,7 @@ impl ErrorCode {
             Self::AuthTokenInvalid,
             Self::AuthTokenExpired,
             Self::AuthDeviceRevoked,
-            Self::AuthQuotaExceeded,
-            Self::StorageQuotaExceeded,
+            Self::AuthDeviceSigInvalid,
             Self::StorageVaultLocked,
             Self::StorageVTooNew,
             Self::StorageVTooOld,

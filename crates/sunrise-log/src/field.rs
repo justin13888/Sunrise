@@ -30,6 +30,11 @@ pub static ALLOWED: &[&str] = &[
     "attachment_h",
     // --- counters, sizes, latencies ---
     "attempt",
+    // The sender's per-session outbox batch counter, not an entity id. It is
+    // minted by the client, restarts at 1 on every reconnect, and names
+    // nothing outside one live session — which is also why the relay refuses
+    // to dedup on it. Carved out of the `_id` rule by `NOT_ENTITY_IDS`.
+    "batch_id",
     // Server's own listen address from operator config. Not a client IP:
     // §6.2 forbids logging peer addresses, not the socket we opened.
     "bind",
@@ -51,6 +56,12 @@ pub static ALLOWED: &[&str] = &[
     // The hierarchical event name (logging.md §3). Validated by
     // [`crate::EventName`].
     "ev",
+    // --- server-minted wall-clock instants (machine time, never authored) ---
+    // The deadline the relay adopted for a refreshed bearer, and the relay's
+    // own arrival stamp for an op batch. Both are the server's clock talking
+    // about itself; neither is derived from anything a user typed.
+    "expires_at_ms",
+    "first_seen_ms",
     "from_v",
     "kind",
     "lat_ms",
@@ -181,14 +192,77 @@ mod tests {
         assert!(!is_allowed("uri"));
     }
 
+    /// Names ending `_id` that are not entity identifiers.
+    ///
+    /// The suffix rule is worth keeping literal, so its exceptions are listed
+    /// one by one rather than pattern-matched: each has to be argued for by
+    /// hand, which is the point of the rule. What stops the list being a
+    /// loophole is [`entity_ids_implied_by_hashes`] — an exception may not name
+    /// something the allowlist has already called an entity.
+    const NOT_ENTITY_IDS: &[&str] = &["batch_id"];
+
+    /// The `_id` names the allowlist's own `_h` entries forbid.
+    ///
+    /// §6 bans full ids and admits a truncated hash in their place, so every
+    /// `x_h` on the list is a standing statement that `x_id` is an entity
+    /// identifier. Deriving the forbidden set from that, rather than listing a
+    /// few names by hand, is what makes the rule hold for entities nobody has
+    /// thought of yet: `op_id`, `session_id` and `frame_id` become forbidden
+    /// the moment their hashes are admitted, with no one having to remember.
+    fn entity_ids_implied_by_hashes() -> Vec<String> {
+        ALLOWED
+            .iter()
+            .filter_map(|n| n.strip_suffix("_h"))
+            .map(|stem| format!("{stem}_id"))
+            .collect()
+    }
+
     #[test]
     fn no_raw_identifier_keys_on_the_allowlist() {
         // §6 bans full ids; only the `_h` hashes may appear. This catches a
         // future edit that adds `task_id` next to `task_h`.
         for name in ALLOWED {
+            if NOT_ENTITY_IDS.contains(name) {
+                continue;
+            }
             assert!(
                 !name.ends_with("_id"),
                 "field {name:?} looks like a raw identifier"
+            );
+        }
+    }
+
+    #[test]
+    fn the_id_carve_out_cannot_admit_an_entity() {
+        let forbidden = entity_ids_implied_by_hashes();
+        assert!(
+            forbidden.len() >= 9,
+            "the allowlist's `_h` entries went missing: {forbidden:?}"
+        );
+
+        for name in NOT_ENTITY_IDS {
+            // A carve-out for a name that is not on the list would quietly
+            // widen the rule the next time someone added that name.
+            assert!(
+                ALLOWED.contains(name),
+                "stale carve-out {name:?}: not on the allowlist"
+            );
+            // And an exception may not name something the allowlist has
+            // already declared an entity by admitting its hash. This is the
+            // half a hand-written list of leaks could not enforce: adding
+            // `stream_id` to both this array and `ALLOWED` used to pass.
+            assert!(
+                !forbidden.contains(&(*name).to_owned()),
+                "carve-out {name:?} is an entity id — the allowlist admits its \
+                 `_h` hash, which is the reason the raw id is banned"
+            );
+        }
+
+        // Nothing the `_h` entries forbid may be on the list at all.
+        for id in &forbidden {
+            assert!(
+                !is_allowed(id),
+                "{id:?} is an entity id: the allowlist admits its `_h` hash"
             );
         }
     }

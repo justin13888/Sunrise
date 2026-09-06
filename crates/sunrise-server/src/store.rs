@@ -197,6 +197,30 @@ CREATE TABLE IF NOT EXISTS relay_evicted (
     evicted_through INTEGER NOT NULL,
     PRIMARY KEY (account_h, stream_id, device_id)
 );
+
+-- One row per op batch the relay has already appended, keyed by the CONTENT of
+-- the batch rather than by its `batch_id`. The client's counter is per session
+-- (`sync_driver.rs` starts it at 0 inside `session()`), so it restarts at 1 on
+-- every reconnect: a `UNIQUE (account_h, device_id, batch_id)` would drop
+-- session 2's batch 1 as a duplicate *while acking it*, and an acked batch is
+-- deleted from the client's outbox. That is silent data loss. Content is the
+-- only key that survives a reconnect, and a reconnect re-draining the outbox
+-- is exactly the churn this table exists to absorb.
+--
+-- `frame_id` is what bounds it: `ON DELETE CASCADE` plus `PRAGMA foreign_keys`
+-- means a batch is forgotten the moment retention deletes the frame it named,
+-- so the dedup window is the retention window, kept in step for free and with
+-- no second sweep to write.
+CREATE TABLE IF NOT EXISTS relay_batches (
+    account_h     BLOB NOT NULL,
+    stream_id     BLOB NOT NULL,
+    ops_h         BLOB NOT NULL,
+    frame_id      INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+    batch_id      INTEGER NOT NULL,
+    first_seen_ms INTEGER NOT NULL,
+    PRIMARY KEY (account_h, stream_id, ops_h)
+);
+CREATE INDEX IF NOT EXISTS relay_batches_by_frame ON relay_batches(frame_id);
 ";
 
 impl Store {
