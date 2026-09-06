@@ -307,6 +307,93 @@ depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
 
+# --- Running the apps ---
+#
+# The three tasks above build and *test*; none of them puts an app on screen,
+# which is the gap these two close. `-open` hands the project to Xcode and stops
+# there, which is right for development and wrong for "does it work".
+#
+# `-derivedDataPath ../../out/dd` rather than Xcode's default, and that is the
+# load-bearing part: the default lives under a hashed
+# `~/Library/Developer/Xcode/DerivedData/Sunrise-<gibberish>` path that nothing
+# can name without asking `xcodebuild -showBuildSettings` first. `out/` is
+# gitignored and — unlike `build/` — is not `rm -rf`'d by `apple-xcframework`,
+# so the product survives its own dependency.
+
+[tasks.macos-run]
+description = "Build the macOS app and launch it. The 'is it actually working' command"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+# An optional scratch vault. With no argument the app opens the real vault in
+# the standard location, which is what a demo should do; with one it opens a
+# throwaway directory and an in-memory key store instead, so a run can be
+# repeated from first-run without touching the developer's data or Keychain.
+usage = 'arg "<vault>" default=""'
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+xcodebuild build \\
+  -project Sunrise.xcodeproj \\
+  -scheme Sunrise \\
+  -destination 'platform=macOS,arch=arm64' \\
+  -derivedDataPath ../../out/dd \\
+  -quiet \\
+  CODE_SIGNING_ALLOWED=NO
+app="../../out/dd/Build/Products/Debug/Sunrise.app"
+# `open`, never `"$app/Contents/MacOS/Sunrise"`. Executing the binary directly
+# starts the process without registering it with the window server as a
+# foreground app: it runs, it opens no window, and it looks exactly like a hang.
+# That is the single most likely way to conclude this app does not work.
+if [ -n "$usage_vault" ]; then
+  mkdir -p "$usage_vault"
+  vault="$(cd "$usage_vault" && pwd)"
+  echo "scratch vault: $vault"
+  # `-n`, so a second scratch run is a second instance rather than a no-op
+  # against the one already open. Two `Core::open`s on one directory are
+  # refused by the vault lock, which is why each run wants its own directory.
+  open -n "$app" --args -sunrise-ui-test-vault "$vault"
+else
+  open "$app"
+fi
+"""
+
+[tasks.ios-run]
+description = "Build the iOS app and launch it on the simulator"
+depends = ["apple-xcframework"]
+dir = "apps/apple"
+shell = "bash -c"
+run = """
+set -euo pipefail
+xcodegen generate --quiet
+# Signed ad-hoc, like `ios-app` and for the same reason: iOS gates the Keychain
+# on an application-identifier entitlement that only a signed binary carries,
+# and the vault stores its root there.
+xcodebuild build \\
+  -project Sunrise.xcodeproj \\
+  -scheme SunriseiOS \\
+  -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -derivedDataPath ../../out/dd \\
+  -quiet \\
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+app="../../out/dd/Build/Products/Debug-iphonesimulator/Sunrise.app"
+# The bundle id comes from the app that was just built. `project.yml` owns
+# `PRODUCT_BUNDLE_IDENTIFIER`; a literal here is a second source of truth that
+# fails silently — `install` still succeeds and only `launch` reports "not
+# found", which reads like a broken build rather than a stale string.
+bundle_id="$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")"
+# Already-booted is not an error here; `bootstatus -b` then waits for the boot
+# to actually finish, because `simctl install` against a half-booted device
+# fails with a device-not-ready error that reads like a build problem.
+xcrun simctl boot "$ios_sim" 2>/dev/null || true
+open -a Simulator
+xcrun simctl bootstatus "$ios_sim" -b
+xcrun simctl install "$ios_sim" "$app"
+xcrun simctl launch "$ios_sim" "$bundle_id"
+echo
+echo "To start again from first run:  xcrun simctl uninstall '$ios_sim' $bundle_id"
+"""
+
 [tasks.apple-shots]
 description = "Walk every screen on both apps and write one PNG per screen to out/shots"
 depends = ["apple-xcframework"]
@@ -366,6 +453,122 @@ for platform in macos ios; do
 done
 echo "out/shots/macos/*.png and out/shots/ios/*.png"
 """
+
+# --- Mutation testing ---
+
+[tasks.mutants]
+description = "Mutation-test one core crate (cargo-mutants). Slow by nature; see mutants/baseline.json"
+shell = "bash -c"
+# `--shard k/n` splits one crate across runs. CI uses it to fan out; locally it
+# is how you get a signal from `sunrise-domain` without giving up an afternoon.
+usage = '''
+arg "<crate>" default="sunrise-sync"
+flag "--shard <shard>" default=""
+'''
+run = """
+set -euo pipefail
+# `--jobs 1`, and this is the line to read before changing it.
+#
+# cargo-mutants copies the source tree per job and runs a full cargo build and
+# test inside each copy. Measured at `-j1` on this workspace: **604 MB peak
+# RSS**, about one `cargo build`, and roughly 1.8 s per mutant on
+# `sunrise-sync`. Every extra job is another tree on disk and another rustc
+# resident — which on a laptop with an Xcode DerivedData directory beside it is
+# how the machine falls over rather than how the run gets faster.
+#
+# If you have the headroom, raise it deliberately and watch the memory. The
+# default is chosen to be safe on the machine most likely to run this, not fast
+# on the biggest one.
+shard_arg=""
+slug="$usage_crate"
+if [ -n "$usage_shard" ]; then
+  shard_arg="--shard $usage_shard"
+  # 3/6 -> 3-6. One directory per invocation, because cargo-mutants always
+  # writes `mutants.out` under the directory it is given: pointed at a shared
+  # one, every shard of a crate overwrites the last, and the run that scored
+  # six shards would score whichever finished last. The gate reads the whole
+  # tree of them, so keeping them apart is what makes a sharded local run add
+  # up to the same verdict as CI's.
+  slug="$slug-$(printf '%s' "$usage_shard" | tr / -)"
+fi
+# cargo-mutants creates its own `mutants.out` but not the parent it was told
+# to put it in, and `out/` is gitignored so a fresh clone has none.
+mkdir -p "out/mutants/$slug"
+# cargo-mutants exits 2 when mutants survived and 3 when some timed out. Both
+# mean the run measured something, and on this workspace both are the ordinary
+# result — every scoped crate has surviving mutants, which is the entire reason
+# the floors exist. Under `set -e` that aborted the task before the two lines
+# below ever printed, so a run that worked perfectly looked like a run that
+# broke, and the guidance it prints was unreachable in the only case that
+# needed it. Coverage is the gate's verdict, not this task's; any other exit
+# code is a real failure and is re-raised.
+rc=0
+cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
+case "$rc" in
+  0 | 2 | 3) ;;
+  *) exit "$rc" ;;
+esac
+echo
+echo "surviving mutants: out/mutants/$slug/mutants.out/missed.txt"
+echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutants.out/outcomes.json"
+"""
+
+[tasks.mutants-baseline]
+description = "Record the current mutation-coverage floors into mutants/baseline.json"
+shell = "bash -c"
+# `--expect-shards` is required, not optional, and this is the whole point of
+# the task. The glob below picks up every run sitting under out/mutants/, and
+# what is sitting there is whatever you happened to run last — one shard of
+# sunrise-domain, say. Recorded as a floor, that shard's rate stands for the
+# whole crate: measured over a sixth of its mutants and thereafter too low to
+# fail on anything. Naming the counts is the one moment where someone states
+# what the floor is supposed to cover, so the gate can check it did.
+#
+# For a deliberately partial floor, call the gate directly with
+# `--allow-partial`, which records without the check and says so.
+usage = 'flag "--expect-shards <expect_shards>" required=#true'
+run = """
+set -euo pipefail
+# Deliberately separate from `mutants`, and deliberately not something the gate
+# does on its own when the number goes up. Moving a floor is a claim that the
+# tests got better, and a claim belongs in a commit message.
+#
+# Every run under out/mutants/, not one fixed path: `mise run mutants` gives
+# each crate and shard its own directory, and a floor recorded from one of them
+# while the others sit on disk is a floor for a fraction of the crate.
+shopt -s nullglob
+outcomes=(out/mutants/*/mutants.out/outcomes.json)
+# Results from before each run got its own directory sit one level shallower,
+# and the glob above steps straight over them. A tree that has them is not an
+# empty tree, and saying "no results" to someone looking at a mutants.out they
+# just produced is the wrong answer. Named literally rather than globbed:
+# nullglob only drops patterns, and a literal path that does not exist would
+# survive into the array and be handed to the gate as a file to read.
+legacy=out/mutants/mutants.out/outcomes.json
+if [ -f "$legacy" ]; then
+  outcomes+=("$legacy")
+fi
+if [ -z "${outcomes[0]:-}" ]; then
+  echo "no results in out/mutants/*/mutants.out/ or out/mutants/mutants.out/;" >&2
+  echo "run 'mise run mutants <crate>' first" >&2
+  exit 1
+fi
+echo "recording from:"
+for outcome in "${outcomes[@]}"; do
+  echo "  $outcome"
+done
+.github/scripts/mutants-gate.py "${outcomes[@]}" --update \
+  --expect-shards "$usage_expect_shards"
+"""
+
+[tasks.mutants-gate-test]
+description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
+# Runs in about a second: it synthesises outcomes.json fixtures in a temp
+# directory and never invokes cargo. That is the point — the gate's contract is
+# what CI and the printed remedies depend on, and it had drifted twice before
+# anything asserted it, because the only way to exercise it was a full mutation
+# run nobody waits for.
+run = "python3 .github/scripts/test_mutants_gate.py"
 
 # --- Release artifacts ---
 #

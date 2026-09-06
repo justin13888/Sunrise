@@ -6,7 +6,7 @@ status: accepted
 
 > **Implementation status.** The self-host single-binary path is built and is
 > the only one: one SQLite database (`store.rs` + `relay_log.rs`) and a
-> local-filesystem blob root (`routes/blobs.rs` over `sunrise_storage::BlobStore`).
+> local-filesystem blob root (`api/blobs.rs` over `sunrise_storage::BlobStore`).
 > There is no Postgres, no object store, and no pub/sub; the "managed" sections
 > below describe a deployment that does not exist. Sections that describe built
 > behaviour are marked **(implemented)**.
@@ -110,7 +110,7 @@ server only claims ops are gone when they actually are.
 
 ## Op write path (implemented)
 
-1. Client `OpBatch` arrives over WS.
+1. Client `OpBatch` arrives as one `POST /api/v1/sync/ops`, and the handler rebuilds the wire frame from it.
 2. Server reads each op's cleartext routing header for `(device_id, seq)`. It
    verifies **no signature** — it holds no key that could — and enforces
    **no rate limit and no quota**; neither exists. Frame size is bounded by the
@@ -132,7 +132,7 @@ server only claims ops are gone when they actually are.
 
 The blob flow is a genuine two-phase commit, fully implemented and
 hash-verified, but it is not the Postgres/S3 outbox an earlier draft described.
-What `routes/blobs.rs` does:
+What `api/blobs.rs` does:
 
 ```
 1. POST /api/v1/blobs/init { stream_id, chunk_count, size_bytes }
