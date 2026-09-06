@@ -9,10 +9,14 @@
 //!   any of that were wrong the *surviving* device would go dark, so B
 //!   converging on a Stream and a Context created after the cut is the
 //!   assertion that rotation and redistribution actually work.
-//! - **The revoked device cannot write.** An op C signs at or after the cut is
-//!   refused by every replica that has applied the revocation, so C cannot go
-//!   on mutating the account it was cut out of. The cut is the HLC of the
-//!   `device_revoke` op itself; there is no `effective_at` anybody nominates.
+//! - **The revoked device stops receiving keys.** `emit_key_envelopes` excludes
+//!   it, so the epoch the rotation mints reaches the devices that remain and
+//!   not the one that left. That is what revocation bounds here: **key
+//!   distribution, not writes.** Peer-side write refusal was removed from this
+//!   change — a refused op stalls the refusing replica's sync cursor for that
+//!   device, and relay retention then turns the stall into a permanent
+//!   data-loss warning on every peer. Bounding writes needs the relay to stop
+//!   accepting them, which is #80.
 //!
 //! # What this test deliberately does not assert, and why
 //!
@@ -47,21 +51,14 @@ use std::time::Duration;
 
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, RevokeReason, SystemClock};
 use sunrise_domain::{ContextDraft, StreamDraft, TaskDraft};
-use sunrise_e2e::chaos::ToxicConfig;
 use sunrise_e2e::{
-    canonical_tasks, open_paired_core, open_paired_core_with_factory, open_synced_core,
-    spawn_relay, toxic_ws_factory, wait_live, wait_tasks_converge,
+    canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live,
+    wait_tasks_converge,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
 const ROOT: [u8; 32] = [0x37; 32];
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Long enough for anything the relay was going to deliver to have arrived.
-///
-/// Only ever used to give a *negative* assertion time to be wrong; every
-/// positive one waits on a condition instead.
-const SETTLE: Duration = Duration::from_secs(3);
 
 async fn create_task(core: &Core, title: &str) -> EntityRef {
     core.submit(Command::CreateTask(TaskDraft {
@@ -145,7 +142,7 @@ async fn wait_context(core: &Core, name: &str, timeout: Duration) {
 }
 
 #[tokio::test]
-async fn a_revoked_device_cannot_write_and_the_survivors_keep_syncing() {
+async fn a_revoked_device_stops_receiving_keys_and_the_survivors_keep_syncing() {
     let (addr, _relay) = spawn_relay().await;
     let dir_a = tempfile::tempdir().expect("tmp a");
     let dir_b = tempfile::tempdir().expect("tmp b");
@@ -201,119 +198,20 @@ async fn a_revoked_device_cannot_write_and_the_survivors_keep_syncing() {
     wait_tasks_converge(&a, &b, 2, TIMEOUT).await;
     wait_context(&b, "post-revocation", TIMEOUT).await;
 
-    // ---- The revoked device cannot write ----
+    // ---- The revoked device is no longer a key recipient ----
     //
-    // C can still write to its own database — nothing takes a local vault away
-    // from its holder — but the op it signs is refused by every replica that
-    // has applied the revocation.
-    create_task(&c, "from a revoked device").await;
-    tokio::time::sleep(SETTLE).await;
-    for (name, core) in [("A", &a), ("B", &b)] {
-        assert!(
-            !task_titles(core)
-                .await
-                .contains(&"from a revoked device".to_owned()),
-            "{name} applied an op signed by a revoked device"
-        );
-    }
-    assert_eq!(
-        task_titles(&a).await,
-        task_titles(&b).await,
-        "and the two surviving devices still agree with each other"
-    );
-
-    // And C keeps what it already had. Rotation bounds forward exposure at
-    // best; it never reaches backwards.
+    // Which is what revocation bounds in this PR: `emit_key_envelopes` stops
+    // sealing to C, so the epoch minted by the rotation above reached A and B
+    // and not C. C keeps every key it already held — rotation bounds forward
+    // exposure, never backward — so the pre-revocation task is still readable
+    // there, and that is the honest limit.
     assert!(
         task_titles(&c).await.contains(&"before the cut".to_owned()),
         "the pre-revocation task is still readable on the revoked device"
     );
-}
-
-/// Wait until `core` shows a task titled `title`.
-async fn wait_title(core: &Core, title: &str, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if task_titles(core).await.iter().any(|t| t == title) {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for the task {title:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// The cut is a **time**, and an op signed before it still applies on a replica
-/// that has already recorded the revocation.
-///
-/// The scenario is the ordinary one: C does a morning's work on a laptop, the
-/// laptop goes offline, the user revokes it from another device that evening,
-/// and the morning's ops reach the rest of the account afterwards. Dropping
-/// them would throw away honest work the user never asked to lose.
-///
-/// **The ordering is staged, not assumed.** An earlier version of this waited
-/// for C's op to reach B *before* submitting the revocation, so B had already
-/// applied it and the test asserted the residual in #78 — that an op already
-/// applied is never re-examined — rather than the cut being a time. It passed
-/// with the fix reverted. C is now partitioned off the relay while it writes,
-/// so the op is provably still in C's outbox when B records the revocation
-/// (`wait_revoked`), and only then is the link healed.
-#[tokio::test]
-async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
-    let (addr, _relay) = spawn_relay().await;
-    let dir_a = tempfile::tempdir().expect("tmp a");
-    let dir_b = tempfile::tempdir().expect("tmp b");
-    let dir_c = tempfile::tempdir().expect("tmp c");
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-
-    let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
-    let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
-    // C's link is one this test can cut.
-    let (factory, faults) = toxic_ws_factory(addr, ToxicConfig::passthrough(), 7);
-    let c = open_paired_core_with_factory(dir_c.path(), &a, addr, clock.clone(), factory).await;
-    wait_live(&a, TIMEOUT).await;
-    wait_live(&b, TIMEOUT).await;
-    wait_live(&c, TIMEOUT).await;
-
-    create_task(&a, "baseline").await;
-    wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
-    wait_tasks_converge(&a, &c, 1, TIMEOUT).await;
-
-    // C goes offline and does a morning's work. The op carries C's HLC from
-    // this moment and gets no further than C's outbox.
-    faults.partition(true);
-    create_task(&c, "signed before the cut").await;
-    tokio::time::sleep(SETTLE).await;
-    assert!(
-        !task_titles(&b)
-            .await
-            .contains(&"signed before the cut".to_owned()),
-        "the premise: B has not seen C's op yet"
-    );
-
-    // The user revokes C from A, and B records it — before C's op exists
-    // anywhere but on C.
-    let c_device = c.device_id();
-    a.submit(Command::RevokeDevice {
-        device_id: EntityRef::new(EntityKind::Device, c_device),
-        reason: RevokeReason::Retired,
-    })
-    .await
-    .expect("revoke C");
-    wait_revoked(&b, c_device, TIMEOUT).await;
-    wait_revoked(&a, c_device, TIMEOUT).await;
-
-    // Only now does the morning's work reach anybody. Its HLC is before the
-    // cut, so every replica applies it despite having the revocation already.
-    faults.partition(false);
-    wait_title(&b, "signed before the cut", TIMEOUT).await;
-    wait_title(&a, "signed before the cut", TIMEOUT).await;
-
     assert_eq!(
         task_titles(&a).await,
         task_titles(&b).await,
-        "the survivors agree about the pre-cut work"
+        "and the two surviving devices still agree with each other"
     );
 }
