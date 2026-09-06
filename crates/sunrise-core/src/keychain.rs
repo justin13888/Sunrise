@@ -1971,17 +1971,29 @@ mod tests {
     /// A row whose blob is the wrong length is a corrupt row, and is refused
     /// or skipped rather than zero-padded into a valid-looking value.
     ///
-    /// Padding is what made this dangerous rather than merely wrong. A
-    /// truncated `identity_id` padded with zeros still compares equal to
-    /// itself, so the vault opened and every cert bound to an account that had
-    /// never existed; a truncated `stream_id` pads to `[0u8; 16]`, which is the
-    /// vault-meta stream, so one corrupt row filed a stranger's key against it.
+    /// Padding is what made this dangerous rather than merely wrong: it turns a
+    /// corrupt row into a value that looks well-formed everywhere it is later
+    /// used. A truncated `stream_id` becomes a stream of its own that the next
+    /// revocation mints an epoch for, and a truncated `identity_id` still
+    /// compares equal to itself.
+    ///
+    /// Each assertion is on a path where padding is *observable*. The first
+    /// version of this test asserted the key cache, which cannot tell the two
+    /// apart — a padded id is also the wrong AAD, so the wrap fails to open and
+    /// the row is skipped either way — and it passed with the padding still in
+    /// place.
     #[test]
     fn a_wrong_length_blob_is_refused_rather_than_padded() {
         let root = VaultRootKey::from_bytes([0x79; 32]);
 
-        // A short `stream_keys.stream_id` is skipped: one bad row is not a
-        // lost vault, and it must not become the vault-meta stream.
+        // A `stream_keys` row whose id is the wrong length must not become a
+        // stream. Asserted through `rotation_set` rather than through the key
+        // cache, because the cache cannot tell the two apart: a padded id is
+        // also the wrong AAD, so the wrap fails to open and the row is dropped
+        // either way. `rotation_set` does no crypto — a padded `X'0011'`
+        // becomes a 16-byte id naming nothing, and the next revocation mints an
+        // epoch for it and seals `key_envelope` ops to a stream that does not
+        // exist.
         let sid: [u8; 16] = [0x3c; 16];
         let mut d = db(&root);
         {
@@ -2001,9 +2013,11 @@ mod tests {
         })
         .unwrap();
         let kc = open(&mut d, &root);
-        assert!(
-            kc.stream_keys_at(&crate::engine::META_STREAM, 1).is_empty(),
-            "a truncated stream id must not be padded onto the vault-meta stream"
+        let set = d.with_tx(|tx| kc.rotation_set(tx)).unwrap();
+        assert_eq!(
+            set,
+            vec![crate::engine::META_STREAM, INBOX_STREAM_BYTES],
+            "a truncated stream id must not be padded into a stream of its own"
         );
 
         // A short `identity.identity_id` is fatal, and says which column.
