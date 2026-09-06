@@ -23,7 +23,7 @@
 //! Three families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke` and `DeviceCertPublish` carry key material and trust, have no
 //! row and no last-writer-wins stamp, and are classed
-//! [`OpEffect::Control`] so the compiler keeps them out of the entity
+//! `OpEffect::Control` so the compiler keeps them out of the entity
 //! materializer. See [`crate::control_op`] and ADR-0024.
 //!
 //! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,

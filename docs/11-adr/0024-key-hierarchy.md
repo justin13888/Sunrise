@@ -71,9 +71,16 @@ Alongside it, the hierarchy the documents already specify is made real:
    it, which is what makes revocation meaningful.
 4. **`key_envelope` ops distribute Stream keys** by HPKE, sealing each
    `(stream_id, epoch)` key to a recipient's X25519 public key. Two recipient
-   classes, and the distinction is what makes both revocation and recovery work:
+   classes:
    * to each **device**'s `D_D_pub`, so a device learns the epochs it is entitled to;
    * to the **identity**'s `ID_D`, so the recovery path can reach them.
+
+   The identity class is what makes **recovery** work. It is also why revocation
+   does not: every paired device is handed `ID_D_priv` at pairing, so a revoked
+   device opens the identity copy of every epoch minted after it was revoked.
+   The two goals are in direct tension here, and this ADR resolves it in
+   recovery's favour — see decision 5's scope note and
+   [#76](https://github.com/justin13888/Sunrise/issues/76).
 5. **Epochs are real.** `EPOCH` stops being a constant, so revoking a device can
    mint a new epoch for every Stream it could read. The revoked device keeps
    what it already had — unavoidable, and stated — and, as built, reads what

@@ -49,9 +49,14 @@ fn the_identity_opens_its_own_copy() {
     );
 }
 
-/// Revocation is only meaningful if this holds: a device that is not a
-/// recipient of an epoch's envelope cannot open it, even holding the vault
-/// root and the whole op log.
+/// A device that is not a recipient of an epoch's envelope cannot open it, even
+/// holding the vault root and the whole op log.
+///
+/// This is the *necessary* condition for any future revocation, not evidence of
+/// one: the engine seals every epoch to the account identity as well, and every
+/// paired device holds `ID_D_priv`, so no device is ever a non-recipient in
+/// practice. What this pins is the HPKE property the eventual fix will rest on
+/// — see `#76`.
 #[test]
 fn another_device_cannot_open_it() {
     let mut r = rng(3);

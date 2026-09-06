@@ -550,7 +550,14 @@ impl Engine {
             // exists to prevent.
             self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
 
-            // 2 + 3. Rotate everything, telling only the devices that remain.
+            // 2 + 3. Rotate everything, and seal each new epoch to **every**
+            //        device — the revoked one included. That is not an
+            //        oversight: the epoch is sealed to the account identity as
+            //        well, and every paired device holds `ID_D_priv`, so
+            //        leaving it out of the device recipients withholds nothing.
+            //        See `Self::emit_key_envelopes` and issue #76. What the
+            //        rotation buys is that a *later* epoch is a different key
+            //        at all, which is the thing that was impossible before.
             for stream_id in self.keychain.rotation_set(tx)? {
                 let (epoch, key) =
                     self.keychain
@@ -1310,8 +1317,9 @@ impl Engine {
     /// said, including work the device did honestly months earlier.
     ///
     /// A revocation affects nothing on this path, or on any other: it is
-    /// recorded and converged by [`Self::apply_control_op`] and consulted by no
-    /// production code at all.
+    /// recorded and converged, and **acted on** by no production code. The
+    /// register is read once outside tests — `Self::query_device_list` joins it
+    /// to report a flag — and nothing branches on the answer.
     fn lookup_device_cert(
         &self,
         db: &Db,

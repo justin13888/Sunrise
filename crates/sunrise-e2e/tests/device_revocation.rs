@@ -5,15 +5,15 @@
 //!
 //! - **The account keeps working.** Revocation mints a fresh epoch for every
 //!   stream in the rotation set — the vault-meta stream and the Inbox included,
-//!   not only user Streams — and seals each one to the devices that remain. If
-//!   any of that were wrong the *surviving* device would go dark, so B
-//!   converging on a Stream and a Context created after the cut is the
-//!   assertion that rotation and redistribution actually work.
+//!   not only user Streams — and seals each one to every device *and* to the
+//!   account identity. If any of that were wrong the surviving devices would go
+//!   dark, so B converging on a Stream and a Context created after the cut is
+//!   the assertion that rotation and redistribution actually work.
 //! - **Revocation is recorded and converged, and enforces nothing.** C is
 //!   marked revoked on every replica and keeps every capability it had. That is
 //!   the honest scope of this slice, and the assertions below are written to
-//!   the property that survives: the rotation reaches the devices that remain,
-//!   so the account keeps working across a revocation.
+//!   the property that survives: the rotation reaches every device, so the
+//!   account keeps working across a revocation. It reaches C too.
 //!
 //! Both enforcement claims were built here and removed. Refusing a revoked
 //! device's ops freezes the refusing replica's sync cursor for it while the
