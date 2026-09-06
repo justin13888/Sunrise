@@ -6,16 +6,21 @@ status: accepted
 
 **v1's transport is an SSE stream downstream and typed `POST` operations
 upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes
-[ADR-0005](../11-adr/0005-sync-transport.md)). The WebSocket described below is
-the **implementation being replaced**, not the settled design. It is what runs
-today — `crates/sunrise-server/src/ws.rs` on the server, `WsTransport` under
-`crates/sunrise-core/src/sync_driver.rs` on the client — and it is documented
-here because it is what a reader will find in the tree.
+[ADR-0005](../11-adr/0005-sync-transport.md)). That is no longer a decision
+waiting on an implementation: it is what runs. The client is `SseTransport`
+(`crates/sunrise-sync/src/sse.rs`), used by `sunrise-cli`, the Apple apps
+through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the server is
+`crates/sunrise-server/src/api/sync.rs` over `crates/sunrise-server/src/sync_session.rs`.
+
+The WebSocket is gone rather than being replaced. `crates/sunrise-server/src/ws.rs`
+was deleted, and neither `axum` nor `tokio-tungstenite` resolves in `Cargo.lock`
+any more. Earlier revisions of this page described the WebSocket as "what runs
+today"; it does not, and this revision is the correction.
 
 This page previously said "v1 ships **WebSocket only**" and deferred HTTP
 fallbacks to v2, which contradicted ADR-0005's own "primary WebSocket, fallback
-HTTP/2 long-poll" on the record for the whole of v1. ADR-0023 settles it in a
-third direction and retires both statements.
+HTTP/2 long-poll" on the record for the whole of v1. ADR-0023 settled it in a
+third direction and retired both statements.
 
 ## The decided transport (ADR-0023)
 
@@ -43,35 +48,49 @@ mapping and its frozen fixtures; only the frame that carries it changes. The
 three-method byte-frame pipe, which is where a future P2P or WebTransport path
 re-enters.
 
-## WebSocket (current implementation, being replaced)
+## The routes, as built
 
-- Bidirectional, low-latency, runs everywhere TLS does.
-- Used by every client surface that syncs today: macOS, CLI, and the e2e suite.
-- Dialed by `tokio-tungstenite`, which leaves the workspace with the WebSocket.
+Five, all inside the authoritative OpenAPI document because `kynos` generates it
+from the handlers themselves:
 
-**Keepalive is not implemented.** A `0x0C Ping` / `0x0D Pong` pair exists in the
-message catalog and both sides *answer* one, but **neither side ever sends one
-unprompted**: there is no 30 s ping timer and no 90 s idle close anywhere in
-`ws.rs` or the sync driver. The only deadline on a server-side session is
-token expiry, whose `select!` arm ends an idle session with
-`AUTH_TOKEN_EXPIRED` when its bearer ages out — that is a credential check, not
-a liveness check. A dead peer holding a valid token therefore keeps a session
-until the token expires. Under ADR-0023 liveness becomes SSE comment
-heartbeats, so this gap is closed by the migration rather than by adding a
-timer to a transport being removed.
+| Route | Purpose |
+|---|---|
+| `POST /api/v1/sync/session` | open a session; negotiate versions and capabilities |
+| `POST /api/v1/sync/subscribe` | declare the streams this session wants |
+| `GET /api/v1/sync/events` | the `text/event-stream` fan-out |
+| `POST /api/v1/sync/ops` | upstream ops, answered with a typed `Ack` |
+| `POST /api/v1/sync/session/refresh` | credential renewal |
 
-**Per-platform notes** (as built / as intended):
+`Hello::negotiate` in `crates/sunrise-wire-protocol/src/negotiation.rs` keeps its
+rules, its error mapping and its frozen fixtures unchanged; only the frame that
+carries it moved. The `Transport` trait in `sunrise-sync` also keeps its purpose
+— a three-method byte-frame pipe, which is where a future P2P or WebTransport
+path would re-enter.
+
+**Keepalive is implemented, and it is a comment rather than a frame.** The
+stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
+(`crates/sunrise-server/src/api/sync.rs:64-69`, `:570-574`). The `0x0C Ping` /
+`0x0D Pong` pair still exists in the message catalog and both sides still answer
+one, but neither sends one unprompted: a comment does the same job — stopping an
+intermediary from reaping an idle connection — with no frame type and nothing
+for the client to answer. `SseTransport` drops incoming comments before they
+reach the driver (`sse.rs:223-244`).
+
+Earlier revisions of this page said keepalive was not implemented and that a
+dead peer holding a valid token would hold a session until the token expired.
+The migration closed that, exactly as the page predicted it would.
+
+**Per-platform notes:**
 
 | Platform | Library / API |
 |---|---|
-| Rust core (macOS, CLI) | `tokio-tungstenite` |
-| iOS UI layer | `URLSessionWebSocketTask` if needed for background; otherwise core handles |
-| Android UI layer | `OkHttp` WebSocket if needed; otherwise core handles |
-| Web | Browser WebSocket |
+| Rust core (macOS, iOS, CLI) | `hyper` + `hyper-rustls`, framed by `SseTransport` |
+| Web | Browser `EventSource` — deferred with the client itself ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
+| Android | Deferred; no client exists |
 
 ## Reconnect on failure
 
-On connection failure, exponential backoff with jitter: start at **500 ms**, cap at **60 s**, jitter ±20%. "Connection failure" includes TLS handshake, WebSocket upgrade, or `HelloAck` failing within 30 s. The push wakeup signal (below) and OS network-change events trigger an immediate retry attempt.
+On connection failure, exponential backoff with jitter: start at **500 ms**, cap at **60 s**, jitter ±20%. "Connection failure" includes TLS handshake, session open, or `HelloAck` failing within 30 s. The schedule is `Backoff` in `crates/sunrise-sync/src/backoff.rs`, which takes its jitter as an injected `[0, 1]` value rather than sampling ambient randomness — the determinism gate in CI forbids the latter. The push wakeup signal (below) and OS network-change events trigger an immediate retry attempt.
 
 ## Push wakeup
 
@@ -89,7 +108,7 @@ Push is *not a transport*. Push is an out-of-band wakeup: the server sends a con
 
 Earlier revisions of this page said all pairing is QR-over-server. **It is not,
 and the relay has no part in pairing at all.** There is no pairing route in
-`crates/sunrise-server/src/routes/`, and capability bit 4 `SRV_RELAY_PAIR`
+`crates/sunrise-server/src/api/`, and capability bit 4 `SRV_RELAY_PAIR`
 ("server forwards Noise-XX pairing transport") is defined in
 `crates/sunrise-wire-protocol/src/capability.rs` and **never advertised** — the
 server's `Hello` response sets only `REQUIRED_CLIENT_BITS |

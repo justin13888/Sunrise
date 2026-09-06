@@ -12,15 +12,15 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 2. **Push fanout.** Wakes a device to pull when an op is queued for it.
 3. **Encrypted blob storage.** Attachments larger than the op-log payload limit are stored as encrypted blobs; the server holds them but cannot read them.
 4. **Authentication for sync.** Verifies an OIDC access token (issued by a separate IdP) plus a registered device ID. See [`../06-server/auth.md`](../06-server/auth.md).
-5. **Rate limiting & abuse prevention.** Per-account quotas to keep the system viable.
-6. **Coordination for sharing.** Invites, key-exchange envelopes between identities (the keys themselves are wrapped end-to-end).
-7. **Account/billing surface.** Email + payment for managed cloud users. Self-hosted servers can omit billing.
+5. **Fixed request and size limits.** Anti-DoS bounds that need no per-account state: request body, blob chunk/count/size, relay-log retention. There are no per-account quotas — [ADR-0027](../11-adr/0027-v1-self-host-first.md).
+6. **Coordination for sharing — post-v1.** Invites and key-exchange envelopes between identities (the keys themselves are wrapped end-to-end). Nothing implements this; sharing is deferred ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a), [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5).
 
 ## What the server explicitly does *not* do
 
 - It does not see plaintext content. Ever.
 - It does not see derived data (search indexes, summaries, embeddings) — those are computed on devices.
 - It does not enforce business rules on content. It treats ops as opaque, signed, ordered ciphertext.
+- It does not evaluate a role, a grant, a revocation or an expiry. Every such check is a signature check performed by a *receiving client* against a record in that client's own vault. Where a spec says "the server also checks", it is wrong; the relay cannot reach the grant, the cert or the payload. (The one revocation the relay does act on is its own `devices.revoked` flag, which gates authentication — account metadata it already holds, not a content decision.)
 - It does not generate notifications based on content. Push payloads are wake-ups only — content is fetched and decrypted on device.
 - It does not run integrations on the user's behalf with their cleartext credentials. Integration tokens for third-party APIs (Google Calendar, etc.) live in the encrypted vault and run *on device*, with the server never holding them. (Exception: optional server-side cron for stable-rotated integrations is **out of scope for v1**.)
 
@@ -49,27 +49,45 @@ The rule "the server never sees plaintext" is enforced by the type system, not b
 Two limits on that, stated rather than left to be discovered:
 
 - **The relay's own SQLite database is not encrypted.** The client vault is SQLCipher-keyed by `BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`; the server calls plain `Connection::open` with no `PRAGMA key`. Everything in the metadata list above sits in a file an operator or a backup can read directly. What that file does *not* contain is anything openable — the frames in it are ciphertext the server has no key for.
-- **The blob store content-addresses over ciphertext.** `blob_id` is `blb_` plus a BLAKE3 hash of the *uploaded bytes* (`crates/sunrise-server/src/routes/blobs.rs`), so the server can tell that two uploads are byte-identical. That is deliberate and harmless in practice: each attachment gets a fresh random per-blob key, so two identical plaintexts encrypt to different ciphertext and do not collide. The server learns "these two uploads are the same ciphertext", never "these two attachments are the same file".
+- **The blob store content-addresses over ciphertext.** `blob_id` is `blb_` plus the first 16 bytes of a BLAKE3 hash of the *uploaded bytes*, which `finalize` recomputes from disk rather than trusting the client's claim (`crates/sunrise-server/src/api/blobs.rs`), so the server can tell that two uploads are byte-identical. That is deliberate and harmless in practice: each attachment gets a fresh random per-blob key, so two identical plaintexts encrypt to different ciphertext and do not collide. The server learns "these two uploads are the same ciphertext", never "these two attachments are the same file".
 
 ## Self-hosted vs managed distinction
 
-The Sunrise server has **two deployment profiles**:
+**v1 ships one profile: self-hosted.** Managed cloud is post-v1
+([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
-| Profile | Auth | Billing | Push | Geo |
-|---|---|---|---|---|
-| Managed | Sunrise-operated OIDC issuer | Stripe | APNs/FCM via shared cert | Global |
-| Self-hosted | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Off | Optional, operator's own certs | Wherever the operator runs |
+| Profile | Auth | Push | Geo |
+|---|---|---|---|
+| Self-hosted (v1) | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Optional, operator's own certs | Wherever the operator runs |
+| Managed (post-v1) | Sunrise-operated OIDC issuer | APNs/FCM via shared cert | Global |
 
-A user on a self-hosted server may still federate with managed users for sharing. The sharing protocol is operator-agnostic.
+### Cross-server delivery
 
-### Cross-server delivery (managed ↔ self-hosted)
+This is the single answer; other specs point here rather than restating it.
 
-v1 ships with a single rule: **the owner's server is authoritative for relay**. If a user on managed cloud shares a Stream with a user on a self-hosted instance, both clients connect to the **owner's** server. The non-owner side authenticates to the owner's server using a relay-only token issued at share-grant time.
+**Cross-server delivery is not in v1.** Sharing itself is deferred
+([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a),
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5), so there is no
+cross-server case to answer yet.
 
-- The `share_grant` envelope carries `relay_url` (the owner's server) and `relay_token` (a short-lived bearer scoped to that share).
-- The recipient's client adds an outbound connection to `relay_url` in addition to its own server connection. Quotas are charged to the owner.
-- If the owner's server is unreachable, the share is in-progress unavailable (no peer-to-peer fallback in v1). UI surfaces `"Stream unavailable — owner's server is offline"`.
-- Federation between independent servers is explicitly out of scope for v1.
+When sharing lands, the rule is that **the owner's relay is authoritative**: the
+recipient's client adds an outbound connection to it alongside its own relay
+connection, and there is no federation between independent relays. If the owner's
+relay is unreachable the shared Stream is unavailable; there is no peer-to-peer
+fallback.
+
+The grant will have to carry the owner's relay URL — **not yet a field of
+`ShareGrantPayload`**, whose seven fields
+([`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)`:35-46`)
+are `stream_id`, `epoch`, `recipient_identity_id_bytes`, `role`, `expires_at`,
+`hpke_ct` and `identity_sig` — when sharing is designed.
+
+What the credentials for that outbound connection are is **not decided**, and
+cannot be until the grant model exists. Earlier revisions specified a
+`relay_token` short-lived bearer minted at grant time; nothing implements it, no
+route accepts it, and designing an authentication token before the thing it
+authorizes is the wrong order. It is removed rather than left standing as a
+contract.
 
 ## Rationale
 

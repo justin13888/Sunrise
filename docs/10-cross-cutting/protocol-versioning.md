@@ -72,7 +72,7 @@ redefinition. The change itself is required for correctness — an id-only delet
 cannot converge under entity-level LWW
 ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
 
-`STORAGE_V` is per-device and never appears on the wire. It is `14`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. `0014_stream_sort_order.sql` is the first migration appended after the reset, so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
+`STORAGE_V` is per-device and never appears on the wire. It is `16`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. Three migrations have been appended since the reset — `0014_stream_sort_order.sql`, `0015_entity_extra_columns.sql` and `0016_stream_description_and_default_context.sql` — so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
 
 ---
 
@@ -158,7 +158,7 @@ Server bits:
 | 3 | `SRV_BLOB_PRESIGN` | Server signs URLs for blob upload/download. |
 | 4 | `SRV_RELAY_PAIR` | Server forwards Noise-XX pairing transport. |
 | 5 | `SRV_INTEGRATION_GCAL` | Server provides Google Calendar OAuth proxy. |
-| 6 | `SRV_BILLING_STRIPE` | Server enforces Stripe-backed quotas. |
+| 6 | *(reserved)* | Was `SRV_BILLING_STRIPE`, "server enforces Stripe-backed quotas". ADR-0027 takes quotas out of v1, so the **name is retired and the position is not**: a peer that ever set bit 6 asserted the Stripe meaning, and reissuing the bit would make that honest claim read as a new one. Nothing above it is renumbered. |
 | 7 | `SRV_DIAGNOSTIC_UPLOAD` | Server accepts opt-in diagnostic bundles. |
 | 8 | `SRV_TOKEN_REFRESH` | Server accepts `0x12 RefreshToken` mid-session and answers `0x13 RefreshTokenAck`. |
 
@@ -212,7 +212,22 @@ For `WIRE_PROTO_V`:
    - Client release notes call out the protocol bump.
 3. Frame headers and the magic prefix are immutable. A new wire-protocol generation that needs to change them gets a new magic and is treated as a separate transport (clients dial both, server listens on both).
 
-The negotiated `wire_proto` is logged on every session in field `proto.wire` — `srv.ws.connect` in `crates/sunrise-server/src/ws.rs` emits it as `wire_v` alongside `crypto_v`. The per-version metric that would let an operator read the distribution without parsing logs is target state ([§11](#11-logging-and-metrics)).
+The negotiated `wire_proto` is **not** logged per session, and no per-session
+record carries it. `wire_v` / `doc_v` / `crypto_v` appear once per process, on
+the `srv.start` line, which is the trade `crates/sunrise-log/src/proto.rs`
+records: restating three constants that cannot change while the process lives
+would cost roughly 50 bytes on every record to say what one line already says.
+`srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries
+`account_h` and nothing about the protocol.
+
+For today's server that loses nothing, because the server offers exactly one
+wire version — `Hello::negotiate` is called with `&[WIRE_PROTO_V]` — so the
+negotiated value is the compiled one and the startup line already reports it.
+It stops being sufficient the day the server lists two, which is the same day
+§6's deprecation window needs measuring. The per-version metric that would let
+an operator read the distribution without parsing logs is target state
+([§11](#11-logging-and-metrics)), and it is what should land with the second
+version rather than after it.
 
 ---
 
@@ -252,7 +267,7 @@ The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
   - All Streams the user owns have rotated past the old suite (client surfaces the list).
   - At least 12 months since the new suite shipped to all client platforms.
   - A superseding ADR.
-- The negotiated suite is logged as `proto.crypto`.
+- The negotiated suite is **not logged anywhere**. Negotiation is per session (`max_intersection` in `crates/sunrise-wire-protocol/src/negotiation.rs`), and its result is discarded for observability purposes: `srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries `account_h` and nothing about the suite. The `crypto_v` on the startup line is a different number — the binary's compiled `CRYPTO_SUITE_V`, what this process *supports*, not what any session *chose*. Nor do the metrics cover it: `sunrise_sync_session_total` is incremented once per session but is unlabelled. The registry's `render` passes a name containing `{` through verbatim, so a labelled series is expressible as a string, but nothing constructs one — the single `incr` site at `api/sync.rs` would have to build the name (see [§11](#11-logging-and-metrics)).
 
 There is no per-session crypto-suite mixing. A session uses exactly one suite for transport-level handshake; ops within the session may carry envelopes encrypted under any suite the recipient supports.
 
@@ -287,7 +302,14 @@ All version-mismatch errors are **permanent** in the sense of [error-handling](.
 
 ## 11. Logging and metrics
 
-Every log record includes `proto: { wire, doc, crypto }` (see [logging.md](./logging.md) §3).
+`proto` is **not** on every log record. `wire_v` / `doc_v` / `crypto_v` are
+emitted once per process on the binary's startup event (`srv.start` /
+`ui.start`) — [logging.md](./logging.md) §3 records the change under *Dropped
+from the original schema*, and [§6](#6-wire-protocol-evolution-rules) above
+gives the trade: restating three constants that cannot change while the process
+lives would cost roughly 50 bytes on every line to say what one line already
+says. Correlating a later record with them is a join on the process, not a
+field read.
 
 **Server-side metrics as implemented.** `crates/sunrise-server/src/metrics.rs`
 is an in-process `BTreeMap<String, AtomicU64>` behind a mutex, rendered as
@@ -295,14 +317,22 @@ Prometheus text at `/metrics`. It has one operation — increment a counter by
 name — and therefore **no labels, no histograms and no gauges**. Every series it
 emits is a bare counter name:
 
+<!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
+     grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
+     Last extracted: 310e377 -->
+
 ```
-sunrise_sync_token_expired_total       sunrise_sync_token_refreshed_total
-sunrise_sync_unauthenticated_total     sunrise_relay_append_failed_total
-sunrise_relay_cursor_gap_total         sunrise_device_sig_rejected_total
-sunrise_account_create_total           sunrise_devices_{list,register,revoke}_total
+sunrise_sync_{negotiate_refused,session,refresh,stream}_total
+sunrise_relay_append_failed_total       sunrise_relay_cursor_gap_total
+sunrise_device_sig_rejected_total       sunrise_account_create_total
+sunrise_devices_{list,register,revoke}_total
 sunrise_blob_{init,chunk,finalize,fetch}_total
-sunrise_blob_hash_mismatch_total       sunrise_push_{apns,fcm,web}_total
+sunrise_blob_hash_mismatch_total
+sunrise_push_register_total             sunrise_push_{apns,fcm,web}_total
 ```
+
+Twenty names. The full list with its provenance lives in
+[`../06-server/observability.md`](../06-server/observability.md) §Metrics.
 
 The registry's `render` passes a name containing `{` through verbatim, so a
 labelled series is *expressible* as a string, but nothing constructs one.

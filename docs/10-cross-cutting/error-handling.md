@@ -11,8 +11,8 @@ Errors flow up the stack with a stable code at every boundary. UIs translate cod
 A finite enum across the system. Examples:
 
 - `AUTH_DEVICE_REVOKED`
+- `AUTH_DEVICE_SIG_INVALID`
 - `AUTH_TOKEN_INVALID`
-- `STORAGE_QUOTA_EXCEEDED`
 - `STORAGE_VAULT_LOCKED`
 - `SYNC_PROTOCOL_VERSION_MISMATCH`
 - `SYNC_TAMPER_DETECTED`
@@ -32,6 +32,7 @@ Codes are stable across versions; new codes can be added but never repurposed.
 - The Rust enum at `crates/sunrise-error/src/codes.rs` and the TypeScript enum at `packages/sunrise-error-ts/src/codes.ts` are **generated** mirrors. Hand-editing either generated file is a CI failure.
 - Codes are added at minor-version boundaries; never reused, never renamed.
 - Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
+- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of v1; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.
 - An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
 ## Error envelope (core → UI)
@@ -77,7 +78,7 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 writes always carry an idempotency key (`batch_id`), so they are eligible; writes without an idempotency key never auto-retry.
+Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
 

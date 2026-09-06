@@ -92,9 +92,9 @@ simply passes `true`.
 
 Fallback when the primary goes quiet: if the primary push device hasn't checked in for 1 hour, ALL active devices receive the push. Users may see duplicates briefly; they can mute on devices that don't need them. This is intentionally simple — no per-device duplicate-tolerance setting, no first-to-fire suppression op.
 
-## Notification channels (Android)
+## Notification channels (Android — post-v1)
 
-Channels per Stream + per category. User-managed in OS settings.
+Android is post-v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4). When it lands: channels per Stream + per category, user-managed in OS settings.
 
 ## Notification settings UI
 
@@ -107,5 +107,5 @@ A `Settings → Notifications` page that lets the user:
 
 ## Testing
 
-- Shipped E2E test that verifies a reminder set 1 minute in the future fires within ±5s.
+- *Target state:* an end-to-end test that verifies a reminder set 1 minute in the future fires within ±5 s. No such test exists. What is covered is the scheduling arithmetic at unit level (`a_task_reminder_fires_at_its_scheduled_time_by_default`, `crates/sunrise-domain/src/notify.rs`) — when a reminder is *due*, not that anything delivers it.
 - Manual regression check on each iOS/Android major version (notification APIs change frequently).

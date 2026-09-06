@@ -12,11 +12,13 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 > There is **no** Postgres, S3, Redis, pub/sub, or push delivery anywhere in
 > `crates/` — no `sqlx`, `aws-sdk-s3`, `apns2`, `fcm`, or `web-push` appears in
 > any `Cargo.toml`. The managed and scale-out sections below are design targets;
-> each unbuilt piece is marked. Two accepted ADRs move this document's ground:
-> [ADR-0021](../11-adr/0021-kynos-openapi-server.md) replaces the hand-written
+> each unbuilt piece is marked. Two accepted ADRs moved this document's ground
+> and both have landed:
+> [ADR-0021](../11-adr/0021-kynos-openapi-server.md) replaced the hand-written
 > `axum` routing with `kynos` and a generated, authoritative OpenAPI 3.2
-> document, and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaces the
-> `/sync` WebSocket with SSE downstream plus typed `POST` upstream.
+> document, and [ADR-0023](../11-adr/0023-sse-sync-transport.md) replaced the
+> `/sync` WebSocket with SSE downstream plus typed `POST` upstream. Neither
+> `axum` nor `tokio-tungstenite` resolves in `Cargo.lock` any more.
 
 ## Responsibilities (recap)
 
@@ -27,8 +29,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 | Store encrypted op log + blobs durably | [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 | Wake devices via push when ops arrive while they're offline — **not implemented** | [`push-notifications.md`](./push-notifications.md) |
 | Handle account lifecycle — create only; **recovery-blob fetch and account deletion have no route** | [`api.md`](./api.md), [`auth.md`](./auth.md) |
-| Enforce quotas and abuse protection — **not implemented** | [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md) |
-| (Managed only) Billing — **not implemented** | [`billing.md`](./billing.md) |
+| Enforce fixed operator limits — request body size, blob chunk/count/size ceilings, relay-log retention | [`api.md`](./api.md), [`relay-and-blob-storage.md`](./relay-and-blob-storage.md) |
 
 ## Non-responsibilities
 
@@ -43,14 +44,16 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 A single server binary (`sunrise-server`) listens on one socket (`[server] listen`,
 default `127.0.0.1:8443`), serving:
 
-- WebSocket at `/sync` — primary sync transport, mounted by `ws::router()`.
-  The binary terminates no TLS of its own; a `[tls]` config block is rejected
-  by the parser, so `wss://` means a reverse proxy in front. Superseded by
-  [ADR-0023](../11-adr/0023-sse-sync-transport.md).
-- REST under `/api/v1/` — account lifecycle, devices, blobs, push-token
+- The sync surface under `/api/v1/sync/` — `session`, `subscribe`, `ops` and
+  `session/refresh` as typed `POST`s, and `events` as the `text/event-stream`
+  fan-out ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). The binary
+  terminates no TLS of its own; a `[tls]` config block is rejected by the
+  parser, so `https://` means a reverse proxy in front.
+- The rest of `/api/v1/` — account lifecycle, devices, blobs, push-token
   registration, `meta`, `health`.
-- `/metrics` — Prometheus text exposition, mounted at the router **root** by
-  `metrics::router()`.
+- `/metrics` — Prometheus text exposition, mounted only when the listener is
+  loopback; a public bind serves `404` there and logs
+  `srv.start.metrics_withheld`.
 
 There is no admin HTTP surface: nothing under `/api/v1/admin/` is routed.
 
@@ -66,7 +69,7 @@ Stateless except for:
 
 | Layer | Choice | Built |
 |---|---|---|
-| Server core | Rust, `axum` (WebSocket via `axum::extract::ws`; `tokio-tungstenite` is a dev-dependency the tests drive as a client) | yes |
+| Server core | Rust, `kynos` over `hyper` ([ADR-0021](../11-adr/0021-kynos-openapi-server.md)); the sync stream is `kynos::response::stream::sse`, and the routing, the security schemes and the OpenAPI 3.2 document all come off the handlers | yes |
 | DB access | `rusqlite` (workspace feature set `bundled-sqlcipher`, `blob`, `trace`) | yes |
 | Object storage | `sunrise_storage::BlobStore` — chunk files on the local filesystem | yes |
 | Push | `push::PushProvider` trait plus `push::LoggingProvider`, which increments a counter and returns `Ok(())` | trait only |
@@ -86,7 +89,7 @@ instance, and no external store to share. It records the intended shape.
 
 The server scales horizontally. Each instance:
 
-- Holds active WebSocket connections.
+- Holds the open event streams.
 - Reads/writes Postgres for op metadata.
 - Reads/writes S3 for op envelopes (and blobs).
 - Publishes "new op" notifications to a shared topic (Redis pub/sub or NATS) so other instances holding the receiving device's connection can fan out.
@@ -121,6 +124,6 @@ Persisted server-side structures (recovery blobs at rest; snapshot blobs the ser
 
 ## Deferred to v2
 
-- **Family plan** (group quotas, multi-identity sharing under one subscription). v1 ships Free and Pro tiers only.
+- **Managed cloud, plan tiers and billing** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). v1 ships one server shape and has no tiers.
 - Cross-server federation.
-- Foreground-service "always-on" sync on Android (per-device opt-in; v1 accepts occasional Doze-induced latency).
+- Foreground-service "always-on" sync on Android — moot for v1, which ships no Android client at all ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4).

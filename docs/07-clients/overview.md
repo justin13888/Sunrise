@@ -4,20 +4,24 @@ status: accepted
 
 # Clients — Overview
 
-Sunrise has **one** graphical client and **one** headless one. Both consume the
-same shared core ([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)),
+Sunrise has **two** graphical clients — macOS and iOS / iPadOS, compiled from
+one shared view layer in `apps/apple` — and **one** headless one. All three
+consume the same shared core ([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)),
 so they cannot disagree about what a task is or when a routine fires.
 
 | Client | Tech | Status | Spec |
 |---|---|---|---|
 | macOS | Swift + SwiftUI, core via UniFFI | **v1** | [`desktop.md`](./desktop.md) |
 | CLI | Rust, core linked in-process | **v1** | this page, §CLI |
-| iOS / iPadOS | Swift + SwiftUI + UniFFI core | deferred | [`mobile-ios.md`](./mobile-ios.md) |
+| iOS / iPadOS | Swift + SwiftUI + UniFFI core | **v1** at SHOULD level ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | [`mobile-ios.md`](./mobile-ios.md) |
 | Android | Kotlin + Jetpack Compose + UniFFI core | deferred | [`mobile-android.md`](./mobile-android.md) |
 | Web (PWA) | React + WASM core | deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | [`web.md`](./web.md) |
 | Terminal (TUI) | — | **removed** ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)) | — |
 
-"Deferred" means specified, not scheduled, and carrying no MUSTs. See
+"Deferred" means specified, not scheduled, and carrying no MUSTs — that is
+Android and Web. macOS and the CLI carry the v1 MUSTs. The remaining client is
+neither: iOS / iPadOS ships, and carries SHOULDs rather than MUSTs until a
+release is cut ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). See
 [`parity-matrix.md`](./parity-matrix.md).
 
 Windows and Linux desktop were specified in an earlier revision of this
@@ -196,8 +200,10 @@ quality. Compose Multiplatform remains the strongest contender for a v2.
 |---|---|
 | macOS | Direct signed & notarized `.dmg`; Mac App Store under evaluation (sandboxing costs global-hotkey reliability — see [`desktop.md`](./desktop.md)) |
 | CLI | Cargo, Homebrew, prebuilt binaries on GitHub releases |
+| iOS / iPadOS | TestFlight → App Store when a release is cut. Today it installs ad-hoc on the simulator (`CODE_SIGN_IDENTITY=-`) via `mise run ios-run`; ad-hoc signing is not optional, because iOS gates the Keychain on an application-identifier entitlement only a signed binary carries |
 
-Channels for the deferred clients are decided when they are scheduled.
+Channels for the deferred clients (Android and Web) are decided when they are
+scheduled.
 
 ## Versioning
 

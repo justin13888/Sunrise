@@ -11,9 +11,18 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > nothing in between exists: **zero ops, zero commands, zero queries, zero
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
-> `EntityKind::Note` explicitly. What *is* live is the `body` **field** on
-> Task, Stream and Routine — which is a `NoteBody`, a different thing from a
-> `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
+> `EntityKind::Note`, though not by name: it falls through to the generic
+> refusal, the wildcard arm at `crates/sunrise-core/src/engine.rs:2504-2507`
+> ("EntityById not supported for kind {:?} in v1"). What *is* live is `NoteBody`
+> as a **field**, reached three ways — `Task.body`
+> (`crates/sunrise-domain/src/task.rs:97`), `Stream.description`
+> (`stream.rs:124`, given a column by migration
+> `0016_stream_description_and_default_context.sql`) and
+> `Routine.template.body`, which is a field of `TaskTemplate`
+> (`routine.rs:68-88`, `body` at `:87`) reached through `Routine.template`
+> (`routine.rs:149`) rather than a field of `Routine` itself. Two of the three
+> are not called `body` at the path you would guess. A `NoteBody` field is a
+> different thing from a `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
 > free-standing entity while keeping notes-as-a-field a v1 MUST, and kept the
 > struct and the table deliberately rather than deleting them. See also
 > [`../implementation/overview.md`](../implementation/overview.md).
@@ -68,7 +77,7 @@ Divider   = {kind: "hr"}
 Inline =
       {text: text, marks?: [* Mark]}
     / {kind: "link", href: text, label: text}
-    / {kind: "ref", ref: tstr}        ; in-app entity link
+    / {kind: "ref", ref: entity-ref}      ; in-app entity link
     / {kind: "mention", person: tstr}
 
 Mark = "bold" / "italic" / "underline" / "strike" / "code"
@@ -111,7 +120,7 @@ up names this file specifically. Character-level merge is the target state.
 |---|---|
 | macOS | SwiftUI text editing, schema-locked to NoteBody |
 | Web (deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
-| iOS (deferred) | Native textview with custom toolbar |
+| iOS / iPadOS | The same SwiftUI `NoteBodyEditor` the Mac uses, schema-locked to NoteBody. The one deliberate difference is the checklist tick: macOS draws `.checkbox`, which iOS does not have, and iOS's default `Toggle` is a switch — so it draws a circle that fills instead, because a switch says "this setting is on" where a checklist row means "this is done" |
 | Android (deferred) | Native EditText with custom toolbar |
 | `sunrise` CLI | Plain text only; no structured-body editing |
 
@@ -119,17 +128,36 @@ All editors emit and consume the same `NoteBody` bytes.
 
 ## In-app references
 
-`{kind: "ref", ref: "tsk_…"}` renders as the target entity's title; clicking navigates. References are **scrubbed at egress** when sharing the parent Stream with someone who doesn't have access to the referenced entity (becomes `{kind: "redacted"}`).
+`{kind: "ref", ref: "tsk_…"}` renders as the target entity's title; clicking
+navigates. References are **scrubbed at egress** when sharing the parent Stream
+with someone who does not have access to the referenced entity.
 
-The redacted form is:
+This file is the single definition of both shapes, and **these are shipped
+bytes, not a proposal.** `NoteBody` is live on `Task.body`,
+`Stream.description` and `Routine.template.body` (banner above), and the codec in `crates/sunrise-domain/src/note_body.rs`
+encodes these exact map keys (`:470,:474-481`) and decodes them (`:670-679`).
+Every other spec that shows a reference or a redaction —
+[`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
+§Egress scrubbing, [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)
+§Scrubbing implementation, [`../01-architecture/threat-model.md`](../01-architecture/threat-model.md)
+§A5 — points here rather than restating it. What is retired is the `sr://` URI
+form, which existed in exactly one file and matched no encoder.
 
-```cbor
-{
-  kind: "redacted",
-  reason: "private_ref" | "external_account" | "deleted_entity",
-  placeholder_text: "(redacted)"   ; used by editors that need a visible token
+```cddl
+Ref      = {kind: "ref", ref: entity-ref}
+Redacted = {
+    kind:             "redacted",
+    reason:           "private_ref" / "external_account" / "deleted_entity",
+    placeholder_text: tstr,     ; visible token for editors that need one
 }
 ```
+
+**The map key is `ref`, not `target`.** The Rust *field* is named `target`
+(`Inline::Ref { target }`), which is why the two spellings circulate; the byte on
+the wire is `"ref"`. Likewise the key is `placeholder_text`, not `placeholder`.
+`reason` is carried as text rather than a closed enum, so a decoder that meets a
+reason it does not know still renders the placeholder rather than dropping the
+node.
 
 The original target id is **not** preserved in the redacted form sent to a recipient who shouldn't see it.
 

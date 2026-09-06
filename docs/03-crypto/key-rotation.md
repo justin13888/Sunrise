@@ -51,6 +51,22 @@ Ops signed by the old device key stand until that op is emitted; after it, every
 
 **Why rotate-now-revoke-later rather than a forward-dated cut.** A future-dated cut needs an emitter-chosen field in the payload, and that field is the whole of a revocation's meaning — so every bound on it has to be right, and none of them were (see [`DeviceRevokePayload`](../../crates/sunrise-core/src/control_op.rs)). Deferring the *op* instead needs no field, no bound and no new failure mode: the window is a local timer on the rotating device, and if that device never emits the op the old key simply stays valid, which is exactly the state it was in before the rotation started. It also means the overlap is what the rotating device actually observed rather than what it predicted 24 hours earlier.
 
+**Where each half is enforced.** The relay's gate and the vault's are different
+mechanisms and the spec has previously conflated them. At the relay, revocation
+arrives through the account API and never through the op: `DELETE
+/api/v1/devices/{device_id}` sets `revoked = 1` on the relay's own `devices` row
+(`crates/sunrise-server/src/store.rs`), `Store::active_device` filters on it,
+and that refuses every subsequent signed request
+(`crates/sunrise-server/src/api/signed.rs`) and ends a live SSE session with
+`AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync.rs`). It is a
+time-less binary flag on relay metadata the relay already holds, not a content
+check, and it refuses the *device's credential* rather than ops signed by a
+superseded key. In the vault, the matching check would be the receiving client's
+— and it is **not built**: a replica today applies an op from a revoked device
+like any other ([#82](https://github.com/justin13888/Sunrise/issues/82)). The
+relay cannot make that check for it: it does not open envelopes, and
+`device_revoke` is an inner op sealed under the vault-meta Stream key.
+
 ## Stream key rotation (medium)
 
 **Triggers.**
@@ -76,7 +92,7 @@ The op log for a Stream may contain ops from multiple epochs interleaved (a slow
 ### Slow peers and out-of-order epochs
 
 - A device MAY emit ops under any epoch for which it holds the key.
-- The relay accepts ops from any epoch known to it; epoch is part of the envelope and is not validated against the "current" epoch.
+- The relay does not look at the epoch at all — it knows of none. Epoch sits inside the sealed payload, and the only envelope type the relay can reach is `EnvelopeHeader {stream_id, device_id, seq}` ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md) §Why the boundary holds structurally). Nothing is validated against a "current" epoch because nothing on the relay could be.
 - Receivers maintain a per-`stream_id` decryption-key cache keyed by epoch; ops are decrypted on receipt with the matching epoch's key.
 - Out-of-order arrival across epochs: ops are applied in arrival order regardless of epoch; the LWW comparison key `(hlc, device_id, seq)` resolves any reordering, so arrival order does not change the converged state. There is **no per-epoch barrier**.
 - The owner garbage-collects an old epoch's key only when **all** active devices' cursors have advanced past the last op signed under it (same rule as blob GC).

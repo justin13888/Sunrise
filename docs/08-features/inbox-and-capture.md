@@ -60,18 +60,23 @@ Inbox view characteristics:
 
 ## Capture from outside the app
 
-| Source | Result |
-|---|---|
-| Desktop global hotkey | Capture window |
-| iOS Lock Screen widget | Capture sheet |
-| iOS Share Sheet | Task with attached link/file/text |
-| iOS Siri intent | Voice → parser → task |
-| Android Quick Settings tile | Capture sheet |
-| Android share intent | Task with attached link/file/text |
-| Android Tasker | Task with arbitrary fields |
-| Web bookmarklet / extension | Capture sheet pre-filled |
-| CLI subcommand | One-shot commit |
-| Email-to-Sunrise | (deferred to v2) |
+The **Status** column is measured against the tree, not promised: this table
+is part specification and part description, and which half a row is in matters
+more than the row itself.
+
+| Source | Result | Status |
+|---|---|---|
+| macOS global hotkey | Capture window | **live** — `RegisterEventHotKey` ⌘⇧N, plus the menu bar item |
+| Apple URL scheme (`sunrise://capture?text=`) | Capture sheet, pre-filled | **live** on both Apple apps; each registers the scheme in its own `info:` block |
+| iOS Siri / Shortcuts | Voice → parser → task | **live** — `CaptureTaskIntent` behind the **Capture Task** App Shortcut, shared with macOS |
+| iOS Lock Screen widget | Capture sheet | **not built** — no `WidgetKit` in `apps/apple` and no widget extension target ([#14](https://github.com/justin13888/Sunrise/issues/14)) |
+| iOS Share Sheet | Task with attached link/file/text | **not built** — no share extension target ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
+| Android Quick Settings tile | Capture sheet | **not built** — deferred client |
+| Android share intent | Task with attached link/file/text | **not built** — deferred client |
+| Android Tasker | Task with arbitrary fields | **not built** — deferred client |
+| Web bookmarklet / extension | Capture sheet pre-filled | **not built** — deferred client |
+| CLI subcommand | One-shot commit | **live** — `sunrise capture`, the same parser |
+| Email-to-Sunrise | — | deferred to v2 |
 
 ## Performance constraints
 
@@ -81,4 +86,4 @@ Inbox view characteristics:
 
 ## States
 
-Empty / loading / error / conflict states follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract).
+Empty / loading / error states follow the three-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#three-state-view-contract).

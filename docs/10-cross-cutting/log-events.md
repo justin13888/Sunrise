@@ -9,9 +9,18 @@ catalogue: adding a new `ev` value requires a one-line entry here so analysts
 can `grep` for meaning.
 
 That rule is **enforced**, not aspirational.
-`crates/sunrise-log/tests/event_catalog.rs` scans every `ev = "…"` literal in
-`crates/*/src` and fails if one is missing from this file, or if a name in
-either place violates the grammar in [`logging.md`](./logging.md) §3.
+`crates/sunrise-log/tests/event_catalog.rs` reads every `tracing::*!` call in
+shipped source and fails if an event it emits is missing from this file, or if
+a name in either place violates the grammar in [`logging.md`](./logging.md) §3.
+The file set is not a directory walk: it comes from `cargo metadata` plus the
+dep-info the compiler wrote, so a module reached by `#[path]`, a raw-identifier
+module and generated code under `target/` are all covered. That test's module
+doc enumerates what it does **not** see.
+
+Do not add an event name here to satisfy that test when the emission is a
+`#[cfg(test)]` unit test inside a shipped file. This catalogue is the record of
+what an operator can see in production; a test that needs an event should reuse
+a name already listed.
 
 The **Implemented** tables below are what the workspace emits today. The
 **Reserved** tables are names held for surfaces that do not log yet; they are
@@ -39,21 +48,20 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.stop.failed` | error | The server returned an error; `cause`. |
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
-| `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
-| `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present and did not check out; `reason` names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
-| `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `reason` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
-| `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
+| `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present, resolved to an active device of the account, and did not check out; `err_code` (`AUTH_DEVICE_SIG_INVALID`) and `cause`, which names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
+| `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `cause` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
 | `srv.sync.session_open` | info | A sync session was established; `account_h`. Replaces `srv.ws.connect`: ADR-0023 split the socket's one negotiation into `POST /sync/session`, so establishing a session and opening a stream are now separate events. |
-| `srv.sync.negotiate_refused` | warn | `POST /sync/session` could not agree a wire version, crypto suite or required capability; `reason`. The client receives a `400` naming the same thing, unlike the socket it replaces, where a closed connection left an operator as the only party who could diagnose it. |
+| `srv.sync.negotiate_refused` | warn | `POST /sync/session` could not agree a wire version, crypto suite or required capability; `cause`. The client receives a `400` naming the same thing, unlike the socket it replaces, where a closed connection left an operator as the only party who could diagnose it. |
 | `srv.sync.stream_open` | info | `GET /sync/events` opened; `account_h`, `resumed` (whether a `Last-Event-ID` was presented). |
 | `srv.sync.stream_closed` | info | The event stream ended, whether by the client leaving or by the server closing it. `account_h`. |
 | `srv.sync.subscribe` | debug | The session's stream set was replaced; `n_streams`. |
 | `srv.sync.device_revoked` | warn | The session's device is no longer an active row on its account; the stream is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.sync.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
 | `srv.sync.token_expired` | warn | The session's bearer passed its `exp`; the stream is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
 | `srv.sync.refreshed` | debug | A refresh verified; the session's deadline moved out with no reconnect. `account_h`. |
-| `srv.sync.refresh_rejected` | warn | A refresh token failed verification; `account_h`, `reason`. The session keeps its current credential — this is recoverable. Never the token. |
+| `srv.sync.refresh_rejected` | warn | A refresh token failed verification; `account_h`, `cause`. The session keeps its current credential — this is recoverable. Never the token. |
 | `srv.sync.refresh_identity_mismatch` | warn | A refresh token verified but names a different principal or device than the session; the session is ended. `account_h`. A session handed another user's token is not a mistake to keep serving. |
 | `srv.relay.fanout` | debug | `OpBatch` republished to a channel; `stream_h`, `n_bytes`. The relay never decrypts, so shape is all it can report. |
+| `srv.relay.batch_duplicate` | debug | A batch this channel already holds arrived again, so nothing was stored and nothing was republished; `stream_h`, `batch_id`, `first_seen_ms`. The ack carries the stored `first_seen_ms`. Debug rather than warn: a re-send is what a reconnect is *supposed* to do — the client's counter restarts per session, so it cannot know which batches landed. |
 | `srv.relay.append_failed` | error | The durable op log rejected a write, so the batch is not acked; `stream_h`, `err_code`, `cause`. The client keeps the op and retries — the one failure that must never be answered with an `Ack`. |
 | `srv.relay.replay_failed` | error | The durable op log could not be read, so the session ends without a `CaughtUp`; `stream_h`, `err_code`, `cause`. Never followed by a completeness claim the server cannot back. |
 | `srv.relay.cursor_gap` | warn | A subscriber's cursor for a device is below what the ring still holds, so the ops between are gone; `stream_h`, `device_h`, `cursor`, `evicted_through`. Recoverable but never retryable — re-subscribing cannot reproduce them. |
@@ -166,17 +174,28 @@ away from being a plaintext handle.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Reserved for v2 HTTP fallback; unused in v1 (transport is WebSocket-only per ADR-0005). |
+| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused in v1. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
-### `srv` (quota and push)
+### `srv` (auth outcome and push)
 
-Unimplemented because the features are: there is no quota enforcement and the
-only push provider is `LoggingProvider`, which increments a metric.
+Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
+the Implemented table for the whole of v1 while nothing in
+`crates/sunrise-server/src` produced either: the bearer path logs nothing on
+success, and a refusal is visible as the `srv.req.end` record's status. They are
+worth keeping as names — an operator asking "who authenticated" is a real
+question — but not as a claim about running code.
+
+`srv.quota.warning` and `srv.quota.exceeded` are **deleted rather than
+reserved**: ADR-0027 takes per-account quotas out of v1, and the codes they
+would have carried are gone from the registry with their ids burned.
+
+The push events are unimplemented because the feature is: the only provider is
+`LoggingProvider`, which increments a metric.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `srv.quota.warning` | warn | Quota soft cap reached. |
-| `srv.quota.exceeded` | warn | Quota hard cap exceeded. |
+| `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
+| `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
 | `srv.push.send.ok` | info | Push delivered; `provider`, `n_devices`. |
 | `srv.push.send.failed` | warn | Push delivery failed. |
 

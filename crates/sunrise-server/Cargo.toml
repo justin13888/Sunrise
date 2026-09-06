@@ -7,17 +7,39 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "Sunrise sync relay server (REST + WebSocket, OIDC, self-host SQLite)"
+description = "Sunrise sync relay server (REST + SSE relay, OIDC, self-host SQLite)"
 
 [lib]
 path = "src/lib.rs"
-# Upstream workaround, not a policy change. kynos 0.1.0's route macros emit a
-# `relative_uri` doc comment whose second paragraph is indented eight spaces
-# (kynos-macros/src/route/uri.rs), which rustdoc reads as an indented CODE
-# block and then tries to compile as Rust -- so every handler carrying a
-# `#[kynos::get]`/`post`/`delete` attribute produces a failing doc test full of
-# prose. This crate has no doc tests of its own (the workspace reports zero),
-# so nothing is lost by opting out until the macro fences that paragraph.
+# Upstream workaround, not a policy change. kynos 0.1.0's route macros build
+# the generated `relative_uri` doc from one `#[doc = "..."]` string literal
+# (kynos-macros-0.1.0/src/route/uri.rs:47) whose first line sits at column zero
+# and whose second paragraph is indented eight spaces. Rustdoc unindents a doc
+# fragment by its *minimum* line indent, so the column-zero first line pins
+# that minimum at zero, the eight-space paragraph survives as a four-plus-space
+# indent, and Markdown reads it as an indented CODE block -- which rustdoc then
+# compiles as Rust. Every handler carrying a `#[kynos::get]`/`post`/`delete`
+# attribute therefore yields one doc test made of English prose: 18 of them
+# here, identical on 1.88.0, 1.91.1 and stable.
+#
+# The fix belongs upstream (#60) and is one line -- fence that paragraph, or
+# indent the literal's first line to match it so the unindent pass strips
+# both. The generated item cannot be suppressed from here: it is emitted, not
+# written here, and rustdoc scrapes doc tests out of `#[doc(hidden)]` items,
+# private items and private modules alike (all three verified), so no
+# annotation on our handlers reaches it. The route attributes take only
+# `operation_id`, `tag` and `catch_panics`, so the macro offers no opt-out
+# either, and no kynos feature changes what it emits.
+#
+# The containment is therefore a name filter rather than an opt-out: CI's
+# doc-test step runs `cargo test --workspace --doc -- --skip relative_uri`,
+# which drops exactly those 18 items -- libtest filters by name before
+# rustdoc compiles a snippet -- while keeping every other doc test in this
+# crate watched, including any added later. This key stays because it is what
+# `cargo test` and `cargo test -p sunrise-server` honour locally; `cargo test
+# --doc` ignores it and selects the doc target whatever the manifest says,
+# which is why the filter is needed as well. Retire both halves together when
+# the macro is fixed.
 doctest = false
 
 [[bin]]

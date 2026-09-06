@@ -1,23 +1,31 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Billing (Managed Cloud Only)
 
-Self-host has no billing. Skip this spec for self-host operators.
-
-> **Implementation status: none of this is built.** There is no Stripe client in
-> the workspace, no `processed_stripe_events` table, no webhook route, and no
-> quota accounting anywhere in `crates/sunrise-server`. The only trace of a plan
-> is `accounts.tier`, a `TEXT` column that `Store::resolve_account` sets to
-> `'free'` at provisioning and that nothing ever updates or reads for a
-> decision; it is surfaced verbatim as `AccountInfo.tier`. No handler counts
-> storage, ops, blobs or devices against a limit, and `error.rs`'s `codes`
-> module defines no quota code — so the `429`/`202` responses below cannot be
-> produced. Read this document as a specification.
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places managed cloud, plan
+> tiers and billing after v1. This document is the design of record for that
+> work, not a description of anything that ships.
 >
-> Managed cloud is itself unbuilt: the relay ships in one shape, the self-host
-> single binary. See [`overview.md`](./overview.md).
+> **What exists in the tree:** `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'`
+> column (`crates/sunrise-server/src/store.rs:136`) that `resolve_account` sets
+> to `"free"` (`store.rs:268`) and that is read exactly once, to echo onto
+> `AccountInfo` (`api/accounts.rs:72`). Nothing else: no Stripe client, no
+> `processed_stripe_events` table, no webhook route, no quota accounting.
+>
+> **Why it is not v1:** v1 ships one server shape, the self-host single binary,
+> which needs none of this. The deferred work is not the Stripe integration —
+> it is per-account accounting and enforcement paths through every write route,
+> and none of it exists. The `429`/`202` responses below cannot be produced:
+> `error.rs`'s `codes` module defines no quota code.
+>
+> **What holds regardless:** nothing in this file constrains v1 code. Its
+> numbers are **not** citable from an `accepted` spec; ADR-0027 removed the
+> citations that existed.
+
+Self-host has no billing. Skip this spec for self-host operators.
 
 ## Plans
 
@@ -47,11 +55,18 @@ per-channel 30-day / 256 MiB retention bounds. `Store::active_device_count`
 exists and is reported in `AccountInfo`, but nothing compares it to a device
 cap.
 
+There is also no longer a code to report a breach with. ADR-0027 takes
+per-account quotas out of v1, so `AUTH_QUOTA_EXCEEDED` and
+`STORAGE_QUOTA_EXCEEDED` were removed from `crates/sunrise-error/codes.toml`
+and their ids (203, 300) are burned. The table below therefore describes the
+*shape* a quota surface would take, not a wire contract: building it starts
+with allocating new codes.
+
 | Phase | Behavior |
 |---|---|
 | Within plan | Writes accepted; no warning. |
 | 100% – 110% (hard cap = 110%) | Writes accepted; in-app banner shown; emails at 100% and 105%; responses carry `X-Sunrise-Quota-Warning: true` and HTTP `202 Accepted` with `quota_used_ratio` in the body. |
-| > 110% | New writes return `429 AUTH_QUOTA_EXCEEDED` with `Retry-After: <seconds-until-period-end>`; reads continue. |
+| > 110% | New writes return `429` with `Retry-After: <seconds-until-period-end>`; reads continue. |
 | Day 8 of overage | Existing writes still rejected; account marked `quota_locked` in DB. User must upgrade or delete. |
 
 The 7-day soft-grace window covers transient overages before the hard cap engages.

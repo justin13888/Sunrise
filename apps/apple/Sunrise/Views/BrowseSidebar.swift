@@ -46,16 +46,71 @@ struct BrowseSidebar: View {
                         Task { await model.moveStreams(from: source, to: destination) }
                     }
             } header: {
-                header("Streams", add: { newStream = true }, addLabel: "New stream")
+                header("Streams")
             }
 
             Section {
                 ForEach(model.visibleContexts, id: \.id) { contextRow($0) }
             } header: {
-                header("Contexts", add: { newContext = true }, addLabel: "New context")
+                header("Contexts")
             }
         }
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
+        // The add controls, placed where each platform puts them — and out of
+        // the section headers they used to live in on both, because a header
+        // cannot hold a control that accessibility can see. See `header(_:)`.
+        //
+        // On the Mac this is a bottom bar under the sidebar, which is where
+        // Mail, Reminders and Finder's tags all keep their `+`. On iPhone that
+        // space belongs to the tab bar — a bar of its own there overlaps both
+        // the tab bar and the last rows of the list — so the same two actions
+        // become a toolbar menu, which is where iOS puts them.
+        //
+        // Only the iOS half of this is proved in CI. `SidebarAddButtonTests`
+        // runs on the simulator on every `mise run ios-app`; the macOS suite is
+        // `skipped: true` in the `Sunrise` scheme, because a macOS XCUITest
+        // needs two one-time grants to the machine — developer mode, and an
+        // automation grant keyed to the app bundle's path — that a CI runner
+        // cannot give. See `macos-uitest` in `mise.toml`.
+        //
+        // The gap is narrower than it sounds. The two branches differ in
+        // placement only, and what the simulator proves — both actions in the
+        // accessibility tree under their own names, and not merely under their
+        // identifiers — is the claim that was broken. The Mac's bottom bar is
+        // covered for layout by `mise run apple-shots` on a developer machine,
+        // which is where those grants live.
+        //
+        // A cheaper macOS test hosting this view in an `NSHostingView` would
+        // not close the gap: that materialises a different accessibility tree
+        // from the windowed app the bug lived in, and would have been green
+        // against the original defect.
+        #if os(macOS)
+        .safeAreaInset(edge: .bottom) {
+            HStack(spacing: 4) {
+                addButton("New stream", systemImage: "plus",
+                          identifier: "sidebar.stream.new") { newStream = true }
+                addButton("New context", systemImage: "at",
+                          identifier: "sidebar.context.new") { newContext = true }
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        #else
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("Add", systemImage: "plus") {
+                    Button("New stream", systemImage: "plus") { newStream = true }
+                        .accessibilityIdentifier("sidebar.stream.new")
+                    Button("New context", systemImage: "at") { newContext = true }
+                        .accessibilityIdentifier("sidebar.context.new")
+                }
+                .accessibilityLabel("Add")
+                .accessibilityIdentifier("sidebar.add")
+            }
+        }
+        #endif
         .contextMenu {
             Toggle("Show archived", isOn: Binding(
                 get: { model.showsArchived },
@@ -128,19 +183,52 @@ struct BrowseSidebar: View {
         }
     }
 
-    private func header(
+    /// One of the two add buttons under the sidebar.
+    ///
+    /// `.labelStyle(.iconOnly)` sits *inside* `.accessibilityLabel` rather
+    /// than on the enclosing `HStack`, which is the natural place to put it.
+    /// An icon-only label leaves nothing on screen to read, so the label has
+    /// to be stated for accessibility explicitly, and stating it outside the
+    /// style is the order that survives.
+    ///
+    /// `SidebarAddButtonTests` asserts the labels reach the accessibility tree
+    /// by looking them up by name rather than by identifier — the two are
+    /// separate attributes, and a control findable only by identifier is
+    /// findable by a test and silent to VoiceOver.
+    private func addButton(
         _ title: String,
-        add: @escaping () -> Void,
-        addLabel: String
+        systemImage: String,
+        identifier: String,
+        action: @escaping () -> Void
     ) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Button(addLabel, systemImage: "plus", action: add)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .accessibilityLabel(addLabel)
-        }
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly)
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(identifier)
+    }
+
+    /// A section title.
+    ///
+    /// It holds no button, and that is the fix rather than a simplification.
+    /// A `Button` inside a `List` section header on macOS 26 is **absent from
+    /// the accessibility tree entirely** — measured against the running app,
+    /// not assumed. The `+` rendered and worked under a mouse, and the row it
+    /// lived in exposed exactly one element: an `AXHeading`. No `AXButton`,
+    /// at any button style, with or without
+    /// `.accessibilityElement(children: .contain)`. Both were tried and both
+    /// changed nothing. That is why `testCreatingAStreamFromTheSidebar` was
+    /// red: there was no button to find.
+    ///
+    /// The add controls moved to the bottom bar, which is where macOS puts
+    /// them anyway — Mail, Reminders and Finder's tags all carry a `+` under
+    /// the sidebar rather than in it.
+    ///
+    /// The heading the row does expose carries no name of its own. That is a
+    /// smaller problem than an unreachable control — a heading with no name is
+    /// skipped, not mis-actioned — and it is recorded in #38 rather than
+    /// worked around with a fake row.
+    private func header(_ title: String) -> some View {
+        Text(title)
     }
 
     private func streamRow(_ row: StreamListRow) -> some View {
@@ -237,23 +325,11 @@ extension StreamListRow: Identifiable {}
 extension ContextListRow: Identifiable {}
 
 extension StreamColor {
-    /// The swatch for a stream's colour.
-    ///
-    /// The *names* are the domain's — `slate`, `rose`, `emerald` — and this
-    /// only decides what each one looks like on this platform, which is a
-    /// rendering choice and nothing more.
-    var tint: Color {
-        switch self {
-        case .slate: .gray
-        case .rose: .pink
-        case .amber: .orange
-        case .emerald: .green
-        case .sky: .cyan
-        case .indigo: .indigo
-        case .violet: .purple
-        case .pink: Color(red: 0.95, green: 0.45, blue: 0.7)
-        }
-    }
+    // `tint` moved to `Sunrise/Design/Tokens.swift`. It was eight system-colour
+    // aliases plus one raw `Color(red:green:blue:)`, which made this the only
+    // place in the Apple app that decided a stream's colour — and made it
+    // decide a different palette from the one `packages/sunrise-ui` gave the
+    // web app under the same eight names. It is now the generated token set.
 
     /// What the picker calls it.
     var label: String {

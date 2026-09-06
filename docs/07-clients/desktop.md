@@ -19,7 +19,7 @@ and one entry in `mise.toml`'s `macos_slices`; it is not built today.
 
 ## What the app is today
 
-Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 471 Swift
+Roughly 18k lines of Swift under `apps/apple/Sunrise/`, covered by 477 Swift
 Testing cases in 75 suites, built and linted `--strict` in CI on `macos-26`.
 This section is the *shipped* inventory; everything under
 [Platform integration](#platform-integration) is marked for whether it exists.
@@ -82,6 +82,28 @@ as it runs, which is also why the CLI is one-shot: two long-lived writers
 against one vault would need a daemon, and a daemon is a whole subsystem to buy
 something neither client needs.
 
+### Run
+
+```
+mise run macos-run                      # build and open the app
+mise run macos-run /tmp/sunrise-demo    # …against a throwaway vault and key store
+```
+
+This is the only task that puts the app on screen. Everything under
+[Build](#build) either tests or hands the project to Xcode.
+
+Launch the product with `open`, never by executing
+`Sunrise.app/Contents/MacOS/Sunrise`. Executing the binary starts the process
+without registering it as a foreground app: it runs, opens no window, and is
+indistinguishable from a hang. `macos-run` uses `open` for exactly this reason.
+
+The optional argument is a scratch vault directory. It forwards
+`-sunrise-ui-test-vault` — the `#if DEBUG` hook in
+`Sunrise/Identity/UITestHarness.swift` that the UI tests already use — which
+redirects both the vault and the key store, so a demo or a walk through first-run
+touches neither the developer's data nor their Keychain. The key store is
+in-memory and dies with the process, so every scratch run is a first run.
+
 ### Build
 
 ```
@@ -91,15 +113,21 @@ mise run macos-uitest         # the XCUITest target, which macos-app does not ru
 mise run macos-open           # open the generated project in Xcode
 ```
 
+None of these four launches the app; `macos-app` builds and *tests*, and
+`macos-open` stops at Xcode. See [Run](#run) above.
+
 `project.yml` (XcodeGen) is committed; the generated `.xcodeproj` is not.
 `out/` and `build/` are gitignored — the Swift bindings are generated from the
 Rust source on every build, so committing them would let the two drift.
 
 **CI builds this.** `.github/workflows/ci.yml` has a `macos-app` job on the
 `macos-26` runner — pinned because `project.yml` sets a macOS 26.0 deployment
-target that no earlier image can build — which runs `mise run macos-app` as a single
-step on every push and PR to `master` and `v1-rewrite`, plus nightly. So a
-Swift-side break is caught.
+target that no earlier image can build — which runs `mise run macos-app` as a
+single step on every push and PR to `master` and `v1-rewrite`, plus a 04:00 UTC
+nightly on `master` alone, since GitHub fires a `schedule` only on the
+repository's default branch, which is `master`. Any other ref builds on demand
+through `workflow_dispatch` — `gh workflow run ci.yml --ref <branch>` — which
+carries no branch filter at all. So a Swift-side break is caught.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
 the `Sunrise` scheme, because a macOS XCUITest takes control of another process
@@ -185,11 +213,10 @@ document's intent, not yet implemented).
   not, because a Task has no ordering facet to write. Files drop onto a task's
   Attachments pane. Today and Search decline a reorder drop rather than
   accepting one that would snap back, because the core ranks those two lists.
-  The one gesture not built is **Calendar block → Task**, and it is a layout
-  consequence: this is a sidebar plus a *single* detail pane, so a grid and a
-  task list are never on screen together. `TaskListModel.bind(_:to:)` exists and
-  is tested, so the write is ready if a future layout makes the gesture
-  expressible.
+  The one gesture not built is **Calendar block → Task**, and what is missing is
+  two modifiers rather than a layout: `BlockChip` is not `.draggable`, and the
+  task row's drop destination only reorders. `TaskListModel.bind(_:to:)` exists
+  and is tested, so the write is ready and building the gesture is UI work.
 - **built — `sunrise://` URL scheme**, registered in `Info.plist` and handled by
   `onOpenURL`, for notification deep links
   ([`interaction-patterns.md`](./interaction-patterns.md)). When no main window

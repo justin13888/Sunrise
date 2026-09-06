@@ -154,3 +154,20 @@ taken.
 Neither `DOC_SCHEMA_V` nor any wire constant moved for this. `sort_order` was
 already a required `tstr` in the `Stream` payload, carrying `"a0"`; 0014 gave
 the field real storage rather than adding a field.
+
+---
+
+## Addendum (2026-09) — the addendum above has itself been overtaken
+
+Same rule, applied to the note rather than to the Decision: nothing above is
+retracted, and "`STORAGE_V` is now **14**" was true when it was written. Two
+further migrations have appended since — `0015_entity_extra_columns.sql`
+(forward-compat unknown-field storage for the remaining six entities) and
+`0016_stream_description_and_default_context.sql` (storage for two `Stream`
+fields the CDDL already declared) — so **`STORAGE_V` is 16**.
+
+Nothing this ADR decided moves with them. `BASELINE_STORAGE_V` is still **13**,
+a vault below it is still refused outright, and the append-only rule is what
+both migrations obey. The upgrade chain the 0014 note described as one step is
+three: 13 → 16. That is the whole of the change, and it is the shape this ADR
+predicted rather than an exception to it.

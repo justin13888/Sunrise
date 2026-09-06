@@ -14,7 +14,7 @@
 //! supplies.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
 use sunrise_core_bindings::vocab::{
@@ -272,28 +272,80 @@ impl Recorder {
     }
 }
 
-/// Consumes slowly enough to fall behind a burst.
+/// A latch the test closes over the pump and opens once, by hand.
 ///
-/// The delay is deliberately far larger than it needs to be. The claim under
-/// test is only that `on_lagged` is reachable, but *whether* it is reached is a
-/// race between this sleep and how long a `CreateTask` takes: the channel holds
-/// 256, so the burst has to get 257 ahead. At 2 ms that margin was thin enough
-/// that a loaded machine, or a write path that got a little heavier — ADR-0024
-/// added a `stream_keys` lookup inside every op's transaction — could make the
-/// producer lose the race and the test fail while nothing was wrong. 20 ms
-/// makes the outcome independent of both.
-struct Slow(Arc<Recorder>);
+/// `wait` parks the caller until `open` has been called and is a no-op
+/// afterwards, so a listener built on it stalls exactly once — on the first
+/// event — rather than on every one.
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    opened: Condvar,
+}
 
-impl ChangeListener for Slow {
+impl Gate {
+    /// Park until [`Gate::open`] has run. Returns immediately once it has.
+    ///
+    /// A poisoned lock is recovered rather than propagated: the flag is a
+    /// `bool` that cannot be left half-written, and panicking here would panic
+    /// the pump task instead of the test, where the failure is legible.
+    fn wait(&self) {
+        let mut open = self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*open {
+            open = self
+                .opened
+                .wait(open)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Release everyone parked in [`Gate::wait`], and everyone who arrives later.
+    fn open(&self) {
+        *self
+            .open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.opened.notify_all();
+    }
+}
+
+/// Opens a [`Gate`] when it leaves scope, by *any* path including an unwind.
+///
+/// Not tidiness — liveness. A parked pump sits in synchronous code on a tokio
+/// worker, and dropping a multi-threaded runtime joins its workers; a worker
+/// blocked on a condvar never observes shutdown, so the drop never returns. If
+/// a `submit` in the burst below panicked with the gate still shut, the test
+/// future would unwind, the runtime would be dropped, and the process would
+/// hang forever instead of failing — in CI, until the job's own ceiling. The
+/// guard makes the release unconditional, so a panic reports itself.
+struct GateGuard(Arc<Gate>);
+
+impl Drop for GateGuard {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+/// Holds the pump on its first event until the test opens the gate, then
+/// forwards everything to `rec` as fast as it arrives.
+struct Gated {
+    rec: Arc<Recorder>,
+    gate: Arc<Gate>,
+}
+
+impl ChangeListener for Gated {
     fn on_change(&self, event: ChangeEvent) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        self.0.on_change(event);
+        self.gate.wait();
+        self.rec.on_change(event);
     }
     fn on_lagged(&self, skipped: u64) {
-        self.0.on_lagged(skipped);
+        self.rec.on_lagged(skipped);
     }
     fn on_closed(&self) {
-        self.0.on_closed();
+        self.rec.on_closed();
     }
 }
 
@@ -351,17 +403,49 @@ async fn the_change_stream_delivers_and_cancels() {
     core.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_slow_listener_is_told_it_fell_behind() {
     // The broadcast channel behind the stream holds 256 events and is lossy
     // past that. A listener that only implements `on_change` therefore shows
     // stale data after a sync burst, silently — which is exactly the catch-up
     // case. This pins that `on_lagged` is reachable, so a bridge that ignores
     // it is ignoring something real.
+    //
+    // The overrun is *constructed*, not raced for. `Gated` parks the pump
+    // inside its first `on_change` and holds it there until the whole burst has
+    // been published, so 400 events are sent into a 256-slot channel with the
+    // only reader stopped: whatever the pump does next, it has already missed
+    // at least 144 and its next `recv` can only be `Lagged`. If it never got a
+    // first event to park on, it missed them the same way. There is no
+    // interleaving in which this passes on one machine and fails on another.
+    //
+    // What it replaced did race: a listener that slept 2 ms per event, hoping
+    // the pump could not keep up with 400 sends. On a fast machine it kept up
+    // ("seen 400, lagged 0"), and that is what left `master` red.
+    //
+    // Only the pump parks — never the test's own thread, which keeps submitting
+    // while the pump is stopped (`Core::submit` publishes to a broadcast
+    // channel, which never blocks on a slow receiver, it drops for it). Two
+    // worker threads are pinned rather than left to `num_cpus` so that the
+    // parked pump cannot be the runtime's only worker on a single-core runner.
+    //
+    // The rule, for any test written after this one: a test that parks a
+    // runtime worker pins `worker_threads` to at least 2, and must release the
+    // park on every exit path, including unwind. Releasing it only on the happy
+    // path turns an ordinary assertion failure into a hung job, because
+    // dropping a multi-threaded runtime joins workers that are blocked in
+    // synchronous code and can never notice they were asked to stop. Here that
+    // is `GateGuard`, whose `Drop` opens the gate whatever happens.
     let (_dir, core) = open_core().await;
 
     let rec = Arc::new(Recorder::default());
-    let sub = core.subscribe_changes(Arc::new(Slow(rec.clone())));
+    let gate = Arc::new(Gate::default());
+    // Armed before the pump can possibly park, and covering everything below.
+    let release = GateGuard(gate.clone());
+    let sub = core.subscribe_changes(Arc::new(Gated {
+        rec: rec.clone(),
+        gate,
+    }));
 
     for i in 0..400 {
         core.submit(CoreCommand::CreateTask {
@@ -370,6 +454,11 @@ async fn a_slow_listener_is_told_it_fell_behind() {
         .await
         .expect("create");
     }
+    // Everything is published; let the pump discover what it missed. Explicit,
+    // so the happy path opens the gate here rather than wherever the guard
+    // would otherwise fall out of scope.
+    drop(release);
+
     assert!(
         until(|| rec.lagged.load(Ordering::SeqCst) > 0).await,
         "a slow listener must be told it fell behind; seen {}, lagged {}",

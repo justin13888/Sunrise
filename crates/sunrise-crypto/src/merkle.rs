@@ -8,8 +8,17 @@
 //! env_hash_n = BLAKE3(canonical_cbor_envelope_bytes_n, 32)
 //! ```
 //!
-//! Concurrent ops are ordered by `(ts_ms_clamped, device_id_lex, seq)` with
-//! `ts_ms_clamped = clamp(envelope.ts_ms, server_first_seen_ms ± 5min)`.
+//! Concurrent ops are folded in `(hlc, device_id, seq)` order — the same key
+//! entity-level LWW resolves a conflict with (ADR-0014, ADR-0016), which is
+//! what makes the root and the merge agree by construction rather than by
+//! coincidence.
+//!
+//! It was `(ts_ms_clamped, device_id_lex, seq)`, clamping the envelope's
+//! timestamp into a ±5 min window around `server_first_seen_ms`. That rule had
+//! no input: the relay never emitted a signed `server_first_seen_ms`
+//! annotation, and the value it does return on an `Ack` is advisory — a client
+//! measures its own skew with it and nothing orders ops by it. See
+//! `docs/03-crypto/audit-and-tamper-evidence.md`.
 
 const ROOT_INIT_PREFIX: &[u8] = b"sunrise.stream_root.init.v1";
 const ROOT_STEP_PREFIX: &[u8] = b"sunrise.stream_root.step.v1";

@@ -88,8 +88,17 @@ pub struct AckPayload {
     /// 16-byte stream id the batch targeted.
     #[serde(with = "serde_bytes")]
     pub stream_id: [u8; 16],
-    /// Server wall-clock (ms) at which the batch was first seen; the
-    /// out-of-band annotation used for clock-skew clamping.
+    /// Server wall-clock (ms) at which the relay **first** saw this batch.
+    ///
+    /// Advisory. A client uses it to measure its own clock skew; nothing
+    /// orders ops by it, and it is not part of the signed envelope. A re-sent
+    /// batch the relay already holds is acked with the original value rather
+    /// than with the time the copy arrived — "first seen" is the contract, and
+    /// it is what makes a re-send after a lost ack idempotent.
+    ///
+    /// It once fed a clamp on the Merkle fold order
+    /// (`docs/03-crypto/audit-and-tamper-evidence.md`); that rule is retired,
+    /// and the relay never emitted the signed annotation it would have needed.
     pub server_first_seen_ms: u64,
 }
 

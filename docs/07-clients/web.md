@@ -45,7 +45,7 @@ React UI ──▶ Web Worker (sunrise-core WASM)
                 ▼ via OPFS
          vault.db (sqlite-wasm) + blob chunks
                 │
-                ▼ via WebSocket
+                ▼ via SSE (down) + typed POST (up), ADR-0023
             Sync server
 ```
 
@@ -60,12 +60,11 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 #### OPFS quota handling
 
 - Storage usage = sum of OPFS file sizes under `sunrise/`. Computed via `navigator.storage.estimate()` (browser-reported) and a recursive `getDirectoryHandle().values()` walk for our own accounting.
-- Warn at 80% of `quota`; block writes at 95% with `STORAGE_QUOTA_EXCEEDED`.
+- Warn at 80% of `quota`; block writes at 95%. **The code is unallocated:** `STORAGE_QUOTA_EXCEEDED` was removed from the registry with ADR-0027 and its id is burned, so a browser-local storage cap needs a new one before this can be built.
 
 ### SQLite in the browser
 
-- `wa-sqlite` (WASM SQLite with FTS5).
-- Async access only, via Web Worker.
+- *Target state:* `wa-sqlite` (WASM SQLite with FTS5), async access only, via Web Worker. Nothing in the tree builds it — the WASM core is deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) and no `wa-sqlite` dependency is declared anywhere.
 - We are not using the browser's built-in WebSQL or any other sync API.
 
 ### Service Worker
@@ -136,7 +135,7 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 ### Self-host vs managed cloud
 
-The web client connects to whatever sync server URL is configured. For self-host, the operator hosts the static assets too (or points the user at the app at `app.sunrise.example` configured to talk to their server — supported via a settings handshake).
+*Target state.* The web client would connect to whatever sync server URL is configured, with the operator hosting the static assets or pointing the user at a hosted app configured against their server. A runtime server-URL setting is the web client's own deliverable and does not exist; there is no "settings handshake" protocol anywhere in the tree. Note also that v1 ships one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
 
 ## What about the browser as a *capture* tool?
 

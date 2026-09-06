@@ -21,7 +21,7 @@ Per-platform UI consumes the core; nothing else does.
 |---|---|---|
 | macOS | `SunriseCore.xcframework` via UniFFI bindings (`mise run apple-xcframework`) | v1 |
 | CLI | Linked directly into the `sunrise` binary | v1 |
-| iOS | `xcframework` via UniFFI bindings — same seam, and `mise run apple-xcframework` now builds the device and simulator slices beside the macOS one | deferred |
+| iOS / iPadOS | `SunriseCore.xcframework` via UniFFI bindings — the same seam and the same `mise run apple-xcframework`, which builds the device and simulator slices beside the macOS one | **v1** ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) |
 | Android | `.aar` via UniFFI bindings (JNI) — same seam | deferred |
 | Web | `wasm-bindgen` build, loaded as ES module | deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
 
@@ -55,8 +55,6 @@ pub enum Command {
     // … (one variant per user-visible action)
     PromoteToStream { id: TaskId, stream: StreamId },
     AttachNote { target: EntityRef, body: NoteBody },
-    PairDevice(PairingChallenge),
-    RevokeDevice(DeviceId),
     // …
 }
 
@@ -77,7 +75,7 @@ impl Core {
     pub async fn query(&self, q: Query) -> Result<QueryResult>;
     pub fn changes(&self) -> impl Stream<Item = DomainEvent> + Send;
     pub fn sync_status(&self) -> impl Stream<Item = SyncStatus> + Send;
-    pub async fn export(&self, opts: ExportOptions) -> Result<ExportArchive>;
+    pub async fn export(&self, opts: ExportOptions) -> Result<ExportArchive>;  // target state
     pub async fn close(self) -> Result<()>;
 }
 ```

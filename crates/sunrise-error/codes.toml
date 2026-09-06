@@ -84,21 +84,21 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
-[[code]]
-id = 203
-name = "AUTH_QUOTA_EXCEEDED"
-kind = "transient"
-retryable = true
-since = "v1"
-
-# --- Storage --------------------------------------------------------------
+# 203 was `AUTH_QUOTA_EXCEEDED`. ADR-0027 takes per-account quotas out of v1
+# and nothing ever emitted it, so it was removed — and the id is burned by the
+# rule above, never re-used and never repurposed. Hence 204 below.
 
 [[code]]
-id = 300
-name = "STORAGE_QUOTA_EXCEEDED"
+id = 204
+name = "AUTH_DEVICE_SIG_INVALID"
 kind = "user"
 retryable = false
 since = "v1"
+docs = "header_sig_v2 signature did not verify, or its Date is outside MAX_CLOCK_SKEW_SECS (±300 s). Re-sign with a correct clock; never refresh the bearer. Emitted once the caller's device has resolved to an active row on the authenticated account, and also — before any lookup — when require_device_sig is set and the caller did not present a complete binding (either of X-Sunrise-Device and X-Sunrise-Device-Sig missing, not only both), which GET /meta's device_binding_required already advertises. Every other pre-lookup rejection, a device id that is not on this account included, stays AUTH_TOKEN_INVALID, so the code cannot be used to enumerate accounts or devices."
+
+# --- Storage --------------------------------------------------------------
+
+# 300 was `STORAGE_QUOTA_EXCEEDED`, removed with 203 above and burned with it.
 
 [[code]]
 id = 301

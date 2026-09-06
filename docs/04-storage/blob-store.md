@@ -6,17 +6,43 @@ status: accepted
 
 Blob storage holds attachment ciphertext.
 
+## One blob identity
+
+A blob has exactly one identity, and both sides derive it from the same bytes:
+
+```
+blob_id = first 16 bytes of BLAKE3(chunk_ciphertext_0 || … || chunk_ciphertext_{n-1})
+```
+
+The creating device computes it while sealing
+([`../02-domain/attachments.md`](../02-domain/attachments.md)`:27`, "assigned by
+the creating device"). The relay re-derives it at `finalize` from what is
+actually on disk rather than trusting the client's claim
+(`crates/sunrise-server/src/api/blobs.rs:222-247`), takes the same first 16
+bytes as the storage key (`blob_key`, `blobs.rs:416-425`), and returns it as
+`blb_` + 32 lowercase hex (`blobs.rs:272`). The two values are equal by
+construction; if they were not, the upload would have failed the hash check.
+
+That one 16-byte value is `Attachment.blob_id`
+(`crates/sunrise-domain/src/attachment.rs:42-44`), the local chunk-path key, the
+relay's storage key, and the `{blob_id}` path segment of `GET /api/v1/blobs/{blob_id}`.
+**There is no second id and no mapping table.**
+
 ## Layout
 
 ```
-$VAULT/blobs/<00..ff>/<plaintext_blake3_hex[2..]>.<chunk_idx>
+$VAULT/blobs/<blob_id_hex[..2]>/<blob_id_hex>/<chunk_idx>.bin
 ```
 
-- First two hex chars of the *plaintext* `BLAKE3(plaintext_chunk, 32)` are used as a fanout dir (256 buckets).
-- Filename is the remaining hex of the plaintext hash plus the chunk index (e.g. `9a7c3f...e1.0`).
-- Each file is one encrypted chunk (see envelope in [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)).
+Per `crates/sunrise-storage/src/blob_store.rs:4,37-44`: the first two hex
+characters of the 16-byte `blob_id` are a fanout directory (256 buckets), then a
+directory named by the full hex, then one file per chunk index. Each file is one
+sealed chunk — opaque ciphertext, no header (see
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+§Blob chunks).
 
-Naming by *plaintext* hash is **local-only** — it never reaches the network. The server stores blobs by an opaque `BlobChunkId` it generates at upload (see "Server-side storage" below); it cannot compute the plaintext hash because it never sees plaintext. The plaintext-hash file layout enables content-addressable dedup within a single vault. Cross-vault dedup is impossible by design — the server's ciphertext bytes differ for identical plaintexts because per-blob keys differ.
+The relay uses the *same* `BlobStore` type and therefore the same layout, rooted
+per account (§Server-side storage below).
 
 ## Chunking
 
@@ -27,18 +53,67 @@ Naming by *plaintext* hash is **local-only** — it never reaches the network. T
   which is why they drifted apart in the first place and will again.
 - An attachment of N bytes produces ⌈N / 256 KiB⌉ chunks.
 - Chunks are streamed to/from the server independently.
+- **Two different numbers, often confused.** 256 KiB is the *plaintext* chunking
+  unit. 1 MiB is the relay's ceiling on a single *ciphertext* chunk body
+  (`MAX_CHUNK_BYTES`, `crates/sunrise-server/src/api/blobs.rs:53`), alongside a
+  4096-chunk cap (`:57`) and a 100 MB per-blob cap (`:61`). A 256 KiB plaintext
+  chunk seals to 256 KiB + a 16-byte tag, comfortably inside the ceiling; the
+  ceiling is an anti-DoS bound on a request body, not a chunk size.
 
-## Local plaintext-hash dedup
+## No key-sharing dedup
 
-- Local dedup is **automatic**: a `BLAKE3(plaintext_chunk, 32)` is computed during chunking. If a row in `attachment` already has the same plaintext hash, the new attachment shares its `blob_id` and chunk encryption keys (re-encrypted under a fresh nonce per chunk).
-- Plaintext hashes never leave the device.
-- Dedup applies across Streams owned by the same vault. Cross-vault dedup is impossible (per-blob keys differ).
+> **A `blob_key` MUST NOT seal two different byte sequences.** The chunk nonce is
+> derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness
+> ([`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+> §Blob chunks), so reusing a key across two distinct plaintexts at the same
+> `chunk_idx` reuses an XChaCha20-Poly1305 nonce — which forfeits confidentiality
+> of both messages and leaks the Poly1305 authentication key. Every sealed byte
+> sequence — every attachment, every thumbnail, every re-attach of the same
+> file — gets a fresh 32-byte random `blob_key`.
+
+Consequently there is **no dedup by key sharing**, at any scope. Two attachments
+of the same file are two blobs with two keys and two `blob_id`s. Earlier
+revisions of this file specified exactly the forbidden thing (a second
+attachment adopting the first's `blob_id` and keys); that section is deleted, not
+qualified.
+
+What this buys, beyond not being broken: content-addressing over ciphertext never
+collides across attachments, which is what makes
+[`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:52`
+true — the relay learns "these two uploads are the same ciphertext", never "these
+two attachments are the same file".
+
+Dedup that *does* survive is dedup of the identical *ciphertext*: one account's
+devices re-uploading the same sealed bytes converge on one stored copy, because
+the id is that ciphertext's hash. That is a storage optimisation on the relay,
+visible to no one else.
 
 ## Server-side storage
 
-The server stores the same chunks (uploaded), keyed by an opaque `BlobChunkId` that is unrelated to the plaintext hash (the server cannot compute the plaintext hash). The mapping `(blob_id, chunk_idx) → BlobChunkId` lives in the metadata op for the attachment.
+The relay stores the same sealed chunks under the same `blob_id`, in the same
+`BlobStore` layout, rooted **per account**:
 
-This means: one logical blob = one metadata op + N upload requests for chunks. The metadata op carries the wrapped key.
+```
+<blob_root>/committed/<blake3(account_id)[..16] hex>/blobs/<blob_id_hex[..2]>/<blob_id_hex>/<idx>.bin
+<blob_root>/committed/<blake3(account_id)[..16] hex>/manifests/<blob_id_hex>
+```
+
+The per-account root is deliberate and load-bearing (`blobs.rs:29-36,340-350`):
+content addressing without it would be a cross-tenant read primitive, since one
+account could name another's blob by its hash. A grantee naming an owner's
+`blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id
+**for this account**" ([`../06-server/api.md`](../06-server/api.md) §Blobs). This
+is one of the reasons cross-user sharing is post-v1
+([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
+
+The manifest (`"<chunk_count> <size_bytes>"`) is written **after** every chunk
+(`blobs.rs:254-266`), so a crash mid-commit leaves an invisible partial rather
+than a short read: a reader that finds no manifest sees no blob.
+
+Upload is three calls, not one: `POST /blobs/init` reserves an `up_…` id and
+hands back one URL per chunk, `PUT /blobs/{upload_id}/{idx}` uploads each sealed
+chunk, `POST /blobs/finalize` verifies and commits. The per-blob key never goes
+near any of them — it rides inside the attachment op envelope.
 
 ## Lazy fetch
 
@@ -65,32 +140,39 @@ A chunk's cache row has a `state` field: `absent | downloading | cached | partia
 
 The server retains a chunk while:
 
-- Any unrevoked metadata op in any non-compacted Stream references its `BlobChunkId`.
+- Any unrevoked attachment op in any non-compacted Stream references its `blob_id`.
 - OR within 30 days of upload (regardless of references).
 
 A cron job runs every 4 hours; chunks not meeting either condition are deleted. Self-hosters can override `[blob] gc_grace_days = 30` and `[blob] gc_interval_hours = 4`.
 
 ## Integrity model
 
-Chunk metadata (carried in the metadata op) is:
+There is no `BlobMeta` structure. The metadata a blob has is the `Attachment`
+entity itself — `{blob_key, blob_id, chunk_count, content_hash, size_bytes,
+mime_type, filename}`, specified at
+[`../02-domain/attachments.md`](../02-domain/attachments.md)`:17-33` and modelled
+at `crates/sunrise-domain/src/attachment.rs:38-50`. Earlier revisions of this
+file specified a parallel CDDL with a per-chunk `chunk_id`; both the structure
+and the second id are gone.
 
-```cddl
-BlobMeta = {
-    blob_id:    bstr .size 16,
-    size:       uint,
-    mime:       tstr,
-    chunk_size: uint,                    ; bytes; 1048576 = 1 MiB in v1
-    chunks:     [+ {
-                    chunk_id:  bstr,     ; opaque server-side id; ≤ 64 bytes
-                    hash:      bstr .size 32,  ; BLAKE3(plaintext_chunk, 32)
-                  }],
-    blob_hash:  bstr .size 32,           ; BLAKE3 over concatenated plaintext chunk hashes, 32
-}
-```
+Integrity comes from three facts, each at a different layer:
 
-Each chunk carries **one** hash: `BLAKE3(plaintext_chunk, 32)`, used for local dedup and end-to-end integrity. Per-chunk integrity at decrypt time is provided by the AEAD (ChaCha20-Poly1305) tag on the ciphertext envelope. The server validates upload integrity via TLS plus the storage backend's own ETag (S3 returns a content hash; for the local-disk backend the server computes `BLAKE3(ciphertext, 32)` on receipt). There is no separate `enc_hash` field in metadata.
+1. **`Attachment.content_hash` is the BLAKE3 of the concatenated *plaintext*.**
+   The client checks it after reassembly and decrypt. It is the end-to-end
+   guarantee, and it is the only hash the relay cannot compute.
+2. **`FinalizeRequest.chunk_hashes` are BLAKE3 of each *ciphertext* chunk**, and
+   `FinalizeRequest.content_hash` is BLAKE3 of the concatenated ciphertext
+   (`blobs.rs:93-97`). The relay re-hashes what is on disk and refuses on
+   mismatch (`blobs.rs:236-247`, `sunrise_blob_hash_mismatch_total`), which
+   catches a chunk that never arrived, arrived truncated, or arrived corrupted —
+   at upload time, rather than months later on another device.
+3. **The XChaCha20-Poly1305 tag inside each sealed chunk** catches any
+   modification of stored bytes at open time, whoever made it.
 
-After download and decrypt, the client verifies each chunk's `BLAKE3(plaintext_chunk, 32)` against the metadata; on full assembly it verifies `blob_hash`. A mismatch triggers re-fetch from a different replica or surfaces an error.
+Note that `content_hash` means two different digests in the two places it
+appears: a **plaintext** digest on the `Attachment` (rule 1) and a **ciphertext**
+digest in `FinalizeRequest` (rule 2). They are not interchangeable and neither is
+derivable from the other.
 
 ## CLI / web limitations
 

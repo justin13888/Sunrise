@@ -14,9 +14,12 @@
 #   vault lock used the `fs4` crate purely to stand in for it; that dependency
 #   is now gone.
 #
-# The patch level is pinned exactly, and `rust-version` in the root `Cargo.toml`
-# is kept byte-identical to `channel` — CI's `msrv` job asserts both. Any
-# further bump requires an ADR and a CI update.
+# The patch level is pinned exactly. `rust-version` in the root `Cargo.toml` and
+# `ARG RUST_VERSION` in the `Dockerfile` are kept byte-identical to `channel`,
+# and the first step of CI's `rust` job asserts all four: the toolchain file,
+# `rust-version`, the Dockerfile's `ARG RUST_VERSION`, and the `rustc` a
+# checkout actually resolves to. Any further bump requires an ADR and a CI
+# update.
 channel = "1.91.1"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"

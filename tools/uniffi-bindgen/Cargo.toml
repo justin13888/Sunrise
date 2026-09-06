@@ -17,12 +17,13 @@ description = "Quarantined UniFFI binding generator. Build tool only; never ship
 # member this tool would ask the same package for `cli` (= `bindgen` + `clap` +
 # `camino`), and resolver 2 unifies features per package across one cargo
 # invocation. So `cargo build --workspace` would compile the seam crate against
-# a `uniffi` carrying the entire binding generator — measured, 21 packages that
-# are in this directory's lockfile and in no other part of the tree (`askama`
-# and its three macro crates, `goblin` + `scroll` + `plain`, `uniffi_bindgen`,
-# `uniffi_udl`, `weedle2`, `cargo_metadata`, `cargo-platform`, …) — on every
-# workspace build, test and clippy run, for a code generator no shipping binary
-# links.
+# a `uniffi` carrying the entire binding generator — measured, 20 third-party
+# packages that are in this directory's lockfile and in no other part of the
+# tree (`askama` and its three macro crates, `goblin` + `scroll` + `plain`,
+# `uniffi_bindgen`, `uniffi_udl`, `weedle2`, `cargo_metadata`,
+# `cargo-platform`, …) — on every workspace build, test and clippy run, for a
+# code generator no shipping binary links. (The lockfile holds 21 such
+# packages; the twenty-first is this crate.)
 #
 # `--locked` in `mise run apple-xcframework` stays for the ordinary reason a
 # build tool is built locked: the generated Swift is an input to the app, and a

@@ -1,8 +1,35 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Shared Documents (Cross-User)
+
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5 places cross-user
+> shared documents after v1, consistent with
+> [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a). This document is the
+> design of record for that work, not a description of anything that ships.
+>
+> **What exists in the tree:** nothing. No `shares` table, no `share_grant` /
+> `share_revoke` / `share_decline` op kind, no `api/shares.rs`, and no
+> implementor of the key distribution the design needs — ADR-0020 §(a)
+> enumerates the gap in detail.
+>
+> **Why it is not v1:** beyond ADR-0020's security-review argument, two things
+> in this file are structurally at odds with the relay v1 has. The relay
+> evaluates no role and cannot
+> ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`),
+> so every "the server also checks" sentence has been corrected rather than
+> annotated. And the cross-account blob path cannot work: both blob stores are
+> rooted per account (`crates/sunrise-server/src/api/blobs.rs:29-36`), so a
+> grantee naming an owner's `blb_…` gets `404 BLOB_NOT_FOUND`
+> ([`../06-server/api.md`](../06-server/api.md)`:289`). That root is deliberate;
+> removing it would make content addressing a cross-tenant read primitive.
+>
+> **What holds regardless:** the client-side enforcement model below — role
+> checked by the emitter and re-checked by every receiver against a grant in its
+> own vault — is the only enforcement model available to an E2EE relay, and it
+> is the one any future design starts from.
 
 When user A shares a Stream with user B, that Stream becomes a *shared document*. Both users' devices (and any future devices they pair) participate in its sync.
 
@@ -24,7 +51,7 @@ A grant carries a role (`viewer` / `editor`):
 - Viewer: their device's outbox refuses to emit ops on this Stream.
 - Editor: ops are produced freely.
 
-This is enforced **client-side** (their core checks role before emitting). The server *also* checks: it rejects ops on shared Streams from devices whose identity isn't a grantee with editor role. Defense in depth.
+This is enforced **client-side** and only client-side: the emitting core checks role before emitting, and every honest peer re-checks on receipt against the grant record in its own vault. The relay performs no such check and cannot — it reaches only `EnvelopeHeader` and holds no grant ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`).
 
 ## Grant state machine
 
@@ -52,12 +79,12 @@ State is on the grant record (`grant.state`). Concurrent transitions resolve by 
 
 - Owner emits `stream_key_rotate` immediately on revoke; new ops use the new epoch.
 - Existing recipients receive the new epoch's key in a `share_key_distribute` op (one per remaining recipient, encrypted to their identity).
-- The revoked recipient does not receive the new key (server enforces).
+- The revoked recipient does not receive the new key, because no `key_envelope` is sealed to it. Nothing is withheld by the relay; the key is simply never encrypted for that recipient.
 - Latency target: rotation completes within 5 s on a healthy connection. Until distribute completes, the owner's device queues new ops locally and emits them once all remaining recipients have a fresh key.
 
 ## Read-only attestation
 
-Because the server *can* see device IDs and op metadata, it enforces editor-role checks. But it cannot read content. So a malicious grantee viewer running a modified client could in principle emit ops; the server rejects them. Other devices also reject them on signature check (no valid editor cert).
+A malicious grantee viewer running a modified client can emit ops, and the relay will forward them — it cannot tell an editor from a viewer. Other devices reject them on signature check (no valid editor cert). That client-side check is the whole attestation; there is no server-side one behind it.
 
 ## Egress scrubbing
 
@@ -69,7 +96,7 @@ Scrubbing happens **per envelope, per cohort**, at op-emit time:
 
 1. Author's device builds the canonical (unscrubbed) op.
 2. For each recipient cohort that this op fans out to, compute the cohort's accessible-Stream set.
-3. Walk the op's references; replace any reference to an entity in a non-accessible Stream with `{kind: "redacted", reason: "private_ref"}`.
+3. Walk the op's references; replace any reference to an entity in a non-accessible Stream with `{kind: "redacted", reason: "private_ref", placeholder_text: "—"}`.
 4. CBOR-encode the per-cohort variant; encrypt under the cohort's Stream key.
 5. Emit each per-cohort envelope as a separate sub-op in the same OpBatch.
 
@@ -77,19 +104,12 @@ Editors **cannot** create cross-stream references in v1 — the UI prevents it b
 
 ### Entity reference format
 
-References inside Note bodies and free-text fields use the canonical form:
-
-```
-[<display>](sr://<entity_kind>/<entity_id>)
-```
-
-Where:
-
-- `entity_kind` ∈ `{task, stream, context, person, block, attachment, routine}`.
-- `entity_id` is the prefixed id from [`../02-domain/identifiers.md`](../02-domain/identifiers.md), URL-safe (no encoding needed; ids are alphanumeric + underscore).
-- `display` is the user-typed display text, escaped per markdown rules.
-
-The scrubber recognizes `sr://` URIs and rewrites the URI portion to `redacted:` while preserving display text (or replacing with `(redacted)`).
+References are `{kind: "ref", ref: entity-ref}` inline nodes and redactions are
+`{kind: "redacted", reason, placeholder_text}`, both defined once in
+[`../02-domain/notes.md`](../02-domain/notes.md) §In-app references. There is no
+URI form: an `sr://` scheme appeared in this file and nowhere else in `docs/` or
+`crates/`, and the only registered scheme in the product is `sunrise://` for
+deep links ([`../02-domain/identifiers.md`](../02-domain/identifiers.md)`:68`).
 
 ## Joining and leaving
 

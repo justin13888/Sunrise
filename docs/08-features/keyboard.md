@@ -152,7 +152,8 @@ focused) the browser keeps the binding.
 
 ## Discoverability
 
-- `?` in any view opens a contextual cheat sheet.
+- `?` in any view opens a contextual cheat sheet — on macOS. It is inert on
+  iOS; see [Mobile keyboards](#mobile-keyboards).
 - Command palette shows the current binding next to every command.
 - New users see an opt-in "show keyboard tips" coachmark.
 
@@ -164,9 +165,32 @@ focused) the browser keeps the binding.
 
 ## Mobile keyboards
 
-- iPad / Android tablet with attached keyboard: same shortcuts as desktop where they make sense (e.g., `Cmd+N` for new task).
-- Software keyboards: capture sheet uses input mode `text` + autocorrect off; supports Smart Punctuation toggle.
-- Predictive text doesn't interfere with the capture parser (`#`, `@`, `^` etc. are typed as-is).
+- **An iPad with an attached keyboard runs the list keymap and the vim subset,
+  and nothing above them.** `onKeyChord` is applied in exactly one place in
+  `apps/apple` — the shared `TaskListView` — so every row-scoped binding in the
+  macOS column above works unchanged on iOS, and every `⌘` binding does not:
+  those are delivered by the Mac's `Commands` scene, which lives in `macOS/`
+  and the iOS target never compiles. Concretely, `⌘N` on iOS is the toolbar
+  **Capture** button rather than a chord; the command palette (`⌘⇧P`) and the
+  cheat sheet are handed inert closures in the tab shell, so `?` in a list does
+  nothing there. An iPad that draws a system menu bar gets only the system's
+  own items, for the same reason. Android tablets are a deferred client.
+- **Software keyboards are specified here and not yet configured in the app.**
+  The intent is a `text` input mode with autocorrect off, so that `#`, `@`,
+  `^`, `!` and `~` are typed as-is and predictive text cannot rewrite a token
+  the parser is about to read. Nothing in `apps/apple` sets it: neither capture
+  field carries `autocorrectionDisabled`, `textInputAutocapitalization` or
+  `keyboardType`, so on iOS both get the system defaults today. This paragraph
+  is the requirement, not a description.
+- **What a phone does have** is the affordances a hardware keyboard made
+  unnecessary: an explicit **Done** in the capture bar's toolbar, because there
+  is no Escape key to hand focus back with, and **Cancel** / **Add** buttons in
+  the capture sheet, because the Mac's panel commits on Return and closes on
+  Escape and a phone can do neither visibly.
+- The requirement level is in
+  [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md): iOS
+  *Keyboard navigation* is a **SHOULD** scoped to the list keymap, and the
+  audit grades it `met *(list keymap)*`.
 
 ## Conflict policy
 
@@ -174,4 +198,4 @@ Where a keyboard shortcut conflicts with a user-installed system shortcut: the u
 
 ### `Ctrl+Shift+P` on web
 
-The web app intercepts `Ctrl+Shift+P` only when focus is inside the app's main element (not in browser chrome / DevTools). Documented in user-facing help; users can rebind via Settings → Keyboard.
+The web app intercepts `Ctrl+Shift+P` only when focus is inside the app's main element (not in browser chrome / DevTools). Documented in user-facing help. There is no rebinding: no client ships a Settings → Keyboard surface, and the bindings in this document are fixed.

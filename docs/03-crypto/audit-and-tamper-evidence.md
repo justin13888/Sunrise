@@ -14,7 +14,7 @@ Concretely, none of the following exists:
 
 * **No root is persisted.** There is no column, no table, and no "highest-seen root per Stream", so §Rollback detection has nothing to compare against on reconnect.
 * **No checkpoint op.** Of the 24 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`), 21 are domain CRUD and the three [ADR-0024](../11-adr/0024-key-hierarchy.md) added carry keys and trust (`key_envelope`, `device_revoke`, `device_cert`). `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
-* **No `server_first_seen_ms` annotation.** The relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)` and parses only `EnvelopeHeader` — `{stream_id, device_id, seq}` — for routing. It emits no unsigned addendum, so the `hlc_clamped` ordering rule has no input.
+* **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:93`) is stamped at `crates/sunrise-server/src/api/sync.rs:419` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse.rs:435`. Nothing persists it and nothing orders by it. Per *op* it does not exist at all — the relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)`, parses only `EnvelopeHeader` (`{stream_id, device_id, seq}`) for routing, and emits no unsigned addendum. Since the amendment below removes the clamp, no ordering rule wants one.
 * **No fork or rollback detection, and no integrity indicator.** §Verifying checkpoints from peers, §Fork detection and §Per-vault Integrity indicator describe no code and no UI.
 
 What *is* enforced today is the replay invariant in §Identity and replay invariants: `0013_baseline.sql` declares `UNIQUE (stream_id, device_id, seq)` on `ops`, so `Engine::apply_remote` drops a re-delivered op idempotently, and `sync_cursors.last_applied_seq` is the per-`(stream_id, device_id)` high-water mark. Tampering with any single stored op is caught by the `OpEnvelope` AEAD. Detecting *omission and reordering across* ops — which is what the rest of this document is for — is not built.
@@ -40,19 +40,33 @@ root_n     = BLAKE3("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n, 3
 env_hash_n = BLAKE3(canonical_cbor_envelope_bytes_n, 32)
 ```
 
-Concurrent ops apply in `(hlc_clamped, device_id_lex, seq)` lexicographic order before being folded into the root, where:
+Concurrent ops apply in `(hlc, device_id, seq)` order before being folded into
+the root — the hybrid logical clock, then the raw 16-byte device id (memcmp,
+higher wins), then the writer's per-`(stream, device)` sequence number. This is
+byte-identical to the entity-level LWW comparison key
+([ADR-0016](../11-adr/0016-hlc-timestamps.md),
+[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) §The comparison key,
+`crates/sunrise-storage/migrations/0013_baseline.sql:97-99`), which is the point:
+one ordering key for the whole system, and no second one to keep in agreement
+with it.
 
-```
-hlc_clamped = (clamp(envelope.hlc.physical_ms,
-                     server_first_seen_ms - 5 * 60_000,
-                     server_first_seen_ms + 5 * 60_000),
-               envelope.hlc.logical)
-```
-
-The clamp window is the same 5 minutes as `MAX_DRIFT_MS` in
-[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md), and for the same reason: a reading further out than that is a broken clock, and a *client* refuses such an op outright. The clamp is the relay-side equivalent for a party that cannot refuse.
-
-The relay timestamps every inbound op as `server_first_seen_ms` and includes it in the op's metadata as an unsigned addendum (see [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) §6). The annotation is part of every replicated op; relays MUST forward it unchanged. Two devices that have observed the same set of ops compute identical roots if both have observed the same `server_first_seen_ms` annotations.
+> **Amended ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).** This section
+> previously folded concurrent ops in `(hlc_clamped, device_id_lex, seq)`, where
+> `hlc_clamped` clamped the signed HLC to ±5 min around the relay's
+> `server_first_seen_ms`. The clamp is removed.
+>
+> **Why:** the clamp gave the relay an input into the ordering of the one
+> structure whose whole purpose is detecting what the relay did. An adversary who
+> can shift `server_first_seen_ms` can shift the fold and therefore the root,
+> which makes a divergent root deniable — the failure the Merkle root exists to
+> make undeniable.
+>
+> **What this gives up:** a device with a badly wrong clock can now push an op
+> far up or down the fold order. That was already the honest state. The clamp
+> bounded the *ordering* effect without bounding *acceptance*, and a receiver
+> refuses an op more than `MAX_DRIFT_MS` out anyway
+> ([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
+> The skew warning below stays.
 
 Devices with > 5 min skew display a `"Your clock is ≥ 5 minutes off; sync may produce unexpected ordering"` warning.
 

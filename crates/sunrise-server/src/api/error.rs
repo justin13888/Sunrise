@@ -30,8 +30,16 @@ use kynos::error::rejection::AuthRejection;
 /// constants rather than strings formatted at the call site.
 pub mod codes {
     /// Token signature, issuer, or audience did not validate. Also the code
-    /// every device-binding failure collapses to — see [`super::ApiError`].
+    /// every device-binding failure *upstream of the device lookup* collapses
+    /// to — see [`super::ApiError`] for where the line is drawn and why.
     pub const AUTH_TOKEN_INVALID: &str = "AUTH_TOKEN_INVALID";
+    /// The caller's device resolved to an active row on the authenticated
+    /// account and its `header_sig_v2` binding still did not check out.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::AuthDeviceSigInvalid`] (registry id
+    /// 204). Only [`super::ApiError::device_sig_invalid`] produces it, which
+    /// is what keeps the two-tier rule a property rather than a convention.
+    pub const AUTH_DEVICE_SIG_INVALID: &str = "AUTH_DEVICE_SIG_INVALID";
     /// First login for an unknown account while `allow_signup = false`.
     pub const AUTH_SIGNUP_DISABLED: &str = "AUTH_SIGNUP_DISABLED";
     /// Caller is not an active device of the account.
@@ -54,16 +62,27 @@ pub mod codes {
 
 /// A failure this surface can return.
 ///
-/// Every authentication and device-binding failure collapses to
-/// [`ApiError::Unauthenticated`] carrying [`codes::AUTH_TOKEN_INVALID`],
-/// deliberately. The server distinguishes a bad signature from an expired token
-/// from a revoked device in its own logs; a client is told none of it, because
-/// the difference is only useful to someone probing which accounts and devices
-/// exist.
+/// Every authentication and device-binding failure is a `401`
+/// [`ApiError::Unauthenticated`], and the code it carries follows one rule:
 ///
-/// The one distinction a client *does* need — "your token expired, refresh and
-/// retry" — travels as a `WWW-Authenticate` challenge, which is what RFC 6750
-/// defines for exactly that and which does not require a second code.
+/// - **Before the caller's device has resolved** — no credential, a bearer
+///   that did not verify, an account that did not resolve, a device id that is
+///   not an active row on this account — the code is
+///   [`codes::AUTH_TOKEN_INVALID`]. Anything finer would answer "does this
+///   device exist on this account?" for an unauthenticated caller, which is an
+///   enumeration oracle, and the server distinguishes the cases in its own log
+///   instead.
+/// - **After it has resolved** — the caller is provably an active device of
+///   the authenticated account, and only its *signature* is wrong or stale —
+///   the code is [`codes::AUTH_DEVICE_SIG_INVALID`]. Nothing is disclosed that
+///   the caller did not already prove, and the distinction is the difference
+///   between "fix your clock and re-sign" and "get a new bearer", which a
+///   client cannot guess and will otherwise get wrong by refreshing a token
+///   that was never the problem.
+///
+/// The one further distinction a client needs — "your token expired, refresh
+/// and retry" — travels as a `WWW-Authenticate` challenge, which is what RFC
+/// 6750 defines for exactly that and which does not require a second code.
 #[derive(Debug, thiserror::Error, kynos::ApiError)]
 #[problem(base = "https://sunrise.app/problems/")]
 pub enum ApiError {
@@ -82,8 +101,9 @@ pub enum ApiError {
     #[error("authentication required")]
     #[problem(status = 401, title = "Unauthenticated")]
     Unauthenticated {
-        /// Always [`codes::AUTH_TOKEN_INVALID`]; see the type's own docs for
-        /// why this carries no finer distinction.
+        /// [`codes::AUTH_TOKEN_INVALID`], or
+        /// [`codes::AUTH_DEVICE_SIG_INVALID`] once the caller's device has
+        /// resolved. See the type's own docs for where the line sits.
         #[problem(extension)]
         code: &'static str,
     },
@@ -183,12 +203,66 @@ impl ApiError {
         }
     }
 
-    /// `401 AUTH_TOKEN_INVALID`. The only way to build a 401 on this surface,
-    /// which is what makes the collapse a property rather than a convention.
+    /// `401 AUTH_TOKEN_INVALID` — every authentication failure that has not
+    /// yet resolved the caller's device.
     #[must_use]
     pub fn unauthenticated() -> Self {
         Self::Unauthenticated {
             code: codes::AUTH_TOKEN_INVALID,
+        }
+    }
+
+    /// `401 AUTH_DEVICE_SIG_INVALID` — the signature, and only the signature.
+    ///
+    /// `api/signed.rs::verify_bytes` is the one place this is emitted, in three
+    /// spots. Two are after the caller's device has resolved to an active row
+    /// on the authenticated account; one is not:
+    ///
+    /// 1. **Before any lookup** — `require_device_sig` is set and the caller
+    ///    did not present a *complete* binding. `verify_bytes` destructures
+    ///    `X-Sunrise-Device` and `X-Sunrise-Device-Sig` together, so this takes
+    ///    a request missing either one as well as a request missing both. It
+    ///    discloses nothing about the account: `GET /meta` already publishes
+    ///    `device_binding_required` to anyone who asks. See the caveat below
+    ///    for what it does disclose.
+    /// 2. **After** the lookup — the `Date` header is absent.
+    /// 3. **After** the lookup — `verify_canonical` refused: a bad signature,
+    ///    an unparseable key, or a `Date` outside the ±300 s replay window.
+    ///    This is the case the code exists for. A drifted clock is cured by
+    ///    setting the clock, and a client told `AUTH_TOKEN_INVALID` instead
+    ///    refreshes a bearer that was never the problem, forever.
+    ///
+    /// What must stay [`Self::unauthenticated`] is everything that would answer
+    /// a question about the account: a device id that is not an active row
+    /// here, a header that disagrees with the token's own `device_id` claim,
+    /// and any failure to resolve the account or the bearer. A code that
+    /// separated those would answer "which devices does this account have?" for
+    /// a caller who has proved nothing.
+    /// `an_unknown_device_is_still_indistinguishable_from_a_bad_bearer` is the
+    /// guard on that half.
+    ///
+    /// # What case 1 discloses
+    ///
+    /// With `require_device_sig = true`, a caller who sends no binding gets
+    /// `401 AUTH_DEVICE_SIG_INVALID` on a valid bearer and
+    /// `401 AUTH_TOKEN_INVALID` on an invalid one — the bearer never reaches
+    /// this code, so the two are told apart. Both were `AUTH_TOKEN_INVALID`
+    /// before. That is a bearer-validity oracle, and it is live wherever
+    /// `require_device_sig` is on, which `ServerConfig` derives from
+    /// `oidc_issuer` when the operator does not set it.
+    ///
+    /// It is narrow: the endpoint returns no `200` to a binding-less caller
+    /// whatever the bearer says, so it separates "this token is currently
+    /// valid" from "it is not" and discloses nothing about the account behind
+    /// it — against an attacker who already holds the token to test. Closing it
+    /// means putting case 1 behind its own opt-in config so an operator can
+    /// trade the diagnostic for the silence. That is worth doing deliberately
+    /// rather than as a side effect of this change, so it is recorded here and
+    /// the behaviour is left alone.
+    #[must_use]
+    pub fn device_sig_invalid() -> Self {
+        Self::Unauthenticated {
+            code: codes::AUTH_DEVICE_SIG_INVALID,
         }
     }
 
@@ -270,7 +344,7 @@ impl From<crate::store::StoreError> for ApiError {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",
-                    reason = %e,
+                    cause = %e,
                     "storage error"
                 );
                 Self::internal()

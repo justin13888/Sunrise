@@ -26,7 +26,7 @@ Attachment = {
     blob_key:      bstr .size 32,       ; per-blob symmetric key; sealed inside the op envelope
     blob_id:       bstr .size 16,       ; assigned by the creating device
     chunk_count:   uint,                ; >= 1
-    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext, for dedup and integrity
+    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext; end-to-end integrity
     deleted:       bool,
     unknown-fields,                     ; see overview.md
 }
@@ -81,13 +81,13 @@ the entity.
 - Each attachment has a per-blob symmetric key, generated client-side.
 - Plaintext is encrypted with that key (AEAD; chunked so streaming partial reads work).
 - The key is carried on the Attachment itself (`blob_key`) alongside the blob id and chunk count, sealed inside the op envelope.
-- The encrypted blob is uploaded to the server (or kept LAN-local in T3 topologies).
+- The encrypted blob is uploaded to the server. There is no LAN-local option: [`../01-architecture/deployment-topologies.md`](../01-architecture/deployment-topologies.md) defines two topologies, neither of which is LAN-only.
 
 ## Size policy
 
-- Hard limit per attachment: 100 MB on managed cloud (configurable on self-host).
+- Hard limit per attachment: **100 MB, fixed** (`MAX_BLOB_BYTES`, `crates/sunrise-server/src/api/blobs.rs:59-61`). It is a compile-time constant, not an operator setting and not a plan tier; the constant's own doc comment still describes it as "100 MB on managed cloud, configurable on self-host", which [ADR-0027](../11-adr/0027-v1-self-host-first.md) retires. Correcting that comment is a code change.
 - Recommended UX: nudge user toward external storage links (Drive, Dropbox) for files > 25 MB.
-- Total per-vault quota: tiered (see [`../06-server/billing.md`](../06-server/billing.md)).
+- No per-vault quota. The only ceiling is the fixed 100 MB per attachment above (`crates/sunrise-server/src/api/blobs.rs:61`); v1 has no per-account accounting to charge a vault total against ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 ## Lazy fetch
 
@@ -142,7 +142,17 @@ The server runs the GC; only the **blob** is GC'd, never the metadata, since met
 Image attachments include a thumbnail generated on the **source device** at attach time:
 
 - Max edge: 512 px; format: AVIF (fallback JPEG for platforms without AVIF encode).
-- Stored as a separate small blob with the same per-blob key as the original (no extra key envelope).
-- The thumbnail's `BlobRef` is recorded in a `thumbnail_ref` field on the Attachment metadata op.
+- Stored as a **separate blob with its own fresh random `blob_key` and its own
+  `blob_id`**. It MUST NOT reuse the original's key: the chunk nonce is derived
+  from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness, so one key over
+  two different plaintexts is a nonce reuse
+  ([`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+  §Blob chunks). Earlier revisions of this file specified the key sharing
+  explicitly, on the grounds that it saved a key envelope; the saving is not
+  worth the property it destroys.
+- *Target state.* `crates/sunrise-domain/src/attachment.rs` models no thumbnail:
+  there is no `thumbnail_ref` field, no second `blob_key`, and no generation
+  path. Whatever shape it lands in has to carry both a key and an id, not a
+  reference alone.
 
 Generating on receivers is rejected for v1: it would require every receiver to fetch the full ciphertext just to thumbnail, defeating the lazy-fetch policy.
