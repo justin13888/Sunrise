@@ -439,6 +439,14 @@ mod tests {
 
     /// ...and one just under the limit still encodes, so the bound is not so
     /// conservative that a realistic vault trips it.
+    #[test]
+    fn a_thousand_keys_still_fit() {
+        let p = payload(500, 2);
+        let bytes = encode_pairing_payload(&p).expect("1000 keys fit in one message");
+        assert!(bytes.len() <= MAX_PAIRING_PAYLOAD);
+        assert_eq!(decode_pairing_payload(&bytes).unwrap().key_count(), 1000);
+    }
+
     /// A payload whose `ID_D` halves disagree is refused at decode.
     ///
     /// `ID_D_pub` is what every `key_envelope` is sealed to and `ID_D_priv` is
@@ -477,14 +485,6 @@ mod tests {
             decode_pairing_payload(&bytes).unwrap().id_d_pub,
             good.id_d_pub
         );
-    }
-
-    #[test]
-    fn a_thousand_keys_still_fit() {
-        let p = payload(500, 2);
-        let bytes = encode_pairing_payload(&p).expect("1000 keys fit in one message");
-        assert!(bytes.len() <= MAX_PAIRING_PAYLOAD);
-        assert_eq!(decode_pairing_payload(&bytes).unwrap().key_count(), 1000);
     }
 
     #[test]
