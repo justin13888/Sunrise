@@ -38,7 +38,7 @@ superseding decision named in the **Governing decision** column.
 | Log redaction | `sunrise-log` (workspace) | — | [ADR-0010](../11-adr/0010-logging-strategy.md) (amended), [logging.md](../10-cross-cutting/logging.md) §6 | Not a logger. `Plain<T>` (no `Display`/`Serialize`/`Value`), the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. |
 | Property-based testing | `proptest` | 1.11.0 | [testing.md](../10-cross-cutting/testing.md) | Convergence / redaction / round-trip proptests. |
 | Foreign bindings (Swift, later Kotlin) | `uniffi` | 0.32.0 | [ADR-0019](../11-adr/0019-swiftui-macos-client.md), [ADR-0026](../11-adr/0026-msrv-bump.md) | `sunrise-core-bindings` only, `default-features = false` + `tokio`. 0.32's only default feature is `cargo-metadata`, which serves the UDL/build-script path; these bindings are generated in `--library` mode from the compiled dylib, so it is dead weight here and turning it off keeps `cargo_metadata` + `cargo-platform` out of the seam crate. The generator lives in `tools/uniffi-bindgen`, **outside** the workspace, with its own lockfile — for **feature unification**, not MSRV: as a member it would ask `uniffi` for `cli`, and resolver 2 would unify that onto the seam crate's build, adding 20 third-party packages (`askama`, `goblin`, `uniffi_bindgen`, `uniffi_udl`, …) to every workspace build. It formerly also pinned `cargo-platform` to 0.3.2 against the 1.88 toolchain; ADR-0026 lifted that and the pin is gone. `mise run apple-xcframework` builds it `--locked`. |
-| Snapshot testing | `insta` | *declared 1.40; not in lock* | [testing.md](../10-cross-cutting/testing.md) | Declared `1.40` with the `yaml` feature. It resolved to `1.48.0` while it had a consumer; with that consumer gone it is unconsumed again and **no longer appears in `Cargo.lock`**, like `hpke`. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); the entry stays because snapshot testing is still the right tool for the next renderer that needs it. See Reconciliations §e. |
+| Snapshot testing | *none (`insta` removed)* | — | [testing.md](../10-cross-cutting/testing.md) | `insta` was declared `1.40` with the `yaml` feature and is **no longer declared at all**. Its only consumer was `sunrise-tui`'s golden-frame render snapshots, deleted with the TUI ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)); it resolved to `1.48.0` while that consumer existed and left `Cargo.lock` when it went. The declaration was kept after that on the reasoning in Reconciliations §e, and issue #36 reversed it: a declaration with no consumer reads as coverage that is already there. Nothing resolves it, so re-adding it costs one line whenever a renderer needs snapshots. See Reconciliations §e. |
 | Benchmarking | `criterion` | 0.5.1 | [testing.md](../10-cross-cutting/testing.md) | `sunrise-bench` only. `default-features = false` + `cargo_bench_support`; drives the submit / query_today@10k / fts@10k / sync_session benches that feed `bench/baseline.json`. The last was `ws_handshake` until [ADR-0023](../11-adr/0023-sse-sync-transport.md) removed the upgrade it measured. |
 | Deterministic seeded RNG | `rand_chacha` | 0.3.1 | [testing.md](../10-cross-cutting/testing.md) | ChaCha20 CSPRNG seeded for reproducibility. Direct dependency of `sunrise-crypto`, `sunrise-onboarding`, `sunrise-crypto-test-vectors`, `sunrise-e2e` (seeded chaos transport), and `sunrise-bench` (fixture generation). |
 | Datetime | `jiff` | 0.2.32 | [ADR-0011](../11-adr/0011-datetime-jiff.md) | Sole datetime library **in Sunrise's own code**. `jiff::Timestamp` for absolute instants; civil/`Zoned` types available for wall-clock and tz-aware semantics. The chrono→jiff migration landed and the unused `time` dependency was removed. `chrono` 0.4.45 is back in `Cargo.lock` — transitively, via `oauth2`; see that row and Reconciliations §f. Nothing in the workspace calls it. See Reconciliations §d. |
@@ -143,12 +143,29 @@ string, so the canonical bytes are byte-identical.
 ### e. `insta` — consumed, then unconsumed again
 
 `insta` was *declared but unconsumed*, then became a dev-dependency of
-`sunrise-tui` for golden-frame render snapshots, and is now unconsumed again:
+`sunrise-tui` for golden-frame render snapshots, and became unconsumed again:
 [ADR-0019](../11-adr/0019-swiftui-macos-client.md) deleted that crate. Declared
 as `1.40` in `[workspace.dependencies]`, it resolved to **`1.48.0`** while it
-had a consumer. The declaration stays — snapshot testing is the right tool for
-whatever renders next, and re-adding it later would be a decision to re-argue
-for no reason.
+had a consumer.
+
+This section previously read "the declaration stays — snapshot testing is the
+right tool for whatever renders next, and re-adding it later would be a
+decision to re-argue for no reason." Issue #36 reversed that, and the
+declaration is now **removed**. The reasoning it rested on weighed the cost of
+re-arguing the choice against the cost of keeping the line, and left out what
+the line does to a reader in the meantime: `[workspace.dependencies]` is
+inventory, not intent, and an entry there is read as a tool the project already
+has. That is not hypothetical. During the same run that removed it, a reader
+went through the crate manifests, found `proptest` declared in four crates that
+never call it, and reported those crates as property-tested.
+
+Nothing was re-argued by removing it, because nothing was decided: `insta` is
+not in `Cargo.lock` and has no consumer, so the removal changes no build and
+the resolved package graph is byte-identical either side of it. Whoever next
+needs snapshot tests adds one line back and picks the version current at the
+time, rather than inheriting a `1.40` floor chosen for a crate that no longer
+exists. What survives here is the record of why it was ever declared, which is
+the part that would have been expensive to reconstruct.
 
 ### f. `chrono` is back in the lock file, and nothing calls it
 
