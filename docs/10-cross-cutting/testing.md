@@ -23,7 +23,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 
 #### Convergence property-test determinism
 
-- **Library**: `proptest` (Rust). Fuzz targets that need wire-bytes coverage are `cargo-fuzz` binaries in `fuzz/`: `op_envelope`, `wire_frame`, `rrule`, `ical`, `oauth_state`, `recovery_blob`.
+- **Library**: `proptest` (Rust) — a real, in-use dependency (`sunrise-core`, `sunrise-crypto`, `sunrise-domain`, `sunrise-cbor`, `sunrise-id`, `sunrise-wire-protocol`, `sunrise-log`, `sunrise-e2e`). Wire-bytes coverage beyond what proptest reaches is meant to come from `cargo-fuzz` binaries, which are specified but not built — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set and status, rather than restating it here.
 - **Seed**: read from `SUNRISE_FUZZ_SEED` (hex) when set; otherwise default to the first 8 bytes of the workspace `HEAD` commit hash. Every CI run logs the resolved seed in the suite header so a failing run is reproducible by re-export.
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
 - **Assertion**: for every permutation of the same op set across N simulated devices, the final state is byte-identical (canonical CBOR comparison).
