@@ -335,7 +335,8 @@ GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
                                    event carrying `id: <relay_frames.id>`
   ← data: {"kind":"caught_up", …}  per stream, once its backlog is drained
   ← data: {"kind":"ops", …}        live frames as peers publish them, no `id:`
-  ← : sunrise                      a comment every 15 s — what replaced Ping
+  ← : sunrise                      sent after 15 s of silence, not on a
+                                   15 s interval: see below
   ← data: {"kind":"closed", …}     terminal; the body ends after it
 
 POST /sync/ops              X-Sunrise-Session
@@ -349,6 +350,14 @@ POST /sync/session/refresh  X-Sunrise-Session
 The event kind is a field of the JSON `data:` payload, not the SSE `event:`
 name, and `SseTransport` drops comments before they reach the driver rather
 than modelling them as a frame.
+
+The `: sunrise` comment is what replaced `Ping`/`Pong`, and it is an **idle
+timer, not an interval**: every emitted event restarts the 15 s countdown
+(`KEEP_ALIVE_SECS`, `crates/sunrise-server/src/api/sync.rs`), so a stream
+delivering ops continuously sends no comment at all. A conformance test or a
+proxy healthcheck that expects one within every 15 s window will fail against a
+correct server; what the server promises is that a *silent* stream produces one
+within 15 s.
 
 Every operation carries the bearer and, where `require_device_sig` is on, the
 [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) device binding —
