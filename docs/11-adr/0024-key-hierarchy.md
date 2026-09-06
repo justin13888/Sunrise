@@ -78,6 +78,21 @@ Alongside it, the hierarchy the documents already specify is made real:
    could read and seals envelopes only to the remaining devices. The revoked
    device keeps what it already had — unavoidable, and stated — and reads nothing
    written afterwards.
+
+   **Scope, as implemented:** revocation bounds **key distribution**, not
+   writes. The revoked device receives no new epoch key, and a key it offers is
+   not absorbed by its peers — so it cannot read what is written after its cut,
+   and cannot make its peers seal under a key it holds. Its ordinary writes are
+   still applied: peer-side refusal was built and removed, because a refused op
+   freezes the refusing replica's sync cursor for that device while the relay
+   goes on accepting its uploads, and within the relay's retention window that
+   stall latches a permanent data-loss warning on every device in the account.
+   Bounding writes requires the relay to stop accepting them, which is
+   [#80](https://github.com/justin13888/Sunrise/issues/80). Identity rotation is
+   [#76](https://github.com/justin13888/Sunrise/issues/76) and converging the
+   *effect* of a revocation is
+   [#78](https://github.com/justin13888/Sunrise/issues/78). This ADR is
+   implemented at the key layer; it is not complete revocation.
 6. **`stream_keys` becomes the read path.** `EPOCH` stops being a constant.
 
 ### What this fixes in `recovery.md`

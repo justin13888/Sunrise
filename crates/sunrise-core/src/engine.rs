@@ -12658,7 +12658,6 @@ mod tests {
     fn a_revocation_that_arrives_before_the_cert_survives_it() {
         let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let mut dba = db_root(ROOT);
         let mut dbb = db_root(ROOT);
         let a_id = ea.keychain.device_id();
 
