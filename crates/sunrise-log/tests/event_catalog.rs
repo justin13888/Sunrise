@@ -38,10 +38,16 @@
 //! version of this file was a totality claim nobody had written down and so
 //! nobody could check:
 //!
-//! - **An external macro expanding to `include!`.** The walk reads source, not
-//!   expansions, so a third-party macro that pulls in a file is invisible. A
-//!   literal `include!` is refused; one arriving through a macro is not seen at
-//!   all.
+//! - **Anything that arrives by macro expansion.** The walk reads source, not
+//!   expansions. A `macro_rules!` written here is covered, because its body is
+//!   source like any other — but an *external* macro that expands to an
+//!   `include!`, or to a `tracing::` call of its own, is invisible. A literal
+//!   `include!` is refused; one arriving through a macro is not seen at all.
+//! - **Code that is not part of a shipped target.** Tests, benches, examples
+//!   and build scripts are excluded from the file set on purpose: a fixture may
+//!   invent its own event names, and a `build.rs` runs at build time rather
+//!   than in the artefact whose logs an operator reads. Unit tests *inside* a
+//!   shipped `src/` file are scanned, because they are not separable from it.
 //! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
 //!   names a second span site as the trigger to revisit — but nothing here
 //!   detects a second span site, so that trigger is a note, not an alarm. One
@@ -148,6 +154,20 @@ fn derived_manifests() -> BTreeSet<PathBuf> {
         .collect()
 }
 
+/// Whether this build-config file is a container build.
+///
+/// Asked by both the general directory rule, which skips these, and the copy
+/// rule, which covers them. One predicate rather than two spellings of a
+/// filename: the two rules divide the read set between them, and a filter that
+/// disagreed with the reader is the exact drift that let a mise task, a
+/// composite action and a `WORKDIR` through a check written for them.
+fn is_container_build(file: &str) -> bool {
+    Path::new(file)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.starts_with("Dockerfile"))
+}
+
 /// The files that say how this repository is built.
 ///
 /// `mise.toml` is included deliberately: it is where the derivation reads from,
@@ -174,11 +194,23 @@ fn build_config_files() -> Vec<(String, String)> {
             }
         }
     }
-    for named in ["Dockerfile", "mise.toml"] {
-        let path = root.join(named);
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            files.push((rel(&path, &root), text));
+    // Container builds are discovered, not named: a second `Dockerfile.dev`
+    // that copied a foreign manifest in and built it was read by nothing, and
+    // so covered by nothing.
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_container_build(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                files.push((rel(&path, &root), text));
+            }
         }
+    }
+    let mise = root.join("mise.toml");
+    if let Ok(text) = std::fs::read_to_string(&mise) {
+        files.push((rel(&mise, &root), text));
     }
     // Four today: two workflows, the Dockerfile, mise.toml. The floor is
     // against a reader that has stopped finding files, not against deleting a
@@ -1877,10 +1909,11 @@ fn no_build_config_runs_cargo_from_a_directory_of_its_own() {
     // switches off.
     let mut offenders = Vec::new();
     for (file, text) in build_config_files() {
-        // The container build has no directory structure this gate can model —
+        // A container build has no directory structure this gate can model —
         // `/src` is a path inside an image. What decides its manifest is which
-        // `Cargo.toml` is copied in, which is checked on its own below.
-        if file == "Dockerfile" {
+        // `Cargo.toml` is copied in, which
+        // `the_container_build_copies_only_manifests_the_scan_covers` checks.
+        if is_container_build(&file) {
             continue;
         }
         for scope in scopes(&file, &text) {
@@ -1917,21 +1950,33 @@ fn the_container_build_copies_only_manifests_the_scan_covers() {
     // and not anything this gate could learn by modelling container paths.
     let root = workspace_root();
     let derived = derived_manifests();
-    let text = std::fs::read_to_string(root.join("Dockerfile")).expect("Dockerfile is readable");
+    let containers: Vec<(String, String)> = build_config_files()
+        .into_iter()
+        .filter(|(f, _)| is_container_build(f))
+        .collect();
+    // Read from the same set the skip above consumes, so the two rules cannot
+    // come to disagree about which files each is responsible for.
+    assert!(
+        !containers.is_empty(),
+        "no container build was read, so the rule that skips them in \
+         `no_build_config_runs_cargo_from_a_directory_of_its_own` covers nothing"
+    );
     let mut offenders = Vec::new();
-    for line in text.lines() {
-        let t = line.trim_start();
-        if !t.starts_with("COPY ") {
-            continue;
-        }
-        for token in t.split_whitespace().skip(1) {
-            if !token.ends_with("Cargo.toml") {
+    for (file, text) in containers {
+        for line in text.lines() {
+            let t = line.trim_start();
+            if !t.starts_with("COPY ") {
                 continue;
             }
-            let path = root.join(token);
-            let path = path.canonicalize().unwrap_or(path);
-            if !derived.contains(&path) {
-                offenders.push(format!("Dockerfile: `COPY {token}`"));
+            for token in t.split_whitespace().skip(1) {
+                if !token.ends_with("Cargo.toml") {
+                    continue;
+                }
+                let path = root.join(token);
+                let path = path.canonicalize().unwrap_or(path);
+                if !derived.contains(&path) {
+                    offenders.push(format!("{file}: `COPY {token}`"));
+                }
             }
         }
     }
