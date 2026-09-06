@@ -1014,6 +1014,15 @@ fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
     assert!(out.status.success(), "inbox failed: {out:?}");
     let bytes = std::fs::read(&payload).expect("the payload must have been written");
     assert!(!bytes.is_empty(), "an empty payload is not a payload");
+    // The payload is the whole account in the clear — `ID_S_priv`,
+    // `ID_D_priv`, the vault root and every Stream key — so it must not land
+    // at the process umask, which on a default 022 would leave it 0644.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&payload).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
     // stdout stays the contract: the demo banner goes to stderr.
     assert!(
         !stdout(&out).contains("exported pairing payload"),
