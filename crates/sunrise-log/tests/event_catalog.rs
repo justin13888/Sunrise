@@ -72,9 +72,26 @@ fn rel(path: &Path, root: &Path) -> String {
 /// output, `tests/fixtures` crates and `--target-dir ./build` leftovers, none
 /// of which anyone ships, and firing on those is how a gate gets switched off.
 fn extra_manifests() -> Vec<PathBuf> {
-    const FLAG: &str = "--manifest-path";
     let root = workspace_root();
     let text = std::fs::read_to_string(root.join("mise.toml")).expect("mise.toml is readable");
+    let mut found: Vec<PathBuf> = manifest_path_args(&text)
+        .into_iter()
+        .map(|p| root.join(p))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every `--manifest-path` argument in `text`, in source order.
+///
+/// Shared by [`extra_manifests`] and by
+/// [`no_build_config_names_a_manifest_the_scan_does_not_cover`], so the
+/// derivation and the gate that checks it cannot disagree about what a
+/// `--manifest-path` says — the same reason an event name is read out of the
+/// field parse rather than by a second search of its own.
+fn manifest_path_args(text: &str) -> Vec<String> {
+    const FLAG: &str = "--manifest-path";
     let mut found = Vec::new();
     let mut from = 0;
     while let Some(at) = text[from..].find(FLAG).map(|r| from + r) {
@@ -86,12 +103,57 @@ fn extra_manifests() -> Vec<PathBuf> {
             .unwrap_or_default()
             .trim_matches(['"', '\'']);
         if !path.is_empty() {
-            found.push(root.join(path));
+            found.push(path.to_owned());
         }
     }
-    found.sort();
-    found.dedup();
     found
+}
+
+/// The workspace manifest plus every manifest the build config names beside it
+/// — the complete set these gates derive their file list from.
+fn derived_manifests() -> BTreeSet<PathBuf> {
+    let mut set = vec![workspace_root().join("Cargo.toml")];
+    set.extend(extra_manifests());
+    set.into_iter()
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .collect()
+}
+
+/// The files that say how this repository is built.
+///
+/// `mise.toml` is included deliberately: it is where the derivation reads from,
+/// so scanning it too means the gate below checks the derivation against
+/// itself rather than only against everything else.
+fn build_config_files() -> Vec<(String, String)> {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    let mut stack = vec![root.join(".github/workflows")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                files.push((rel(&path, &root), text));
+            }
+        }
+    }
+    for named in ["Dockerfile", "mise.toml"] {
+        let path = root.join(named);
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            files.push((rel(&path, &root), text));
+        }
+    }
+    assert!(
+        files.len() >= 4,
+        "expected the workflows, the Dockerfile and mise.toml, found {}: {:?}",
+        files.len(),
+        files.iter().map(|(f, _)| f).collect::<Vec<_>>()
+    );
+    files
 }
 
 /// `cargo metadata --no-deps` for the workspace and for every manifest the
@@ -1592,4 +1654,144 @@ fn an_aliased_macro_path_is_refused_by_the_path_gates() {
             "{stmt:?} must be refused by the import gate"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The derivation's own boundary
+// ---------------------------------------------------------------------------
+//
+// The file set comes from `cargo metadata` plus the `--manifest-path` flags in
+// `mise.toml`. The first half is the compiler's own view and cannot drift; the
+// second is a *convention* — that everything this repo builds goes through a
+// mise task. A workflow that reached around mise and ran cargo against a
+// manifest of its own would build a crate no gate here reads, and nothing would
+// say so.
+//
+// Nothing does that today. These check it rather than trust it.
+
+/// Whether a build-config line runs cargo.
+fn mentions_cargo(text: &str) -> bool {
+    word_boundary_hits(text, "cargo").next().is_some()
+}
+
+/// Byte offsets where `word` appears as a whole word.
+fn word_boundary_hits<'a>(text: &'a str, word: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let bytes = text.as_bytes();
+    text.match_indices(word).filter_map(move |(at, _)| {
+        let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
+        let after = at + word.len();
+        let after_ok = bytes.get(after).copied().is_none_or(|b| !is_ident_byte(b));
+        (before_ok && after_ok).then_some(at)
+    })
+}
+
+#[test]
+fn no_build_config_names_a_manifest_the_scan_does_not_cover() {
+    let root = workspace_root();
+    let derived = derived_manifests();
+    let mut offenders = Vec::new();
+    for (file, text) in build_config_files() {
+        for arg in manifest_path_args(&text) {
+            // An interpolated path cannot be resolved here, and a manifest this
+            // gate cannot name is a manifest it cannot check. Same rule as an
+            // `include!`: refuse it and say so.
+            if arg.contains("${{") || arg.contains('$') || arg.contains('`') {
+                offenders.push(format!(
+                    "{file}: `--manifest-path {arg}` is interpolated, so this gate cannot \
+                     tell which manifest it resolves to"
+                ));
+                continue;
+            }
+            let path = root.join(&arg);
+            let path = path.canonicalize().unwrap_or(path);
+            if !derived.contains(&path) {
+                offenders.push(format!(
+                    "{file}: `--manifest-path {arg}` names a manifest the file set does \
+                     not include"
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these build a crate with a manifest these gates do not read, so its log \
+         vocabulary is checked by nothing. Route the build through a `mise.toml` \
+         task — which is where the out-of-workspace half of the file set is \
+         derived from — or make the manifest a workspace member:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn no_workflow_step_runs_cargo_from_a_directory_of_its_own() {
+    // The other way to reach a foreign manifest: leave the workspace root and
+    // let cargo find whatever is there. A step that both changes directory and
+    // runs cargo is refused rather than guessed at — this gate has no YAML
+    // parser and will not pretend to know which manifest that resolves to.
+    //
+    // Only steps that do *both* are flagged. A `working-directory` on a step
+    // that runs bun is ordinary work, and a gate that fires on ordinary work is
+    // one someone switches off.
+    let mut offenders = Vec::new();
+    for (file, text) in build_config_files() {
+        if !file.starts_with(".github/workflows/") {
+            continue;
+        }
+        // Steps are YAML sequence items; splitting on them is enough to tell
+        // "this step" from "some other step".
+        for step in text.split("\n      - ") {
+            if !mentions_cargo(step) {
+                continue;
+            }
+            let moves = step.contains("working-directory:")
+                || step
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("cd ") || l.contains("&& cd "));
+            if moves {
+                let name = step
+                    .lines()
+                    .next()
+                    .map_or_else(String::new, |l| snippet(l.trim()));
+                offenders.push(format!(
+                    "{file}: a step that changes directory and runs cargo ({name})"
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these run cargo somewhere other than the workspace root, so which \
+         manifest they build is not something this gate can determine. Give the \
+         invocation an explicit `--manifest-path`, or route it through a \
+         `mise.toml` task:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn the_build_config_scan_actually_reads_cargo_invocations() {
+    // A floor near the real count, not far below it. The workflows, the
+    // Dockerfile and mise.toml carry dozens of cargo invocations between them;
+    // a scanner that quietly stopped matching would otherwise pass both gates
+    // above by finding nothing to check.
+    let files = build_config_files();
+    let with_cargo = files.iter().filter(|(_, t)| mentions_cargo(t)).count();
+    assert!(
+        with_cargo >= 3,
+        "expected cargo invocations in at least 3 build-config files, found \
+         {with_cargo}: {:?}",
+        files.iter().map(|(f, _)| f).collect::<Vec<_>>()
+    );
+    // And the one `--manifest-path` the repo actually has must be found, or the
+    // argument parser has stopped working and `extra_manifests` with it.
+    let found: Vec<String> = files
+        .iter()
+        .flat_map(|(_, t)| manifest_path_args(t))
+        .collect();
+    assert!(
+        found.iter().any(|p| p.contains("uniffi-bindgen")),
+        "the `--manifest-path` parser found {found:?}, which does not include the \
+         one manifest mise.toml names — `extra_manifests` reads the same parser, \
+         so the file set would be short a crate"
+    );
 }
