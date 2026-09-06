@@ -1,8 +1,31 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Android Client
+
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4 places Android after
+> v1. This document is the design of record for that work, not a description of
+> anything that ships.
+>
+> **What exists in the tree:** the string `"android"` in the device-platform
+> allowlist (`crates/sunrise-server/src/api/devices.rs:19`,
+> `store.rs:82`, `crates/sunrise-relay-client/src/bootstrap.rs:34`) and two
+> comments saying Kotlin bindings would be generated when Android arrives
+> (`crates/sunrise-core-bindings/src/lib.rs:5`, its `Cargo.toml:10`). No Android
+> source, no Gradle or SDK configuration, no CI job, no device.
+> `.github/workflows/release.yml:314` puts it plainly: "Google Play — there is
+> no Android app."
+>
+> **Why it is not v1:** [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
+> committed v1's graphical client to SwiftUI on macOS. A second native client is
+> a separate build, a separate store pipeline and a separate QA surface, none of
+> which exist.
+>
+> **What holds regardless:** nothing here constrains v1 code. The UniFFI seam
+> this document assumes is real and is exercised by the macOS app, so the
+> starting position for the work is better than the rest of this page implies.
 
 Native Kotlin / Jetpack Compose app. The Sunrise core ships as an `.aar` via UniFFI bindings (JNI under the hood).
 
@@ -99,16 +122,11 @@ Compose UI ──▶ ViewModels ──▶ CoreClient (Kotlin wrapper)
 
 ## OEM quirks
 
-- **Battery optimization whitelisting**: we ask once on first launch (with explanation), document in help. Some OEMs (Xiaomi, Huawei, OnePlus historically) aggressively kill background work; we document workarounds and degrade gracefully.
-- **Custom skins** that override widget rendering. Tested skin matrix:
-
-| Skin | Device used in CI / QA | Min OS |
-|---|---|---|
-| Pixel | Pixel 7 | Android 13 |
-| One UI (Samsung) | Galaxy S22 | Android 13 |
-| MIUI (Xiaomi) | Redmi Note 12 | Android 12 |
-| HyperOS (Xiaomi 2024+) | Xiaomi 13T | Android 14 |
-| OxygenOS (OnePlus) | OnePlus 11 | Android 13 |
+- **Battery optimization whitelisting**: ask once on first launch (with explanation), document in help. Some OEMs (Xiaomi, Huawei, OnePlus historically) aggressively kill background work; document workarounds and degrade gracefully.
+- **Custom skins** that override widget rendering. A skin matrix will be needed;
+  none is claimed here. Earlier revisions of this file named five specific
+  devices under the heading "Device used in CI / QA", which asserted a test
+  estate that has never existed.
 
 ## Performance budgets
 

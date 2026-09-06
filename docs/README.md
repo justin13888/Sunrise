@@ -35,7 +35,7 @@ Two cross-cutting substrates every section depends on:
 
 ## Conventions
 
-- **Status legend** — YAML frontmatter on every doc: `status: accepted` (frozen design) or `status: living` (tracks implementation). ADRs use a `**Status:** accepted` line instead.
+- **Status legend** — YAML frontmatter on every doc: `status: accepted` (frozen design, change-controlled per the rule above), `status: living` (tracks implementation), or `status: proposed` (design of record for work not scheduled in v1; see [ADR-0027](./11-adr/0027-v1-self-host-first.md)). A number quoted from a `proposed` doc is not a contract, and citing one from an `accepted` doc is a defect. ADRs use a `**Status:** accepted` line instead.
 - **MUST / SHOULD / MAY** follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 - **Cross-references** use relative paths: `[envelope format](./03-crypto/data-encryption-format.md)`.
 - **Diagrams** are ASCII first.

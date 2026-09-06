@@ -47,16 +47,27 @@ they carry their own values. So no shipping client reads a shared token today,
 which is why the drift above has cost nothing yet and why it will cost
 something the moment a second consumer appears.
 
-## Four-state view contract
+## Three-state view contract
 
-Every view MUST implement four states. This is the canonical table; per-view files reference this section rather than duplicating it.
+Every view MUST implement three states. This is the canonical table; per-view files reference this section rather than duplicating it.
 
 | State | Trigger | Visual | Action |
 |---|---|---|---|
 | `loading` | Initial vault read or async fetch in flight > 200 ms | Skeleton placeholder of 3 list rows; no spinner unless > 1 s, then small inline spinner; no modal. | None auto; user can navigate away. |
 | `empty` | View has no entities to render after load. | Centered illustration glyph + 1-line copy + 1 primary action button (e.g. "Capture your first task"). Copy is per-view from `i18n` table `view.<name>.empty.*`. | Primary action triggers the view's main affordance. |
 | `error` | Async load failed, or sync session error blocks data. | Inline banner at top of view: icon + 1-line `error.<ErrorCode>.title` + 1 retry button. View renders cached/stale data below if available. | Retry re-runs the failed operation. |
-| `conflict` | Merge applied a conflict-resolution rule the user might want to review. | Toast notification (5 s) + entry in Reviews → Recent Conflicts. | Tap toast → opens conflict-detail view. |
+
+**There is no `conflict` state.** Its data source was asserted absent by
+[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)
+§Merge journal — removed: `merge_journal` was dropped by
+[ADR-0018](../11-adr/0018-storage-baseline-reset.md), and
+`baseline_omits_the_dead_schema` in `crates/sunrise-storage/src/db.rs` fails if
+it returns. Nothing records that a concurrent edit lost, so a view has nothing to
+raise a toast about. This is not an omission to be filled in later by the UI: the
+state cannot exist until a journal does, and reinstating one needs an ADR
+superseding 0018's removal. [ADR-0014](../11-adr/0014-entity-level-lww-merge.md)
+§What would force revisiting this, trigger 2 (per-field merge becoming
+user-visible), is the likeliest place both come back together.
 
 ### Per-view empty-state copy
 
@@ -83,7 +94,7 @@ Patterns are described once and implemented natively per platform:
 | **Stream chip** | Color dot + name; consistent across all surfaces |
 | **Today header** | Date + day-of-week + a count summary |
 | **Detail pane** | Slides in from trailing edge; never modal blocking; closes with `Esc` |
-| **Empty state** | See "Four-state view contract" above |
+| **Empty state** | See "Three-state view contract" above |
 
 ## Component implementations
 

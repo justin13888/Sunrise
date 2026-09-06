@@ -65,7 +65,7 @@ A Person becomes a Sunrise *peer* by linking to an `identity_id`. This happens v
 After linking:
 
 - Sharing capabilities apply.
-- Avatar and display name from the peer's own profile (an opt-in profile sync; defaults to user-set local values).
+- Display name from the peer's own profile (an opt-in profile sync; defaults to the user-set local value). There is no avatar: `Person` carries no image field and nothing transports one.
 
 See [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md) for the cryptographic layer.
 
@@ -79,7 +79,7 @@ People records are **per-vault** and never sent to the server in plaintext. Link
 |---|---|---|
 | Share Stream | Stream + all child entities | Recipient can read/edit per role |
 | Unshare | Stream | Future ops not delivered to recipient; recipient retains last-seen state locally (we cannot exfiltrate from their device) |
-| Transfer ownership | Stream | New owner becomes responsible; permissions reset; original owner's access becomes "shared with" |
+| Transfer ownership *(target state)* | Stream | New owner becomes responsible; permissions reset; original owner's access becomes "shared with". No op kind, no command and no route exists for this; per the banner above, none of this table is built. |
 
 Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no team admin surface).
 
@@ -98,7 +98,7 @@ Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no te
 | Trigger Stream-key rotation | — | — (owner only) |
 | Archive or delete the Stream | — | — (owner only) |
 
-Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, the relay enforces the same boundary by dropping ops whose signing identity does not have `editor` role on the target Stream.
+Ops emitted by a viewer are dropped client-side before transmission; if a viewer's compromised client emits ops anyway, every honest peer drops them on receipt, because the grant record is in the receiver's own vault and the op carries an identity signature to check against it. There is no relay-side role check and there cannot be one: the relay reaches only `EnvelopeHeader` and holds no grant ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`).
 
 ### Permission elevation (viewer → editor)
 

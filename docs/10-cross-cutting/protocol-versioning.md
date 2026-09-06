@@ -317,14 +317,22 @@ Prometheus text at `/metrics`. It has one operation — increment a counter by
 name — and therefore **no labels, no histograms and no gauges**. Every series it
 emits is a bare counter name:
 
+<!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
+     grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
+     Last extracted: 310e377 -->
+
 ```
-sunrise_sync_token_expired_total       sunrise_sync_token_refreshed_total
-sunrise_sync_unauthenticated_total     sunrise_relay_append_failed_total
-sunrise_relay_cursor_gap_total         sunrise_device_sig_rejected_total
-sunrise_account_create_total           sunrise_devices_{list,register,revoke}_total
+sunrise_sync_{negotiate_refused,session,refresh,stream}_total
+sunrise_relay_append_failed_total       sunrise_relay_cursor_gap_total
+sunrise_device_sig_rejected_total       sunrise_account_create_total
+sunrise_devices_{list,register,revoke}_total
 sunrise_blob_{init,chunk,finalize,fetch}_total
-sunrise_blob_hash_mismatch_total       sunrise_push_{apns,fcm,web}_total
+sunrise_blob_hash_mismatch_total
+sunrise_push_register_total             sunrise_push_{apns,fcm,web}_total
 ```
+
+Twenty names. The full list with its provenance lives in
+[`../06-server/observability.md`](../06-server/observability.md) §Metrics.
 
 The registry's `render` passes a name containing `{` through verbatim, so a
 labelled series is *expressible* as a string, but nothing constructs one.

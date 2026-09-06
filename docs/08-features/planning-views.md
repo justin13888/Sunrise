@@ -87,4 +87,4 @@ One screen showing every Stream as a card with: count of open tasks, count overd
 
 ## States
 
-Empty / loading / error / conflict states for every planning view follow the four-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#four-state-view-contract). Per-view empty copy lives in the same file's "Per-view empty-state copy" table.
+Empty / loading / error states for every planning view follow the three-state contract in [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md#three-state-view-contract). Per-view empty copy lives in the same file's "Per-view empty-state copy" table.

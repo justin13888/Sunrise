@@ -1,12 +1,23 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Presence
 
-> **Nothing on this page is implemented, and one design choice on it needs a
-> decision before any of it is.**
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 3 places presence
+> after v1, and fixes the condition for its return: an ADR that states the
+> behavioural-metadata leak outright and amends
+> [`../06-server/overview.md`](../06-server/overview.md) §Non-responsibilities
+> in the same change. This document is the design of record for that work, not
+> a description of anything that ships.
 >
+> **What exists in the tree:** two message-kind discriminators and nothing
+> behind them (below).
+>
+> **Why it is not v1:** two blockers, one mechanical and one architectural.
+>
+> *Mechanical — there is no frame to carry it.*
 > `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
 > discriminators in `crates/sunrise-wire-protocol/src/messages.rs` and that is
 > all: there is no payload type for either, no server handler, and no client
@@ -16,10 +27,13 @@ status: accepted
 > (`crates/sunrise-server/src/api/sync.rs`) are typed one per purpose, so a
 > beacon has no route that would accept it. It is now unreachable rather than
 > silently dropped, which is a smaller gap than it sounds: neither state has a
-> handler behind it. Capability bit 36 `CLI_PRESENCE_BEACONS` is defined and is
-> not in `REQUIRED_CLIENT_BITS`. There is no presence channel, no ACL check on one,
-> and no "last activity" tracking.
+> handler behind it. Capability bit 36 is defined as
+> `Capability::CliPresenceBeacons`
+> (`crates/sunrise-wire-protocol/src/capability.rs:86,109`) and is deliberately
+> absent from `REQUIRED_CLIENT_BITS` (`:121-125`); nothing sets it. There is no
+> presence channel, no ACL check on one, and no "last activity" tracking.
 >
+> *Architectural — it would be the relay's first look at user data.*
 > **Presence is specified as UNENCRYPTED, and that is a deliberate choice, not
 > an oversight** — see the Implementation section: device ids and timestamps are
 > treated as metadata the relay sees anyway. It is also the only user data in
@@ -31,6 +45,10 @@ status: accepted
 > [`../06-server/overview.md`](../06-server/overview.md)'s
 > non-responsibilities list MUST be amended to match. Do not treat this page as
 > having settled that.
+>
+> **What holds regardless:** nothing in this file constrains v1 code. The
+> *posture* statement does bind: until an ADR says otherwise, the relay reads no
+> user data in the clear, and presence is the design that would change it.
 
 Lightweight indicators of which of the user's other devices are online and which shared peers are co-viewing.
 

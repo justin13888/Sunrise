@@ -174,4 +174,4 @@ Where a keyboard shortcut conflicts with a user-installed system shortcut: the u
 
 ### `Ctrl+Shift+P` on web
 
-The web app intercepts `Ctrl+Shift+P` only when focus is inside the app's main element (not in browser chrome / DevTools). Documented in user-facing help; users can rebind via Settings → Keyboard.
+The web app intercepts `Ctrl+Shift+P` only when focus is inside the app's main element (not in browser chrome / DevTools). Documented in user-facing help. There is no rebinding: no client ships a Settings → Keyboard surface, and the bindings in this document are fixed.

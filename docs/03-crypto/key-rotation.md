@@ -33,10 +33,19 @@ ADR-0024 makes Stream keys independently random per `(stream_id, epoch)`, wrappe
 1. The rotating device generates new `D_S'`, `D_D'` keypairs.
 2. It signs a fresh `DeviceCert'` for itself using `ID_S_priv` (still held by this device).
 3. It emits a `device_cert` op (control envelope, signed by the **new** `D_S_priv'`).
-4. It re-wraps each Stream key currently stored in `stream_keys` for this device under the new `D_D_pub'` (this is local-only; no peer involvement).
+4. It re-wraps each Stream key currently stored in `stream_keys` for this device under the new `D_D_pub'` (this is local-only; no peer involvement). The `stream_keys` table is created by [ADR-0024](../11-adr/0024-key-hierarchy.md) and is the shape this step assumes; per the banner above, nothing writes or re-wraps it yet.
 5. It emits a `device_revoke` op for the **old** key with `effective_at = now + 24h` (the overlap window).
 
-The relay continues to accept signed ops from the old device key until `effective_at`. After that, ops signed by the old key are rejected.
+**The overlap window is enforced by receiving clients, not by the relay.** A
+receiver applies an op signed by the old key while `now < effective_at` and drops
+it after; the check is a signature check against the `device_cert` set in the
+receiver's own vault. The relay evaluates no expiry and cannot — it has no
+`device_revoke` op to read, does not open envelopes, and holds no `effective_at`
+anywhere ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)
+§What the server explicitly does *not* do). Its own gate is the binary
+`devices.revoked` flag described under §Revocation below, which is time-less and
+sits on a different mechanism entirely: it refuses the *device's* credential, not
+ops signed by a superseded key.
 
 ## Stream key rotation (medium)
 
@@ -63,7 +72,7 @@ The op log for a Stream may contain ops from multiple epochs interleaved (a slow
 ### Slow peers and out-of-order epochs
 
 - A device MAY emit ops under any epoch for which it holds the key.
-- The relay accepts ops from any epoch known to it; epoch is part of the envelope and is not validated against the "current" epoch.
+- The relay does not look at the epoch at all — it knows of none. Epoch sits inside the sealed payload, and the only envelope type the relay can reach is `EnvelopeHeader {stream_id, device_id, seq}` ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md) §Why the boundary holds structurally). Nothing is validated against a "current" epoch because nothing on the relay could be.
 - Receivers maintain a per-`stream_id` decryption-key cache keyed by epoch; ops are decrypted on receipt with the matching epoch's key.
 - Out-of-order arrival across epochs: ops are applied in arrival order regardless of epoch; the LWW comparison key `(hlc, device_id, seq)` resolves any reordering, so arrival order does not change the converged state. There is **no per-epoch barrier**.
 - The owner garbage-collects an old epoch's key only when **all** active devices' cursors have advanced past the last op signed under it (same rule as blob GC).
@@ -114,8 +123,10 @@ Revocation = removing a device from the identity. Triggered from any other still
 **Procedure.**
 
 1. The trusted device emits a `device_revoke` op for the target device, signed by the trusted device.
-2. The trusted device performs a Stream key rotation **for every Stream the revoked device had access to** (all of them, in v1). This produces fresh `key_envelope` ops for sibling devices and `share_grant` ops for peers under the new epoch — but pointedly NOT for the revoked device.
-3. The server, on seeing the `device_revoke` op (it is a control envelope, the server can read the metadata: `revoked_device_id`), starts rejecting future ops signed by the revoked device.
+2. The trusted device performs a Stream key rotation **for every Stream the revoked device had access to** (all of them, in v1). This produces fresh `key_envelope` ops for sibling devices and, once per-Stream grants exist, `share_grant` ops for peers under the new epoch — but pointedly NOT for the revoked device. Per-Stream grants are not built and sharing is post-v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so the `share_grant` half has no subject today.
+3. Two independent things then happen, and the spec has previously conflated them.
+   * **At the relay,** revocation arrives through the account API, never through the op. `DELETE /api/v1/devices/{device_id}` sets `revoked = 1` on the relay's own `devices` row (`crates/sunrise-server/src/store.rs:431`); `Store::active_device` filters on it (`store.rs:400-411`), which refuses every subsequent signed request (`crates/sunrise-server/src/api/signed.rs:166`) and ends a live SSE session with `AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync.rs:746-768`). That is relay metadata the relay already holds; it is not a content check.
+   * **In the vault,** revocation is enforced by receiving clients. A device applying a remote op verifies the signing `device_id` against the `device_cert` set derived from its own vault-meta log; an op signed by a device with an applied `device_revoke` whose `effective_at` has passed is dropped and counted, never applied. The relay cannot make this check — it does not open envelopes and there is no `device_revoke` op kind in the tree (§Implementation status) — and it forwards such an op unchanged. This is the half that holds against a hostile relay, and it is the half that matters.
 4. The revoked device, when next online, sees the revocation in its inbox; the UI explains the situation and the local DB is wiped on first launch.
 
 A revoked device that never reconnects retains whatever plaintext it had at the moment of revocation. We are honest about this in the UI.

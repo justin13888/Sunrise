@@ -8,8 +8,8 @@ Operate the server without violating the E2EE guarantee.
 
 > **Implementation status.** What is built is the identifier-hashing surface
 > (`logging::account_h` / `id_h`), the hand-assembled request trace layer
-> (`logging::trace_layer`) with its redaction regression test
-> (`crates/sunrise-server/tests/logging.rs`), and an in-process counter registry
+> (`logging::trace_layer`) with its redaction tests (in-module, in
+> `api/observe.rs`), and an in-process counter registry
 > exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
 > kind, histograms, OTel tracing and sampling, the deep health check, alerting,
 > and the per-account audit log. Each section says which it is.
@@ -25,12 +25,40 @@ Target set:
 - Error frequencies by error code.
 
 **Built today:** a request span per HTTP request carrying the method and a
-*templated* target only, plus event lines that already use `account_h` / `id_h`
-(`srv.auth.ok`, `srv.auth.rejected`, `srv.ws.refreshed`,
-`srv.ws.refresh_rejected`, `srv.ws.refresh_identity_mismatch`,
-`srv.start.refused`). Per-endpoint/status rates, connection counts, per-account
-op rates and slow-query logs have no implementation; error frequency is
-recoverable from the `err_code` field on rejection lines, not from a metric.
+*templated* endpoint only, plus the event set below. Per-endpoint/status rates,
+connection counts, per-account op rates and slow-query logs have no
+implementation; error frequency is recoverable from the `err_code` field on
+rejection lines, not from a metric.
+
+The 24 `ev` names the relay emits, complete:
+
+<!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
+     grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
+     Last extracted: 310e377 -->
+
+```
+srv.start                        srv.req.start
+srv.start.failed                 srv.req.end
+srv.start.refused                srv.store.failed
+srv.start.single_tenant          srv.auth.device_sig_rejected
+srv.start.metrics_withheld
+srv.stop                         srv.relay.fanout
+srv.stop.failed                  srv.relay.append_failed
+                                 srv.relay.replay_failed
+srv.sync.negotiate_refused       srv.relay.cursor_gap
+srv.sync.session_open
+srv.sync.subscribe               srv.sync.refresh_rejected
+srv.sync.stream_closed           srv.sync.refresh_identity_mismatch
+srv.sync.token_expired           srv.sync.refreshed
+srv.sync.device_revoked
+```
+
+Four names earlier revisions of this file listed are **not emitted by anything**
+and must not be quoted: `srv.auth.ok`, `srv.auth.rejected`, and the whole
+`srv.ws.*` family — the last of these went with the socket under
+[ADR-0023](../11-adr/0023-sse-sync-transport.md), and its refresh events came
+back as `srv.sync.*`. A successful authentication produces no event at all; only
+a rejection does (`srv.auth.device_sig_rejected`).
 
 `account_h` is defined as:
 
@@ -83,6 +111,10 @@ Prometheus text at `/metrics`. It supports **counters only** — no gauges, no
 histograms — and every call site increments a bare, unlabelled name. The
 complete set the server emits today:
 
+<!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
+     grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
+     Last extracted: 310e377 -->
+
 ```
 sunrise_account_create_total
 sunrise_blob_chunk_total
@@ -95,14 +127,24 @@ sunrise_devices_list_total
 sunrise_devices_register_total
 sunrise_devices_revoke_total
 sunrise_push_register_total
+sunrise_push_apns_total          (LoggingProvider; never reached)
+sunrise_push_fcm_total           (LoggingProvider; never reached)
+sunrise_push_web_total           (LoggingProvider; never reached)
 sunrise_relay_append_failed_total
 sunrise_relay_cursor_gap_total
-sunrise_sync_token_expired_total
-sunrise_sync_token_refresh_rejected_total
-sunrise_sync_token_refreshed_total
-sunrise_sync_unauthenticated_total
-sunrise_push_apns_total / _fcm_total / _web_total   (LoggingProvider; never reached)
+sunrise_sync_negotiate_refused_total
+sunrise_sync_refresh_total
+sunrise_sync_session_total
+sunrise_sync_stream_total
 ```
+
+Twenty names, and four that earlier revisions of this file listed and the tree
+does not define: `sunrise_sync_token_expired_total`,
+`sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
+`sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
+`sunrise_sync_refresh_total` when sync moved to SSE
+([ADR-0023](../11-adr/0023-sse-sync-transport.md)); the token *events* survive
+under `srv.sync.*` above, which is why the names look familiar.
 
 `/metrics` is mounted at the router root, and **only when the listener binds
 loopback** — a non-loopback bind withholds the route and logs
@@ -120,7 +162,6 @@ sunrise_sync_ops_delivered_total{kind="Push"}
 sunrise_sync_op_latency_seconds_bucket{le="…"}
 sunrise_blob_uploads_total
 sunrise_push_dispatch_total{provider="apns",result="ok"}
-sunrise_quota_exceeded_total{kind="storage"}
 sunrise_db_query_seconds{op="…"}
 ```
 
@@ -141,7 +182,6 @@ status       (HTTP status code)
 kind         (frame kind, OpBatch | Subscribe | …)
 provider     (apns | fcm | web | google | …)
 result       (ok | failed | rate_limited | …)
-plan_tier    (free | pro)
 wire_proto   (1)
 crypto_suite (1)
 ```
@@ -160,10 +200,23 @@ records the HTTP method and a **templated** target from
 `sunrise_log::templatize_path` — query dropped, opaque id segments replaced —
 and nothing else from the request ever reaches a field. That is deliberate
 rather than incidental: the stock `MakeSpan` records `http.uri`, which is where
-a bearer would sit if the `?access_token=` fallback existed. The regression test
-is `crates/sunrise-server/tests/logging.rs`, and
-`docs/10-cross-cutting/logging.md` §6.3 bans `Plain::expose` in this module with
-a `log-redaction` CI gate over the path.
+a bearer would sit if the `?access_token=` fallback existed.
+
+> **`crates/sunrise-server/tests/logging.rs` no longer exists.** It did not
+> survive [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port, despite
+> [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3
+> declaring it MUST. `crates/sunrise-server/tests/` holds `oidc_verifier.rs` and
+> nothing else. What carries the guarantee today is `api/observe.rs`'s in-module
+> suite — `the_query_string_never_reaches_the_log`,
+> `an_opaque_path_segment_is_templated`,
+> `request_records_carry_status_and_latency`,
+> `every_server_field_survives_the_redaction_allowlist` — plus the structural
+> property that kynos hands the observer the matched `Route`, never the concrete
+> URI (`api/observe.rs:9-14`). Restoring the integration-level regression test is
+> a code change, not a documentation one.
+
+`docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` in this
+module with a `log-redaction` CI gate over the path.
 
 The target — OTel-compatible tracing with a sampling rate (1% prod, 100%
 staging), span attributes scrubbed of user identifiers, spans covering
@@ -206,12 +259,15 @@ For account-management actions only (not content):
 - Device added/removed.
 - Recovery blob fetched.
 - Account deleted.
-- Plan changed.
 
 Visible in the user's "Security" page on the web app, derived from a per-account audit log. Retention:
 
-- **Managed: 30 days** (formerly 90; unified to 30 across the system per the v1 retention policy).
-- **Self-host:** configurable via `[observability] audit_retention_days = 30` (default). A cron job at 02:00 UTC deletes expired records. There is no separate `auth_log_retention_hours` setting — server logs use `account_h` everywhere; no email-tagged buffer exists.
+- 30 days, configurable via `[observability] audit_retention_days = 30`
+  (default). A cron job at 02:00 UTC deletes expired records. There is one
+  deployment profile in v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)),
+  so there is no managed/self-host split to state. There is no separate
+  `auth_log_retention_hours` setting — server logs use `account_h` everywhere;
+  no email-tagged buffer exists.
 
 ## Privacy commitments to users
 

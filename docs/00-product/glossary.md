@@ -24,9 +24,9 @@ Shared vocabulary used throughout these specs. When a term in this glossary is u
 | **Device** | A specific install (phone, laptop, browser profile). Has its own keypair derived from the identity. |
 | **Pairing** | The process of authorizing a new device to join an identity. |
 | **Recovery code** | A user-held secret allowing identity reconstruction with no other device available. |
-| **Op** | The atomic unit of sync: one encrypted, signed mutation of one entity. Merged by entity-level last-writer-wins ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) — *not* a CRDT operation, though earlier drafts and [`05-sync/crdt-design.md`](../05-sync/crdt-design.md) describe the CRDT design that was deferred. |
+| **Op** | The atomic unit of sync: one encrypted, signed mutation of one entity. Merged by entity-level last-writer-wins — the rules in force are [`05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md), the reasoning is [ADR-0014](../11-adr/0014-entity-level-lww-merge.md). *Not* a CRDT operation; [`05-sync/crdt-design.md`](../05-sync/crdt-design.md) is the deferred per-field design (`proposed`). |
 | **Op log** | The append-only sequence of ops on a given device. |
 | **Relay** | The server's role in passing encrypted ops between devices. The relay cannot read ops. |
 | **Vault** | The local encrypted store on a device. |
-| **Shared document** | A subgraph of state shared between two or more identities (a stream, a task, etc.) via cross-identity sharing. |
+| **Shared document** | A **Stream** (and all its descendant entities) shared between two or more identities. The Stream is the unit; there is no per-Task ACL ([`03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)). Post-v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). |
 | **Stream of work** | Synonym for Stream. Used in user-facing copy where "stream" alone might be ambiguous. |

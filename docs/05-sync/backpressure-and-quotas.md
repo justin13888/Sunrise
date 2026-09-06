@@ -1,23 +1,33 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Backpressure and Quotas
 
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places per-account quotas
+> after v1. This document is the design of record for that work, not a
+> description of anything that ships.
+>
+> **What exists in the tree:** nothing. No quota accounting, no `Throttle`
+> frame, no rate-limiting middleware
+> ([`../06-server/api.md`](../06-server/api.md) §Rate limits), and no
+> `AUTH_RATE_LIMITED` on the typed error surface —
+> [`wire-protocol.md`](./wire-protocol.md)`:233-238` lists it among the nine
+> names the enum does not contain.
+>
+> **Why it is not v1:** quotas presuppose plan tiers, and plan tiers presuppose
+> billing; ADR-0027 defers all three. What v1 enforces instead is a small set of
+> fixed operator constants that need no per-account state: a 2 MiB request body
+> (`crates/sunrise-server/src/config.rs:76-77`), a 1 MiB ciphertext chunk /
+> 4096 chunks / 100 MB blob (`api/blobs.rs:53,57,61`), and 30-day / 256 MiB
+> per-channel relay-log retention (`relay_log.rs:54,63`).
+>
+> **What holds regardless:** the backpressure *shape* below — clients respecting
+> a server signal rather than retrying blind — is the design any future limit
+> would use. The numbers are not citable from an `accepted` spec.
+
 Sync must not become a denial-of-service vector. The server enforces quotas; clients respect backpressure signals.
-
-## Per-account quotas (managed cloud)
-
-| Resource | Free tier | Paid tier |
-|---|---|---|
-| Total stored ops | 100 MB ciphertext | 5 GB ciphertext |
-| Op rate | 5 ops/sec sustained, 50 ops/sec burst | 50 ops/sec sustained, 500 ops/sec burst |
-| Devices per account | 5 | 50 |
-| Shared Streams (in + out) | 5 | unlimited |
-| Attachment storage | 1 GB | 50 GB |
-| Push notifications | 100/day | 10k/day |
-
-Self-hosted servers can configure their own limits or disable them.
 
 ## Server-to-client backpressure
 
@@ -46,8 +56,7 @@ If the server is sending more ops than the client can apply (rare but possible d
 ## Abuse handling
 
 - A misbehaving (or compromised) client that floods ops gets rate-limited at the connection level after thresholds.
-- Per-device signed op-rate has a hard limit of **50 signed ops/sec per device** (averaged over a 10 s window). Excess returns `AUTH_RATE_LIMITED`; the client backs off.
-- Soft limit (warning, not enforced): 5 ops/sec sustained over 60 s. Crossing the soft limit logs `srv.quota.warning` but ops continue.
+- Per-device signed op-rate would have a hard limit of **50 signed ops/sec per device** (averaged over a 10 s window), with the client backing off on refusal. The error code and the log event this rule used to name do not exist and are not reserved: the typed enum has no rate-limit code, and no source file emits a quota event. Whatever carries the refusal has to be chosen when the rule is built.
 
 ## Stream-level prioritization
 

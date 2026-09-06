@@ -1,18 +1,41 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # Compaction
 
-> **This document describes target state, not v1.**
-> Nothing here is implemented: there is no snapshot op (`InnerOp` has no
-> such variant), no compactor election, and no retention sweep — the op log
-> currently grows without bound. It also predates
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md), which replaced CRDT
-> merge with entity-level LWW and removed the `loro` dependency, so the
-> snapshot shape below needs redesigning before it can be built. See
+> **Status: proposed. Not scheduled for v1.**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places compaction after v1.
+> This document is the design of record for that work, not a description of
+> anything that ships.
+>
+> **What exists in the tree:** nothing. There is no snapshot op (`InnerOp` has
+> no such variant), no compactor election, and no retention sweep; the op log
+> grows without bound. See
 > [`../implementation/overview.md`](../implementation/overview.md) for what is
-> actually live.
+> live.
+>
+> **Why it is not v1:** two blockers, and the first is inside this document.
+>
+> 1. **`doc_state` is undecided** (§Snapshot format below). The field was
+>    specified as `loro::Doc::export_snapshot()` bytes, which cannot be produced
+>    — the workspace ships no CRDT library, and under
+>    [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) a Stream's state is
+>    rows in SQLite rather than a mergeable document. A spec cannot be
+>    `accepted` with an undecided field in its wire format.
+> 2. **§Catch-up contradicts the replay invariant.** The claim that a device
+>    whose own old ops were compacted out is "fine" is incompatible with
+>    `seq` being strictly monotonic per `(stream_id, device_id)` **with no gaps**
+>    ([`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)`:28`),
+>    which every receiver enforces and which surfaces a gap as a sync warning.
+>    Compaction that discards ops has to say what a receiver does with the hole
+>    it leaves, and this document does not.
+>
+> **What holds regardless:** the retention *pressure* is real — the op log
+> genuinely grows without bound, and that is a v1 operational fact, bounded on
+> the relay side only by the 30-day / 256 MiB per-channel relay-log retention
+> (`crates/sunrise-server/src/relay_log.rs:54,63`), which trims the relay's copy
+> and not the client's.
 
 Without compaction, the op log grows forever. Compaction trims ops that are no longer needed for sync or audit.
 

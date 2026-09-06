@@ -118,7 +118,7 @@ every remote replica while the originating replica kept it.
 Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
-- Receivers see both; idempotent; PN-counter for streak increments by 1 (using op_id dedup), not by 2.
+- Receivers see both, and application is idempotent on `op_id`, so the streak advances once rather than twice. *Target state:* the PN-counter this rule was written for; the streak is an ordinary field on the Routine row today and merges with it under entity-level LWW (banner above).
 
 ### Concurrent list reorders
 
@@ -144,7 +144,11 @@ future migration cannot reintroduce it by copy-paste.
 
 The consequence for the product: **an automatic merge is currently invisible.**
 Nothing records that a concurrent edit lost, so the "X edits merged
-automatically this week" review surface has no data behind it. Reinstating that
+automatically this week" review surface has no data behind it — and neither does
+the UI state that used to exist for it.
+[`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
+§Three-state view contract dropped its `conflict` state on exactly this ground:
+a view cannot raise a toast about a loss nothing recorded. Reinstating that
 UI means designing a journal for an entity-level model — one row per losing
 *entity version*, not per field — and an ADR superseding 0018's removal, not
 restoring the schema above.
