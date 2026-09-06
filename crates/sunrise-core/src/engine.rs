@@ -994,7 +994,7 @@ impl Engine {
         if evicted > 0 {
             tracing::warn!(
                 ev = "core.op.deferred_evicted",
-                n = evicted,
+                n_dropped = evicted,
                 stream_h = hex_short(&env.stream_id),
                 "the parked-op buffer is full; the oldest entries were dropped"
             );
@@ -1119,7 +1119,7 @@ impl Engine {
                         ev = "core.key.epoch_refused",
                         stream_h = hex_short(&p.stream_id),
                         epoch = p.epoch,
-                        live,
+                        live_epoch = live,
                         "a key envelope names an epoch too far above this vault's own"
                     );
                     return Ok(Vec::new());

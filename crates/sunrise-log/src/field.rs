@@ -65,6 +65,10 @@ pub static ALLOWED: &[&str] = &[
     "from_v",
     "kind",
     "lat_ms",
+    // The epoch this vault currently holds for a stream, printed beside the
+    // `epoch` an incoming envelope names so a refusal says which two numbers
+    // disagreed. A locally minted `u32` counter; nothing authored reaches it.
+    "live_epoch",
     // `message` is tracing's name for the format-string body. It is
     // allowlisted because every event has one; keeping it free of plaintext
     // is the job of the `.expose()` CI gate, not of this list.
@@ -84,17 +88,31 @@ pub static ALLOWED: &[&str] = &[
     "op_kind",
     "person_h",
     "provider",
+    // A closed set of static discriminants explaining a refusal ("self",
+    // "undecodable", "names_another_device", "binding"). Distinct from
+    // `cause`, which carries an error's `Display`. Values under this name
+    // must stay string literals chosen at the call site — the moment one is
+    // interpolated from data, it belongs under `cause` instead.
+    "reason",
     // Relay *hostname* — §6.2 names this as the sanctioned stand-in for a
     // client's own IP in connection diagnostics.
     "relay",
     "result",
     "retryable",
     "routine_h",
+    // --- per-device device-id hashes on control ops ---
+    // The device that signed a control op, and the device that op names as
+    // its subject. Both are `hex_short` of a device id, so both are covered
+    // by the §6 rule that admits a truncation in place of the full id — and
+    // admitting them here is what makes `sender_id` and `subject_id`
+    // forbidden, via `entity_ids_implied_by_hashes`.
+    "sender_h",
     "seq",
     "sig_alg",
     "status",
     "storage_v",
     "stream_h",
+    "subject_h",
     "task_h",
     "tier",
     "to_v",
