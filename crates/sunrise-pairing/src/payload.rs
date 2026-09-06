@@ -53,10 +53,26 @@
 //!
 //! `ID_S_priv` does still travel, because it is what lets a device issue a
 //! `device_cert` for the *next* device it pairs, and a pairing that withheld it
-//! would produce a device that can never admit another one. That it is on every
-//! device — a revoked one included — is why a cert names its issuer and is
-//! refused when that issuer was revoked at the cert's own HLC; see
-//! `sunrise_crypto::device_cert`.
+//! would produce a device that can never admit another one.
+//!
+//! **That it is on every device — a revoked one included — is a hole, and
+//! nothing closes it.** A `DeviceCert` carries no issuer field: `DeviceCertInner`
+//! names the *subject* (`device_id`, `d_s_pub`, `d_d_pub`, `identity_id`) and
+//! the signature is the identity's, which every device can produce. So there is
+//! nothing to check a revocation against, and nothing checks one — the
+//! `DeviceCertPublish` arm of `Engine::apply_control_op` verifies only that the
+//! publisher is the cert's own subject and that the cert binds to this
+//! account's identity. A revoked device therefore mints a fresh device id,
+//! signs a valid cert for it with the `ID_S_priv` it still holds, and
+//! `Engine::backfill_key_envelopes` seals the new id the current epoch of every
+//! stream. Revocation is undone in one round trip.
+//!
+//! This is stated and not mitigated. Identity rotation is what would close it
+//! completely — a revoked device's `ID_S_priv` stops signing anything the
+//! account accepts — and it is unbuilt; refusing to backfill a device id first
+//! seen in a cert whose signer is already revoked is the narrow form and is
+//! also unbuilt. See `docs/03-crypto/key-rotation.md` §Revocation, which is
+//! where this bypass is tracked.
 //!
 //! The channel it travels over is the Noise XX transport confirmed by a SAS
 //! both users read aloud. That is the same channel the vault root already used,
