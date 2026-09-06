@@ -73,7 +73,6 @@ use tokio::time::Instant;
 
 use crate::config::Rng;
 use crate::core::Core;
-use crate::engine::hex_short;
 use crate::events::{DomainEvent, SyncStatus};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_error::ErrorCode;
@@ -721,10 +720,6 @@ async fn session(
     if let Ok(p) = core.sync_pending() {
         shared.set_pending(p);
     }
-    // A session is the first moment a revocation can reach the relay, so this
-    // runs once per session rather than on a timer: the ordinary case is that
-    // the user revoked a device while offline, or on a device that then closed.
-    drain_relay_revocations(core, transport.as_mut()).await;
     maybe_live(core, shared, &subscribed, &caught_up);
 
     // ---- Main pump ----
@@ -1115,55 +1110,6 @@ fn build_outbox_frames(
     Ok(())
 }
 
-/// Tell the relay about every device this vault has revoked and not yet
-/// reported.
-///
-/// The relay cannot learn this from the op stream — `device_revoke` is sealed
-/// under the vault-meta key and the relay holds no Stream keys — so the two
-/// halves of a revocation travel separately, and this is the second one. Until
-/// it lands the relay keeps accepting the revoked device's uploads and keeps
-/// streaming it everyone else's, which is `#80`.
-///
-/// Failures leave the row in place, deliberately. The device this is about is
-/// typically lost or stolen; giving up after one refused call would mean the
-/// revocation silently never reached the relay, which is the failure this whole
-/// mechanism exists to prevent. `attempts` is what makes a relay that keeps
-/// refusing visible in the log rather than retried in silence.
-///
-/// An [`TransportError::Unsupported`] transport is not an attempt: the
-/// loopback and in-process transports have no account API, and counting them
-/// would inflate `attempts` on every convergence test that revokes anything.
-async fn drain_relay_revocations<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
-    let Ok(pending) = core.pending_relay_revocations() else {
-        return;
-    };
-    for device_id in pending {
-        match transport.revoke_device(device_id).await {
-            Ok(()) => {
-                let _ = core.clear_relay_revocation(device_id);
-                tracing::info!(
-                    ev = "sync.device.revoke_relayed",
-                    subject_h = hex_short(&device_id),
-                    "the relay has been told to stop accepting a revoked device"
-                );
-            }
-            Err(TransportError::Unsupported) => return,
-            Err(e) => {
-                let attempts = core
-                    .note_relay_revocation_attempt(device_id, core.now_ms())
-                    .unwrap_or(0);
-                tracing::warn!(
-                    ev = "sync.device.revoke_not_relayed",
-                    subject_h = hex_short(&device_id),
-                    attempt = attempts,
-                    cause = %e,
-                    "the relay has not accepted a device revocation; it still accepts that device"
-                );
-            }
-        }
-    }
-}
-
 /// Transition to `Live` once every subscribed stream is caught up and the
 /// outbox is empty (all local ops acked).
 fn maybe_live(
@@ -1306,10 +1252,7 @@ mod tests {
     //! `submit_while_live` test drives the real driver task; the fake server
     //! scripts the protocol side.
 
-    use super::{
-        drain_relay_revocations, BoxTransport, ConnectFuture, SyncConfig, TokenSource,
-        TransportFactory,
-    };
+    use super::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
     use crate::config::Clock;
     use crate::{Command, Core, CoreConfig, DomainEvent, Query, QueryResult, SystemRng, Unlock};
     use async_trait::async_trait;
@@ -1381,118 +1324,6 @@ mod tests {
             .await
             .unwrap(),
         )
-    }
-
-    /// Revoking a device queues the relay's half, and a session hands it to
-    /// the transport.
-    ///
-    /// This is the write bound. A revocation that never reaches the relay
-    /// leaves it accepting the revoked device's uploads and streaming it
-    /// everyone else's ops, whatever the vault believes -- and the relay cannot
-    /// learn it from the op stream, because `device_revoke` is sealed under a
-    /// key the relay does not hold.
-    #[tokio::test]
-    async fn a_revocation_is_handed_to_the_transport_and_then_forgotten() {
-        /// Records what it was asked to revoke, and answers as the relay would.
-        struct Recorder {
-            seen: Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
-            refuse: bool,
-        }
-        #[async_trait]
-        impl Transport for Recorder {
-            async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
-                Ok(())
-            }
-            async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-                Ok(None)
-            }
-            async fn close(&mut self) -> Result<(), TransportError> {
-                Ok(())
-            }
-            async fn revoke_device(&mut self, device_id: [u8; 16]) -> Result<(), TransportError> {
-                self.seen.lock().unwrap().push(device_id);
-                if self.refuse {
-                    return Err(TransportError::Unavailable("relay down".into()));
-                }
-                Ok(())
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let core = open_arc(dir.path()).await;
-        let target = [0x9c; 16];
-
-        // A revocation of a device this vault knows about. The command refuses
-        // an unknown device, so the row is planted the way pairing would.
-        core.queue_relay_revocation_for_test(target).unwrap();
-        assert_eq!(core.pending_relay_revocations().unwrap(), vec![target]);
-
-        // A refusing relay keeps the intent: the device this is about is
-        // typically lost, so giving up would mean it stays accepted forever.
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut refusing = Recorder {
-            seen: seen.clone(),
-            refuse: true,
-        };
-        drain_relay_revocations(&core, &mut refusing).await;
-        assert_eq!(*seen.lock().unwrap(), vec![target]);
-        assert_eq!(
-            core.pending_relay_revocations().unwrap(),
-            vec![target],
-            "a refused revocation must stay queued"
-        );
-
-        // And an accepting one clears it, so it is not re-sent every session.
-        let mut accepting = Recorder {
-            seen: seen.clone(),
-            refuse: false,
-        };
-        drain_relay_revocations(&core, &mut accepting).await;
-        assert!(
-            core.pending_relay_revocations().unwrap().is_empty(),
-            "an accepted revocation must not be re-sent forever"
-        );
-    }
-
-    /// A transport with no account API is not counted as an attempt.
-    ///
-    /// The loopback transports every convergence test runs on cannot revoke
-    /// anything. Counting them would inflate `attempts` on a row that had never
-    /// actually been offered to a relay, which is the one number an operator
-    /// would read to decide whether a relay is refusing them.
-    #[tokio::test]
-    async fn an_unsupported_transport_does_not_burn_an_attempt() {
-        struct NoAccountApi;
-        #[async_trait]
-        impl Transport for NoAccountApi {
-            async fn send_frame(&mut self, _f: Vec<u8>) -> Result<(), TransportError> {
-                Ok(())
-            }
-            async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-                Ok(None)
-            }
-            async fn close(&mut self) -> Result<(), TransportError> {
-                Ok(())
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let core = open_arc(dir.path()).await;
-        let target = [0x7d; 16];
-        core.queue_relay_revocation_for_test(target).unwrap();
-
-        drain_relay_revocations(&core, &mut NoAccountApi).await;
-
-        let attempts = core.relay_revocation_attempts_for_test(target).unwrap();
-        assert_eq!(
-            attempts, 0,
-            "a transport with no account API is not a refusal"
-        );
-        assert_eq!(
-            core.pending_relay_revocations().unwrap(),
-            vec![target],
-            "and the intent survives for a transport that can carry it"
-        );
     }
 
     // ---- channel-backed duplex transport ----

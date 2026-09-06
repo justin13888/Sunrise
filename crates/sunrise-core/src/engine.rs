@@ -579,18 +579,6 @@ impl Engine {
             //        exclusion is not cosmetic, because the identity copy
             //        emitted alongside is no longer openable by a device
             //        pairing admitted.
-            // The relay's half of the revocation, queued rather than called.
-            // `revoke_device` has to work with no network -- a device that is
-            // gone is the whole scenario -- so the call cannot be part of the
-            // command. `Core::drain_relay_revocations` makes it when a session
-            // is up, and until then the row is what remembers that it is owed.
-            tx.execute(
-                "INSERT INTO relay_revocation_intents (device_id, created_at_ms)
-                 VALUES (?, ?)
-                 ON CONFLICT(device_id) DO NOTHING",
-                params![&revoked[..], now_ms],
-            )?;
-
             for stream_id in self.keychain.rotation_set(tx)? {
                 let (epoch, key) =
                     self.keychain
@@ -6201,7 +6189,7 @@ fn to16(raw: &[u8]) -> Option<[u8; 16]> {
     raw.try_into().ok()
 }
 
-pub(crate) fn hex_short(b: &[u8; 16]) -> String {
+fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
         use core::fmt::Write;

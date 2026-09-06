@@ -28,15 +28,6 @@ pub enum TransportError {
     /// Operation cancelled (e.g., shutdown).
     #[error("transport cancelled")]
     Cancelled,
-    /// This transport has no account API behind it.
-    ///
-    /// The loopback and in-process transports carry the op stream and nothing
-    /// else; asking one of them to change an account's device list is a
-    /// category error rather than a failure, and the caller distinguishes the
-    /// two -- an unsupported transport leaves the request queued for a
-    /// transport that does support it, where a failure counts as an attempt.
-    #[error("transport has no account API")]
-    Unsupported,
 }
 
 /// Async wire transport. Both client and server sides implement this.
@@ -53,22 +44,6 @@ pub trait Transport: Send + Sync {
 
     /// Initiate graceful close.
     async fn close(&mut self) -> Result<(), TransportError>;
-
-    /// Ask the relay to stop accepting `device_id`'s uploads and to end any
-    /// session it is holding.
-    ///
-    /// This is out-of-band on purpose and is the only way it can be done. A
-    /// `device_revoke` is an inner op sealed under the vault-meta Stream key,
-    /// so the relay cannot read it; promoting the revoked id into the cleartext
-    /// envelope header would tell the relay which of an account's devices had
-    /// been revoked and when, for every account it serves, which is the
-    /// metadata leak the blind-relay property exists to prevent.
-    ///
-    /// Defaulted to [`TransportError::Unsupported`] because the frame-only
-    /// transports have no account API to call; `SseTransport` overrides it.
-    async fn revoke_device(&mut self, _device_id: [u8; 16]) -> Result<(), TransportError> {
-        Err(TransportError::Unsupported)
-    }
 }
 
 #[cfg(test)]
