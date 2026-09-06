@@ -626,26 +626,31 @@ impl Engine {
     /// `BEGIN IMMEDIATE` transaction (after out-of-tx crypto verification):
     ///
     /// 1. `decode_envelope` — malformed bytes are rejected.
-    /// 2. Sender lookup — `envelope.device_id` must be a trusted (non-revoked)
-    ///    row in `devices`, else [`EngineError::UnknownDevice`].
+    /// 2. Sender lookup — `envelope.device_id` must be a device this vault has
+    ///    admitted, else [`EngineError::UnknownDevice`]. Revocation is **not**
+    ///    consulted, here or anywhere else on this path: see
+    ///    [`Self::apply_control_op`].
     /// 3. `verify_envelope` against the stored device pubkey — a bad signature
     ///    is never applied.
-    /// 4. Decrypt under the shared Stream key (same derivation as the sender —
-    ///    the pairing model shares a vault root) and decode the inner op. A
-    ///    different vault root derives a different key and fails AEAD.
-    /// 5. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
-    ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
-    ///    op was already present (`changes() == 0`), return `Ok(None)` with no
-    ///    materialization and no event.
+    /// 4. Decrypt under the Stream key for the envelope's `(stream_id, epoch)`
+    ///    and decode the inner op. **No key is not an error**: the
+    ///    `key_envelope` op carrying it may not have arrived, so the op is
+    ///    parked in `deferred_ops` and this returns `Ok(vec![])` without
+    ///    reaching any step below. It is retried after every absorbed key.
     /// 5. Clock gate: the envelope's `hlc` is observed into this device's HLC.
     ///    A reading beyond `MAX_DRIFT_MS` in the future is refused outright —
     ///    see [`sunrise_cbor::hlc`].
-    /// 6. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
+    /// 6. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
+    ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
+    ///    op was already present (`changes() == 0`), return `Ok(None)` with no
+    ///    materialization and no event.
+    /// 7. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
     ///    is compared against the envelope's. The greater tuple wins. A winning
     ///    op performs the same materialized-row upsert the local path does and
     ///    stamps the row with the SENDER's values; a losing op keeps the row
     ///    but stays recorded in the op log.
-    /// 7. Advance `sync_cursors(stream_id, device_id)` to `max(seq)`.
+    /// 8. Advance `sync_cursors(stream_id, device_id)` over the contiguous
+    ///    applied prefix.
     ///
     /// Remote ops are **not** enqueued in the outbox: the relay fans out to
     /// peers, so re-broadcasting a received op would loop.
@@ -687,7 +692,7 @@ impl Engine {
         let env = decode_envelope(envelope_bytes)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("decode: {e}")))?;
 
-        // b. Sender must be a known, non-revoked device.
+        // b. Sender must be a device this vault has admitted.
         //
         //    One family bypasses the lookup, because it is what *creates* the
         //    row the lookup reads: a `DeviceCertPublish` op carries the
@@ -697,9 +702,11 @@ impl Engine {
         //    stranger's cert fails the second check however it is delivered,
         //    which is exactly what `Command::TrustDevice` could not do.
         //
-        //    A *revoked* device's row is still found here. Whether its op
-        //    stands is a question about the op's timestamp, not about whether
-        //    the device is still a member, and step d2 is where that is asked.
+        //    A *revoked* device's row is found here like any other, and its op
+        //    is applied like any other. Revocation is recorded and converged by
+        //    this vault and enforced by nothing in it — see
+        //    [`Self::apply_control_op`] for what that means and where the
+        //    enforcement is tracked.
         let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
             Some(cert_blob) => {
                 let cert = DeviceCert::from_cbor(&cert_blob)
@@ -879,34 +886,25 @@ impl Engine {
         Err(EngineError::UnknownDevice)
     }
 
-    /// Whether `device_id` was revoked at or before `at_ms`, which is the
-    /// envelope's own HLC reading.
+    /// Whether `device_id` was revoked at or before `at_ms`, read from the
+    /// register.
     ///
-    /// The cut is the HLC of the `device_revoke` op itself — not a field
-    /// anybody nominated — so both sides of this comparison are HLC readings
-    /// the emitting devices merged rather than wall-clock values they chose.
+    /// **Test-only, and that is the finding rather than an oversight.** Nothing
+    /// on any production path asks this question, because nothing acts on the
+    /// answer: this pull request records a revocation and converges it, and
+    /// enforces it nowhere. The only production reader of the register is
+    /// [`Self::query_device_list`], which asks whether a device is revoked at
+    /// all so the UI can say so — not whether a particular op falls after the
+    /// cut.
     ///
-    /// It is still a **convergence** boundary and not a cryptographic one: a
-    /// revoked device that can still reach a peer can stamp an op with a
-    /// reading below the cut and have it applied. Only the direction is
-    /// constrained — the clock gate in step e refuses a reading in this
-    /// device's future, so the lie can only ever be backwards, into a past this
-    /// device already agrees existed.
-    ///
-    /// Closing that is a *transport* question, not a comparison this function
-    /// could make. `DELETE /api/v1/devices/{id}` makes the relay refuse the
-    /// device's signed uploads and its sync sessions outright, and nothing at
-    /// all reaches a peer after that. `Command::RevokeDevice` does not call it:
-    /// the `device_revoke` op is vault state, the relay never reads it
-    /// (`docs/03-crypto/key-rotation.md` §Revocation step 3, marked not built),
-    /// and wiring the two together is its own change.
-    ///
-    /// The residual is written down in `docs/01-architecture/threat-model.md`
-    /// §A3, together with the sharper limit this cannot reach at all:
-    /// revocation converges the *cut* and not the *effect*. An op already
-    /// applied when the revocation arrives is never re-examined, so two
-    /// replicas that agree exactly on this row can still hold different task
-    /// tables, depending only on which op each saw first.
+    /// It stays because the convergence tests are about the cut being a *time*,
+    /// and asserting that through this reads as what it is. If a later change
+    /// gives the cut an effect — reads are
+    /// [#76](https://github.com/justin13888/Sunrise/issues/76), writes are
+    /// [#82](https://github.com/justin13888/Sunrise/issues/82) behind
+    /// [#80](https://github.com/justin13888/Sunrise/issues/80) — this is the
+    /// function it will call, and the `cfg` comes off then.
+    #[cfg(test)]
     fn is_revoked_at(
         &self,
         conn: &rusqlite::Connection,
@@ -1087,36 +1085,6 @@ impl Engine {
                 // is confused or hostile; either way the key itself is what
                 // opens ops, and it is filed under its real id.
                 if stream_key_id(&key) != p.key_id {
-                    return Ok(Vec::new());
-                }
-                // A revoked device's key is **not absorbed**, though its op is
-                // kept in the log like anyone else's.
-                //
-                // This is the one thing revocation still enforces here, and it
-                // is enforced in the only place that costs nothing: withholding
-                // the *effect* rather than refusing the *op*. Refusing would
-                // leave this replica's cursor for that device stalled, which is
-                // exactly the failure that took the peer-side gate out of this
-                // change — a stalled cursor plus relay retention latches every
-                // peer into a permanent data-loss warning. Applying the op and
-                // declining its effect has neither cost.
-                //
-                // Distributing a Stream key is an exercise of authority the cut
-                // has withdrawn — a revoked device that can still raise an
-                // epoch would have every peer sealing under a key it holds,
-                // which is the single thing the random-wrapped-key hierarchy
-                // exists to prevent. The mirror of this is
-                // `emit_key_envelopes`, which stops sealing *to* it; together
-                // they are what "revocation bounds key distribution" means, and
-                // it is all this PR claims. Writes are #80.
-                if self.is_revoked_at(tx, sender, hlc.physical_ms)? {
-                    tracing::warn!(
-                        ev = "core.key.envelope_from_revoked",
-                        stream_h = hex_short(&p.stream_id),
-                        sender_h = hex_short(sender),
-                        epoch = p.epoch,
-                        "a revoked device offered a Stream key; not absorbed"
-                    );
                     return Ok(Vec::new());
                 }
                 // An epoch far above this replica's live one is refused
@@ -3685,10 +3653,17 @@ impl Engine {
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
+                // Deliberately **not** filtered on `device_revocations`. This
+                // pull request enforces nothing about revocation, and a filter
+                // here would be the loudest place to imply otherwise: every
+                // paired device holds `ID_D_priv`, and the identity recipient
+                // appended below seals the same key to all of them, so
+                // excluding a revoked device from the device recipients
+                // withholds nothing it cannot open through the identity copy.
+                // That is issue #76, and it is the reason this claim was
+                // removed rather than repaired.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
-                 WHERE d.d_d_pub IS NOT NULL
-                   AND NOT EXISTS (SELECT 1 FROM device_revocations r
-                                   WHERE r.device_id = d.device_id)",
+                 WHERE d.d_d_pub IS NOT NULL",
             )?;
             let rows = stmt
                 .query_map([], |r| {
@@ -12208,131 +12183,114 @@ mod tests {
         );
     }
 
-    /// A revoked device's Stream key is **not absorbed**, while its
-    /// `device_revoke` op still lands. That asymmetry is what revocation
-    /// enforces in this PR, and this is what makes it fail rather than read.
+    /// A revoked device's ops are applied, its keys are absorbed, and its
+    /// cursor advances — because **this pull request enforces nothing about
+    /// revocation**.
     ///
-    /// The two are different kinds of thing. A revocation is a claim about the
-    /// *world* — "this device is gone" — which any member may make, and which
-    /// costs nothing to accept from anyone. Distributing a Stream key is an
-    /// **exercise of authority the cut has withdrawn**: a revoked device that
-    /// could still raise an epoch would have every peer sealing under a key it
-    /// holds, which is the single thing the random-wrapped-key hierarchy exists
-    /// to prevent.
+    /// This is a pin on a removal, and it is here because re-adding a gate is a
+    /// live hazard: six review rounds produced six defects and every one was a
+    /// gate interacting with something else. Refusing a device's ops freezes
+    /// its sync cursor while the relay keeps accepting its uploads, and
+    /// retention then latches a permanent data-loss warning on every peer.
+    /// Withholding its Stream key is worse: `defer_op` returns before the op
+    /// log, so every op behind it in that stream parks forever waiting on a key
+    /// that will never come. And neither withholds anything in the first place,
+    /// because every paired device holds `ID_D_priv` and the identity-sealed
+    /// copy of each epoch opens for all of them — issue #76.
     ///
-    /// Note what is asserted and what is not. The op is *applied* — it enters
-    /// the log and the cursor moves — and only its effect is withheld.
-    /// Refusing the op instead would stall this replica's cursor for that
-    /// device, which is the failure that removed the peer-side write gate from
-    /// this change. Anyone tempted to make this a refusal should read that
-    /// first.
+    /// What revocation does here is recorded, converged and inert. Reads are
+    /// #76, writes are #82 behind #80, and converging the effect is #78.
+    /// Anyone re-adding enforcement in this layer should have to delete this.
     #[test]
-    fn a_revoked_devices_stream_key_is_not_absorbed_but_its_revocations_land() {
+    fn a_revoked_devices_ops_and_keys_are_applied_like_anyone_elses() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
         let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
         let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let mut dba = db_root(ROOT);
         let mut dbb = db_root(ROOT);
         trust(&ea, &mut dba, &eb);
-        trust(&ea, &mut dba, &ec);
         trust(&eb, &mut dbb, &ea);
-        trust(&eb, &mut dbb, &ec);
 
-        // A writes, which mints the Inbox key and emits the envelopes that
-        // carry it. B is given only the vault-meta key, so it can read control
-        // ops but holds no Inbox key of its own.
-        ea.apply(
-            &mut dba,
-            Command::CreateTask(TaskDraft {
-                title: "mints the inbox key".into(),
-                ..Default::default()
-            }),
-        )
-        .unwrap();
-        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
-        let envelopes = key_envelope_envs(&dba);
-        assert!(!envelopes.is_empty(), "A emitted key envelopes at all");
-
-        // A is revoked, at a cut at or before everything above.
+        // A is revoked before it writes anything, at a cut before every op
+        // below — the strongest form of the premise.
         revoke(&eb, &mut dbb, &eb, ea.keychain.device_id(), T0);
+        assert!(eb
+            .is_revoked_at(dbb.conn(), &ea.keychain.device_id(), T0 + 60_000)
+            .unwrap());
 
-        // Its key envelopes apply as ops — no stall — and hand over nothing.
-        for env in &envelopes {
-            eb.apply_remote_all(&mut dbb, env)
-                .expect("the op is applied; only its effect is withheld");
-        }
-        assert!(
-            eb.keychain
-                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
-                .is_empty(),
-            "and nothing it sent was absorbed"
-        );
-
-        // Its revocations are not refused: A revoking C still reaches B.
-        set_clock(&ca, T0 + 1_000);
-        let revoke_c = ea
+        set_clock(&ca, T0 + 10_000);
+        let task = ea
             .apply(
                 &mut dba,
-                Command::RevokeDevice {
-                    device_id: EntityRef::new(EntityKind::Device, ec.keychain.device_id()),
-                    reason: RevokeReason::Compromised,
-                },
+                Command::CreateTask(TaskDraft {
+                    title: "written after the cut".into(),
+                    ..Default::default()
+                }),
             )
             .unwrap();
-        eb.apply_remote(&mut dbb, &env_bytes(&dba, &revoke_c.op_id))
-            .expect("a revoked device may still say another device is gone");
+
+        // B is given the vault-meta key, which is what lets it read control
+        // ops at all; every Stream key below still has to arrive by envelope.
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+
+        // Its Stream keys are absorbed, so the op it sealed can be opened.
+        for env in key_envelope_envs(&dba) {
+            eb.apply_remote_all(&mut dbb, &env)
+                .expect("a revoked device's key envelope applies");
+        }
         assert!(
-            eb.is_revoked_at(dbb.conn(), &ec.keychain.device_id(), T0 + 2_000)
-                .unwrap(),
-            "the claim about the world lands even though its author is revoked"
+            !eb.keychain
+                .stream_keys_at(&sunrise_domain::INBOX_STREAM_BYTES, 1)
+                .is_empty(),
+            "the key it distributed was absorbed"
         );
-    }
 
-    /// Revoking a device leaves `devices.revoked_at_ms` NULL, because the
-    /// register lives in `device_revocations` and that column is superseded.
-    ///
-    /// Migration 0017 says so in a comment. This makes it a fact: anything that
-    /// starts writing the old column again fails here rather than creating a
-    /// second, silently disagreeing source of truth.
-    #[test]
-    fn revocation_does_not_touch_the_superseded_devices_column() {
-        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-        let mut dba = db_root(ROOT);
-        trust(&ea, &mut dba, &eb);
-        let target = eb.keychain.device_id();
+        // And the op itself is applied, materialized, and passed by the cursor.
+        let env = env_bytes(&dba, &task.op_id);
+        let head = sunrise_cbor::decode_envelope_header(&env).unwrap();
+        eb.apply_remote(&mut dbb, &env)
+            .expect("a revoked device's op applies")
+            .expect("and produces its event");
+        assert_eq!(
+            read_task_t(&eb, &dbb, task.entity).title,
+            "written after the cut"
+        );
+        assert_eq!(
+            cursor_for(&dbb, &head.stream_id, &head.device_id),
+            1,
+            "the cursor advances, so nothing stalls and nothing replays forever"
+        );
 
+        // The other direction: a device revoked in *this* vault is still sealed
+        // to. Excluding it from `emit_key_envelopes` withholds nothing — the
+        // identity recipient appended alongside seals the same key, and every
+        // paired device holds `ID_D_priv` — so the filter would only look like
+        // enforcement. That is #76, and it is why the claim came out.
+        let before = key_envelope_envs(&dba).len();
         ea.apply(
             &mut dba,
             Command::RevokeDevice {
-                device_id: EntityRef::new(EntityKind::Device, target),
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
                 reason: RevokeReason::Lost,
             },
         )
         .unwrap();
-
+        let sealed_to_b = key_envelope_envs(&dba)
+            .into_iter()
+            .skip(before)
+            .filter_map(|env| ea.keychain.open_op(&env).ok())
+            .filter_map(|cbor| decode_inner_op(&cbor).ok())
+            .any(|inner| {
+                matches!(
+                    inner,
+                    InnerOp::KeyEnvelope(p)
+                        if p.recipient == Recipient::Device(eb.keychain.device_id())
+                )
+            });
         assert!(
-            revocation_row(&dba, &target).is_some(),
-            "the register is where the revocation lives"
+            sealed_to_b,
+            "the rotation still seals to the device it just revoked"
         );
-        let legacy: Option<i64> = dba
-            .conn()
-            .query_row(
-                "SELECT revoked_at_ms FROM devices WHERE device_id = ?",
-                params![&target[..]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(legacy, None, "the 0013 column is superseded and unwritten");
-        // And the device list reads the register, not the dead column.
-        match ea.query(&dba, Query::DeviceList).unwrap() {
-            QueryResult::Devices(rows) => assert!(
-                rows.iter().find(|d| d.device_id == target).unwrap().revoked,
-                "the device list still shows it revoked"
-            ),
-            other => panic!("expected Devices, got {other:?}"),
-        }
     }
 
     /// Two devices revoke each other, and both replicas end up holding both

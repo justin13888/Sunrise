@@ -9,14 +9,20 @@
 //!   any of that were wrong the *surviving* device would go dark, so B
 //!   converging on a Stream and a Context created after the cut is the
 //!   assertion that rotation and redistribution actually work.
-//! - **The revoked device stops receiving keys.** `emit_key_envelopes` excludes
-//!   it, so the epoch the rotation mints reaches the devices that remain and
-//!   not the one that left. That is what revocation bounds here: **key
-//!   distribution, not writes.** Peer-side write refusal was removed from this
-//!   change — a refused op stalls the refusing replica's sync cursor for that
-//!   device, and relay retention then turns the stall into a permanent
-//!   data-loss warning on every peer. Bounding writes needs the relay to stop
-//!   accepting them, which is #80.
+//! - **Revocation is recorded and converged, and enforces nothing.** C is
+//!   marked revoked on every replica and keeps every capability it had. That is
+//!   the honest scope of this slice, and the assertions below are written to
+//!   the property that survives: the rotation reaches the devices that remain,
+//!   so the account keeps working across a revocation.
+//!
+//! Both enforcement claims were built here and removed. Refusing a revoked
+//! device's ops freezes the refusing replica's sync cursor for it while the
+//! relay goes on accepting its uploads, and retention turns that into a
+//! permanent data-loss warning on every peer; withholding its Stream key parks
+//! every op behind it in that stream forever. And neither withholds anything,
+//! because pairing hands every device `ID_D_priv` and each epoch is sealed to
+//! the identity as well — so a revoked device opens the identity copy. Reads
+//! are #76, writes are #82 behind #80, and converging the effect is #78.
 //!
 //! # What this test deliberately does not assert, and why
 //!
@@ -32,8 +38,9 @@
 //!
 //! `docs/01-architecture/threat-model.md` §A3 names all three legs of the
 //! mitigation — revoke, rotate Stream keys, **rotate the identity key**. This
-//! slice builds the first two. Until the third lands, forward secrecy against a
-//! revoked device is not achieved and no test here should claim it is.
+//! slice builds the machinery for the first two and enforces neither. Until the
+//! third lands, forward secrecy against a revoked device is not achieved, and
+//! no test here should claim it is.
 //!
 //! Separately, and for the same root cause: a revoked device still holds
 //! `ID_S_priv`, so it can issue itself a fresh, valid `DeviceCert` under a new
@@ -142,7 +149,7 @@ async fn wait_context(core: &Core, name: &str, timeout: Duration) {
 }
 
 #[tokio::test]
-async fn a_revoked_device_stops_receiving_keys_and_the_survivors_keep_syncing() {
+async fn a_revocation_converges_and_the_survivors_keep_syncing() {
     let (addr, _relay) = spawn_relay().await;
     let dir_a = tempfile::tempdir().expect("tmp a");
     let dir_b = tempfile::tempdir().expect("tmp b");
@@ -198,13 +205,12 @@ async fn a_revoked_device_stops_receiving_keys_and_the_survivors_keep_syncing() 
     wait_tasks_converge(&a, &b, 2, TIMEOUT).await;
     wait_context(&b, "post-revocation", TIMEOUT).await;
 
-    // ---- The revoked device is no longer a key recipient ----
+    // ---- What the revoked device keeps ----
     //
-    // Which is what revocation bounds in this PR: `emit_key_envelopes` stops
-    // sealing to C, so the epoch minted by the rotation above reached A and B
-    // and not C. C keeps every key it already held — rotation bounds forward
-    // exposure, never backward — so the pre-revocation task is still readable
-    // there, and that is the honest limit.
+    // Everything. Its pre-revocation content, plainly; and — since this slice
+    // enforces nothing — its ability to read and write what comes after too.
+    // The assertion here is the modest one that is true: revoking a device does
+    // not take away what it already had.
     assert!(
         task_titles(&c).await.contains(&"before the cut".to_owned()),
         "the pre-revocation task is still readable on the revoked device"
