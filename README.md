@@ -14,7 +14,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 
 - **Local-first & end-to-end encrypted**: A deterministic Rust core owns your data; it never leaves your devices unencrypted.
 - **Offline-first sync that converges**: Every write commits locally first and syncs as an encrypted op. Concurrent edits are resolved by entity-level last-writer-wins ordered by a **hybrid logical clock**, so a device with a skewed wall clock cannot win every conflict ([ADR-0014](docs/11-adr/0014-entity-level-lww-merge.md), [ADR-0016](docs/11-adr/0016-hlc-timestamps.md)).
-- **Self-hostable sync relay**: Run your own server (REST + WebSocket, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
+- **Self-hostable sync relay**: Run your own server (REST + SSE sync, OIDC, SQLite) to keep your data yours. The relay only ever sees ciphertext.
 - **Scriptable**: `sunrise` is a one-shot CLI — capture, edit, defer, triage, review, export and sync from a shell, a cron job, or over SSH. Each vault is a separate account with its own key, so one machine can hold several. The graphical clients are native SwiftUI apps over one shared view layer ([ADR-0019](docs/11-adr/0019-swiftui-macos-client.md)): **macOS**, and an **iOS/iPadOS** tab shell that builds, tests and runs its UI tests in CI on every pull request into `master` or `v1-rewrite`. Android and Web are deferred.
 - **Routines with recurrence**: DST-aware RRULE-based scheduling and deterministic cross-device routine generation, driven by plain English (`every 2 weeks on tue`, `weekdays`, `monthly on the last day`).
 - **Calendar interchange**: import and export `.ics` (RFC 5545) from either client — `sunrise ical import` / `export`, or File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today | This Week on macOS — so time blocks move in and out of any calendar app. Imports are idempotent: re-importing the same file updates the blocks it already made rather than duplicating them. Anything the subset does not model is **reported, never dropped silently**. A Google Calendar provider is implemented and tested but is **not wired into v1** ([ADR-0020](docs/11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)).
@@ -32,10 +32,10 @@ Sunrise is split into a shared, deterministic **Rust core** and thin **client ap
 crates/        Rust workspace — the shared core, the server, the clients' core
   sunrise-core            Single-writer vault: command/query + sync state
   sunrise-crypto          Frozen v1 crypto suite (keys, envelopes, recovery, pairing)
-  sunrise-sync            Sync session states, backoff, transport trait + WebSocket client
+  sunrise-sync            Sync session states, backoff, transport trait + SSE/POST client
   sunrise-wire-protocol   Sync wire protocol: frames, codecs, negotiation
   sunrise-storage         SQLite + SQLCipher (op log, blob store, FTS5)
-  sunrise-server          Self-host sync relay (REST + WebSocket, OIDC)
+  sunrise-server          Self-host sync relay (REST + SSE sync, OIDC)
   sunrise-domain          Entities, validation, RRULE, routine generation, the
                           capture/annotate grammars, and the shared phrasing
   sunrise-client-core     Client-side but UI-free: undo/redo, saved views
@@ -197,13 +197,13 @@ cargo run -p sunrise-server
 
 # Terminal 1 — vault A writes something and exports its pairing payload:
 SUNRISE_VAULT=/tmp/vault-a \
-SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
+SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
 SUNRISE_EXPORT_PAIRING_FILE=/tmp/a.pairing \
 cargo run -p sunrise-cli -- capture 'Written on A'
 
 # Terminal 2 — vault B joins A's account by adopting that payload:
 SUNRISE_VAULT=/tmp/vault-b \
-SUNRISE_SYNC_URL=ws://127.0.0.1:8443/sync \
+SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
 SUNRISE_PAIRING_FILE=/tmp/a.pairing \
 cargo run -p sunrise-cli -- today
 ```
