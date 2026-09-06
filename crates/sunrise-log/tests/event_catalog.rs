@@ -12,8 +12,15 @@
 //! - every *field name* those events carry is on the redaction allowlist, so
 //!   the record the catalogue promises can actually reach a subscriber.
 //!
-//! Both scan `crates/*/src` — the shipped surfaces — so test fixtures
-//! inventing their own event names do not have to be catalogued.
+//! Both scan the `src` of every crate in the repository — the shipped
+//! surfaces — so test fixtures inventing their own event names do not have to
+//! be catalogued. The crate list is discovered from the manifests rather than
+//! from the workspace members, because `tools/uniffi-bindgen` is a crate the
+//! workspace does not contain.
+//!
+//! The field half **fails closed**: an invocation shape it cannot analyse is a
+//! failure naming the form, not a silent "no fields here". See the note above
+//! [`MACROS`] for why that is worth more than a scanner that knows more syntax.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -39,29 +46,13 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every `ev = "…"` literal in shipped crate sources, with the file it came
-/// from.
+/// Every `ev = "…"` literal in shipped sources, with the file it came from.
+///
+/// Shares [`shipped_sources`] with the field gates below, so both cover the
+/// same tree — including the crates that sit outside the workspace.
 fn emitted_events() -> BTreeSet<(String, String)> {
-    let root = workspace_root();
-    let mut files = Vec::new();
-    for crate_dir in std::fs::read_dir(root.join("crates"))
-        .expect("crates/ exists")
-        .flatten()
-    {
-        rust_sources(&crate_dir.path().join("src"), &mut files);
-    }
-    assert!(!files.is_empty(), "found no crate sources to scan");
-
     let mut found = BTreeSet::new();
-    for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let rel = file
-            .strip_prefix(&root)
-            .unwrap_or(&file)
-            .display()
-            .to_string();
+    for (rel, text) in shipped_sources() {
         for line in text.lines() {
             // Skip comments, the same way `.github/scripts/grep-gate.sh` does:
             // prose that *names* an event — this crate's own doc comments, for
@@ -165,13 +156,37 @@ fn the_scan_actually_finds_events() {
 //
 // A catalogue row promising `stream_h`, `batch_id`, `first_seen_ms` is worth
 // nothing if the record can never reach a subscriber, so the field vocabulary
-// is now scanned the same way the event vocabulary is.
+// is scanned the same way the event vocabulary is.
+//
+// # Why this fails closed
+//
+// The scanner reads one shape — `ident = value`, plus the `%`/`?` sigils and
+// bare shorthand — and every other legal `tracing` form is reported as a
+// *failure* rather than scanned as "no fields here". That is deliberate. A
+// scanner that silently yields nothing on a form it does not know is a gate
+// that fails open, and the form nobody anticipated is precisely the one that
+// would carry the next leak through. Four such shapes were found by review:
+//
+// - a quoted field name (`"task_title" = %t`), which `tracing` records and an
+//   earlier version of this scanner mistook for the message, skipping it *and*
+//   every field after it;
+// - a braced field block (`{ ev = "x", task_title = %t }`), whose `=` sits at
+//   bracket depth 1 where the scan does not look;
+// - a raw-identifier key (`r#type = 1`), which `tracing` records as `type`;
+// - a macro reached through an alias or a re-export (`t::warn!`, `self::warn!`,
+//   or an imported `wlog!`), which the invocation scan never sees at all.
+//
+// None exists in the tree. Rather than teach the scanner four more grammars —
+// which is a parser, and still leaves a fifth shape — each is a loud failure
+// naming the form and asking for the plain one. If a site ever genuinely needs
+// one, this gate failing is the right place to have that conversation.
 
 /// The macros this scanner reads, fully qualified.
 ///
-/// Every emission in the workspace writes `tracing::warn!` rather than a bare
-/// `warn!`; [`no_bare_tracing_macro_invocations`] is what keeps that true, and
-/// with it the scan complete.
+/// [`every_tracing_macro_is_called_by_its_full_path`] and
+/// [`the_tracing_macros_are_never_imported`] are what make this list
+/// sufficient: between them, no invocation can reach `tracing` by a name that
+/// is not on it.
 const MACROS: &[&str] = &[
     "tracing::trace!",
     "tracing::debug!",
@@ -183,6 +198,72 @@ const MACROS: &[&str] = &[
 
 /// The level names, without the `tracing::` qualifier.
 const LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "event"];
+
+/// What the scanner made of one invocation.
+#[derive(Debug, PartialEq, Eq)]
+enum Scanned {
+    /// The field names it declares, in order.
+    Fields(Vec<String>),
+    /// A form the scanner will not guess at, and why.
+    Unanalysable(String),
+}
+
+/// The `src` directory of every crate in the repository.
+///
+/// Discovered from the manifests rather than hardcoded to `crates/*`: the
+/// workspace is `members = ["crates/*"]`, but `tools/uniffi-bindgen` is a crate
+/// outside it, and a scan that cannot see a source tree silently stops covering
+/// it the moment someone adds one.
+fn source_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    manifest_dirs(&workspace_root(), 0, &mut roots);
+    roots.sort();
+    roots
+}
+
+fn manifest_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Vendored, generated, or deliberately out of scope. `legacy` is
+        // excluded from the workspace by the root manifest for the same reason.
+        if name.starts_with('.') || matches!(name.as_ref(), "legacy" | "target" | "node_modules") {
+            continue;
+        }
+        if path.join("Cargo.toml").is_file() && path.join("src").is_dir() {
+            out.push(path.join("src"));
+        }
+        manifest_dirs(&path, depth + 1, out);
+    }
+}
+
+/// Every shipped Rust source in the repository, with its path relative to the
+/// root.
+fn shipped_sources() -> Vec<(String, String)> {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    for src in source_roots() {
+        rust_sources(&src, &mut files);
+    }
+    assert!(!files.is_empty(), "found no crate sources to scan");
+    files
+        .into_iter()
+        .filter_map(|f| {
+            let rel = f.strip_prefix(&root).unwrap_or(&f).display().to_string();
+            std::fs::read_to_string(&f).ok().map(|text| (rel, text))
+        })
+        .collect()
+}
 
 /// The source with comment bodies and string/char literal *contents* blanked,
 /// every delimiter left in place.
@@ -336,20 +417,52 @@ fn is_field_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-/// The field names one invocation declares.
+/// The text after the string literal `arg` opens with, or `None` if it does not
+/// open with one.
 ///
-/// `tracing`'s grammar puts fields before the message, so the first
-/// string-literal argument ends the field list: everything after it is a
-/// format argument, which is recorded under no name of its own.
-fn fields_of(body: &str) -> Vec<String> {
+/// Contents are already blanked by [`strip_noise`], so the literal is found by
+/// its delimiters alone.
+fn after_string_literal(arg: &str) -> Option<&str> {
+    let b = arg.as_bytes();
+    if b.first() == Some(&b'"') {
+        return arg[1..].find('"').map(|i| &arg[i + 2..]);
+    }
+    if b.first() == Some(&b'r') {
+        let hashes = arg[1..].bytes().take_while(|&c| c == b'#').count();
+        let open = 1 + hashes;
+        if b.get(open) == Some(&b'"') {
+            let close = format!("\"{}", "#".repeat(hashes));
+            return arg[open + 1..]
+                .find(&close)
+                .map(|i| &arg[open + 1 + i + close.len()..]);
+        }
+    }
+    None
+}
+
+/// A short, single-line form of an argument, for a failure message.
+fn snippet(arg: &str) -> String {
+    let flat = arg.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 72 {
+        format!("{}…", flat.chars().take(72).collect::<String>())
+    } else {
+        flat
+    }
+}
+
+/// The field names one invocation declares, or the reason it cannot be read.
+///
+/// `tracing`'s grammar puts fields before the message, so an unquoted-name
+/// field list ends at the first string literal that is *not* followed by `=`.
+/// `takes_level` covers `event!`, whose first non-directive argument is the
+/// `Level` rather than a field.
+fn fields_of(body: &str, takes_level: bool) -> Scanned {
     let mut names = Vec::new();
+    let mut level_pending = takes_level;
     for arg in split_args(body) {
         let arg = arg.trim();
         if arg.is_empty() {
             continue;
-        }
-        if arg.starts_with('"') || arg.starts_with("r\"") || arg.starts_with("r#") {
-            break;
         }
         // Macro directives, not fields.
         if ["target:", "parent:", "name:"]
@@ -357,6 +470,31 @@ fn fields_of(body: &str) -> Vec<String> {
             .any(|d| arg.starts_with(d))
         {
             continue;
+        }
+        if level_pending {
+            level_pending = false;
+            continue;
+        }
+        // A braced field block. Its `=` signs sit at bracket depth 1, where the
+        // scan below does not look, so this would otherwise read as an
+        // invocation with no fields at all.
+        if arg.starts_with('{') {
+            return Scanned::Unanalysable(format!(
+                "a braced field block, whose fields this scanner cannot see: {}",
+                snippet(arg)
+            ));
+        }
+        if let Some(rest) = after_string_literal(arg) {
+            let rest = rest.trim_start();
+            // A quoted field name is a field `tracing` records; anything else
+            // is the message, which ends the field list.
+            if rest.starts_with('=') && !rest.starts_with("==") {
+                return Scanned::Unanalysable(format!(
+                    "a quoted field name, which this scanner cannot read: {}",
+                    snippet(arg)
+                ));
+            }
+            break;
         }
         let chars: Vec<char> = arg.chars().collect();
         let mut depth = 0i32;
@@ -380,15 +518,25 @@ fn fields_of(body: &str) -> Vec<String> {
             // Shorthand: `field`, `%field`, `?field`.
             None => arg.trim_start_matches(['%', '?']).trim().to_owned(),
         };
-        if is_field_name(&name) {
-            names.push(name);
+        if name.starts_with("r#") {
+            return Scanned::Unanalysable(format!(
+                "a raw-identifier field name, which `tracing` records with the `r#` stripped: {}",
+                snippet(arg)
+            ));
         }
+        if !is_field_name(&name) {
+            return Scanned::Unanalysable(format!(
+                "an argument that is neither `ident = value` nor a bare field name: {}",
+                snippet(arg)
+            ));
+        }
+        names.push(name);
     }
-    names
+    Scanned::Fields(names)
 }
 
-/// Every field name declared by a `tracing::*!` invocation in `text`.
-fn fields_in_source(text: &str) -> Vec<String> {
+/// Every `tracing::*!` invocation in `text`, analysed.
+fn scan_source(text: &str) -> Vec<Scanned> {
     let cleaned = strip_noise(text);
     assert!(
         cleaned.is_ascii(),
@@ -396,7 +544,7 @@ fn fields_in_source(text: &str) -> Vec<String> {
          offsets would not line up with its char offsets"
     );
     let bytes = cleaned.as_bytes();
-    let mut names = Vec::new();
+    let mut out = Vec::new();
     for mac in MACROS {
         let mut from = 0;
         while let Some(hit) = cleaned[from..].find(mac) {
@@ -410,41 +558,51 @@ fn fields_in_source(text: &str) -> Vec<String> {
                 continue;
             }
             let Some(end) = matching_paren(bytes, j) else {
+                out.push(Scanned::Unanalysable(
+                    "an invocation whose argument list does not close".to_owned(),
+                ));
                 continue;
             };
-            names.extend(fields_of(&cleaned[j + 1..end]));
+            out.push(fields_of(&cleaned[j + 1..end], *mac == "tracing::event!"));
         }
     }
-    names
+    out
 }
 
-/// Every field name logged from shipped crate sources, with its file.
+/// Every field name logged from shipped sources, with its file.
 fn emitted_fields() -> BTreeSet<(String, String)> {
-    let root = workspace_root();
-    let mut files = Vec::new();
-    for crate_dir in std::fs::read_dir(root.join("crates"))
-        .expect("crates/ exists")
-        .flatten()
-    {
-        rust_sources(&crate_dir.path().join("src"), &mut files);
-    }
-    assert!(!files.is_empty(), "found no crate sources to scan");
-
     let mut found = BTreeSet::new();
-    for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let rel = file
-            .strip_prefix(&root)
-            .unwrap_or(&file)
-            .display()
-            .to_string();
-        for name in fields_in_source(&text) {
-            found.insert((name, rel.clone()));
+    for (rel, text) in shipped_sources() {
+        for scanned in scan_source(&text) {
+            if let Scanned::Fields(names) = scanned {
+                for name in names {
+                    found.insert((name, rel.clone()));
+                }
+            }
         }
     }
     found
+}
+
+#[test]
+fn every_tracing_invocation_is_in_the_analysable_form() {
+    let mut refused = Vec::new();
+    for (rel, text) in shipped_sources() {
+        for scanned in scan_source(&text) {
+            if let Scanned::Unanalysable(why) = scanned {
+                refused.push(format!("{rel}: {why}"));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "these `tracing` invocations use a form this gate cannot analyse, so it \
+         cannot confirm their field names are on the redaction allowlist. Write \
+         the fields as plain `ident = value` pairs (with `%` or `?` for the \
+         value, or bare shorthand) — or, if one of these forms is genuinely \
+         needed, decide that deliberately and teach this scanner to read it:\n  {}",
+        refused.join("\n  ")
+    );
 }
 
 #[test]
@@ -467,28 +625,12 @@ fn every_emitted_field_name_is_on_the_redaction_allowlist() {
 }
 
 #[test]
-fn no_bare_tracing_macro_invocations() {
-    // The scan keys on the `tracing::` qualifier, so `use tracing::warn;` and a
-    // bare `warn!(…)` would be invisible to it. Nothing does that today, and
-    // this is what keeps the gate above complete.
-    let root = workspace_root();
-    let mut files = Vec::new();
-    for crate_dir in std::fs::read_dir(root.join("crates"))
-        .expect("crates/ exists")
-        .flatten()
-    {
-        rust_sources(&crate_dir.path().join("src"), &mut files);
-    }
-    let mut bare = Vec::new();
-    for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        let rel = file
-            .strip_prefix(&root)
-            .unwrap_or(&file)
-            .display()
-            .to_string();
+fn every_tracing_macro_is_called_by_its_full_path() {
+    // The scan keys on the literal `tracing::` qualifier, so an invocation that
+    // reaches the macro by any other name is invisible to it: `t::warn!` behind
+    // a `use tracing as t`, or a `self::`/`crate::` re-export.
+    let mut aliased = Vec::new();
+    for (rel, text) in shipped_sources() {
         let cleaned = strip_noise(&text);
         for lvl in LEVELS {
             let needle = format!("{lvl}!");
@@ -496,33 +638,117 @@ fn no_bare_tracing_macro_invocations() {
             while let Some(hit) = cleaned[from..].find(&needle) {
                 let at = from + hit;
                 from = at + needle.len();
-                if cleaned[..at].ends_with("tracing::") {
+                let before = &cleaned[..at];
+                if before.ends_with("tracing::") {
                     continue;
                 }
-                // Part of a longer path or identifier, not an invocation.
-                if cleaned[..at]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-                {
-                    continue;
+                match before.chars().next_back() {
+                    // Reached through some other path.
+                    Some(':') => aliased.push(format!(
+                        "{rel}: a `…::{needle}` that is not `tracing::{needle}`"
+                    )),
+                    // Part of a longer identifier — an unrelated macro. An
+                    // *alias* of a tracing macro can only get its name from a
+                    // `use`, which `the_tracing_macros_are_never_imported`
+                    // refuses outright.
+                    Some(c) if c.is_ascii_alphanumeric() || c == '_' => {}
+                    // A bare invocation.
+                    _ => aliased.push(format!("{rel}: a bare `{needle}`")),
                 }
-                bare.push(format!("{needle} in {rel}"));
             }
         }
     }
     assert!(
-        bare.is_empty(),
-        "these are bare tracing macro invocations, which the field scan cannot \
-         see. Write them as `tracing::{{level}}!` instead:\n  {}",
-        bare.join("\n  ")
+        aliased.is_empty(),
+        "these reach a `tracing` macro by a name the field scan does not look \
+         for. Call them as `tracing::<level>!` so the gate can read their \
+         fields:\n  {}",
+        aliased.join("\n  ")
+    );
+}
+
+#[test]
+fn the_tracing_macros_are_never_imported() {
+    // Importing a level macro is what makes a bare or renamed invocation
+    // possible in the first place, and a renamed one cannot be recognised by
+    // shape. Refusing the import is what closes that off at the source.
+    let mut imports = Vec::new();
+    for (rel, text) in shipped_sources() {
+        let cleaned = strip_noise(&text);
+        let mut from = 0;
+        while let Some(hit) = cleaned[from..].find("use ") {
+            let at = from + hit;
+            from = at + 4;
+            let Some(end) = cleaned[at..].find(';') else {
+                continue;
+            };
+            let stmt = &cleaned[at..at + end];
+            let rest = stmt[4..].trim_start().trim_start_matches("::");
+            if !rest.starts_with("tracing") {
+                continue;
+            }
+            if rest
+                .trim_start_matches("tracing")
+                .trim_start()
+                .starts_with("as ")
+            {
+                imports.push(format!(
+                    "{rel}: `{}` renames the whole crate",
+                    snippet(stmt)
+                ));
+                continue;
+            }
+            let imported = rest
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|tok| LEVELS.contains(&tok));
+            if imported {
+                imports.push(format!("{rel}: `{}` imports a level macro", snippet(stmt)));
+            }
+        }
+    }
+    assert!(
+        imports.is_empty(),
+        "these import a `tracing` level macro (or the crate under another \
+         name), which allows a bare or renamed invocation the field scan cannot \
+         see. Call the macros by their full `tracing::<level>!` path \
+         instead:\n  {}",
+        imports.join("\n  ")
+    );
+}
+
+#[test]
+fn the_scan_covers_every_crate_in_the_repository() {
+    // The walk finds manifests rather than assuming `crates/*`, and this is
+    // what proves it: `tools/uniffi-bindgen` sits outside the workspace, so a
+    // scan hardcoded to the workspace members would silently skip it.
+    let root = workspace_root();
+    let rel: BTreeSet<String> = source_roots()
+        .iter()
+        .map(|p| p.strip_prefix(&root).unwrap_or(p).display().to_string())
+        .collect();
+    assert!(
+        rel.contains("crates/sunrise-server/src"),
+        "the walk lost the workspace crates: {rel:?}"
+    );
+    assert!(
+        rel.contains("tools/uniffi-bindgen/src"),
+        "the walk does not reach crates outside the workspace: {rel:?}"
+    );
+    assert!(
+        rel.len() >= 24,
+        "expected at least 24 crate source roots, found {}: {rel:?}",
+        rel.len()
+    );
+    assert!(
+        !rel.iter().any(|p| p.starts_with("legacy/")),
+        "`legacy` is excluded from the workspace and from this scan: {rel:?}"
     );
 }
 
 #[test]
 fn the_field_scan_actually_finds_fields() {
     // The counterpart to `the_scan_actually_finds_events`: a scanner that
-    // silently stopped matching would turn the gate above into a no-op.
+    // silently stopped matching would turn the gates above into no-ops.
     let found = emitted_fields();
     let distinct: BTreeSet<&String> = found.iter().map(|(n, _)| n).collect();
     assert!(
@@ -544,7 +770,7 @@ fn the_field_scanner_reads_the_shapes_it_must() {
     // inside it naming fields it does not declare, `%` and `?` sigils, a value
     // expression carrying its own commas and parens, bare shorthand, and the
     // message that ends the field list.
-    let found = fields_in_source(
+    let scanned = scan_source(
         r#"
         fn emit() {
             tracing::warn!(
@@ -561,23 +787,108 @@ fn the_field_scanner_reads_the_shapes_it_must() {
         "#,
     );
     assert_eq!(
-        found,
-        ["ev", "stream_h", "n_ops", "first_seen_ms", "err"],
+        scanned,
+        vec![Scanned::Fields(
+            ["ev", "stream_h", "n_ops", "first_seen_ms", "err"]
+                .map(str::to_owned)
+                .to_vec()
+        )],
         "the scanner must read the declared fields and stop at the message"
     );
 }
 
 #[test]
 fn the_field_scanner_catches_a_planted_violation() {
-    // Proof the gate has teeth: the shape a leak actually takes, seen by the
-    // scanner and refused by the allowlist.
-    let found = fields_in_source(r#"tracing::info!(ev = "srv.oops", task_title = %t, "x");"#);
-    assert!(
-        found.iter().any(|n| n == "task_title"),
-        "the scanner missed a planted field: {found:?}"
+    // Proof the allowlist gate has teeth: the shape a leak actually takes, seen
+    // by the scanner and refused by the allowlist.
+    let scanned = scan_source(r#"tracing::info!(ev = "srv.oops", task_title = %t, "x");"#);
+    assert_eq!(
+        scanned,
+        vec![Scanned::Fields(
+            ["ev", "task_title"].map(str::to_owned).to_vec()
+        )]
     );
     assert!(
         !sunrise_log::is_allowed("task_title"),
         "and the allowlist must refuse it"
     );
+}
+
+/// The four bypass shapes, each of which must now be a *refusal* rather than a
+/// silent miss. Every one of these previously scanned as "no offending fields".
+#[test]
+fn the_field_scanner_refuses_the_forms_it_cannot_read() {
+    let why = |src: &str| match scan_source(src).pop().expect("one invocation") {
+        Scanned::Unanalysable(why) => why,
+        Scanned::Fields(f) => panic!("expected a refusal, got fields {f:?}"),
+    };
+
+    // 1. A quoted field name, which `tracing` records and which the old
+    //    scanner took for the message — skipping it and everything after it.
+    assert!(
+        why(r#"tracing::info!(ev = "x", "task_title" = %t, "m");"#).contains("a quoted field name"),
+        "a quoted field name must be refused"
+    );
+
+    // 2. A braced field block: the `=` sits at bracket depth 1.
+    assert!(
+        why(r#"tracing::info!({ ev = "x", task_title = %t }, "m");"#)
+            .contains("a braced field block"),
+        "a braced field block must be refused"
+    );
+
+    // 3. A raw-identifier key, recorded by `tracing` as `type`.
+    assert!(
+        why(r#"tracing::info!(ev = "x", r#type = 1, "m");"#)
+            .contains("a raw-identifier field name"),
+        "a raw-identifier field name must be refused"
+    );
+
+    // 4. Anything else that is not an `ident = value` pair or a bare field.
+    assert!(
+        why(r#"tracing::info!(ev = "x", some.call(1) + 2, "m");"#)
+            .contains("neither `ident = value` nor a bare field name"),
+        "an unreadable argument must be refused"
+    );
+}
+
+/// The fourth shape is a *path* problem rather than an argument problem, so it
+/// is caught by the two path gates rather than by `fields_of`.
+#[test]
+fn an_aliased_macro_path_is_refused_by_the_path_gates() {
+    // `t::warn!` and `self::warn!` are both `…::` hits that are not
+    // `tracing::`, which is exactly what `every_tracing_macro_is_called_by_its
+    // _full_path` reports; a bare `warn!` is the third arm of that match. The
+    // `use` that gives an alias its name is what
+    // `the_tracing_macros_are_never_imported` refuses.
+    for src in [
+        "fn f() { t::warn!(ev = \"x\", task_title = %t, \"m\"); }",
+        "fn f() { self::warn!(ev = \"x\", \"m\"); }",
+        "fn f() { warn!(ev = \"x\", \"m\"); }",
+    ] {
+        assert!(
+            scan_source(src).is_empty(),
+            "the field scan cannot see {src:?} — which is why the path gates exist"
+        );
+    }
+    for stmt in [
+        "use tracing::warn;",
+        "use tracing::{info, warn};",
+        "use tracing::warn as wlog;",
+        "use tracing as t;",
+    ] {
+        let cleaned = strip_noise(stmt);
+        let rest = cleaned[4..].trim_start().trim_start_matches("::");
+        let renames_crate = rest
+            .trim_start_matches("tracing")
+            .trim_start()
+            .starts_with("as ");
+        let imports_level = rest
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|tok| LEVELS.contains(&tok));
+        assert!(
+            renames_crate || imports_level,
+            "{stmt:?} must be refused by the import gate"
+        );
+    }
 }
