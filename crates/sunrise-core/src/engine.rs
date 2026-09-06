@@ -12466,6 +12466,81 @@ mod tests {
         assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
     }
 
+    /// A revoked device that keeps uploading costs its peers **one** row, not
+    /// one per op, and the cursor still walks past every one of them.
+    ///
+    /// It does keep uploading: `Command::RevokeDevice` never calls
+    /// `DELETE /api/v1/devices/{id}`, so nothing takes its relay credentials
+    /// away. One row per refused op was the same unbounded-growth defect
+    /// `deferred_ops` is capped against.
+    #[test]
+    fn a_revoked_devices_refusals_cost_one_row_however_many_ops_it_sends() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+
+        // One op before the cut, so the prefix has somewhere to start.
+        let first = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "before".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let first_env = env_bytes(&dba, &first.op_id);
+        let head = sunrise_cbor::decode_envelope_header(&first_env).unwrap();
+        let (stream, device) = (head.stream_id, head.device_id);
+        eb.apply_remote(&mut dbb, &first_env).unwrap();
+
+        revoke(&eb, &mut dbb, &eb, device, T0 + 1);
+
+        // Then twenty it signs afterwards, every one refused.
+        for i in 0..20u64 {
+            set_clock(&ca, T0 + 1_000 + i);
+            let res = ea
+                .apply(
+                    &mut dba,
+                    Command::CreateTask(TaskDraft {
+                        title: format!("after {i}"),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+            assert!(matches!(
+                eb.apply_remote(&mut dbb, &env_bytes(&dba, &res.op_id)),
+                Err(EngineError::DeviceRevoked)
+            ));
+        }
+
+        assert_eq!(
+            refused_rows(&dbb),
+            1,
+            "twenty refusals are one contiguous range, not twenty rows"
+        );
+        assert_eq!(
+            cursor_for(&dbb, &stream, &device),
+            21,
+            "and the cursor still passes all of them, so the relay stops resending"
+        );
+
+        // The range is what it says it is.
+        let (from, through): (i64, i64) = dbb
+            .conn()
+            .query_row(
+                "SELECT from_seq, through_seq FROM refused_ops
+                 WHERE stream_id = ? AND device_id = ?",
+                params![&stream[..], &device[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((from, through), (2, 21));
+    }
+
     fn refused_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT COUNT(*) FROM refused_ops", [], |r| r.get(0))
