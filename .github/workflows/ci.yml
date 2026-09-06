@@ -87,8 +87,19 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --all-targets
+      # `--skip relative_uri` drops the 18 `relative_uri` constructors kynos
+      # 0.1.0's route macros generate, whose doc comment rustdoc reads as an
+      # indented code block and then compiles as English -- see
+      # crates/sunrise-server/Cargo.toml for the mechanism and #60 for the
+      # one-line upstream fix that retires this. libtest filters by name
+      # before rustdoc compiles a snippet, so the prose never reaches a
+      # compiler, and unlike excluding the crate this leaves every other doc
+      # test in sunrise-server watched, including any added later. The filter
+      # is a substring match over the whole workspace, so do not name a real
+      # doc test `relative_uri`. `mise run rust-doctest` is this command
+      # verbatim -- keep the two in step.
       - name: cargo doc-test
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc -- --skip relative_uri
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
@@ -301,6 +312,119 @@ jobs:
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
+
+  mutants:
+    name: Mutation coverage
+    runs-on: ubuntu-latest
+    # Nightly and on demand, never on a pull request. The four scoped crates
+    # generate ~2,500 mutants and each one is an incremental rebuild plus a
+    # test run; a full pass is hours, which is exactly why
+    # docs/10-cross-cutting/testing.md scopes this to release candidates rather
+    # than to every commit.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      # Not fail-fast: a regression in one crate should not hide the scores of
+      # the other three, and the gate below needs every shard's outcomes to
+      # compute a crate's rate correctly.
+      fail-fast: false
+      matrix:
+        # Sharded by crate rather than one shard-space across the workspace,
+        # because the gate scores per crate and a shard that straddles two
+        # crates makes a partial denominator. Shard counts are proportional to
+        # mutant count: sunrise-domain 1352, sunrise-core 740,
+        # sunrise-crypto 296, sunrise-sync 94.
+        #
+        # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
+        # n/n outright ("shard k must be less than n"). So a crate split n ways
+        # is 0/n through (n-1)/n, and a crate run whole is 0/1.
+        include:
+          - { crate: sunrise-domain, shard: 0/6 }
+          - { crate: sunrise-domain, shard: 1/6 }
+          - { crate: sunrise-domain, shard: 2/6 }
+          - { crate: sunrise-domain, shard: 3/6 }
+          - { crate: sunrise-domain, shard: 4/6 }
+          - { crate: sunrise-domain, shard: 5/6 }
+          - { crate: sunrise-core, shard: 0/4 }
+          - { crate: sunrise-core, shard: 1/4 }
+          - { crate: sunrise-core, shard: 2/4 }
+          - { crate: sunrise-core, shard: 3/4 }
+          - { crate: sunrise-crypto, shard: 0/2 }
+          - { crate: sunrise-crypto, shard: 1/2 }
+          - { crate: sunrise-sync, shard: 0/1 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: Mutate ${{ matrix.crate }} (shard ${{ matrix.shard }})
+        # `--jobs 1` here for the same reason the mise task pins it: each job
+        # is a full copy of the tree plus a resident rustc, and a hosted runner
+        # has less headroom than the laptop the figure was measured on.
+        #
+        # cargo-mutants exits 2 when mutants survived and 3 when some timed
+        # out. Both mean the run measured something, and on this workspace
+        # both are the ordinary result — no scoped crate is near 100%. Whether
+        # that measurement is good enough is the gate's question, not this
+        # step's, so 0/2/3 are success here and every other code propagates.
+        # Red on this step now means the shard could not be measured at all.
+        run: |
+          rc=0
+          cargo mutants -p ${{ matrix.crate }} \
+            --jobs 1 --shard ${{ matrix.shard }} \
+            --output out/mutants || rc=$?
+          case "$rc" in
+            0 | 2 | 3) ;;
+            *) exit "$rc" ;;
+          esac
+      - name: Upload outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-${{ matrix.crate }}-${{ strategy.job-index }}
+          path: out/mutants/mutants.out/outcomes.json
+
+  mutants-gate:
+    name: Mutation coverage gate
+    runs-on: ubuntu-latest
+    needs: mutants
+    # `always()` so the gate still scores the shards that finished when one
+    # fails to run. A missing shard lowers a crate's measured rate and the gate
+    # will say so, which is the honest outcome — silence would not be.
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-*
+          path: outcomes
+      - name: Compare against mutants/baseline.json
+        # `--expect-shards` mirrors the matrix above, and has to be edited with
+        # it. Without it a shard whose runner died is silently a crate that
+        # scores low, and the gate blames the tests for a dead runner. With it,
+        # a short crate is reported as a broken run and left unscored.
+        run: |
+          .github/scripts/mutants-gate.py outcomes/*/outcomes.json \
+            --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1
+
+  mutants-gate-contract:
+    name: Mutation gate contract
+    runs-on: ubuntu-latest
+    # Deliberately not inside the nightly `Mutation coverage gate` job above,
+    # and deliberately without an `if:` — so it runs on every trigger this
+    # workflow has, pull requests included. What it asserts is the gate's
+    # exit-code contract, which is what ci.yml and the gate's own printed
+    # remedies depend on, and it has drifted twice — both times in a pull
+    # request that a 04:00 schedule would only have caught the morning after
+    # it merged. Running it nightly as well costs a second and occasionally
+    # catches a change to the runner rather than to the gate. It needs no
+    # Rust, no cargo-mutants and no outcomes: it synthesises its fixtures.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_mutants_gate.py
 
   determinism:
     name: Determinism gate

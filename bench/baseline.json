@@ -1,5 +1,5 @@
 {
-    "_comment": "Per-platform performance baselines. PR check fails if a metric regresses by >5%. Nightly job auto-updates this file. Per docs/10-cross-cutting/testing.md §release-gates.",
+    "_comment": "Per-platform performance baselines, compared by `cargo run -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`. Nothing enforces them and nothing updates them automatically. The bench-regression job in .github/workflows/ci.yml runs on schedule and workflow_dispatch only \u2014 never on a pull request \u2014 carries continue-on-error: true, and passes a 60% tolerance rather than the 5% docs/10-cross-cutting/performance-budgets.md specifies, because on the shared runner the same binary swings +270% (ws_handshake) and \u221239% (submit_create_task) against its own recorded baseline. So this file is edited by hand, in a commit that says what changed and why. A null is a metric never measured on that platform. See performance-budgets.md \u00a7Regression policy and https://github.com/justin13888/Sunrise/issues/33.",
     "platforms": {
         "darwin-aarch64": {
             "fts_query_10k_p99_ms": null,

@@ -35,29 +35,29 @@ and a crate can be reachable while a capability inside it is not.
 
 | Crate / Component | Status | Notes |
 |---|---|---|
-| Workspace + CI | ✅ live | Cargo + Bun workspace, 21 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
+| Workspace + CI | ✅ live | Cargo + Bun workspace, 23 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
 | `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, export, the `note_body` block-grammar codec, the `notify` reminder planner, `import`'s stable `(source, uid)` → Block id hash, and the `sort_order` base-26 fractional index that gives `Stream.sort_order` its arithmetic. `Block` (6 commands, 3 op kinds, 4 queries) and `Attachment` (2 commands, 2 op kinds, `Query::TaskAttachments`) have full command paths: Block is now reachable from **both** clients (macOS calendar grid; CLI via `ical import` / `ical export`), Attachment from macOS only. `Note` and `Person` are the two entities that genuinely have no path: a struct and a dead table, with nothing in between |
-| `sunrise-storage` | 🟨 partial | Schema, op log and FTS5 are solid. `BlobStore` has two external consumers (`sunrise-core::attach`, `sunrise-server::routes::blobs`), so it is reachable from the macOS client. **2** tables are never written — `notes` and `persons`, matching the two entities with no command path. The migration list is a baseline plus three appends, and `STORAGE_V` is now **16**: `0013_baseline.sql` per [ADR-0018](../11-adr/0018-storage-baseline-reset.md), then `0014_stream_sort_order.sql`, the first migration appended after that reset and the one that gives `streams` a real `sort_order` column instead of a synthesized `"a0"`; then `0015_entity_extra_columns.sql`, which gives `streams`, `contexts`, `routines`, `focus_sessions` and `focus_session_ends` the `extra BLOB` that only `tasks`, `blocks` and `attachments` had, so forward-compat unknowns stop being dropped at the projection on five of the nine column-projected entities; then `0016_stream_description_and_default_context.sql`, which gives `Stream.description` and `Stream.default_context` the columns their CDDL always declared — `description` was accepted by the command surface, carried in the op, and then erased on every replica by the next update, because nothing could materialize it. It backfills in the order the sidebar was already displaying (`name COLLATE NOCASE, stream_id`), so no existing vault rearranges itself on upgrade. `BASELINE_STORAGE_V` stays **13**: `db.rs` refuses any vault stamped below it with a typed `STORAGE_V_PRE_BASELINE`, and `refuses_every_pre_baseline_version` asserts that for every version below it |
+| `sunrise-storage` | 🟨 partial | Schema, op log and FTS5 are solid. `BlobStore` has two external consumers (`sunrise-core::attach`, `sunrise-server::api::blobs`), so it is reachable from the macOS client. **2** tables are never written — `notes` and `persons`, matching the two entities with no command path. The migration list is a baseline plus three appends, and `STORAGE_V` is now **16**: `0013_baseline.sql` per [ADR-0018](../11-adr/0018-storage-baseline-reset.md), then `0014_stream_sort_order.sql`, the first migration appended after that reset and the one that gives `streams` a real `sort_order` column instead of a synthesized `"a0"`; then `0015_entity_extra_columns.sql`, which gives `streams`, `contexts`, `routines`, `focus_sessions` and `focus_session_ends` the `extra BLOB` that only `tasks`, `blocks` and `attachments` had, so forward-compat unknowns stop being dropped at the projection on five of the nine column-projected entities; then `0016_stream_description_and_default_context.sql`, which gives `Stream.description` and `Stream.default_context` the columns their CDDL always declared — `description` was accepted by the command surface, carried in the op, and then erased on every replica by the next update, because nothing could materialize it. It backfills in the order the sidebar was already displaying (`name COLLATE NOCASE, stream_id`), so no existing vault rearranges itself on upgrade. `BASELINE_STORAGE_V` stays **13**: `db.rs` refuses any vault stamped below it with a typed `STORAGE_V_PRE_BASELINE`, and `refuses_every_pre_baseline_version` asserts that for every version below it |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
-| `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `WsTransport`. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
+| `sunrise-sync` | ✅ live | `SyncState`, `Backoff`, the `Transport` trait, and `SseTransport` (`src/sse.rs`, behind the `sse` feature) — the SSE-plus-typed-`POST` client [ADR-0023](../11-adr/0023-sse-sync-transport.md) put in the `WsTransport`'s place. The trait did not change, which is the point of it: the driver still hands this layer whole encoded wire frames and reads whole encoded frames back, so `sync_driver`, the outbox, the cursor bookkeeping and the backoff were untouched by the migration. The dead `Outbox` / `Cursor` / `CursorMap` / `SyncStateMachine` exports were deleted — the live implementations are `sunrise_storage::Outbox` and `sunrise-core::sync_driver` |
 | `sunrise-log` | ✅ live | No longer a logger: `tracing` + `tracing-subscriber` carry the transport ([ADR-0010](../11-adr/0010-logging-strategy.md), amended) and this crate is the `Plain<T>` wrapper, the `RedactionLayer` field-name veto, the `ev` catalogue check, and subscriber assembly. Both binaries initialise it first thing; `sunrise-server`, `-storage`, `-core`, `-cli` emit against the catalogue. The `ring`/`remote` sinks and the `(ev, lv)` throttle were deleted rather than left as an unimplemented interface |
 | `sunrise-pairing` | ✅ live | Full `Noise_XX_25519_ChaChaPoly_SHA256` handshake, SAS confirmation, and the encrypted channel the existing device uses to hand a new one its vault root. `Core::export_vault_root_for_pairing` is the (deliberately conspicuous) counterpart. Proven by `sunrise-e2e/tests/paired_devices_converge.rs`, which contains **no shared key constant** — B learns the root only across the channel |
 | `sunrise-onboarding` | 🟨 partial | BIP-39 derivation is absent; `account.rs` has no tests. Its request shapes are no longer unconsumed: `sunrise-relay-client` carries them over the wire and `sunrise bootstrap` invokes it |
 | `sunrise-auth` | ✅ live | Client-side OIDC relying party: discovery, PKCE, a loopback redirect listener, token exchange and refresh, and credential storage. Consumed by `sunrise-cli` (`login` / `logout` / `whoami`) and by `sunrise-core-bindings`, so it reaches the macOS app. 35 tests |
 | `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements **8** entities behind **21** op kinds (`InnerOp`), exposed as **30** commands and **29** queries. Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` reaches ten commands and thirteen queries — enough that `Query::StreamTasks` and `Query::ContextTasks`, which no binary issued a cycle ago, now have a caller with no UI behind it. `SystemClock::timezone()` now resolves the device's real IANA zone (see [Fixed this cycle](#fixed-this-cycle)) |
-| `sunrise-server` | ✅ live | Every operation is served by `api/`, described by `schemas/openapi.v1.json` and reachable — `routes/` and the `/sync` WebSocket are gone, and with them `axum`, `tower` and `tokio-tungstenite`. Relay fanout, cursor-scoped replay backed by a durable SQLite relay log, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` is an SSE stream downstream and typed `POST`s upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md)): `POST /sync/session` negotiates, `GET /sync/events` fans out with `Last-Event-ID` resumption, and the stream ends when the token expires or the device is revoked, so a revocation reaches a stream already open. Fanout is scoped to the verified subject. `require_device_sig` is derived from the deployment — on wherever an OIDC issuer is configured, off for single-tenant self-host, which `validate` rejects the flag alongside anyway — and `/metrics` is mounted only on a loopback listener. Blob 2PC is **implemented**, not a stub: `init` / `PUT {upload_id}/{chunk_idx}` / `finalize` / `GET {blob_id}` are all mounted, content-addressed and hash-verified on finalize, with a round-trip test, and the fetch streams chunk-by-chunk rather than buffering the whole blob. Its auth is stricter than `/sync`'s — bearer plus account plus device binding ([#22](https://github.com/justin13888/Sunrise/issues/22) is closed by this) |
+| `sunrise-server` | ✅ live | Every operation is served by `api/`, described by `schemas/openapi.v1.json` and reachable — `routes/` and the `/sync` WebSocket are gone, and with them `axum` and `tokio-tungstenite` (`tower` and `tower-http` survive in the lock only as `reqwest` transitives, declared nowhere). Relay fanout, cursor-scoped replay backed by a durable SQLite relay log, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` is an SSE stream downstream and typed `POST`s upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md)): `POST /sync/session` negotiates, `GET /sync/events` fans out with `Last-Event-ID` resumption, and the stream ends when the token expires or the device is revoked, so a revocation reaches a stream already open. Fanout is scoped to the verified subject. `require_device_sig` is derived from the deployment — on wherever an OIDC issuer is configured, off for single-tenant self-host, which `validate` rejects the flag alongside anyway — and `/metrics` is mounted only on a loopback listener. Blob 2PC is **implemented**, not a stub: `init` / `PUT {upload_id}/{chunk_idx}` / `finalize` / `GET {blob_id}` are all mounted, content-addressed and hash-verified on finalize, with a round-trip test, and the fetch streams chunk-by-chunk rather than buffering the whole blob. Its auth is bearer plus account plus device binding, and since ADR-0023 that is the *same* auth `/sync` runs rather than a stricter one: every route on the surface goes through one of `api/signed.rs`'s four extractors ([#22](https://github.com/justin13888/Sunrise/issues/22) is closed by this) |
 | `sunrise-integrations` | 🟨 partial | **No longer an orphan.** The iCal half is live and dual-consumed: `ical` (RFC 5545 syntax) → `ical_map` (domain mapping) → `ical_vault` (the vault driver), reached by `sunrise-cli`'s `ical import` / `ical export` and, across the seam's `import_ical` / `export_ical`, by the macOS File menu — so both shipping clients reach it, which was not true a cycle ago. Imports are idempotent because the Block id *is* a hash of `(source, uid)`. The subset is narrow and **reports rather than drops**: `VTODO`, `VALARM`, `VTIMEZONE`, `VJOURNAL`, `VFREEBUSY`, `RDATE`/`EXDATE`/`RECURRENCE-ID`, `ATTACH`, `ATTENDEE` and any `X-` property each raise an `ICalNotice`. `RRULE`, `DESCRIPTION` and `LOCATION` parse and are then reported at the domain boundary, because `Block` has no field for them — so **a recurring event imports as a single occurrence**, and an exported `.ics` carries only `UID`, `SUMMARY`, `DTSTART`, `DTEND`. The GCal half is **implemented, tested and unconsumed**, deferred to [#4](https://github.com/justin13888/Sunrise/issues/4) by [ADR-0020](../11-adr/0020-v1-must-demotions.md): PKCE exchange/refresh with the durable-refresh-token rule and change detection that suppresses phantom deletes, all with injected transport, but nothing has run against the live API (needs a Google OAuth client ID) and there is no `impl EventSyncer` anywhere. `IntegrationProvider` still has **no implementor** — not even the live iCal path uses it, so the crate's own claim that integrations "run through" it is not true today |
 | `sunrise-cli` | ✅ live | The `sunrise` binary: **twenty-three** one-shot subcommands — `capture`, `edit`, `defer`, `done`, `drop`, `today`, `inbox`, `next`, `search`, `streams` (incl. `streams move`), `stream`, `contexts`, `context`, `routines`, `review`, `export`, `ical` (`import` / `export`), `vaults`, `login`, `logout`, `whoami`, `focus`, `sync --once` — plus the env-driven live-sync wiring. Six landed this cycle (`edit`, `defer`, `drop`, `stream`, `context`, `vaults`) and they are what closed the CLI's three partial MUSTs; **all nine are now met**, see the [status audit](../07-clients/parity-matrix.md#v1-status-audit). It submits ten of the core's thirty commands: `CreateTask`, `UpdateTask`, `PromoteToStream`, `DeferTask`, `CompleteTask`, `DeleteTask`, `UpdateStream`, `StartFocus`, `ImportBlock`, and `TrustDevice` from the startup path. Arg parsing is hand-rolled, not clap. This is the reachability story for the core with no UI at all — `tests/cli.rs` drives the real binary against a real vault in a separate process |
 | `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
 | `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync, fanned out to every subscriber. **Re-graded from 🟨 this cycle.** The partial mark was for one stated reason — `import_ical` / `export_ical` had no Swift caller — and `apps/apple` now calls both, so the mark was re-derived rather than inherited. Sweeping every exported symbol for a Swift caller leaves a much smaller residue: `parse_saved_view` has none at all, and `energy_fit_label` is reached only from the test target. Neither carries a parity MUST — the *Saved searches / views* MUST is met through `SavedViews.load` / `.save` — so they are unconsumed surface rather than an unreachable requirement, which is the distinction the 🟨 mark is for |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
-| `apps/apple` | 🟨 partial | The SwiftUI client over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~17.8k lines of app source, **471 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Built in CI** — a `macos-app` job on `macos-26` runs `mise run macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`) on every push and PR. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the UI test target is `skipped: true` in the scheme, so CI proves the models behave but never proves a click reaches the core |
+| `apps/apple` | 🟨 partial | The SwiftUI clients over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~19.2k lines of app source across `Sunrise/` (shared, 17.3k), `macOS/` (1.3k) and `iOS/` (0.6k), **477 Swift Testing cases in 75 suites**, plus 4 XCTest UI tests on macOS and 5 on iOS. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Both targets build in CI**, as two jobs on `macos-26` rather than one — a `macos-app` job running `mise run macos-app` (xcframework → xcodegen → `swiftlint --strict` → `xcodebuild test`), and an `ios-app` job running `mise run ios-app`, which builds the `SunriseiOS` product, compiles the same `SunriseTests/` sources against it a second time as `SunriseiOSTests`, which is what makes the shared half of the app answer for itself on both platforms, and — unlike the macOS job — runs its UI tests, `SunriseiOSUITests`, on the iPhone 17 Pro simulator. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles, Continuity Camera and Sparkle updates, none of which exist; there is no camera QR scanner; and the **macOS** UI test target is `skipped: true` in the scheme — a macOS XCUITest needs `DevToolsSecurity -enable` on the machine, and a simulator runner needs no such change — so on the Mac product CI proves the models behave but never proves a click reaches the core. The iOS job is where that loop closes — `SunriseiOSUITests` runs on the simulator — so the click-to-core path is demonstrated on the platform that carries no MUSTs and not on the one that does |
 | `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
 | `packages/sunrise-ui` | 🟨 partial | A 40-line token file, not a component library. Its **one** consumer (`apps/web`, itself deferred) imports only `taskStateGlyph` and hardcodes colours. It had two until the Tauri shell was removed; the macOS app is Swift and does not consume it, so no shipping client does |
 
@@ -101,9 +101,10 @@ smaller scale. Crate-level reachability is the floor, not the ceiling.
 
 The sync path is the strongest thing in the repository, and none of it is faked:
 
-- Real `TcpListener` + `axum::serve` running the production router; real WebSocket
-  over real TCP via the production `WsTransport`; real `Hello`/`HelloAck`
-  capability negotiation.
+- Real `TcpListener` running the production `kynos` router; real HTTP over real
+  TCP via the production `SseTransport` — typed `POST`s up, a `text/event-stream`
+  fan-out down; real `Hello`/`HelloAck` capability negotiation, unchanged across
+  the transport move because `Hello::negotiate` and its frozen fixtures were.
 - Real Ed25519 signing and XChaCha20-Poly1305 sealing under BLAKE3-derived
   per-stream keys, with signature verification *before* decryption and a
   trusted-device-cert lookup. Untrusted-device, tampered-envelope, and
@@ -117,10 +118,13 @@ The sync path is the strongest thing in the repository, and none of it is faked:
 
 Also solid: the RRULE DST golden vectors (including Lord Howe's 30-minute
 offset), the pre-baseline migration *refusal* tests, and the FTS5 hostile-input
-proptest. The migration list is two files deep now — `0013_baseline.sql` and the
-appended `0014_stream_sort_order.sql` — so there is a one-step upgrade chain to
-test as well as a refusal, and `current_storage_v()` is asserted equal to
-`STORAGE_V` so the constant and the list cannot drift apart.
+proptest. The migration list is four files deep now — `0013_baseline.sql`
+and three appends, `0014_stream_sort_order.sql`,
+`0015_entity_extra_columns.sql` and
+`0016_stream_description_and_default_context.sql` — so there is a three-step
+upgrade chain to test as well as a refusal, and `current_storage_v()` is
+asserted equal to `STORAGE_V`, now **16**, so the constant and the list cannot
+drift apart.
 
 ## Known defects
 
@@ -144,34 +148,51 @@ the code showed they no longer describe it. Both had outlived their fix:
   cursors now filter the replay instead of being discarded, a cursor past the
   ring is served from a durable SQLite relay log, and a cursor past *that*
   retention gets a typed `SYNC_CURSOR_GAP` rather than silence.
-  `tests/ws_cursors.rs` pins all four cases, including survival across a relay
-  restart and the "eviction of already-applied ops is not a gap" boundary.
+  The four cases are pinned by `no_cursor_replays_everything_retained`,
+  `a_cursor_narrows_the_replay_to_what_was_missed`,
+  `a_cursor_at_the_head_replays_nothing_and_reports_no_gap` and
+  `a_cursor_past_retention_gets_a_typed_gap_before_the_replay`, plus
+  `a_replay_past_the_ring_bound_is_served_from_the_durable_log`. They were
+  `tests/ws_cursors.rs` until ADR-0023; they now live in `api/sync.rs`'s inline
+  `mod tests`, under a `-- ws_cursors --` marker that says where they came from.
 - **Blob storage is a stub and unauthenticated**
   ([#22](https://github.com/justin13888/Sunrise/issues/22)) — fixed, and the
   entry was wrong on every count by the end. The chunk route is mounted, the
   2PC is content-addressed and hash-verified at `finalize`, and the routes
-  require bearer *plus* account *plus* device binding, which is stricter than
-  `/sync`. `Command::AttachFile` and `Query::TaskAttachments` both exist.
+  require bearer *plus* account *plus* device binding. That was stricter than
+  `/sync` until ADR-0023; the two are now the same code — every route on the
+  surface, sync included, takes one of `api/signed.rs`'s four extractors, so the
+  order of checks is stated once rather than per handler.
+  `Command::AttachFile` and `Query::TaskAttachments` both exist.
 
 Similarly, **"auth is checked once, at the WebSocket upgrade"** was stale and
-has been rewritten: the server also re-checks `exp` on every inbound frame,
-enforces an idle deadline, and handles a mid-session `0x12 RefreshToken`
-(`tests/ws_token_expiry.rs`). What remains true is narrower, and is the entry
+has been rewritten twice. The socket re-checked `exp` on every inbound frame;
+the SSE surface re-checks it on every operation, through `resolve`, and on a
+timer inside the open event stream — which is the case that matters, since a
+subscriber that only reads issues nothing else to check. A mid-session refresh
+is `POST /sync/session/refresh`. The coverage moved with the code, into
+`api/sync.rs`'s inline `mod tests` under a `-- ws_token_expiry --` marker:
+`an_expired_token_ends_the_session`, `a_session_with_no_deadline_is_never_closed`
+and the four refresh cases. What remains true is narrower, and is the entry
 below.
 
 - **No in-session op retry**
   ([#20](https://github.com/justin13888/Sunrise/issues/20)). An unacked op waits
   for the session to end; the chaos tests script the reconnect the driver should
   perform itself, so they prove the *relay* can recover, not that the client does.
-- **Device binding on `/sync` is not signature-based.** The upgrade now
-  resolves the device and refuses one that is not an active row on the account,
-  and a live session is re-checked on every inbound frame and on a
-  `device_recheck_ms` timer, so a revocation reaches a socket the revoked device
-  is already holding. What it still does not do is require
-  `X-Sunrise-Device-Sig` the way the blob routes do — an upgrade carries no body
-  to sign, and [ADR-0022](../11-adr/0022-device-signature-canonical-json.md)
-  re-bases signing on the request *value* rather than its bytes
-  ([#7](https://github.com/justin13888/Sunrise/issues/7) covers the rest).
+- **Device binding on `/sync` is not signature-based** — no longer true, and it
+  was ADR-0023 that closed it rather than a fix aimed at it. The socket's
+  objection was structural: an upgrade carries no body to sign. Five typed
+  operations do, so all five take `api/signed.rs`'s extractors and are bound
+  exactly as the blob routes are, under
+  [ADR-0022](../11-adr/0022-device-signature-canonical-json.md)'s
+  `header_sig_v2` over the request *value*. What survives from the entry is the
+  narrower point it always contained: the binding is `require_device_sig`-gated,
+  so a self-host deployment with no OIDC issuer has no device rows to bind to
+  and binds nothing ([#7](https://github.com/justin13888/Sunrise/issues/7)
+  covers the rest). The open event stream is still re-checked on a
+  `device_recheck_ms` timer, because a subscriber that only reads presents no
+  further request to check.
 **Two more entries left this list this cycle, both closed in code rather than
 re-worded:**
 
@@ -294,7 +315,9 @@ Recorded because each presented as something other than what it was:
   place data can vanish quietly.
 - **Bearer tokens could reach the log.** `TraceLayer::new_for_http`'s stock span
   records the full URI, and `?access_token=` is the documented browser fallback
-  for the sync socket.
+  for the sync socket. The hand-assembled span that fixed it is itself gone now:
+  `api/observe.rs` is handed the matched route rather than the request's URI, so
+  there is no query string in reach of the logging path at all.
 - **Two CI gates were structurally unenforceable.** The determinism and
   log-redaction gates were shaped `if grep ...; then fail; fi`, which takes the
   else branch — printing OK — on *every* failure mode, including a missing
@@ -366,7 +389,26 @@ Recorded because each presented as something other than what it was:
 - **CI gates** — the bench comparison is wired and runs nightly, but
   **informationally**: on shared runners the same binary reports swings over
   ±100% against its own baseline from scheduling noise alone, so `testing.md`'s
-  >5% blocking gate needs dedicated hardware. `cargo-mutants` is not wired.
+  >5% blocking gate needs dedicated hardware. `cargo-mutants` is wired, but
+  nightly rather than per-pull-request: `ci.yml`'s `Mutation coverage` job runs
+  the four scoped crates as a per-crate shard matrix — the counts live in that
+  matrix and are sized by mutant count — on `schedule` and `workflow_dispatch`
+  only, and `Mutation coverage gate` feeds every shard's `outcomes.json` to
+  `.github/scripts/mutants-gate.py`, which aggregates per crate and compares
+  against `mutants/baseline.json` with `--expect-shards` mirroring that matrix,
+  so a shard whose runner died reads as a broken run rather than as a coverage
+  regression. The mutate step treats cargo-mutants' exit 0, 2 and 3 — clean,
+  mutants missed, mutants timed out — as success, because on this workspace 2
+  and 3 are the ordinary result and judging them is the gate's job, and it
+  propagates every other code, notably 4: the unmutated baseline failed to
+  build or test. `mise run mutants <crate> [--shard k/n]` is the same pass
+  locally, and `mise run mutants-baseline` — with the shard
+  counts it requires — is how a floor is recorded. The floors themselves are
+  deliberately not restated here: `mutants/baseline.json` is the only thing the
+  gate reads, the numbers ratchet upward as tests improve, and a copy in this
+  file would be wrong the first time one moves. It currently carries
+  `sunrise-crypto` and `sunrise-sync`; `sunrise-domain` and `sunrise-core` get
+  theirs from the first nightly and until then fail the gate for having none.
   `CODEOWNERS` now encodes the security-review gate, though GitHub only enforces
   it once branch protection requires code-owner review.
 - **`cargo-fuzz` targets** — `testing.md` specifies six; `fuzz/` does not exist.
@@ -380,18 +422,21 @@ carried over from an earlier revision.
 |---|---|
 | `mise run rust-test` | **1335 passed**, 0 failed, 3 ignored |
 | `cargo test -p sunrise-cli` | **77 passed** — 48 in `tests/`, 29 in-crate |
-| `cargo test --workspace --doc` | 0 doc tests |
-| `mise run macos-app` | **471 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
+| `mise run rust-doctest` (`cargo test --workspace --doc -- --skip relative_uri`) | 2 passed (sunrise-log); the 18 kynos-generated `relative_uri` items are skipped by name — #58, #60 |
+| `mise run macos-app` | **477 tests in 75 suites passed**; SwiftLint `--strict` clean; exit 0 |
 | `mise run rust-fmt-check` | clean |
 | `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
 | `cargo deny check` | clean |
 | `mise run validate` | clean (no TS tests exist yet) |
-| `mise run orphan-crates` | clean — 18/21 reachable, QUARANTINE empty |
+| `mise run orphan-crates` | clean — 20/23 reachable, QUARANTINE empty |
 
 The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
 tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`
-them. The macOS 471 does **not** include the 4 XCUITest cases, which are
+them. The macOS 477 does **not** include the 4 XCUITest cases, which are
 `skipped: true` in the scheme and run only under `mise run macos-uitest`.
+`mise run ios-app` compiles the same `SunriseTests/` sources against the iOS
+product as `SunriseiOSTests` and runs the 5 `SunriseiOSUITests` cases on the
+simulator alongside them.
 
 The `sunrise-cli` line is broken out because it is the one gate that proves the
 core without a UI: `main.rs` itself has **no** unit tests, so every subcommand's
@@ -443,7 +488,8 @@ cargo deny check      # advisories, bans, licences, sources
 ## Boots end-to-end
 
 - `cargo run -p sunrise-server` — the typed REST surface plus the SSE sync
-  relay on `127.0.0.1:8443`. Self-host mode installs the single-tenant `NullVerifier`,
+  relay on `127.0.0.1:8443`, both described by the committed
+  `schemas/openapi.v1.json`. Self-host mode installs the single-tenant `NullVerifier`,
   and the server now **refuses to bind a non-loopback address** while that is
   in use, since it maps every caller to one account. Configure an OIDC issuer
   for multi-user.
@@ -459,7 +505,8 @@ cargo deny check      # advisories, bans, licences, sources
   binary.
 
 > **Sync from the CLI:** setting `SUNRISE_SYNC_URL`
-> (e.g. `ws://127.0.0.1:8443/sync`) starts the WebSocket sync driver;
+> (e.g. `http://127.0.0.1:8443` — the relay's origin, not a path) starts the
+> sync driver over `SseTransport`;
 > `SUNRISE_EXPORT_CERT_FILE` / `SUNRISE_TRUST_CERT_FILE` perform the dev
 > two-file device-cert exchange (see the README's live sync demo).
 > `sunrise sync --once` drains the outbox and exits, bounded. Unset, the CLI

@@ -1,0 +1,75 @@
+# cargo-mutants configuration.
+#
+# Mutation testing asks a question `cargo test` cannot: not "do the tests
+# pass", but "would they notice if the code were wrong". It changes one
+# operator or return value at a time and reports the changes nothing caught.
+#
+# `docs/10-cross-cutting/testing.md` §Mutation testing scopes this to
+# `sunrise-core`, `sunrise-crypto`, `sunrise-sync` and `sunrise-domain`, and to
+# release candidates rather than pull requests. The scoping is a cost decision
+# and it is the right one: those four crates alone generate ~2,500 mutants, and
+# each one is an incremental rebuild plus a test run.
+#
+# Run it with `mise run mutants <crate>`, never bare — the task pins `--jobs 1`
+# for a reason recorded there.
+
+# What is not worth mutating.
+#
+# The excluded crates are excluded for four different reasons, and the
+# distinction matters more than the list:
+#
+#   sunrise-core-bindings   The UniFFI seam. Its job is to hand values across
+#                           an FFI boundary, so most of it is conversion code
+#                           whose mutants are either unviable or caught by the
+#                           crate on either side. The Swift half cannot be
+#                           mutated at all, which would make any score here a
+#                           statement about half a seam.
+#   sunrise-bench           Benchmarks. Not correctness code.
+#   sunrise-e2e             A test harness. Mutating a harness measures the
+#                           harness's own tests, which do not exist.
+#   sunrise-relay-client    Generated from the OpenAPI description by build.rs.
+#                           A mutant here is a change to a file nobody edits.
+#   sunrise-crypto-test-vectors
+#                           Frozen literals. There is nothing to mutate but the
+#                           constants the vectors exist to pin, and flipping one
+#                           tests the test.
+exclude_globs = [
+    "crates/sunrise-core-bindings/**",
+    "crates/sunrise-bench/**",
+    "crates/sunrise-e2e/**",
+    "crates/sunrise-relay-client/**",
+    "crates/sunrise-crypto-test-vectors/**",
+    "**/tests/**",
+    "**/benches/**",
+    "**/build.rs",
+]
+
+# Mutants no test should be asked to catch.
+#
+# A `Debug` impl that renders differently is not a defect anyone is going to
+# assert on, and demanding coverage for it teaches people to write assertions
+# that pin formatting — which then break on every unrelated change. Same for
+# `main`, whose behaviour is covered by the CLI's own integration tests running
+# the real binary rather than by a unit test that could see a mutant.
+exclude_re = [
+    "impl Debug",
+    "impl Display",
+    "impl Clone",
+    "<impl Debug for",
+    "<impl Display for",
+    "fn main",
+]
+
+# `sunrise-crypto` runs Argon2id at production parameters — 64 MiB, t=3, p=1
+# (`crates/sunrise-crypto/src/recovery.rs`), deliberately not weakened for
+# tests. Under mutation each surviving mutant pays that cost again, and a
+# machine under load pays it slower still. Without a generous multiplier those
+# runs are scored as timeouts, which reads identically to "caught" in the
+# summary and is not the same claim at all.
+timeout_multiplier = 5.0
+minimum_test_timeout = 120
+
+# Build timeouts get their own headroom: the first build in a fresh tree
+# compiles SQLCipher from source through `rusqlite`'s `bundled-sqlcipher`
+# feature, which is much slower than the incremental rebuilds that follow.
+build_timeout_multiplier = 5.0
