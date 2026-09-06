@@ -116,11 +116,32 @@ WHERE stream_id = X'00000000000000000000000000000000';
 -- function of state every replica shares. An op refused because its bytes did
 -- not decode or verify is NOT recorded: those bytes may have been damaged in
 -- transit, and the replay is the only thing that would ever repair them.
+--
+-- One row per `(stream_id, device_id)`, holding a *range*, rather than one row
+-- per refused op. That is not only compression, it is the shape of the fact:
+--
+-- * `seq` and `hlc` are both minted per op on the emitting device, and both are
+--   strictly increasing there, so for one `(stream_id, device_id)` the seq
+--   order *is* the HLC order;
+-- * the only permanent refusal is "revoked at or after the cut", which is a
+--   comparison against that HLC;
+-- * the cut only ever moves earlier (`apply_control_op` takes the `MIN` of the
+--   cuts it has seen), so an op refused once is refused forever.
+--
+-- Refusals are therefore contiguous from the first refused seq onward, and any
+-- seq between two refused ones would be refused too if it ever arrived. The
+-- unbounded alternative was a real defect and not a stylistic one: a revoked
+-- device keeps its relay credentials — `Command::RevokeDevice` does not call
+-- `DELETE /api/v1/devices/{id}` — so it goes on uploading, and every op it
+-- signs would otherwise become a permanent row on every peer.
 CREATE TABLE refused_ops (
     stream_id       BLOB NOT NULL,
     device_id       BLOB NOT NULL,
-    seq             INTEGER NOT NULL,
+    -- The lowest and highest seq refused for this pair. Everything between
+    -- them is refused, whether or not it has been delivered.
+    from_seq        INTEGER NOT NULL,
+    through_seq     INTEGER NOT NULL,
     reason          TEXT NOT NULL,
     refused_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY (stream_id, device_id, seq)
+    PRIMARY KEY (stream_id, device_id)
 );

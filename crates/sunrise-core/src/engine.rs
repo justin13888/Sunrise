@@ -942,6 +942,17 @@ impl Engine {
     ///   epoch concurrently (D-7), so the key that opens it may still be in a
     ///   `key_envelope` op on its way. Recording that as decided would turn a
     ///   late key into permanent data loss.
+    ///
+    /// Stored as one **range** per `(stream_id, device_id)` rather than one row
+    /// per op: `seq` and `hlc` are both strictly increasing on the emitting
+    /// device, so for one pair the seq order is the HLC order, and the only
+    /// permanent refusal is a comparison against that HLC whose cut only ever
+    /// moves earlier. Refusals are therefore contiguous from the first one
+    /// onward. Without that compression a revoked device — which keeps its
+    /// relay credentials, since `Command::RevokeDevice` never calls
+    /// `DELETE /api/v1/devices/{id}` — turns every op it goes on signing into a
+    /// permanent row on every peer, which is the same unbounded-growth defect
+    /// [`DEFERRED_TOTAL_CAP`] exists to prevent one table over.
     fn record_refusal(
         &self,
         db: &mut Db,
@@ -951,9 +962,14 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         db.with_tx(|tx| {
             tx.execute(
-                "INSERT OR IGNORE INTO refused_ops
-                 (stream_id, device_id, seq, reason, refused_at_ms)
-                 VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO refused_ops
+                 (stream_id, device_id, from_seq, through_seq, reason, refused_at_ms)
+                 VALUES (?1, ?2, ?3, ?3, ?4, ?5)
+                 ON CONFLICT(stream_id, device_id) DO UPDATE SET
+                    from_seq = MIN(from_seq, excluded.from_seq),
+                    through_seq = MAX(through_seq, excluded.through_seq),
+                    reason = excluded.reason,
+                    refused_at_ms = excluded.refused_at_ms",
                 params![
                     &env.stream_id[..],
                     &env.device_id[..],
@@ -3776,6 +3792,46 @@ fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64) -> [u8; 16
     out
 }
 
+/// The end of the run of `ops` seqs starting at `start`, or `start - 1` when
+/// `start` itself is absent.
+fn ops_run_end(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+    start: i64,
+) -> rusqlite::Result<i64> {
+    tx.query_row(
+        "SELECT CASE
+                  WHEN EXISTS (SELECT 1 FROM ops
+                               WHERE stream_id = ?1 AND device_id = ?2 AND seq = ?3)
+                  THEN (SELECT MIN(o.seq) FROM ops o
+                        WHERE o.stream_id = ?1 AND o.device_id = ?2 AND o.seq >= ?3
+                          AND NOT EXISTS (SELECT 1 FROM ops n
+                                          WHERE n.stream_id = ?1 AND n.device_id = ?2
+                                            AND n.seq = o.seq + 1))
+                  ELSE ?3 - 1
+                END",
+        params![&stream_id[..], &device_id[..], start],
+        |row| row.get(0),
+    )
+}
+
+/// The `(from_seq, through_seq)` this replica has permanently refused for
+/// `(stream_id, device_id)`, if any.
+fn refused_range(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+) -> rusqlite::Result<Option<(i64, i64)>> {
+    tx.query_row(
+        "SELECT from_seq, through_seq FROM refused_ops
+         WHERE stream_id = ? AND device_id = ?",
+        params![&stream_id[..], &device_id[..]],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
 /// Set `sync_cursors(stream_id, device_id)` to the end of the **contiguous**
 /// applied prefix — the largest `n` for which every seq `1..=n` from that
 /// device on that stream is in the op log.
@@ -3797,35 +3853,26 @@ fn upsert_sync_cursor(
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
 ) -> rusqlite::Result<()> {
-    // The prefix ends at the lowest *decided* seq whose successor is absent —
-    // unless seq 1 itself is missing, in which case there is no prefix at all.
-    // `UNIQUE (stream_id, device_id, seq)` on `ops` and the primary key on
-    // `refused_ops` serve both scans.
+    // The prefix is the run of *decided* seqs starting at 1, where decided is
+    // "applied, or permanently refused". The union is the whole point: a
+    // refused op never reaches `ops`, so a prefix read from `ops` alone would
+    // stop one short of it forever — the relay filters its replay by this
+    // number, so it would re-send that op and everything after it on every
+    // reconnect, none of it ever advancing anything. The cursor means "do not
+    // send me this again", and a refusal is exactly that.
     //
-    // "Decided" is the union of applied and permanently refused, and the union
-    // is the whole point. A refused op never reaches `ops`, so a prefix read
-    // from `ops` alone would stop one short of it *forever*: the relay filters
-    // its replay by this number, so it would re-send that op and everything
-    // after it on every reconnect, none of it ever advancing anything. The
-    // cursor means "do not send me this again", and a refusal is exactly that.
-    let prefix: i64 = tx.query_row(
-        "WITH decided(seq) AS (
-             SELECT seq FROM ops
-             WHERE stream_id = ?1 AND device_id = ?2
-             UNION
-             SELECT seq FROM refused_ops
-             WHERE stream_id = ?1 AND device_id = ?2
-         )
-         SELECT CASE
-                  WHEN EXISTS (SELECT 1 FROM decided WHERE seq = 1)
-                  THEN (SELECT COALESCE(MIN(d.seq), 0) FROM decided d
-                        WHERE NOT EXISTS (SELECT 1 FROM decided n
-                                          WHERE n.seq = d.seq + 1))
-                  ELSE 0
-                END",
-        params![&stream_id[..], &device_id[..]],
-        |row| row.get(0),
-    )?;
+    // Refusals are held as one range per pair rather than one row per op (see
+    // [`Engine::record_refusal`]), so the walk is: the run of ops from 1; then,
+    // if the refused range begins at or before the next missing seq, over that
+    // range; then the run of ops again. At most one range exists per pair, so
+    // this terminates in two steps rather than looping.
+    let mut prefix = ops_run_end(tx, stream_id, device_id, 1)?;
+    if let Some((from, through)) = refused_range(tx, stream_id, device_id)? {
+        if from <= prefix.saturating_add(1) && through > prefix {
+            prefix = through;
+            prefix = ops_run_end(tx, stream_id, device_id, prefix.saturating_add(1))?;
+        }
+    }
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
          VALUES (?, ?, ?)
