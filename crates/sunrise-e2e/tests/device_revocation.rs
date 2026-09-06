@@ -47,9 +47,10 @@ use std::time::Duration;
 
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, RevokeReason, SystemClock};
 use sunrise_domain::{ContextDraft, StreamDraft, TaskDraft};
+use sunrise_e2e::chaos::ToxicConfig;
 use sunrise_e2e::{
-    canonical_tasks, open_paired_core, open_synced_core, spawn_relay, wait_live,
-    wait_tasks_converge,
+    canonical_tasks, open_paired_core, open_paired_core_with_factory, open_synced_core,
+    spawn_relay, toxic_ws_factory, wait_live, wait_tasks_converge,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -247,19 +248,18 @@ async fn wait_title(core: &Core, title: &str, timeout: Duration) {
 /// The cut is a **time**, and an op signed before it still applies on a replica
 /// that has already recorded the revocation.
 ///
-/// The scenario is the ordinary one, not an exotic one: C does a morning's work
-/// on a laptop, the laptop goes offline, the user revokes it from another
-/// device that evening, and the morning's ops reach the rest of the account
-/// afterwards. Dropping them would throw away honest work the user never asked
-/// to lose, and would leave the replicas permanently disagreeing about it.
+/// The scenario is the ordinary one: C does a morning's work on a laptop, the
+/// laptop goes offline, the user revokes it from another device that evening,
+/// and the morning's ops reach the rest of the account afterwards. Dropping
+/// them would throw away honest work the user never asked to lose.
 ///
-/// C's op is written *before* the revocation is submitted and delivered after
-/// it — the sleep is what makes the ordering real rather than assumed, and C's
-/// HLC is stamped when it writes, not when the op arrives. Before this was
-/// fixed, `lookup_device_cert` filtered `revoked_at_ms IS NULL` and the row
-/// simply vanished for a revoked device, so every family except `device_cert`
-/// came back `UnknownDevice` whatever its HLC said, and `is_revoked_at` — the
-/// only place the cut is read — was unreachable for all twenty domain families.
+/// **The ordering is staged, not assumed.** An earlier version of this waited
+/// for C's op to reach B *before* submitting the revocation, so B had already
+/// applied it and the test asserted the residual in #78 — that an op already
+/// applied is never re-examined — rather than the cut being a time. It passed
+/// with the fix reverted. C is now partitioned off the relay while it writes,
+/// so the op is provably still in C's outbox when B records the revocation
+/// (`wait_revoked`), and only then is the link healed.
 #[tokio::test]
 async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
     let (addr, _relay) = spawn_relay().await;
@@ -270,7 +270,9 @@ async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
 
     let a = open_synced_core(dir_a.path(), ROOT, addr, clock.clone()).await;
     let b = open_paired_core(dir_b.path(), &a, addr, clock.clone()).await;
-    let c = open_paired_core(dir_c.path(), &a, addr, clock.clone()).await;
+    // C's link is one this test can cut.
+    let (factory, faults) = toxic_ws_factory(addr, ToxicConfig::passthrough(), 7);
+    let c = open_paired_core_with_factory(dir_c.path(), &a, addr, clock.clone(), factory).await;
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
     wait_live(&c, TIMEOUT).await;
@@ -279,12 +281,20 @@ async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
     wait_tasks_converge(&a, &b, 1, TIMEOUT).await;
     wait_tasks_converge(&a, &c, 1, TIMEOUT).await;
 
-    // C writes, and its op carries C's HLC from this moment.
+    // C goes offline and does a morning's work. The op carries C's HLC from
+    // this moment and gets no further than C's outbox.
+    faults.partition(true);
     create_task(&c, "signed before the cut").await;
-    wait_title(&b, "signed before the cut", TIMEOUT).await;
+    tokio::time::sleep(SETTLE).await;
+    assert!(
+        !task_titles(&b)
+            .await
+            .contains(&"signed before the cut".to_owned()),
+        "the premise: B has not seen C's op yet"
+    );
 
-    // Only then is C revoked, so the cut — the revocation op's own HLC — is
-    // strictly later than the op above.
+    // The user revokes C from A, and B records it — before C's op exists
+    // anywhere but on C.
     let c_device = c.device_id();
     a.submit(Command::RevokeDevice {
         device_id: EntityRef::new(EntityKind::Device, c_device),
@@ -293,18 +303,14 @@ async fn an_op_signed_before_the_cut_applies_after_the_revocation_arrives() {
     .await
     .expect("revoke C");
     wait_revoked(&b, c_device, TIMEOUT).await;
+    wait_revoked(&a, c_device, TIMEOUT).await;
 
-    // The pre-cut work stands on every replica, and B's copy is not withdrawn
-    // by the revocation arriving after it.
-    tokio::time::sleep(SETTLE).await;
-    for (name, core) in [("A", &a), ("B", &b)] {
-        assert!(
-            task_titles(core)
-                .await
-                .contains(&"signed before the cut".to_owned()),
-            "{name} dropped work the revoked device did before the cut"
-        );
-    }
+    // Only now does the morning's work reach anybody. Its HLC is before the
+    // cut, so every replica applies it despite having the revocation already.
+    faults.partition(false);
+    wait_title(&b, "signed before the cut", TIMEOUT).await;
+    wait_title(&a, "signed before the cut", TIMEOUT).await;
+
     assert_eq!(
         task_titles(&a).await,
         task_titles(&b).await,
