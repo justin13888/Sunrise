@@ -219,9 +219,12 @@ impl ApiError {
     /// on the authenticated account; one is not:
     ///
     /// 1. **Before any lookup** — `require_device_sig` is set and the caller
-    ///    sent no binding at all. This discloses nothing about the account:
-    ///    `GET /meta` already publishes `device_binding_required` to anyone who
-    ///    asks. See the caveat below for what it does disclose.
+    ///    did not present a *complete* binding. `verify_bytes` destructures
+    ///    `X-Sunrise-Device` and `X-Sunrise-Device-Sig` together, so this takes
+    ///    a request missing either one as well as a request missing both. It
+    ///    discloses nothing about the account: `GET /meta` already publishes
+    ///    `device_binding_required` to anyone who asks. See the caveat below
+    ///    for what it does disclose.
     /// 2. **After** the lookup — the `Date` header is absent.
     /// 3. **After** the lookup — `verify_canonical` refused: a bad signature,
     ///    an unparseable key, or a `Date` outside the ±300 s replay window.

@@ -108,7 +108,8 @@ pub struct DeviceSig {
 /// it carries varies. `AUTH_DEVICE_SIG_INVALID` says "the signature, not the
 /// bearer" and is returned once the named device has resolved to an active row
 /// on this account and the binding still did not check out — and, before any
-/// lookup, when `require_device_sig` is set and no binding was sent at all.
+/// lookup, when `require_device_sig` is set and the caller did not present a
+/// complete binding, meaning either header missing, not only both.
 /// `AUTH_TOKEN_INVALID` covers the rest of the pre-lookup ground, including a
 /// device id that is not on this account, which must stay indistinguishable
 /// from a bad bearer or the code becomes an enumeration oracle. See
@@ -151,9 +152,11 @@ pub fn verify_bytes(
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
         if state.config.require_device_sig {
-            // The one pre-lookup case that names the signature. Nothing is
-            // disclosed: the server has already told every caller it demands a
-            // binding, in `GET /meta`'s `device_binding_required`.
+            // The one pre-lookup case that names the signature, and it covers a
+            // *partial* binding too: the `let else` above wants both headers,
+            // so one without the other lands here. Nothing is disclosed: the
+            // server has already told every caller it demands a binding, in
+            // `GET /meta`'s `device_binding_required`.
             return Err(ApiError::device_sig_invalid());
         }
         // Self-host single-tenant: there are no device rows to bind to, and
@@ -725,6 +728,44 @@ mod tests {
         });
 
         let res = client.send(Method::GET, "/api/v1/accounts/me", None).await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
+    }
+
+    /// And a *partial* binding takes the same path, which is easy to describe
+    /// wrongly: `verify_bytes` destructures the device and the signature
+    /// together, so one header without the other never reaches the lookup.
+    #[tokio::test]
+    async fn a_half_present_binding_is_the_same_pre_lookup_refusal() {
+        let client = Client::new(ServerConfig {
+            require_device_sig: true,
+            ..ServerConfig::default()
+        });
+        let (device_id, _) = paired(&client, 23).await;
+
+        // A device id with no signature beside it.
+        let res = client
+            .send_with(
+                Method::GET,
+                "/api/v1/accounts/me",
+                Some(BEARER),
+                None,
+                &[("x-sunrise-device", &device_id)],
+            )
+            .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
+
+        // And a signature with no device id naming whose it is.
+        let res = client
+            .send_with(
+                Method::GET,
+                "/api/v1/accounts/me",
+                Some(BEARER),
+                None,
+                &[("x-sunrise-device-sig", "not-a-real-signature")],
+            )
+            .await;
         res.assert_status(StatusCode::UNAUTHORIZED);
         assert_eq!(code_of(&res), AUTH_DEVICE_SIG_INVALID);
     }
