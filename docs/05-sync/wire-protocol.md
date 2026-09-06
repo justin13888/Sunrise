@@ -357,15 +357,34 @@ client would record a completeness it has no basis for. A session whose
 credential is about to lapse renews it with `POST /sync/session/refresh`, which
 must name the same principal and the same device; the open stream keeps running.
 
-**Resumption is `Last-Event-ID`, and it does not replace the cursors.** Replayed
-`ops` events carry the relay's durable per-channel id, so a reconnect that
-presents the last id it saw resumes after that frame instead of replaying the
-retained backlog from the start. The two statements differ: `Last-Event-ID` says
-"I *received* everything up to here", a `Subscribe` cursor says "I have
-*applied* everything up to here", and they diverge exactly when delivery
-succeeded and application did not. The stricter one wins — re-sending
-`Subscribe` clears the client's resume point (`crates/sunrise-sync/src/sse.rs`),
-so the recovery path cannot resume past the ops it exists to fetch.
+**A non-zero `Last-Event-ID` takes precedence over the cursors for frame
+selection.** Replayed `ops` events carry the relay's durable per-channel id, so
+a reconnect that presents the last id it saw resumes after that frame instead of
+replaying the retained backlog from the start. When it does, the cursors stop
+selecting anything: `relay_replay_after` sends every frame with
+`id > after_id` and never consults `covered(&heads, cursors)` at all
+(`crates/sunrise-server/src/relay_log.rs:254-257,281-291`, whose own rustdoc
+states the precedence). Only `after_id == 0` — a first connection — replays what
+the cursors do not cover.
+
+**Cursor gaps are reported either way.** The `relay_evicted` watermark check runs
+on the cursors regardless of `after_id` (`relay_log.rs:302-325`), so a resumed
+stream still learns that ops it never received have aged out.
+
+The two statements are not interchangeable, which is why the precedence matters:
+`Last-Event-ID` says "I *received* everything up to here", a `Subscribe` cursor
+says "I have *applied* everything up to here", and they diverge exactly when
+delivery succeeded and application did not — a dropped frame, a client that
+restarted mid-batch. That is precisely when a client re-sends `Subscribe` to
+recover, and presenting a stale id alongside those cursors would make the relay
+select on the id and skip the very frames the cursors asked for.
+
+**What keeps that safe today is a client convention, not a server guarantee.**
+`SseTransport` clears `last_event_id` whenever it sends `Subscribe`
+(`crates/sunrise-sync/src/sse.rs:417`), so the stricter statement is the only one
+left standing. A third-party client that keeps the id across a recovery
+`Subscribe` will silently under-receive. Treat clearing the id on `Subscribe` as
+part of the client contract.
 
 Replay and live fan-out carry the **same** frame bytes: the relay republishes
 retained and live frames byte-for-byte, so a client cannot tell them apart from
