@@ -1968,6 +1968,81 @@ mod tests {
         assert_eq!(again.open_op(&legacy_env).unwrap(), b"a pre-0017 op");
     }
 
+    /// A row whose blob is the wrong length is a corrupt row, and is refused
+    /// or skipped rather than zero-padded into a valid-looking value.
+    ///
+    /// Padding is what made this dangerous rather than merely wrong. A
+    /// truncated `identity_id` padded with zeros still compares equal to
+    /// itself, so the vault opened and every cert bound to an account that had
+    /// never existed; a truncated `stream_id` pads to `[0u8; 16]`, which is the
+    /// vault-meta stream, so one corrupt row filed a stranger's key against it.
+    #[test]
+    fn a_wrong_length_blob_is_refused_rather_than_padded() {
+        let root = VaultRootKey::from_bytes([0x79; 32]);
+
+        // A short `stream_keys.stream_id` is skipped: one bad row is not a
+        // lost vault, and it must not become the vault-meta stream.
+        let sid: [u8; 16] = [0x3c; 16];
+        let mut d = db(&root);
+        {
+            let kc = open(&mut d, &root);
+            d.with_tx(|tx| {
+                kc.mint_epoch(tx, &sid, &SystemRng, 1)?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        d.with_tx(|tx| {
+            tx.execute(
+                "UPDATE stream_keys SET stream_id = X'0011' WHERE stream_id = ?",
+                params![&sid[..]],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let kc = open(&mut d, &root);
+        assert!(
+            kc.stream_keys_at(&crate::engine::META_STREAM, 1).is_empty(),
+            "a truncated stream id must not be padded onto the vault-meta stream"
+        );
+
+        // A short `identity.identity_id` is fatal, and says which column.
+        let mut d2 = db(&root);
+        drop(open(&mut d2, &root));
+        d2.with_tx(|tx| {
+            tx.execute(
+                "UPDATE identity SET identity_id = X'00112233' WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let err = Keychain::open(&mut d2, root.clone(), &clock(), &SystemRng, None)
+            .expect_err("a truncated identity_id is not an identity");
+        assert!(
+            matches!(err, KeychainError::CorruptRow("identity.identity_id")),
+            "got {err:?}"
+        );
+
+        // As is a short `id_s_pub`, which `to32` used to pad.
+        let mut d3 = db(&root);
+        drop(open(&mut d3, &root));
+        d3.with_tx(|tx| {
+            tx.execute(
+                "UPDATE identity SET id_s_pub = X'00112233' WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let err = Keychain::open(&mut d3, root, &clock(), &SystemRng, None)
+            .expect_err("a truncated id_s_pub is not a key");
+        assert!(
+            matches!(err, KeychainError::CorruptRow("identity.id_s_pub")),
+            "got {err:?}"
+        );
+    }
+
     /// A pre-0017 vault that already had two devices is refused rather than
     /// adopted.
     ///

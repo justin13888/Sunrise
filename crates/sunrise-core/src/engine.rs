@@ -12353,6 +12353,58 @@ mod tests {
         .expect("a revocation effective now is the whole point");
     }
 
+    /// A revocation is the first control op a fresh vault emits, so resolving
+    /// the vault-meta epoch mints that stream's own key mid-transaction and
+    /// emits `key_envelope` ops into the very stream whose `seq` the revocation
+    /// needs. A `seq` read before the transaction is already spent by then, and
+    /// `ops` has a `UNIQUE(stream_id, device_id, seq)`.
+    ///
+    /// This is the only shape that fires it: a vault that has already written
+    /// anything has a meta key, so nothing is minted and the stale read happens
+    /// to be right.
+    #[test]
+    fn a_revocation_on_a_vault_with_no_meta_key_yet_gets_its_own_seq() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        // `trust` writes the peer's row directly, so the vault-meta stream
+        // still holds no key and no op: exactly the premise.
+        trust(&ea, &mut dba, &eb);
+        assert_eq!(op_count(&dba), 0, "the premise: nothing written yet");
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Stolen,
+                effective_at_ms: None,
+            },
+        )
+        .expect("revoking as the first act of a vault must work");
+
+        let revokes: i64 = dba
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE inner_kind = 'device.revoke'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(revokes, 1, "the revocation reached the op log");
+        // Every op in the meta stream has a distinct seq. A stale read would
+        // have collided with the `key_envelope` ops minting the epoch emitted.
+        let (rows, distinct): (i64, i64) = dba
+            .conn()
+            .query_row(
+                "SELECT COUNT(seq), COUNT(DISTINCT seq) FROM ops WHERE stream_id = ?",
+                params![&META_STREAM[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(rows > 1, "the epoch mint emitted envelopes alongside it");
+        assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
+    }
+
     /// Read the stored cursor for `(stream, device)`, or 0 if none.
     fn cursor_for(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
         db.conn()
