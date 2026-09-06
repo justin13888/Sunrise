@@ -180,11 +180,35 @@ absorbs the replay. Rising against a steady op rate is a transport problem
 rather than a load one. The
 [`srv.relay.batch_duplicate`](../10-cross-cutting/log-events.md) event carries
 the same fact per stream, for grepping; this is the fleet-level rate. One
-boundary worth knowing before trusting it as a total: `batch_ops_hash` returns
-`None` for an empty batch and `relay_append` skips the lookup entirely when
-`ops_h` is `None`, so **an empty batch is never de-duplicated and never
-increments this counter**. The number under-counts re-submissions by exactly
-that traffic.
+caution before trusting it as a *total*: it counts only what reaches
+`Appended::Duplicate`, and three classes of re-sent-but-already-held ops take
+the `Fresh` arm instead and are never counted.
+
+- **A re-partitioned re-send.** The key covers the whole batch —
+  `batch_ops_hash` mixes in `ops.len()` and each op's length — so `[O1]` and
+  `[O1, O2]` hash differently and both store. A client that authored something
+  between the lost ack and the reconnect re-sends a *wider* batch, which is the
+  active-client case and the dominant one in a real reconnect storm. Intended
+  behaviour, asserted by `a_batch_with_different_ops_is_never_deduped`, and
+  tracked as a design question on
+  [#73](https://github.com/justin13888/Sunrise/issues/73), whose own words for
+  it are "relay-log growth on exactly the churn the dedup was added to stop".
+- **A re-send after retention evicted the frame.** `relay_batches.frame_id` is
+  `ON DELETE CASCADE` against `relay_frames` with `PRAGMA foreign_keys = ON`,
+  and `evict()` runs inside every append, so the dedup window *is* the retention
+  window: past it, the batch is forgotten and stores again. Deliberate, and
+  asserted by `eviction_forgets_the_batch_it_deduped_on` — a batch remembered
+  past the frame it named would refuse ops the relay no longer holds while
+  acking them.
+- **An empty batch.** `batch_ops_hash` returns `None` for one and `relay_append`
+  skips the lookup entirely, so it is never de-duplicated
+  (`an_empty_batch_is_never_deduped`).
+
+Read the counter as a floor on re-submission, then — reliable as a *signal*
+that clients are replaying, and not a census of it. In particular a reconnect
+storm among **active** clients can leave it flat while the relay log grows and
+subscribers re-receive ops, because every one of those re-sends is
+re-partitioned. Do not read flat as healthy on its own.
 
 `/metrics` is mounted at the router root, and **only when the listener binds
 loopback** — a non-loopback bind withholds the route and logs
@@ -282,17 +306,28 @@ templates opaque segments out of a *raw* target — and it is still exported fro
 > `the_query_string_never_reaches_the_log`,
 > `an_opaque_path_segment_is_templated`,
 > `request_records_carry_status_and_latency`,
-> `every_server_field_survives_the_redaction_allowlist` — plus the structural
-> property that kynos hands the observer the matched `Route`, never the concrete
-> URI (`api/observe.rs:9-14`). `crates/sunrise-server/tests/` holds `logging.rs`
-> and `oidc_verifier.rs`.
+> `every_server_field_survives_the_redaction_allowlist`.
+> `crates/sunrise-server/tests/` holds `logging.rs` and `oidc_verifier.rs`.
+>
+> Those nine tests are the whole of the enforcement. `api/observe.rs:9-14` reads
+> as though a tenth, structural guarantee stands behind them — "the concrete URI
+> is never consulted, so there is no query string to leak: the property is
+> structural" — but that module comment is itself the stale text the paragraph
+> above corrects, and it is a comment rather than a test. The structural half
+> holds only for `on_response`, `on_disconnect` and `on_panic`, which are handed
+> no request; `on_request` is handed one, and nothing but the tests keeps its
+> `.uri()` unread.
 >
 > [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3 and §11
 > still record this file as missing, and its §6 allowlist table
 > (`logging.md:156`) still attributes the `endpoint` template to
 > `sunrise_log::templatize_path`, which the paragraph above establishes is not
-> what runs. Correcting all three is outside this document; issue #99 tracks
-> them.
+> what runs. That last one understates the guarantee as well as misplacing it:
+> `templatize_path` sanitises a raw path, whereas `observe::templated` is never
+> given one, because it works from the matched route's `paths` key. All three
+> are outside this document — §6.3 and §11 are tracked on
+> [#99](https://github.com/justin13888/Sunrise/issues/99), the §6 allowlist row
+> on [#109](https://github.com/justin13888/Sunrise/issues/109).
 
 `docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` here.
 The `log-redaction` job in `.github/workflows/ci.yml` greps
