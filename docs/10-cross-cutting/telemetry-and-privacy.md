@@ -79,7 +79,7 @@ struct Plain<T>(T);
 
 `Plain<T>` deliberately implements **neither `Display`, nor `serde::Serialize`, nor `tracing::Value`** — each would make a different way of logging the payload compile (`crates/sunrise-log/src/plain.rs:89-93`). It *does* implement `Debug`, which prints the fixed marker `Plain<…>` and never the value (`plain.rs:83-87`); a `Debug` that refused to exist would only make the wrapper unusable in ordinary derives.
 
-To reach the value, code must call `.expose()` explicitly. What enforces that is not a clippy lint but a grep gate: `.github/scripts/grep-gate.sh` run as `log-redaction`, matching `\bplain[a-z_]*\.expose[[:space:]]*\(` — a POSIX ERE, exactly as `.github/workflows/ci.yml:310` spells it — across a fixed list of source directories, and failing the build on any hit. The gate and its directory list are specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); the message is the gate's own.
+To reach the value, code must call `.expose()` explicitly. What enforces that is not a clippy lint but a grep gate: `.github/scripts/grep-gate.sh` run as `log-redaction`, matching `\bplain[a-z_]*\.expose[[:space:]]*\(` — a POSIX ERE, exactly as the `log-redaction` job in `.github/workflows/ci.yml` spells it — across a fixed list of source directories, and failing the build on any hit. The gate and its directory list are specified in [`logging.md` §6.3](./logging.md#63-ci-enforcement); the message is the gate's own.
 
 This is the structural enforcement that prevents accidental telemetry of content.
 

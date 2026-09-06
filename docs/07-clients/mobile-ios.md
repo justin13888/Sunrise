@@ -17,10 +17,16 @@ that is no longer what is built.
 
 ## Status
 
-**The app ships and is in CI.** It is not, however, held to the v1 MUST set —
-[`parity-matrix.md`](./parity-matrix.md) still carries no iOS requirements, and
-the platform surfaces below are specification rather than description. Read
-[Platform surfaces](#platform-surfaces-not-built) with that in mind.
+**The app ships and is in CI, and it is a v1 client at SHOULD level.**
+[`parity-matrix.md`](./parity-matrix.md) now carries a filled iOS column and
+[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) is the record of why: every
+row the shell reaches is a **SHOULD**, and none of them is a MUST until an iOS
+release ships. Twenty-three SHOULDs, graded **21 met and 2 unmet** — saved
+views and iCal import/export, both of them a working shared model with no iOS
+caller.
+
+The platform surfaces below are still specification rather than description.
+Read [Platform surfaces](#platform-surfaces-not-built) with that in mind.
 
 What exists today:
 
@@ -40,7 +46,18 @@ What exists today:
 - `SunriseiOSUITests` — and unlike the macOS UI tests, these are **not** skipped.
   A simulator runner needs no change to the machine's security posture, so iOS is
   the platform where a tap is proved to reach the core on every build.
-- CI: an `ios-app` job on `macos-26`, unconditional on every push and PR.
+- CI: an `ios-app` job on `macos-26`. It carries no `if:` and no path filter,
+  so it runs whenever CI runs. Four triggers
+  (`.github/workflows/ci.yml:3-11`), two of them branch-filtered: `push` on
+  `master` or `v1-rewrite` and `pull_request` targeting either — `branches:` is
+  nested under those two events and constrains only them — plus the nightly
+  schedule and `workflow_dispatch`, which carry no `branches:` key. Only one of
+  those two is actually unconstrained. GitHub fires a `schedule` on the
+  repository's **default branch** alone, and that is `master`, so the 04:00
+  nightly builds `master` and never `v1-rewrite` — a branch constraint that
+  comes from GitHub's rule rather than from this file, and one no `--ref` can
+  change. `workflow_dispatch` is the one that will build any ref on request:
+  `gh workflow run ci.yml --ref <branch>`.
 
 ## Run it
 
