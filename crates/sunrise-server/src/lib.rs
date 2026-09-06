@@ -6,7 +6,7 @@
 //!   meta, health.
 //! - The sync surface under `/api/v1/sync/`, an SSE stream downstream and typed
 //!   `POST`s upstream per
-//!   [ADR-0023](../../../../docs/11-adr/0023-sse-sync-transport.md):
+//!   [ADR-0023](../../../docs/11-adr/0023-sse-sync-transport.md):
 //!   `POST /sync/session` negotiates, `POST /sync/subscribe` declares the
 //!   streams, `GET /sync/events` fans out with `Last-Event-ID` resumption,
 //!   `POST /sync/ops` takes a batch and answers with an `Ack`, and
