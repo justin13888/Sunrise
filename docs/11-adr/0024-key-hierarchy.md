@@ -79,20 +79,25 @@ Alongside it, the hierarchy the documents already specify is made real:
    device keeps what it already had — unavoidable, and stated — and reads nothing
    written afterwards.
 
-   **Scope, as implemented:** revocation bounds **key distribution**, not
-   writes. The revoked device receives no new epoch key, and a key it offers is
-   not absorbed by its peers — so it cannot read what is written after its cut,
-   and cannot make its peers seal under a key it holds. Its ordinary writes are
-   still applied: peer-side refusal was built and removed, because a refused op
-   freezes the refusing replica's sync cursor for that device while the relay
-   goes on accepting its uploads, and within the relay's retention window that
-   stall latches a permanent data-loss warning on every device in the account.
-   Bounding writes requires the relay to stop accepting them, which is
-   [#80](https://github.com/justin13888/Sunrise/issues/80). Identity rotation is
-   [#76](https://github.com/justin13888/Sunrise/issues/76) and converging the
-   *effect* of a revocation is
-   [#78](https://github.com/justin13888/Sunrise/issues/78). This ADR is
-   implemented at the key layer; it is not complete revocation.
+   **Scope, as implemented: the machinery exists and enforces nothing.** A
+   `device_revoke` op is recorded and converged as an LWW register on the op's
+   own HLC, and no code consults it. Two enforcement claims were built here and
+   both removed. *Withholding new epoch keys* withholds nothing: every epoch is
+   also sealed to the identity so recovery can reach it, and pairing hands every
+   device `ID_D_priv`, so a revoked device opens the identity copy —
+   [#76](https://github.com/justin13888/Sunrise/issues/76). *Refusing a revoked
+   device's ops on a peer* freezes that peer's sync cursor for it while the
+   relay, which knows nothing of the revocation, goes on accepting its uploads;
+   within retention that latches a permanent data-loss warning on every device
+   in the account. Bounding writes needs the relay
+   ([#82](https://github.com/justin13888/Sunrise/issues/82) behind
+   [#80](https://github.com/justin13888/Sunrise/issues/80)); converging the
+   *effect* rather than the record is
+   [#78](https://github.com/justin13888/Sunrise/issues/78).
+
+   What this ADR delivers is the hierarchy that makes revocation **expressible**
+   — random per-`(stream, epoch)` keys, wrapped rather than derived — which is
+   the thing that was structurally impossible before. It is not revocation.
 6. **`stream_keys` becomes the read path.** `EPOCH` stops being a constant.
 
 ### What this fixes in `recovery.md`

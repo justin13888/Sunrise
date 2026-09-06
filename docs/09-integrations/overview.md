@@ -66,10 +66,20 @@ Three rules follow, and each is load-bearing:
    the durable one.
 3. **The secret rides as an ordinary entity field**, which is sufficient only
    because ops are sealed under per-Stream keys *and* because
-   [ADR-0024](../11-adr/0024-key-hierarchy.md) makes epoch rotation real: a
-   revoked device stops being able to read credentials written afterwards.
-   Under the derived-key model it could read everything forever, which is why
-   ADR-0025 depends on ADR-0024 rather than shipping beside it.
+   [ADR-0024](../11-adr/0024-key-hierarchy.md) makes epoch rotation real —
+   keys are random per `(stream, epoch)` and wrapped, rather than derived from
+   the vault root, so a key can be rotated at all. Under the derived-key model
+   every device that ever knew the root could derive every key forever, which
+   is why ADR-0025 depends on ADR-0024 rather than shipping beside it.
+
+   **A revoked device can still read credentials written after its
+   revocation.** Rotation is expressible now; it is not yet enforced against a
+   revoked device, because every device holds `ID_D_priv` and every epoch is
+   also sealed to the identity — see
+   [`../03-crypto/key-rotation.md`](../03-crypto/key-rotation.md) §Revocation.
+   Any integration whose threat model needs "revoking the laptop cuts off its
+   access to the connected account" is waiting on
+   [#76](https://github.com/justin13888/Sunrise/issues/76), not on this ADR.
 
 "Log in once" is what the entity buys: authorizing on one device writes the
 durable credential into the vault, and every paired device receives it through

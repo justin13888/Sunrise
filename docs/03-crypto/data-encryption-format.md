@@ -126,12 +126,21 @@ When verifying an op envelope's signature, select the device cert in force at `e
 device_certs = vault_meta.device_certs[envelope.device_id]   // 1..N records
 candidate    = device_certs
                 .filter(c => c.created_at_ms <= envelope.ts_ms)
-                .filter(c => no device_revoke r exists with r.device_id = envelope.device_id
-                             AND r.cut_ms <= envelope.ts_ms)   // cut = r's own HLC
                 .max_by_key(c => c.created_at_ms)
 if candidate.is_none(): reject CRYPTO_DEVICE_NOT_TRUSTED
 verify with candidate.D_S_pub
 ```
+
+**Revocation is deliberately absent from this resolution.** It used to filter the
+candidate certs on the cut, and that is wrong twice over. It is the enforcement
+[`key-rotation.md`](./key-rotation.md) §Revocation records as removed — refusing
+a revoked device's ops freezes the refusing replica's sync cursor against relay
+retention. And it is the wrong *shape* even for a build that wanted to enforce:
+hiding the cert answers "which key verifies this signature" with a fact about
+membership, so an op fails as unverifiable rather than as refused, and every op
+the device signed honestly before its cut fails too. Whether a signature is
+valid and whether its signer is still a member are separate questions, and this
+step answers only the first.
 
 Key rotation grace: when a device emits `device_rotate(old, new, effective_at)`, the **previous** cert remains the resolution result for any envelope with `ts_ms < effective_at`. There is no flat "24 h grace" — the rotation op carries the explicit cutoff.
 

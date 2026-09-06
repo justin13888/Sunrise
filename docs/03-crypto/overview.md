@@ -63,7 +63,7 @@ This document is the index. Each linked spec is normative for its area; **all cr
 
 The arrows not yet drawn in code are **sharing** — `share_grant` / `share_revoke` have no implementation, so a Stream reaches other devices of the same identity and nobody else — and **identity rotation**, which `identity_transition` would carry.
 
-Of the six goals: **Confidentiality**, **Integrity** and **Authenticity** are delivered by the op envelope. **Revocability** is *partly* delivered — a revoked device's ops are refused by every replica, and every Stream it could read gets a new epoch it is not sent — but not fully, because pairing hands each device `ID_D_priv` and every epoch is also sealed to the identity for recovery, so a revoked device can still open the identity's copy until identity rotation lands. See [`key-rotation.md`](./key-rotation.md) §Revocation. **Recoverability** now has keys worth restoring, and its client route is the next slice. **Selective sharing** is unbuilt.
+Of the six goals: **Confidentiality**, **Integrity** and **Authenticity** are delivered by the op envelope. **Revocability** is *not* delivered — what exists is the key hierarchy that makes it expressible, plus a converged record of who was revoked and when. A revoked device keeps reading (every epoch is sealed to the identity for recovery, and pairing hands each device `ID_D_priv`) and keeps writing (nothing refuses its ops). See [`key-rotation.md`](./key-rotation.md) §Revocation for why each enforcement attempt was removed rather than repaired. **Recoverability** now has keys worth restoring, and its client route is the next slice. **Selective sharing** is unbuilt.
 
 ## Specs in this section
 
