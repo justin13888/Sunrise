@@ -561,13 +561,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Reject a description that has drifted from its handlers
-        # `schemas/openapi.v1.json` is an *input*: `spargen` generates the relay
+        # `schemas/generated/openapi.v1.json` is an *input*: `spargen` generates the relay
         # client from it. A stale one yields a client that disagrees with the
         # server and compiles perfectly while doing so, so regenerating it is
         # not optional and cannot be left to a reviewer noticing.
         run: |
-          cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json
-          git diff --exit-code -- schemas/openapi.v1.json \
+          cargo run -q -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json
+          git diff --exit-code -- schemas/generated/openapi.v1.json \
             || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
 
   tokens-current:

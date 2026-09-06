@@ -359,7 +359,7 @@ pub struct OpsResponse {
 //
 // Deliberately a `//` comment rather than a `///` one: kynos publishes a
 // handler's doc comment as the operation `description`, and
-// `schemas/openapi.v1.json` is a committed artefact this change has no business
+// `schemas/generated/openapi.v1.json` is a committed artefact this change has no business
 // touching — the request and response shapes are identical either way.
 #[kynos::post("/api/v1/sync/ops", operation_id = "publishOps")]
 pub async fn ops(

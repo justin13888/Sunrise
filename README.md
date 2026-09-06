@@ -53,7 +53,8 @@ apps/
 packages/
   sunrise-ui-tokens/  TOML design tokens → CSS / TS / Swift / Rust — see ADR-0029
   sunrise-ui/         Names the generated tokens for the web app
-schemas/       Versioned JSON schemas
+schemas/       Versioned JSON schemas, hand-written
+  generated/   Written by a generator, never by hand — `mise run openapi`
 docs/          Design source of truth: product, architecture, domain, crypto, sync, ADRs + implementation notes
 ```
 

@@ -7,7 +7,7 @@ status: accepted
 Two surfaces: the **sync protocol** (an SSE stream downstream and typed `POST`s upstream, per [ADR-0023](../11-adr/0023-sse-sync-transport.md); payloads spec'd in [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md)) and a small **REST API** for account lifecycle and blobs.
 
 > **This document is no longer authoritative about shapes.**
-> [`schemas/openapi.v1.json`](../../schemas/openapi.v1.json) is, per
+> [`schemas/generated/openapi.v1.json`](../../schemas/generated/openapi.v1.json) is, per
 > [ADR-0021](../11-adr/0021-kynos-openapi-server.md). It is generated from the
 > handlers, committed, and checked against them by
 > `the_committed_description_is_current` — so where this page and the

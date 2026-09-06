@@ -78,7 +78,7 @@ rename of machinery that exists and is tested, not new machinery.
 written and is added here to match what shipped. `POST /api/v1/sync/subscribe`
 is its own operation keyed by session
 (`crates/sunrise-server/src/api/sync.rs`; `subscribeStreams` in
-`schemas/openapi.v1.json`), and the module header there carries the same
+`schemas/generated/openapi.v1.json`), and the module header there carries the same
 mapping. The socket's `Subscribe` frame carried the same stream set and
 cursors, so this is that frame's replacement rather than a new capability —
 the table was incomplete, not the build.
@@ -129,7 +129,7 @@ row. The row and its reasoning are now in the table's own section, where a
 reader checking the mapping will be looking.
 
 This corrects the record, not the build: `POST /api/v1/sync/subscribe` shipped
-as its own session-keyed operation, is in `schemas/openapi.v1.json` as
+as its own session-keyed operation, is in `schemas/generated/openapi.v1.json` as
 `subscribeStreams`, and `crates/sunrise-server/src/api/sync.rs` has carried the
 complete mapping in its module header since it was written. The implementation
 was never ambiguous about it; this ADR was.
