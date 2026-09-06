@@ -7,7 +7,7 @@ Loro Stream doc**. That mechanism no longer exists —
 [ADR-0014](./0014-entity-level-lww-merge.md) superseded
 [ADR-0003](./0003-crdt-loro-vs-automerge.md), deleted `crates/sunrise-crdt`,
 and made **entity-level last-writer-wins in SQLite** the whole of the v1 merge
-model. See [Amendment](#amendment-2026-08--or-set--append-only-row) below for
+model. See [Amendment](#amendment-2026-08-or-set--append-only-row) below for
 what changed, what survived, and why the decision did not need to be reopened.
 
 ## Context
