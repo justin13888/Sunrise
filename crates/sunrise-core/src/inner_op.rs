@@ -300,6 +300,23 @@ impl InnerOp {
             Self::KeyEnvelope(_) | Self::DeviceRevoke(_) | Self::DeviceCertPublish(_)
         )
     }
+
+    /// Whether this op is one of the two families that decide **membership**,
+    /// and so cannot be gated on membership without becoming self-confirming.
+    ///
+    /// `DeviceCertPublish` is how a device enters the list and is
+    /// self-authenticating. `DeviceRevoke` is how one leaves it, and gating it
+    /// on the sender not already being revoked lets two crossed revocations
+    /// diverge permanently: the replica that applies one first refuses the
+    /// other and never learns of it, while a replica that saw them the other
+    /// way round holds both.
+    ///
+    /// `KeyEnvelope` is deliberately **not** here. It carries key material
+    /// rather than membership, and a revoked device has no business
+    /// distributing keys after its cut.
+    pub(crate) const fn is_revocation_control(&self) -> bool {
+        matches!(self, Self::DeviceRevoke(_) | Self::DeviceCertPublish(_))
+    }
 }
 
 /// Encode an [`InnerOp`] to its canonical CBOR blob (the envelope payload).

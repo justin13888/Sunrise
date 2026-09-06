@@ -70,21 +70,46 @@ CREATE TABLE deferred_ops (
 );
 CREATE INDEX deferred_ops_by_key ON deferred_ops (stream_id, epoch);
 
--- --- device identity binding + revocation ---
--- `revoked_at_ms` already exists (0013) and becomes the revocation's
--- effective_at; these say who revoked it and why.
+-- --- device identity binding ---
+-- Which account a device belongs to, and the X25519 key a `key_envelope` is
+-- sealed to. Revocation is not here: see `device_revocations` below.
 ALTER TABLE devices ADD COLUMN identity_id BLOB;
 ALTER TABLE devices ADD COLUMN d_d_pub BLOB;
-ALTER TABLE devices ADD COLUMN revoked_by BLOB;
-ALTER TABLE devices ADD COLUMN revoke_reason TEXT;
--- The revocation row is an LWW register on the declaring op's own
--- `(hlc, device_id)`: `revoked_at_ms` is that HLC's physical half — which is
--- also the cut — and this is its logical half. Comparing the physical alone
--- would drop the part that orders two ops inside one millisecond, and
--- `revoked_by` breaks the remaining tie, so all three revocation columns follow
--- the winning op rather than converging on the timestamp while the other two
--- stay decided by arrival order.
-ALTER TABLE devices ADD COLUMN revoked_hlc_logical INTEGER;
+-- --- revocation, in a table of its own ---
+-- An LWW register per device id on the declaring op's own `(hlc, device_id)`:
+-- `cut_ms` is that HLC's physical half — which is also the cut — `cut_logical`
+-- its logical half, and `revoked_by` the tie-break. All three are in the key so
+-- that `reason` and `revoked_by` follow the winning op rather than converging
+-- on the timestamp while the other two stay decided by arrival order.
+--
+-- Separate from `devices` rather than columns on it, because a `device_revoke`
+-- can legitimately name a device this replica has never seen — the cert travels
+-- in the same stream but with no ordering guarantee, and one parked in
+-- `deferred_ops` at meta epoch k drains after a revocation absorbed at k+1.
+-- Upserting into `devices` made every such op mint a row there, so fifty
+-- revocations of ids nobody knows would put fifty phantom devices in the user's
+-- device list, and a phantom row also satisfies `revoke_device`'s "is this
+-- device known" guard — so revoking a ghost would mint a fresh epoch for every
+-- stream in the account. Keeping the two apart makes `devices` mean "devices we
+-- know about" and lets a revocation be durable without inventing one.
+--
+-- `devices.revoked_at_ms` (from 0013) is **superseded and unused**. Nothing
+-- reads or writes it after this migration; the authority is this table.
+CREATE TABLE device_revocations (
+    device_id       BLOB PRIMARY KEY,
+    cut_ms          INTEGER NOT NULL,
+    cut_logical     INTEGER NOT NULL,
+    revoked_by      BLOB NOT NULL,
+    reason          TEXT NOT NULL,
+    recorded_at_ms  INTEGER NOT NULL
+);
+-- Any pre-0017 revocation carries over, with a zero HLC so that the first real
+-- `device_revoke` op supersedes it.
+INSERT INTO device_revocations
+    (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+SELECT device_id, revoked_at_ms, 0, X'', 'Retired', revoked_at_ms
+FROM devices WHERE revoked_at_ms IS NOT NULL;
+UPDATE devices SET revoked_at_ms = NULL;
 
 -- --- the Inbox stops sharing the vault-meta stream id ---
 -- Pre-0017 the Inbox was sixteen zero bytes, which is also the vault-meta

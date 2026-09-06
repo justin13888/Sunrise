@@ -525,7 +525,7 @@ mod tests {
     }
 
     /// A 0016 vault upgrades to 0017: the identity, `deferred_ops`,
-    /// and the revocation columns arrive, and `stream_keys` is
+    /// and `device_revocations` arrive, and `stream_keys` is
     /// re-keyed on `(stream_id, epoch, key_id)`.
     ///
     /// The pre-0017 rows are dropped on purpose and this asserts it: every one
@@ -560,7 +560,12 @@ mod tests {
         tx.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1].sql)
             .unwrap();
 
-        for table in ["identity", "stream_keys", "deferred_ops"] {
+        for table in [
+            "identity",
+            "stream_keys",
+            "deferred_ops",
+            "device_revocations",
+        ] {
             let n: i64 = tx
                 .query_row(
                     "SELECT count(*) FROM sqlite_master
@@ -613,17 +618,21 @@ mod tests {
             "(stream_id, epoch, key_id) must admit two keys per epoch"
         );
 
-        // The devices row survived and grew its revocation columns.
-        let (nickname, identity_id, reason): (String, Option<Vec<u8>>, Option<String>) = tx
-            .query_row(
-                "SELECT nickname, identity_id, revoke_reason FROM devices",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        // The devices row survived and grew its identity columns. Revocation
+        // is no longer among them: it lives in `device_revocations`, so that a
+        // `device_revoke` naming a device this vault has never seen cannot
+        // mint a phantom entry in the user's device list.
+        let (nickname, identity_id): (String, Option<Vec<u8>>) = tx
+            .query_row("SELECT nickname, identity_id FROM devices", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(nickname, "old");
         assert!(identity_id.is_none());
-        assert!(reason.is_none());
+        let revocations: i64 = tx
+            .query_row("SELECT count(*) FROM device_revocations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(revocations, 0, "an unrevoked device carries no register");
     }
 
     /// A vault from before the reset is REFUSED, with its own error — not
