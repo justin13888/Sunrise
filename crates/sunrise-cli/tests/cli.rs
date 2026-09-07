@@ -1026,9 +1026,11 @@ fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
     assert!(out.status.success(), "inbox failed: {out:?}");
     let bytes = std::fs::read(&payload).expect("the payload must have been written");
     assert!(!bytes.is_empty(), "an empty payload is not a payload");
-    // The payload is the whole account in the clear — `ID_S_priv`,
-    // `ID_D_priv`, the vault root and every Stream key — so it must not land at
-    // the process umask, which under the `umask 0` above would leave it 0666.
+    // The payload is the whole account in the clear — `ID_S_priv`, the vault
+    // root and every Stream key — so it must not land at the process umask,
+    // which under the `umask 0` above would leave it 0666. (`ID_D_priv` is not
+    // among them: it never leaves the recovery blob, which is what makes a
+    // revoked device unable to open the identity copy of an envelope.)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

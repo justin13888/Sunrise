@@ -79,7 +79,16 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 
 /// Local storage schema version. Per-device; never appears on the wire.
 ///
-/// `17` is migration `0017_key_hierarchy.sql`: the `identity` table, the
+/// `17` was migration `0017_key_hierarchy.sql`: the `identity` table, the
 /// re-keyed `stream_keys`, `deferred_ops`, and the device/revocation columns
 /// ADR-0024 needs.
-pub const STORAGE_V: u16 = 17;
+///
+/// `18` is migration `0018_key_envelope_recipients.sql`, which adds the index
+/// of which device has been sent which `(stream, epoch)` key. That question was
+/// unanswerable from the database before — the recipient lives inside the
+/// `key_envelope` op's sealed payload — and nothing needed to ask it while
+/// every device held `ID_D_priv` and could open the identity copy of any
+/// envelope it was left out of. Removing `ID_D_priv` from `PairingPayload`
+/// removes that fallback, so `Engine::backfill_key_envelopes` has to know what
+/// is actually missing, and this table is what it reads.
+pub const STORAGE_V: u16 = 18;

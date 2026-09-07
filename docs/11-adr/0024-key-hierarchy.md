@@ -7,6 +7,21 @@
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this
 ADR adopts. **Bumps** `CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
 
+**Amended (2026-09):** decision 4 recorded a tension between recovery and
+revocation and resolved it in recovery's favour, filing
+[#76](https://github.com/justin13888/Sunrise/issues/76). The tension was not
+real. Sealing a `key_envelope` to the identity needs only `ID_D_pub`, so
+`ID_D_priv` never had to travel in a `PairingPayload`; it no longer does. It
+stays on the account's creator, bound for the recovery blob that decision 5's
+scope note describes and that nothing yet writes. With that, excluding a revoked
+device from the
+recipient list withholds something for the first time, and both goals hold at
+once. Writes remain unbounded: the relay cannot read a `device_revoke` op and
+must not be able to, so it has to be told out of band, and it cannot be told
+today because it names devices by a ULID it minted and a vault knows no peer's
+([#80](https://github.com/justin13888/Sunrise/issues/80)). Decisions 4 and 5
+carry the details; `STORAGE_V` moves to 18 for the table this needed.
+
 ## Context
 
 The implemented cryptosystem and the documented one are different systems that
@@ -75,36 +90,48 @@ Alongside it, the hierarchy the documents already specify is made real:
    * to each **device**'s `D_D_pub`, so a device learns the epochs it is entitled to;
    * to the **identity**'s `ID_D`, so the recovery path can reach them.
 
-   The identity class is what makes **recovery** work. It is also why revocation
-   does not: every paired device is handed `ID_D_priv` at pairing, so a revoked
-   device opens the identity copy of every epoch minted after it was revoked.
-   The two goals are in direct tension here, and this ADR resolves it in
-   recovery's favour — see decision 5's scope note and
+   The identity class is what makes **recovery** work, and it read as a direct
+   conflict with revocation: every paired device was handed `ID_D_priv`, so a
+   revoked device opened the identity copy of every epoch minted after its cut.
+   This ADR originally resolved that in recovery's favour and filed
    [#76](https://github.com/justin13888/Sunrise/issues/76).
+
+   **Amended (see the amendment below): the tension was not real.** Sealing to
+   the identity needs only `ID_D_pub`, so the private half never had to travel
+   in a `PairingPayload` at all. It does not now, and both goals hold at once —
+   the identity copy is still emitted for every epoch, and a paired device
+   cannot open it.
 5. **Epochs are real.** `EPOCH` stops being a constant, so revoking a device can
    mint a new epoch for every Stream it could read. The revoked device keeps
    what it already had — unavoidable, and stated — and, as built, reads what
    comes afterwards too: see the scope note below.
 
-   **Scope, as implemented: the machinery exists and enforces nothing.** A
-   `device_revoke` op is recorded and converged as an LWW register on the op's
-   own HLC, and no code consults it. Two enforcement claims were built here and
-   both removed. *Withholding new epoch keys* withholds nothing: every epoch is
-   also sealed to the identity so recovery can reach it, and pairing hands every
-   device `ID_D_priv`, so a revoked device opens the identity copy —
-   [#76](https://github.com/justin13888/Sunrise/issues/76). *Refusing a revoked
-   device's ops on a peer* freezes that peer's sync cursor for it while the
-   relay, which knows nothing of the revocation, goes on accepting its uploads;
-   within retention that latches a permanent data-loss warning on every device
-   in the account. Bounding writes needs the relay
-   ([#82](https://github.com/justin13888/Sunrise/issues/82) behind
-   [#80](https://github.com/justin13888/Sunrise/issues/80)); converging the
-   *effect* rather than the record is
-   [#78](https://github.com/justin13888/Sunrise/issues/78).
+   **Scope, as amended: revocation bounds reads. It does not bound writes.**
+   Reads are bounded in the vault, on every replica that has
+   applied the revocation: `emit_key_envelopes` anti-joins the register, and
+   there is no identity copy for a paired device to open instead. Writes are
+   **not** bounded — an earlier slice of this work queued a relay request and
+   it was reverted, because `DELETE /api/v1/devices/{device_id}` names the
+   relay's own ULID for a device and a vault knows only its 16-byte device id,
+   so the client has no id to send
+   ([#80](https://github.com/justin13888/Sunrise/issues/80)) — and peers do not
+   refuse a revoked device's ops, because doing so at apply time is not
+   convergent: a replica that applied one before the revocation arrived cannot
+   un-apply it and this engine has no projection rebuild
+   ([#82](https://github.com/justin13888/Sunrise/issues/82),
+   [#78](https://github.com/justin13888/Sunrise/issues/78)).
+
+   Two bounds remain and are stated rather than claimed away. The account's
+   **creator** — and a device restored from the recovery code — still holds
+   `ID_D_priv`, because until the recovery blob is built there is nowhere else
+   for it to live; revoking that device does not bound its reads. And a revoked
+   device still holds `ID_S_priv`, so it can certify itself under a fresh device
+   id; what stands against that today is the relay refusing its uploads, not
+   cryptography. Both close with identity rotation.
 
    What this ADR delivers is the hierarchy that makes revocation **expressible**
    — random per-`(stream, epoch)` keys, wrapped rather than derived — which is
-   the thing that was structurally impossible before. It is not revocation.
+   the thing that was structurally impossible before.
 6. **`stream_keys` becomes the read path.** `EPOCH` stops being a constant.
 
 ### What this fixes in `recovery.md`

@@ -200,9 +200,10 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
             .map_err(|e| e.to_string())
             .and_then(|p| sunrise_pairing::encode_pairing_payload(&p).map_err(|e| e.to_string()))
             // Owner-only, and not at the process umask: this is the whole
-            // account in the clear — `ID_S_priv`, `ID_D_priv`, the vault root
-            // and every Stream key — so it is strictly more sensitive than the
-            // vault root `vault.rs` already refuses to write that way.
+            // account in the clear — `ID_S_priv`, the vault root and every
+            // Stream key — so it is strictly more sensitive than the vault root
+            // `vault.rs` already refuses to write that way. (`ID_D_priv` is no
+            // longer among them; it never leaves the recovery blob.)
             .and_then(|bytes| {
                 crate::private_file::write_private(path, &bytes).map_err(|e| e.to_string())
             }) {
