@@ -307,6 +307,8 @@ final class CalendarModel {
 
     func dismissNote() { note = nil }
 
+    func dismissError() { errorMessage = nil }
+
     // MARK: - Time values
 
     /// An instant, expressed in the kind the user chose.
