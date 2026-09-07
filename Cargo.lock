@@ -2708,7 +2708,6 @@ name = "sunrise-cbor"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "proptest",
  "serde",
  "serde_json",
  "sunrise-error",
@@ -2901,7 +2900,6 @@ dependencies = [
 name = "sunrise-id"
 version = "0.1.0"
 dependencies = [
- "proptest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3070,7 +3068,6 @@ name = "sunrise-wire-protocol"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "proptest",
  "serde",
  "serde_bytes",
  "sunrise-cbor",

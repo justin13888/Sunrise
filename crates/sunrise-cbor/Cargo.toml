@@ -20,5 +20,4 @@ sunrise-error = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
-proptest = { workspace = true }
 serde_json = { workspace = true }
