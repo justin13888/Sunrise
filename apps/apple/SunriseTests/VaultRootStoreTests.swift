@@ -9,10 +9,13 @@ import Testing
 /// at. Each run uses its own service name and removes it afterwards, so it
 /// leaves no residue in the developer's login keychain.
 struct KeychainItemTests {
-    private func scratch() -> KeychainItem {
+    private func scratch(
+        _ accessibility: KeychainAccessibility = .afterFirstUnlockThisDeviceOnly
+    ) -> KeychainItem {
         KeychainItem(
             service: "dev.sunrise.Sunrise.tests.\(UUID().uuidString)",
-            account: "vault-root"
+            account: "vault-root",
+            accessibility: accessibility
         )
     }
 
@@ -47,7 +50,89 @@ struct KeychainItemTests {
         try item.delete()
         #expect(try item.read() == nil)
     }
+
+    /// The class an item declares is the class the Keychain records — on the
+    /// platform that has classes at all. macOS's file-based login keychain
+    /// accepts `kSecAttrAccessible` and stores nothing, which is asserted here
+    /// rather than assumed: it is the reason this fix protects iOS and leaves
+    /// the Mac where it was.
+    @Test
+    func aWrittenItemCarriesTheClassItDeclares() throws {
+        let item = scratch(.afterFirstUnlockThisDeviceOnly)
+        defer { try? item.delete() }
+        try item.write(Data(repeating: 4, count: 32))
+
+        #expect(storedAccessibility(of: item) == expectedThisDeviceOnly)
+    }
+
+    /// The migration. An item added by a build that used the weaker class keeps
+    /// it — `SecItemUpdate` touches only the attributes it is handed, and the
+    /// vault root is never rewritten on the ordinary path — so an upgrade that
+    /// only changed the constant would leave every existing installation
+    /// exactly where it was.
+    @Test
+    func anItemLeftInTheBackupClassIsRaisedRatherThanLeftAlone() throws {
+        let asAnOlderBuildWroteIt = scratch(.afterFirstUnlock)
+        defer { try? asAnOlderBuildWroteIt.delete() }
+        try asAnOlderBuildWroteIt.write(Data(repeating: 5, count: 32))
+        #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedAfterFirstUnlock)
+
+        let asThisBuildWantsIt = KeychainItem(
+            service: asAnOlderBuildWroteIt.service,
+            account: asAnOlderBuildWroteIt.account,
+            accessibility: .afterFirstUnlockThisDeviceOnly
+        )
+        try asThisBuildWantsIt.upgradeAccessibilityIfNeeded()
+
+        #expect(storedAccessibility(of: asThisBuildWantsIt) == expectedThisDeviceOnly)
+        #expect(
+            try asThisBuildWantsIt.read() == Data(repeating: 5, count: 32),
+            "the bytes must survive it"
+        )
+    }
+
+    /// First run reaches this before there is anything to raise, and must not
+    /// turn "no item" into an error — the distinction decides whether the app
+    /// generates a new root over an existing vault.
+    @Test
+    func raisingTheClassOfAnAbsentItemIsNotAnError() throws {
+        let item = scratch()
+        try item.upgradeAccessibilityIfNeeded()
+        #expect(try item.read() == nil)
+    }
 }
+
+/// The `kSecAttrAccessible` the Keychain actually recorded, or `nil` when the
+/// keychain in use does not implement protection classes.
+private func storedAccessibility(of item: KeychainItem) -> String? {
+    let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: item.service,
+        kSecAttrAccount as String: item.account,
+        kSecReturnAttributes as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne
+    ]
+    var found: CFTypeRef?
+    guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess,
+          let attributes = found as? [String: Any]
+    else { return nil }
+    return attributes[kSecAttrAccessible as String] as? String
+}
+
+// The expectations differ by platform, and the difference is the finding:
+// only the data-protection keychain has protection classes, and the Mac app
+// does not use it (no App Sandbox, no keychain-access-group entitlement — see
+// `project.yml`, where both are deferred to release work). A `SecItemAdd` with
+// `kSecUseDataProtectionKeychain` from this app returns `errSecMissingEntitlement`
+// (-34018) today. If the Mac ever gains that entitlement, these two lines
+// collapse into one and macOS gains the guarantee with them.
+#if os(iOS)
+private let expectedThisDeviceOnly: String? = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+private let expectedAfterFirstUnlock: String? = kSecAttrAccessibleAfterFirstUnlock as String
+#else
+private let expectedThisDeviceOnly: String? = nil
+private let expectedAfterFirstUnlock: String? = nil
+#endif
 
 struct VaultRootTests {
     @Test
@@ -84,6 +169,35 @@ struct VaultRootTests {
         #expect(try store.load() == root)
         try store.clear()
         #expect(try store.load() == nil)
+    }
+
+    /// The one assertion that holds on both platforms, and the regression this
+    /// guards: the vault root is the key every Stream key and the database key
+    /// hang off, so it is the item that must not travel in a backup.
+    @Test
+    func theVaultRootDeclaresTheClassThatKeepsItOffOtherDevices() {
+        #expect(KeychainVaultRootStore.accessibility == .afterFirstUnlockThisDeviceOnly)
+    }
+
+    /// An installation that predates the class above is the case a one-line
+    /// constant change would have missed entirely: its root stays in the class
+    /// it was written under until something rewrites it, and nothing does.
+    @Test
+    func aRootLeftByAnOlderBuildIsRaisedOnTheNextLoad() throws {
+        let vaultName = "tests-\(UUID().uuidString)"
+        let asAnOlderBuildWroteIt = KeychainItem(
+            service: KeychainVaultRootStore.service,
+            account: vaultName,
+            accessibility: .afterFirstUnlock
+        )
+        defer { try? asAnOlderBuildWroteIt.delete() }
+
+        let root = try VaultRoot.generate()
+        try asAnOlderBuildWroteIt.write(root)
+
+        let store = KeychainVaultRootStore(vaultName: vaultName)
+        #expect(try store.load() == root, "raising the class must not cost the user their vault")
+        #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedThisDeviceOnly)
     }
 }
 
