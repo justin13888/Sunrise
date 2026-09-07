@@ -133,7 +133,7 @@ ENTRYPOINT ["/usr/local/bin/sunrise-server"]
 ARG VERSION=0.0.0-dev
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="sunrise-server" \
-      org.opencontainers.image.description="Sunrise sync relay (REST + WebSocket, OIDC, self-host SQLite)" \
+      org.opencontainers.image.description="Sunrise sync relay (REST + SSE sync, OIDC, self-host SQLite)" \
       org.opencontainers.image.source="https://github.com/justin13888/Sunrise" \
       org.opencontainers.image.documentation="https://github.com/justin13888/Sunrise/blob/master/docs/06-server/self-hosting.md" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
