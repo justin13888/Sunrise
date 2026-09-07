@@ -196,6 +196,18 @@ struct VaultWindow: View {
             selection = destination
             surfaces.destinationTaken()
         }
+        // …and which *thing* on that screen. Taken separately because it is a
+        // read: the sidebar moves now, and the entity's own editor opens when
+        // the vault has answered. A block needs no second surface — by then
+        // `reveal` has moved the grid onto its day, which is where it is.
+        .onChange(of: surfaces.pendingReveal) { _, entity in
+            guard let entity else { return }
+            surfaces.revealTaken()
+            Task {
+                guard case let .task(item)? = await models.reveal(entity) else { return }
+                sheets.editing = item
+            }
+        }
         // Settings that change what the OS is holding: a new quiet window, a
         // different lead time, or this Mac ceasing to be the primary device —
         // which must make it go quiet, not merely stop adding.

@@ -84,6 +84,12 @@ pub enum ErrorCode {
     SyncStreamNotFound,
     /// The relay evicted retained frames past a subscriber's cursor.
     SyncCursorGap,
+    /// `GET /sync/events` presented a `Last-Event-ID` on the first stream
+    /// after a `Subscribe`. The id says what the client *received*; the
+    /// cursors say what it *applied*, and honouring either one silently would
+    /// discard the other's claim.
+    SyncResumeConflict,
+
     /// First 5 bytes of an envelope/frame did not match the expected magic.
     ProtocolBadMagic,
     /// Frame larger than 4 MiB cap.
@@ -148,6 +154,8 @@ impl ErrorCode {
             Self::SyncOpInvalid => "SYNC_OP_INVALID",
             Self::SyncStreamNotFound => "SYNC_STREAM_NOT_FOUND",
             Self::SyncCursorGap => "SYNC_CURSOR_GAP",
+            Self::SyncResumeConflict => "SYNC_RESUME_CONFLICT",
+
             Self::ProtocolBadMagic => "PROTOCOL_BAD_MAGIC",
             Self::ProtocolFrameTooLarge => "PROTOCOL_FRAME_TOO_LARGE",
             Self::ProtocolDecompressBomb => "PROTOCOL_DECOMPRESS_BOMB",
@@ -194,6 +202,7 @@ impl ErrorCode {
             | Self::SyncTamperDetected
             | Self::SyncOpInvalid
             | Self::SyncCursorGap
+            | Self::SyncResumeConflict
             | Self::ProtocolBadMagic
             | Self::ProtocolFrameTooLarge
             | Self::ProtocolDecompressBomb
@@ -226,7 +235,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 37] {
+    pub const fn all() -> [Self; 38] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -254,6 +263,7 @@ impl ErrorCode {
             Self::SyncOpInvalid,
             Self::SyncStreamNotFound,
             Self::SyncCursorGap,
+            Self::SyncResumeConflict,
             Self::ProtocolBadMagic,
             Self::ProtocolFrameTooLarge,
             Self::ProtocolDecompressBomb,

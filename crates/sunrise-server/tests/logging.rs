@@ -478,7 +478,15 @@ fn the_refusal_records_survive_redaction_and_carry_their_cause() {
     });
 
     let refused = record(&out, "srv.sync.negotiate_refused");
-    assert_eq!(refused["err_kind"], "user");
+    // `permanent`, not `user`: the four negotiation codes are all `permanent`
+    // in `crates/sunrise-error/codes.toml`, and the record now carries the
+    // code itself — a record naming `SYNC_PROTOCOL_VERSION_MISMATCH` beside
+    // `err_kind: user` would contradict the registry on the same line.
+    assert_eq!(refused["err_kind"], "permanent");
+    assert_eq!(
+        refused["err_code"], "SYNC_PROTOCOL_VERSION_MISMATCH",
+        "the refusal's own code, not a shared one: {refused}"
+    );
     assert!(
         refused["cause"].is_string(),
         "an operator needs to know what could not be agreed: {refused}"

@@ -136,6 +136,14 @@ pub struct SessionHeader {
 /// unchanged, so a client that cannot agree on a wire version, a crypto suite
 /// or a required capability is refused here for the same reason and with the
 /// same mapping it was refused at the socket.
+///
+/// A refusal is a `400` carrying the negotiation's **own** code —
+/// `SYNC_PROTOCOL_VERSION_MISMATCH`, `CRYPTO_SUITE_MISMATCH`,
+/// `DOC_SCHEMA_TOO_OLD` or `CAPABILITY_REQUIRED_MISSING` — because the four
+/// mean four different things to whoever is looking at the screen, and
+/// telling a self-hoster to update their app when the relay is the stale half
+/// is the concrete failure of collapsing them.
+
 #[kynos::post("/api/v1/sync/session", operation_id = "openSyncSession")]
 pub async fn session(
     Inject(state): Inject<ServerState>,
@@ -175,14 +183,25 @@ pub async fn session(
             now_ms,
         )
         .map_err(|e| {
+            // The refusal's own code, not `VALIDATION_INVALID`. The four
+            // negotiation failures mean four different things to a user —
+            // update the app, update the relay, this device's data is too old,
+            // this relay is missing a feature the vault requires — and a
+            // client that receives one code for all four can only tell them
+            // apart by matching on `e.to_string()`, which breaks on any
+            // rewording. `NegotiationError::as_error_code` has always computed
+            // the distinction; this is the call that delivers it.
+            let code = e.as_error_code();
             state.metrics.incr("sunrise_sync_negotiate_refused_total");
             tracing::warn!(
                 ev = "srv.sync.negotiate_refused",
-                err_kind = "user",
+                err_code = %code,
+                err_kind = "permanent",
+                retryable = false,
                 cause = %e,
                 "session refused"
             );
-            ApiError::validation_coded(codes::VALIDATION_INVALID, e.to_string())
+            ApiError::validation_coded(code.as_str(), e.to_string())
         })?;
 
     let account = account_hash(&caller.principal.account.account_id);
@@ -195,8 +214,10 @@ pub async fn session(
         conn: state.relay.next_conn(),
         negotiated: ack.clone(),
         streams: Vec::new(),
+        subscribe_unserved: false,
         seen_ms: now_ms,
     };
+
     let session_id = state
         .sessions
         .insert(stored)
@@ -261,6 +282,13 @@ pub struct SubscribeRequest {
 /// Takes effect on the next `GET /sync/events`. A stream already open keeps its
 /// current set: re-subscribing mid-stream is a reconnect, which is what the
 /// socket's re-`Subscribe` amounted to once the fan-out had been rebuilt.
+///
+/// It also **voids any resume point the client is holding**: the cursors this
+/// carries are the client's newest statement of where it is, and a
+/// `Last-Event-ID` minted before them is an older one. The next stream to
+/// present both is refused with `400 SYNC_RESUME_CONFLICT` rather than served
+/// from one of them; `GET /sync/events` carries the reasoning.
+
 #[kynos::post("/api/v1/sync/subscribe", operation_id = "subscribeStreams")]
 pub async fn subscribe(
     Inject(state): Inject<ServerState>,
@@ -295,7 +323,11 @@ pub async fn subscribe(
         n_streams = streams.len() as u64,
         "stream set replaced"
     );
-    state.sessions.update(&id, now_ms, |s| s.streams = streams);
+    state.sessions.update(&id, now_ms, |s| {
+        s.streams = streams;
+        s.subscribe_unserved = true;
+    });
+
     Ok(kynos::response::status::NoContent)
 }
 
@@ -634,6 +666,32 @@ pub enum SyncEvent {
 /// Backpressure and disconnect are the stream's own: events are pulled one at a
 /// time and never ahead, and a client that goes away drops the body, which
 /// drops the stream, which drops the relay receivers it holds.
+///
+/// # The resume order, enforced
+///
+/// A `Last-Event-ID` and a `Subscribe`'s cursors are two different statements:
+/// the id is what the client *received* on a stream, the cursors are what it
+/// *applied* to its op log. They agree right up until the moment they matter —
+/// a frame delivered but not committed, which is what a crash between receipt
+/// and commit leaves behind, and which is exactly when a client re-sends
+/// `Subscribe` to recover.
+///
+/// `relay_replay_after` selects on the id alone when one is present, so
+/// serving that pair would skip the very frames the cursors asked for and
+/// report `caught_up` over the hole. Rather than pick one silently, a resume
+/// id presented on the **first stream after a `Subscribe`** is refused with
+/// `400 SYNC_RESUME_CONFLICT`; the client drops the id and reopens, and gets
+/// cursor-selected replay. An ordinary reconnect — a stream following another
+/// stream of the same session — is untouched and still resumes on its id.
+///
+/// The alternative, unioning the two filters, was rejected because the cursors
+/// only advance when a client sends a new `Subscribe`: a client that resumes
+/// correctly for a week on `Last-Event-ID` would have every frame since its
+/// last `Subscribe` replayed on every reconnect, which is not resumption at
+/// all. The alternative of documenting the precedence and leaving the server
+/// alone leaves a data-loss hazard as a client's responsibility to read
+/// carefully, which is what the wire protocol document already declined to do
+/// by calling clearing the id on `Subscribe` part of the client contract.
 #[kynos::get("/api/v1/sync/events", operation_id = "syncEvents")]
 pub async fn events(
     Inject(state): Inject<ServerState>,
@@ -643,9 +701,40 @@ pub async fn events(
 ) -> Result<Sse<EventStream>, ApiError> {
     let now_ms = state.clock.now_ms();
     let (id, session) = resolve(&state, &header, &caller, now_ms)?;
-    let after = resume.as_deref().and_then(|s| s.parse::<u64>().ok());
+    // A zero is not a resume point: `relay_replay_after` already reads 0 as
+    // "first connection", so it carries no claim to conflict with.
+    let after = resume
+        .as_deref()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0);
+
+    if after.is_some() && session.subscribe_unserved {
+        state.metrics.incr("sunrise_sync_resume_conflict_total");
+        tracing::warn!(
+            ev = "srv.sync.resume_conflict",
+            err_code = %ErrorCode::SyncResumeConflict,
+            err_kind = "permanent",
+            retryable = false,
+            account_h = %crate::logging::account_h(&session.account_id),
+            n_streams = session.streams.len() as u64,
+            "a resume id was presented on the first stream after a subscribe"
+        );
+        return Err(ApiError::validation_coded(
+            codes::SYNC_RESUME_CONFLICT,
+            "Last-Event-ID and a fresh Subscribe are two different positions; \
+             reopen without the id to replay from the cursors",
+        ));
+    }
+    // The set is served from here on, so the ids this stream mints are a
+    // statement about it and the next reconnect may resume on one.
+    if session.subscribe_unserved {
+        state
+            .sessions
+            .update(&id, now_ms, |s| s.subscribe_unserved = false);
+    }
 
     state.metrics.incr("sunrise_sync_stream_total");
+
     Ok(
         Sse::new(spawn_stream(state, id, session, after)).keep_alive(
             KeepAlive::new()
@@ -1190,6 +1279,33 @@ mod tests {
         read_as(client, BEARER, id, extra).await
     }
 
+    /// `GET /sync/events`, expecting a refusal rather than a stream.
+    ///
+    /// [`Client::send_with`] collects the whole body, and a stream that is
+    /// *not* refused never ends — so the call is bounded. A timeout here is
+    /// the assertion failing: the server served a request it was meant to
+    /// refuse.
+    async fn open_events(
+        client: &Client,
+        id: &str,
+        extra: &[(&str, &str)],
+    ) -> crate::api::testing::Res {
+        let mut headers = vec![("x-sunrise-session", id)];
+        headers.extend_from_slice(extra);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.send_with(
+                Method::GET,
+                "/api/v1/sync/events",
+                Some(BEARER),
+                None,
+                &headers,
+            ),
+        )
+        .await
+        .expect("the stream had to be refused; a served stream never ends")
+    }
+
     // -- ws_auth ------------------------------------------------------------
 
     /// Was `unauthenticated_upgrade_is_refused`.
@@ -1333,6 +1449,50 @@ mod tests {
             .send(Method::POST, "/api/v1/sync/session", Some(&body))
             .await
             .assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    /// The four negotiation failures are four different user-facing outcomes,
+    /// and every one of them used to arrive as `VALIDATION_INVALID` with the
+    /// distinction only in a message string. `as_error_code` had always
+    /// computed it; nothing called it. Telling a self-hoster to update their
+    /// app when their *relay* is the stale half is the concrete failure.
+    #[tokio::test]
+    async fn every_negotiation_refusal_carries_its_own_code() {
+        let client = Client::new(ServerConfig::default());
+        let cases: [(&str, serde_json::Value, &str); 4] = [
+            (
+                "wire_proto_supported",
+                serde_json::json!([9999]),
+                "SYNC_PROTOCOL_VERSION_MISMATCH",
+            ),
+            (
+                "crypto_suite_supported",
+                serde_json::json!([9999]),
+                "CRYPTO_SUITE_MISMATCH",
+            ),
+            // The server's floor is 1, so a client that can read nothing at
+            // all is the device whose data predates what this relay accepts.
+            ("doc_schema_max", serde_json::json!(0), "DOC_SCHEMA_TOO_OLD"),
+            (
+                "capabilities",
+                serde_json::json!(0),
+                "CAPABILITY_REQUIRED_MISSING",
+            ),
+        ];
+
+        for (field, value, expected) in cases {
+            let mut body = hello();
+            body[field] = value;
+            let res = client
+                .send(Method::POST, "/api/v1/sync/session", Some(&body))
+                .await;
+            res.assert_status(StatusCode::BAD_REQUEST);
+            assert_eq!(
+                res.json()["code"],
+                serde_json::json!(expected),
+                "a refusal on {field} must carry {expected}, not a shared code"
+            );
+        }
     }
 
     /// Was `ws_subscribe_receives_op_batch_fanout`.
@@ -1861,6 +2021,12 @@ mod tests {
     }
 
     /// `Last-Event-ID` resumes rather than replaying from the start.
+    ///
+    /// The stream that serves the subscription comes first, because that is
+    /// where the ids come from: a client cannot hold a `Last-Event-ID` it was
+    /// never sent, and a resume on a stream that follows another stream is
+    /// exactly what `SseTransport` does. The test used to resume straight off
+    /// the `Subscribe`, which is the shape the server now refuses.
     #[tokio::test]
     async fn a_resumed_stream_does_not_replay_what_it_already_had() {
         let client = Client::new(ServerConfig::default());
@@ -1873,10 +2039,131 @@ mod tests {
             );
         }
 
+        let first = read(&client, &id, &[]).await;
+        assert!(first.contains("id: 3"), "the ids come from here: {first}");
+
         let body = read(&client, &id, &[("last-event-id", "2")]).await;
         assert!(!body.contains("id: 1"), "already had: {body}");
         assert!(!body.contains("id: 2"), "already had: {body}");
         assert!(body.contains("id: 3"), "not yet had: {body}");
+    }
+
+    /// The defect #101 names, at the boundary.
+    ///
+    /// A client crashes between receiving a frame and committing it, restarts,
+    /// re-sends `Subscribe` with the cursors it can actually vouch for, and
+    /// keeps the id of the last frame it *received*. Id-only selection skips
+    /// every frame at or below that id, so the ops the cursors asked for are
+    /// never sent and `caught_up` is reported over the hole. The pair is
+    /// refused instead, with a code the client can branch on.
+    #[tokio::test]
+    async fn a_resume_id_presented_with_a_fresh_subscribe_is_refused() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [9u8; 16];
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![envelope(device, seq)], seq).await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        // Received through frame 3, applied only through seq 1.
+        subscribe(&client, &reader, Some((hex::encode(device), 1))).await;
+
+        let res = open_events(&client, &reader, &[("last-event-id", "3")]).await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!("SYNC_RESUME_CONFLICT"),
+            "the client has to learn this from a code, not from missing frames"
+        );
+        assert_eq!(
+            client.metrics.get("sunrise_sync_resume_conflict_total"),
+            1,
+            "an operator watching a third-party client needs to see this"
+        );
+    }
+
+    /// And the frames the refusal protected are actually there.
+    ///
+    /// Without the refusal this is the silent half: the same session, the same
+    /// cursors, and the two ops it never applied simply never arrive.
+    #[tokio::test]
+    async fn dropping_the_id_replays_what_the_cursors_asked_for() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [10u8; 16];
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(&client, &writer, vec![envelope(device, seq)], seq).await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 1))).await;
+        open_events(&client, &reader, &[("last-event-id", "3")])
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+
+        let body = read(&client, &reader, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            2,
+            "seqs 2 and 3 were received but never applied: {body}"
+        );
+    }
+
+    /// A refusal is not a state change: the same request stays refused, so a
+    /// client that retries without reading the code makes no progress rather
+    /// than getting the truncated replay on its second attempt.
+    #[tokio::test]
+    async fn a_refused_resume_stays_refused_until_the_id_is_dropped() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, Some((hex::encode([11u8; 16]), 1))).await;
+
+        for _ in 0..2 {
+            open_events(&client, &id, &[("last-event-id", "1")])
+                .await
+                .assert_status(StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(client.metrics.get("sunrise_sync_resume_conflict_total"), 2);
+    }
+
+    /// Every `Subscribe` voids the resume point, not just the first: a client
+    /// that restates its cursors mid-session is in the same position as one
+    /// that restated them at the start.
+    #[tokio::test]
+    async fn a_second_subscribe_voids_the_resume_point_again() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+
+        // The stream that serves the first set clears the bar.
+        let _ = read(&client, &id, &[]).await;
+        subscribe(&client, &id, Some((hex::encode([12u8; 16]), 1))).await;
+
+        open_events(&client, &id, &[("last-event-id", "1")])
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    /// A zero carries no claim — `relay_replay_after` already reads it as
+    /// "first connection" — so it is not the ambiguous pair and is served.
+    #[tokio::test]
+    async fn a_zero_last_event_id_is_not_a_resume_point() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, Some((hex::encode([13u8; 16]), 1))).await;
+        assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+
+        let body = read(&client, &id, &[("last-event-id", "0")]).await;
+        assert!(body.contains("\"kind\":\"caught_up\""), "{body}");
+        assert_eq!(client.metrics.get("sunrise_sync_resume_conflict_total"), 0);
     }
 
     // -- ws_batch_dedup -----------------------------------------------------

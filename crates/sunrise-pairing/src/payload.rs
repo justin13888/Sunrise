@@ -46,6 +46,14 @@
 //! caller — so today the creator's vault is the only place the key exists, and
 //! revoking that one device does not bound its reads.
 //!
+//! Which device that is stopped being guesswork in `STORAGE_V` 19:
+//! `identity.minted_by_device_id` records it at mint time, and `Keychain::load`
+//! loads `ID_D_priv` only when the row names the vault reading it. A device
+//! paired while `STORAGE_V` was 17 — when field 2 still carried the key — had
+//! wrapped a copy into its own row and kept it through the upgrade, and
+//! migration 0019 clears it, telling a creator from a paired device by
+//! `stream_keys.source`. That was issue #87.
+//!
 //! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels
 //! and a paired device can still mint epochs for the identity. Asymmetric
 //! cryptography is doing real work here: the device can address the recovery
@@ -64,15 +72,26 @@
 //! publisher is the cert's own subject and that the cert binds to this
 //! account's identity. A revoked device therefore mints a fresh device id,
 //! signs a valid cert for it with the `ID_S_priv` it still holds, and
-//! `Engine::backfill_key_envelopes` seals the new id the current epoch of every
-//! stream. Revocation is undone in one round trip.
+//! `Engine::backfill_key_envelopes` seals the new id every epoch the applying
+//! replica holds. Revocation is undone in one round trip, and
+//! `sunrise_core`'s `a_revoked_device_rejoins_under_a_fresh_device_id` asserts
+//! it rather than describing it.
 //!
-//! This is stated and not mitigated. Identity rotation is what would close it
-//! completely — a revoked device's `ID_S_priv` stops signing anything the
-//! account accepts — and it is unbuilt; refusing to backfill a device id first
-//! seen in a cert whose signer is already revoked is the narrow form and is
-//! also unbuilt. See `docs/03-crypto/key-rotation.md` §Revocation, which is
-//! where this bypass is tracked.
+//! This paragraph used to end by naming a narrow fix — *refuse to backfill a
+//! device id first seen in a cert whose signer is already revoked* — as
+//! available and merely unbuilt. **It is not available: there is no signer to
+//! key it on.** The certificate's only signature is `ID_S_priv`'s, which
+//! belongs to the account rather than to any device, and the `device_cert` op's
+//! signature is the subject's own `D_S_priv`, which on a fresh device id the
+//! revoked device minted along with everything else. An issuer field would be a
+//! value the attacker picks; in the honest flow it would be a constant, because
+//! `Keychain::create` has the joining device self-issue its own certificate.
+//!
+//! Identity rotation is what closes it — a revoked device's `ID_S_priv` stops
+//! signing anything the account accepts — and it is unbuilt. ADR-0032 records
+//! the narrower shapes that were priced against this tree and what killed each;
+//! `docs/03-crypto/key-rotation.md` §Revocation is where the bypass is
+//! tracked.
 //!
 //! The channel it travels over is the Noise XX transport confirmed by a SAS
 //! both users read aloud. That is the same channel the vault root already used,

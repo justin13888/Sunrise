@@ -142,11 +142,12 @@ sunrise_relay_batch_duplicate_total
 sunrise_relay_cursor_gap_total
 sunrise_sync_negotiate_refused_total
 sunrise_sync_refresh_total
+sunrise_sync_resume_conflict_total
 sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-Twenty-one names, and four that earlier revisions of this file listed and the
+Twenty-two names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -155,9 +156,9 @@ tree does not define: `sunrise_sync_token_expired_total`,
 under `srv.sync.*` above, which is why the names look familiar.
 
 `sunrise_relay_batch_duplicate_total` is the counter for op-batch
-de-duplication, and it gets commentary the other twenty do not because its key
-is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's **content**:
-`ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
+de-duplication, and it gets commentary the other twenty-one do not because its
+key is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's
+**content**: `ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
 `PRIMARY KEY (account_h, stream_id, ops_h)` in `relay_batches`. When that
 content is already stored for the channel, the handler increments this counter,
 logs `srv.relay.batch_duplicate`, publishes nothing to live subscribers, and

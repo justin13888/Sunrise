@@ -62,7 +62,18 @@ struct KeychainCredentialStore: CredentialStore {
     private let item: KeychainItem
 
     init(account: String = "default") {
-        item = KeychainItem(service: Self.service, account: account)
+        // Not `ThisDeviceOnly`, and deliberately: the relay session is not the
+        // vault. What the vault root buys by refusing to travel is that a
+        // backup carries no readable data; a bearer token that expires on its
+        // own schedule buys much less, and taking it out of backups is a
+        // sign-in-again-after-migration decision about sessions rather than
+        // part of the key hierarchy. It is left where it was so that this
+        // change moves exactly one class.
+        item = KeychainItem(
+            service: Self.service,
+            account: account,
+            accessibility: .afterFirstUnlock
+        )
     }
 
     func load() throws -> StoredCredentials? {

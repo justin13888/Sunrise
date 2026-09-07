@@ -142,6 +142,30 @@ final class CalendarModel {
         await refresh()
     }
 
+    /// Move the grid onto the day a block is on, and hand the row back.
+    ///
+    /// What a `sunrise://entity/<blk_…>` link needs, which is the link every
+    /// block reminder carries (`ReminderPlan/notification(for:timeZone:)`).
+    /// Opening the calendar was never the hard part; opening it on **today**
+    /// when the block is on Thursday is a link that lands somewhere plausible
+    /// and wrong, and nothing on the screen says so.
+    ///
+    /// `nil` when the vault has no such block — deleted elsewhere, or an id
+    /// from another vault — and the grid then stays where it was, which
+    /// `docs/07-clients/interaction-patterns.md` asks for: "A link naming an
+    /// entity that does not exist resolves to the nearest sensible screen
+    /// rather than an error dialog."
+    func reveal(_ block: EntityRef) async -> BlockGridRow? {
+        guard case let .blocks(rows)? = try? await bridge.query(.entityById(id: block)),
+              let row = rows.first else { return nil }
+        // The start resolved through the same seam the grid draws with, so a
+        // floating block lands on the day this device reads it as.
+        let start = timeValueMs(value: row.block.startsAt, tz: timeZone)
+        anchorMs = UInt64(max(0, start))
+        await refresh()
+        return self.row(block)
+    }
+
     // MARK: - The grid's geometry
 
     /// Start of the first civil day the grid draws, epoch ms.

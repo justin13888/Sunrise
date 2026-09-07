@@ -58,6 +58,48 @@ struct CalendarModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// **What a block reminder's link needs.** `ReminderPlan` gives every
+    /// block notification a `sunrise://entity/<blk_…>` link, and the calendar
+    /// it opens is anchored on today — so an alert for Thursday's block
+    /// landed on a grid the block was not drawn on, with nothing on screen to
+    /// say the link had gone anywhere but where it meant to.
+    @Test
+    func revealingABlockMovesTheGridOntoItsDay() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        await model.createBlock(
+            fromMs: hour(model, 9),
+            toMs: hour(model, 10),
+            title: "Quarterly review",
+            kind: .zoned
+        )
+        let id = try #require(model.rows.first?.block.id)
+
+        await model.step(3)
+        #expect(model.row(id) == nil, "three days on, the block is off the grid")
+
+        let revealed = await model.reveal(id)
+
+        #expect(revealed?.block.id == id)
+        #expect(model.placed(dayOffset: 0).map(\.id) == [id])
+        await vault.bridge.shutdown()
+    }
+
+    /// A block deleted on another device between the alert and the tap. The
+    /// grid stays where it is rather than jumping to 1970, which is where an
+    /// unresolved start would put it.
+    @Test
+    func revealingABlockThatIsNotThereLeavesTheGridAlone() async throws {
+        let vault = try await TestVault()
+        let model = await model(vault)
+        let anchor = model.anchorMs
+
+        #expect(await model.reveal("blk_01ARZ3NDEKTSV4RRFFQ69G5FAV") == nil)
+
+        #expect(model.anchorMs == anchor)
+        await vault.bridge.shutdown()
+    }
+
     /// **The regression test for a core and a client that disagreed about
     /// which day it is.**
     ///

@@ -54,8 +54,16 @@ pub mod codes {
     pub const BLOB_CHUNK_MISSING: &str = "BLOB_CHUNK_MISSING";
     /// No committed blob under that id for this account.
     pub const BLOB_NOT_FOUND: &str = "BLOB_NOT_FOUND";
+    /// `GET /sync/events` presented a `Last-Event-ID` on the first stream
+    /// after a `Subscribe`, so the resume point and the cursors are two
+    /// different statements of position and the server will not pick one.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::SyncResumeConflict`] (registry id
+    /// 513).
+    pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
     /// The relay could not read or write its durable op log.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
+
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
 }

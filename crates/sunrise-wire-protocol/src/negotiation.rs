@@ -64,6 +64,15 @@ pub enum NegotiationError {
 
 impl NegotiationError {
     /// Map to a canonical wire error code.
+    ///
+    /// This is what the client actually receives:
+    /// `crates/sunrise-server/src/api/sync.rs`'s `session` handler puts the
+    /// returned code on the `400` rather than collapsing every refusal to one
+    /// generic code. The four are four different outcomes for whoever is
+    /// looking at the screen — update the app, update the relay, this device's
+    /// data predates the relay's floor, this relay lacks a feature the vault
+    /// requires — so anything that stops calling this pushes a client author
+    /// into matching on `Display` output to recover the distinction.
     #[must_use]
     pub const fn as_error_code(&self) -> ErrorCode {
         match self {

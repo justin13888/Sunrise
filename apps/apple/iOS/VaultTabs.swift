@@ -45,7 +45,7 @@ struct VaultTabs: View {
             .modifier(CaptureSheet(surfaces: surfaces))
             .modifier(rowSheets)
             .sheet(isPresented: $showingSettings) { settingsSheet }
-            .modifier(Routing(surfaces: surfaces, show: show, perform: perform))
+            .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform))
             .modifier(Lifecycle(
                 bridge: bridge,
                 models: models,
@@ -258,6 +258,17 @@ struct VaultTabs: View {
         }
     }
 
+    /// Show the entity a link named, not merely the screen it lives on: a
+    /// task opens its editor, the one surface that shows it whether or not
+    /// the list underneath holds it. A block needs none, because
+    /// ``VaultModels/reveal(_:)`` has already moved the grid onto its day.
+    private func reveal(_ entity: EntityRef) {
+        Task {
+            guard case let .task(item)? = await models.reveal(entity) else { return }
+            sheets.editing = item
+        }
+    }
+
     /// The sidebar's selection binding, translated into a push.
     ///
     /// `BrowseSidebar` is shared and takes a `Destination?` selection, because
@@ -413,6 +424,7 @@ struct VaultTabs: View {
 private struct Routing: ViewModifier {
     let surfaces: AppSurfaces
     let show: (Destination) -> Void
+    let reveal: (EntityRef) -> Void
     let perform: (AppAction) -> Void
 
     func body(content: Content) -> some View {
@@ -421,6 +433,11 @@ private struct Routing: ViewModifier {
                 guard let destination else { return }
                 show(destination)
                 surfaces.destinationTaken()
+            }
+            .onChange(of: surfaces.pendingReveal) { _, entity in
+                guard let entity else { return }
+                surfaces.revealTaken()
+                reveal(entity)
             }
             .onChange(of: surfaces.pendingCommand) { _, command in
                 guard let command else { return }

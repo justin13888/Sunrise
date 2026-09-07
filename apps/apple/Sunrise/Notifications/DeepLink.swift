@@ -11,7 +11,7 @@ import Foundation
 ///
 /// Two of the cases are the views issue #9 asks a notification to open into.
 /// They are not in the doc's list because they did not exist when it was
-/// written; the rest are its list, minus the three noted on ``init(url:)``.
+/// written; the rest are its list, minus the one noted on ``init(url:)``.
 enum DeepLink: Equatable, Sendable {
     /// `sunrise://morning` — the morning summary.
     case morningSummary
@@ -23,20 +23,19 @@ enum DeepLink: Equatable, Sendable {
     case capture(text: String)
     /// `sunrise://task/<id>?action=…` — act on one task.
     case task(EntityRef, TaskLinkAction)
+    /// `sunrise://focus/<TaskId>` — focus on that task.
+    case focus(EntityRef)
 
     /// The scheme, lowercase. Registered in `apps/apple/project.yml`.
     static let scheme = "sunrise"
 
     /// Parse a URL, or refuse it.
     ///
-    /// Three documented shapes are deliberately **not** parsed:
-    /// `sunrise://focus/<TaskId>`, `sunrise://share/<token>` and the
-    /// "open entity in detail" reading of `sunrise://entity/…`. The macOS app
-    /// has no route to any of them yet — focus starts from a chosen task
-    /// inside the Focus screen, share invites are not implemented, and there
-    /// is no standalone entity detail window — and a parser case whose router
-    /// arm does nothing is a link that silently fails rather than one that is
-    /// honestly ignored.
+    /// One documented shape is deliberately **not** parsed:
+    /// `sunrise://share/<token>`. Sharing is deferred from v1 by ADR-0020, so
+    /// there is no grant this app could resolve a token against — and a
+    /// parser case whose router arm does nothing is a link that silently
+    /// fails rather than one that is honestly ignored.
     init?(url: URL) {
         guard url.scheme?.lowercased() == Self.scheme,
               let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -75,6 +74,10 @@ enum DeepLink: Equatable, Sendable {
             guard let id = entityRef(segments[0], kind: "tsk_"),
                   let action = TaskLinkAction(query: query) else { return nil }
             return .task(id, action)
+        case ("focus", 1):
+            // A task, and only a task: a session is time spent on one piece
+            // of work, and the core's `StartFocus` takes a `tsk_` id.
+            return entityRef(segments[0], kind: "tsk_").map { .focus($0) }
         default:
             return nil
         }
@@ -99,6 +102,9 @@ enum DeepLink: Equatable, Sendable {
             parts.host = "task"
             parts.path = "/\(id)"
             parts.queryItems = [URLQueryItem(name: "action", value: action.identifier)]
+        case let .focus(id):
+            parts.host = "focus"
+            parts.path = "/\(id)"
         }
         return parts.url
     }
@@ -116,14 +122,33 @@ enum DeepLink: Equatable, Sendable {
         case .capture: nil
         case let .entity(id): Self.home(of: id)
         case let .task(_, action): action == .open ? .list(.todayAll) : nil
+        case .focus: .focus
+        }
+    }
+
+    /// The entity this link asks to be *shown* on that screen.
+    ///
+    /// A second question, and the one that used to go unanswered: a link can
+    /// name a screen, a thing on it, or both. `sunrise://entity/<blk_…>` is
+    /// the link a block reminder carries, and moving only the screen opened
+    /// the calendar on *today* — so an alert about Thursday's block landed on
+    /// a grid the block was not on, which is a failure a user cannot see.
+    ///
+    /// `nil` for ``focus``: the session that link starts is what the Focus
+    /// screen shows, so there is nothing left for a reveal to do.
+    var reveal: EntityRef? {
+        switch self {
+        case let .entity(id): id
+        case let .task(id, action): action == .open ? id : nil
+        case .morningSummary, .endOfDayPlan, .capture, .focus: nil
         }
     }
 
     /// The screen an entity lives on.
     ///
-    /// Coarser than the doc's "open entity in detail", and said plainly rather
-    /// than pretended: a block belongs to the calendar grid and a task to
-    /// Today, and those are the two kinds a reminder can be about.
+    /// Where the link *lands*; ``reveal`` is what it then shows there. A
+    /// block belongs to the calendar grid and a task to Today, and those are
+    /// the two kinds a reminder can be about.
     private static func home(of id: EntityRef) -> Destination {
         id.hasPrefix("blk_") ? .calendar : .list(.todayAll)
     }

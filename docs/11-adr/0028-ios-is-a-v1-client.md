@@ -105,7 +105,9 @@ column is what gives them somewhere to land. The other two do not land, and
 both are worth naming as exceptions rather than counted as wins. **#40** —
 `sunrise://focus` and `sunrise://share` unparsed — gains visibility and not a
 row: the matrix grades no URL scheme in any column, which is why the
-Consequences below say it is "unchanged and now visible". **#42** is the same
+Consequences below say it is "unchanged and now visible". *Amended: #40 has
+since been resolved — see the Consequences bullet. That it earns no matrix row
+is unchanged, and for the same reason.* **#42** is the same
 shape one layer down: the vault root's Keychain accessibility class,
 `Keychain.swift:62`, measured against
 [`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md) §OS keystore
@@ -288,8 +290,15 @@ is tested, and has not been released.
 - **[#40](https://github.com/justin13888/Sunrise/issues/40) is unchanged and
   now visible.** `Sunrise/Notifications/DeepLink.swift` is shared and
   `iOS/TabRoute.swift:83-116` routes every destination it produces to a tab and
-  a stack — but `sunrise://focus` and `sunrise://share` are still unparsed on
-  both platforms.
+  a stack — but ~~`sunrise://focus` and `sunrise://share` are still unparsed on
+  both platforms~~. *Amended: #40 is resolved.* `sunrise://focus/<TaskId>` is
+  parsed and routed on both platforms, `sunrise://entity/<id>` now reveals the
+  entity rather than the screen it lives on, and `sunrise://share/<token>` is
+  recorded as specified-not-built against
+  [ADR-0020](./0020-v1-must-demotions.md) in
+  [`../07-clients/interaction-patterns.md`](../07-clients/interaction-patterns.md)
+  §URL scheme. *It still earns no matrix row: the matrix grades no URL scheme
+  in any column.*
 
 - **[#12](https://github.com/justin13888/Sunrise/issues/12) doubles in size.**
   Every user-facing string in `apps/apple/Sunrise/` now ships on two platforms.

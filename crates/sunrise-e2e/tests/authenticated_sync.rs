@@ -54,8 +54,13 @@ async fn spawn_authenticating_relay() -> (std::net::SocketAddr, tokio::task::Joi
 /// socket had to authenticate at — with ordinary requests, so there is no
 /// connect to fail. The refusal simply arrives one step later.
 async fn handshake(t: &mut SseTransport) -> Result<(), TransportError> {
+    handshake_with(t, hello()).await
+}
+
+/// [`handshake`], with a `Hello` the caller composed.
+async fn handshake_with(t: &mut SseTransport, hello: Hello) -> Result<(), TransportError> {
     let mut payload = Vec::new();
-    ciborium::ser::into_writer(&hello(), &mut payload).unwrap();
+    ciborium::ser::into_writer(&hello, &mut payload).unwrap();
     t.send_frame(encode_frame(MsgKind::Hello, FrameFlags::EMPTY, &payload).unwrap())
         .await?;
     let buf = t.recv_frame().await?.expect("a HelloAck, not a close");
@@ -84,6 +89,34 @@ async fn the_real_transport_without_a_bearer_is_refused() {
         matches!(handshake(&mut t).await, Err(TransportError::Server { .. })),
         "an unauthenticated session must be refused"
     );
+    h.abort();
+}
+
+/// A negotiation refusal reaches the real client as the refusal's own code.
+///
+/// The two halves had never met here either. The relay computed a typed code
+/// for each of the four negotiation failures and then threw it away, sending
+/// `VALIDATION_INVALID`; `SseTransport::refuse` does not recognise that name,
+/// so it fell through to the status map and every refusal arrived as
+/// `SYNC_OP_INVALID`. A client cannot tell "update the app" from "update the
+/// relay" out of that, which is what `docs/05-sync/wire-protocol.md`
+/// §Versioning and `docs/10-cross-cutting/protocol-versioning.md` §4 both
+/// promise it can.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_negotiation_refusal_reaches_the_client_as_its_own_code() {
+    let (addr, h) = spawn_authenticating_relay().await;
+    let mut t = SseTransport::connect_with_bearer(&format!("http://{addr}"), Some("alice-token"));
+    let unnegotiable = Hello {
+        wire_proto_supported: vec![9999],
+        ..hello()
+    };
+    match handshake_with(&mut t, unnegotiable).await {
+        Err(TransportError::Server { code, .. }) => assert_eq!(
+            code, "SYNC_PROTOCOL_VERSION_MISMATCH",
+            "the client has to be able to say which half is stale"
+        ),
+        other => panic!("expected a typed server refusal, got {other:?}"),
+    }
     h.abort();
 }
 
