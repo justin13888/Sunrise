@@ -91,4 +91,15 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// envelope it was left out of. Removing `ID_D_priv` from `PairingPayload`
 /// removes that fallback, so `Engine::backfill_key_envelopes` has to know what
 /// is actually missing, and this table is what it reads.
-pub const STORAGE_V: u16 = 18;
+///
+/// `19` is migration `0019_identity_minted_by.sql`. 0018 left one hole open in
+/// terms: a device paired while this constant read `17` had wrapped the
+/// account's `ID_D_priv` into its own `identity` row, kept it through the
+/// upgrade, and went on opening the identity-sealed copy of every rotated
+/// epoch. Clearing the column needed a way to tell that device from the
+/// account's *creator*, on which the same column holds the only copy of the
+/// key. `stream_keys.source` already carried the answer -- only the creator
+/// mints the vault-meta stream's first epoch -- so 19 reads it, records the
+/// minting device on the `identity` row, and clears the column everywhere
+/// else.
+pub const STORAGE_V: u16 = 19;

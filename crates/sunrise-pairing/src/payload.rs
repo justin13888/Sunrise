@@ -46,6 +46,14 @@
 //! caller — so today the creator's vault is the only place the key exists, and
 //! revoking that one device does not bound its reads.
 //!
+//! Which device that is stopped being guesswork in `STORAGE_V` 19:
+//! `identity.minted_by_device_id` records it at mint time, and `Keychain::load`
+//! loads `ID_D_priv` only when the row names the vault reading it. A device
+//! paired while `STORAGE_V` was 17 — when field 2 still carried the key — had
+//! wrapped a copy into its own row and kept it through the upgrade, and
+//! migration 0019 clears it, telling a creator from a paired device by
+//! `stream_keys.source`. That was issue #87.
+//!
 //! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels
 //! and a paired device can still mint epochs for the identity. Asymmetric
 //! cryptography is doing real work here: the device can address the recovery
