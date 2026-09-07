@@ -36,7 +36,10 @@ final class VaultModels {
     let sync = SyncStatusModel()
     let savedViews = SavedViewsModel()
 
+    private let bridge: CoreBridge
+
     init(bridge: CoreBridge) {
+        self.bridge = bridge
         list = TaskListModel(bridge: bridge)
         capture = CaptureModel(bridge: bridge)
         browse = BrowseModel(bridge: bridge)
@@ -48,5 +51,42 @@ final class VaultModels {
         morning = MorningSummaryModel(bridge: bridge)
         evening = EndOfDayPlanModel(bridge: bridge)
         undo = UndoModel(bridge: bridge)
+    }
+}
+
+/// What a link that named an entity turned out to be.
+///
+/// Two cases because two exist: `EntityRef` covers twelve kinds, and the only
+/// ones a `sunrise://entity/<id>` link is written for — by "Copy permalink"
+/// (`docs/02-domain/identifiers.md`) and by a block reminder — are a Task and
+/// a Block. Anything else resolves to nothing rather than to a screen picked
+/// on its behalf.
+enum EntityReveal: Equatable {
+    case task(TaskItem)
+    case block(BlockGridRow)
+}
+
+extension VaultModels {
+    /// Find the entity a link named, and put the screen it lives on in front
+    /// of it.
+    ///
+    /// The second half is the part that was missing. ``DeepLink/destination``
+    /// says which screen, and for a block that is the calendar — but the
+    /// calendar opens on today, so revealing the block means moving the grid
+    /// onto its day first. That is why this returns after a write to
+    /// ``CalendarModel``: by the time the caller has the row, the screen
+    /// behind it is already showing the right day.
+    ///
+    /// Split on the id's prefix rather than on the query's answer, which is
+    /// the split ``DeepLink`` already makes when it decides which screen an
+    /// entity lives on — one question, answered the same way in both places.
+    func reveal(_ id: EntityRef) async -> EntityReveal? {
+        if id.hasPrefix("blk_") {
+            return await calendar.reveal(id).map(EntityReveal.block)
+        }
+        guard case let .task(item)? = try? await bridge.query(.entityById(id: id)) else {
+            return nil
+        }
+        return .task(item)
     }
 }
