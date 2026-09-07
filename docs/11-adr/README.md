@@ -50,6 +50,9 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0030 | [Every palette colour clears a stated contrast threshold, and the loader enforces it](./0030-palette-contrast-gate.md) | accepted (amends 0029 and the shared UI system's colour section) |
 | 0031 | [macOS ships as a Developer ID-signed, notarized `.dmg`, not through the Mac App Store](./0031-macos-distribution.md) | accepted (settles the "under evaluation" in the clients overview and `desktop.md`; answers 0019's unstated distribution question) |
 | 0032 | [Revocation cannot bound certificate issuance; disclose it rather than half-enforce it](./0032-revocation-cannot-bound-cert-issuance.md) | accepted (amends 0024's revocation guarantee; records why the narrow fixes for #105 are unsound) |
+| 0033 | [The relay dedups whole batches, and a re-partitioned re-send is accepted](./0033-relay-batch-dedup-is-whole-batch.md) | accepted (amends the wire protocol's ack-semantics section) |
+| 0034 | [Revocation bounds a device's reads, not its writes, and no replica refuses an op](./0034-revocation-bounds-reads-not-writes.md) | accepted (depends on 0024; amends key rotation §Revocation and the threat model's A3) |
+| 0035 | [The bearer-validity disclosure on `AUTH_DEVICE_SIG_INVALID` is accepted](./0035-bearer-validity-oracle-accepted.md) | accepted (amends server auth §Device binding and the threat model's A2) |
 
 ## When to write a new ADR
 
