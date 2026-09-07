@@ -48,6 +48,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0028 | [iOS is a v1 client with its own parity column, at SHOULD level](./0028-ios-is-a-v1-client.md) | accepted (amends the client parity matrix; closes 0019's revisit trigger 1) |
 | 0029 | [Design tokens are compiled from TOML, committed, and drift-checked](./0029-design-token-pipeline.md) | accepted (amends the shared UI system's token section; amended by 0030: the seven light-theme colours below AA are raised and the gate is exhaustive) |
 | 0030 | [Every palette colour clears a stated contrast threshold, and the loader enforces it](./0030-palette-contrast-gate.md) | accepted (amends 0029 and the shared UI system's colour section) |
+| 0033 | [The relay dedups whole batches, and a re-partitioned re-send is accepted](./0033-relay-batch-dedup-is-whole-batch.md) | accepted (amends the wire protocol's ack-semantics section) |
 
 ## When to write a new ADR
 

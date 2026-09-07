@@ -353,9 +353,14 @@ pub struct OpsResponse {
 // makes session 2 send `[O1, O2]` where session 1 sent `[O1]`: different
 // content, a `Fresh` append, and `O1` stored twice. Re-applying it is harmless
 // — ops are idempotent — but the relay pays the disk and fan-out cost, and
-// nothing upstream prevents it. A per-op key would close this and is a separate
-// change: it needs a retention rule of its own, because forgetting an op id is
-// precisely what lets a legitimate replay through.
+// nothing upstream prevents it. That is the stated guarantee rather than a
+// pending gap: ADR-0033 (`docs/11-adr/0033-relay-batch-dedup-is-whole-batch.md`)
+// rejects a per-op key here — the relay stores frames, not ops, so saving the
+// disk would mean filtering an op out and re-deriving the heads, and a per-op
+// table would need its own tie to retention, because forgetting an op id is
+// precisely what lets a legitimate replay through — and names the client-side
+// fix (persist the partition in the outbox) as the cheaper one if it is ever
+// measured to matter.
 //
 // Deliberately a `//` comment rather than a `///` one: kynos publishes a
 // handler's doc comment as the operation `description`, and
