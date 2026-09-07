@@ -21,6 +21,31 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 - RRULE expansion across DST boundaries.
 - Op envelope round-trip (encode/decode/encrypt/decrypt/sign/verify).
 
+#### Counterexample persistence
+
+When a property test fails, proptest shrinks the case and writes the seed to a
+persistence file, which every later run replays before generating anything new.
+Those files are **committed**: a shrunken counterexample is a test input the
+suite discovered by itself, and it is the one output of a property test that
+cannot be regenerated on demand. `crates/sunrise-core/proptest-regressions/engine.txt`
+is the standing example — two cases from the control-op ordering bug, still
+replayed on every `cargo test`.
+
+There is exactly one shape, `<crate>/proptest-regressions/<source path>.txt`.
+proptest's default (`FileFailurePersistence::SourceParallel`) produces it only
+for proptests under `src/`, because it walks up from the source file looking for
+a directory holding `lib.rs` or `main.rs` and an integration test has none above
+it; it then prints `failed to find lib.rs or main.rs` and falls back to a flat
+`<name>.proptest-regressions` beside the test. Every proptest in `tests/`
+therefore sets `failure_persistence` to
+`FileFailurePersistence::Direct("proptest-regressions/tests/<name>.txt")`
+explicitly — the path is relative to the crate root, which is the working
+directory cargo gives a test binary.
+
+`.gitignore` deliberately carries no rule for either shape. The directory shape
+is tracked; the flat shape means a proptest is missing that setting, and it
+should be visible in `git status` rather than hidden.
+
 #### Convergence property-test determinism
 
 - **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches is meant to come from `cargo-fuzz` binaries, which are specified but not built — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set and status, rather than restating it here.

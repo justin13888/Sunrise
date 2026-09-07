@@ -86,6 +86,19 @@ fn valid_list_strategy() -> impl Strategy<Value = Vec<ScheduleConstraint>> {
 }
 
 proptest! {
+    // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
+    // holds a `lib.rs` or `main.rs`, so the default warns and drops the
+    // counterexample beside this source instead. See
+    // docs/10-cross-cutting/testing.md section 2.
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/constraint_proptest.txt",
+            ),
+        )),
+        ..ProptestConfig::default()
+    })]
+
     #[test]
     fn valid_constraints_pass_validation(c in valid_constraint_strategy()) {
         prop_assert!(c.validate().is_ok(), "generated constraint should be valid: {c:?}");

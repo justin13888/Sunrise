@@ -353,6 +353,15 @@ fn config() -> ProptestConfig {
         .unwrap_or(256);
     ProptestConfig {
         cases,
+        // `Direct`, not the `SourceParallel` default: nothing above a `tests/`
+        // file holds a `lib.rs` or `main.rs`, so the default warns and drops the
+        // counterexample beside this source instead. See
+        // docs/10-cross-cutting/testing.md section 2.
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/op_envelope_proptest.txt",
+            ),
+        )),
         ..ProptestConfig::default()
     }
 }
