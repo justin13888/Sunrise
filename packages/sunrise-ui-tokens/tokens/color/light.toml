@@ -4,14 +4,24 @@
 #
 # `[surface]` is semantic: a client asks for `accent`, never for a blue. Its
 # keys and `dark.toml`'s must match exactly, and the contrast ratios between
-# them are asserted in test/invariants.test.ts against
-# docs/10-cross-cutting/accessibility.md §Color and contrast.
+# them are enforced by src/contrast.ts — which the loader calls, so this file
+# cannot be saved below docs/10-cross-cutting/accessibility.md §Color and
+# contrast, only rejected.
 #
 # `[stream]` is *not* semantic and is not generated from `accent`. Its keys are
 # the eight variants of `StreamColor` in crates/sunrise-domain/src/stream.rs,
 # which is a serde-stable enum persisted in the vault — so the palette is
 # enumerated to match the enum, and test/invariants.test.ts reads that file and
 # fails if the two lists diverge.
+#
+# Every value here is a Tailwind ramp step, and which step is not a free
+# choice: it is the lightest one that clears its contrast rule in
+# `src/contrast.ts` on this theme's `bg`. That is 600 for most of the palette
+# and 700 for the five hues whose 600 is too light on `#fbfbfa` — `warning`
+# and `success` in `[surface]`, and `amber`, `emerald`, `sky` and `pink` in
+# `[stream]`, with `info` at cyan-700. ADR-0030 has the before/after ratios.
+# Editing a value here without checking the ratio is not possible: the loader
+# refuses the file and `mise run tokens` writes nothing.
 
 [surface]
 bg = "#fbfbfa"
@@ -21,16 +31,16 @@ accent = "#2563eb"
 accent_text = "#ffffff"
 border = "#e5e5e7"
 danger = "#dc2626"
-warning = "#d97706"
-success = "#059669"
-info = "#0891b2"
+warning = "#b45309"
+success = "#047857"
+info = "#0e7490"
 
 [stream]
 slate = "#475569"
 rose = "#e11d48"
-amber = "#d97706"
-emerald = "#059669"
-sky = "#0284c7"
+amber = "#b45309"
+emerald = "#047857"
+sky = "#0369a1"
 indigo = "#4f46e5"
 violet = "#7c3aed"
-pink = "#db2777"
+pink = "#be185d"

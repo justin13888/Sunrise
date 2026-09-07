@@ -10,13 +10,23 @@
  *   carry and nothing checked.
  * - `docs/10-cross-cutting/accessibility.md` §Color and contrast asks for AA
  *   on interactive elements and AAA on body text. Those are ratios, so they
- *   are assertions.
+ *   are assertions — and since ADR-0030 they are assertions over the whole
+ *   palette rather than three pairs picked by hand. `src/contrast.ts` holds
+ *   the rule table and the loader enforces it; this file recomputes the ratios
+ *   independently, checks that no token escaped the table, and proves the
+ *   loader actually refuses a palette that falls short.
  * - The same doc's Reduce Motion requirement is a `prefers-reduced-motion`
  *   block that has to exist in the emitted CSS.
  */
 
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import {
+    contrastFailures,
+    EXEMPT_SURFACE_KEYS,
+    STREAM_CONTRAST_RULE,
+    SURFACE_CONTRAST_RULES,
+} from "../src/contrast";
 import { emitCss } from "../src/emit-css";
 import { emitSwift } from "../src/emit-swift";
 import {
@@ -29,6 +39,7 @@ import {
     parseTheme,
     parseType,
     SURFACE_KEYS,
+    type SurfaceKey,
     TokenError,
 } from "../src/model";
 
@@ -212,25 +223,131 @@ describe("the stream palette is keyed on the domain enum", () => {
 });
 
 describe("contrast meets docs/10-cross-cutting/accessibility.md", () => {
+    /**
+     * The rule *table* is imported; the ratio is recomputed here.
+     *
+     * That split is the whole value of this suite. Asserting the palette with
+     * `contrastFailures` would compare the gate to itself — the same blindness
+     * `drift.test.ts` documents for the emitters — and a wrong `luminance`
+     * would be green on both sides. So `contrast` above is a second,
+     * independent transcription of WCAG 2.1, and what is imported from
+     * `src/contrast.ts` is only the claim about which pairs matter and at what
+     * threshold.
+     */
+    it("computes ratios WCAG's own anchors agree with", () => {
+        expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
+        expect(contrast("#ffffff", "#ffffff")).toBeCloseTo(1, 5);
+        // Two pairs from the shipped palette, to two decimals.
+        expect(
+            contrast(tokens.light.surface.fg, tokens.light.surface.bg),
+        ).toBeCloseTo(16.81, 2);
+        expect(
+            contrast(tokens.dark.surface.muted, tokens.dark.surface.bg),
+        ).toBeCloseTo(7.55, 2);
+    });
+
+    /**
+     * Every `[surface]` key is measured or exempt, in that order of
+     * preference.
+     *
+     * `warning`, `success`, `info` and four of the eight tints shipped below
+     * AA because nothing enumerated the palette — three pairs were picked by
+     * hand and the rest were nobody's. This is the assertion that makes the
+     * *next* token impossible to add unmeasured.
+     */
+    it("leaves no surface token unaccounted for", () => {
+        const measured = SURFACE_CONTRAST_RULES.map((rule) => rule.foreground);
+        const exempt = EXEMPT_SURFACE_KEYS.map((entry) => entry.key);
+        expect([...measured, ...exempt, "bg"].sort()).toEqual(
+            [...SURFACE_KEYS].sort(),
+        );
+        // An exemption is a claim, so it has to carry one.
+        for (const entry of EXEMPT_SURFACE_KEYS) {
+            expect(entry.why.length, entry.key).toBeGreaterThan(20);
+        }
+    });
+
     for (const theme of ["light", "dark"] as const) {
-        const { surface } = tokens[theme];
+        const { surface, stream } = tokens[theme];
 
-        it(`${theme}: body text on background is AAA (>= 7:1)`, () => {
-            expect(contrast(surface.fg, surface.bg)).toBeGreaterThanOrEqual(7);
-        });
+        for (const rule of SURFACE_CONTRAST_RULES) {
+            it(`${theme}: ${rule.foreground} on ${rule.background} clears ${rule.min}:1 as ${rule.role}`, () => {
+                expect(
+                    contrast(
+                        surface[rule.foreground as SurfaceKey],
+                        surface[rule.background as SurfaceKey],
+                    ),
+                ).toBeGreaterThanOrEqual(rule.min);
+            });
+        }
 
-        it(`${theme}: muted text on background is AA (>= 4.5:1)`, () => {
-            expect(contrast(surface.muted, surface.bg)).toBeGreaterThanOrEqual(
-                4.5,
-            );
-        });
-
-        it(`${theme}: accent text on accent is AA (>= 4.5:1)`, () => {
-            expect(
-                contrast(surface.accent_text, surface.accent),
-            ).toBeGreaterThanOrEqual(4.5);
+        it(`${theme}: every stream tint clears ${STREAM_CONTRAST_RULE.min}:1 on the background`, () => {
+            for (const [key, tint] of Object.entries(stream)) {
+                expect(contrast(tint, surface.bg), key).toBeGreaterThanOrEqual(
+                    STREAM_CONTRAST_RULE.min,
+                );
+            }
         });
     }
+
+    /**
+     * The gate fires, and says enough to act on.
+     *
+     * A rule table nothing enforces is the state this issue found the
+     * repository in, so the load-bearing assertion is not that the palette
+     * passes — it is that a palette which does not is refused by the *loader*,
+     * with the token, the ratio it got and the ratio it needed in the message.
+     */
+    it("refuses a theme whose colours fall short, naming token, got and needed", () => {
+        const surface = { ...tokens.light.surface, warning: "#d97706" as Hex };
+        expect(() =>
+            parseTheme("color/light.toml", {
+                surface,
+                stream: tokens.light.stream,
+            }),
+        ).toThrow(TokenError);
+        expect(() =>
+            parseTheme("color/light.toml", {
+                surface,
+                stream: tokens.light.stream,
+            }),
+        ).toThrow(/warning on bg is 3\.07:1, below the 4\.5:1/);
+    });
+
+    it("refuses a stream tint that falls short", () => {
+        expect(() =>
+            parseTheme("color/light.toml", {
+                surface: tokens.light.surface,
+                stream: { ...tokens.light.stream, amber: "#d97706" },
+            }),
+        ).toThrow(/\[stream\]: amber on bg is 3\.07:1, below the 4\.5:1/);
+    });
+
+    it("refuses a surface token no rule covers, rather than skipping it", () => {
+        // `parseTheme` would reject an extra key before contrast ever sees it,
+        // so the completeness check is exercised where it actually guards:
+        // against the rule table, with the key list the model declares.
+        expect(
+            contrastFailures(
+                "color/light.toml",
+                { ...tokens.light.surface, overlay: "#00000080" },
+                tokens.light.stream,
+            ),
+        ).toEqual([expect.stringContaining("overlay has no contrast rule")]);
+    });
+
+    it("reports every failure at once rather than the first", () => {
+        const failures = contrastFailures(
+            "color/light.toml",
+            {
+                ...tokens.light.surface,
+                warning: "#d97706",
+                success: "#059669",
+            },
+            { ...tokens.light.stream, sky: "#0284c7" },
+        );
+        expect(failures).toHaveLength(3);
+    });
 });
 
 describe("reduced motion is expressible on every target", () => {

@@ -97,12 +97,12 @@ pub const SURFACE_LIGHT_ACCENT_TEXT: [u8; 3] = [0xff, 0xff, 0xff];
 pub const SURFACE_LIGHT_BORDER: [u8; 3] = [0xe5, 0xe5, 0xe7];
 /// Light-theme `danger`, as sRGB `#dc2626`.
 pub const SURFACE_LIGHT_DANGER: [u8; 3] = [0xdc, 0x26, 0x26];
-/// Light-theme `warning`, as sRGB `#d97706`.
-pub const SURFACE_LIGHT_WARNING: [u8; 3] = [0xd9, 0x77, 0x06];
-/// Light-theme `success`, as sRGB `#059669`.
-pub const SURFACE_LIGHT_SUCCESS: [u8; 3] = [0x05, 0x96, 0x69];
-/// Light-theme `info`, as sRGB `#0891b2`.
-pub const SURFACE_LIGHT_INFO: [u8; 3] = [0x08, 0x91, 0xb2];
+/// Light-theme `warning`, as sRGB `#b45309`.
+pub const SURFACE_LIGHT_WARNING: [u8; 3] = [0xb4, 0x53, 0x09];
+/// Light-theme `success`, as sRGB `#047857`.
+pub const SURFACE_LIGHT_SUCCESS: [u8; 3] = [0x04, 0x78, 0x57];
+/// Light-theme `info`, as sRGB `#0e7490`.
+pub const SURFACE_LIGHT_INFO: [u8; 3] = [0x0e, 0x74, 0x90];
 
 /// Dark-theme `bg`, as sRGB `#0f0f10`.
 pub const SURFACE_DARK_BG: [u8; 3] = [0x0f, 0x0f, 0x10];
@@ -129,18 +129,18 @@ pub const SURFACE_DARK_INFO: [u8; 3] = [0x22, 0xd3, 0xee];
 pub const STREAM_LIGHT_SLATE: [u8; 3] = [0x47, 0x55, 0x69];
 /// Light-theme tint for `StreamColor::Rose`, as `#e11d48`.
 pub const STREAM_LIGHT_ROSE: [u8; 3] = [0xe1, 0x1d, 0x48];
-/// Light-theme tint for `StreamColor::Amber`, as `#d97706`.
-pub const STREAM_LIGHT_AMBER: [u8; 3] = [0xd9, 0x77, 0x06];
-/// Light-theme tint for `StreamColor::Emerald`, as `#059669`.
-pub const STREAM_LIGHT_EMERALD: [u8; 3] = [0x05, 0x96, 0x69];
-/// Light-theme tint for `StreamColor::Sky`, as `#0284c7`.
-pub const STREAM_LIGHT_SKY: [u8; 3] = [0x02, 0x84, 0xc7];
+/// Light-theme tint for `StreamColor::Amber`, as `#b45309`.
+pub const STREAM_LIGHT_AMBER: [u8; 3] = [0xb4, 0x53, 0x09];
+/// Light-theme tint for `StreamColor::Emerald`, as `#047857`.
+pub const STREAM_LIGHT_EMERALD: [u8; 3] = [0x04, 0x78, 0x57];
+/// Light-theme tint for `StreamColor::Sky`, as `#0369a1`.
+pub const STREAM_LIGHT_SKY: [u8; 3] = [0x03, 0x69, 0xa1];
 /// Light-theme tint for `StreamColor::Indigo`, as `#4f46e5`.
 pub const STREAM_LIGHT_INDIGO: [u8; 3] = [0x4f, 0x46, 0xe5];
 /// Light-theme tint for `StreamColor::Violet`, as `#7c3aed`.
 pub const STREAM_LIGHT_VIOLET: [u8; 3] = [0x7c, 0x3a, 0xed];
-/// Light-theme tint for `StreamColor::Pink`, as `#db2777`.
-pub const STREAM_LIGHT_PINK: [u8; 3] = [0xdb, 0x27, 0x77];
+/// Light-theme tint for `StreamColor::Pink`, as `#be185d`.
+pub const STREAM_LIGHT_PINK: [u8; 3] = [0xbe, 0x18, 0x5d];
 
 /// Dark-theme tint for `StreamColor::Slate`, as `#94a3b8`.
 pub const STREAM_DARK_SLATE: [u8; 3] = [0x94, 0xa3, 0xb8];

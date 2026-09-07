@@ -1,8 +1,10 @@
 # Dark-theme colour. Symmetrical with light.toml — same two tables, same keys,
 # brightness inverted. See light.toml for what each table is for.
 #
-# The stream tints are the light set lifted two steps: a 600-weight tint that
-# reads as a colour on #fbfbfa reads as a smudge on #0f0f10.
+# The stream tints are the light set lifted: a dark-enough tint to read on
+# #fbfbfa reads as a smudge on #0f0f10. They land on the 400 step, which
+# clears the same contrast rules light does with room to spare — the tightest
+# pair in this theme is `indigo` at 6.42:1 against a required 4.5:1.
 
 [surface]
 bg = "#0f0f10"
