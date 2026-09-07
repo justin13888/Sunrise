@@ -42,17 +42,25 @@ use sunrise_core::{
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_sync::SseTransport;
 
-/// Env var: relay `/sync` WebSocket URL. Unset ⇒ sync stays off.
-/// Example for the bundled self-host server: `http://127.0.0.1:8443`.
+/// Env var: relay **origin** for the `/api/v1/sync` surface. Unset ⇒ sync
+/// stays off.
+///
+/// `SseTransport` appends the routes itself, so this is an origin rather than
+/// a URL to any one of them. Example for the bundled self-host server:
+/// `http://127.0.0.1:8443`.
 pub const ENV_SYNC_URL: &str = "SUNRISE_SYNC_URL";
 /// Env var: path to write this device's pairing payload on startup.
 pub const ENV_EXPORT_PAIRING: &str = "SUNRISE_EXPORT_PAIRING_FILE";
 /// Env var: path to a pairing payload to adopt when opening the vault.
 pub const ENV_ADOPT_PAIRING: &str = "SUNRISE_PAIRING_FILE";
-/// Env var: bearer token presented on the `/sync` upgrade.
+/// Env var: bearer token presented as `Authorization: Bearer` on every
+/// `/api/v1/sync` request.
 ///
-/// Unset is only viable against a self-host relay running `NullVerifier`;
-/// every other deployment answers an unauthenticated upgrade with `401`.
+/// ADR-0023 replaced the WebSocket upgrade with an SSE stream downstream and
+/// typed `POST`s upstream, so there is no single upgrade at which the
+/// credential is checked — each request carries the header. Unset is only
+/// viable against a self-host relay running `NullVerifier`; every other
+/// deployment answers an unauthenticated request with `401`.
 pub const ENV_SYNC_TOKEN: &str = "SUNRISE_SYNC_TOKEN";
 
 /// Raw environment inputs. Kept separate from parsing so [`plan_from_env`]

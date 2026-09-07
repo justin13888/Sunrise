@@ -1,4 +1,4 @@
-//! Shared server state held by Axum extractors.
+//! Shared server state, held as the kynos `Service`'s context.
 
 use crate::auth::{NullVerifier, TokenVerifier};
 use crate::config::ServerConfig;
@@ -27,7 +27,8 @@ impl Clock for SystemClock {
     }
 }
 
-/// State injected into every handler via `axum::extract::State`.
+/// The context `kynos` hands to every handler and observer on the built
+/// `Service<ServerState>`.
 #[derive(Debug, Clone)]
 pub struct ServerState {
     /// Server configuration (immutable for the lifetime of the process).
