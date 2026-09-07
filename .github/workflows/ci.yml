@@ -99,19 +99,24 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --all-targets
-      # `--skip relative_uri` drops the 18 `relative_uri` constructors kynos
-      # 0.1.0's route macros generate, whose doc comment rustdoc reads as an
-      # indented code block and then compiles as English -- see
+      # Two runs, because the containment belongs to one crate. `--skip
+      # relative_uri` drops the 18 `relative_uri` constructors kynos 0.1.0's
+      # route macros generate, whose doc comment rustdoc reads as an indented
+      # code block and then compiles as English -- see
       # crates/sunrise-server/Cargo.toml for the mechanism and #60 for the
-      # one-line upstream fix that retires this. libtest filters by name
-      # before rustdoc compiles a snippet, so the prose never reaches a
-      # compiler, and unlike excluding the crate this leaves every other doc
-      # test in sunrise-server watched, including any added later. The filter
-      # is a substring match over the whole workspace, so do not name a real
-      # doc test `relative_uri`. `mise run rust-doctest` is this command
-      # verbatim -- keep the two in step.
+      # upstream release that retires this. libtest filters by name before
+      # rustdoc compiles a snippet, so the prose never reaches a compiler, and
+      # unlike excluding the crate this leaves every other doc test in
+      # sunrise-server watched, including any added later. `--skip` matches a
+      # substring of every doc test name in the run it is given, so the first
+      # run carries no filter at all and the second is scoped to the only crate
+      # in the workspace that uses a kynos route attribute; a doc test named
+      # `relative_uri` anywhere else is still watched. `mise run rust-doctest`
+      # is these two commands verbatim -- keep them in step.
       - name: cargo doc-test
-        run: cargo test --workspace --doc -- --skip relative_uri
+        run: |
+          cargo test --workspace --exclude sunrise-server --doc
+          cargo test -p sunrise-server --doc -- --skip relative_uri
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
