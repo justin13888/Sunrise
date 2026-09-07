@@ -153,7 +153,7 @@ never be user-authored content. Broad shapes:
 | `op_kind`, `kind`, `result`, `mode`, `tier`, `provider`, `action_kind`, `view`, `aead_alg`, `sig_alg` | enum string | structural, not content |
 | `n_ops`, `n_chunks`, `n_bytes`, `n_devices`, `n_streams`, `n_imported`, `n_exported`, `n_retained`, `n_dropped` | counters | |
 | `lat_ms`, `delay_ms` | durations | |
-| `status`, `method`, `endpoint` | HTTP | `endpoint` is **templated** by `sunrise_log::templatize_path`: query string dropped, opaque path segments replaced with `:id`. |
+| `status`, `method`, `endpoint` | HTTP | `endpoint` is the **matched route's own template**, spelled `:id` by the private `templated` in `crates/sunrise-server/src/api/observe.rs`. The request's concrete URI is never consulted, so there is no query string to drop and no segment to guess at. `sunrise_log::templatize_path` sanitises a *raw* path and nothing on this route calls it — see `docs/06-server/observability.md`. |
 | `wire_v`, `doc_v`, `crypto_v`, `storage_v`, `from_v`, `to_v`, `app_v` | versions | |
 | `bind`, `relay` | socket address / host | The server's own listen address, and the relay hostname §6.2 sanctions as the stand-in for a client IP. |
 | `err_code`, `err_kind`, `retryable`, `cause` | error envelope | §5 |
@@ -246,10 +246,14 @@ Alongside it:
   envelope or an allowlisted context key.
 - `crates/sunrise-server/src/api/observe.rs` (in-module) — real requests through
   the real router: no `?access_token=`, no full entity ids, every field
-  allowlisted. **This replaces `crates/sunrise-server/tests/logging.rs`, which
-  §6.3 declares a MUST and which does not exist**: it did not survive
-  [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port. Restoring the
-  integration-level test is open work.
+  allowlisted. It builds the service from inside the crate, through the
+  `pub(crate)` `api::testing::Client`.
+- `crates/sunrise-server/tests/logging.rs` — **the same guarantee over the
+  public surface**, `ServerState::new` plus `sunrise_server::build_service`,
+  which is the assembly an operator's deployment actually has. It did not
+  survive [ADR-0021](../11-adr/0021-kynos-openapi-server.md)'s port and was
+  restored afterwards, so the MUST this section states is met at two levels —
+  the in-module suite is not a stand-in for it.
 
 **Not implemented:** the custom `sunrise::log_plaintext` clippy lint (a
 type-aware lint needs a `dylint` driver, and `Plain<T>` having no `Value` impl
@@ -365,7 +369,8 @@ one global dispatcher.
 | `crates/sunrise-log/tests/redaction.rs` | Property tests over both §6 defences, against the real subscriber stack, asserting on captured sink bytes. |
 | `crates/sunrise-log/tests/event_catalog.rs` | Every event emitted from shipped source is grammatical and catalogued, and every field name it carries is allowlisted. File set from `cargo metadata` + dep-info; the test's module doc enumerates what it does not cover. |
 | `crates/sunrise-log/tests/record_schema.rs` | Live records validate against `schemas/log-record.v1.json`; every top-level key is envelope or allowlist. |
-| `crates/sunrise-server/src/api/observe.rs` (in-module) | Real requests through the real router: no `?access_token=`, no full entity ids, every field allowlisted. Stands in for `tests/logging.rs`, which §6.3 requires and which no longer exists. |
+| `crates/sunrise-server/src/api/observe.rs` (in-module) | Real requests through the real router, reached through the `pub(crate)` `api::testing::Client`: no `?access_token=`, no full entity ids, every field allowlisted. `the_query_string_never_reaches_the_log`, `an_opaque_path_segment_is_templated`, `request_records_carry_status_and_latency`, `every_server_field_survives_the_redaction_allowlist`. |
+| `crates/sunrise-server/tests/logging.rs` | The §6.3 MUST, over the *public* surface (`ServerState::new` + `sunrise_server::build_service`): `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`, `a_signed_request_that_is_refused_logs_no_signature_bytes`, `the_request_records_carry_the_catalogued_shape`, `healthy_traffic_is_silent_at_info`, `the_refusal_records_survive_redaction_and_carry_their_cause`. |
 | `crates/sunrise-cli/tests/logging.rs` | Records reach the file destination and parse as NDJSON; the log directory is created on first run; relay URLs are reduced to a host. |
 
 **Removed: the per-package conformance triple.** The original §11 asked every

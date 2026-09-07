@@ -5,10 +5,14 @@
 //! file to survive the port to kynos, and
 //! `docs/10-cross-cutting/logging.md` §11 lists it as the test that holds "no
 //! `?access_token=`, no full entity ids, every field allowlisted, healthy
-//! traffic silent at `info`". It did not survive: the axum router it drove was
-//! deleted with `build_router`, and the assertions went with it.
+//! traffic silent at `info`". It did not survive the port — the axum router it
+//! drove was deleted along with `build_router`, and the assertions went with it
+//! — and it was **restored afterwards**, over `build_service`, the `kynos`
+//! entry point that replaced that constructor. What follows describes the file
+//! that runs today; the section below is why it is worth having as an
+//! integration test rather than a record of its absence.
 //!
-//! # Why it is worth restoring rather than folding into the unit tests
+//! # Why it stands as an integration test rather than folded into the unit tests
 //!
 //! `api/observe.rs` has unit tests over the same observer, and they are not the
 //! same guarantee. They reach `crate::api::testing::Client`, which is
@@ -27,7 +31,7 @@
 //! it starts mattering".
 //!
 //! Each test installs its own subscriber with
-//! `tracing::dispatcher::with_default`, which is thread-local, so the four run
+//! `tracing::dispatcher::with_default`, which is thread-local, so they run
 //! concurrently without fighting over a global default.
 
 use http_body_util::BodyExt as _;
