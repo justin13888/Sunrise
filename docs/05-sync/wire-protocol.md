@@ -223,10 +223,11 @@ PROTOCOL_FRAME_TOO_LARGE        SYNC_BATCH_TOO_LARGE
 PROTOCOL_DECOMPRESS_BOMB        SYNC_OP_INVALID
 CRYPTO_NON_CANONICAL_CBOR       SYNC_STREAM_NOT_FOUND
 CRYPTO_SUITE_MISMATCH           SYNC_CURSOR_GAP
-AUTH_TOKEN_EXPIRED              DOC_SCHEMA_TOO_OLD
-AUTH_TOKEN_INVALID              CAPABILITY_REQUIRED_MISSING
-AUTH_DEVICE_REVOKED             RELAY_GRANT_REVOKED
-AUTH_DEVICE_SIG_INVALID         RELAY_STORAGE_UNAVAILABLE
+AUTH_TOKEN_EXPIRED              SYNC_RESUME_CONFLICT
+AUTH_TOKEN_INVALID              DOC_SCHEMA_TOO_OLD
+AUTH_DEVICE_REVOKED             CAPABILITY_REQUIRED_MISSING
+AUTH_DEVICE_SIG_INVALID         RELAY_GRANT_REVOKED
+                                RELAY_STORAGE_UNAVAILABLE
                                 FATAL_INTERNAL
 ```
 
@@ -332,6 +333,8 @@ POST /sync/subscribe        X-Sunrise-Session: <session_id>
     GET /sync/events.
 
 GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
+  → 400 `SYNC_RESUME_CONFLICT` where a non-zero Last-Event-ID is presented on
+    the first stream after a Subscribe; see below
   ← data: {"kind":"gap", …}        only where the cursor predates retention,
                                    always before that stream's replay
   ← data: {"kind":"ops", …}        retained frames, replayed verbatim, each
@@ -387,28 +390,50 @@ a reconnect that presents the last id it saw resumes after that frame instead of
 replaying the retained backlog from the start. When it does, the cursors stop
 selecting anything: `relay_replay_after` sends every frame with
 `id > after_id` and never consults `covered(&heads, cursors)` at all
-(`crates/sunrise-server/src/relay_log.rs:254-257,281-291`, whose own rustdoc
-states the precedence). Only `after_id == 0` — a first connection — replays what
-the cursors do not cover.
+(`crates/sunrise-server/src/relay_log.rs`, whose own rustdoc states the
+precedence). Only `after_id == 0` — a first connection — replays what the
+cursors do not cover.
 
 **Cursor gaps are reported either way.** The `relay_evicted` watermark check runs
-on the cursors regardless of `after_id` (`relay_log.rs:303-326`), so a resumed
-stream still learns that ops it never received have aged out.
+on the cursors regardless of `after_id`, so a resumed stream still learns that
+ops it never received have aged out.
 
 The two statements are not interchangeable, which is why the precedence matters:
 `Last-Event-ID` says "I *received* everything up to here", a `Subscribe` cursor
 says "I have *applied* everything up to here", and they diverge exactly when
 delivery succeeded and application did not — a dropped frame, a client that
 restarted mid-batch. That is precisely when a client re-sends `Subscribe` to
-recover, and presenting a stale id alongside those cursors would make the relay
-select on the id and skip the very frames the cursors asked for.
+recover, and selecting on the id there would skip the very frames the cursors
+asked for.
 
-**What keeps that safe today is a client convention, not a server guarantee.**
-`SseTransport` clears `last_event_id` whenever it sends `Subscribe`
-(`crates/sunrise-sync/src/sse.rs:417`), so the stricter statement is the only one
-left standing. A third-party client that keeps the id across a recovery
-`Subscribe` will silently under-receive. Treat clearing the id on `Subscribe` as
-part of the client contract.
+**So the server refuses the pair rather than choosing between them.** A
+non-zero `Last-Event-ID` presented on the **first `GET /sync/events` after a
+`POST /sync/subscribe`** is answered with `400 SYNC_RESUME_CONFLICT` and no
+stream. The recovery is to reopen without the id, which replays what the
+cursors do not cover. A `Last-Event-ID` of `0` is not a resume point —
+`relay_replay_after` already reads it as a first connection — so it is served
+like any other first stream.
+
+An ordinary reconnect is untouched: a stream that follows **another stream** of
+the same session, with no `Subscribe` in between, still resumes on its id and
+still gets id-only selection. That is the case resumption exists for, and it is
+the only case in which a client legitimately holds an id — ids are minted by a
+stream, so a client that has not been served one has nothing to resume from.
+
+The order this enforces is what `SseTransport` already does: it clears
+`last_event_id` whenever it sends `Subscribe`
+(`crates/sunrise-sync/src/sse.rs`). What changed is that the invariant is now a
+property of the relay rather than of one client's source. A third-party client
+that keeps the id across a recovery `Subscribe` used to silently under-receive;
+it now gets a code it can act on.
+
+**Why not union the two filters.** Sending a frame that is past the id *or* not
+covered by the cursors would also be safe, and it was rejected because the
+cursors only advance when the client sends a **new** `Subscribe`. A client that
+resumes correctly for a week on `Last-Event-ID` alone would have every frame
+since its last `Subscribe` replayed on every reconnect — which is not
+resumption. Refusing the ambiguous pair costs one round trip to a client that
+gets the order wrong and nothing at all to one that gets it right.
 
 Replay and live fan-out carry the **same** frame bytes: the relay republishes
 retained and live frames byte-for-byte, so a client cannot tell them apart from

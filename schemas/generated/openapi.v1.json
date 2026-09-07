@@ -1973,7 +1973,7 @@
     "/api/v1/sync/subscribe": {
       "post": {
         "summary": "Replace the set of streams this session receives on.",
-        "description": "Takes effect on the next `GET /sync/events`. A stream already open keeps its\ncurrent set: re-subscribing mid-stream is a reconnect, which is what the\nsocket's re-`Subscribe` amounted to once the fan-out had been rebuilt.",
+        "description": "Takes effect on the next `GET /sync/events`. A stream already open keeps its\ncurrent set: re-subscribing mid-stream is a reconnect, which is what the\nsocket's re-`Subscribe` amounted to once the fan-out had been rebuilt.\n\nIt also **voids any resume point the client is holding**: the cursors this\ncarries are the client's newest statement of where it is, and a\n`Last-Event-ID` minted before them is an older one. The next stream to\npresent both is refused with `400 SYNC_RESUME_CONFLICT` rather than served\nfrom one of them; `GET /sync/events` carries the reasoning.",
         "operationId": "subscribeStreams",
         "parameters": [
           {
@@ -2527,7 +2527,7 @@
     "/api/v1/sync/events": {
       "get": {
         "summary": "The live op stream for this session.",
-        "description": "Backpressure and disconnect are the stream's own: events are pulled one at a\ntime and never ahead, and a client that goes away drops the body, which\ndrops the stream, which drops the relay receivers it holds.",
+        "description": "Backpressure and disconnect are the stream's own: events are pulled one at a\ntime and never ahead, and a client that goes away drops the body, which\ndrops the stream, which drops the relay receivers it holds.\n\n# The resume order, enforced\n\nA `Last-Event-ID` and a `Subscribe`'s cursors are two different statements:\nthe id is what the client *received* on a stream, the cursors are what it\n*applied* to its op log. They agree right up until the moment they matter —\na frame delivered but not committed, which is what a crash between receipt\nand commit leaves behind, and which is exactly when a client re-sends\n`Subscribe` to recover.\n\n`relay_replay_after` selects on the id alone when one is present, so\nserving that pair would skip the very frames the cursors asked for and\nreport `caught_up` over the hole. Rather than pick one silently, a resume\nid presented on the **first stream after a `Subscribe`** is refused with\n`400 SYNC_RESUME_CONFLICT`; the client drops the id and reopens, and gets\ncursor-selected replay. An ordinary reconnect — a stream following another\nstream of the same session — is untouched and still resumes on its id.\n\nThe alternative, unioning the two filters, was rejected because the cursors\nonly advance when a client sends a new `Subscribe`: a client that resumes\ncorrectly for a week on `Last-Event-ID` would have every frame since its\nlast `Subscribe` replayed on every reconnect, which is not resumption at\nall. The alternative of documenting the precedence and leaving the server\nalone leaves a data-loss hazard as a client's responsibility to read\ncarefully, which is what the wire protocol document already declined to do\nby calling clearing the id on `Subscribe` part of the client contract.",
         "operationId": "syncEvents",
         "parameters": [
           {
