@@ -15,6 +15,7 @@
 
 import { readFile } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
+import { contrastFailures } from "./contrast";
 
 /** A colour, as `#rrggbb`. Lowercase, six digits, no shorthand and no alpha. */
 export type Hex = `#${string}`;
@@ -293,7 +294,15 @@ export function parseMotion(raw: unknown): Motion {
     return { curves, reducedDurationMs };
 }
 
-/** Parse one `tokens/color/<theme>.toml`. */
+/**
+ * Parse one `tokens/color/<theme>.toml`, contrast included.
+ *
+ * A palette that cannot be read is not a palette the emitters should be asked
+ * to compile, so the WCAG check in `contrast.ts` runs here rather than only in
+ * a test: `mise run tokens` refuses to write the generated files, and
+ * `mise run tokens-check`, the `tokens-current` CI job and `drift.test.ts`
+ * inherit the refusal.
+ */
 export function parseTheme(source: string, raw: unknown): Theme {
     const tables = exactly(source, table(source, raw), [
         "surface",
@@ -324,6 +333,16 @@ export function parseTheme(source: string, raw: unknown): Theme {
             `${source} [stream]: at least one stream tint is required`,
         );
     }
+
+    // Last, because it is the only check that reads two colours at once: it
+    // needs a whole, well-formed theme, and there is nothing useful to say
+    // about the ratio between a colour and a key that is missing or malformed.
+    // `contrast.ts` holds the rules and the thresholds; see ADR-0030.
+    const failures = contrastFailures(source, surface, stream);
+    if (failures.length > 0) {
+        throw new TokenError(failures.join("\n"));
+    }
+
     return { surface, stream };
 }
 

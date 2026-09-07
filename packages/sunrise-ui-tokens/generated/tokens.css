@@ -49,17 +49,17 @@
     --sunrise-color-accent-text: #ffffff;
     --sunrise-color-border: #e5e5e7;
     --sunrise-color-danger: #dc2626;
-    --sunrise-color-warning: #d97706;
-    --sunrise-color-success: #059669;
-    --sunrise-color-info: #0891b2;
+    --sunrise-color-warning: #b45309;
+    --sunrise-color-success: #047857;
+    --sunrise-color-info: #0e7490;
     --sunrise-stream-slate: #475569;
     --sunrise-stream-rose: #e11d48;
-    --sunrise-stream-amber: #d97706;
-    --sunrise-stream-emerald: #059669;
-    --sunrise-stream-sky: #0284c7;
+    --sunrise-stream-amber: #b45309;
+    --sunrise-stream-emerald: #047857;
+    --sunrise-stream-sky: #0369a1;
     --sunrise-stream-indigo: #4f46e5;
     --sunrise-stream-violet: #7c3aed;
-    --sunrise-stream-pink: #db2777;
+    --sunrise-stream-pink: #be185d;
 }
 
 /* The dark theme rebinds only the colour customs; nothing else changes. */

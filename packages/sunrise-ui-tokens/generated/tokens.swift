@@ -102,9 +102,9 @@ enum SunriseTokens {
             static let accentText = RGB(red: 255 / 255, green: 255 / 255, blue: 255 / 255)  // #ffffff
             static let border = RGB(red: 229 / 255, green: 229 / 255, blue: 231 / 255)  // #e5e5e7
             static let danger = RGB(red: 220 / 255, green: 38 / 255, blue: 38 / 255)  // #dc2626
-            static let warning = RGB(red: 217 / 255, green: 119 / 255, blue: 6 / 255)  // #d97706
-            static let success = RGB(red: 5 / 255, green: 150 / 255, blue: 105 / 255)  // #059669
-            static let info = RGB(red: 8 / 255, green: 145 / 255, blue: 178 / 255)  // #0891b2
+            static let warning = RGB(red: 180 / 255, green: 83 / 255, blue: 9 / 255)  // #b45309
+            static let success = RGB(red: 4 / 255, green: 120 / 255, blue: 87 / 255)  // #047857
+            static let info = RGB(red: 14 / 255, green: 116 / 255, blue: 144 / 255)  // #0e7490
         }
 
         enum Dark {
@@ -130,12 +130,12 @@ enum SunriseTokens {
         enum Light {
             static let slate = RGB(red: 71 / 255, green: 85 / 255, blue: 105 / 255)  // #475569
             static let rose = RGB(red: 225 / 255, green: 29 / 255, blue: 72 / 255)  // #e11d48
-            static let amber = RGB(red: 217 / 255, green: 119 / 255, blue: 6 / 255)  // #d97706
-            static let emerald = RGB(red: 5 / 255, green: 150 / 255, blue: 105 / 255)  // #059669
-            static let sky = RGB(red: 2 / 255, green: 132 / 255, blue: 199 / 255)  // #0284c7
+            static let amber = RGB(red: 180 / 255, green: 83 / 255, blue: 9 / 255)  // #b45309
+            static let emerald = RGB(red: 4 / 255, green: 120 / 255, blue: 87 / 255)  // #047857
+            static let sky = RGB(red: 3 / 255, green: 105 / 255, blue: 161 / 255)  // #0369a1
             static let indigo = RGB(red: 79 / 255, green: 70 / 255, blue: 229 / 255)  // #4f46e5
             static let violet = RGB(red: 124 / 255, green: 58 / 255, blue: 237 / 255)  // #7c3aed
-            static let pink = RGB(red: 219 / 255, green: 39 / 255, blue: 119 / 255)  // #db2777
+            static let pink = RGB(red: 190 / 255, green: 24 / 255, blue: 93 / 255)  // #be185d
         }
 
         enum Dark {
