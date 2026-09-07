@@ -49,6 +49,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0029 | [Design tokens are compiled from TOML, committed, and drift-checked](./0029-design-token-pipeline.md) | accepted (amends the shared UI system's token section; amended by 0030: the seven light-theme colours below AA are raised and the gate is exhaustive) |
 | 0030 | [Every palette colour clears a stated contrast threshold, and the loader enforces it](./0030-palette-contrast-gate.md) | accepted (amends 0029 and the shared UI system's colour section) |
 | 0031 | [macOS ships as a Developer ID-signed, notarized `.dmg`, not through the Mac App Store](./0031-macos-distribution.md) | accepted (settles the "under evaluation" in the clients overview and `desktop.md`; answers 0019's unstated distribution question) |
+| 0032 | [Revocation cannot bound certificate issuance; disclose it rather than half-enforce it](./0032-revocation-cannot-bound-cert-issuance.md) | accepted (amends 0024's revocation guarantee; records why the narrow fixes for #105 are unsound) |
 
 ## When to write a new ADR
 
