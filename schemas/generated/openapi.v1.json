@@ -1789,7 +1789,7 @@
     "/api/v1/sync/session": {
       "post": {
         "summary": "Establish a sync session: negotiate versions and capabilities.",
-        "description": "Replaces the `Hello`/`HelloAck` exchange. `Hello::negotiate` is called\nunchanged, so a client that cannot agree on a wire version, a crypto suite\nor a required capability is refused here for the same reason and with the\nsame mapping it was refused at the socket.",
+        "description": "Replaces the `Hello`/`HelloAck` exchange. `Hello::negotiate` is called\nunchanged, so a client that cannot agree on a wire version, a crypto suite\nor a required capability is refused here for the same reason and with the\nsame mapping it was refused at the socket.\n\nA refusal is a `400` carrying the negotiation's **own** code —\n`SYNC_PROTOCOL_VERSION_MISMATCH`, `CRYPTO_SUITE_MISMATCH`,\n`DOC_SCHEMA_TOO_OLD` or `CAPABILITY_REQUIRED_MISSING` — because the four\nmean four different things to whoever is looking at the screen, and\ntelling a self-hoster to update their app when the relay is the stale half\nis the concrete failure of collapsing them.",
         "operationId": "openSyncSession",
         "parameters": [
           {

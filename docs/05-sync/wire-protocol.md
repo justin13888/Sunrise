@@ -322,7 +322,9 @@ POST /sync/session          Authorization: Bearer <oidc_jwt>
   → 201 { session_id, server_app_v, wire_proto, crypto_suite,
           doc_schema_floor, capabilities, server_time_ms }
         Location: /api/v1/sync/events         ← Hello::negotiate, unchanged
-  → 401, or 400 `VALIDATION_INVALID` whose message is the negotiation error
+  → 401, or 400 carrying the negotiation refusal's own code:
+    SYNC_PROTOCOL_VERSION_MISMATCH, CRYPTO_SUITE_MISMATCH,
+    DOC_SCHEMA_TOO_OLD or CAPABILITY_REQUIRED_MISSING
 
 POST /sync/subscribe        X-Sunrise-Session: <session_id>
   { streams: [ { stream_id, cursors: [ { device_id, last_applied_seq } ] } ] }

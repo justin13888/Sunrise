@@ -40,7 +40,7 @@
 //! `Hello::negotiate` keeps its semantics, its error mapping and its frozen
 //! version fixtures.
 
-use crate::api::error::{codes, ApiError};
+use crate::api::error::ApiError;
 use crate::api::signed::{Signed, SignedParts};
 use crate::relay::{CursorGap, FrameHead, RelayFrame};
 use crate::relay_log::Appended;
@@ -136,6 +136,14 @@ pub struct SessionHeader {
 /// unchanged, so a client that cannot agree on a wire version, a crypto suite
 /// or a required capability is refused here for the same reason and with the
 /// same mapping it was refused at the socket.
+///
+/// A refusal is a `400` carrying the negotiation's **own** code —
+/// `SYNC_PROTOCOL_VERSION_MISMATCH`, `CRYPTO_SUITE_MISMATCH`,
+/// `DOC_SCHEMA_TOO_OLD` or `CAPABILITY_REQUIRED_MISSING` — because the four
+/// mean four different things to whoever is looking at the screen, and
+/// telling a self-hoster to update their app when the relay is the stale half
+/// is the concrete failure of collapsing them.
+
 #[kynos::post("/api/v1/sync/session", operation_id = "openSyncSession")]
 pub async fn session(
     Inject(state): Inject<ServerState>,
@@ -175,14 +183,25 @@ pub async fn session(
             now_ms,
         )
         .map_err(|e| {
+            // The refusal's own code, not `VALIDATION_INVALID`. The four
+            // negotiation failures mean four different things to a user —
+            // update the app, update the relay, this device's data is too old,
+            // this relay is missing a feature the vault requires — and a
+            // client that receives one code for all four can only tell them
+            // apart by matching on `e.to_string()`, which breaks on any
+            // rewording. `NegotiationError::as_error_code` has always computed
+            // the distinction; this is the call that delivers it.
+            let code = e.as_error_code();
             state.metrics.incr("sunrise_sync_negotiate_refused_total");
             tracing::warn!(
                 ev = "srv.sync.negotiate_refused",
-                err_kind = "user",
+                err_code = %code,
+                err_kind = "permanent",
+                retryable = false,
                 cause = %e,
                 "session refused"
             );
-            ApiError::validation_coded(codes::VALIDATION_INVALID, e.to_string())
+            ApiError::validation_coded(code.as_str(), e.to_string())
         })?;
 
     let account = account_hash(&caller.principal.account.account_id);
@@ -1328,6 +1347,50 @@ mod tests {
             .send(Method::POST, "/api/v1/sync/session", Some(&body))
             .await
             .assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    /// The four negotiation failures are four different user-facing outcomes,
+    /// and every one of them used to arrive as `VALIDATION_INVALID` with the
+    /// distinction only in a message string. `as_error_code` had always
+    /// computed it; nothing called it. Telling a self-hoster to update their
+    /// app when their *relay* is the stale half is the concrete failure.
+    #[tokio::test]
+    async fn every_negotiation_refusal_carries_its_own_code() {
+        let client = Client::new(ServerConfig::default());
+        let cases: [(&str, serde_json::Value, &str); 4] = [
+            (
+                "wire_proto_supported",
+                serde_json::json!([9999]),
+                "SYNC_PROTOCOL_VERSION_MISMATCH",
+            ),
+            (
+                "crypto_suite_supported",
+                serde_json::json!([9999]),
+                "CRYPTO_SUITE_MISMATCH",
+            ),
+            // The server's floor is 1, so a client that can read nothing at
+            // all is the device whose data predates what this relay accepts.
+            ("doc_schema_max", serde_json::json!(0), "DOC_SCHEMA_TOO_OLD"),
+            (
+                "capabilities",
+                serde_json::json!(0),
+                "CAPABILITY_REQUIRED_MISSING",
+            ),
+        ];
+
+        for (field, value, expected) in cases {
+            let mut body = hello();
+            body[field] = value;
+            let res = client
+                .send(Method::POST, "/api/v1/sync/session", Some(&body))
+                .await;
+            res.assert_status(StatusCode::BAD_REQUEST);
+            assert_eq!(
+                res.json()["code"],
+                serde_json::json!(expected),
+                "a refusal on {field} must carry {expected}, not a shared code"
+            );
+        }
     }
 
     /// Was `ws_subscribe_receives_op_batch_fanout`.
