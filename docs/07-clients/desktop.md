@@ -256,8 +256,17 @@ document's intent, not yet implemented).
 
 The direct `.dmg` build is **not** sandboxed. A sandboxed build cannot register
 a reliable system-wide hotkey, and quick capture is the feature the persona
-uses most. A Mac App Store build would have to trade that away; it is under
-evaluation, not committed.
+uses most. A Mac App Store build would have to trade that away, and
+[ADR-0031](../11-adr/0031-macos-distribution.md) declines the trade: the App
+Store is **not** a v1 channel, and v1 ships the direct `.dmg` alone. The
+sandbox stays off.
+
+The **hardened runtime**, which is a different setting, is on for a release
+build and has to be: Apple's notary service rejects a submission without it.
+`apps/apple/project.yml` still records `ENABLE_HARDENED_RUNTIME: NO`, and
+`release.yml` overrides it on the archive command line — see
+[`releasing.md`](./releasing.md) §Two settings that are overridden rather than
+committed, which asks for the project-file change as the durable fix.
 
 ## Multi-vault
 
@@ -319,6 +328,12 @@ none, because it is the SAS.
 applied on next launch — a running session is never interrupted by an update.
 Channels: `stable`, `beta`. There is no Sparkle dependency in the project today
 and no update path of any kind.
+
+What changed with [ADR-0031](../11-adr/0031-macos-distribution.md) is that this
+became *buildable*: Sparkle needs a stable download URL, a Developer ID
+signature and an appcast, and the first two now exist. It was not built as part
+of it. An installed copy still learns about a new version the way it did
+before, which is that it does not.
 
 ## Telemetry
 
