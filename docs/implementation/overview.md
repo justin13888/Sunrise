@@ -190,8 +190,12 @@ below.
   `header_sig_v2` over the request *value*. What survives from the entry is the
   narrower point it always contained: the binding is `require_device_sig`-gated,
   so a self-host deployment with no OIDC issuer has no device rows to bind to
-  and binds nothing ([#7](https://github.com/justin13888/Sunrise/issues/7)
-  covers the rest). The open event stream is still re-checked on a
+  and binds nothing. That is the configured shape rather than an outstanding
+  gap — the verifier itself was built and #7 closed with it — and it is bounded
+  where it is decided: no issuer means `NullVerifier`, and `config.rs` refuses
+  to bind anything but loopback while that verifier is in place. See
+  [`../06-server/auth.md`](../06-server/auth.md) §Configuration gates which
+  verifier runs. The open event stream is still re-checked on a
   `device_recheck_ms` timer, because a subscriber that only reads presents no
   further request to check.
 **Two more entries left this list this cycle, both closed in code rather than
