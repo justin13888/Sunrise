@@ -104,6 +104,13 @@ final class AppSurfaces {
     /// that may not be on screen.
     private(set) var pendingDestination: Destination?
 
+    /// The entity a link asked the shell to *show* on that screen.
+    ///
+    /// Beside ``pendingDestination`` rather than folded into it: the
+    /// destination is a selection the shell makes at once, and the entity has
+    /// to be read out of the vault first. See ``DeepLink/reveal``.
+    private(set) var pendingReveal: EntityRef?
+
     /// What a menu item asked the window to do.
     ///
     /// The same shape as ``pendingDestination`` and for the same reason: the
@@ -308,9 +315,50 @@ final class AppSurfaces {
         if case let .task(entity, .snooze(span)) = link {
             perform(.snooze(span), on: entity)
         }
+        if case let .focus(entity) = link {
+            _Concurrency.Task { await beginFocus(on: entity) }
+        }
         guard let destination = link.destination else { return }
         pendingDestination = destination
+        pendingReveal = link.reveal
         if raisingAWindow { raiseWindow(for: link) }
+    }
+
+    /// Start a session on the task a `sunrise://focus/<TaskId>` link names.
+    ///
+    /// The same write `F` on a row makes — one pomodoro, the task's own
+    /// energy — because a link that named a task and then opened Focus
+    /// without it would be the half-route this parser exists to refuse.
+    ///
+    /// It declines while a session is already running, which `F` does not.
+    /// Two open sessions is a state the core allows and the screen cannot
+    /// render (``FocusModel/running`` shows the newest), so a link starting a
+    /// second would silently hide the first — and whoever clicked it was, by
+    /// definition, not watching the timer. They land on Focus either way, so
+    /// what is running is the first thing they see.
+    ///
+    /// Awaitable and `internal` because the write is the whole of what this
+    /// route does: fired only as a detached task, "never a second session"
+    /// would be a rule no test could hold it to.
+    func beginFocus(on task: EntityRef) async {
+        guard let vault else {
+            Platform.refusalFeedback()
+            return
+        }
+        do {
+            // A refused read is not an absent session: `try?` here would
+            // flatten the two into `nil` and start a second timer on top of
+            // the one the query failed to report.
+            guard try await FocusSessions.running(in: vault) == nil else { return }
+            _ = try await vault.submit(.startFocus(
+                taskId: task,
+                kind: .work,
+                length: .onePomodoro,
+                energy: nil
+            ))
+        } catch {
+            Platform.refusalFeedback()
+        }
     }
 
     /// Make sure something is on screen to receive ``pendingDestination``.
@@ -349,6 +397,13 @@ final class AppSurfaces {
     /// the same value twice is two requests, not one.
     func destinationTaken() {
         pendingDestination = nil
+    }
+
+    /// The shell has taken the entity to reveal. Cleared for the reason
+    /// ``destinationTaken()`` clears its own request: the same link twice is
+    /// two requests, and the second one has to reopen what the first closed.
+    func revealTaken() {
+        pendingReveal = nil
     }
 
     /// Ask the window to run a keyboard action.
