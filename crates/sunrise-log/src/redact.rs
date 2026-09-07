@@ -36,9 +36,11 @@
 //! emit fields we do not control and whose names we have not vetted; they are
 //! filtered by level (`EnvFilter`), not by vocabulary. The one third-party
 //! surface that would otherwise log a user-bearing value — `tower_http`'s
-//! request URI, which carries `?access_token=` — is handled at the source in
-//! `sunrise_server::build_router`, which records a
-//! [`crate::field::templatize_path`] target instead.
+//! request URI, which carries `?access_token=` — left the workspace with
+//! `tower_http` when ADR-0021 ported the server to `kynos`. What records a
+//! request today is `sunrise_server::api::observe`, built by
+//! `sunrise_server::build_service`, and it takes `endpoint` from the *matched
+//! route's* `paths` key rather than from the request's own target.
 //!
 //! **Spans are not gated, by design.** `on_new_span` has no veto and a span
 //! cannot be rewritten once created, so this layer implements `event_enabled`
@@ -47,8 +49,8 @@
 //! What stands behind the span vocabulary is not this layer but its size. The
 //! workspace creates exactly one span — `http.request`, in
 //! `sunrise_server::api::observe` — carrying `method` and `endpoint`, both on
-//! [`crate::field::ALLOWED`] and both server-derived (`endpoint` is a
-//! [`crate::field::templatize_path`] route, never a raw target). The
+//! [`crate::field::ALLOWED`] and both server-derived (`endpoint` is the matched
+//! route's own template, never a raw target). The
 //! `Plain<T>` type-level guarantee still applies to span fields and the
 //! `.expose()` CI gate still covers the modules that build them.
 //!

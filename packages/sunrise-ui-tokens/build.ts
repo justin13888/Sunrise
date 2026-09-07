@@ -13,13 +13,13 @@
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
-import { argv } from "node:process";
+import { argv, exit } from "node:process";
 import { fileURLToPath } from "node:url";
 import { emitCss } from "./src/emit-css";
 import { emitRust } from "./src/emit-rust";
 import { emitSwift } from "./src/emit-swift";
 import { emitTs } from "./src/emit-ts";
-import { loadTokens, type Tokens } from "./src/model";
+import { loadTokens, TokenError, type Tokens } from "./src/model";
 
 /** Every output, as `(filename, emitter)`. The drift test reads the same list. */
 export const OUTPUTS: ReadonlyArray<
@@ -38,7 +38,21 @@ export const GENERATED_DIR = new URL("./generated/", import.meta.url);
 // but it is not in the `@types/node` this workspace pins, and the drift test
 // imports this module, so the guard has to hold under vitest too.
 if (argv[1] !== undefined && fileURLToPath(import.meta.url) === argv[1]) {
-    const tokens = await loadTokens();
+    // A `TokenError` is a message written for the person who edited the TOML —
+    // a missing step, an easing CSS would drop, a colour below its contrast
+    // threshold. A stack trace through `smol-toml` buries it, and
+    // `mise run tokens-check` discards stdout, so it is reported on stderr
+    // and nowhere else.
+    let tokens: Tokens;
+    try {
+        tokens = await loadTokens();
+    } catch (error) {
+        if (error instanceof TokenError) {
+            console.error(`tokens: ${error.message}`);
+            exit(1);
+        }
+        throw error;
+    }
     await mkdir(GENERATED_DIR, { recursive: true });
     for (const [name, emit] of OUTPUTS) {
         await writeFile(new URL(name, GENERATED_DIR), emit(tokens));

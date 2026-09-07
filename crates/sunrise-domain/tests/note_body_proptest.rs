@@ -120,6 +120,19 @@ fn document_strategy() -> impl Strategy<Value = Vec<NoteBlock>> {
 }
 
 proptest! {
+    // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
+    // holds a `lib.rs` or `main.rs`, so the default warns and drops the
+    // counterexample beside this source instead. See
+    // docs/10-cross-cutting/testing.md section 2.
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/note_body_proptest.txt",
+            ),
+        )),
+        ..ProptestConfig::default()
+    })]
+
     /// Encode → decode → encode is the identity on both the blocks and the
     /// bytes, and the codec says so.
     #[test]

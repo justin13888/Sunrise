@@ -6,7 +6,8 @@
 //! pushes an `OpBatch` for a stream, the hub appends the raw frame to the
 //! ring and republishes it live; every other subscribed device receives it.
 //! The original sender is filtered out of the *live* path by connection id
-//! (see [`crate::ws`]) so it doesn't receive its own ops back.
+//! (`frame.from == session.conn`, in `crate::api::sync`) so it doesn't receive
+//! its own ops back.
 //!
 //! On [`RelayHub::subscribe`], the hub atomically snapshots the ring **and**
 //! creates the broadcast receiver under a single lock, so a concurrent
@@ -81,7 +82,7 @@ pub const DEFAULT_MAX_RETAINED_FRAMES: usize = 4096;
 /// Default cap on the total retained bytes per channel (16 MiB).
 pub const DEFAULT_MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
 
-/// Monotonic connection id; unique per WS session.
+/// Monotonic connection id; unique per sync session (`Session::conn`).
 pub type ConnId = u64;
 
 /// Bounds for a channel's retained-frame ring. Whichever cap binds first

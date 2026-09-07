@@ -90,7 +90,34 @@ The migration closed that, exactly as the page predicted it would.
 
 ## Reconnect on failure
 
-On connection failure, exponential backoff with jitter: start at **500 ms**, cap at **60 s**, jitter ±20%. "Connection failure" includes TLS handshake, session open, or `HelloAck` failing within 30 s. The schedule is `Backoff` in `crates/sunrise-sync/src/backoff.rs`, which takes its jitter as an injected `[0, 1]` value rather than sampling ambient randomness — the determinism gate in CI forbids the latter. The push wakeup signal (below) and OS network-change events trigger an immediate retry attempt.
+On connection failure the client backs off exponentially with jitter: initial
+**100 ms**, doubling, capped at **30 s**, jitter ±20%, and **`max_retries = 5`**
+(`crates/sunrise-sync/src/backoff.rs:31-63`). The schedule is therefore
+*exhaustible*, which is the part a reader most needs and which earlier revisions
+of this page did not mention at all: five jittered delays of 100, 200, 400, 800
+and 1600 ms, after which `next_delay` returns `None`. Exhausting it does not give
+up — the session loop resets the policy, sleeps a flat un-jittered 30 s and
+starts the sequence again, so a client that cannot reach its relay retries
+forever in bursts of five. `Backoff` takes its jitter as an injected `[0, 1]`
+value rather than sampling ambient randomness — the determinism gate in CI
+forbids the latter. "Connection failure" includes TLS handshake, session open, or
+`HelloAck` failing within 30 s.
+
+[`offline-queue.md`](./offline-queue.md) §Backoff owns these numbers, and this
+page defers to it rather than keeping a second copy: it also covers the
+per-batch retransmit timer that shares the same policy and why the 30 s cap
+inside `next_delay` is unreachable on it. An earlier revision here published a
+different pair — start 500 ms, cap 60 s — that matched no code, and
+[`wire-protocol.md`](./wire-protocol.md) §Error model already records that pair
+as the drift this consolidation exists to prevent.
+
+**Not built: the immediate-retry triggers.** Earlier revisions said the push
+wakeup signal (below) and OS network-change events trigger an immediate retry.
+Neither seam exists — nothing in the workspace observes network reachability,
+and no client consumes a push wakeup — so reconnection is driven entirely by the
+backoff timer above, as [`offline-queue.md`](./offline-queue.md) §Network changes
+states from the other side. The design is still the one to build; it is not a
+description of the client.
 
 ## Push wakeup
 

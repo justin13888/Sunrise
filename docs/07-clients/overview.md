@@ -165,6 +165,7 @@ real relay in-process. That is a standing requirement, not a transitional one.
 - [`parity-matrix.md`](./parity-matrix.md) — what each client must / should / may support.
 - [`shared-ui-system.md`](./shared-ui-system.md) — design tokens and components shared cross-platform.
 - [`interaction-patterns.md`](./interaction-patterns.md) — common gestures and keyboard idioms.
+- [`releasing.md`](./releasing.md) — operator runbook for the signed, notarized macOS `.dmg`.
 
 ## What clients share
 
@@ -198,7 +199,7 @@ quality. Compose Multiplatform remains the strongest contender for a v2.
 
 | Client | Channel |
 |---|---|
-| macOS | Direct signed & notarized `.dmg`; Mac App Store under evaluation (sandboxing costs global-hotkey reliability — see [`desktop.md`](./desktop.md)) |
+| macOS | Direct `.dmg`, Developer ID-signed, notarized and stapled, attached to the GitHub Release beside the CLI tarballs. **Not** the Mac App Store, which would require the App Sandbox and so cost global-hotkey reliability — decided in [ADR-0031](../11-adr/0031-macos-distribution.md); built by `release.yml`'s `macos-app` job; operated per [`releasing.md`](./releasing.md) |
 | CLI | Cargo, Homebrew, prebuilt binaries on GitHub releases |
 | iOS / iPadOS | TestFlight → App Store when a release is cut. Today it installs ad-hoc on the simulator (`CODE_SIGN_IDENTITY=-`) via `mise run ios-run`; ad-hoc signing is not optional, because iOS gates the Keychain on an application-identifier entitlement only a signed binary carries |
 

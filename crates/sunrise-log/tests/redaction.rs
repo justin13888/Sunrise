@@ -108,7 +108,19 @@ fn emit_through_every_plain_path(payload: &str) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
+    // holds a `lib.rs` or `main.rs`, so the default warns and drops the
+    // counterexample beside this source instead. See
+    // docs/10-cross-cutting/testing.md section 2.
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/redaction.txt",
+            ),
+        )),
+        ..ProptestConfig::default()
+    })]
 
     /// No byte of a `Plain<T>` payload reaches the sink through any path, and
     /// the opaque marker reaches it instead — so the emissions really happened.

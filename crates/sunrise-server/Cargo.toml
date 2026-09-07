@@ -22,24 +22,33 @@ path = "src/lib.rs"
 # attribute therefore yields one doc test made of English prose: 18 of them
 # here, identical on 1.88.0, 1.91.1 and stable.
 #
-# The fix belongs upstream (#60) and is one line -- fence that paragraph, or
-# indent the literal's first line to match it so the unindent pass strips
-# both. The generated item cannot be suppressed from here: it is emitted, not
-# written here, and rustdoc scrapes doc tests out of `#[doc(hidden)]` items,
-# private items and private modules alike (all three verified), so no
-# annotation on our handlers reaches it. The route attributes take only
-# `operation_id`, `tag` and `catch_panics`, so the macro offers no opt-out
-# either, and no kynos feature changes what it emits.
+# The fix is upstream and already written: getkono/kynos 13064f42, "fix(macros):
+# unindent the paragraph rustdoc reads as a code block", rejoins that literal
+# with line continuations so no line of it carries leading whitespace. It is
+# unpublished -- the registry index still offers kynos and kynos-macros 0.1.0
+# and nothing later -- so what retires this workaround is a released version to
+# bump to (#60), not a patch to write. The generated item cannot be suppressed
+# from here in the meantime: it is emitted, not written here, and rustdoc
+# scrapes doc tests out of `#[doc(hidden)]` items, private items and private
+# modules alike (all three verified), so no annotation on our handlers reaches
+# it. The route attributes take only `operation_id`, `tag` and `catch_panics`,
+# so the macro offers no opt-out either, and no kynos feature changes what it
+# emits.
 #
-# The containment is therefore a name filter rather than an opt-out: CI's
-# doc-test step runs `cargo test --workspace --doc -- --skip relative_uri`,
-# which drops exactly those 18 items -- libtest filters by name before
-# rustdoc compiles a snippet -- while keeping every other doc test in this
-# crate watched, including any added later. This key stays because it is what
-# `cargo test` and `cargo test -p sunrise-server` honour locally; `cargo test
-# --doc` ignores it and selects the doc target whatever the manifest says,
-# which is why the filter is needed as well. Retire both halves together when
-# the macro is fixed.
+# The containment is therefore a name filter rather than an opt-out, scoped to
+# this crate -- the only one in the workspace that uses a kynos route
+# attribute. CI's doc-test step, and `mise run rust-doctest` with it, is two
+# commands: `cargo test --workspace --exclude sunrise-server --doc`, which
+# filters nothing, then `cargo test -p sunrise-server --doc -- --skip
+# relative_uri`, which drops exactly those 18 items -- libtest filters by name
+# before rustdoc compiles a snippet -- while keeping every other doc test in
+# this crate watched, including any added later. Scoping the second run is what
+# keeps `--skip`'s substring match from reaching a genuine doc test of the same
+# name in another crate. This key stays because it is what `cargo test` and
+# `cargo test -p sunrise-server` honour locally; `cargo test --doc` ignores it
+# and selects the doc target whatever the manifest says (verified: `cargo test
+# -p sunrise-server --doc` fails on all 18), which is why the filter is needed
+# as well. Retire both halves together when a kynos release carries 13064f42.
 doctest = false
 
 [[bin]]

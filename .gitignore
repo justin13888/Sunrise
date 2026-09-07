@@ -52,6 +52,18 @@ fuzz/artifacts/
 mutants.out/
 mutants.out.old/
 
+# proptest counterexamples are **tracked**, not ignored, and there is no rule
+# for them here on purpose. A `proptest-regressions/` file is a failing case the
+# suite found by itself and then shrank -- the one test input that cannot be
+# regenerated on demand -- so it is committed and replayed on every later run.
+# Every proptest in the workspace is configured to write there
+# (docs/10-cross-cutting/testing.md section 2).
+#
+# A flat `<name>.proptest-regressions` beside a test file is therefore not
+# ignored either: it means that proptest is missing its `failure_persistence`
+# setting and fell back to proptest's `WithSource` shape. It should show up in
+# `git status` so the config gets fixed, rather than being hidden.
+
 # Byte-compiled output from the CI gates in .github/scripts/, which are Python.
 # Written whenever one is imported or executed, and they are run by hand as
 # often as by CI. Same reasoning as above for the missing leading slash.

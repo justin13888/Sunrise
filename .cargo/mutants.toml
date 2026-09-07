@@ -46,18 +46,42 @@ exclude_globs = [
 
 # Mutants no test should be asked to catch.
 #
-# A `Debug` impl that renders differently is not a defect anyone is going to
-# assert on, and demanding coverage for it teaches people to write assertions
-# that pin formatting — which then break on every unrelated change. Same for
-# `main`, whose behaviour is covered by the CLI's own integration tests running
-# the real binary rather than by a unit test that could see a mutant.
+# A `Debug` or `Display` impl that renders differently is not a defect anyone is
+# going to assert on, and demanding coverage for it teaches people to write
+# assertions that pin formatting — which then break on every unrelated change.
+# That is the whole argument, and it reaches exactly these two traits.
+#
+# Known gap, deliberately left alone here: cargo-mutants matches these against
+# the names `--list` prints, and an impl written `impl std::fmt::Debug for X` is
+# named `<impl std::fmt::Debug for X>::fmt`, which none of the four patterns
+# match. Sixteen `fmt` mutants across the scoped crates are scored today for
+# that reason. Closing it excludes sixteen more mutants and so moves the rates
+# in `mutants/baseline.json`; it belongs with the re-baseline, not here.
+#
+# Two patterns were removed from this list, for opposite reasons.
+#
+# `fn main` was dead. The scope above is `sunrise-core`, `sunrise-crypto`,
+# `sunrise-sync` and `sunrise-domain`, and none of them has a binary target, so
+# it matched nothing. The reason written for it argued about `sunrise-cli` --
+# "covered by the CLI's own integration tests running the real binary" -- which
+# is a crate this config never mutates. If the scope ever grows to a binary,
+# make that argument then, against that binary's tests.
+#
+# `impl Clone` was never argued for at all, and the `Debug`/`Display` reason
+# does not carry over: a `Clone` that drops a field, or shares one it should
+# have copied, is an ordinary correctness defect, and the types cloned in these
+# crates hold keys, cursors and caches. Every `Clone` in the four scoped crates
+# is derived today, so the pattern was matching nothing either; dropping it
+# means the first hand-written one gets scored instead of silently skipped.
+#
+# Neither removal moves the mutant population, which is why this lands without a
+# re-baseline: `cargo mutants -p <crate> --list` returns the same 959, 349, 94
+# and 1349 mutants for the four scoped crates before and after.
 exclude_re = [
     "impl Debug",
     "impl Display",
-    "impl Clone",
     "<impl Debug for",
     "<impl Display for",
-    "fn main",
 ]
 
 # `sunrise-crypto` runs Argon2id at production parameters — 64 MiB, t=3, p=1

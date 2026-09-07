@@ -237,6 +237,14 @@ field records nothing and can silently disagree with itself.
   ratios the invariants **do** assert are the ones with a consumer; the palette
   is left as specified rather than quietly altered here, and raising these
   values is a design decision with its own issue.
+
+  **Settled by [ADR-0030](./0030-palette-contrast-gate.md)**, which was that
+  issue ([#75](https://github.com/justin13888/Sunrise/issues/75)). All seven
+  moved one Tailwind step, 600 to 700, and the gate is no longer three
+  assertions but an exhaustive rule table the *loader* runs — so the deferral
+  this bullet records is closed and cannot recur silently: a `[surface]` key
+  with neither a rule nor a written exemption now fails the build. `border`
+  stays unmeasured, deliberately and conditionally; 0030 §2 has the terms.
 - **The drift gate is paired with systematic shape assertions, not exemplary
   ones.** Comparing the committed file to `emit(tokens)` proves only that
   somebody ran `mise run tokens`: both sides come from the same function, so a

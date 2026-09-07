@@ -102,10 +102,19 @@ run = "cargo test --workspace --all-targets"
 [tasks.rust-doctest]
 description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 # `--all-targets` above silently excludes doc tests, so this is the only local
-# command that runs them. The `--skip` matches CI exactly; see
-# crates/sunrise-server/Cargo.toml for why the 18 skipped items exist (#58) and
-# #60 for the upstream fix that retires the filter.
-run = "cargo test --workspace --doc -- --skip relative_uri"
+# command that runs them. Two runs rather than one, matching CI exactly: every
+# crate but `sunrise-server` is watched with nothing filtered out, and the
+# `--skip` that contains kynos 0.1.0's generated `relative_uri` items is
+# confined to `sunrise-server`, the only crate in the workspace that carries a
+# kynos route attribute. `--skip` is a substring match over whatever run it is
+# given, so scoping the run is what keeps a genuine doc test elsewhere from
+# being dropped by the same name. See crates/sunrise-server/Cargo.toml for why
+# the 18 skipped items exist (#58) and #60 for the upstream release that
+# retires the filter.
+run = [
+  "cargo test --workspace --exclude sunrise-server --doc",
+  "cargo test -p sunrise-server --doc -- --skip relative_uri",
+]
 
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
@@ -294,7 +303,7 @@ swiftlint lint --strict --quiet --config .swiftlint.yml
 # on an application-identifier entitlement, which only exists on a signed
 # binary — with `CODE_SIGNING_ALLOWED=NO` every `SecItemAdd` returns
 # `errSecMissingEntitlement` and the vault cannot store its root, so the
-# five Keychain and vault-root tests fail for a reason that has nothing to
+# nine Keychain and vault-root tests fail for a reason that has nothing to
 # do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
 # enough for the simulator and needs no developer account.
 xcodebuild test \\
