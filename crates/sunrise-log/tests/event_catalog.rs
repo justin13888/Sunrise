@@ -34,18 +34,52 @@
 //! lines, which no walk could reach and which needed an argued exception under
 //! the old design, are simply in the set.
 //!
+//! ## Every record, not the newest one
+//!
+//! A `.d` describes **one compilation unit**: one crate under one feature set,
+//! one profile and one target platform. It is therefore never a description of
+//! the crate — a module behind `#[cfg(feature = "…")]` or `#[cfg(test)]` ships
+//! and is absent from the record of any build that did not enable it.
+//!
+//! Selecting the *newest* `.d` per crate root made the covered set a function
+//! of which cargo command ran last. Measured on one tree with a `task_title`
+//! violation planted in `crates/sunrise-server/src/api/testing.rs`:
+//! `cargo build --workspace` gave 24 tests passed over 180 files with
+//! `testing.rs` absent; `cargo test -p sunrise-server --lib --no-run` named the
+//! violation; touching `lib.rs` and building again passed with the violation
+//! still there. One tree, three answers, decided by build order (#84).
+//!
+//! So every `.d` naming this crate root is unioned instead. The union is a
+//! superset of every configuration ever built here, which is the safe
+//! direction: it can read a file some configuration does not compile, and it
+//! cannot silently stop reading one that ships.
+//!
+//! Recency keeps a job, and it is the *other* one. The newest record decides
+//! **currency** — whether the build is stale — while the union decides
+//! **coverage**. Conflating those two questions in one `max_by_key` is what
+//! #84 reported.
+//!
+//! Only the per-unit records rustc writes under a `deps/` directory are read.
+//! Cargo also writes an uplifted `.d` beside each finished artefact whose
+//! dependency line is the whole transitive source closure in topological order
+//! — `target/debug/libsunrise_bench.d` names 95 files across 10 crates — so its
+//! first path is not a crate root, and two such files began with a path that is
+//! a real target's `src_path`. Being newest, they won the selection: coverage
+//! of `crates/sunrise-sync/src/sse.rs` rested on `sunrise-bench` enabling the
+//! `sse` feature and on cargo's topological ordering, neither of which anyone
+//! intended to depend on.
+//!
+//! ## The price, and who pays it
+//!
 //! The price is a dependency on build state, and it is paid openly:
 //! [`every_shipped_target_has_current_dep_info`] fails when dep-info is
-//! missing, unreadable, or older than a source it names. A gate that quietly
-//! covered less because `target/` was cleaned would be the same defect in
-//! build-system clothes.
-//!
-//! There is a **fourth** condition it does not detect, and it is the one that
-//! is live: a dep-info can be perfectly current and still describe a *narrower
-//! configuration* than the tree contains. `.d` records what one build compiled
-//! under one set of features and one target platform, not what the crate holds.
-//! Nothing here notices, so the set can be silently narrow while every gate is
-//! green. See conditional compilation in the list below.
+//! missing, unreadable, or older than a source the newest record names, and
+//! [`the_scan_reaches_what_cargo_compiles`] fails naming any `.rs` file git
+//! tracks under a workspace crate's `src/` that no record covers. A gate that
+//! quietly covered less because `target/` was cleaned, or because the last
+//! build enabled fewer features, would be the same defect in build-system
+//! clothes — so it is a named failure that says which files went missing and
+//! what to build to get them back.
 //!
 //! # What this gate does not see
 //!
@@ -58,43 +92,48 @@
 //!   source like any other — but an *external* macro that expands to a
 //!   `tracing::` call is invisible. Dep-info names the *file*; what the tokens
 //!   in it become is not recorded there.
-//! - **Anything not compiled by the build that wrote the newest `.d`.** This
-//!   is the live gap, and it is not a boundary case. A module behind
-//!   `#[cfg(feature = "…")]` or `#[cfg(target_os = "…")]` **ships**, and is
-//!   absent from the dep-info of any build that did not enable it. The
-//!   instance here is `crates/sunrise-sync/src/sse.rs`, behind
-//!   `#[cfg(feature = "sse")]` — off by default, enabled by `sunrise-bench`,
-//!   `sunrise-cli`, `sunrise-core-bindings` and `sunrise-e2e`, and *not* by
-//!   `sunrise-core`. After an ordinary `cargo build -p sunrise-core` the
-//!   newest `sunrise_sync-*.d` names five files and not `sse.rs`, which this
-//!   pull request itself edits.
+//! - **A configuration nothing has ever built here.** The union covers every
+//!   feature set, profile and platform whose records `target/` still holds, and
+//!   nothing beyond that. A module behind a feature no build in this checkout
+//!   has enabled — or behind `#[cfg(target_os = "android")]`, which no build
+//!   here compiles at all — is in no record, and its source lines are read by
+//!   nothing.
 //!
-//!   So the same tree gives different answers depending on which cargo command
-//!   last wrote a `.d`. `mise run rust-test` produces the wide set, which is
-//!   why CI is on the safe side; a developer who last ran `cargo build
-//!   --workspace` is on the narrow one. A shipped file **can** escape the set,
-//!   and nothing here reports it: a `.d` can be current — passing every
-//!   condition above — and still describe a narrower configuration than the
-//!   tree contains. There is no claim of exactness to make here, and the
-//!   sentence that used to make one was wrong.
+//!   This no longer *hides*, which is the whole of the change. Every `.rs` file
+//!   git tracks under a workspace crate's `src/` is checked against the union
+//!   by [`the_scan_reaches_what_cargo_compiles`], and one the union misses is
+//!   named with what to build. `crates/sunrise-sync/src/sse.rs`, behind
+//!   `#[cfg(feature = "sse")]` and off by default, is the standing instance:
+//!   it is in the set because `sunrise-cli` and `sunrise-bench` turn the feature
+//!   on and cargo recorded those units, and if that ever stops being true the
+//!   gate says so instead of covering less. What survives is the file reached by
+//!   `#[path]` from *outside* a crate's `src/`, and a platform this checkout
+//!   never builds: both are covered when a record exists and neither is
+//!   asserted.
 //! - **Code that is not part of a shipped target.** Benches, examples and
 //!   build scripts are outside the set on purpose: a `build.rs` runs at build
 //!   time rather than in the artefact whose logs an operator reads. Note that
 //!   [`is_shipped_kind`] admits any `lib`, so `sunrise-e2e`, `sunrise-bench`
 //!   and `sunrise-crypto-test-vectors` *are* scanned despite existing only to
-//!   support tests — the phrase "shipped source file" in the failure messages
-//!   is loose for those three.
+//!   support tests. That is over-coverage rather than a gap — nothing leaks
+//!   through it — and it stays, because narrowing a gate to make its wording
+//!   exact is the wrong trade. The failure messages say "compiled into a
+//!   workspace library or binary", which is true of all three.
 //!
 //!   A unit test written inside a shipped file is scanned, because it is not
 //!   separable from the file. A whole file behind `#[cfg(test)] mod x;` is a
 //!   different thing and follows the rule above it: `sunrise-server`'s
-//!   `api/testing.rs` is in the set or not according to whether the newest
-//!   dep-info came from a `cargo build` or a `cargo test`.
+//!   `api/testing.rs` is in the set because some `cargo test` compiled it, and
+//!   the union keeps it there once it is.
 //! - **Crates built outside the workspace.** `cargo test` never builds one, so
 //!   there is no dep-info to derive its sources from. Each is an argued entry
 //!   in [`BUILD_TOOLS`] with a guard, and a new one fails
 //!   [`every_out_of_workspace_target_is_a_guarded_build_tool`] until someone
-//!   argues it. Not one line of their source is read.
+//!   argues it. Their sources are not part of the scanned set — but the guard
+//!   does read the entry's own target file, for `tracing` and for a `mod`
+//!   declaration, because "it cannot reach `tracing`" is a claim about that
+//!   source and reading the declared dependency list was a proxy that a
+//!   transitive `tracing` would have satisfied.
 //! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
 //!   names a second span site as the trigger to revisit — but nothing here
 //!   detects a second span site, so that trigger is a note, not an alarm. One
@@ -310,19 +349,6 @@ fn metadata_documents() -> &'static Vec<serde_json::Value> {
             })
             .collect()
     })
-}
-
-/// Every package across every manifest this repo builds.
-fn packages() -> Vec<&'static serde_json::Value> {
-    metadata_documents()
-        .iter()
-        .flat_map(|doc| {
-            doc["packages"]
-                .as_array()
-                .expect("metadata lists packages")
-                .iter()
-        })
-        .collect()
 }
 
 /// The target kinds that end up in something a user runs or links.
@@ -542,6 +568,32 @@ fn word_bang_hits(text: &str, word: &str) -> Vec<(usize, usize)> {
     hits
 }
 
+/// Every whole-word occurrence of `word`, as a byte offset.
+///
+/// The plain-word sibling of [`word_bang_hits`], used where the question is
+/// whether a name appears at all rather than whether a macro is invoked —
+/// reading a build tool's eleven lines for `mod` and for `tracing`.
+fn word_hits(text: &str, word: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let mut hits = Vec::new();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(word).map(|r| from + r) {
+        from = at + word.len();
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        if bytes
+            .get(at + word.len())
+            .copied()
+            .is_some_and(is_ident_byte)
+        {
+            continue;
+        }
+        hits.push(at);
+    }
+    hits
+}
+
 /// An out-of-workspace target that is a build tool rather than shipped code.
 ///
 /// The gate's subject is code whose log output an operator reads. A crate
@@ -561,7 +613,8 @@ const BUILD_TOOLS: &[BuildTool] = &[BuildTool {
     why: "eleven lines calling `uniffi::uniffi_bindgen_main()`, quarantined from \
           the workspace on purpose and driven only by `mise run apple-xcframework`. \
           Its output is Swift source, not operator logs. Its own manifest says \
-          `Build tool only; never shipped`.",
+          `Build tool only; never shipped`. Those eleven lines are read by the \
+          guard rather than described to it.",
 }];
 
 /// Every shipped target, as `(package, src_path, in the workspace)`.
@@ -601,6 +654,83 @@ fn shipped_targets() -> Vec<(String, PathBuf, bool)> {
     out
 }
 
+/// Every workspace package, as `(name, the directory its manifest sits in)`.
+///
+/// The manifest directory rather than a target's `src_path`, because a `bin`
+/// target lives at `src/bin/<name>.rs` and its parent is not the crate's source
+/// root. Out-of-workspace packages are excluded: `cargo test` never builds one,
+/// so there is nothing to be complete against.
+fn workspace_package_dirs() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for doc in metadata_documents() {
+        if doc["workspace_root"].as_str() != Some(&workspace_root().display().to_string()) {
+            continue;
+        }
+        let members = doc["workspace_members"]
+            .as_array()
+            .expect("metadata lists workspace members");
+        for pkg in doc["packages"].as_array().expect("packages") {
+            if !members.iter().any(|m| m == &pkg["id"]) {
+                continue;
+            }
+            let manifest = PathBuf::from(pkg["manifest_path"].as_str().expect("a manifest_path"));
+            if let Some(dir) = manifest.parent() {
+                out.push((
+                    pkg["name"].as_str().expect("a package name").to_owned(),
+                    dir.to_path_buf(),
+                ));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every `.rs` file git tracks under a workspace package's `src/` directory.
+///
+/// The set the scan has to be *complete against*, and the answer to the floor
+/// this test used to carry. `>= 50` against a measured 185 tolerated losing
+/// 72% of the file set — precisely the failure #84 describes — and any other
+/// constant would be the same bet at a different odds. This is a derivation
+/// instead: git says which files exist, cargo's own records say which were
+/// compiled, and a file in the first set and not the second is named.
+///
+/// Note the direction. Every tracked `src/` file must be covered; a covered
+/// file that git does not track is fine and expected —
+/// `sunrise-relay-client`'s generated `api.rs` lives under `target/` and is in
+/// the set exactly as it should be. And a source reached by `#[path]` from
+/// outside `src/` is covered by the dep-info union without being asserted here,
+/// which is the honest statement: this is a floor derived from the tree, not a
+/// claim of exactness.
+fn tracked_package_sources() -> Vec<String> {
+    let root = workspace_root();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "-z", "--", "*.rs"])
+        .output()
+        .expect("git ls-files runs");
+    assert!(
+        out.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed = String::from_utf8(out.stdout).expect("git ls-files emits UTF-8");
+    let prefixes: Vec<String> = workspace_package_dirs()
+        .into_iter()
+        .map(|(_, dir)| format!("{}/src/", rel(&dir, &root)))
+        .collect();
+    let mut found: Vec<String> = listed
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .filter(|f| prefixes.iter().any(|p| f.starts_with(p.as_str())))
+        .map(str::to_owned)
+        .collect();
+    found.sort();
+    found
+}
+
 /// Cargo's `target/` directory, from cargo rather than by assumption.
 fn target_directory() -> PathBuf {
     PathBuf::from(
@@ -610,10 +740,44 @@ fn target_directory() -> PathBuf {
     )
 }
 
-/// One dep-info file: the sources rustc read, and the file's own timestamp.
+/// One dep-info file: where it is, the sources rustc read, and its timestamp.
 struct DepInfo {
+    /// The `.d` itself, so a diagnostic can name the record it is complaining
+    /// about rather than only the target the record belongs to.
+    from: PathBuf,
     deps: Vec<PathBuf>,
     written: std::time::SystemTime,
+}
+
+/// Split one dependency line into paths, honouring make's `\ ` escape.
+///
+/// Splitting on whitespace loses a path containing a space: cargo writes it as
+/// `a\ b`, and two bogus tokens then come back, each reported as "not on disk".
+/// No such path exists in this repository, and that is exactly why it is worth
+/// handling here — the failure would arrive as a mysterious red gate on somebody
+/// else's checkout rather than as a defect anyone could see.
+fn split_dep_line(rhs: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in rhs.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 /// Read one `.d`, returning every path on its dependency lines.
@@ -629,8 +793,8 @@ fn read_dep_info(path: &Path) -> Option<DepInfo> {
         let Some((_, rhs)) = line.split_once(':') else {
             continue;
         };
-        for token in rhs.split_whitespace() {
-            let p = Path::new(token);
+        for token in split_dep_line(rhs) {
+            let p = Path::new(&token);
             deps.push(if p.is_absolute() {
                 p.to_path_buf()
             } else {
@@ -638,7 +802,48 @@ fn read_dep_info(path: &Path) -> Option<DepInfo> {
             });
         }
     }
-    (!deps.is_empty()).then_some(DepInfo { deps, written })
+    (!deps.is_empty()).then_some(DepInfo {
+        from: path.to_path_buf(),
+        deps,
+        written,
+    })
+}
+
+/// Whether this `.d` is the per-unit record rustc wrote, rather than the
+/// uplifted copy cargo writes beside the finished artefact.
+///
+/// The distinction is the whole of #84's second half. Only the per-unit file —
+/// always under a `deps/` directory — begins its dependency line with the crate
+/// root rustc was given. The uplifted `target/debug/<name>.d` lists the *whole
+/// transitive source closure* in topological order, so its first path is
+/// whatever crate happened to sort first: `target/debug/libsunrise_bench.d`
+/// names 95 files across 10 crates, and two such files begin with a path that is
+/// a real target's `src_path`. Indexing those by their first path filed a
+/// ten-crate closure under one target, and being newest they won the selection —
+/// which is how `crates/sunrise-sync/src/sse.rs` came to be covered by a
+/// benchmark crate's artefact record rather than by sunrise-sync's own.
+///
+/// `clippy-driver` also writes `.d` files whose first path is `clippy.toml`.
+/// Those are excluded by [`indexable_dep_info`] below rather than here, because
+/// the reason is different: they are per-unit records, they just do not start
+/// with a source file.
+fn is_per_unit_dep_info(path: &Path) -> bool {
+    path.parent()
+        .and_then(|d| d.file_name())
+        .and_then(|d| d.to_str())
+        == Some("deps")
+}
+
+/// The crate root a `.d` records, when it records one at all.
+///
+/// `None` for a `clippy-driver` record, whose dependency line starts with
+/// `clippy.toml`. Left in the index those would be filed under a path no target
+/// has, which is harmless, but reading them costs nothing to skip and keeps the
+/// invariant this index depends on — first path is a Rust source — true rather
+/// than nearly true.
+fn indexable_dep_info(info: &DepInfo) -> Option<PathBuf> {
+    let first = info.deps.first()?;
+    (first.extension().is_some_and(|e| e == "rs")).then(|| first.clone())
 }
 
 /// Every source a shipped workspace target compiled, and everything that made
@@ -655,9 +860,10 @@ fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let mut problems: Vec<String> = Vec::new();
 
-    // Index every dep-info by the first source on its dependency line, which is
-    // the crate root rustc was given.
+    // Index every *per-unit* dep-info by the first source on its dependency
+    // line, which for those and only those is the crate root rustc was given.
     let mut by_root: BTreeMap<PathBuf, Vec<DepInfo>> = BTreeMap::new();
+    let mut clippy_only = true;
     let mut stack = vec![target_directory()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -667,9 +873,10 @@ fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "d") {
+            } else if path.extension().is_some_and(|e| e == "d") && is_per_unit_dep_info(&path) {
                 if let Some(info) = read_dep_info(&path) {
-                    if let Some(first) = info.deps.first().cloned() {
+                    if let Some(first) = indexable_dep_info(&info) {
+                        clippy_only = false;
                         by_root.entry(first).or_default().push(info);
                     }
                 }
@@ -683,49 +890,82 @@ fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
             continue;
         }
         let canonical = src_path.canonicalize().unwrap_or_else(|_| src_path.clone());
-        // The *newest* dep-info for this root, and only that one. Cargo keeps a
-        // `.d` per feature set and profile it has ever built, and an older one
-        // is stale by construction — treating those as current would leave the
-        // gate permanently red for something that is not a defect.
-        let info = by_root
+        // *Every* dep-info for this root, not the newest one. Cargo keeps a `.d`
+        // per feature set, profile and target platform it has built, and each
+        // describes a different slice of the crate: a module behind
+        // `#[cfg(feature = "…")]` is absent from every record of a build that
+        // did not enable it. Taking the newest made the covered set a function
+        // of which cargo command ran last — same tree, three answers — and a
+        // file no selected `.d` named was checked by nothing. The union is a
+        // superset of every configuration built, which is the safe direction:
+        // it can scan a file some configuration does not compile, and it cannot
+        // silently stop scanning one that ships.
+        //
+        // Recency still has a job, and it is a different one. It decides
+        // *currency*, below: the newest record is the one a stale-build check
+        // has to be measured against. Conflating the two questions is what #84
+        // reported.
+        let mut infos: Vec<&DepInfo> = by_root
             .iter()
             .filter(|(k, _)| k.canonicalize().unwrap_or_else(|_| (*k).clone()) == canonical)
             .flat_map(|(_, v)| v.iter())
-            .max_by_key(|i| i.written);
-        let Some(info) = info else {
+            .collect();
+        infos.sort_by_key(|i| i.written);
+        let Some(newest) = infos.last().copied() else {
             problems.push(format!(
-                "{package}: no dep-info for {}. Build the workspace first — \
-                 `cargo build --workspace --all-targets` — because this gate reads \
-                 what the compiler recorded rather than parsing the module tree",
-                rel(&src_path, &root)
+                "{package}: no per-unit dep-info for {}. Build the workspace first — \
+                 `cargo test --workspace --all-targets --no-run` — because this gate \
+                 reads what the compiler recorded rather than parsing the module \
+                 tree.{}",
+                rel(&src_path, &root),
+                if clippy_only {
+                    " Nothing under `target/` carries a dep-info naming a Rust source \
+                     at all, which is what a `target/` populated only by `cargo clippy` \
+                     looks like: clippy-driver writes `.d` files whose first path is \
+                     `clippy.toml`."
+                } else {
+                    ""
+                }
             ));
             continue;
         };
-        {
+
+        for info in &infos {
             for dep in &info.deps {
                 if dep.extension().is_none_or(|e| e != "rs") {
                     continue;
                 }
-                let Ok(meta) = std::fs::metadata(dep) else {
-                    problems.push(format!(
-                        "{package}: dep-info names {} but it is not on disk",
-                        rel(dep, &root)
-                    ));
-                    continue;
-                };
-                // Stale dep-info covers less than the code does, which is the
-                // same defect as a walk that could not reach a file.
-                if meta.modified().is_ok_and(|m| m > info.written) {
-                    problems.push(format!(
-                        "{package}: {} is newer than the dep-info naming it, so the \
-                         file set is out of date. Rebuild the workspace",
-                        rel(dep, &root)
-                    ));
+                if !dep.exists() {
+                    // Expected of an older record: the file was deleted after
+                    // that build. Only `newest` is held to naming files that
+                    // still exist, below.
                     continue;
                 }
                 if let Ok(text) = std::fs::read_to_string(dep) {
                     files.insert(rel(dep, &root), text);
                 }
+            }
+        }
+
+        // Currency, against the newest record only. Every entry, not only the
+        // `.rs` ones: an `include_str!`ed fixture is a compile-time input like
+        // any other, and a change to one that no record has seen means the set
+        // may be missing whatever else that build would have read.
+        for dep in &newest.deps {
+            let Ok(meta) = std::fs::metadata(dep) else {
+                problems.push(format!(
+                    "{package}: {} names {} but it is not on disk",
+                    rel(&newest.from, &root),
+                    rel(dep, &root)
+                ));
+                continue;
+            };
+            if meta.modified().is_ok_and(|m| m > newest.written) {
+                problems.push(format!(
+                    "{package}: {} is newer than the newest dep-info naming it, so the \
+                     file set may be missing something. Rebuild the workspace",
+                    rel(dep, &root)
+                ));
             }
         }
     }
@@ -1167,23 +1407,50 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
             continue;
         };
         seen.insert(package.clone());
-        let logs = packages()
-            .into_iter()
-            .find(|p| p["name"].as_str() == Some(tool.package))
-            .and_then(|p| p["dependencies"].as_array())
-            .is_some_and(|deps| {
-                deps.iter().any(|d| {
-                    d["name"].as_str() == Some("tracing")
-                        && d["kind"].as_str().is_none_or(|k| k == "normal")
-                })
-            });
+
+        // The claim being guarded is about this crate's *source*, so read it.
+        //
+        // What stood here read the package's declared `dependencies` for
+        // `tracing`, which is a proxy for the claim rather than the claim: a
+        // `tracing` reached transitively — through `uniffi`, say — satisfies
+        // the proxy and refutes the claim. `cargo metadata --no-deps` cannot
+        // see a transitive edge at all, and asking for one with deps means a
+        // resolve of a manifest outside this workspace.
+        //
+        // Reading the file answers the question directly and needs nothing
+        // resolved: code that does not invoke a `tracing` macro emits no event,
+        // whatever it could have linked. The exception holds only while the
+        // whole crate is this one file, so a `mod` declaration retires it —
+        // there would be sources here that nothing reads, which is the shape
+        // this file exists to refuse.
+        let source = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {} is unreadable ({e}), so the guard on this BUILD_TOOLS entry \
+                 ran on nothing",
+                tool.package,
+                rel(&src_path, &workspace_root())
+            )
+        });
+        let normalised = normalise(&source);
         assert!(
-            !logs,
-            "{} now depends on `tracing`, so it can emit events no gate here has \
-             read — and being outside the workspace, there is no dep-info to \
-             derive its sources from. Either drop the dependency, or make it a \
-             workspace member so it is scanned like everything else. ({})",
-            tool.package, tool.why
+            word_hits(&normalised.structural, "mod").is_empty(),
+            "{} declares a module, so its target is no longer the single file this \
+             entry's guard reads. Either fold it back into one file or make the \
+             crate a workspace member so its sources come from dep-info like \
+             everything else. ({})",
+            tool.package,
+            tool.why
+        );
+        let invocations = scan_source(&source);
+        assert!(
+            invocations.is_empty() && word_hits(&normalised.structural, "tracing").is_empty(),
+            "{} names `tracing` in {}, so it can emit events no gate here has read \
+             — and being outside the workspace, there is no dep-info to derive its \
+             sources from. Either drop it, or make the crate a workspace member so \
+             it is scanned like everything else. ({})",
+            tool.package,
+            rel(&src_path, &workspace_root()),
+            tool.why
         );
     }
     assert!(
@@ -1217,17 +1484,43 @@ fn every_out_of_workspace_target_is_a_guarded_build_tool() {
 #[test]
 fn the_scan_reaches_what_cargo_compiles() {
     let files = &sources().0;
-    // A floor against a broken lookup, not against ordinary work.
+    // Not a floor. Every `.rs` file git tracks under a workspace package's
+    // `src/` has to be in the set, named individually when it is not.
+    //
+    // The constant this replaces was `>= 50` against a measured 185, so it
+    // passed while 72% of the file set disappeared — the exact failure mode
+    // #84 describes, sitting inside the test written to detect it. A count
+    // cannot tell "someone deleted a module" from "the lookup broke"; a set
+    // difference can, because it names what went missing and the author reads
+    // the name and knows which it was.
+    let missing: Vec<String> = tracked_package_sources()
+        .into_iter()
+        .filter(|f| !files.contains_key(f))
+        .collect();
     assert!(
-        files.len() >= 50,
-        "expected at least 50 shipped sources, found {} — the dep-info lookup has \
-         stopped finding them",
-        files.len()
+        missing.is_empty(),
+        "these files are tracked under a workspace crate's `src/` and no dep-info \
+         names them, so nothing in this file reads a line of them. Either the \
+         workspace has not been built the way this gate needs — \
+         `cargo test --workspace --all-targets --no-run`, which compiles the \
+         feature and cfg combinations an ordinary `cargo build --workspace` does \
+         not — or the file is reachable from no module and is compiled by \
+         nothing:\n  {}",
+        missing.join("\n  ")
     );
     for expected in [
         "crates/sunrise-server/src/api/sync.rs",
         "crates/sunrise-core/src/sync_driver.rs",
         "crates/sunrise-log/src/field.rs",
+        // Behind `#[cfg(feature = "sse")]`, off by default. Named here because
+        // it is the instance #84 turned on: before the union it was covered by
+        // `sunrise-bench`'s uplifted artefact record, which is a fact about a
+        // benchmark crate rather than about this gate.
+        "crates/sunrise-sync/src/sse.rs",
+        // Behind `#[cfg(test)]` at its `mod` declaration, so it is absent from
+        // any `cargo build --workspace` record and present in a `cargo test`
+        // one. The union holds both.
+        "crates/sunrise-server/src/api/testing.rs",
     ] {
         assert!(
             files.contains_key(expected),
