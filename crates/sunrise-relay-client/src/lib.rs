@@ -15,7 +15,7 @@
 //!
 //! # Generated, not written
 //!
-//! [`api`] is emitted by `spargen` from `schemas/openapi.v1.json` at build time:
+//! [`api`] is emitted by `spargen` from `schemas/generated/openapi.v1.json` at build time:
 //! typed models, one method per operation, typed errors. Nothing here transcribes
 //! a request shape by hand, so the drift ADR-0021 catalogued — nine CDDL blocks
 //! that had wandered from the handlers — has no place to happen. The

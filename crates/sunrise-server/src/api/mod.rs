@@ -224,7 +224,7 @@ mod tests {
     /// This is the check that makes regenerating it non-optional.
     #[test]
     fn the_committed_description_is_current() {
-        let committed = include_str!("../../../../schemas/openapi.v1.json");
+        let committed = include_str!("../../../../schemas/generated/openapi.v1.json");
         let generated = format!(
             "{}\n",
             super::document()
@@ -234,7 +234,7 @@ mod tests {
         );
         assert_eq!(
             committed, generated,
-            "schemas/openapi.v1.json is stale; regenerate it with \
+            "schemas/generated/openapi.v1.json is stale; regenerate it with \
              `mise run openapi` (cargo run -p sunrise-server --bin openapi)"
         );
     }

@@ -115,7 +115,7 @@ run = ".github/scripts/orphan-crate-gate.py"
 # `the_committed_description_is_current` fails until this has been re-run.
 [tasks.openapi]
 description = "Regenerate the OpenAPI description from the handlers that produce it"
-run = "cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json"
+run = "cargo run -q -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json"
 
 # The same shape as `openapi` above, and for the same reason: the four files
 # under `packages/sunrise-ui-tokens/generated/` are *inputs* — Xcode compiles

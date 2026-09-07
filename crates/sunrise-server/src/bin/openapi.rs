@@ -1,7 +1,7 @@
 //! Write the API description to a file.
 //!
 //! ```text
-//! cargo run -p sunrise-server --bin openapi -- schemas/openapi.v1.json
+//! cargo run -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json
 //! ```
 //!
 //! The description is generated from the operations, so this binary makes no
@@ -23,7 +23,7 @@
 use std::process::ExitCode;
 
 /// Where the description lands when no path is given.
-const DEFAULT_PATH: &str = "schemas/openapi.v1.json";
+const DEFAULT_PATH: &str = "schemas/generated/openapi.v1.json";
 
 fn main() -> ExitCode {
     let path = std::env::args()

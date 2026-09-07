@@ -5,14 +5,17 @@
 //! tooling, and so generation failures name a file rather than a macro
 //! expansion.
 //!
-//! The input is `schemas/openapi.v1.json`, which `sunrise-server`'s own
+//! The input is `schemas/generated/openapi.v1.json`, which `sunrise-server`'s own
 //! `the_committed_description_is_current` keeps in step with the handlers. That
 //! test is what makes this safe: a stale description would generate a client
 //! that disagrees with the server and compiles perfectly while doing so.
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
-    let spec = concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/openapi.v1.json");
+    let spec = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../schemas/generated/openapi.v1.json"
+    );
 
     println!("cargo:rerun-if-changed={spec}");
     println!("cargo:rerun-if-changed=build.rs");

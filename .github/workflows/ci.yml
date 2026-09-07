@@ -22,10 +22,22 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Per leg, not one value for both, because the legs do not cost the same:
+    # macOS minutes bill at 10x, so the expensive leg gets the *tighter* cap
+    # rather than inheriting a ceiling sized for the slower-but-cheaper one.
+    # `timeout-minutes` takes an expression, and the `mutants` job below
+    # already carries per-entry matrix keys, so this costs one key.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Each leg is ~2.4x the slowest of the twelve runs that still had real
+        # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
+        # on macos-latest. No `rust` cache entry has ever existed, so those
+        # observations are cold runs and the multiple is over a cold build.
+        include:
+          - { os: ubuntu-latest, timeout: 45 }
+          - { os: macos-latest, timeout: 35 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -220,6 +232,10 @@ jobs:
   rust-deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    # Measured max 1m20s across those twelve runs. The spread is the advisory
+    # database fetch, which is network and can stall; the rest is a downloaded
+    # binary reading manifests.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -230,6 +246,8 @@ jobs:
   bun-lint:
     name: Bun lint & format
     runs-on: ubuntu-latest
+    # Measured max 19s across those twelve runs, `bun install` included.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -244,6 +262,8 @@ jobs:
   bun-typecheck:
     name: Bun typecheck
     runs-on: ubuntu-latest
+    # Measured max 21s across those twelve runs, `bun install` included.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -261,6 +281,8 @@ jobs:
   bun-test:
     name: Bun tests
     runs-on: ubuntu-latest
+    # Measured max 17s across those twelve runs, `bun install` included.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -282,6 +304,15 @@ jobs:
   bench-regression:
     name: Bench regression (informational)
     runs-on: ubuntu-latest
+    # 2.5x the one nightly run with real steps, which took 12m00s on a cold
+    # cache. Read that 12 minutes as compilation, not measurement: at
+    # `--warm-up-time 2 --measurement-time 5` criterion's own window is a
+    # small minority of it, and run 33491168956 spent 9m22s in `cargo bench`
+    # and a further 2m19s compiling and running the `baseline` binary the
+    # second step below uses. So this budget grows with `sunrise-bench`'s
+    # dependency graph and with every target added to it -- if it starts
+    # tripping, check what the crate now compiles before assuming a hang.
+    timeout-minutes: 30
     # Nightly and on demand only, not on every push. It costs ~9 minutes and,
     # per the note below, produces a report rather than a verdict — paying that
     # on every commit for something nobody can act on is waste. testing.md
@@ -316,6 +347,18 @@ jobs:
   mutants:
     name: Mutation coverage
     runs-on: ubuntu-latest
+    # No run of this job has ever completed, so this is derived rather than
+    # measured, and one step of the derivation is an assumption: 1352
+    # sunrise-domain mutants over 6 shards is 226 in the largest, and
+    # mise.toml's `mutants` task records ~1.8s per mutant at `--jobs 1` on a
+    # developer machine -- but it records that for **sunrise-sync**, a
+    # 94-mutant crate, and a mutant costs an incremental rebuild plus a test
+    # run of the crate it is in, which does not transfer between crates. Five
+    # times that figure, plus the baseline build cargo-mutants does first,
+    # still lands a shard inside an hour, and 120 is double the result. Both
+    # the transfer and the cushion want replacing with a measurement the
+    # first time a nightly actually completes.
+    timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
     # generate ~2,500 mutants and each one is an incremental rebuild plus a
     # test run; a full pass is hours, which is exactly why
@@ -389,6 +432,9 @@ jobs:
   mutants-gate:
     name: Mutation coverage gate
     runs-on: ubuntu-latest
+    # Downloads thirteen small artefacts and runs one Python script over them.
+    # Seconds of work; the artefact download is the only part that can stall.
+    timeout-minutes: 10
     needs: mutants
     # `always()` so the gate still scores the shards that finished when one
     # fails to run. A missing shard lowers a crate's measured rate and the gate
@@ -412,6 +458,9 @@ jobs:
   mutants-gate-contract:
     name: Mutation gate contract
     runs-on: ubuntu-latest
+    # One Python script over fixtures it synthesises itself: no toolchain, no
+    # cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
     # Deliberately not inside the nightly `Mutation coverage gate` job above,
     # and deliberately without an `if:` — so it runs on every trigger this
     # workflow has, pull requests included. What it asserts is the gate's
@@ -429,6 +478,8 @@ jobs:
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest
+    # Checkout plus one grep. Measured max 7s across those twelve runs.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Reject ambient RNG in core crates
@@ -450,6 +501,8 @@ jobs:
   log-redaction:
     name: Log redaction gate
     runs-on: ubuntu-latest
+    # Checkout plus one grep. Measured max 8s across those twelve runs.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Reject .expose() in logging/telemetry/observability surfaces
@@ -496,6 +549,9 @@ jobs:
   kynos-waiver:
     name: Kynos waiver gate
     runs-on: ubuntu-latest
+    # Measured max 30s across those twelve runs: a toolchain install and a
+    # `cargo metadata`, which resolves features without compiling.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # `cargo metadata` resolves features without compiling anything, so this
@@ -514,23 +570,31 @@ jobs:
   openapi-current:
     name: OpenAPI description gate
     runs-on: ubuntu-latest
+    # Measured 36-53s on a warm `rust-cache` and 4m17s on a cold one across
+    # those twelve runs; the spread is one `cargo build` of `sunrise-server`.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Reject a description that has drifted from its handlers
-        # `schemas/openapi.v1.json` is an *input*: `spargen` generates the relay
+        # `schemas/generated/openapi.v1.json` is an *input*: `spargen` generates the relay
         # client from it. A stale one yields a client that disagrees with the
         # server and compiles perfectly while doing so, so regenerating it is
         # not optional and cannot be left to a reviewer noticing.
         run: |
-          cargo run -q -p sunrise-server --bin openapi -- schemas/openapi.v1.json
-          git diff --exit-code -- schemas/openapi.v1.json \
+          cargo run -q -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json
+          git diff --exit-code -- schemas/generated/openapi.v1.json \
             || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
 
   tokens-current:
     name: Design token gate
     runs-on: ubuntu-latest
+    # Newer than the last run that had real steps, so sized from what it does
+    # rather than measured: a `bun install`, the TypeScript token build, and
+    # one `rustc --emit=metadata` over a single generated file. That is
+    # `bun-typecheck` (21s measured) plus a toolchain install.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -563,6 +627,9 @@ jobs:
   orphan-crates:
     name: Orphan crate gate
     runs-on: ubuntu-latest
+    # Measured max 27s across those twelve runs: a toolchain install and a
+    # `cargo metadata --no-deps`, which reads manifests and nothing else.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # `cargo metadata --no-deps` reads the workspace manifests and nothing

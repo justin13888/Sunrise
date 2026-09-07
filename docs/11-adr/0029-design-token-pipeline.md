@@ -74,7 +74,7 @@ UniFFI bindings are generated at build time (`mise.toml` `apple-xcframework`,
 invoked from the `SunriseFFI` aggregate target) and gitignored, because Xcode
 *can* be made to run cargo — `apps/apple/project.yml` does exactly that, and
 has to inject `/opt/homebrew/bin` and `$HOME/.cargo/bin` onto `PATH` to manage
-it. `schemas/openapi.v1.json` is generated, committed, and guarded by
+it. `schemas/generated/openapi.v1.json` is generated, committed, and guarded by
 `the_committed_description_is_current`, because `spargen` reads a *file*.
 
 Tokens are the second case, and harder: Xcode's environment has neither Bun nor
