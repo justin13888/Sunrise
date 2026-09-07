@@ -96,9 +96,12 @@ and the `sunrise-server doctor` subcommand.
 | Logs (stderr) | Structured NDJSON; never contains content; never contains push tokens | yes (`sunrise_log::init_stderr`) |
 
 **`/metrics` and any admin surface MUST be reachable on loopback only, or behind
-operator authentication.** `build_router` enforces it: the metrics route is
-mounted only when `bind` is a loopback address, and a non-loopback bind logs
-`srv.start.metrics_withheld` and serves `404` there instead. Put a reverse
+operator authentication.** `build_service` enforces it through
+`api::operator_surface` (`crates/sunrise-server/src/api/mod.rs`): the metrics
+route is mounted only when `bind` is a loopback address, and a non-loopback bind
+logs `srv.start.metrics_withheld` and serves `404` there instead. Read those two
+symbols rather than the constructor alone — the check is in
+`operator_surface`, and `build_service` is where it is wired in. Put a reverse
 proxy in front of the loopback bind if you need to scrape it remotely.
 
 Logs go to **stderr**, not stdout: `main.rs` installs `sunrise_log::init_stderr()`
