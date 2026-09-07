@@ -186,14 +186,19 @@ The app is woken silently, runs sync, optionally raises a local notification if 
 root in the Keychain today, and `SunriseiOSTests` exercises it on the simulator —
 which is why the iOS build is signed even for tests.
 
-Two gaps against the design:
+The accessibility class is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+(`KeychainVaultRootStore.accessibility`): available before the user unlocks the
+screen after a reboot, which background sync needs, and never carried to other
+hardware by a backup, which is what makes the vault root's guarantee in
+[`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root)
+true. A root written by a build that used the weaker
+`…AfterFirstUnlock` is raised to this class on the next load rather than left as
+it was. What a restore onto new hardware then costs the user is written down in
+that section; the same file is shared with macOS, where the login keychain
+implements no protection classes and the guarantee therefore does not yet hold.
 
-- The accessibility class is `kSecAttrAccessibleAfterFirstUnlock`
-  (`Keychain.swift:62`), not the `…ThisDeviceOnly` variant this page specifies.
-  The difference matters: the current item is included in an encrypted device
-  backup and can restore onto another device. Tracked in
-  [#42](https://github.com/justin13888/Sunrise/issues/42); the constant is in the shared
-  tree, so macOS is affected identically.
+One gap against the design remains:
+
 - There is no biometric-protected access for unwrap and no **Secure Enclave**
   binding; `kSecAttrTokenIDSecureEnclave` appears nowhere in `apps/apple`.
 
