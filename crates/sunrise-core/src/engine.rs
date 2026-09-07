@@ -756,7 +756,9 @@ impl Engine {
         //    is applied like any other. Revocation is enforced against a
         //    device's *reads* — it is sealed no new epoch — and not against its
         //    writes, which is deliberate and not pending: see this function's
-        //    own step 2 above for why refusing here would not converge.
+        //    own step 2 above for why refusing here would not converge, and
+        //    ADR-0034 (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`)
+        //    for the decision and what would reopen it.
         let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
             Some(cert_blob) => {
                 let cert = DeviceCert::from_cbor(&cert_blob)
@@ -12642,8 +12644,11 @@ mod tests {
     /// Refusing at apply time is also not convergent: a replica that applied an
     /// op before the revocation arrived cannot un-apply it, and there is no
     /// projection rebuild in this engine to make it, so two replicas with the
-    /// same op set would disagree forever. That is #78, and #82 is where a
-    /// convergent form belongs.
+    /// same op set would disagree forever. Because nothing refuses, they do
+    /// not: delivery order is not an input to the materialized state, and a
+    /// cut correction is lossless. Decided in ADR-0034
+    /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`), which closed
+    /// #78; #82 is where a convergent form belongs, after the relay bound.
     ///
     /// What *is* enforced here is reads, and that is the test below.
     #[test]
