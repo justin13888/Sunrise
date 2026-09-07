@@ -123,6 +123,19 @@ async fn delay_preserves_fifo_order() {
 }
 
 proptest! {
+    // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
+    // holds a `lib.rs` or `main.rs`, so the default warns and drops the
+    // counterexample beside this source instead. See
+    // docs/10-cross-cutting/testing.md section 2.
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/chaos_transport.txt",
+            ),
+        )),
+        ..ProptestConfig::default()
+    })]
+
     /// With no faults, `Toxic` is byte-transparent for arbitrary frame
     /// sequences: whatever is sent arrives, in order, unchanged.
     #[test]
