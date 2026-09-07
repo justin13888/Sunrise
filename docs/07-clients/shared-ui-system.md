@@ -76,9 +76,9 @@ accent      = "#2563eb"
 accent_text = "#ffffff"
 border      = "#e5e5e7"
 danger      = "#dc2626"
-warning     = "#d97706"
-success     = "#059669"
-info        = "#0891b2"
+warning     = "#b45309"
+success     = "#047857"
+info        = "#0e7490"
 ```
 
 ```toml
@@ -96,11 +96,23 @@ success     = "#34d399"
 info        = "#22d3ee"
 ```
 
-Contrast is asserted rather than intended: body text on background clears AAA
-(7:1), and both muted text and `accent_text`-on-`accent` clear AA (4.5:1), in
-both themes — which is what makes
+Contrast is **enforced, not asserted**: the rule table in
+`packages/sunrise-ui-tokens/src/contrast.ts` names every pair that is drawn one
+on the other and the ratio it owes, the loader runs it inside `parseTheme`, and
+a palette below threshold is a file `mise run tokens` refuses to compile rather
+than a colour that ships. Body text on background clears AAA (7:1); muted text,
+the accent, all four status colours and `accent_text`-on-`accent` clear AA
+(4.5:1); so do all eight stream tints. The table is exhaustive — every
+`[surface]` key is measured or listed as exempt with a reason, and a key that
+is neither fails the build — which is how
 [`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
-§Color and contrast a test rather than a wish.
+§Color and contrast stops being a wish for the *whole* palette rather than for
+three pairs somebody remembered. `border` is the one exemption: at 1.21:1 light
+and 1.29:1 dark it is a hairline, which WCAG 2.1 1.4.11 exempts as decoration,
+and it owes 3:1 the moment it draws the boundary that identifies a control.
+[ADR-0030](../11-adr/0030-palette-contrast-gate.md) records the thresholds, the
+seven light values it moved, and why the exemption is written down rather than
+implied.
 
 **Stream tints are eight named values, not a ramp generated from `accent`.**
 This supersedes the earlier `stream-1..stream-12` specification. `StreamColor`
@@ -116,16 +128,26 @@ fails when the two lists diverge:
 [stream]
 slate   = "#475569"
 rose    = "#e11d48"
-amber   = "#d97706"
-emerald = "#059669"
-sky     = "#0284c7"
+amber   = "#b45309"
+emerald = "#047857"
+sky     = "#0369a1"
 indigo  = "#4f46e5"
 violet  = "#7c3aed"
-pink    = "#db2777"
+pink    = "#be185d"
 ```
 
 The dark set is the same eight names, lifted: `#94a3b8`, `#fb7185`, `#fbbf24`,
 `#34d399`, `#38bdf8`, `#818cf8`, `#a78bfa`, `#f472b6`.
+
+**A tint may be a label colour, not only a dot.** All eight clear 4.5:1 against
+their theme background — text contrast, not 1.4.11's 3:1 for a graphical
+object — so a stream's name may be drawn in its own tint anywhere the tint is
+already legal, with no separate audit. That is a constraint on the palette
+rather than a licence for the UI: colour is still never the only signal
+([`../10-cross-cutting/accessibility.md`](../10-cross-cutting/accessibility.md)
+§Color and contrast), so a tinted label still needs the name beside it to be
+the thing that carries the meaning. Every value is a Tailwind ramp step, and
+which step is not a free choice: it is the lightest one that clears the rule.
 
 ### Motion
 
