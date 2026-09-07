@@ -1771,7 +1771,7 @@ impl Engine {
     /// Per `docs/02-domain/scheduling-constraints.md`: window dimensions are
     /// civil (zone-less) values pinned to instants by the **device-local**
     /// timezone for a Task, which reaches the engine through the injected
-    /// [`Clock`](crate::config::Clock) rather than from ambient process state.
+    /// [`Clock`] rather than from ambient process state.
     /// A `hard` violation is rejected; the `soft` ones are returned so the
     /// caller can surface them.
     fn check_schedule_constraints(
@@ -3641,7 +3641,7 @@ impl Engine {
 // ---- table operations ----
 
 impl Engine {
-    /// Seal `inner_op` into a real [`OpEnvelope`] under the routing stream's
+    /// Seal `inner_op` into a real [`sunrise_crypto::OpEnvelope`] under the routing stream's
     /// **live** epoch and append it to the op log, enqueueing it in the outbox
     /// — all inside the caller's transaction.
     ///
@@ -6957,7 +6957,7 @@ fn insert_review_snapshot_row(
 /// Block's `seq` independent of the meta stream's.
 ///
 /// `Task.blocks` is never written. It is derived from `block_tasks` on read
-/// (see [`read_task_blocks`]), which is what makes the spec's "Bound Task's
+/// (see `read_task_blocks`), which is what makes the spec's "Bound Task's
 /// `blocks` field updates symmetrically" hold by construction: one writer, one
 /// op, and nothing for a concurrent edit of the Task to overwrite.
 impl Engine {

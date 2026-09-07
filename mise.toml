@@ -116,6 +116,27 @@ run = [
   "cargo test -p sunrise-server --doc -- --skip relative_uri",
 ]
 
+[tasks.rust-doc]
+description = "Build the rustdoc for the workspace with every rustdoc warning denied"
+# The third documentation gate, and the one a compiler decides. `cargo build`,
+# `cargo clippy` and `cargo test` are all blind to a broken intra-doc link:
+# `[`Foo`]` that resolves to nothing renders as literal text for exactly the
+# reader the comment was written for, and nothing goes red. Forty-eight such
+# errors were standing on master when this task was added — an ambiguous
+# `[init]`, links to items in other crates that were never imported, and a row
+# of public doc comments pointing at private items, which break in the published
+# docs even though `--document-private-items` resolves them here.
+#
+# `--document-private-items` is deliberate: it documents the private half of
+# every crate, so a link inside a private item is checked too rather than
+# skipped. It also turns on `rustdoc::private_intra_doc_links`, which is the
+# lint that catches a *public* comment linking somewhere a public reader cannot
+# follow.
+#
+# `--no-deps` keeps this about this workspace. A dependency's rustdoc is its
+# author's problem and would make the gate flap on a version bump.
+run = 'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items'
+
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"

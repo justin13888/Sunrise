@@ -656,7 +656,7 @@ impl SunriseCore {
     /// [`SunriseCore::set_sync_credential`] — the driver picks the new token up
     /// on its next connect, and the caller does not restart sync.
     ///
-    /// Deliberately sync: it only spawns. See the note on [`SunriseCore::rt`]
+    /// Deliberately sync: it only spawns. See the note on `SunriseCore::rt`
     /// for why the spawn cannot use `tokio::spawn`.
     pub fn start_sync(&self, url: String, bearer: Option<String>) -> Result<(), BindingError> {
         let _guard = self.rt.enter();

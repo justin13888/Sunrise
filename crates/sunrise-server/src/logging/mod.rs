@@ -1,7 +1,7 @@
 //! The server's logging surface: what it is allowed to say about a request.
 //!
 //! Everything here exists because the obvious thing to log is the thing we
-//! must not. `tower-http`'s stock [`TraceLayer`] records `http.uri` — which on
+//! must not. `tower-http`'s stock `TraceLayer` records `http.uri` — which on
 //! this server is where browser clients put `?access_token=…`, because a
 //! `WebSocket` upgrade cannot carry an `Authorization` header. A default
 //! request-log configuration would therefore write bearer tokens to disk on

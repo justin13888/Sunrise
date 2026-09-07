@@ -117,6 +117,25 @@ jobs:
         run: |
           cargo test --workspace --exclude sunrise-server --doc
           cargo test -p sunrise-server --doc -- --skip relative_uri
+      # A step in this job rather than a gate job of its own, because rustdoc
+      # needs the same dependency graph `cargo test` above just compiled and
+      # this job's cache is already warm — standing it up separately would pay
+      # a cold workspace build for a check that runs in about a minute here.
+      #
+      # `cargo build`, `cargo clippy` and `cargo test` are all blind to a broken
+      # intra-doc link: it renders as literal text for exactly the reader the
+      # comment was written for, and nothing goes red. Forty-eight such errors
+      # were standing on master when this step was added.
+      # `--document-private-items` documents the private half of every crate, so
+      # a link inside a private item is checked rather than skipped, and it
+      # turns on `rustdoc::private_intra_doc_links` — the lint for a *public*
+      # comment pointing somewhere a public reader cannot follow. `--no-deps`
+      # keeps the verdict about this workspace. `mise run rust-doc` is this
+      # command verbatim -- keep them in step.
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --document-private-items
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)

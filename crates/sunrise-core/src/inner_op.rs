@@ -1,6 +1,6 @@
 //! The versioned, wire-stable op vocabulary.
 //!
-//! An [`InnerOp`] is the plaintext CBOR payload carried inside every
+//! An `InnerOp` is the plaintext CBOR payload carried inside every
 //! [`sunrise_crypto::OpEnvelope`]: the engine encodes one per command, seals it
 //! under the Stream key, and appends the envelope to the op log. On the receive
 //! side ([`crate::engine::Engine::apply_remote`]) the envelope is opened and the
@@ -30,7 +30,7 @@
 //! not a field-level delta. This is the accepted v1 approximation of the CRDT
 //! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
 //! rather than per-field merge. `*Delete` ops are full-state too: each carries
-//! its entity with `deleted` set, never a bare id — see [`InnerOp::TaskDelete`]
+//! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`
 //! and ADR-0014 for why a tombstone marker does not converge.
 
 use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload};

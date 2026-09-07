@@ -211,7 +211,7 @@ pub fn keystore_dir() -> PathBuf {
 
 /// Pure form of [`keystore_dir`], so the precedence is testable without
 /// touching the process environment — the same shape
-/// [`sunrise_log::log_path_in`] uses for the log destination.
+/// [`sunrise_log::init::log_path_in`] uses for the log destination.
 #[must_use]
 pub fn keystore_dir_in(
     env_keystore: Option<&str>,

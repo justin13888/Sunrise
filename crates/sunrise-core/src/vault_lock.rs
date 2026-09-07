@@ -49,7 +49,7 @@
 //!   so two in-process Cores would both succeed.
 //! - Some FUSE and network filesystems no-op `flock` entirely.
 //!
-//! So [`HELD`] — a process-local registry of canonicalized vault paths — is the
+//! So `HELD` — a process-local registry of canonicalized vault paths — is the
 //! authority for same-process contention, and the OS lock is the authority
 //! across processes.
 

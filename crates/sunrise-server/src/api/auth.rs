@@ -10,7 +10,7 @@
 //!   is replayable from anywhere; the signature is what makes revoking a device
 //!   mean something while its OIDC token is still valid at the issuer.
 //!
-//! Taking [`Auth<AccountToken>`] in a handler adds the scheme to that
+//! Taking [`Auth<AccountToken>`](kynos::security::auth::Auth) in a handler adds the scheme to that
 //! operation's `security`, registers it under `components.securitySchemes`, and
 //! adds 401 and 403 to its responses. There is no way to do one without the
 //! others, which is the property that stops an authenticated route being

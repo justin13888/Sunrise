@@ -40,12 +40,26 @@
 /// or holding a generator to a house style it has never seen. spargen puts
 /// `#![forbid(unsafe_code)]`-equivalent attributes on everything it emits, which
 /// is the one guarantee that does have to hold.
+///
+/// The three `rustdoc::` entries are the same argument one layer along, and they
+/// were added when `mise run rust-doc` started denying rustdoc warnings. The
+/// generated `api.rs` documents public wrappers in terms of the private
+/// `MaybeSend`/`MaybeSync`/`send` helpers spargen emits beside them, and links
+/// a `Response` that lives in the runtime support module. Every one of those is
+/// spargen's output shape rather than a broken reference someone here wrote, so
+/// the honest options are to allow them or to hold a generator to a house style
+/// it has never seen — the same fork this attribute already resolved for
+/// clippy. If spargen ever qualifies those paths, delete these three lines and
+/// the gate will say so.
 #[allow(
     missing_docs,
     unreachable_pub,
     missing_debug_implementations,
     clippy::all,
-    clippy::pedantic
+    clippy::pedantic,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links
 )]
 pub mod api {
     include!(concat!(env!("OUT_DIR"), "/api.rs"));

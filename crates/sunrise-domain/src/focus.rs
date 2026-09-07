@@ -850,7 +850,7 @@ impl CalibAcc {
 ///
 /// Pure: same input, same output, with `now_ms` the only time that enters —
 /// and it only affects the *running* sessions' contribution to
-/// `total_focused_ms`, never a calibration factor (see [`CalibAcc::observe`]).
+/// `total_focused_ms`, never a calibration factor (see `CalibAcc::observe`).
 ///
 /// Breaks are counted in `sessions` but contribute no focused time and no
 /// calibration: a break is not work.
