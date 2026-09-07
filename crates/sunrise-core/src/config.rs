@@ -54,6 +54,12 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
     fn observe(&self, received: Hlc) -> Result<(), HlcError>;
 
     /// The current local reading, without advancing it. Diagnostics only.
+    ///
+    /// Not a basis for comparing a value another device stamped. State is not
+    /// persisted (see [`MonotonicHlc`]), so this reads 0 after every restart
+    /// and a comparison built on it silently becomes a comparison against
+    /// nothing. Revocation used this for one revision and
+    /// `Engine::is_revoked` explains why it no longer does.
     fn peek(&self) -> Hlc;
 }
 

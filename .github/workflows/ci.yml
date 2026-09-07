@@ -22,14 +22,22 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # 2.5x the slowest of the twelve runs that still had real steps before CI
-    # was billing-blocked: 18m26s on ubuntu-latest, 14m46s on macos-latest.
-    # One value for both legs, sized on the slower one.
-    timeout-minutes: 45
+    # Per leg, not one value for both, because the legs do not cost the same:
+    # macOS minutes bill at 10x, so the expensive leg gets the *tighter* cap
+    # rather than inheriting a ceiling sized for the slower-but-cheaper one.
+    # `timeout-minutes` takes an expression, and the `mutants` job below
+    # already carries per-entry matrix keys, so this costs one key.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Each leg is ~2.4x the slowest of the twelve runs that still had real
+        # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
+        # on macos-latest. No `rust` cache entry has ever existed, so those
+        # observations are cold runs and the multiple is over a cold build.
+        include:
+          - { os: ubuntu-latest, timeout: 45 }
+          - { os: macos-latest, timeout: 35 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -296,10 +304,14 @@ jobs:
   bench-regression:
     name: Bench regression (informational)
     runs-on: ubuntu-latest
-    # The one nightly run with real steps took 12m00s, and the `if:` note
-    # below budgets ~9 minutes. Criterion's measurement window is fixed by
-    # the flags on the step below, so no input makes this legitimately longer
-    # -- twice the observed cost is already a stuck harness.
+    # 2.5x the one nightly run with real steps, which took 12m00s on a cold
+    # cache. Read that 12 minutes as compilation, not measurement: at
+    # `--warm-up-time 2 --measurement-time 5` criterion's own window is a
+    # small minority of it, and run 33491168956 spent 9m22s in `cargo bench`
+    # and a further 2m19s compiling and running the `baseline` binary the
+    # second step below uses. So this budget grows with `sunrise-bench`'s
+    # dependency graph and with every target added to it -- if it starts
+    # tripping, check what the crate now compiles before assuming a hang.
     timeout-minutes: 30
     # Nightly and on demand only, not on every push. It costs ~9 minutes and,
     # per the note below, produces a report rather than a verdict — paying that
@@ -336,11 +348,16 @@ jobs:
     name: Mutation coverage
     runs-on: ubuntu-latest
     # No run of this job has ever completed, so this is derived rather than
-    # measured: 1352 sunrise-domain mutants over 6 shards is 226 in the
-    # largest, and mise.toml's `mutants` task records ~1.8s per mutant at
-    # `--jobs 1` on a developer machine. Even at five times that on a hosted
-    # runner, plus the baseline build cargo-mutants does first, a shard lands
-    # inside an hour. Revisit with a real figure once a nightly completes.
+    # measured, and one step of the derivation is an assumption: 1352
+    # sunrise-domain mutants over 6 shards is 226 in the largest, and
+    # mise.toml's `mutants` task records ~1.8s per mutant at `--jobs 1` on a
+    # developer machine -- but it records that for **sunrise-sync**, a
+    # 94-mutant crate, and a mutant costs an incremental rebuild plus a test
+    # run of the crate it is in, which does not transfer between crates. Five
+    # times that figure, plus the baseline build cargo-mutants does first,
+    # still lands a shard inside an hour, and 120 is double the result. Both
+    # the transfer and the cushion want replacing with a measurement the
+    # first time a nightly actually completes.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
     # generate ~2,500 mutants and each one is an incremental rebuild plus a

@@ -20,7 +20,7 @@ Not implemented:
 
 * **The relay rendezvous does not exist.** There is no pairing route on `sunrise-server` — the router exposes `/accounts`, `/devices`, `/blobs`, `/meta`, `/health` and the `/sync` WebSocket, and nothing that routes by `pair_id`. §Relay framing for Noise, the three-message-per-role buffer and the 60 s window describe nothing. `crates/sunrise-core-bindings/src/pairing.rs` states the consequence outright: "the *transport* for them **is currently the user**" — the three handshake messages and the sealed root cross as base64url strings a person copies between the two machines by hand. The crypto is unaffected by that: the SAS binds the transcript either way.
 * **The rate limits are constants, not a limiter.** `RATE_LIMIT_HOURLY = 10` and `RATE_LIMIT_DAILY = 30` are declared in `rate_limit.rs` and read by nothing. No counter, no `429`, no `Retry-After`.
-* **The rendezvous, not the payload.** What crosses the channel *is* `PairingPayload` — `ID_S_priv`, `ID_D_priv`, the identity's public halves and id, the vault root, and every Stream key the sending device holds, as the integer-keyed canonical CBOR §Payload transfer specifies (`crates/sunrise-pairing/src/payload.rs`). The receiver checks `identity_id == identity_id_from_pub(ID_S_pub)` and `ID_D_pub == X25519(ID_D_priv)` in constant time before writing anything, mints its own `D_S` / `D_D`, and self-issues a cert under the just-received `ID_S_priv`, which it publishes as a `device_cert` op. `Command::TrustDevice` is gone. One limit is surfaced rather than hidden: a payload over `MAX_PAIRING_PAYLOAD` is refused rather than truncated, because chunking it needs a framing contract that reaches the Swift seam, where a sealed payload is one base64 string.
+* **The rendezvous, not the payload.** What crosses the channel *is* `PairingPayload` — `ID_S_priv`, the identity's public halves and id, the vault root, and every Stream key the sending device holds, as the integer-keyed canonical CBOR §Payload transfer specifies (`crates/sunrise-pairing/src/payload.rs`). **`ID_D_priv` does not travel**: sealing to the identity needs only the public half, and a paired device that held the private one could open the identity copy of every epoch, which is what made revocation unenforceable. The receiver checks `identity_id == identity_id_from_pub(ID_S_pub)` in constant time before writing anything, mints its own `D_S` / `D_D`, and self-issues a cert under the just-received `ID_S_priv`, which it publishes as a `device_cert` op. `Command::TrustDevice` is gone. One limit is surfaced rather than hidden: a payload over `MAX_PAIRING_PAYLOAD` is refused rather than truncated, because chunking it needs a framing contract that reaches the Swift seam, where a sealed payload is one base64 string.
 * **Account creation (§Account creation) has no client.** `AccountCreateRequest` is consumed by the server and produced by nothing; no client mints an identity keypair, a recovery blob, or an unlock method.
 
 ## Account creation
@@ -100,7 +100,9 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
    ```cddl
    PairingPayload = {
        1: bstr .size 32,         ; ID_S_priv (32-byte seed)
-       2: bstr .size 32,         ; ID_D_priv
+       ; 2 was ID_D_priv. Burned, never reused: a payload still carrying it
+       ; is refused, because a device that holds it can open the identity copy
+       ; of every epoch and no revocation can bound its reads.
        3: bstr .size 32,         ; ID_S_pub
        4: bstr .size 32,         ; ID_D_pub
        5: bstr .size 16,         ; identity_id_bytes
@@ -111,7 +113,7 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
        9: bstr .size 32          ; vault_root
    }
    ```
-7. **N receives the payload, validates** that `BLAKE3("sunrise.identity_id.v1" || ID_S_pub, 16) == identity_id_bytes` **and** that `X25519(ID_D_priv) == ID_D_pub` (both constant-time compares via `subtle::ConstantTimeEq`), generates its own `D_S` / `D_D` keypairs, and constructs a `DeviceCert` for itself signed by the just-received `ID_S_priv`. The DH check is not decoration: `ID_D_pub` is what every `key_envelope` is sealed to and `ID_D_priv` is what opens it, so a payload whose two halves disagree produces a device that silently opens nothing addressed to the identity — including, after a revocation, every rotated Stream key — with nothing downstream able to say why.
+7. **N receives the payload, validates** that `BLAKE3("sunrise.identity_id.v1" || ID_S_pub, 16) == identity_id_bytes` (a constant-time compare via `subtle::ConstantTimeEq`), generates its own `D_S` / `D_D` keypairs, and constructs a `DeviceCert` for itself signed by the just-received `ID_S_priv`. `ID_D_pub` is **not** checked, and cannot be: with no private half in the payload there is nothing to recompute it from, and a receiver holding only public material cannot tell the account's real `ID_D_pub` from any other valid X25519 point. What stands behind it is the same SAS-confirmed Noise channel that stands behind `ID_S_priv` and the vault root in the same message. A wrong value here does not disclose anything — it seals epochs the recovery blob cannot open, so the failure is an unrecoverable account rather than a readable one, which is why `identity_id`, the field that decides *whose* account this device joins, keeps its check.
 8. **N publishes its `device_cert` op** (signed by its new `D_S_priv`, control envelope) into the vault-meta log, and stores keys per [`identity-and-device-keys.md`](./identity-and-device-keys.md).
 9. **E displays** "Paired with N at `<time>`" in its devices list; N displays "Ready."
 

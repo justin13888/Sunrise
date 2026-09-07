@@ -142,6 +142,15 @@ pub enum KeychainError {
     /// The stored identity row is inconsistent with its own keys.
     #[error("stored identity_id does not match its signing key")]
     IdentityIdMismatch,
+    /// An identity-sealed `key_envelope` was offered to a device that holds no
+    /// `ID_D_priv` — which is every device admitted by pairing.
+    ///
+    /// Not a corruption. The identity copy exists for the recovery path, and a
+    /// paired device is meant to open its own `Recipient::Device` copy instead.
+    #[error(
+        "this device holds no identity unwrapping key; the identity copy is the recovery path's"
+    )]
+    IdentitySecretAbsent,
     /// A vault with no identity row was opened with a pairing payload for a
     /// different account.
     #[error("pairing payload belongs to a different identity than this vault")]
@@ -181,7 +190,18 @@ pub enum KeychainError {
 pub struct Identity {
     identity_id: [u8; 16],
     signing: IdentitySigningKeyPair,
-    dh: IdentityDhKeyPair,
+    /// `ID_D_pub`. Every device holds this: sealing a `key_envelope` to the
+    /// identity needs only the public half.
+    dh_pub: [u8; 32],
+    /// `ID_D_priv`, and only where it belongs.
+    ///
+    /// `Some` on the device that created the account, and on one restored from
+    /// the recovery code. `None` on every device admitted by pairing, because
+    /// `PairingPayload` stopped carrying it — which is what lets a revocation
+    /// bound a device's reads at all (`#76`). A device with `None` here can
+    /// seal to the identity and cannot open what was sealed to it, which is
+    /// the asymmetry the whole mechanism rests on.
+    dh_secret: Option<IdentityDhKeyPair>,
 }
 
 impl std::fmt::Debug for Identity {
@@ -334,7 +354,10 @@ impl Keychain {
                 let identity = Identity {
                     identity_id: p.identity_id,
                     signing: IdentitySigningKeyPair::from_secret_bytes(&p.id_s_priv),
-                    dh: IdentityDhKeyPair::from_secret_bytes(p.id_d_priv),
+                    dh_pub: p.id_d_pub,
+                    // The point of the whole change: a paired device adopts the
+                    // identity's public half and never its unwrapping key.
+                    dh_secret: None,
                 };
                 if identity_id_from_pub(&identity.signing.public_bytes()) != identity.identity_id {
                     return Err(KeychainError::IdentityIdMismatch);
@@ -359,8 +382,14 @@ impl Keychain {
                 let identity_id = identity_id_from_pub(&signing.public_bytes());
                 Identity {
                     identity_id,
+                    dh_pub: dh.public_bytes(),
                     signing,
-                    dh,
+                    // The account's creator keeps it, because until the
+                    // recovery blob exists this is the only copy and dropping
+                    // it would make the account unrecoverable. That is the one
+                    // device a revocation cannot bound the reads of; see
+                    // `docs/03-crypto/key-rotation.md` §Revocation.
+                    dh_secret: Some(dh),
                 }
             }
         };
@@ -507,8 +536,12 @@ impl Keychain {
         dh_seed.zeroize();
         let identity = Identity {
             identity_id: identity_id_from_pub(&id_signing.public_bytes()),
+            dh_pub: id_dh.public_bytes(),
             signing: id_signing,
-            dh: id_dh,
+            // A vault upgrading from pre-0017 is minting the account identity
+            // here, which makes this device its creator; it keeps the secret
+            // for the same reason the founder branch does.
+            dh_secret: Some(id_dh),
         };
 
         // A fresh D_D, since the old private half was never stored.
@@ -656,7 +689,39 @@ impl Keychain {
     /// recipient of every `key_envelope`.
     #[must_use]
     pub fn identity_dh_pub(&self) -> [u8; 32] {
-        self.identity.dh.public_bytes()
+        self.identity.dh_pub
+    }
+
+    /// Whether this vault holds `ID_D_priv`, the account identity's X25519
+    /// secret — and therefore, today, whether it holds the **only** copy.
+    ///
+    /// True on exactly one device per account: the one that created it.
+    /// `Keychain::create` mints the identity there and keeps `dh_secret`;
+    /// every device admitted by pairing gets `dh_secret: None`, because
+    /// `PairingPayload` stopped carrying the key (that is the whole of the #76
+    /// read bound — see [`sunrise_pairing::payload`]).
+    ///
+    /// **The consequence, which nothing else in the tree states:** the second
+    /// copy is supposed to be the recovery blob, and the recovery blob is not
+    /// built — `seal_recovery_blob` has no production caller. So while this
+    /// returns `true`, this device's vault is the only place `ID_D_priv`
+    /// exists. If it is lost, the key is gone permanently: every
+    /// `Recipient::Identity` copy in the op log becomes unopenable forever, and
+    /// no recovery feature shipped afterwards can retrieve it, because there is
+    /// nothing left to seal a blob from. Before `ID_D_priv` was dropped from
+    /// the pairing payload, any surviving paired device could have produced
+    /// that blob later; now none can.
+    ///
+    /// Callers should surface this, not act on it. It is a disclosure about
+    /// what the user's backup situation actually is, not a capability check —
+    /// and it stops being an alarming answer the moment the recovery blob
+    /// ships, at which point this method still answers "does this device hold
+    /// the key" and no longer implies "solely".
+    ///
+    /// See `docs/03-crypto/recovery.md` §Implementation status.
+    #[must_use]
+    pub fn holds_only_copy_of_identity_key(&self) -> bool {
+        self.identity.dh_secret.is_some()
     }
 
     /// The identity-signed device cert bytes (canonical CBOR).
@@ -704,9 +769,8 @@ impl Keychain {
         }
         Ok(PairingPayload {
             id_s_priv: self.identity.signing.secret_bytes(),
-            id_d_priv: self.identity.dh.secret_bytes(),
             id_s_pub: self.identity.signing.public_bytes(),
-            id_d_pub: self.identity.dh.public_bytes(),
+            id_d_pub: self.identity.dh_pub,
             identity_id: self.identity.identity_id,
             vault_root: *self.vault_root.as_bytes(),
             stream_keys,
@@ -733,6 +797,45 @@ impl Keychain {
     }
 
     // ---- Stream keys ----
+
+    /// The **current** epoch of each stream this device holds a key for.
+    ///
+    /// `MAX(epoch)` per stream, not every epoch. A backfill exists to close the
+    /// window between "an epoch was minted" and "the minter had heard of this
+    /// device", and that window only ever contains current epochs: a device
+    /// paired earlier received every older epoch in field 6 of its
+    /// `PairingPayload`, and one paired later will receive them the same way.
+    /// Sending all of them would re-send, as ops, keys the payload had already
+    /// delivered — `S x E x D` sealed control ops on the first cert publication
+    /// of every new device, retained in `ops` forever. This is `S x D`.
+    ///
+    /// It also bounds how long a wrongly-recorded `key_envelope_recipients` row
+    /// can suppress a backfill: the next rotation of that stream mints a new
+    /// epoch, which is a key this table has no row for.
+    ///
+    /// Read from `stream_keys` rather than the in-memory cache so that a key
+    /// absorbed inside the caller's own open transaction is included: the cache
+    /// is loaded at open and refreshed on absorption, and a backfill running in
+    /// the same transaction as the absorption that provoked it would otherwise
+    /// miss exactly the epoch it was called about.
+    ///
+    /// Sorted so that two devices running the same backfill emit the same
+    /// envelopes in the same order, which keeps a diff of two vaults' op logs
+    /// readable.
+    pub(crate) fn held_current_epochs_tx(
+        tx: &rusqlite::Transaction<'_>,
+    ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
+        let mut stmt = tx.prepare(
+            "SELECT stream_id, MAX(epoch) FROM stream_keys GROUP BY stream_id ORDER BY stream_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(sid, epoch)| Some((to16(&sid)?, u32::try_from(epoch).ok()?)))
+            .collect())
+    }
 
     /// Every key this device holds at `(stream_id, epoch)`.
     ///
@@ -991,7 +1094,18 @@ impl Keychain {
         let bytes = match recipient {
             EnvelopeRecipient::Device => hpke_open(&self.device_dh, &info, sealed, b"")?,
             EnvelopeRecipient::Identity => {
-                hpke_open_identity(&self.identity.dh, &info, sealed, b"")?
+                // Absent on every device pairing admitted. Reaching here is
+                // not a corrupt vault: it means this device was offered an
+                // envelope addressed to the recovery path and has no business
+                // opening it. Its own `Recipient::Device` copy is what it is
+                // supposed to use, and `backfill_key_envelopes` is what mints
+                // that copy when an epoch predates the device.
+                let dh = self
+                    .identity
+                    .dh_secret
+                    .as_ref()
+                    .ok_or(KeychainError::IdentitySecretAbsent)?;
+                hpke_open_identity(dh, &info, sealed, b"")?
             }
         };
         let arr: [u8; 32] = bytes
@@ -1069,7 +1183,10 @@ impl Keychain {
     /// build one of these for any sibling and it verifies. That is what makes
     /// "the sender must be the device the cert names" a real check rather than
     /// a formality, and this is how the engine test builds the op that check
-    /// has to refuse. Tracked as the identity-rotation gap in issue #76.
+    /// has to refuse. The underlying gap -- every member can mint a valid cert,
+    /// so a revoked device can certify itself under a fresh id -- is not closed
+    /// by revocation and needs identity rotation; see
+    /// `docs/03-crypto/key-rotation.md` §Identity rotation.
     #[cfg(test)]
     pub(crate) fn issue_cert_for(
         &self,
@@ -1130,10 +1247,12 @@ impl Keychain {
         dh_seed[0] ^= 0xff;
         let device_dh = DeviceDhKeyPair::from_secret_bytes(dh_seed);
         let id_signing = IdentitySigningKeyPair::from_secret_bytes(&[0x5a; 32]);
+        let id_dh = IdentityDhKeyPair::from_secret_bytes([0x5b; 32]);
         let identity = Identity {
             identity_id: identity_id_from_pub(&id_signing.public_bytes()),
             signing: id_signing,
-            dh: IdentityDhKeyPair::from_secret_bytes([0x5b; 32]),
+            dh_pub: id_dh.public_bytes(),
+            dh_secret: Some(id_dh),
         };
         let cert_blob = issue_cert(
             &identity,
@@ -1344,9 +1463,19 @@ fn wrap_identity(
     let mut s = identity.signing.secret_bytes();
     let wrapped_s = wrap_secret(vault_root, &s, &aad, rng);
     s.zeroize();
-    let mut d = identity.dh.secret_bytes();
-    let wrapped_d = wrap_secret(vault_root, &d, &aad, rng);
-    d.zeroize();
+    // `None` stores a zero-length blob rather than a wrapped zero key: the
+    // column has to distinguish "this device never had the secret" from "the
+    // secret happens to be all zeros", and an empty blob cannot be mistaken
+    // for a nonce-prefixed ciphertext by `unwrap_secret`.
+    let wrapped_d = match identity.dh_secret.as_ref() {
+        Some(dh) => {
+            let mut d = dh.secret_bytes();
+            let w = wrap_secret(vault_root, &d, &aad, rng);
+            d.zeroize();
+            w
+        }
+        None => Vec::new(),
+    };
     (wrapped_s, wrapped_d)
 }
 
@@ -1358,11 +1487,26 @@ fn unwrap_identity(
     let mut s = unwrap_secret(vault_root, &row.id_s_priv_wrapped, &aad)?;
     let signing = IdentitySigningKeyPair::from_secret_bytes(&s);
     s.zeroize();
-    let mut d = unwrap_secret(vault_root, &row.id_d_priv_wrapped, &aad)?;
-    let dh = IdentityDhKeyPair::from_secret_bytes(d);
-    d.zeroize();
+    let dh_secret = if row.id_d_priv_wrapped.is_empty() {
+        None
+    } else {
+        let mut d = unwrap_secret(vault_root, &row.id_d_priv_wrapped, &aad)?;
+        let dh = IdentityDhKeyPair::from_secret_bytes(d);
+        d.zeroize();
+        // Only checkable when the secret is here. On a paired device the
+        // stored `id_d_pub` is what the payload asserted and the Noise channel
+        // is what stands behind it; see `sunrise_pairing::payload`.
+        if dh.public_bytes() != row.id_d_pub {
+            return Err(KeychainError::IdentityIdMismatch);
+        }
+        Some(dh)
+    };
+    let dh_pub: [u8; 32] = row
+        .id_d_pub
+        .as_slice()
+        .try_into()
+        .map_err(|_| KeychainError::IdentityIdMismatch)?;
     if signing.public_bytes() != row.id_s_pub
-        || dh.public_bytes() != row.id_d_pub
         || identity_id_from_pub(&signing.public_bytes()) != row.identity_id
     {
         return Err(KeychainError::IdentityIdMismatch);
@@ -1370,7 +1514,8 @@ fn unwrap_identity(
     Ok(Identity {
         identity_id: row.identity_id,
         signing,
-        dh,
+        dh_pub,
+        dh_secret,
     })
 }
 
@@ -1387,7 +1532,7 @@ fn insert_identity_row(
         params![
             &identity.identity_id[..],
             &identity.signing.public_bytes()[..],
-            &identity.dh.public_bytes()[..],
+            &identity.dh_pub[..],
             wrapped.0,
             wrapped.1,
             now_ms,
@@ -1867,6 +2012,119 @@ mod tests {
             // Wrong epoch does not open.
             assert!(kc.open_key_envelope(recipient, &sid, 3, &sealed).is_err());
         }
+    }
+
+    /// A device admitted by pairing cannot open an identity-sealed envelope,
+    /// and survives a reopen still unable to.
+    ///
+    /// This is the half of `#76` that the recipient filter cannot express. The
+    /// filter decides who gets a `Recipient::Device` copy; this decides whether
+    /// the `Recipient::Identity` copy — which is emitted for *every* epoch,
+    /// because recovery depends on it — is a way around that filter. It was,
+    /// for as long as `PairingPayload` carried `ID_D_priv`.
+    ///
+    /// The reopen matters as much as the first open: the identity row is
+    /// written from what pairing supplied, so a paired device that persisted a
+    /// secret it was never given would get it back on the next unlock and the
+    /// property would hold for one session only.
+    #[test]
+    fn a_paired_device_cannot_open_the_identity_copy() {
+        let root = VaultRootKey::from_bytes([0x5e; 32]);
+
+        // The inviting device: it created the account, so it holds `ID_D_priv`
+        // and can open an identity-sealed envelope.
+        let mut inviter_db = db(&root);
+        let inviter = open(&mut inviter_db, &root);
+        let sid = [0x21; 16];
+        let key = StreamKey::from_bytes([0x64; 32]);
+        let sealed = inviter
+            .seal_key_envelope(&inviter.identity_dh_pub(), &sid, 4, &key, &SystemRng)
+            .unwrap();
+        assert_eq!(
+            inviter
+                .open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed)
+                .unwrap(),
+            key,
+            "the account's creator can still open the recovery copy"
+        );
+
+        // The paired device, opened from that device's own payload.
+        let payload = inviter.export_pairing_payload(&inviter_db).unwrap();
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&payload),
+        )
+        .unwrap();
+        assert_eq!(
+            paired.identity_dh_pub(),
+            inviter.identity_dh_pub(),
+            "it joined the same account, so it can still seal to the identity"
+        );
+        assert!(
+            matches!(
+                paired.open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed),
+                Err(KeychainError::IdentitySecretAbsent)
+            ),
+            "a paired device must not hold the identity's unwrapping key"
+        );
+
+        // And it did not quietly persist one to find again next time.
+        drop(paired);
+        let reopened = open(&mut paired_db, &root);
+        assert!(
+            matches!(
+                reopened.open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed),
+                Err(KeychainError::IdentitySecretAbsent)
+            ),
+            "nor recover it on the next unlock"
+        );
+    }
+
+    /// The sole-copy condition is *observable*, on the device it applies to and
+    /// on the ones it does not.
+    ///
+    /// Dropping `ID_D_priv` from `PairingPayload` moved the account identity's
+    /// unwrapping key from "on every device" to "on exactly one", and the
+    /// second copy it is supposed to have — the recovery blob — is not built.
+    /// So for every vault created from now on there is a window in which one
+    /// machine holds a key that cannot be reconstructed from anywhere else, and
+    /// nothing in the tree said so. A caller cannot warn about a condition it
+    /// cannot ask about, which is what this pins.
+    #[test]
+    fn only_the_account_creator_holds_the_identity_key() {
+        let root = VaultRootKey::from_bytes([0x6f; 32]);
+        let mut creator_db = db(&root);
+        let creator = open(&mut creator_db, &root);
+        assert!(
+            creator.holds_only_copy_of_identity_key(),
+            "the account's creator holds `ID_D_priv`, and today holds the only copy"
+        );
+
+        let payload = creator.export_pairing_payload(&creator_db).unwrap();
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&payload),
+        )
+        .unwrap();
+        assert!(
+            !paired.holds_only_copy_of_identity_key(),
+            "a paired device holds no copy at all, so it cannot hold the only one"
+        );
+
+        // And the answer survives a reopen on both sides: it is a property of
+        // what the vault stores, not of how it was constructed this session.
+        drop(creator);
+        drop(paired);
+        assert!(open(&mut creator_db, &root).holds_only_copy_of_identity_key());
+        assert!(!open(&mut paired_db, &root).holds_only_copy_of_identity_key());
     }
 
     /// A vault written by the pre-ADR-0024 code path opens, gains an identity,

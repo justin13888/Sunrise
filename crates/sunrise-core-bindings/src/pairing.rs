@@ -24,16 +24,26 @@
 //!
 //! # What crosses
 //!
-//! The spec's [`PairingPayload`](sunrise_pairing::PairingPayload): the account
-//! identity's key pair, every Stream key the sending device holds, the vault
-//! root, and the sender's nickname and platform. Sending the private identity
-//! keys was once described here as "not something to do speculatively", and
-//! that was right while the identity decrypted nothing. Under ADR-0024 it
-//! decrypts everything — `ID_D_priv` opens the identity-sealed half of every
-//! `key_envelope`, and `ID_S_priv` is what lets this device admit the *next*
-//! one. Withholding them would produce a device that can read today's content
-//! and can never admit another, which is the limitation this replaces rather
-//! than a property worth keeping.
+//! The spec's [`PairingPayload`](sunrise_pairing::PairingPayload): `ID_S_priv`
+//! and `ID_D_pub` — the identity's signing secret and the *public* half of its
+//! X25519 pair — every Stream key the sending device holds, the vault root, and
+//! the sender's nickname and platform.
+//!
+//! **`ID_D_priv` does not cross.** That module's own doc
+//! ([`sunrise_pairing::payload`]) is the authority on why, and it supersedes
+//! what was written here: the X25519 secret that opens the identity-sealed copy
+//! of every `key_envelope` used to travel in field 2, and while it did, a
+//! revoked device dropped from an epoch's recipient list simply opened the
+//! identity copy instead. Every device holding it meant no device could be
+//! excluded from anything. Field 2 is burned; sealing needs only the public
+//! half, so field 4 still travels and a paired device can still address the
+//! identity without being able to read what it addresses.
+//!
+//! `ID_S_priv` does cross, and it is what lets this device admit the *next*
+//! one. Withholding it would produce a device that can never admit another,
+//! which is a limitation rather than a property worth keeping — and it is why a
+//! revoked device can still mint itself a cert under a fresh device id, which
+//! nothing bounds today (`docs/03-crypto/key-rotation.md` §Revocation).
 //!
 //! The channel is unchanged: Noise XX confirmed by a SAS both users read
 //! aloud, which is the same channel the vault root already travelled over, and
@@ -383,11 +393,12 @@ impl DevicePairing {
 /// What a completed pairing hands the new device.
 ///
 /// Both fields are **plaintext**. `payload_bytes` is the opened
-/// `PairingPayload` — `ID_S_priv`, `ID_D_priv`, the vault root and every Stream
-/// key in the account — and it was called `sealed_bundle` while nothing sealed
-/// it: the field is the output of `channel.receive`, which is where the sealing
-/// ends. A name that says "sealed" is the one thing that would make a caller
-/// comfortable logging it.
+/// `PairingPayload` — `ID_S_priv`, the vault root and every Stream key in the
+/// account; `ID_D_priv` is not among them and never travels here — and it was
+/// called `sealed_bundle` while nothing sealed it: the field is the output of
+/// `channel.receive`, which is where the sealing ends. A name that says
+/// "sealed" is the one thing that would make a caller comfortable logging
+/// it.
 ///
 /// `Debug` is hand-written for the same reason `PairingPayload`'s is: the
 /// derive would print every one of those bytes, undoing at this seam the
