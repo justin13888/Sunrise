@@ -670,6 +670,26 @@ jobs:
         run: .github/scripts/orphan-crate-gate.py
 
 
+  doc-comments:
+    name: Doc comment gate
+    runs-on: ubuntu-latest
+    # The same shape and the same cost as `docs-links` below: `actions/checkout`
+    # plus one standard-library Python script over the 234 tracked `.rs` files,
+    # no network call, no toolchain to install and nothing to cache. Well under
+    # a second locally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a doc comment mangled into a shape rustdoc misreads
+        # `cargo fmt` does not reflow comments — rustfmt says so deliberately —
+        # and clippy has no rule for comment shape, so a doc comment folded onto
+        # one physical line, split in two by a stray blank line, stranded below
+        # an attribute, or indented until rustdoc reads it as code passes
+        # everything else in this file. PR #77 created the folded shape twice,
+        # the second time while fixing the first. The script carries its own
+        # self-test and runs it as a precondition of the check.
+        run: .github/scripts/doc-comment-gate.py
+
   docs-links:
     name: Docs link gate
     runs-on: ubuntu-latest

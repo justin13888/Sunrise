@@ -196,6 +196,18 @@ description = "Reject a markdown link or heading anchor that resolves to nothing
 # second over 130 files and needs no toolchain but python3.
 run = ".github/scripts/docs-link-gate.py"
 
+[tasks.doc-comments]
+description = "Reject a doc comment mangled into a shape rustdoc misreads (the CI gate, run locally)"
+# `cargo fmt` does not reflow comments and clippy has no rule for comment
+# *shape*, so a folded, split or detached doc comment passes every other gate
+# here. Five decidable shapes, no prose style rule: two markers on one physical
+# line (the PR #77 defect, created twice in one branch), an unclosed code fence,
+# a paragraph indented into a code block that rustdoc then compiles (the #58/#60
+# defect), a doc comment stranded below an outer attribute (the PR #63 defect),
+# and two blocks split by a blank line that Rust silently rejoins. Standard
+# library Python over every tracked `.rs`, in under a second.
+run = ".github/scripts/doc-comment-gate.py"
+
 # --- Apple clients (Swift / UniFFI) ---
 
 [tasks.apple-xcframework]
