@@ -193,10 +193,28 @@ The one pre-lookup exception is an **incomplete binding** under
 `require_device_sig`, which names the signature. `verify_bytes` reads
 `X-Sunrise-Device` and `X-Sunrise-Device-Sig` together, so a request missing
 either one takes this path as surely as one missing both. It discloses nothing
-about the account: `GET /meta`'s `device_binding_required` already tells every
-caller the server demands a binding. What it does disclose is that the *bearer*
-is valid — an invalid one is refused before reaching this code — which is
-recorded on `ApiError::device_sig_invalid` and tracked separately.
+about the account. What it does disclose is that the *bearer* is valid — an
+invalid one is refused before reaching this code, so the two refusals are told
+apart by a caller who already holds the token.
+
+**That disclosure is accepted, not pending**
+([ADR-0035](../11-adr/0035-bearer-validity-oracle-accepted.md)). The reason is
+not `GET /meta`'s `device_binding_required`, which answers a different question
+— it says the server *demands* a binding, not whether any particular bearer is
+good. The reason is that the same disclosure is already unavoidable, and
+stronger, two routes away: `POST /accounts` and `POST /devices` take the
+**bootstrap exemption** and accept a bearer with no binding at all, on every
+configuration, because a device cannot sign before it exists. Against either,
+an invalid bearer is a `401` from `resolve_bearer`, a valid one reaches the
+handler's own validation (`400`) or succeeds (`201`) — so gating the code above
+behind a setting would quieten a weaker duplicate of a disclosure that stays
+open regardless. `AUTH_SIGNUP_DISABLED`'s `403` is a third instance and is
+chosen on exactly the same reasoning.
+
+So, stated as a property: **this surface does not hide whether a bearer is valid
+from the party presenting it, and does hide everything about the account behind
+it.** Which accounts exist, which devices are on one, and whether a named device
+id is one of them all stay `AUTH_TOKEN_INVALID`.
 
 **Request bodies reject unknown fields** (`serde(deny_unknown_fields)`). This is
 the load-bearing half: a signature over a re-serialisation verifies only if the

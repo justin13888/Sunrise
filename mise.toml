@@ -185,6 +185,40 @@ set -euo pipefail
 rm -rf build "out/$ffi_fw.xcframework"
 mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 
+# 0. Where cargo actually writes. Not necessarily `target/`: CARGO_TARGET_DIR
+#    and `build.target-dir` both move it, and pointing several git worktrees
+#    at one shared directory is how this repo is worked on a disk this full.
+#    Ask cargo instead of restating its precedence rules here; `--no-deps`
+#    keeps the question offline and cheap, and python3 reads the answer
+#    because it is already a dependency of the gates in .github/scripts and
+#    jq is not a dependency anywhere.
+#
+#    Honouring the variable by halves would be worse than ignoring it: two
+#    worktrees sharing a target directory produce identically named outputs,
+#    so building into the shared one and then reading a stale local `target/`
+#    would package the other tree's slices without a word. Everything below
+#    reads these two variables, never a literal path.
+#
+#    `tools/uniffi-bindgen` is a separate workspace with its own manifest, so
+#    it is asked separately: the same directory as the workspace when the
+#    variable is set, its own `tools/uniffi-bindgen/target` when it is not.
+#
+#    Only the JSON reader is a shared function. The manifest cannot be a
+#    parameter: `event_catalog.rs` derives the set of out-of-workspace crates
+#    whose log vocabulary it checks by scanning this file for the manifest
+#    paths its cargo calls name, and it refuses an interpolated one because
+#    it cannot tell which manifest that resolves to. So the bindgen manifest
+#    is written out literally below, and the workspace query names none at
+#    all — the task runs at the workspace root, like every cargo call here.
+#    For the same reason the flag itself is not spelled out in this comment:
+#    that scan is a plain text search over the whole file.
+target_directory() {
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+}
+target_dir=$(cargo metadata --format-version 1 --no-deps | target_directory)
+bindgen_target_dir=$(cargo metadata --format-version 1 --no-deps \\
+  --manifest-path tools/uniffi-bindgen/Cargo.toml | target_directory)
+
 # 1. One static + dynamic lib per slice. `--library` binding generation
 #    reads the .dylib, so both crate-types are load-bearing.
 #
@@ -216,8 +250,8 @@ done
 #    the tool still lives outside the workspace; see its manifest for why.)
 first=$(echo $macos_slices | awk '{print $1}')
 cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
-tools/uniffi-bindgen/target/release/uniffi-bindgen generate \\
-  --library "target/$first/release/lib$ffi_lib.dylib" \\
+"$bindgen_target_dir/release/uniffi-bindgen" generate \\
+  --library "$target_dir/$first/release/lib$ffi_lib.dylib" \\
   --language swift --out-dir out/swift
 
 # 3. The module map. UniFFI's own is unusable inside an xcframework: it is
@@ -234,7 +268,7 @@ printf 'module %sFFI {\\n    header "%sFFI.h"\\n    export *\\n}\\n' \\
 fatten() {
   local out="$1"; shift
   local libs=()
-  for t in "$@"; do libs+=("target/$t/release/lib$ffi_lib.a"); done
+  for t in "$@"; do libs+=("$target_dir/$t/release/lib$ffi_lib.a"); done
   lipo -create "${libs[@]}" -output "build/$out/lib$ffi_lib.a"
 }
 fatten macos $macos_slices

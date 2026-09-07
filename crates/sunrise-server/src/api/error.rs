@@ -54,8 +54,16 @@ pub mod codes {
     pub const BLOB_CHUNK_MISSING: &str = "BLOB_CHUNK_MISSING";
     /// No committed blob under that id for this account.
     pub const BLOB_NOT_FOUND: &str = "BLOB_NOT_FOUND";
+    /// `GET /sync/events` presented a `Last-Event-ID` on the first stream
+    /// after a `Subscribe`, so the resume point and the cursors are two
+    /// different statements of position and the server will not pick one.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::SyncResumeConflict`] (registry id
+    /// 513).
+    pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
     /// The relay could not read or write its durable op log.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
+
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
 }
@@ -254,11 +262,25 @@ impl ApiError {
     /// It is narrow: the endpoint returns no `200` to a binding-less caller
     /// whatever the bearer says, so it separates "this token is currently
     /// valid" from "it is not" and discloses nothing about the account behind
-    /// it — against an attacker who already holds the token to test. Closing it
-    /// means putting case 1 behind its own opt-in config so an operator can
-    /// trade the diagnostic for the silence. That is worth doing deliberately
-    /// rather than as a side effect of this change, so it is recorded here and
-    /// the behaviour is left alone.
+    /// it — against an attacker who already holds the token to test.
+    ///
+    /// **Accepted, not pending.** ADR-0035
+    /// (`docs/11-adr/0035-bearer-validity-oracle-accepted.md`) keeps this case
+    /// unconditionally and adds no configuration. The reason is *not* `GET
+    /// /meta`'s `device_binding_required`, which answers a different question:
+    /// it says the server demands a binding, not whether a given bearer is
+    /// good. The reason is the **bootstrap exemption**. `POST /accounts` and
+    /// `POST /devices` take [`super::signed::SignedBootstrap`], which accepts a
+    /// bearer with no binding at all on every configuration — a device cannot
+    /// sign before it exists — and `caller_of` resolves the bearer before the
+    /// headers and the body, so an invalid one is a `401` while a valid one
+    /// reaches the handler's validation (`400`) or succeeds (`201`). The same
+    /// disclosure is therefore already open, unavoidable, and stronger two
+    /// routes away, and putting case 1 behind a setting would quieten a weaker
+    /// duplicate while telling an operator they were hidden.
+    /// [`Self::signup_disabled`]'s `403` is a third instance, chosen on the
+    /// identical reasoning. What stays hidden is everything about the
+    /// *account*, which is the rule above.
     #[must_use]
     pub fn device_sig_invalid() -> Self {
         Self::Unauthenticated {

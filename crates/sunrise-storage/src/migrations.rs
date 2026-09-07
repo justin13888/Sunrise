@@ -62,6 +62,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "key_envelope_recipients",
         sql: include_str!("../migrations/0018_key_envelope_recipients.sql"),
     },
+    Migration {
+        id: 19,
+        name: "identity_minted_by",
+        sql: include_str!("../migrations/0019_identity_minted_by.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

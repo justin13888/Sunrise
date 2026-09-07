@@ -223,10 +223,11 @@ PROTOCOL_FRAME_TOO_LARGE        SYNC_BATCH_TOO_LARGE
 PROTOCOL_DECOMPRESS_BOMB        SYNC_OP_INVALID
 CRYPTO_NON_CANONICAL_CBOR       SYNC_STREAM_NOT_FOUND
 CRYPTO_SUITE_MISMATCH           SYNC_CURSOR_GAP
-AUTH_TOKEN_EXPIRED              DOC_SCHEMA_TOO_OLD
-AUTH_TOKEN_INVALID              CAPABILITY_REQUIRED_MISSING
-AUTH_DEVICE_REVOKED             RELAY_GRANT_REVOKED
-AUTH_DEVICE_SIG_INVALID         RELAY_STORAGE_UNAVAILABLE
+AUTH_TOKEN_EXPIRED              SYNC_RESUME_CONFLICT
+AUTH_TOKEN_INVALID              DOC_SCHEMA_TOO_OLD
+AUTH_DEVICE_REVOKED             CAPABILITY_REQUIRED_MISSING
+AUTH_DEVICE_SIG_INVALID         RELAY_GRANT_REVOKED
+                                RELAY_STORAGE_UNAVAILABLE
                                 FATAL_INTERNAL
 ```
 
@@ -252,7 +253,7 @@ Client-side: an outbound OpBatch is held in the persistent outbox until the serv
 
 The relay dedups on the **content** of a batch's ops instead: a domain-separated BLAKE3 over the op count and each op's length and bytes, scoped to `(account, stream)` and remembered exactly as long as the frame it named survives retention. A batch already in that window is not stored and not fanned out again, and is answered with a `200` carrying the **original** `server_first_seen_ms` — the field says "first seen", and a re-send is the only thing a client that lost an ack can do. An empty batch is exempt: it carries no content to be the same as, so three empty batches are three events.
 
-The key is the **whole batch**, which bounds what "already seen" can mean. Two of the three re-send shapes are covered: a retransmit inside a session replays the encoded frame verbatim, and a reconnect that adds nothing to the outbox re-sends the same ops. An **active** client is not. The client batches every unacked op for a stream into one frame with no size cap (`Core::sync_outbox_grouped`), so a user who edits between a lost `Ack` and the reconnect makes session 2 send `[O1, O2]` where session 1 sent `[O1]`. Those are two different batches by content: the second is stored, and `O1` lands twice. Re-applying it is harmless — ops are idempotent — but the relay pays the disk and fan-out cost. A per-op key would close this and is tracked separately; it needs a retention rule of its own, because forgetting an op id is precisely what lets a legitimate replay through.
+The key is the **whole batch**, which bounds what "already seen" can mean. Two of the three re-send shapes are covered: a retransmit inside a session replays the encoded frame verbatim, and a reconnect that adds nothing to the outbox re-sends the same ops. An **active** client is not. The client batches every unacked op for a stream into one frame with no size cap (`Core::sync_outbox_grouped`), so a user who edits between a lost `Ack` and the reconnect makes session 2 send `[O1, O2]` where session 1 sent `[O1]`. Those are two different batches by content: the second is stored, and `O1` lands twice. Re-applying it is harmless — ops are idempotent — but the relay pays the disk and fan-out cost. **This is the stated guarantee, not a pending shortfall.** The relay dedups a re-sent batch when the re-send carries exactly the ops the first attempt carried; a re-partitioned re-send is accepted, stored and fanned out again. It is not a correctness event — the receiver's `op_id` dedup below is what correctness rests on — and its cost is bounded by the unacked depth at the moment the ack was lost, and by retention thereafter. A per-op relay key was considered and rejected: the relay stores frames rather than ops, so saving the disk would mean filtering an op out of a batch and re-deriving its heads, and a per-op table would need its own tie to retention, because forgetting an op id is precisely what lets a legitimate replay through. If the case is ever measured to matter, the cheaper fix is client-side — persist the partition in the outbox so a reconnect re-sends the same ops the lost ack covered, which the existing batch key then catches exactly. See [ADR-0033](../11-adr/0033-relay-batch-dedup-is-whole-batch.md) for the argument and for what would reopen it.
 
 Relay dedup sits on top of the **receiver's**, which is the one correctness rests on and whose key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` (`OpLog::insert`, `crates/sunrise-storage/src/oplog.rs`), which the receive path calls and then gates on `tx.changes() == 0` (`applied` in `crates/sunrise-core/src/engine.rs`), so a second copy materializes nothing and raises no event. For received ops the op id is derived from exactly `(stream_id, device_id, seq)` (`remote_op_id`); a locally authored op carries a random ULID. The two constraints are independent and both load-bearing: the primary key dedups a re-received remote op, and `UNIQUE(stream_id, device_id, seq)` is what drops a device's own history when the relay hands it back on reconnect. That is why the uncovered re-send shape above costs disk and fan-out rather than correctness.
 
@@ -322,7 +323,9 @@ POST /sync/session          Authorization: Bearer <oidc_jwt>
   → 201 { session_id, server_app_v, wire_proto, crypto_suite,
           doc_schema_floor, capabilities, server_time_ms }
         Location: /api/v1/sync/events         ← Hello::negotiate, unchanged
-  → 401, or 400 `VALIDATION_INVALID` whose message is the negotiation error
+  → 401, or 400 carrying the negotiation refusal's own code:
+    SYNC_PROTOCOL_VERSION_MISMATCH, CRYPTO_SUITE_MISMATCH,
+    DOC_SCHEMA_TOO_OLD or CAPABILITY_REQUIRED_MISSING
 
 POST /sync/subscribe        X-Sunrise-Session: <session_id>
   { streams: [ { stream_id, cursors: [ { device_id, last_applied_seq } ] } ] }
@@ -330,6 +333,8 @@ POST /sync/subscribe        X-Sunrise-Session: <session_id>
     GET /sync/events.
 
 GET  /sync/events           X-Sunrise-Session, optional Last-Event-ID
+  → 400 `SYNC_RESUME_CONFLICT` where a non-zero Last-Event-ID is presented on
+    the first stream after a Subscribe; see below
   ← data: {"kind":"gap", …}        only where the cursor predates retention,
                                    always before that stream's replay
   ← data: {"kind":"ops", …}        retained frames, replayed verbatim, each
@@ -385,28 +390,50 @@ a reconnect that presents the last id it saw resumes after that frame instead of
 replaying the retained backlog from the start. When it does, the cursors stop
 selecting anything: `relay_replay_after` sends every frame with
 `id > after_id` and never consults `covered(&heads, cursors)` at all
-(`crates/sunrise-server/src/relay_log.rs:254-257,281-291`, whose own rustdoc
-states the precedence). Only `after_id == 0` — a first connection — replays what
-the cursors do not cover.
+(`crates/sunrise-server/src/relay_log.rs`, whose own rustdoc states the
+precedence). Only `after_id == 0` — a first connection — replays what the
+cursors do not cover.
 
 **Cursor gaps are reported either way.** The `relay_evicted` watermark check runs
-on the cursors regardless of `after_id` (`relay_log.rs:303-326`), so a resumed
-stream still learns that ops it never received have aged out.
+on the cursors regardless of `after_id`, so a resumed stream still learns that
+ops it never received have aged out.
 
 The two statements are not interchangeable, which is why the precedence matters:
 `Last-Event-ID` says "I *received* everything up to here", a `Subscribe` cursor
 says "I have *applied* everything up to here", and they diverge exactly when
 delivery succeeded and application did not — a dropped frame, a client that
 restarted mid-batch. That is precisely when a client re-sends `Subscribe` to
-recover, and presenting a stale id alongside those cursors would make the relay
-select on the id and skip the very frames the cursors asked for.
+recover, and selecting on the id there would skip the very frames the cursors
+asked for.
 
-**What keeps that safe today is a client convention, not a server guarantee.**
-`SseTransport` clears `last_event_id` whenever it sends `Subscribe`
-(`crates/sunrise-sync/src/sse.rs:417`), so the stricter statement is the only one
-left standing. A third-party client that keeps the id across a recovery
-`Subscribe` will silently under-receive. Treat clearing the id on `Subscribe` as
-part of the client contract.
+**So the server refuses the pair rather than choosing between them.** A
+non-zero `Last-Event-ID` presented on the **first `GET /sync/events` after a
+`POST /sync/subscribe`** is answered with `400 SYNC_RESUME_CONFLICT` and no
+stream. The recovery is to reopen without the id, which replays what the
+cursors do not cover. A `Last-Event-ID` of `0` is not a resume point —
+`relay_replay_after` already reads it as a first connection — so it is served
+like any other first stream.
+
+An ordinary reconnect is untouched: a stream that follows **another stream** of
+the same session, with no `Subscribe` in between, still resumes on its id and
+still gets id-only selection. That is the case resumption exists for, and it is
+the only case in which a client legitimately holds an id — ids are minted by a
+stream, so a client that has not been served one has nothing to resume from.
+
+The order this enforces is what `SseTransport` already does: it clears
+`last_event_id` whenever it sends `Subscribe`
+(`crates/sunrise-sync/src/sse.rs`). What changed is that the invariant is now a
+property of the relay rather than of one client's source. A third-party client
+that keeps the id across a recovery `Subscribe` used to silently under-receive;
+it now gets a code it can act on.
+
+**Why not union the two filters.** Sending a frame that is past the id *or* not
+covered by the cursors would also be safe, and it was rejected because the
+cursors only advance when the client sends a **new** `Subscribe`. A client that
+resumes correctly for a week on `Last-Event-ID` alone would have every frame
+since its last `Subscribe` replayed on every reconnect — which is not
+resumption. Refusing the ambiguous pair costs one round trip to a client that
+gets the order wrong and nothing at all to one that gets it right.
 
 Replay and live fan-out carry the **same** frame bytes: the relay republishes
 retained and live frames byte-for-byte, so a client cannot tell them apart from

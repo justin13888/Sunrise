@@ -154,9 +154,11 @@ pub fn verify_bytes(
         if state.config.require_device_sig {
             // The one pre-lookup case that names the signature, and it covers a
             // *partial* binding too: the `let else` above wants both headers,
-            // so one without the other lands here. Nothing is disclosed: the
-            // server has already told every caller it demands a binding, in
-            // `GET /meta`'s `device_binding_required`.
+            // so one without the other lands here. Nothing about the *account*
+            // is disclosed -- no lookup has happened yet. That the *bearer* is
+            // valid is disclosed, and is accepted rather than closed: the
+            // bootstrap routes carry the same disclosure unconditionally and
+            // more strongly. See `ApiError::device_sig_invalid` and ADR-0035.
             return Err(ApiError::device_sig_invalid());
         }
         // Self-host single-tenant: there are no device rows to bind to, and
