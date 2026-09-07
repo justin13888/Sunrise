@@ -35,9 +35,15 @@ The 25 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
+     `.github/scripts/observability-catalog-gate.py` reads the command above out
+     of this comment and runs it, then diffs the result against the block below
+     in both directions, so the block cannot go stale unnoticed and the pattern
+     cannot drift from the gate. It checks the count in the sentence before the
+     block too, which is why that count is a numeral.
      `Last extracted` names the commit this block was last reconciled against —
-     NOT the commit that last changed the set. Diff that ref against HEAD over
-     the grepped path to see whether the set could have moved since.
+     NOT the commit that last changed the set. Now that the gate runs, it is
+     provenance rather than the reader's assurance: diff that ref against HEAD
+     over the grepped path to see what a human last looked at.
      Last extracted: c3c54ac -->
 
 ```
@@ -117,9 +123,13 @@ complete set the server emits today:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
+     Enforced the same way as the `ev` block above, by
+     `.github/scripts/observability-catalog-gate.py`, which runs the command on
+     this line and diffs it against the block in both directions.
      `Last extracted` names the commit this block was last reconciled against —
-     NOT the commit that last changed the set. Diff that ref against HEAD over
-     the grepped path to see whether the set could have moved since.
+     NOT the commit that last changed the set. Now that the gate runs, it is
+     provenance rather than the reader's assurance: diff that ref against HEAD
+     over the grepped path to see what a human last looked at.
      Last extracted: c3c54ac -->
 
 ```
@@ -146,7 +156,7 @@ sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-Twenty-one names, and four that earlier revisions of this file listed and the
+21 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

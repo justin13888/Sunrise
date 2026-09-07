@@ -670,6 +670,29 @@ jobs:
         run: .github/scripts/orphan-crate-gate.py
 
 
+  observability-catalog:
+    name: Observability catalogue gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script that walks
+    # `crates/sunrise-server/src` and one markdown file. No toolchain, nothing
+    # to cache, no network call.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, because the gate resolves each block's
+          # `Last extracted:` marker to a commit. Under the default shallow
+          # checkout that object is absent and the script skips the check,
+          # which would quietly retire half of what this job is for.
+          fetch-depth: 0
+      - name: Reject an extracted block that has drifted from the tree
+        # The two blocks in observability.md are what an operator reads to know
+        # what this server emits, and a missing entry is invisible in a way a
+        # stale document usually is not: it still parses, still reads
+        # coherently, and its own marker says it was checked. It had drifted
+        # twice in one cycle before anything ran the extraction.
+        run: .github/scripts/observability-catalog-gate.py
+
   doc-comments:
     name: Doc comment gate
     runs-on: ubuntu-latest

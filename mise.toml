@@ -196,6 +196,18 @@ description = "Reject a markdown link or heading anchor that resolves to nothing
 # second over 130 files and needs no toolchain but python3.
 run = ".github/scripts/docs-link-gate.py"
 
+[tasks.observability-catalog]
+description = "Reject an observability.md event or metric block that has drifted from the tree (the CI gate, run locally)"
+# `docs/06-server/observability.md` carries the operator-facing inventory of
+# what this server emits, extracted from the source and marked as such. Nothing
+# re-ran the extraction, and it had already drifted twice in one cycle. The
+# script reads each block's own `grep` command out of the marker above it and
+# runs that, so the document and the gate cannot disagree about what to extract,
+# then diffs the result against the block in both directions — a name the
+# catalogue advertises and the tree does not define is as much a defect as the
+# reverse.
+run = ".github/scripts/observability-catalog-gate.py"
+
 [tasks.doc-comments]
 description = "Reject a doc comment mangled into a shape rustdoc misreads (the CI gate, run locally)"
 # `cargo fmt` does not reflow comments and clippy has no rule for comment
