@@ -163,7 +163,9 @@ If shipped: a glance for Today, ability to capture via voice. Syncs to phone via
 
 - `BGAppRefreshTask` scheduled by the OS at OS-decided times.
 - During the budget window:
-  1. Connect WS.
+  1. Open a sync session and its event stream (`POST /api/v1/sync/session`,
+     then `GET /api/v1/sync/events` — [ADR-0023](../11-adr/0023-sse-sync-transport.md)
+     replaced the WebSocket this step used to name).
   2. Drain inbox + outbox.
   3. Commit.
   4. Schedule local notifications for any new reminders within the next horizon.
