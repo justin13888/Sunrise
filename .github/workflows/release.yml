@@ -1,14 +1,32 @@
 name: Release
 
 # Tag-driven. Pushing an annotated `vX.Y.Z` (or a `-rc.N` / `-beta.N`
-# prerelease) is the whole trigger; nothing here runs on a branch push, and
-# there is no manual dispatch, so a release cannot happen without a tag object
-# in the repository to point at afterwards.
+# prerelease) is the whole trigger for a release; nothing here runs on a branch
+# push, so a release cannot happen without a tag object in the repository to
+# point at afterwards.
+#
+# The one manual entry point publishes nothing, and that is what keeps the
+# property above intact: `workflow_dispatch` exists so the `macos-app` job's
+# packaging path can be exercised while the six signing secrets it needs do not
+# yet exist. It builds and packages an **unsigned** `.dmg`, leaves it as a
+# workflow artifact, and every job that would touch a Release or a registry
+# sits the run out. `verify`'s `dry_run` output is the single switch the rest of
+# the file reads.
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-*"
+  workflow_dispatch:
+    inputs:
+      unsigned_macos_dmg:
+        description: >-
+          Dry run. Build and package an UNSIGNED, un-notarized macOS .dmg so the
+          packaging path can be verified while the signing secrets are absent.
+          Nothing is signed, notarized, released or pushed to any registry.
+          Leave this off and the dispatch does nothing at all.
+        type: boolean
+        default: false
 
 # Default-deny. Every job re-grants exactly what it needs and nothing else, so
 # a compromised build step in the binaries matrix cannot push a package.
@@ -35,6 +53,10 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      # `true` on a manual dispatch, `false` under a tag. Every job below that
+      # publishes anything reads this rather than re-deriving the event, so
+      # there is one place to look for what a dry run does not do.
+      dry_run: ${{ steps.check.outputs.dry_run }}
     steps:
       # Shallow: this job reads Cargo.toml and the ref name, nothing else.
       - uses: actions/checkout@v4
@@ -51,6 +73,20 @@ jobs:
           # the mistake is invisible until someone reads a bug report.
           manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
                      | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          # A manual dispatch has no tag, so there is nothing to check it
+          # against and nothing it could publish. It exists for exactly one
+          # purpose -- a dry run of the `macos-app` packaging path -- so the
+          # version comes straight from the manifest and the run is marked,
+          # which is what makes the three publishing jobs below skip.
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            echo "dry run: no tag; version $manifest taken from Cargo.toml; nothing will be published"
+            {
+              echo "version=$manifest"
+              echo "prerelease=true"
+              echo "dry_run=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "tag=$tag manifest=$manifest"
           if [ "${version%%-*}" != "$manifest" ]; then
             echo "::error::tag $tag implies version ${version%%-*}, but Cargo.toml says $manifest"
@@ -63,6 +99,46 @@ jobs:
             *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
             *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
+          echo "dry_run=false" >> "$GITHUB_OUTPUT"
+      # Here rather than in `macos-app`, and the placement is the whole point.
+      # `binaries` and `image` do not need `macos-app`, so a preflight inside
+      # that job would fail *after* the image job had already pushed
+      # `sunrise-server:<version>` and `:latest` to GHCR — the half-published
+      # tag this workflow's `concurrency` comment says is worse than a
+      # duplicate run. This job is the one that already exists to "refuse
+      # early, before anything is built or pushed", and every other job needs
+      # it, so a missing release credential belongs here with the version
+      # check.
+      #
+      # No secret *value* crosses into this job: each `env` entry is the
+      # boolean `secrets.X != ''`, evaluated where the secrets live. A job that
+      # only has to know whether a private key exists should not be handed one.
+      - name: Signing and notarization secrets must all be present
+        if: steps.check.outputs.dry_run == 'false'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID != '' }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID != '' }}
+        run: |
+          set -euo pipefail
+          # A plain string rather than a bash array: `${arr[@]}` on an empty
+          # array is an unbound-variable error under `set -u` in bash 3.2,
+          # which is what the macOS runners carry, and this list is copied
+          # between shells often enough that it should behave the same in both.
+          missing=""
+          for s in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_TEAM_ID \
+                   APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            eval "have=\${$s}"
+            [ "$have" = "true" ] || missing="$missing $s"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error title=macOS release signing is not configured::Missing repository secret(s):${missing}. This release would ship no macOS app, or an unsigned one that Gatekeeper refuses to open, so nothing is built or pushed. Create them as described in docs/07-clients/releasing.md -- only the repository owner can -- then delete and re-push the tag. To exercise the packaging path meanwhile, run this workflow from the Actions tab with the 'unsigned_macos_dmg' input ticked."
+            exit 1
+          fi
+          echo "all six macOS signing secrets are present"
 
   # ---------------------------------------------------------------------
   # Release binaries: `sunrise-server` and the `sunrise` CLI.
@@ -70,6 +146,8 @@ jobs:
   binaries:
     name: Binaries (${{ matrix.target }})
     needs: verify
+    # Nothing here is published on a dry run, so nothing here is built on one.
+    if: needs.verify.outputs.dry_run == 'false'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -160,6 +238,8 @@ jobs:
   image:
     name: Image (linux/amd64)
     needs: verify
+    # As with `binaries`: a dry run publishes nothing, so it builds nothing.
+    if: needs.verify.outputs.dry_run == 'false'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -218,12 +298,399 @@ jobs:
           push-to-registry: true
 
   # ---------------------------------------------------------------------
+  # The macOS app: a Developer ID-signed, notarized, stapled `.dmg`.
+  #
+  # `docs/11-adr/0031-macos-distribution.md` records why this is a direct
+  # download and not the Mac App Store, and
+  # `docs/07-clients/releasing.md` is the operator runbook for the six secrets
+  # below — how to produce each one and how to verify what comes out.
+  #
+  # Two things about this job are unusual, and both are deliberate.
+  #
+  #   * **It never builds an unsigned artifact under a tag.** None of the six
+  #     secrets exists in this repository yet and only its owner can create
+  #     them. A job that quietly produced an unsigned `.dmg` anyway would put a
+  #     file on the Releases page that Gatekeeper refuses to open, and the
+  #     person who discovers that is a user rather than the maintainer. The
+  #     guard is not here, though — it is a step on `verify`, so that a tag
+  #     without the secrets fails before `image` has pushed anything to GHCR.
+  #     See the note there.
+  #   * **A manual dispatch builds the same `.dmg` unsigned.** That is the
+  #     only reason any of this is testable before the secrets exist: it
+  #     exercises the xcframework build, `xcodegen`, the archive, the DMG
+  #     packaging, the naming convention and the checksum, and skips exactly
+  #     the four steps that need a credential. Nothing it produces reaches a
+  #     Release — `verify` marks the run `dry_run=true` and the `release` job
+  #     does not run at all.
+  # ---------------------------------------------------------------------
+  macos-app:
+    name: macOS app (.dmg)
+    needs: verify
+    # A tag always builds it. A dispatch builds it only when the operator
+    # ticks the box, so a stray dispatch costs nothing: macOS minutes bill at
+    # 10x and this is the most expensive job in the repository.
+    if: github.event_name == 'push' || inputs.unsigned_macos_dmg
+    # Same pin and same reason as `ci.yml`'s `macos-app`: project.yml sets
+    # `deploymentTarget.macOS: "26.0"`, which no earlier image can build.
+    runs-on: macos-26
+    permissions:
+      contents: read
+    env:
+      # As in `ci.yml`'s two Apple jobs, and for the reason spelled out there:
+      # this job compiles `tools/uniffi-bindgen`, whose third-party dependency
+      # tree is not ours to keep warning-free.
+      RUSTFLAGS: ""
+      VERSION: ${{ needs.verify.outputs.version }}
+      DRY_RUN: ${{ needs.verify.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain file pins the compiler; rustup installs it on first use.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-app
+      # A step rather than the action's `targets:` input, for the reason
+      # `ci.yml`'s `macos-app` spells out: `targets:` installs onto *stable*,
+      # while rust-toolchain.toml overrides this directory to the pinned
+      # version, which would then have no iOS std. `apple-xcframework` builds
+      # all three slices, so all three have to be on the pinned toolchain.
+      - name: Add the iOS slices to the pinned toolchain
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Install mise, XcodeGen and SwiftLint
+        run: brew install --quiet mise xcodegen swiftlint
+      - name: Trust mise config
+        run: mise trust --yes
+      - name: Toolchain versions
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i macos
+          xcodegen --version
+      # A keychain of its own, created here and deleted in the `always()` step
+      # at the bottom of this job. Not the login keychain: the runner is
+      # ephemeral, but a signing identity in the default keychain is reachable
+      # by every subsequent step in the job, and the point of a temporary one
+      # is that the blast radius of anything that runs after `xcodebuild` is a
+      # keychain that no longer exists.
+      #
+      # `set-key-partition-list` is the step people leave out and then spend an
+      # afternoon on. Without it macOS prompts for authorization the first time
+      # `codesign` asks for the private key — on a runner with no UI that is
+      # not a prompt, it is `errSecInternalComponent`.
+      - name: Import the Developer ID identity into a temporary keychain
+        if: needs.verify.outputs.dry_run != 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/sunrise-signing.keychain-db"
+          pw="$(openssl rand -base64 24)"
+          echo "::add-mask::$pw"
+          # The password itself is not exported: nothing after this step needs
+          # it, and a later step that does not need a secret should not have it
+          # in its environment. Only the path travels.
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pw" "$keychain"
+          # `-lut 21600` and no `-l`: the keychain must not re-lock partway
+          # through a 90-minute job while `codesign` still needs the key.
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pw" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$keychain" >/dev/null
+          # Prepended to the search list rather than replacing it: xcodebuild
+          # resolves the Apple intermediate certificates out of the system
+          # roots, which are in the list this preserves.
+          existing=$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          # Unquoted deliberately: `-s` takes the whole new search list as
+          # separate arguments, so word splitting is the mechanism here.
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$keychain" $existing
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Prove the identity is usable now, not inside a 20-minute build.
+          security find-identity -v -p codesigning "$keychain"
+      # The repository's own task, not a re-expression of it. It builds the
+      # three-slice `out/SunriseCore.xcframework` and
+      # `out/swift/sunrise_core_bindings.swift`, and `xcodegen` below needs the
+      # generated Swift to exist before it can add it to the target.
+      #
+      # Built from this checkout rather than consumed as a CI artifact, which
+      # is the supply-chain question #111 raised: the thing a user runs is
+      # compiled from the tagged source in the same job that signs it, so the
+      # only inputs to the signed bundle are the tag and this workflow.
+      - name: mise run apple-xcframework
+        run: mise run apple-xcframework
+      - name: Archive
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          cd apps/apple
+          # `.xcodeproj` is gitignored; this is the only supported way to get
+          # one, exactly as in `mise run macos-app`.
+          xcodegen generate --quiet
+
+          # The bundle's own version numbers come from the tag, not from
+          # project.yml's pinned `MARKETING_VERSION: "0.1.0"`. `verify`
+          # already refuses a tag that disagrees with Cargo.toml, and the same
+          # argument applies one layer out: an app whose About box disagrees
+          # with the file it was downloaded from misreports itself, and the
+          # mistake is invisible until someone reads a bug report.
+          #
+          # `CFBundleShortVersionString` takes at most three dot-separated
+          # integers, so a `-rc.1` suffix is trimmed for it and kept in the
+          # file name. `CFBundleVersion` is the run number: it has to increase
+          # across builds of the same marketing version, which a prerelease
+          # series does not.
+          short="${VERSION%%-*}"
+          # `ARCHS=arm64` is load-bearing and is the one thing about this
+          # command that a local `mise run macos-app` does not teach you.
+          # That task builds Debug at `-destination 'platform=macOS,arch=arm64'`,
+          # where `ONLY_ACTIVE_ARCH=YES` settles the question. An *archive* is
+          # Release at `generic/platform=macOS`, where `ARCHS` falls back to
+          # `$(ARCHS_STANDARD)` — `arm64 x86_64` — and the x86_64 half then
+          # fails to link with `ld: symbol(s) not found for architecture
+          # x86_64`, because `mise.toml`'s `macos_slices` is
+          # `aarch64-apple-darwin` alone and the xcframework has no Intel
+          # slice. Verified by running the archive without it.
+          #
+          # arm64-only is the right answer rather than a workaround: the
+          # `binaries` matrix above records "x86_64-apple-darwin — no Intel Mac
+          # target is claimed by the app", and this artifact is named
+          # `aarch64-apple-darwin` for the same reason. A universal app needs
+          # `x86_64-apple-darwin` added to `macos_slices` first, which is a
+          # `mise.toml` decision and not this one.
+          common="-project Sunrise.xcodeproj -scheme Sunrise -configuration Release"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::warning title=Unsigned dry run::Building with CODE_SIGNING_ALLOWED=NO. The .dmg this run produces is UNSIGNED and un-notarized; macOS will refuse to open it after a download."
+            # shellcheck disable=SC2086
+            xcodebuild archive $common \
+              -destination 'generic/platform=macOS' \
+              -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
+              -quiet \
+              ARCHS=arm64 \
+              MARKETING_VERSION="$short" \
+              CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+              CODE_SIGNING_ALLOWED=NO
+          else
+            # `ENABLE_HARDENED_RUNTIME=YES` is an override of
+            # apps/apple/project.yml, which sets it to NO. Notarization
+            # *requires* the hardened runtime — a submission without it is
+            # rejected — so this is not a preference. It is overridden here
+            # rather than changed there because it belongs with the signing
+            # identity that only exists in this job; see the note in
+            # docs/07-clients/releasing.md, which asks for the project.yml
+            # change as the durable fix. It does not touch the App Sandbox,
+            # which project.yml's neighbouring comment is about and which
+            # ADR-0031 keeps off.
+            #
+            # `--timestamp` is what makes the signature outlive the
+            # certificate: without a secure timestamp the app stops verifying
+            # the day the Developer ID certificate expires.
+            # shellcheck disable=SC2086
+            xcodebuild archive $common \
+              -destination 'generic/platform=macOS' \
+              -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
+              -quiet \
+              ARCHS=arm64 \
+              MARKETING_VERSION="$short" \
+              CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGN_IDENTITY="Developer ID Application" \
+              DEVELOPMENT_TEAM="$MACOS_TEAM_ID" \
+              ENABLE_HARDENED_RUNTIME=YES \
+              OTHER_CODE_SIGN_FLAGS="--timestamp"
+          fi
+      - name: Export the archive
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/export"
+          if [ "$DRY_RUN" = "true" ]; then
+            # `-exportArchive` always re-signs, and there is no export method
+            # that produces an unsigned Developer ID export — so the dry run
+            # cannot exercise this step and says so rather than pretending.
+            # Everything after it is exercised: the app is lifted straight out
+            # of the archive and packaged by the same code path.
+            mkdir -p "$RUNNER_TEMP/export"
+            ditto "$RUNNER_TEMP/Sunrise.xcarchive/Products/Applications/Sunrise.app" \
+                  "$RUNNER_TEMP/export/Sunrise.app"
+            echo "::warning title=Unsigned dry run::xcodebuild -exportArchive was skipped; the .app was copied out of the archive unsigned."
+            exit 0
+          fi
+          # `signingStyle: manual` with no `provisioningProfiles` entry, which
+          # is correct rather than incomplete: a Developer ID Application
+          # signature needs a profile only for capabilities that are
+          # profile-gated (iCloud, Push, App Groups, and the App Sandbox's
+          # network and file entitlements). This app declares none — see
+          # apps/apple/project.yml, which ships no entitlements file at all —
+          # so the identity is the whole credential.
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>developer-id</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>${MACOS_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Developer ID Application</string>
+            <key>stripSwiftSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+      # Two notarization submissions, not one, and the second is not the
+      # redundant one.
+      #
+      # Apple's rule is that a ticket is stapled to the thing that carries the
+      # quarantine flag. Notarizing and stapling only the `.dmg` covers the
+      # download; the moment the user drags `Sunrise.app` out of it, the app
+      # has no ticket of its own and Gatekeeper's first-launch check has to go
+      # online. For a self-host-first product whose users are explicitly
+      # expected to run without anybody's cloud (ADR-0027), an app that will
+      # not launch offline the first time is a defect. So the app is notarized
+      # and stapled first, and the `.dmg` built around the already-stapled
+      # copy is notarized and stapled second.
+      - name: Notarize and staple the app
+        if: needs.verify.outputs.dry_run != 'true'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          # `ditto -c -k --keepParent` rather than `zip`: notarytool needs the
+          # bundle's symlinks and extended attributes intact, and `zip` flattens
+          # both, which shows up as an "unsigned binary" rejection.
+          ditto -c -k --keepParent "$RUNNER_TEMP/export/Sunrise.app" "$RUNNER_TEMP/Sunrise.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Sunrise.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 25m
+          xcrun stapler staple "$RUNNER_TEMP/export/Sunrise.app"
+      - name: Package the .dmg
+        run: |
+          set -euo pipefail
+          # The tarballs beside this on the Releases page are
+          # `sunrise-<version>-<rust target triple>.tar.gz`, so this is
+          # `sunrise-<version>-aarch64-apple-darwin.dmg`: same prefix, same
+          # version position, same architecture token, so the two macOS
+          # artifacts sort together and a reader can see at a glance that they
+          # are the same slice.
+          name="sunrise-${VERSION}-aarch64-apple-darwin"
+          if [ "$DRY_RUN" = "true" ]; then
+            # Marked in the file name itself, not only in the log. An unsigned
+            # build that escapes this workflow has to say what it is.
+            name="${name}-UNSIGNED"
+          fi
+          echo "DMG_NAME=${name}.dmg" >> "$GITHUB_ENV"
+
+          stage="$RUNNER_TEMP/dmg"
+          rm -rf "$stage"
+          mkdir -p "$stage" dist
+          # `ditto`, not `cp -R`: it is the tool that copies a bundle whole —
+          # symlinks, permissions and extended attributes — and a bundle that
+          # has just been signed and stapled is exactly the thing not to copy
+          # with something that might drop one of the three.
+          ditto "$RUNNER_TEMP/export/Sunrise.app" "$stage/Sunrise.app"
+          # The drag-to-install target every Mac user expects. A symlink, so it
+          # costs nothing in the compressed image.
+          ln -s /Applications "$stage/Applications"
+          # UDZO is the read-only compressed format Gatekeeper and `stapler`
+          # both understand; HFS+ rather than APFS so the image mounts on
+          # anything, which matters for a file a stranger downloads.
+          hdiutil create \
+            -volname "Sunrise ${VERSION}" \
+            -srcfolder "$stage" \
+            -fs HFS+ \
+            -format UDZO \
+            -ov -quiet \
+            "dist/${name}.dmg"
+      - name: Sign, notarize and staple the .dmg
+        if: needs.verify.outputs.dry_run != 'true'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          codesign --force --timestamp --sign "Developer ID Application" \
+            --keychain "$SIGNING_KEYCHAIN" "dist/${DMG_NAME}"
+          xcrun notarytool submit "dist/${DMG_NAME}" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 25m
+          xcrun stapler staple "dist/${DMG_NAME}"
+      # The same commands docs/07-clients/releasing.md tells an operator to run
+      # by hand on a downloaded copy, run here first, so that a signature which
+      # does not actually satisfy Gatekeeper fails the release rather than the
+      # user. A notarized-but-unopenable `.dmg` is the one failure mode this
+      # whole job exists to prevent, and it is invisible until someone tries.
+      - name: Verify the signature the way a user's Mac will
+        if: needs.verify.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/export/Sunrise.app"
+          codesign -dv --verbose=4 "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # `-t exec` for the app and `-t install` for the disk image: those
+          # are the two assessment types Gatekeeper actually uses, and an app
+          # that passes one can fail the other.
+          spctl -a -vvv -t exec "$app"
+          spctl -a -vvv -t install "dist/${DMG_NAME}"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "dist/${DMG_NAME}"
+          # Hardened runtime is not optional for a notarized app, and a
+          # silently-missing flag is exactly the kind of thing that only shows
+          # up as a Gatekeeper refusal on somebody else's Mac.
+          codesign -d --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo "::error::the exported app is not hardened-runtime signed"; exit 1; }
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          # Computed on the machine that produced the file rather than after an
+          # artifact round-trip, exactly as the `binaries` job does it, and
+          # after stapling — stapling rewrites the file, so a checksum taken
+          # before it would describe something nobody downloads.
+          ( cd dist && shasum -a 256 "${DMG_NAME}" > "${DMG_NAME}.sha256" )
+          cat "dist/${DMG_NAME}.sha256"
+      # `always()`, so the private key does not survive a failed archive, a
+      # rejected notarization or a cancelled run. The keychain is on an
+      # ephemeral runner, but "the machine goes away" is not a deletion policy.
+      - name: Delete the temporary keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sunrise-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
   # The GitHub Release itself, last: it is the thing humans see, so it should
   # not exist until the artifacts it advertises do.
   # ---------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: [verify, binaries, image]
+    needs: [verify, binaries, image, macos-app]
+    # Unreachable on a dry run anyway -- `binaries` and `image` are skipped and
+    # a skipped dependency skips this too -- but stated rather than inferred,
+    # because this is the one job whose accidental execution would publish.
+    if: needs.verify.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -237,6 +704,15 @@ jobs:
           path: dist
           pattern: binaries-*
           merge-multiple: true
+      # A second download rather than a wider pattern on the first: the
+      # `binaries-*` artifacts are one per Rust target and are merged into one
+      # directory, while this is a single artifact from a job with a different
+      # shape. Both land in `dist/`, which is what the checksum block and the
+      # upload below read.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: macos-app
       - name: Release notes
         env:
           TAG: ${{ github.ref_name }}
@@ -244,6 +720,9 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          # Kept in step with the `macos-app` job's `Package the .dmg`, which
+          # is where this name is constructed.
+          DMG="sunrise-${VERSION}-aarch64-apple-darwin.dmg"
           # Previous release tag, by tag topology rather than by date: `git
           # describe` walks the parent chain, so a tag pushed out of order does
           # not produce a changelog spanning the wrong range.
@@ -272,6 +751,20 @@ jobs:
             echo
             echo 'See [docs/06-server/self-hosting.md](https://github.com/'"${GITHUB_REPOSITORY}"'/blob/'"${TAG}"'/docs/06-server/self-hosting.md) for configuration.'
             echo
+            echo '### macOS app'
+            echo
+            # Double quotes with escaped backticks, not single quotes: a bare
+            # backtick would open a command substitution, and a single-quoted
+            # string cannot interpolate the file name.
+            printf "Download \`%s\`, open it, and drag Sunrise to Applications. It is signed with a Developer ID Application identity, notarized by Apple and stapled, so it opens on a Mac that has never seen it before and keeps opening with no network. Verify a downloaded copy yourself:\n" "$DMG"
+            echo
+            echo '```'
+            echo "spctl -a -vvv -t install ${DMG}"
+            echo "xcrun stapler validate ${DMG}"
+            echo '```'
+            echo
+            echo "The full procedure, including what each field of \`codesign -dv --verbose=4\` should say, is in [docs/07-clients/releasing.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/07-clients/releasing.md)."
+            echo
             echo '### Checksums'
             echo
             echo '```'
@@ -297,7 +790,11 @@ jobs:
             -F generate_release_notes=true \
             -F prerelease="$PRERELEASE" \
             -F draft=false
-          gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+          # `dist/*.sha256` covers the `.dmg`'s checksum too -- the macOS job
+          # emits one beside the image, the same way each `binaries` leg does
+          # -- and the `### Checksums` block above `cat`s the same glob, so the
+          # notes and the uploaded files cannot disagree about what shipped.
+          gh release upload "$TAG" dist/*.tar.gz dist/*.dmg dist/*.sha256 --clobber
 
 # ---------------------------------------------------------------------------
 # Publish targets deliberately absent
