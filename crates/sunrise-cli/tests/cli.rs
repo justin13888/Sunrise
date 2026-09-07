@@ -1094,12 +1094,22 @@ fn a_subcommand_adopts_a_pairing_payload_when_asked() {
 /// The binary reads the real clock — every subcommand does — so the fixture is
 /// built against the same clock rather than against a frozen date that would
 /// leave this test passing only in one particular week of 2026.
+///
+/// The event starts **now**, not at a civil midnight, and that is the whole
+/// point. `Query::DayBlocks` and `Query::WeekBlocks` fold in the *device* zone
+/// (`Engine::device_zone`, from `/etc/localtime`), while a fixture written in
+/// UTC folds in UTC. West of Greenwich the two disagree for the last hours of
+/// every evening: a UTC midnight is the previous civil day locally, and on a
+/// Monday it is the previous civil *week*, so `ical export week` correctly
+/// returned an empty calendar and five tests failed on a date rather than on a
+/// defect. `Timestamp::now()` is inside the current day and the current week in
+/// every zone there is, which is the property these tests actually need.
 fn ics_this_week(uid: &str, summary: &str) -> String {
+    // Truncated to the second: `.ics` carries no sub-second field, so an
+    // untruncated start would not round-trip through export and back.
     let start = jiff::Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
-        .start_of_day()
-        .expect("start of day")
-        .timestamp();
+        .round(jiff::Unit::Second)
+        .expect("truncate to the second");
     let end = start + jiff::SignedDuration::from_hours(1);
     format!(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
