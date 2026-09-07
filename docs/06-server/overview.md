@@ -108,9 +108,13 @@ For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob s
   scaled shape, and there is no scaled deployment.
 - Monitoring: `/metrics` Prometheus endpoint with content-free metrics. The
   metrics and any admin surface MUST be reachable on loopback only, or behind
-  operator authentication; a public bind MUST NOT serve them. `build_router`
-  enforces this by **mounting `/metrics` only when the listener is loopback**,
-  and logging `srv.start.metrics_withheld` when it is not. An operator who
+  operator authentication; a public bind MUST NOT serve them. `build_service`
+  (`crates/sunrise-server/src/lib.rs`) enforces this through
+  `api::operator_surface` (`crates/sunrise-server/src/api/mod.rs`), which
+  **mounts `/metrics` only when the listener is loopback** and logs
+  `srv.start.metrics_withheld` when it is not. On a non-loopback bind it merges
+  an empty router, so the operation is absent from the OpenAPI description as
+  well as from the routing table. An operator who
   wants the endpoint remotely puts a reverse proxy in front of the loopback
   bind. It was previously merged into the public router with no auth layer and
   no bind check, which published the counter set on any public deployment.

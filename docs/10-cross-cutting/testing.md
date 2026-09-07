@@ -24,7 +24,8 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 #### Convergence property-test determinism
 
 - **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches is meant to come from `cargo-fuzz` binaries, which are specified but not built — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set and status, rather than restating it here.
-- **Seed**: read from `SUNRISE_FUZZ_SEED` (hex) when set; otherwise default to the first 8 bytes of the workspace `HEAD` commit hash. Every CI run logs the resolved seed in the suite header so a failing run is reproducible by re-export.
+- **Reproducing a failure**: proptest's own persistence file. When a property test finds a counterexample it writes the case to disk and replays it on every later run, and that is the only reproduction mechanism any property test in this workspace has. **`SUNRISE_FUZZ_SEED` is not one of them** — no proptest reads it and no suite logs a resolved seed, so exporting it changes nothing here. It is the chaos harness's convention and is documented under [Network / chaos tests](#5-network--chaos-tests), where it is implemented and tested. The persistence files land in two different shapes depending on whether the test lives in `src/` or `tests/`, and `.gitignore` covers neither — [#113](https://github.com/justin13888/Sunrise/issues/113).
+- **Specified, not built:** one seed convention across both harnesses. The earlier text of this bullet asked every property test to read `SUNRISE_FUZZ_SEED` (hex), to fall back to the first 8 bytes of the workspace `HEAD` hash, and to log the resolved seed in a suite header. Nothing does. Plumbing a resolved seed into `ProptestConfig`'s RNG and logging it would make the sentence true everywhere and leave one reproduction story instead of two; it does not remove the need for the persistence file, because the shrinker still replays a *specific* minimal case. Tracked in [#114](https://github.com/justin13888/Sunrise/issues/114).
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
 - **Assertion**: for every permutation of the same op set across N simulated devices, the final state is byte-identical (canonical CBOR comparison).
 
@@ -49,6 +50,7 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
 - Toxic-proxy between client and server: drop packets, corrupt bytes, delay, partition.
 - Verify clients converge once the partition heals.
 - Verify integrity warnings fire on tampered envelopes.
+- **Seed**: the harness's RNG seed comes from `SUNRISE_FUZZ_SEED` when set — hex, a leading `0x` forcing hex, and a plain decimal also accepted — and otherwise from the fixed `DEFAULT_FUZZ_SEED` (`0x5352_5f43_4841_4f53`, "SR_CHAOS"), so a run reproduces out of the box without reading git state. `seed_from_env` in `crates/sunrise-e2e/src/chaos/toxic.rs` is the reader, and its unit tests cover hex, `0x`, decimal and absence; `crates/sunrise-e2e/tests/chaos.rs` xors the resolved value with a per-scenario tag so two scenarios never draw the same stream. **This is the only consumer of the variable in the workspace** — it is a chaos-harness convention, not a property-test one.
 
 ### 6. Performance tests
 
@@ -66,6 +68,17 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
   `workflow_dispatch` only — never on a pull request — and carries
   `continue-on-error: true`. It reports; it does not gate. There is no PR
   comment step and no baseline-updating bot PR.
+- **The tolerance it prints against is 60%, not 5%.** The comparison step is
+  `cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`,
+  so even the informational report only flags a move larger than the noise floor
+  below. 5% is the figure
+  [`performance-budgets.md`](./performance-budgets.md#regression-policy)
+  specifies, and it is what a dedicated-hardware gate would tighten to.
+- **One platform is measured.** The job runs on `ubuntu-latest`, so
+  `bench/baseline.json` holds numbers for `linux-x86_64` and `null` for every
+  `darwin-aarch64` metric. §6's representative-hardware list — a Mac mini, an
+  Android reference device, a Pixel emulator, a Linux runner — is specification;
+  the Linux runner is the part that exists. The file is edited by hand.
 - The job's own comment records why: measured on the shared runner, the same
   binary against its own recorded baseline swings +270% (`ws_handshake`) and
   −39% (`submit_create_task`) from scheduling noise alone. A gate that

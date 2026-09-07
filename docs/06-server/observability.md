@@ -309,25 +309,24 @@ templates opaque segments out of a *raw* target — and it is still exported fro
 > `every_server_field_survives_the_redaction_allowlist`.
 > `crates/sunrise-server/tests/` holds `logging.rs` and `oidc_verifier.rs`.
 >
-> Those nine tests are the whole of the enforcement. `api/observe.rs:9-14` reads
-> as though a tenth, structural guarantee stands behind them — "the concrete URI
-> is never consulted, so there is no query string to leak: the property is
-> structural" — but that module comment is itself the stale text the paragraph
-> above corrects, and it is a comment rather than a test. The structural half
-> holds only for `on_response`, `on_disconnect` and `on_panic`, which are handed
-> no request; `on_request` is handed one, and nothing but the tests keeps its
-> `.uri()` unread.
+> Those nine tests are the whole of the enforcement. `api/observe.rs`'s module
+> comment used to read as though a tenth, structural guarantee stood behind them
+> — "the concrete URI is never consulted, so there is no query string to leak:
+> the property is structural" — and it now carries the distinction instead: the
+> structural half holds only for `on_response`, `on_disconnect` and `on_panic`,
+> which are handed no request; `on_request` is handed one, and nothing but the
+> tests keeps its `.uri()` unread.
 >
 > [`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6.3 and §11
-> still record this file as missing, and its §6 allowlist table
-> (`logging.md:156`) still attributes the `endpoint` template to
-> `sunrise_log::templatize_path`, which the paragraph above establishes is not
-> what runs. That last one understates the guarantee as well as misplacing it:
-> `templatize_path` sanitises a raw path, whereas `observe::templated` is never
-> given one, because it works from the matched route's `paths` key. All three
-> are outside this document — §6.3 and §11 are tracked on
-> [#99](https://github.com/justin13888/Sunrise/issues/99), the §6 allowlist row
-> on [#109](https://github.com/justin13888/Sunrise/issues/109).
+> now record this file as present and list the five tests it holds, and its §6
+> allowlist table names `api/observe.rs`'s route template as the source of
+> `endpoint`. All three previously said the opposite — the file "no longer
+> exists", the template produced by `sunrise_log::templatize_path` — and the
+> second of those understated the guarantee as well as misplacing it, because
+> `templatize_path` sanitises a raw path whereas `observe::templated` is never
+> given one. Corrected under
+> [#99](https://github.com/justin13888/Sunrise/issues/99) and
+> [#109](https://github.com/justin13888/Sunrise/issues/109).
 
 `docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` here.
 The `log-redaction` job in `.github/workflows/ci.yml` greps

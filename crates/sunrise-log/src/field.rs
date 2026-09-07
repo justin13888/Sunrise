@@ -47,7 +47,10 @@ pub static ALLOWED: &[&str] = &[
     // --- redaction-layer self-reporting (see `RedactionLayer`) ---
     "dropped_field",
     "dropped_target",
-    // Templated request target — see [`templatize_path`]. Never a raw URI.
+    // Templated request target. Never a raw URI: the server takes it from
+    // the matched route's template (`sunrise_server::api::observe`), and
+    // [`templatize_path`] is the fallback for any future caller that only has
+    // a concrete path.
     "endpoint",
     "epoch",
     // --- error envelope (logging.md §5) ---
@@ -142,6 +145,16 @@ pub fn is_allowed(name: &str) -> bool {
 /// `[0-9A-Za-z_-]` with at least one digit — which catches Crockford base-32
 /// ULIDs, hex ids, and base64url tokens while leaving real route words
 /// (`devices`, `accounts`, `blobs`) alone.
+///
+/// # It has no caller today, and is kept deliberately
+///
+/// `sunrise-server`'s request log takes `endpoint` from the matched route's
+/// `paths` key (`sunrise_server::api::observe`), so it is never handed a
+/// concrete target and has nothing to sanitise; `docs/06-server/auth.md` calls
+/// this function "the old mitigation" for that reason. It stays exported and
+/// tested as the tool for the *next* caller that logs a concrete path — a
+/// client-side HTTP log, or a server surface that kynos does not describe.
+/// Read it as available, not as a guard currently standing.
 #[must_use]
 pub fn templatize_path(target: &str) -> String {
     let path = target.split(['?', '#']).next().unwrap_or("");

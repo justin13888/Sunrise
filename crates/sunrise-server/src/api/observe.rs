@@ -6,12 +6,24 @@
 //! already, which is why `crate::logging`'s span was hand-assembled rather than
 //! configured.
 //!
-//! kynos removes the hazard rather than mitigating it. An [`Observer`] is handed
-//! the matched [`Route`], whose `path()` is "the `paths` key this request
-//! matched, exactly as the description spells it — with its `{}` expressions
-//! intact, never the request's own path". The concrete URI is never consulted,
-//! so there is no query string to leak: the property is structural rather than
-//! a redaction step someone could forget to apply.
+//! kynos narrows the hazard rather than mitigating it after the fact. An
+//! [`Observer`] is handed the matched [`Route`], whose `path()` is "the `paths`
+//! key this request matched, exactly as the description spells it — with its
+//! `{}` expressions intact, never the request's own path", and that key is what
+//! `endpoint` is built from. There is no raw path in the computation at all,
+//! which is a stronger property than the scrubbing step it replaced
+//! (`sunrise_log::templatize_path`, which nothing on this route calls).
+//!
+//! Read "the concrete URI is never consulted" precisely, though. It is
+//! *structural* only for `on_response`, `on_disconnect` and `on_panic`, which
+//! are handed no request at all. `on_request` **is** handed one — it reads
+//! `request.method()` off the same value — so what keeps its `.uri()` unread is
+//! the tests, not the signature. `the_query_string_never_reaches_the_log` below
+//! and `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`
+//! in `tests/logging.rs` each drive a real `?access_token=` through and assert
+//! the sentinel never appears; neither may be dropped on the grounds that the
+//! leak is impossible by construction. `docs/06-server/observability.md` records
+//! the same distinction.
 //!
 //! What is kept from the surface this replaces is the *record shape*.
 //! `docs/10-cross-cutting/log-events.md` catalogues `srv.req.start` and
