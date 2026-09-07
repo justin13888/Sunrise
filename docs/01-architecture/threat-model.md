@@ -45,6 +45,7 @@ status: accepted
 - Withhold ops (deny service). Detectable via gaps in op counters.
 - Observe metadata (op counts, timestamps, device IDs, sync IPs).
 - Serve a known-old snapshot to a specific device (rollback). Mitigation: clients track high-water-mark of op log root in tamper-evident structure.
+- Tell a caller that already holds a bearer whether that bearer is currently valid. Three status codes do this deliberately — the pre-lookup `AUTH_DEVICE_SIG_INVALID`, `AUTH_SIGNUP_DISABLED`'s `403`, and the two bootstrap routes (`POST /accounts`, `POST /devices`), which accept a bearer with no device binding because a device cannot sign before it exists. Nothing about the *account* is disclosed: which accounts exist, which devices are on one, and whether a named device id is one of them all stay `AUTH_TOKEN_INVALID`. Accepted rather than closed — see [ADR-0035](../11-adr/0035-bearer-validity-oracle-accepted.md) and [`../06-server/auth.md`](../06-server/auth.md) §Device binding.
 
 ### A3: Compromised user device
 

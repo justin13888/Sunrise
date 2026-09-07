@@ -49,6 +49,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0029 | [Design tokens are compiled from TOML, committed, and drift-checked](./0029-design-token-pipeline.md) | accepted (amends the shared UI system's token section; amended by 0030: the seven light-theme colours below AA are raised and the gate is exhaustive) |
 | 0030 | [Every palette colour clears a stated contrast threshold, and the loader enforces it](./0030-palette-contrast-gate.md) | accepted (amends 0029 and the shared UI system's colour section) |
 | 0033 | [The relay dedups whole batches, and a re-partitioned re-send is accepted](./0033-relay-batch-dedup-is-whole-batch.md) | accepted (amends the wire protocol's ack-semantics section) |
+| 0035 | [The bearer-validity disclosure on `AUTH_DEVICE_SIG_INVALID` is accepted](./0035-bearer-validity-oracle-accepted.md) | accepted (amends server auth §Device binding and the threat model's A2) |
 
 ## When to write a new ADR
 
