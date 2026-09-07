@@ -48,6 +48,12 @@ jobs:
   verify:
     name: Verify tag
     runs-on: ubuntu-latest
+    # A shallow checkout, one `sed` over Cargo.toml, a string comparison and
+    # six emptiness checks. Seconds of work, and the only part of it that can
+    # stall is the checkout, so this is `ci.yml`'s floor for a job whose real
+    # cost is `actions/checkout` rather than a number derived from what the
+    # job computes.
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -149,6 +155,18 @@ jobs:
     # Nothing here is published on a dry run, so nothing here is built on one.
     if: needs.verify.outputs.dry_run == 'false'
     runs-on: ${{ matrix.os }}
+    # Per leg, as in `ci.yml`'s `rust` job and for the reason given there:
+    # macOS minutes bill at 10x, so the expensive leg gets the tighter cap
+    # rather than inheriting a ceiling sized for the cheaper one.
+    #
+    # The numbers start from `ci.yml`'s measured cold `rust` runs -- 18m26s on
+    # ubuntu, 14m46s on macOS -- and add to them rather than copy them. Those
+    # were `cargo test` at the dev profile; this is `--release`, where
+    # `opt-level = 3` over the whole graph, and over rusqlite's bundled
+    # SQLCipher, `ring` and `zstd` compiled from C, is the dominant cost. 60
+    # and 45 are ~3.3x and ~3x those cold test-profile builds: room for a
+    # release profile, and no room for a six-hour hang nobody is watching.
+    timeout-minutes: ${{ matrix.timeout }}
     permissions:
       contents: read
     strategy:
@@ -157,9 +175,11 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            timeout: 60
           # macos-26 is the arm64 Tahoe image; see the macos-app job in ci.yml.
           - os: macos-26
             target: aarch64-apple-darwin
+            timeout: 45
         # Not built here, and deliberately:
         #
         #   aarch64-unknown-linux-gnu — needs `ubuntu-24.04-arm`, which is free
@@ -241,6 +261,14 @@ jobs:
     # As with `binaries`: a dry run publishes nothing, so it builds nothing.
     if: needs.verify.outputs.dry_run == 'false'
     runs-on: ubuntu-24.04
+    # The compile inside this image is the same workspace the ubuntu
+    # `binaries` leg builds at `--release`, so it starts from that leg's 60.
+    # The ten minutes on top are the parts that are not the compile: the
+    # remaining image layers, the registry push, and the Sigstore round trip
+    # the attestation step makes. `cache-from: type=gha` does not shorten the
+    # first tag -- there is nothing in that cache until a run has populated it
+    # -- so this is sized for a cold build, which is the one that will happen.
+    timeout-minutes: 70
     permissions:
       contents: read
       packages: write
@@ -333,6 +361,17 @@ jobs:
     # Same pin and same reason as `ci.yml`'s `macos-app`: project.yml sets
     # `deploymentTarget.macOS: "26.0"`, which no earlier image can build.
     runs-on: macos-26
+    # The longest job here, and three of its costs are not compilation.
+    # `ci.yml`'s `macos-app` — the same three-slice release xcframework plus a
+    # full `xcodebuild test` — is capped at 60. This one drops the test run,
+    # keeps the xcframework and the Xcode build, and adds a codesign pass over
+    # the bundle plus **two** `notarytool submit --wait` round trips whose
+    # latency is Apple's and not ours: usually minutes, and documented by
+    # Apple as able to take an hour when the service is backed up. 90 is 60
+    # for the build and 30 for the two waits. Each submission additionally
+    # carries `--timeout 25m` below, so a stuck notarization fails with a
+    # message from `notarytool` rather than by silently hitting this ceiling.
+    timeout-minutes: 90
     permissions:
       contents: read
     env:
@@ -692,6 +731,12 @@ jobs:
     # because this is the one job whose accidental execution would publish.
     if: needs.verify.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
+    # Downloads three artifacts, runs `changelog.sh` over a full-depth clone,
+    # and makes two `gh` calls. Everything it does is I/O, and the two
+    # unbounded parts are the `fetch-depth: 0` checkout and the upload of the
+    # `.dmg`, which is the largest file this workflow produces. 20 leaves room
+    # for both to be slow without leaving a tag half-published for six hours.
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
