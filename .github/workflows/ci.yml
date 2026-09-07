@@ -645,3 +645,30 @@ jobs:
         # reason, and fails when one of them goes stale.
         run: .github/scripts/orphan-crate-gate.py
 
+
+  docs-links:
+    name: Docs link gate
+    runs-on: ubuntu-latest
+    # Newer than the last run that had real steps, so sized from what it does
+    # rather than measured: `actions/checkout` plus one standard-library Python
+    # script that reads 130 files and makes no network call. No toolchain to
+    # install and nothing to cache — it is the cheapest job in this workflow,
+    # and it runs in well under a second locally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # `python3` is preinstalled on ubuntu-latest and the script imports only
+      # the standard library, so there is no setup step and no dependency to
+      # pin. The script shells out to `git ls-files`, which is why it needs the
+      # checkout and nothing else.
+      - name: Reject a markdown link or anchor that resolves to nothing
+        # Nothing checked that a relative link or a heading anchor pointed at
+        # anything real, so a mis-transcribed anchor was invisible: GitHub finds
+        # no such fragment and silently leaves the reader at the top of the
+        # file. The live instance was an ADR cross-reference whose slug doubled
+        # a hyphen the heading does not double, because GitHub *removes* a
+        # character like `→` rather than replacing it and the spaces that
+        # surrounded it survive. External URLs are deliberately out of scope —
+        # the docs cite many third-party URLs and a gate that goes red on
+        # someone else's outage is one people learn to ignore.
+        run: .github/scripts/docs-link-gate.py

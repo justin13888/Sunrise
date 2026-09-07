@@ -155,6 +155,17 @@ run = "cargo bench -p sunrise-bench"
 description = "Run the benches, then merge the results into bench/baseline.json for this platform"
 run = ["cargo bench -p sunrise-bench", "cargo run -p sunrise-bench --bin baseline"]
 
+# --- Documentation ---
+
+[tasks.docs-links]
+description = "Reject a markdown link or heading anchor that resolves to nothing (the CI gate, run locally)"
+# Offline by design: relative links, in-file anchors and cross-file anchors
+# across every tracked `.md`, and nothing with a scheme. The docs cite plenty of
+# third-party URLs, so an external crawler would go red on someone else's
+# outage, and a gate people learn to ignore protects nothing. Runs in under a
+# second over 130 files and needs no toolchain but python3.
+run = ".github/scripts/docs-link-gate.py"
+
 # --- Apple clients (Swift / UniFFI) ---
 
 [tasks.apple-xcframework]
