@@ -68,6 +68,17 @@ Test pyramid plus a few specialized layers for what makes Sunrise distinctive.
   `workflow_dispatch` only — never on a pull request — and carries
   `continue-on-error: true`. It reports; it does not gate. There is no PR
   comment step and no baseline-updating bot PR.
+- **The tolerance it prints against is 60%, not 5%.** The comparison step is
+  `cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`,
+  so even the informational report only flags a move larger than the noise floor
+  below. 5% is the figure
+  [`performance-budgets.md`](./performance-budgets.md#regression-policy)
+  specifies, and it is what a dedicated-hardware gate would tighten to.
+- **One platform is measured.** The job runs on `ubuntu-latest`, so
+  `bench/baseline.json` holds numbers for `linux-x86_64` and `null` for every
+  `darwin-aarch64` metric. §6's representative-hardware list — a Mac mini, an
+  Android reference device, a Pixel emulator, a Linux runner — is specification;
+  the Linux runner is the part that exists. The file is edited by hand.
 - The job's own comment records why: measured on the shared runner, the same
   binary against its own recorded baseline swings +270% (`ws_handshake`) and
   −39% (`submit_create_task`) from scheduling noise alone. A gate that
