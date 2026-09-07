@@ -798,20 +798,35 @@ impl Keychain {
 
     // ---- Stream keys ----
 
-    /// The **current** epoch of each stream this device holds a key for.
+    /// **Every** `(stream_id, epoch)` this device holds a key for.
     ///
-    /// `MAX(epoch)` per stream, not every epoch. A backfill exists to close the
-    /// window between "an epoch was minted" and "the minter had heard of this
-    /// device", and that window only ever contains current epochs: a device
-    /// paired earlier received every older epoch in field 6 of its
-    /// `PairingPayload`, and one paired later will receive them the same way.
-    /// Sending all of them would re-send, as ops, keys the payload had already
-    /// delivered — `S x E x D` sealed control ops on the first cert publication
-    /// of every new device, retained in `ops` forever. This is `S x D`.
+    /// It used to be `MAX(epoch)` per stream, and the reasoning recorded
+    /// alongside it was that older epochs had already travelled in the new
+    /// device's `PairingPayload`. That holds only when a device pairs and is
+    /// certified in one uninterrupted step. A rotation between the two — and
+    /// one is minted whenever a Stream is created, which is an ordinary event
+    /// rather than a rare one — left the device with the payload's epochs and
+    /// the current one, and a permanent hole where the epochs in between should
+    /// have been. Ops sealed under those parked in `deferred_ops` until
+    /// [`DEFERRED_TTL_MS`](crate::engine) dropped them, and nothing surfaced
+    /// it: it presents as "some items from around when I set up this device
+    /// never arrived". That was
+    /// [#107](https://github.com/justin13888/Sunrise/issues/107).
     ///
-    /// It also bounds how long a wrongly-recorded `key_envelope_recipients` row
-    /// can suppress a backfill: the next rotation of that stream mints a new
-    /// epoch, which is a key this table has no row for.
+    /// The cost of the wider set is real and is bounded twice over.
+    /// `key_envelope_recipients` (migration 0018) records who has been sent
+    /// which `(stream, epoch)`, so each pair is sealed to a given device **at
+    /// most once per replica** however many certs it republishes — the `S x E x
+    /// D` figure is the worst case of a first backfill, not a recurring one.
+    /// And the epochs a replica holds are the epochs that stream has ever had
+    /// on it, which grows only by rotation.
+    ///
+    /// A tempting third bound was rejected: deriving the set from the epochs
+    /// still referenced by parked `deferred_ops`. Those rows live on the
+    /// replica running the backfill and describe what *it* could not open — a
+    /// replica that has been online throughout has none, and the device that
+    /// actually needs the keys is the one whose state nobody here can see. It
+    /// bounds the wrong replica's ignorance.
     ///
     /// Read from `stream_keys` rather than the in-memory cache so that a key
     /// absorbed inside the caller's own open transaction is included: the cache
@@ -822,11 +837,11 @@ impl Keychain {
     /// Sorted so that two devices running the same backfill emit the same
     /// envelopes in the same order, which keeps a diff of two vaults' op logs
     /// readable.
-    pub(crate) fn held_current_epochs_tx(
+    pub(crate) fn held_epochs_tx(
         tx: &rusqlite::Transaction<'_>,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         let mut stmt = tx.prepare(
-            "SELECT stream_id, MAX(epoch) FROM stream_keys GROUP BY stream_id ORDER BY stream_id",
+            "SELECT DISTINCT stream_id, epoch FROM stream_keys ORDER BY stream_id, epoch",
         )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?

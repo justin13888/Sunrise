@@ -3966,14 +3966,19 @@ impl Engine {
     ///
     /// Every device that applies the cert runs this, and that is deliberate:
     /// picking one emitter would mean picking a device that might be offline.
-    /// Two things bound the redundancy. The set is the *current* epoch of each
-    /// stream rather than every epoch held — see
-    /// [`Keychain::held_current_epochs_tx`] for why the older ones are already
-    /// the pairing payload's job — and `key_envelope_recipients` carries the
-    /// first emitter's rows along with its ops, so a device that applies those
-    /// before it applies the cert emits nothing. The first round is still a
-    /// race between however many devices are online, and absorption being
-    /// idempotent is what makes that merely wasteful.
+    /// `key_envelope_recipients` carries the first emitter's rows along with
+    /// its ops, so a device that applies those before it applies the cert
+    /// emits nothing. The first round is still a race between however many
+    /// devices are online, and absorption being idempotent is what makes that
+    /// merely wasteful.
+    ///
+    /// The set is **every** epoch this replica holds, not the current one per
+    /// stream. Current-epoch-only was the first shape and it was wrong for a
+    /// reason that is ordinary rather than adversarial: a rotation landing
+    /// between a device's pairing and its certificate leaves that device
+    /// holding the payload's epochs and the live one, with a permanent hole in
+    /// between. See [`Keychain::held_epochs_tx`] for the cost this trades
+    /// against and for the derivation that was rejected.
     ///
     /// A revoked device is skipped, on the same presence test the recipient
     /// query uses, so this route cannot readmit a device the rotation just
@@ -3995,7 +4000,7 @@ impl Engine {
         if self.is_revoked(tx, device_id)? {
             return Ok(());
         }
-        for (stream_id, epoch) in Keychain::held_current_epochs_tx(tx)? {
+        for (stream_id, epoch) in Keychain::held_epochs_tx(tx)? {
             let already: i64 = tx.query_row(
                 "SELECT count(*) FROM key_envelope_recipients
                  WHERE stream_id = ? AND epoch = ? AND recipient = ?",
@@ -12734,9 +12739,7 @@ mod tests {
             envelopes_to(&ea, &dba, &b_id).is_empty(),
             "B cannot have been sealed to before A had its cert"
         );
-        let held = dba
-            .with_tx(Keychain::held_current_epochs_tx)
-            .expect("held epochs");
+        let held = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
         assert!(
             held.len() >= 2,
             "the capture minted at least the meta and Inbox epochs"
@@ -12762,6 +12765,87 @@ mod tests {
             envelopes_to(&ea, &dba, &b_id).len(),
             before,
             "a re-published cert must not re-send every key"
+        );
+    }
+
+    /// A device certified after a **rotation** receives the epoch it missed,
+    /// not only the live one.
+    ///
+    /// The gap this closes is [#107](https://github.com/justin13888/Sunrise/issues/107)
+    /// and it is silent: ops written under the superseded epoch park in
+    /// `deferred_ops` on the new device and expire at `DEFERRED_TTL_MS`, so it
+    /// presents to the user as "some items from around when I set up this
+    /// device never arrived" and to every log as nothing at all.
+    ///
+    /// The rotation here is `Command::RotateStreamKey`, but the ordinary cause
+    /// is creating a Stream or revoking a device — both mint — so the race is
+    /// between a new device's certificate and any of the account's routine
+    /// key-minting activity, which is not a corner.
+    #[test]
+    fn a_device_certified_after_a_rotation_receives_the_epoch_it_missed() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        // Epoch 1 of the Inbox exists and carries a task, all while B is
+        // unknown to A.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "written under epoch 1".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // The rotation that lands between B's pairing and B's certificate.
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        let live = dba
+            .with_tx(|tx| ea.keychain.current_epoch_tx(tx, &INBOX_STREAM_BYTES))
+            .unwrap()
+            .expect("the Inbox has a key");
+        assert!(
+            live >= 2,
+            "the rotation must have superseded epoch 1, or this test proves nothing"
+        );
+
+        trust_at(&ea, &mut dba, &eb, T0);
+
+        let sealed = envelopes_to(&ea, &dba, &b_id);
+        assert!(
+            sealed.contains(&(INBOX_STREAM_BYTES, live)),
+            "the live epoch is sealed to a newly certified device"
+        );
+        assert!(
+            sealed.contains(&(INBOX_STREAM_BYTES, 1)),
+            "and so is the superseded epoch, or every op written under it is \
+             undecryptable on B and expires out of `deferred_ops` unremarked"
+        );
+
+        // Every epoch, not merely the two this assertion names, and not twice.
+        let held = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
+        let mut want = held;
+        want.sort_unstable();
+        let mut got = sealed;
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "the backfill emits exactly the epochs this replica holds"
+        );
+
+        let before = envelopes_to(&ea, &dba, &b_id).len();
+        trust_at(&ea, &mut dba, &eb, T0 + 1);
+        assert_eq!(
+            envelopes_to(&ea, &dba, &b_id).len(),
+            before,
+            "`key_envelope_recipients` still makes a re-published cert emit nothing"
         );
     }
 
