@@ -303,7 +303,7 @@ swiftlint lint --strict --quiet --config .swiftlint.yml
 # on an application-identifier entitlement, which only exists on a signed
 # binary — with `CODE_SIGNING_ALLOWED=NO` every `SecItemAdd` returns
 # `errSecMissingEntitlement` and the vault cannot store its root, so the
-# five Keychain and vault-root tests fail for a reason that has nothing to
+# nine Keychain and vault-root tests fail for a reason that has nothing to
 # do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
 # enough for the simulator and needs no developer account.
 xcodebuild test \\

@@ -17,7 +17,37 @@ The **cryptography below is implemented and correct.** `crates/sunrise-crypto/sr
 * **`ID_D_priv` now exists in exactly one vault, and losing that vault destroys it permanently.** Since `PairingPayload` stopped carrying the identity's X25519 secret, `Keychain::create` keeps it only on the device that *created* the account; every device admitted by pairing gets `dh_secret: None`. The blob above is meant to be the second copy and is not built, so there is no second copy. If the creator's device is lost before the blob ships, `ID_D_priv` is gone: every `Recipient::Identity` copy in the op log becomes permanently unopenable, and **no recovery feature added later can retrieve it**, because sealing a blob needs the key it would carry. Before this change every paired device held `ID_D_priv`, so any survivor could have produced the blob afterwards; none can now. This is disclosed rather than gated — the read bound the change buys is worth more than the window costs — and it applies to every vault created from now on, not only to upgraded ones. `Keychain::holds_only_copy_of_identity_key` answers the question in the core API. **No client surfaces it yet** — there is no `Core` pass-through and no binding, so the Apple app cannot currently ask — which means a user with one device has one copy of the key their account's history is sealed to and is not told so.
 * **The blob cannot be fetched back.** `recovery_blob` is a write-only column: `POST /api/v1/accounts` stores it (`crates/sunrise-server/src/store.rs`), and the only read route, `GET /api/v1/accounts/me`, returns `AccountInfo`, which has no blob field. **There is no `GET /accounts/me/recovery_blob` route**, and no email-OTP gate in front of one.
 * **Previous-blob retention is not implemented.** There is one `recovery_blob` column and no history table; the 30-day window in §Versioning describes nothing.
-* **Recovery today restores nothing readable.** The blob carries *identity* keys. In the tree's hierarchy, decryption depends solely on the vault root, which is a per-account random value in one machine's Keychain and in no backup — see [`identity-and-device-keys.md`](./identity-and-device-keys.md) §What is specified here vs. what is implemented. **Losing the last paired device is total, unrecoverable data loss.** [ADR-0024](../11-adr/0024-key-hierarchy.md) is the decision that fixes this; §Recovery flow step 8 below states what it changes.
+* **Recovery today restores nothing readable.** The blob carries *identity* keys. In the tree's hierarchy, decryption depends solely on the vault root, which is a per-account random value in one machine's Keychain and, on iOS, in no backup (§Device backups do not carry the vault root) — see [`identity-and-device-keys.md`](./identity-and-device-keys.md) §What is specified here vs. what is implemented. **Losing the last paired device is total, unrecoverable data loss.** [ADR-0024](../11-adr/0024-key-hierarchy.md) is the decision that fixes this; §Recovery flow step 8 below states what it changes.
+
+## Device backups do not carry the vault root
+
+This is the guarantee §Implementation status leans on when it says the vault root is in no
+backup, and it is the part of that guarantee a user can actually meet. The root is stored under
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` — `KeychainVaultRootStore.accessibility`
+in `apps/apple/Sunrise/Identity/VaultRootStore.swift` — which iOS keeps wrapped under the
+device's UID key, so an encrypted backup cannot re-key it for other hardware.
+
+- **The vault is in the backup; its key is not.** The database sits in the app container and
+  an encrypted device backup carries it ([`../07-clients/mobile-ios.md`](../07-clients/mobile-ios.md)
+  §File system). Restore that backup onto a *new* device and Sunrise comes up holding a vault
+  it cannot open — `SessionModel.LockReason.keyMissingForExistingVault`, which is a distinct
+  state from first run and says so on screen: *"There is a vault on this device, but its key is
+  not in this Keychain. Pair with a device that still has it — creating a new key would leave
+  the existing data unreadable."*
+- **Restoring the same device keeps the key.** The class excludes the item from moving to other
+  hardware, not from a same-device restore.
+- **Pairing is how the key comes back.** A device that still holds the root sends it over, and
+  `SessionModel.adoptPairing` is the one path allowed to write a root over an existing vault.
+- **With no surviving device there is no way back** — the same total loss §Implementation status
+  states, reached by a route that looks like it should have worked. Nothing about a completed
+  backup implies the vault inside it is recoverable.
+- **macOS does not have this guarantee yet.** The Mac app uses the file-based login keychain,
+  which accepts `kSecAttrAccessible` and stores nothing (`SecItemAdd` with
+  `kSecUseDataProtectionKeychain` returns `errSecMissingEntitlement` for an app with neither the
+  App Sandbox nor a keychain-access-group entitlement, both deferred to release work in
+  `apps/apple/project.yml`). A Mac moved by Migration Assistant or restored from Time Machine
+  carries the login keychain and therefore the vault root. The Apple client declares the right
+  class on both platforms; only iOS enforces it.
 
 ## Recovery code
 
