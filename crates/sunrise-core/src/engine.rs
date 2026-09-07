@@ -1388,6 +1388,43 @@ impl Engine {
                     );
                     return Ok(Vec::new());
                 }
+                // A device id nobody has seen before, appearing in an
+                // account that has revoked something, is the observable
+                // signature of the one bypass revocation does not close: a
+                // revoked device still holds `ID_S_priv`, so it can mint a
+                // fresh id, sign a valid cert for it, and rejoin under a name
+                // the register does not list
+                // ([#105](https://github.com/justin13888/Sunrise/issues/105)).
+                //
+                // It is the signature of an ordinary pairing too, and nothing
+                // here can tell the two apart — that is exactly what #105 is,
+                // and ADR-0032 records why no check available today separates
+                // them without either over-blocking honest devices or diverging
+                // replicas. So this discloses and does not gate: the cert is
+                // applied either way, every replica applies it, and the account
+                // converges. What changes is that the event exists to be seen.
+                let readmission = {
+                    let known: bool = tx
+                        .query_row(
+                            "SELECT 1 FROM devices WHERE device_id = ?",
+                            params![&cert.body.device_id[..]],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    let revocations: i64 =
+                        tx.query_row("SELECT count(*) FROM device_revocations", [], |r| r.get(0))?;
+                    !known && revocations > 0
+                };
+                if readmission {
+                    tracing::warn!(
+                        ev = "core.device.admitted_after_revocation",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        "a device id this vault has never seen joined an account that \
+                         has revoked a device"
+                    );
+                }
                 tx.execute(
                     "INSERT INTO devices
                      (device_id, cert_blob, nickname, platform, created_at_ms,
@@ -12877,6 +12914,79 @@ mod tests {
         assert!(
             envelopes_to(&ea, &dba, &b_id).is_empty(),
             "a revoked device must not recover its keys by re-sending its cert"
+        );
+    }
+
+    /// **A revoked device rejoins under a fresh device id, and every replica
+    /// lets it.** This test asserts the bypass, not a defence against it.
+    ///
+    /// [#105](https://github.com/justin13888/Sunrise/issues/105). Revocation
+    /// names a *device id*; the capability it needs to take away is
+    /// `ID_S_priv`, which every paired device holds and no revocation touches.
+    /// So the revoked device mints a fresh keypair, signs a `DeviceCert` for it
+    /// under the account identity, publishes it — sealed under the pre-rotation
+    /// vault-meta epoch it still has — and `backfill_key_envelopes` hands the
+    /// new id every key the revocation had just rotated away.
+    ///
+    /// Both engines below are built from the same vault root, which is what
+    /// gives them the same account identity, and that models the situation
+    /// exactly: the revoked device *is* holding the key that signs certs. The
+    /// new id is not a forgery. It verifies.
+    ///
+    /// It is pinned here because it was a claim in three documents and an
+    /// assertion in none, and because it is the test that has to flip when the
+    /// fix lands. ADR-0032 records why the fix is identity rotation and not any
+    /// of the narrower checks that were considered here.
+    #[test]
+    fn a_revoked_device_rejoins_under_a_fresh_device_id() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        // The same account identity, a device id nobody has revoked: what the
+        // revoked device produces for itself out of the `ID_S_priv` it kept.
+        let ec2 = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let c_id = ec.keychain.device_id();
+        let c2_id = ec2.keychain.device_id();
+
+        trust(&ea, &mut dba, &ec);
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+        let after_the_cut = envelopes_to(&ea, &dba, &c_id).len();
+
+        // The fresh cert verifies under this account's identity: nothing in
+        // `DeviceCertPublish` has anything to check a revocation against,
+        // because a `DeviceCert` names no issuer.
+        trust_at(&ea, &mut dba, &ec2, T0 + 1);
+
+        assert!(
+            ea.is_revoked(dba.conn(), &c_id).unwrap(),
+            "the register still names the old id"
+        );
+        assert!(
+            !ea.is_revoked(dba.conn(), &c2_id).unwrap(),
+            "and has nothing to say about the new one"
+        );
+        assert_eq!(
+            envelopes_to(&ea, &dba, &c_id).len(),
+            after_the_cut,
+            "the read bound holds for the id it names, which is the whole of what it does"
+        );
+
+        let mut got = envelopes_to(&ea, &dba, &c2_id);
+        got.sort_unstable();
+        let mut want = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
+        want.sort_unstable();
+        assert!(!want.is_empty(), "the revocation rotated something");
+        assert_eq!(
+            got, want,
+            "every key the revocation rotated away is handed back to the same \
+             device under a name the register does not list"
         );
     }
 

@@ -47,6 +47,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0027 | [v1 is self-host-first: managed cloud, billing, quotas, presence, Android and sharing are post-v1](./0027-v1-self-host-first.md) | accepted |
 | 0028 | [iOS is a v1 client with its own parity column, at SHOULD level](./0028-ios-is-a-v1-client.md) | accepted (amends the client parity matrix; closes 0019's revisit trigger 1) |
 | 0029 | [Design tokens are compiled from TOML, committed, and drift-checked](./0029-design-token-pipeline.md) | accepted (amends the shared UI system's token section) |
+| 0032 | [Revocation cannot bound certificate issuance; disclose it rather than half-enforce it](./0032-revocation-cannot-bound-cert-issuance.md) | accepted (amends 0024's revocation guarantee; records why the narrow fixes for #105 are unsound) |
 
 ## When to write a new ADR
 

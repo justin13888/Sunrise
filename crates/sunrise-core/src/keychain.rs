@@ -1211,8 +1211,10 @@ impl Keychain {
     /// a formality, and this is how the engine test builds the op that check
     /// has to refuse. The underlying gap -- every member can mint a valid cert,
     /// so a revoked device can certify itself under a fresh id -- is not closed
-    /// by revocation and needs identity rotation; see
-    /// `docs/03-crypto/key-rotation.md` §Identity rotation.
+    /// by revocation and needs identity rotation. There is no narrower check:
+    /// both signatures on a self-issued cert belong to the party producing it,
+    /// so nothing about it attributes it to the device that signed. See
+    /// ADR-0032 and `docs/03-crypto/key-rotation.md` §Identity rotation.
     #[cfg(test)]
     pub(crate) fn issue_cert_for(
         &self,
