@@ -142,6 +142,11 @@ impl Core {
         // could not distinguish a sibling from a stranger. The cert is now
         // identity-signed and published as an op, so a device that pairs is
         // known to every replica the moment its first ops arrive.
+        // Restore the causal clock before anything stamps an op. `Core::open`
+        // is where a vault meets a fresh `MonotonicHlc`, so it is where the
+        // clock's durable half has to come back; `Engine::prime_hlc` says what
+        // goes wrong when it does not.
+        engine.prime_hlc(&db)?;
         // The account's base epochs are an invariant of a vault, not a fact
         // about pairing. They used to be minted by `export_pairing_payload`,
         // because that is where their absence was first noticed: a payload is

@@ -53,6 +53,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0033 | [The relay dedups whole batches, and a re-partitioned re-send is accepted](./0033-relay-batch-dedup-is-whole-batch.md) | accepted (amends the wire protocol's ack-semantics section) |
 | 0034 | [Revocation bounds a device's reads, not its writes, and no replica refuses an op](./0034-revocation-bounds-reads-not-writes.md) | accepted (depends on 0024; amends key rotation §Revocation and the threat model's A3) |
 | 0035 | [The bearer-validity disclosure on `AUTH_DEVICE_SIG_INVALID` is accepted](./0035-bearer-validity-oracle-accepted.md) | accepted (amends server auth §Device binding and the threat model's A2) |
+| 0036 | [The HLC is restored from the op log at open, not left to reset](./0036-hlc-restored-at-open.md) | accepted (amends 0016: its "HLC state does not survive a restart" concession is withdrawn; depends on 0014) |
 
 ## When to write a new ADR
 

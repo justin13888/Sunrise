@@ -8,6 +8,11 @@ defect below as "this ADR's problem rather than an accident". This is the fix.
 
 **Closes:** issue #21.
 
+**Amended by:** [ADR-0036](./0036-hlc-restored-at-open.md) — the "HLC state does
+not survive a restart" concession in §What we give up is withdrawn. The clock is
+restored at `Core::open` from the op log, which is not the durable write on the
+op path this ADR priced.
+
 ## Context
 
 `lww_wins` compared `envelope.ts_ms` — an unbounded reading of the writing
@@ -76,8 +81,12 @@ old rule made impossible.
 
 `seq` closes the residual documented at `engine.rs`. The send rule makes a
 same-device HLC tie impossible *while a device's clock state lives*; it becomes
-possible across a process restart, because the logical counter is deliberately
-not persisted. In that window `seq` still orders the two ops correctly. The
+possible across a process restart. In that window `seq` still orders the two ops
+correctly. This paragraph understated what a restart did until ADR-0036: the
+physical half reset as well as the logical one, which produces an *inversion*
+rather than a tie, and `seq` is never reached when the `hlc` values differ. With
+the clock restored at open, a tie is the whole of the residual and this sentence
+is true as written. The
 memcmp must **not** be applied to a device's own ops — `dev > dev` is false, so
 the later op would lose to the earlier one and be silently discarded on every
 remote replica while the originating replica kept it. That bug was found and
@@ -106,8 +115,11 @@ so a test skews one thing and gets a coherently skewed replica.
 * **Refused ops are silently dropped by the receiver.** The sender does not
   learn that its clock is why. Surfacing that needs a wire error path and is
   left for the auth/error work.
-* **HLC state does not survive a restart.** Persisting it would need a durable
-  write on the op path for a case `seq` already covers.
+* ~~**HLC state does not survive a restart.** Persisting it would need a durable
+  write on the op path for a case `seq` already covers.~~ **Withdrawn by
+  [ADR-0036](./0036-hlc-restored-at-open.md).** The case was not one `seq`
+  covers, and restoring the clock at open from `ops.ts_ms` — which is the
+  stamp's physical half already — costs nothing on the op path.
 
 ## Alternatives considered
 
