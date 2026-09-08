@@ -138,7 +138,7 @@ The relay sees only Noise traffic (opaque ciphertext) and the eventual `device_c
 
 ## Out-of-band channel security
 
-- **QR path:** the QR carries `n_static_pub` (32 B), so the handshake's authentication is bound to a 256-bit value the user transferred out-of-band. MITM is computationally infeasible.
+- **QR path:** the QR carries `n_static_pub` (32 B), so the handshake's authentication is bound to a 256-bit value the user transferred out-of-band. MITM is computationally infeasible. The binding is a *comparison*, and E is what makes it: Noise XX defers identity, so E learns N's static only from the third message and has no opinion about which key it should have been. E holds the scanned `n_static_pub` and refuses the transcript — before the SAS screen — if the two differ. Without that comparison the QR path degrades silently to the numeric path's 20 bits.
 - **Numeric-only path:** the 6-digit code is the SAS computed from the handshake hash. Security relies on interactive context: the user aborts on mismatch. A MITM has a single online attempt at a 1-in-1,000,000 collision; we require the user to confirm explicitly on both sides, and we rate-limit pair attempts per account.
 
 > v1 does not ship LAN/mDNS, BLE, or USB pairing transports. All pairing handshakes relay through the server (which sees only opaque Noise ciphertext).
