@@ -53,23 +53,73 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
     /// the bad clock.
     fn observe(&self, received: Hlc) -> Result<(), HlcError>;
 
+    /// Restore durable state at open: advance to `observed` if it is ahead,
+    /// without stamping anything and without the drift gate.
+    ///
+    /// [`Self::observe`] is not a substitute. It refuses a reading more than
+    /// `MAX_DRIFT_MS` beyond the wall clock, which is right for a peer's claim
+    /// and wrong for this replica's own history — a device whose clock has been
+    /// set back would have its own past refused and start emitting beneath it,
+    /// which is the failure this call exists to prevent. It also adds one to
+    /// the logical counter, which would make reopening a vault twice with no
+    /// writes in between drift the clock upwards for nothing.
+    ///
+    /// `observed` is the greatest stamp this replica has durably recorded, and
+    /// [`Engine::prime_hlc`](crate::engine::Engine::prime_hlc) is what reads it.
+    fn prime(&self, observed: Hlc);
+
     /// The current local reading, without advancing it. Diagnostics only.
     ///
-    /// Not a basis for comparing a value another device stamped. State is not
-    /// persisted (see [`MonotonicHlc`]), so this reads 0 after every restart
-    /// and a comparison built on it silently becomes a comparison against
-    /// nothing. Revocation used this for one revision and
-    /// `Engine::is_revoked` explains why it no longer does.
+    /// Not a basis for comparing a value another device stamped. It reads 0
+    /// on a [`MonotonicHlc`] that has not been primed, and after priming it is
+    /// a *local* reading of a distributed order: it says nothing about what
+    /// peers this replica has not heard from have stamped. Revocation compared
+    /// against it for one revision and `Engine::is_revoked` explains why it no
+    /// longer does.
     fn peek(&self) -> Hlc;
 }
 
 /// The production [`HlcClock`]: HLC state over an injected [`Clock`].
 ///
-/// State is deliberately **not persisted**. A restart resets the logical
-/// counter to 0, which is safe because the physical component dominates the
-/// ordering and only moves forward; the one case a reset can produce — two ops
-/// from this device sharing a `(physical_ms, logical)` pair across a restart —
-/// is what the `seq` term in the LWW tuple is there to break.
+/// State is not written as it advances — there is no HLC row, and every op
+/// this device emits is not also a clock checkpoint. It is instead *restored*
+/// at open, by [`Engine::prime_hlc`](crate::engine::Engine::prime_hlc), from
+/// the greatest stamp in the op log. The distinction matters because the two
+/// have the same effect and very different costs.
+///
+/// # Why restoring it is not optional
+///
+/// The comment this replaces said the reset was safe because "the physical
+/// component dominates the ordering and only moves forward". That reasoning
+/// covered the logical counter alone. `Hlc::default()` zeroes the physical half
+/// too, and a device does not generally hold a physical half equal to its own
+/// wall clock: `Hlc::receive` takes `max3(local, received, now)` and admits a
+/// peer up to [`MAX_DRIFT_MS`](sunrise_cbor::hlc::MAX_DRIFT_MS) — five minutes
+/// — ahead, and `Hlc::send` carries that forward. So a device that has absorbed
+/// one op from a peer whose clock leads sits above its own wall clock until the
+/// clock catches up.
+///
+/// From a zero start, the first `send` after a restart is roughly the wall
+/// clock, which is *below* the stamps that device emitted minutes earlier. That
+/// is not the tie the old comment anticipated — a tie is what `seq` breaks. It
+/// is an inversion, and `lww_wins` compares `hlc` before it ever looks at
+/// `seq`, so the device's newer op loses to its own older one on every replica
+/// that merges both. The origin has no LWW gate on its own writes, so it keeps
+/// the new value while everyone else keeps the old: silent, permanent
+/// divergence, inside a five-minute window after every restart. `engine.rs`'s
+/// `a_restart_does_not_make_this_device_emit_beneath_its_own_ops` is that
+/// scenario.
+///
+/// # What is left after priming
+///
+/// Exactly the case the old comment described: two ops from this device sharing
+/// a `(physical_ms, logical)` pair across a restart, when the log's greatest
+/// stamp is this device's own last one and the wall clock has not moved since.
+/// Those are a tie, not an inversion, and the `seq` term in the LWW tuple
+/// breaks them.
+///
+/// The decision and the options rejected with it are ADR-0036
+/// (`docs/11-adr/0036-hlc-restored-at-open.md`), which amends ADR-0016.
 #[derive(Debug)]
 pub struct MonotonicHlc {
     clock: Arc<dyn Clock>,
@@ -100,6 +150,13 @@ impl HlcClock for MonotonicHlc {
         let mut st = self.state.lock();
         *st = st.receive(received, now)?;
         Ok(())
+    }
+
+    fn prime(&self, observed: Hlc) {
+        let mut st = self.state.lock();
+        if observed > *st {
+            *st = observed;
+        }
     }
 
     fn peek(&self) -> Hlc {

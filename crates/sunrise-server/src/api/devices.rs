@@ -18,7 +18,16 @@ use serde::{Deserialize, Serialize};
 /// Platforms `DeviceMeta.platform` admits.
 const PLATFORMS: [&str; 6] = ["ios", "android", "macos", "windows", "linux", "web"];
 /// Maximum nickname length in bytes.
-const MAX_NICKNAME_BYTES: usize = 64;
+///
+/// Must equal `sunrise_crypto::MAX_NICKNAME_BYTES`, which is what
+/// `DeviceCert`'s encoder and decoder enforce on the same field. Lowering this
+/// alone makes the pairing path mint certs this route refuses; raising it alone
+/// registers a device whose cert no peer can decode. This crate does not depend
+/// on `sunrise-crypto` — the relay never parses a cert, it stores it as opaque
+/// text — so the agreement is asserted from `sunrise-e2e`, which depends on
+/// both: see `sunrise-e2e/tests/nickname_bound_agreement.rs`. It is `pub` so
+/// that test can read it.
+pub const MAX_NICKNAME_BYTES: usize = 64;
 
 /// A registered device.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
@@ -169,7 +178,9 @@ pub async fn register(
         ));
     }
     if body.nickname.trim().is_empty() || body.nickname.len() > MAX_NICKNAME_BYTES {
-        return Err(ApiError::validation("nickname must be 1..=64 bytes"));
+        return Err(ApiError::validation(format!(
+            "nickname must be 1..={MAX_NICKNAME_BYTES} bytes"
+        )));
     }
     if !PLATFORMS.contains(&body.platform.as_str()) {
         return Err(ApiError::validation(format!(
@@ -360,6 +371,32 @@ mod tests {
     async fn a_real_ed25519_key_still_registers() {
         let client = Client::new(ServerConfig::default());
         let _ = register(&client, 1, "laptop").await;
+    }
+
+    /// The nickname bound is enforced at the byte the constant names, not at a
+    /// literal somebody typed twice.
+    ///
+    /// Both lengths are derived from [`MAX_NICKNAME_BYTES`], so moving the
+    /// constant moves this test with it — the divergence this guards against is
+    /// between crates, and `sunrise-e2e/tests/nickname_bound_agreement.rs` is
+    /// where the other crate's number is compared to this one.
+    #[tokio::test]
+    async fn a_nickname_at_the_bound_registers_and_one_byte_over_does_not() {
+        let client = Client::new(ServerConfig::default());
+        let _ = register(&client, 5, &"n".repeat(super::MAX_NICKNAME_BYTES)).await;
+
+        let res = client
+            .send(
+                Method::POST,
+                "/api/v1/devices",
+                Some(&register_body(
+                    6,
+                    &"n".repeat(super::MAX_NICKNAME_BYTES + 1),
+                )),
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(res.json()["code"], codes::VALIDATION_INVALID);
     }
 
     /// An empty token can never wake anything, and storing it overwrites one

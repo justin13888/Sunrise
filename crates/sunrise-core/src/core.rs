@@ -142,6 +142,27 @@ impl Core {
         // could not distinguish a sibling from a stranger. The cert is now
         // identity-signed and published as an op, so a device that pairs is
         // known to every replica the moment its first ops arrive.
+        // Restore the causal clock before anything stamps an op. `Core::open`
+        // is where a vault meets a fresh `MonotonicHlc`, so it is where the
+        // clock's durable half has to come back; `Engine::prime_hlc` says what
+        // goes wrong when it does not.
+        engine.prime_hlc(&db)?;
+        // The account's base epochs are an invariant of a vault, not a fact
+        // about pairing. They used to be minted by `export_pairing_payload`,
+        // because that is where their absence was first noticed: a payload is
+        // built from the keys this device *holds*, and a vault that had never
+        // been written to held none. Minting them there made opening a pairing
+        // screen a durable write — `key_envelope` ops in the log, rows in the
+        // outbox, fanned out to every other device — for a user who might
+        // cancel. Doing it here instead makes the export a read again, and,
+        // because `Engine::ensure_base_epochs` is idempotent, repairs a vault
+        // created before this moved without a migration.
+        //
+        // It runs *before* `publish_device_cert`, which seals its op under the
+        // vault-meta epoch and would otherwise be the thing that mints it. A
+        // device arriving by pairing has already imported the account's epochs
+        // in `Keychain::open` above, so this finds them and mints nothing.
+        engine.ensure_base_epochs(&mut db)?;
         engine.publish_device_cert(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
@@ -570,34 +591,18 @@ impl Core {
     /// Everything a device being paired needs: the account identity, every
     /// Stream key this device holds, and the vault root.
     ///
-    /// **This writes.** Minting the base epochs emits `key_envelope` ops, so a
-    /// call on a never-written account leaves rows in the op log and the
-    /// outbox.
+    /// **This reads.** Showing a pairing code is not a commitment to pair, so
+    /// it leaves nothing behind: a user who opens the screen and closes it has
+    /// not changed their vault and has emitted nothing for the other devices to
+    /// absorb. The base epochs the payload has to carry are minted at
+    /// [`Self::open`] instead — they are a property of the vault rather than of
+    /// this call, and were the only reason this function ever wrote.
     ///
     /// # Errors
-    /// Storage failures minting the base epochs or reading this device's
-    /// labels.
+    /// Storage failures reading this device's labels.
     pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
-        let payload = {
-            let mut db = self.db.lock();
-            // The payload carries the keys this device holds, so the base
-            // epochs have to exist before it is assembled. On an account that
-            // has never been written to they do not, and the resulting payload
-            // used to be empty -- which paired a device that could read nothing
-            // until it opened an identity-sealed envelope. That fallback is
-            // gone; see `Engine::ensure_base_epochs`.
-            self.engine.ensure_base_epochs(&mut db)?;
-            self.engine.keychain().export_pairing_payload(&db)?
-        };
-        // Same rule as `apply_remote_all`: the wake belongs to "the outbox
-        // grew", not to "the user did something". Minting above can queue
-        // `key_envelope` ops, and a driver that is not told about them leaves
-        // them unsent -- and will not leave `CatchingUp`, because `maybe_live`
-        // reads the outbox depth.
-        if self.sync_shared.is_active() {
-            self.sync_shared.poke_submit();
-        }
-        Ok(payload)
+        let db = self.db.lock();
+        Ok(self.engine.keychain().export_pairing_payload(&db)?)
     }
 
     /// This device's identity-signed cert (canonical CBOR).
@@ -825,6 +830,75 @@ mod tests {
             root: VaultRootKey::from_bytes([1u8; 32]),
             paired: None,
         }
+    }
+
+    /// Every durable trace an `export_pairing_payload` could leave: the op
+    /// log, the outbox, and the key rows.
+    fn vault_footprint(core: &Core) -> (i64, i64, i64) {
+        let db = core.db.lock();
+        let conn = db.conn();
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        (
+            one("SELECT count(*) FROM ops"),
+            one("SELECT count(*) FROM outbox"),
+            one("SELECT count(*) FROM stream_keys"),
+        )
+    }
+
+    /// **Opening a pairing screen must not change the vault** (issue #106).
+    ///
+    /// `export_pairing_payload` minted the account's base epochs for one
+    /// revision, which put `key_envelope` ops in the log and rows in the outbox
+    /// — fanned out to every other device — for a user who might look at a QR
+    /// code and close it. The epochs are now established at `Core::open`, so
+    /// this call reads.
+    ///
+    /// The three counters are compared rather than one because the write took
+    /// three forms: a `stream_keys` row, an op, and an outbox entry.
+    #[tokio::test]
+    async fn export_pairing_payload_does_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+
+        let before = vault_footprint(&core);
+        let payload = core.export_pairing_payload().unwrap();
+        let again = core.export_pairing_payload().unwrap();
+        let after = vault_footprint(&core);
+
+        assert_eq!(
+            before, after,
+            "assembling a pairing payload must leave the op log, the outbox and \
+             the key rows exactly as it found them"
+        );
+        assert_eq!(payload.stream_keys, again.stream_keys);
+        core.close().await.unwrap();
+    }
+
+    /// The other half: the payload is still *complete* without that write.
+    ///
+    /// A vault that has never been written to holds no Stream keys unless
+    /// something mints them, and a device paired from an empty payload can read
+    /// no control op at all — so it cannot even learn what it is missing. That
+    /// is why the mint existed. It now happens at open, and this pins the
+    /// property the move must not lose.
+    #[tokio::test]
+    async fn a_freshly_opened_vault_already_carries_its_base_epochs() {
+        use sunrise_domain::INBOX_STREAM_BYTES;
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let payload = core.export_pairing_payload().unwrap();
+
+        assert!(
+            payload.stream_keys.contains_key(&[0u8; 16]),
+            "the vault-meta key must travel, or the paired device reads no \
+             control op ever"
+        );
+        assert!(
+            payload.stream_keys.contains_key(&INBOX_STREAM_BYTES),
+            "the Inbox is the one stream every account has"
+        );
+        core.close().await.unwrap();
     }
 
     #[tokio::test]
@@ -1167,9 +1241,10 @@ mod tests {
         let pending_before_close;
         {
             let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-            // Not zero: opening a vault publishes this device's certificate and
-            // the identity-sealed copies of its first Stream keys, and those
-            // queue like any other op.
+            // Not zero: opening a vault mints the account's base epochs,
+            // publishes this device's certificate, and queues the
+            // identity-sealed copies of those first Stream keys like any other
+            // op.
             let announced = core.sync_pending().unwrap();
             assert!(announced > 0, "the vault announces itself at open");
             core.submit(Command::CreateTask(TaskDraft {
@@ -1181,13 +1256,15 @@ mod tests {
             pending_before_close = core.sync_pending().unwrap();
             device_id_first = match core.query(Query::SyncStatus).await.unwrap() {
                 QueryResult::SyncStatus(s) => {
-                    // Two more, not one: the first task in the Inbox also
-                    // mints that stream's key, and the `key_envelope` op
-                    // distributing it queues alongside the task.
+                    // One more, not two: the Inbox's key is minted at open
+                    // along with the vault-meta one, so the first task in it
+                    // finds a key already there and queues only itself. It was
+                    // two while the Inbox epoch was minted lazily by whatever
+                    // first wrote to that stream.
                     assert_eq!(
                         u64::from(s.outbox_pending),
-                        announced + 2,
-                        "the task and the key that opens it are both pending"
+                        announced + 1,
+                        "only the task itself is newly pending"
                     );
                     // Read the device id straight from the vault for comparison.
                     let db = core.db.lock();

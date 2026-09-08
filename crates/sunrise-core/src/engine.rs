@@ -300,6 +300,73 @@ impl Engine {
         Self::new(clock, hlc, rng, keychain)
     }
 
+    /// Restore this device's HLC from the op log, so that what it emits after
+    /// a restart sorts above what it emitted before one.
+    ///
+    /// `MonotonicHlc` starts at `Hlc::default()` — `(0, 0)` — and nothing
+    /// advances it except stamping an op or absorbing a peer's. The physical
+    /// half is therefore not the wall clock but `max(wall clock, every stamp
+    /// absorbed this process)`, and `Hlc::receive` admits a peer up to
+    /// `MAX_DRIFT_MS` ahead of local time. A device that has heard from a peer
+    /// whose clock leads sits above its own clock for as long as the lead
+    /// lasts; from a zero start after a restart it drops back to the wall
+    /// clock, and everything it emits for the next few minutes sorts *below*
+    /// ops it emitted before the restart.
+    ///
+    /// `lww_wins` compares `hlc` before `device` or `seq`, so that inversion is
+    /// not the tie `seq` exists to break: the device's newer op loses to its own
+    /// older one on every replica that merges both, while the origin — which
+    /// runs no LWW gate on its own writes — keeps the new value. Silent
+    /// divergence, from an ordinary backgrounded-app restart.
+    ///
+    /// The op log is the right source because `ops.ts_ms` **is** the stamp's
+    /// physical half for every row: [`Self::ops_insert_at`] writes
+    /// `hlc.physical_ms` for a locally emitted op and
+    /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for an absorbed
+    /// one. Every durable stamp elsewhere — a materialized row's `lww_*`
+    /// columns, a `device_revocations` cut — was carried by an op, so the log
+    /// dominates all of them and no other table needs reading.
+    ///
+    /// The logical half is not a column, so it comes from decoding the
+    /// envelopes at that one millisecond. That is a handful of rows (`ts_ms` is
+    /// indexed only by stream, so this is one scan of a narrow column at open),
+    /// and it is needed: priming the physical half alone would leave a device
+    /// that emitted `(t, 5)` before the restart emitting `(t, 1)` after it,
+    /// which is the same inversion in the other half of the pair. An envelope
+    /// that will not decode is skipped rather than fatal — it cannot have been
+    /// applied, and refusing to open the vault over one is a worse answer than
+    /// ignoring it.
+    ///
+    /// See ADR-0036 (`docs/11-adr/0036-hlc-restored-at-open.md`) for the
+    /// decision, including why this is a restore rather than the durable write
+    /// on the op path ADR-0016 priced and declined.
+    ///
+    /// # Errors
+    /// Storage failures reading the log.
+    pub fn prime_hlc(&self, db: &Db) -> Result<(), EngineError> {
+        let conn = db.conn();
+        let max_ms: Option<i64> = conn.query_row("SELECT MAX(ts_ms) FROM ops", [], |r| r.get(0))?;
+        let Some(physical_ms) = max_ms.and_then(|v| u64::try_from(v).ok()) else {
+            return Ok(());
+        };
+        let mut stmt = conn.prepare("SELECT envelope FROM ops WHERE ts_ms = ?")?;
+        let mut rows = stmt.query(params![max_ms])?;
+        let mut logical = 0u32;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(0)?;
+            if let Ok(env) = decode_envelope(&bytes) {
+                if env.hlc.physical_ms == physical_ms {
+                    logical = logical.max(env.hlc.logical);
+                }
+            }
+        }
+        self.hlc.prime(Hlc {
+            physical_ms,
+            logical,
+        });
+        Ok(())
+    }
+
     /// Mint the LWW stamp for an op this device is about to emit.
     ///
     /// Called ONCE per emitted op: [`HlcClock::send`] is strictly increasing,
@@ -3812,29 +3879,30 @@ impl Engine {
         Ok(())
     }
 
-    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
-    /// every other member about it if the stream has none.
+    /// Mint the account's base epochs if they do not exist yet.
     ///
-    /// The order inside the mint branch matters and is not incidental: the key
-    /// row is written **before** the `key_envelope` ops are emitted, because
-    /// emitting one is itself an `ops_insert` into the vault-meta stream, which
-    /// re-enters here. With the row already present the re-entry terminates
-    /// immediately; without it, minting the meta stream's own first key would
-    /// recurse forever.
-    /// Mint the account's base epochs if they do not exist yet, so that a
-    /// pairing payload assembled next carries them.
-    ///
-    /// A payload is built from the keys this device *holds*, and a vault that
-    /// has never written anything holds none — so a device paired from a
-    /// freshly created account used to receive an empty `stream_keys` map. That
-    /// was survivable only because it could open the identity-sealed copy of
-    /// every `key_envelope` with the `ID_D_priv` the payload also carried.
-    /// Neither is true now: without the vault-meta key a paired device cannot
-    /// read a single control op, so it cannot even learn the keys it is
+    /// A pairing payload is built from the keys this device *holds*, and a
+    /// vault that has never written anything holds none — so a device paired
+    /// from a freshly created account used to receive an empty `stream_keys`
+    /// map. That was survivable only because it could open the identity-sealed
+    /// copy of every `key_envelope` with the `ID_D_priv` the payload also
+    /// carried. Neither is true now: without the vault-meta key a paired device
+    /// cannot read a single control op, so it cannot even learn the keys it is
     /// missing, and it sits in `CatchingUp` forever parking everything.
     ///
     /// The Inbox is minted alongside because it is the one stream every account
     /// has whether or not the user has made any of their own.
+    ///
+    /// `Core::open` is the only caller, and that placement is the point.
+    /// `Core::export_pairing_payload` called it for one revision, which is
+    /// where the need was discovered; it made opening a pairing screen a
+    /// durable write that syncs, on a call every layer above had written
+    /// against as a read. Having base epochs is an invariant of a vault rather
+    /// than a fact about pairing, so it is established when the vault is
+    /// opened. This is idempotent — `ensure_stream_epoch` returns the existing
+    /// key when there is one — so it also repairs a vault created before the
+    /// move, and mints nothing on a device that imported the account's epochs
+    /// from a pairing payload.
     ///
     /// # Errors
     /// Storage failures.
@@ -11802,6 +11870,225 @@ mod tests {
         let mut a = [0u8; 16];
         a.copy_from_slice(&op_id[..16]);
         env_bytes(db, &a)
+    }
+
+    /// Every `task.update` envelope this vault holds for `target`, oldest
+    /// first.
+    fn update_envs_for(db: &Db, target: &[u8; 16]) -> Vec<Vec<u8>> {
+        let ids: Vec<[u8; 16]> = db
+            .conn()
+            .prepare(
+                "SELECT op_id FROM ops
+                 WHERE target_id = ? AND inner_kind = 'task.update'
+                 ORDER BY rowid",
+            )
+            .unwrap()
+            .query_map(params![&target[..]], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .map(|v| {
+                let v = v.unwrap();
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&v[..16]);
+                a
+            })
+            .collect();
+        ids.iter().map(|id| env_bytes(db, id)).collect()
+    }
+
+    /// The HLC stamp on a materialized task row.
+    fn task_stamp(db: &Db, target: &[u8; 16]) -> Hlc {
+        db.conn()
+            .query_row(
+                "SELECT lww_hlc_ms, lww_hlc_logical FROM tasks WHERE id = ?",
+                params![&target[..]],
+                |r| {
+                    Ok(Hlc {
+                        physical_ms: u64::try_from(r.get::<_, i64>(0)?).unwrap(),
+                        logical: u32::try_from(r.get::<_, i64>(1)?).unwrap(),
+                    })
+                },
+            )
+            .unwrap()
+    }
+
+    fn task_title(db: &Db, target: &[u8; 16]) -> String {
+        db.conn()
+            .query_row(
+                "SELECT title FROM tasks WHERE id = ?",
+                params![&target[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// **A restart must not make a device emit beneath its own ops** (#112).
+    ///
+    /// `MonotonicHlc` starts at `Hlc::default()`, so before
+    /// [`Engine::prime_hlc`] a reopened vault's clock was the bare wall clock.
+    /// That is not the same thing as where the device left off: `Hlc::receive`
+    /// admits a peer up to `MAX_DRIFT_MS` ahead, and `Hlc::send` keeps that
+    /// lead until local time catches up. Four minutes is inside the window and
+    /// is what B's clock leads by here.
+    ///
+    /// The consequence is not a tie for `seq` to break. `lww_wins` compares
+    /// `hlc` first, so A's *second* edit sorts below its first and every
+    /// replica that merges both keeps the first — while A, which runs no LWW
+    /// gate on its own writes, keeps the second. The last assertion is that
+    /// divergence, made concrete on B.
+    #[test]
+    fn a_restart_does_not_make_this_device_emit_beneath_its_own_ops() {
+        const LEAD_MS: u64 = 4 * 60 * 1000;
+
+        let a_clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], a_clock.clone());
+        let eb = engine_seeded(
+            ROOT,
+            [2u8; 32],
+            Arc::new(FakeClock(PLMutex::new(T0 + LEAD_MS))),
+        );
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+
+        // B, whose clock leads, creates a task. A absorbs it and with it B's
+        // stamp: A's HLC is now four minutes above A's own wall clock.
+        let task = eb
+            .apply(
+                &mut dbb,
+                Command::CreateTask(TaskDraft {
+                    title: "from b".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        let create_env = create_env_for(&dbb, task.bytes());
+        ea.apply_remote_all(&mut dba, &create_env).unwrap();
+        assert!(
+            ea.hlc.peek().physical_ms >= T0 + LEAD_MS,
+            "A has adopted the leading stamp it just absorbed"
+        );
+
+        // A edits it, carrying that lead into its own op.
+        ea.apply(
+            &mut dba,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("edited before the restart".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let before = task_stamp(&dba, task.bytes());
+        assert!(before.physical_ms >= T0 + LEAD_MS);
+
+        // The restart: a fresh `Engine` over the same database, which is what
+        // `Core::open` constructs — and, like `Core::open`, primed from the log.
+        let ea2 = engine_seeded(ROOT, [1u8; 32], a_clock);
+        ea2.prime_hlc(&dba).unwrap();
+        ea2.apply(
+            &mut dba,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("edited after the restart".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let after = task_stamp(&dba, task.bytes());
+
+        assert!(
+            after > before,
+            "a device's own later op must sort after its earlier one across a \
+             restart: before={before:?} after={after:?}"
+        );
+
+        // And the whole point of that: B, merging both of A's edits under LWW,
+        // must end on the later one.
+        for env in update_envs_for(&dba, task.bytes()) {
+            eb.apply_remote_all(&mut dbb, &env).unwrap();
+        }
+        assert_eq!(
+            task_title(&dbb, task.bytes()),
+            "edited after the restart",
+            "the peer must keep A's newer edit, not silently discard it"
+        );
+        assert_eq!(
+            task_title(&dba, task.bytes()),
+            task_title(&dbb, task.bytes()),
+            "and the two replicas must agree"
+        );
+    }
+
+    /// The logical half has to come back too, which is why `prime_hlc` decodes
+    /// envelopes instead of reading `MAX(ts_ms)` and stopping there.
+    ///
+    /// Nothing here involves a peer or a skewed clock: one device, one stalled
+    /// millisecond, several ops. `Hlc::send` puts them at `(t, 1)`, `(t, 2)`,
+    /// `(t, 3)`; a restart primed only from `ts_ms` would resume at `(t, 0)`
+    /// and emit `(t, 1)` again — below the ops already stamped, and an
+    /// inversion rather than the tie `seq` breaks.
+    #[test]
+    fn priming_restores_the_logical_half_not_only_the_physical_one() {
+        let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], clock.clone());
+        let mut dba = db_root(ROOT);
+
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "one".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        for title in ["two", "three"] {
+            ea.apply(
+                &mut dba,
+                Command::UpdateTask {
+                    id: task,
+                    patch: TaskPatch {
+                        title: Some((*title).to_string()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        }
+        let before = task_stamp(&dba, task.bytes());
+        assert_eq!(before.physical_ms, T0, "the wall clock never moved");
+        assert!(
+            before.logical > 0,
+            "the ops are separated by the logical counter alone"
+        );
+
+        let ea2 = engine_seeded(ROOT, [1u8; 32], clock);
+        ea2.prime_hlc(&dba).unwrap();
+        ea2.apply(
+            &mut dba,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("four".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let after = task_stamp(&dba, task.bytes());
+
+        assert_eq!(after.physical_ms, before.physical_ms);
+        assert!(
+            after.logical > before.logical,
+            "the counter must resume, not restart: before={before:?} after={after:?}"
+        );
     }
 
     #[test]
