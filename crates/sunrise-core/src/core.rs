@@ -84,8 +84,8 @@ pub struct Core {
     ///
     /// Owned by `Core`, not read back out of `cfg.sync` on demand. That
     /// distinction is the whole point: a caller that configures sync *after*
-    /// open — every UniFFI caller does, via `start_sync(url, bearer)` — has no
-    /// `cfg.sync` to hold a credential, and a handle minted per call is a
+    /// open — every UniFFI caller does, via `start_sync(url, bearer, device)`
+    /// — has no `cfg.sync` to hold a credential, and a handle minted per call is a
     /// different cell every time, so a renewal written through one is invisible
     /// to the driver holding another.
     sync_credential: TokenSource,

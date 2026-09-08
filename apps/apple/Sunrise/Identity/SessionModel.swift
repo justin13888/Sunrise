@@ -70,6 +70,11 @@ final class SessionModel {
     /// one would file a vault's key under another vault's name.
     private var location: VaultLocation
     private var rootStore: any VaultRootStore
+    /// The relay's id for this vault's device. Re-pointed with the two above
+    /// and for the same reason: an id from one vault names a device row the
+    /// next vault's signing key does not open, and the relay reports that as a
+    /// bad bearer rather than as the mismatch it is.
+    private var relayDeviceStore: any RelayDeviceIDStore
     private let appVersion: String
     private let openBridge: @Sendable (URL, Data, String, Data?) async throws -> CoreBridge
     private let resolve: @Sendable (VaultDescriptor) throws -> VaultBinding
@@ -78,11 +83,18 @@ final class SessionModel {
     /// falling through to a first-run screen against a nonsense path.
     private var configurationError: String?
 
+    /// The single-vault configuration: the unit tests and the UI-test harness.
+    ///
+    /// `relayDeviceStore` defaults to the in-memory one because that is what
+    /// both of its callers want — neither may write a device id into the
+    /// developer's login Keychain. Production reaches ``standard()``'s other
+    /// branch, which resolves a real store per vault through `resolve`.
     init(
         location: VaultLocation,
         rootStore: any VaultRootStore,
         appVersion: String,
         configurationError: String? = nil,
+        relayDeviceStore: any RelayDeviceIDStore = InMemoryRelayDeviceIDStore(),
         openBridge: @escaping @Sendable (URL, Data, String, Data?) async throws -> CoreBridge = {
             try await CoreBridge.open(
                 directory: $0,
@@ -98,6 +110,7 @@ final class SessionModel {
         self.rootStore = rootStore
         self.appVersion = appVersion
         self.configurationError = configurationError
+        self.relayDeviceStore = relayDeviceStore
         self.openBridge = openBridge
     }
 
@@ -133,6 +146,8 @@ final class SessionModel {
         }
         location = resolved?.location ?? VaultLocation(directory: URL(filePath: "/dev/null"))
         rootStore = resolved?.rootStore ?? KeychainVaultRootStore(vaultName: vaults.selectedID)
+        relayDeviceStore = resolved?.relayDeviceStore
+            ?? KeychainRelayDeviceIDStore(vaultName: vaults.selectedID)
         configurationError = failure
     }
 
@@ -172,7 +187,8 @@ final class SessionModel {
                     location: try VaultLocation.forVault(descriptor.id),
                     // The `vaultName` parameter that has existed since this
                     // store was written and has never been passed anything.
-                    rootStore: KeychainVaultRootStore(vaultName: descriptor.id)
+                    rootStore: KeychainVaultRootStore(vaultName: descriptor.id),
+                    relayDeviceStore: KeychainRelayDeviceIDStore(vaultName: descriptor.id)
                 )
             }
         )
@@ -291,6 +307,7 @@ final class SessionModel {
         //    Keychain account from another is an unreadable vault.
         location = binding.location
         rootStore = binding.rootStore
+        relayDeviceStore = binding.relayDeviceStore
         configurationError = nil
         vaults.select(descriptor.id)
 
@@ -315,6 +332,15 @@ final class SessionModel {
             phase = .failed(error.localizedDescription)
         }
     }
+
+    /// The relay's id for this device against the open vault, or `nil` for an
+    /// unbound sync driver.
+    ///
+    /// A read rather than stored state: the environment override
+    /// `RelayDeviceID.resolve` consults is a launch-time fact, and the stored
+    /// half is written by registration, so re-reading is what makes a driver
+    /// restarted after registration pick the binding up.
+    var relayDeviceID: String? { RelayDeviceID.resolve(store: relayDeviceStore) }
 
     /// Close the vault, releasing the core's lock on it.
     ///
@@ -345,4 +371,9 @@ final class SessionModel {
 struct VaultBinding: Sendable {
     let location: VaultLocation
     let rootStore: any VaultRootStore
+    /// Where the relay's id for this vault's device lives. Part of the pair
+    /// rather than resolved at the call site: it is keyed by the same vault id
+    /// as the other two, and a client that presents one vault's device id while
+    /// signing with another's key is refused in a way it cannot diagnose.
+    let relayDeviceStore: any RelayDeviceIDStore
 }

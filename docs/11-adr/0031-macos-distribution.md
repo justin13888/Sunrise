@@ -143,12 +143,11 @@ release process — and this repository has one maintainer.
 
 - **Hardened runtime on, App Sandbox still off.** Notarization rejects a
   submission without the hardened runtime, so it is not a preference.
-  `project.yml` currently sets `ENABLE_HARDENED_RUNTIME: NO`; the workflow
-  overrides it to `YES` on the release build, and
-  [`../07-clients/releasing.md`](../07-clients/releasing.md) records the
-  project-file change as the durable fix. The two settings are independent —
-  the comment quoted in Decision 1 is about the sandbox, and the sandbox stays
-  off.
+  `project.yml` sets `ENABLE_HARDENED_RUNTIME: YES` in `settings.base` and the
+  workflow overrides nothing, so a local archive is the bundle that ships. (It
+  first landed as a command-line override in the release job; #142 moved it to
+  the project file.) The two settings are independent — the comment quoted in
+  Decision 1 is about the sandbox, and the sandbox stays off.
 - **Two notarization submissions, not one.** The `.app` is notarized and
   stapled, and then the `.dmg` built around the stapled copy is notarized and
   stapled too. A ticket is stapled to the thing that carries the quarantine
@@ -240,11 +239,11 @@ encrypted.
   exist.** It builds and packages an `-UNSIGNED.dmg` and stops. Everything
   except the four credential-bearing steps is exercised, including the archive,
   the packaging, the naming and the checksum.
-- **`apps/apple/project.yml` still carries `DEVELOPMENT_TEAM: ""` and
-  `ENABLE_HARDENED_RUNTIME: NO`.** Both are overridden on the release build's
-  command line, which is correct for the team id — it is a secret in CI and
-  must not be committed — and a stopgap for the hardened runtime, which should
-  become `YES` in the project file so a developer's local archive matches what
+- **`apps/apple/project.yml` still carries `DEVELOPMENT_TEAM: ""`.** It is
+  overridden on the release build's command line, which is correct: a team id
+  is a secret in CI and must not be committed. `ENABLE_HARDENED_RUNTIME` was
+  overridden the same way when this ADR was written and no longer is — it is
+  `YES` in the project file, so a developer's local archive matches what
   ships.
 - **iOS distribution is untouched and is a separate decision.** iOS cannot ship
   by direct download at all: there is no equivalent of a Developer ID identity

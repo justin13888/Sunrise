@@ -515,16 +515,12 @@ jobs:
               CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
               CODE_SIGNING_ALLOWED=NO
           else
-            # `ENABLE_HARDENED_RUNTIME=YES` is an override of
-            # apps/apple/project.yml, which sets it to NO. Notarization
-            # *requires* the hardened runtime — a submission without it is
-            # rejected — so this is not a preference. It is overridden here
-            # rather than changed there because it belongs with the signing
-            # identity that only exists in this job; see the note in
-            # docs/07-clients/releasing.md, which asks for the project.yml
-            # change as the durable fix. It does not touch the App Sandbox,
-            # which project.yml's neighbouring comment is about and which
-            # ADR-0031 keeps off.
+            # `ENABLE_HARDENED_RUNTIME` is deliberately absent: it is `YES`
+            # in apps/apple/project.yml, so this build and a developer's local
+            # `xcodebuild archive` produce the same bundle. Re-stating it here
+            # would restore exactly the difference that was worth removing —
+            # an override cannot fail loudly when the project file drifts away
+            # from it.
             #
             # `--timestamp` is what makes the signature outlive the
             # certificate: without a secure timestamp the app stops verifying
@@ -540,7 +536,6 @@ jobs:
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="Developer ID Application" \
               DEVELOPMENT_TEAM="$MACOS_TEAM_ID" \
-              ENABLE_HARDENED_RUNTIME=YES \
               OTHER_CODE_SIGN_FLAGS="--timestamp"
           fi
       - name: Export the archive

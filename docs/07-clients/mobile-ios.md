@@ -201,6 +201,44 @@ it was. What a restore onto new hardware then costs the user is written down in
 that section; the same file is shared with macOS, where the login keychain
 implements no protection classes and the guarantee therefore does not yet hold.
 
+### The OIDC credential is in the same class, and why
+
+`dev.sunrise.Sunrise.oidc-credentials` — the access and refresh tokens from a
+completed login — asks for `…AfterFirstUnlockThisDeviceOnly` too
+(`KeychainCredentialStore.accessibility`). It was deliberately left in
+`…AfterFirstUnlock` when the vault root moved, on the argument that a session
+is not a vault; that argument does not survive contact with the two things that
+would have had to catch a travelling token, neither of which does:
+
+- **The refresh grant carries no device id.** `OidcClient::refresh` exchanges
+  the refresh token with no `sunrise_device_id` parameter, so the access token
+  it mints carries the device claim of the *original* authorization.
+- **The relay checks that claim only when a device signature is presented.**
+  `api::signed::verify_bytes` returns before the comparison when the
+  `X-Sunrise-Device` headers are absent and `require_device_sig` is off — which
+  is the default, and is *required* to be off in the single-tenant self-host
+  mode [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes v1's shape.
+
+So a refresh token lifted out of an encrypted backup opens a live session
+against the account from hardware the account never authorized. What it reaches
+is the relay surface — device list, blob store, op metadata, the ability to
+push — and not the plaintext, which is sealed to Stream keys that hang off a
+vault root that did not travel. The cost of closing it is one tap: a device
+restored onto new hardware already has no vault root and must pair with a
+surviving device before it is useful, and signing in again happens on a screen
+the user is already standing in front of.
+
+### The relay device id is here too
+
+`dev.sunrise.Sunrise.relay-device-id` holds the ULID the relay mints at
+registration, per vault, in the same class — so on iOS a restore onto new
+hardware leaves neither the vault root nor the device id behind, and the two
+halves of the binding stay consistent. The argument for the Keychain over
+`UserDefaults` or the vault, and the fact that the app cannot yet register
+itself, are in
+[`desktop.md`](./desktop.md#device-binding); the store is shared code and the
+reasoning does not differ by platform.
+
 One gap against the design remains:
 
 - There is no biometric-protected access for unwrap and no **Secure Enclave**

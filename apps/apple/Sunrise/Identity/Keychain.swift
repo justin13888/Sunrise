@@ -187,7 +187,10 @@ extension KeychainError: LocalizedError {
             SecCopyErrorMessageString(status, nil) as String?
                 ?? "Keychain error \(status)."
         case let .accessibilityNotRaised(status):
-            "The vault key is stored under an older, weaker Keychain protection "
+            // "This secret" rather than "the vault key": the vault root was
+            // the first caller and is no longer the only one — the OIDC
+            // credential raises its class on the same path.
+            "This secret is stored under an older, weaker Keychain protection "
                 + "class and the Keychain would not change it: "
                 + (SecCopyErrorMessageString(status, nil) as String?
                     ?? "Keychain error \(status).")

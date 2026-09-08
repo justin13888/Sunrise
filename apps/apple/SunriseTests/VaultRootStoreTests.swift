@@ -201,6 +201,80 @@ struct VaultRootTests {
     }
 }
 
+/// The OIDC credential, which #131 moved into the vault root's class. Against
+/// the real Keychain for the same reason the tests above are: what the class
+/// is *recorded* as is the whole claim, and only the platform can answer it.
+struct KeychainCredentialStoreTests {
+    private func credentials(_ token: String) -> StoredCredentials {
+        StoredCredentials(
+            accessToken: token,
+            refreshToken: "refresh-\(token)",
+            expiresAtMs: 2_000,
+            renewAtMs: 1_500
+        )
+    }
+
+    /// The regression #131 decided. A refresh token in `AfterFirstUnlock`
+    /// restores onto other hardware, and neither half of the device binding
+    /// stops it there: the refresh grant sends no device id, and the relay
+    /// cross-checks the token's device claim only when a device signature is
+    /// presented — which `require_device_sig` makes optional and the
+    /// single-tenant self-host mode forbids.
+    @Test
+    func theCredentialDeclaresTheClassThatKeepsItOffOtherDevices() {
+        #expect(KeychainCredentialStore.accessibility == .afterFirstUnlockThisDeviceOnly)
+    }
+
+    @Test
+    func aSavedCredentialComesBackAndClearsAway() throws {
+        let store = KeychainCredentialStore(account: "tests-\(UUID().uuidString)")
+        defer { try? store.clear() }
+
+        #expect(try store.load() == nil)
+        try store.save(credentials("access"))
+        #expect(try store.load() == credentials("access"))
+        try store.clear()
+        #expect(try store.load() == nil)
+    }
+
+    /// An installation that stopped renewing before this build is exactly the
+    /// one sitting in a backup, and `save` — which rewrites the class — is the
+    /// thing it is not doing. The raise therefore has to happen on `load`.
+    @Test
+    func aTokenLeftByAnOlderBuildIsRaisedOnTheNextLoad() throws {
+        let account = "tests-\(UUID().uuidString)"
+        let asAnOlderBuildWroteIt = KeychainItem(
+            service: KeychainCredentialStore.service,
+            account: account,
+            accessibility: .afterFirstUnlock
+        )
+        defer { try? asAnOlderBuildWroteIt.delete() }
+        try asAnOlderBuildWroteIt.write(JSONEncoder().encode(credentials("access")))
+        #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedAfterFirstUnlock)
+
+        let store = KeychainCredentialStore(account: account)
+        #expect(try store.load() == credentials("access"), "raising it must not sign the user out")
+        #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedThisDeviceOnly)
+    }
+
+    /// A credential written under the new class stays under it, which is the
+    /// half `save` owns.
+    @Test
+    func aSavedCredentialCarriesTheClassItDeclares() throws {
+        let account = "tests-\(UUID().uuidString)"
+        let store = KeychainCredentialStore(account: account)
+        defer { try? store.clear() }
+        try store.save(credentials("access"))
+
+        let item = KeychainItem(
+            service: KeychainCredentialStore.service,
+            account: account,
+            accessibility: KeychainCredentialStore.accessibility
+        )
+        #expect(storedAccessibility(of: item) == expectedThisDeviceOnly)
+    }
+}
+
 struct VaultLocationTests {
     @Test
     func anEmptyDirectoryIsNotAVault() throws {

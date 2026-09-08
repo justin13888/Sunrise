@@ -47,7 +47,11 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
   App Sandbox nor a keychain-access-group entitlement, both deferred to release work in
   `apps/apple/project.yml`). A Mac moved by Migration Assistant or restored from Time Machine
   carries the login keychain and therefore the vault root. The Apple client declares the right
-  class on both platforms; only iOS enforces it.
+  class on both platforms; only iOS enforces it. Closing the gap is not a one-line entitlement:
+  an ad-hoc-signed build carrying `keychain-access-groups` is killed at launch by AMFI, which is
+  what makes the fix wait on a real signing identity — measured, with the other two
+  configurations that were tried, in
+  [`../07-clients/desktop.md`](../07-clients/desktop.md#the-data-protection-keychain-is-not-a-one-line-entitlement).
 
 ## Recovery code
 
