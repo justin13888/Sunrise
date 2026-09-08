@@ -493,11 +493,12 @@ extension VaultTabs {
     }
 
     private func startSync() async {
-        guard case let .connect(url, bearer) = SyncPlan(
+        guard case let .connect(url, bearer, relayDeviceID) = SyncPlan(
             relayURL: models.settings.relayURL,
-            accessToken: models.account.accessToken
+            accessToken: models.account.accessToken,
+            relayDeviceID: session.relayDeviceID
         ) else { return }
-        try? await bridge.startSync(url: url, bearer: bearer)
+        try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }
 
     private func signIn() async {

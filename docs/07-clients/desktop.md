@@ -193,7 +193,8 @@ document's intent, not yet implemented).
   account is **per vault**, so a second vault gets its own item rather than
   overwriting the first. Two items, under two services, and **both** ask for
   `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
-  `dev.sunrise.Sunrise.vault-root` and `dev.sunrise.Sunrise.oidc-credentials`.
+  `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials` and
+  `dev.sunrise.Sunrise.relay-device-id`.
   An item an older build left in the weaker `…AfterFirstUnlock` is raised on
   the next load rather than left where it was, and a Keychain that refuses the
   raise fails the load rather than handing back a secret whose guarantee is not
@@ -202,7 +203,7 @@ document's intent, not yet implemented).
   **The Mac does not honour the class**: without the App Sandbox or a
   keychain-access-group entitlement the app uses the file-based login keychain,
   which stores no protection class at all, so a Mac moved by Migration
-  Assistant or restored from Time Machine carries both items with it. iOS
+  Assistant or restored from Time Machine carries all three items with it. iOS
   enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
@@ -332,6 +333,56 @@ panel closes and the menu bar and reminder models are dropped and remade.
 The seam supports many vaults **sequentially**, not concurrently: `shutdown()`
 then `open()`. There is no way to hold two vaults open at once, and there cannot
 be without changing the lock rule.
+
+## Device binding
+
+Every request the sync driver makes can carry the
+[ADR-0022](../11-adr/0022-device-signature-canonical-json.md) binding: an
+`X-Sunrise-Device` naming a relay device row, an `X-Sunrise-Device-Sig` over the
+canonical request, and the `Date` the signature covers. A relay configured with
+`require_device_sig` refuses anything else.
+
+The signing half has always been available — it is the vault's own `D_S_priv`,
+and `Core::device_signer` reaches it across the seam. What was missing was a
+home for the other half: the **relay device id**, a ULID the relay mints at
+`POST /api/v1/devices` and returns **only** to the registering device. It never
+travels back through the op stream, so a client that loses it cannot get it
+again.
+
+It lives in the Keychain, under `dev.sunrise.Sunrise.relay-device-id`, per
+vault, in the vault root's own protection class
+(`KeychainRelayDeviceIDStore`). The class is not about secrecy — the id is sent
+in the clear on every request that uses it, which is why the CLI keeps its copy
+in a plain file. It is about the id and the key it names being present or absent
+*together*: a device holding one without the other signs with a key the named
+row does not hold, and the relay answers that as a bad **bearer** — deliberately
+indistinguishable from a token problem, so that a caller cannot enumerate an
+account's devices, and therefore undiagnosable from the client.
+
+The two rejected homes, for the record:
+
+- **`UserDefaults`**, where the relay URL and the vault registry correctly live,
+  because neither is a secret and both must be repairable without a vault. A
+  preference domain that gets reset costs a setting the user can retype, and
+  costs this one a binding nobody can retype.
+- **The vault**, which would carry the id with the *account* rather than the
+  installation — and would put per-device data in a synced, converging store,
+  where every device replicates every other device's id and a merge has to
+  decide which one is "this" one.
+
+**The app cannot yet register itself.** `sunrise_relay_client::bootstrap` — the
+`POST /api/v1/accounts` then `POST /api/v1/devices` pair the CLI runs as
+`sunrise bootstrap` — is not exposed across the UniFFI seam, so nothing in the
+app produces an id. Until it is, the only way an Apple client is device-bound is
+the environment override the CLI has for the same case: launch it with
+`SUNRISE_SYNC_DEVICE_ID` set to an id registered elsewhere, and the driver
+presents and signs for it. That is the same variable name, the same precedence
+(override before stored) and the same meaning as
+`sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
+
+An unbound driver is not a failure state and is not refused: it is what every
+self-host relay runs, and a client that would not connect without a binding
+could never reach the relay that mints one.
 
 ## Pairing
 

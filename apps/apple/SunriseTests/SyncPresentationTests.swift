@@ -118,7 +118,7 @@ struct SyncPlanTests {
     func aSelfHostRelayConnectsWithNoBearer() {
         #expect(
             SyncPlan(relayURL: "http://127.0.0.1:8443", accessToken: nil)
-                == .connect(url: "http://127.0.0.1:8443", bearer: nil)
+                == .connect(url: "http://127.0.0.1:8443", bearer: nil, relayDeviceID: nil)
         )
     }
 
@@ -129,11 +129,52 @@ struct SyncPlanTests {
     func anEmptyTokenIsNoToken() {
         #expect(
             SyncPlan(relayURL: "https://relay.example", accessToken: "  ")
-                == .connect(url: "https://relay.example", bearer: nil)
+                == .connect(url: "https://relay.example", bearer: nil, relayDeviceID: nil)
         )
         #expect(
             SyncPlan(relayURL: "https://relay.example", accessToken: "tok")
-                == .connect(url: "https://relay.example", bearer: "tok")
+                == .connect(url: "https://relay.example", bearer: "tok", relayDeviceID: nil)
+        )
+    }
+
+    /// The device binding is carried, not invented. A relay device id reaches
+    /// the plan from `SessionModel.relayDeviceID` and is passed straight
+    /// through — the plan's job is to refuse the shapes that cannot work, and
+    /// an id it cannot check is not one of them.
+    @Test
+    func aRegisteredDeviceCarriesItsRelayIDOntoTheConnection() {
+        #expect(
+            SyncPlan(
+                relayURL: "https://relay.example",
+                accessToken: "tok",
+                relayDeviceID: "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y"
+            ) == .connect(
+                url: "https://relay.example",
+                bearer: "tok",
+                relayDeviceID: "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y"
+            )
+        )
+    }
+
+    /// An empty id is the empty-bearer trap one layer down, and worse: an
+    /// `X-Sunrise-Device` naming no row is answered as a bad *bearer*, so the
+    /// client cannot tell what it got wrong.
+    @Test
+    func anEmptyRelayDeviceIDIsNoBinding() {
+        #expect(
+            SyncPlan(relayURL: "https://relay.example", accessToken: "tok", relayDeviceID: "  ")
+                == .connect(url: "https://relay.example", bearer: "tok", relayDeviceID: nil)
+        )
+    }
+
+    /// Not connecting without a binding would be the wrong refusal: the id
+    /// only exists after registration, which happens over this same relay, and
+    /// every self-host deployment runs without one on purpose.
+    @Test
+    func anUnregisteredDeviceStillConnects() {
+        #expect(
+            SyncPlan(relayURL: "https://relay.example", accessToken: "tok")
+                == .connect(url: "https://relay.example", bearer: "tok", relayDeviceID: nil)
         )
     }
 

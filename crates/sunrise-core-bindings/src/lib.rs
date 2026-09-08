@@ -657,13 +657,40 @@ impl SunriseCore {
     /// [`SunriseCore::set_sync_credential`] — the driver picks the new token up
     /// on its next connect, and the caller does not restart sync.
     ///
+    /// `relay_device_id` is the ADR-0022 device binding: the ULID the relay
+    /// minted at registration, which every request then names in
+    /// `X-Sunrise-Device` and signs for. It is **not** [`Self::device_id`] —
+    /// that is the vault's own 16-byte id, and handing it over here produces a
+    /// signature that verifies against nothing, which the relay reports as a
+    /// bad *bearer* so a caller cannot enumerate an account's devices. `None`
+    /// starts an unbound driver, which a self-host relay accepts and a relay
+    /// with `require_device_sig` refuses; the caller keeps the id, because only
+    /// the caller knows where a platform stores one.
+    ///
+    /// The signer is built once and cloned per connection attempt, for the same
+    /// reason the bearer is read per attempt: a reconnect is a new transport
+    /// and has to carry the binding too.
+    ///
     /// Deliberately sync: it only spawns. See the note on `SunriseCore::rt`
     /// for why the spawn cannot use `tokio::spawn`.
-    pub fn start_sync(&self, url: String, bearer: Option<String>) -> Result<(), BindingError> {
+    pub fn start_sync(
+        &self,
+        url: String,
+        bearer: Option<String>,
+        relay_device_id: Option<String>,
+    ) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
         let credential = self.inner.sync_credential();
         credential.set(bearer);
-        self.inner.start_sync(ws_factory(&url, credential))?;
+        // An empty string is not an id. A foreign caller reading a missing
+        // value out of a store that answers with `""` would otherwise start a
+        // driver that presents an `X-Sunrise-Device` naming no row, and the
+        // relay's answer to that is indistinguishable from a bad bearer.
+        let signer = relay_device_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| self.inner.device_signer(id.trim()));
+        self.inner
+            .start_sync(ws_factory(&url, credential, signer))?;
         Ok(())
     }
 
@@ -729,14 +756,29 @@ impl SunriseCore {
 /// attempt (initial connect and every reconnect).
 ///
 /// The bearer is read from `credential` on every attempt rather than captured,
-/// so a reconnect after a renewal presents the *current* token.
-fn ws_factory(url: &str, credential: sunrise_core::TokenSource) -> sunrise_core::TransportFactory {
+/// so a reconnect after a renewal presents the *current* token. `signer` — the
+/// ADR-0022 device binding — is cloned per attempt for the same reason: the
+/// route where that matters most is the revocation `DELETE`, which runs on
+/// whatever connection the driver holds at the time.
+///
+/// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
+/// transport-agnostic and calls this once per connection attempt.
+fn ws_factory(
+    url: &str,
+    credential: sunrise_core::TokenSource,
+    signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
+) -> sunrise_core::TransportFactory {
     let url = url.to_string();
     Arc::new(move || {
         let url = url.clone();
         let bearer = credential.get();
+        let signer = signer.clone();
         Box::pin(async move {
             let t = sunrise_sync::SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = match signer {
+                Some(s) => t.with_device_signer(s),
+                None => t,
+            };
             Ok(Box::new(t) as sunrise_core::BoxTransport)
         }) as sunrise_core::ConnectFuture
     })

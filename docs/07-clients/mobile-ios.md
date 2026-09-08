@@ -228,6 +228,17 @@ restored onto new hardware already has no vault root and must pair with a
 surviving device before it is useful, and signing in again happens on a screen
 the user is already standing in front of.
 
+### The relay device id is here too
+
+`dev.sunrise.Sunrise.relay-device-id` holds the ULID the relay mints at
+registration, per vault, in the same class — so on iOS a restore onto new
+hardware leaves neither the vault root nor the device id behind, and the two
+halves of the binding stay consistent. The argument for the Keychain over
+`UserDefaults` or the vault, and the fact that the app cannot yet register
+itself, are in
+[`desktop.md`](./desktop.md#device-binding); the store is shared code and the
+reasoning does not differ by platform.
+
 One gap against the design remains:
 
 - There is no biometric-protected access for unwrap and no **Secure Enclave**
