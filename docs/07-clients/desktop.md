@@ -191,12 +191,19 @@ document's intent, not yet implemented).
   are **views**, and nothing schedules a notification for them.
 - **built — Keychain** holds the unlock material. Nothing else does. The
   account is **per vault**, so a second vault gets its own item rather than
-  overwriting the first. The vault root asks for
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, but **the Mac does not
-  honour it**: without the App Sandbox or a keychain-access-group entitlement
-  the app uses the file-based login keychain, which stores no protection class
-  at all, so a Mac moved by Migration Assistant or restored from Time Machine
-  carries the vault root with it. iOS enforces the class; see
+  overwriting the first. Two items, under two services, and **both** ask for
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
+  `dev.sunrise.Sunrise.vault-root` and `dev.sunrise.Sunrise.oidc-credentials`.
+  An item an older build left in the weaker `…AfterFirstUnlock` is raised on
+  the next load rather than left where it was, and a Keychain that refuses the
+  raise fails the load rather than handing back a secret whose guarantee is not
+  the one the app claims.
+
+  **The Mac does not honour the class**: without the App Sandbox or a
+  keychain-access-group entitlement the app uses the file-based login keychain,
+  which stores no protection class at all, so a Mac moved by Migration
+  Assistant or restored from Time Machine carries both items with it. iOS
+  enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
   inbox, start focus, end focus — plus a `TaskEntity` with an
