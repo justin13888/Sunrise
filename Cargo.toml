@@ -45,6 +45,11 @@ chacha20poly1305 = { version = "0.10", default-features = false, features = ["al
 hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
 snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
 blake3 = { version = "1.5", default-features = false, features = ["std", "traits-preview"] }
+# BIP-39's checksum is specified as SHA-256 and nothing else, so the recovery
+# code needs one. `ed25519-dalek` already depends on `sha2` — Ed25519 is
+# SHA-512 — so naming it here adds no crate to the tree that was not already
+# built, on the same reasoning `toml` above carries.
+sha2 = { version = "0.10", default-features = false }
 argon2 = { version = "0.5", default-features = false, features = ["std", "alloc", "password-hash"] }
 subtle = { version = "2.5", default-features = false }
 zeroize = { version = "1.8", default-features = false, features = ["alloc", "derive"] }

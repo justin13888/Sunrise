@@ -2817,6 +2817,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_bytes",
+ "sha2",
  "subtle",
  "sunrise-cbor",
  "sunrise-crypto-test-vectors",
