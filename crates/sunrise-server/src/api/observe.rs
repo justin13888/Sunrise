@@ -161,7 +161,25 @@ mod tests {
     /// A plain `#[test]` with its own runtime rather than `#[tokio::test]`,
     /// because installing a dispatcher is synchronous and has to wrap the whole
     /// request rather than sit inside it.
+    ///
+    /// # Never returns an empty capture
+    ///
+    /// A test here asserts on the *contents* of a record, so a capture that
+    /// received nothing at all fails every one of them — with the offending
+    /// `{out}` rendering as nothing, which is a panic message that says
+    /// nothing. That is exactly how #116 was reported: two different tests in
+    /// this module, twice, under a loaded whole-workspace run, each panicking
+    /// with a blank message because `out` was `""`.
+    ///
+    /// The cause was `tracing`'s global per-callsite interest cache being
+    /// computed against a thread that had no subscriber — see
+    /// `sunrise_log::init`'s `pin_interest_cache`, which closes it. The guard
+    /// stays regardless, and lives here rather than in each test so that a
+    /// test added later cannot omit it: "nothing was logged" and "the wrong
+    /// thing was logged" are different failures and must not share a message.
+    #[track_caller]
     fn run(method: Method, uri: &str) -> String {
+        let named = method.to_string();
         let cap = Capture::new();
         let dispatch = build_subscriber(LogConfig {
             target: LogTarget::Capture(cap.clone()),
@@ -183,7 +201,14 @@ mod tests {
                 let _ = client.send(method, uri, None).await;
             });
         });
-        cap.contents()
+        let out = cap.contents();
+        assert!(
+            !out.is_empty(),
+            "the capture received no records at all for {named} {uri}; \
+             every assertion below is about which records arrived, so this is \
+             a broken subscriber rather than a broken server"
+        );
+        out
     }
 
     /// The hazard this module exists for.

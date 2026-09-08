@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 27 `ev` names the server emits, complete:
+The 28 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 27 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 33c75c8 -->
+     Last extracted: 556ff2a -->
 
 ```
 srv.start                        srv.req.start
@@ -58,9 +58,10 @@ srv.stop.failed                  srv.relay.append_failed
 srv.sync.negotiate_refused       srv.relay.cursor_gap
 srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected
-srv.sync.stream_closed           srv.sync.refresh_identity_mismatch
-srv.sync.token_expired           srv.sync.refreshed
-srv.sync.device_revoked          srv.sync.resume_conflict
+srv.sync.stream_open             srv.sync.refresh_identity_mismatch
+srv.sync.stream_closed           srv.sync.refreshed
+srv.sync.token_expired           srv.sync.resume_conflict
+srv.sync.device_revoked
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -130,7 +131,7 @@ complete set the server emits today:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 33c75c8 -->
+     Last extracted: 556ff2a -->
 
 ```
 sunrise_account_create_total
@@ -151,6 +152,7 @@ sunrise_push_fcm_total           (LoggingProvider; never reached)
 sunrise_push_web_total           (LoggingProvider; never reached)
 sunrise_relay_append_failed_total
 sunrise_relay_batch_duplicate_total
+sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
 sunrise_sync_negotiate_refused_total
 sunrise_sync_refresh_total
@@ -159,7 +161,7 @@ sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-24 metric names, and four that earlier revisions of this file listed and the
+25 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -168,8 +170,9 @@ tree does not define: `sunrise_sync_token_expired_total`,
 under `srv.sync.*` above, which is why the names look familiar.
 
 `sunrise_relay_batch_duplicate_total` is the counter for op-batch
-de-duplication, and it gets commentary the other twenty-one do not because its
-key is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's
+de-duplication, and it and its near-miss counterpart below get commentary the
+other twenty-one do not, because the key they are both about is not the obvious
+one. `POST /api/v1/sync/ops` keys on the batch's
 **content**: `ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
 `PRIMARY KEY (account_h, stream_id, ops_h)` in `relay_batches`. When that
 content is already stored for the channel, the handler increments this counter,
@@ -222,6 +225,27 @@ that clients are replaying, and not a census of it. In particular a reconnect
 storm among **active** clients can leave it flat while the relay log grows and
 subscribers re-receive ops, because every one of those re-sends is
 re-partitioned. Do not read flat as healthy on its own.
+
+`sunrise_relay_batch_overlap_total` is the first of those three classes made
+visible: it counts an append that was **stored** — fresh by the whole-batch
+content key — while carrying at least one op the channel already held. That is
+the re-partitioned re-send, and it is the number
+[ADR-0033](../11-adr/0033-relay-batch-dedup-is-whole-batch.md) named as the
+direct measurement its revisit trigger needs and did not have. The two counters
+are complements and are read as a pair: `duplicate` is the churn the key caught,
+`overlap` is the churn it accepted, and a fleet whose overlap rate approaches
+its append rate is one where a whole-batch key is buying very little.
+
+It is derived from sequence numbers rather than from per-op identity, because
+per-op identity is exactly what that ADR declined to store. A device's ops reach
+a channel in sequence order, so the channel's highest sequence for a device
+bounds what it has already been sent, and an op at or below that bound has been
+here before — read from `relay_frame_heads` and from `relay_evicted` together,
+so a re-send of an op retention has already deleted still counts. The error is
+one-directional: a batch mixing re-sent ops with new ones is counted, and new
+work is never counted as old. It is a counter and not an event on purpose — a
+per-occurrence record on the path whose whole question is *how often this
+happens* would be log volume proportional to the thing being measured.
 
 `/metrics` is mounted at the router root, and **only when the listener binds
 loopback** — a non-loopback bind withholds the route and logs

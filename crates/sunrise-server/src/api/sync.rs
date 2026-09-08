@@ -438,6 +438,17 @@ pub async fn ops(
     let heads = frame_heads(&batch);
     let ops_h = batch_ops_hash(&batch.ops);
 
+    // Read before the append, and only useful before it: afterwards this
+    // batch's own ops are what the channel holds, and every append would look
+    // like a re-send of itself. One indexed read on the publish path is the
+    // price of the measurement ADR-0033's revisit trigger names; a read that
+    // fails costs the measurement and never the append, which is about to fail
+    // on its own and say so.
+    let stored_heads = state
+        .store
+        .relay_device_heads((session.account, stream_id))
+        .unwrap_or_default();
+
     let appended = state
         .store
         .relay_append(
@@ -480,6 +491,13 @@ pub async fn ops(
                     heads,
                 },
             );
+            // Fresh by the whole-batch key, and yet carrying ops this channel
+            // already holds: the re-partitioned re-send ADR-0033 accepted and
+            // could not see. Counted, never refused — the batch is stored and
+            // fanned out exactly as before.
+            if overlaps_stored(&batch, &stored_heads) {
+                state.metrics.incr("sunrise_relay_batch_overlap_total");
+            }
             first_seen_ms
         }
         // No publish: a second fan-out would hand every live subscriber an op
@@ -503,6 +521,44 @@ pub async fn ops(
         stream_id: body.stream_id,
         server_first_seen_ms: first_seen_ms,
     }))
+}
+
+/// Whether this batch re-sends an op the channel already holds.
+///
+/// The question ADR-0033's revisit trigger asks, and the one the whole-batch
+/// content key cannot answer: a re-send that re-partitions its ops hashes
+/// differently, so it is stored and fanned out as new work.
+/// `sunrise_relay_batch_duplicate_total` counts the re-sends the key *did*
+/// catch, which is the case already handled; this is the near miss.
+///
+/// Answered from the sequence numbers rather than from per-op identity,
+/// because per-op identity is exactly what the relay declined to store. A
+/// device's ops reach a channel in sequence order, so the channel's highest
+/// sequence for a device is also the boundary of what it has already been
+/// sent: an op at or below it has been here before. That reads a re-partition
+/// exactly, and it is one-directional about the failure it can have — a batch
+/// mixing old ops with new ones is counted, and nothing new is ever counted as
+/// old.
+fn overlaps_stored(batch: &OpBatchPayload, stored: &HashMap<[u8; 16], u64>) -> bool {
+    frame_floors(batch)
+        .iter()
+        .any(|(device, floor)| stored.get(device).is_some_and(|head| floor <= head))
+}
+
+/// The lowest sequence this batch carries for each device.
+///
+/// The mirror of [`frame_heads`], and undecodable ops are skipped by both: a
+/// frame the relay cannot parse is never filtered on, and it is not measured
+/// on either.
+fn frame_floors(batch: &OpBatchPayload) -> HashMap<[u8; 16], u64> {
+    let mut lowest: HashMap<[u8; 16], u64> = HashMap::new();
+    for op in &batch.ops {
+        if let Ok(head) = sunrise_cbor::decode_envelope_header(op) {
+            let slot = lowest.entry(head.device_id).or_insert(u64::MAX);
+            *slot = (*slot).min(head.seq);
+        }
+    }
+    lowest
 }
 
 /// Domain-separated content hash of a batch's ops, or `None` for an empty one.
@@ -734,6 +790,17 @@ pub async fn events(
     }
 
     state.metrics.incr("sunrise_sync_stream_total");
+    // `resumed` is the reason this event is worth emitting rather than
+    // deleting from the catalogue: a stream that opens cold is a client that
+    // has no `Last-Event-ID` to present, and a step change in the cold rate
+    // after a deploy is clients losing the id rather than choosing not to use
+    // it. The counter beside this one cannot tell those apart.
+    tracing::info!(
+        ev = "srv.sync.stream_open",
+        account_h = %crate::logging::account_h(&session.account_id),
+        resumed = after.is_some(),
+        "sync event stream opened"
+    );
 
     Ok(
         Sse::new(spawn_stream(state, id, session, after)).keep_alive(
@@ -2239,6 +2306,63 @@ mod tests {
         assert!(body.contains("id: 3"), "not yet had: {body}");
     }
 
+    /// The catalogue's `srv.sync.stream_open`, and the field that is the
+    /// reason for emitting it.
+    ///
+    /// A plain `#[test]` with its own runtime rather than `#[tokio::test]`,
+    /// because installing a dispatcher is synchronous and has to wrap the whole
+    /// exchange rather than sit inside it.
+    ///
+    /// Both opens are asserted, not just the resumed one: `resumed` is only
+    /// readable as a ratio, and a field that is always true measures nothing.
+    #[test]
+    fn a_stream_open_records_whether_it_resumed() {
+        use sunrise_log::{build_subscriber, Capture, LogConfig, LogFormat, LogTarget};
+
+        let cap = Capture::new();
+        let dispatch = build_subscriber(LogConfig {
+            target: LogTarget::Capture(cap.clone()),
+            filter: "info".to_owned(),
+            format: LogFormat::Ndjson,
+        })
+        .expect("subscriber builds");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tracing::dispatcher::with_default(&dispatch, || {
+            rt.block_on(async {
+                let client = Client::new(ServerConfig::default());
+                let id = establish(&client).await;
+                subscribe(&client, &id, None).await;
+                assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+
+                // A cold open first: the ids a resume names come from it.
+                let first = read(&client, &id, &[]).await;
+                assert!(first.contains("id: 1"), "no id to resume from: {first}");
+                let _ = read(&client, &id, &[("last-event-id", "1")]).await;
+            });
+        });
+
+        let out = cap.contents();
+        assert!(!out.is_empty(), "the capture received no records at all");
+        let opens: Vec<serde_json::Value> = out
+            .lines()
+            .filter(|l| l.contains(r#""ev":"srv.sync.stream_open""#))
+            .map(|l| serde_json::from_str(l).expect("record is JSON"))
+            .collect();
+        assert_eq!(opens.len(), 2, "one record per opened stream: {out}");
+        assert_eq!(opens[0]["resumed"], serde_json::json!(false), "{out}");
+        assert_eq!(opens[1]["resumed"], serde_json::json!(true), "{out}");
+        for open in &opens {
+            assert!(
+                open["account_h"].is_string(),
+                "the record is scoped to an account by hash: {open}"
+            );
+        }
+    }
+
     /// The defect #101 names, at the boundary.
     ///
     /// A client crashes between receiving a frame and committing it, restarts,
@@ -2430,6 +2554,123 @@ mod tests {
             body.matches("\"kind\":\"ops\"").count(),
             2,
             "two distinct batches must both be retained: {body}"
+        );
+    }
+
+    /// The shape ADR-0033 accepted and could not see, now counted.
+    ///
+    /// A client loses an ack, authors between the loss and the reconnect, and
+    /// re-drains its outbox in a different partition. The whole-batch content
+    /// key reads that as new work — correctly, by its own rule — so the batch
+    /// is stored and fanned out, and `sunrise_relay_batch_duplicate_total`
+    /// stays at zero while ops are being re-sent. The two counters together are
+    /// what makes the trade in that ADR falsifiable.
+    #[tokio::test]
+    async fn a_repartitioned_resend_is_counted_without_being_refused() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        let device = [6u8; 16];
+
+        publish_acked(
+            &client,
+            &id,
+            vec![envelope(device, 1), envelope(device, 2)],
+            1,
+        )
+        .await;
+        // Seq 2 again, this time carried with a newer op: a different hash and
+        // a different partition of the same work.
+        publish_acked(
+            &client,
+            &id,
+            vec![envelope(device, 2), envelope(device, 3)],
+            2,
+        )
+        .await;
+
+        assert_eq!(
+            client.metrics.get("sunrise_relay_batch_duplicate_total"),
+            0,
+            "the batch key is not supposed to catch this; that is the point"
+        );
+        assert_eq!(
+            client.metrics.get("sunrise_relay_batch_overlap_total"),
+            1,
+            "an op the channel already held arrived again"
+        );
+
+        // Counted, never refused.
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            2,
+            "both batches must still be stored and served: {body}"
+        );
+    }
+
+    /// The counter measures the near miss and nothing else.
+    ///
+    /// Ordinary new work and an exact re-send are the two cases dedup already
+    /// handles, and a counter that fired on either would be unreadable against
+    /// the append rate.
+    #[tokio::test]
+    async fn new_work_and_an_exact_resend_are_not_overlaps() {
+        let client = Client::new(ServerConfig::default());
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+        let device = [7u8; 16];
+
+        let ops = vec![envelope(device, 1)];
+        publish_acked(&client, &id, ops.clone(), 1).await;
+        // The same batch again: caught by the content key.
+        publish_acked(&client, &id, ops, 1).await;
+        // And strictly later ops: new work.
+        publish_acked(&client, &id, vec![envelope(device, 2)], 2).await;
+
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+        assert_eq!(
+            client.metrics.get("sunrise_relay_batch_overlap_total"),
+            0,
+            "neither shape is a near miss"
+        );
+    }
+
+    /// Retention must not erase the evidence.
+    ///
+    /// A re-send of an op the channel evicted is still a re-send, and
+    /// `relay_frame_heads` cannot say so once the frame that carried it is
+    /// gone. `relay_evicted` outlives it, which is why the head is read from
+    /// both.
+    #[tokio::test]
+    async fn an_op_the_channel_evicted_is_still_an_overlap() {
+        let device = [8u8; 16];
+        let first = envelope(device, 1);
+        // A budget that holds one frame of this size, so the first append is
+        // evicted by the second.
+        let caps = DurableCaps {
+            max_bytes: u64::try_from(first.len()).unwrap_or(u64::MAX),
+            ..DurableCaps::default()
+        };
+        let state = ServerState::new(ServerConfig::default()).with_durable_caps(caps);
+        let client = Client::from_state(state);
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        publish_acked(&client, &id, vec![first], 1).await;
+        publish_acked(&client, &id, vec![envelope(device, 2)], 2).await;
+        assert_eq!(
+            client.metrics.get("sunrise_relay_batch_overlap_total"),
+            0,
+            "seq 2 is new work, whatever retention did to seq 1"
+        );
+
+        // Seq 1 again, long after the frame that carried it was evicted.
+        publish_acked(&client, &id, vec![envelope(device, 1)], 3).await;
+        assert_eq!(
+            client.metrics.get("sunrise_relay_batch_overlap_total"),
+            1,
+            "an evicted op is one the channel held, not one it never saw"
         );
     }
 
