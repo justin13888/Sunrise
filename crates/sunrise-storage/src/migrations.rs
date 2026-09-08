@@ -67,6 +67,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "identity_minted_by",
         sql: include_str!("../migrations/0019_identity_minted_by.sql"),
     },
+    Migration {
+        id: 20,
+        name: "relay_revocation_intents",
+        sql: include_str!("../migrations/0020_relay_revocation_intents.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

@@ -31,6 +31,7 @@ sse = [
     "dep:serde_json",
     "dep:sunrise-wire-protocol",
     "dep:sunrise-error",
+    "dep:sunrise-id",
 ]
 
 [dependencies]
@@ -49,6 +50,7 @@ hyper-rustls = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true, features = ["client-legacy", "http1"] }
 serde_json = { workspace = true, optional = true }
 sunrise-error = { workspace = true, optional = true }
+sunrise-id = { workspace = true, optional = true }
 sunrise-wire-protocol = { workspace = true, optional = true }
 
 [dev-dependencies]

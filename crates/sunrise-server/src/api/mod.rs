@@ -92,6 +92,7 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
             devices::list,
             devices::register,
             devices::revoke,
+            devices::revoke_by_vault_id,
             devices::push_tokens
         ])
         .mount(kynos::routes![

@@ -42,12 +42,13 @@
 //! convergent, because a replica that applied an op before the revocation
 //! arrived cannot un-apply it and this engine has no projection rebuild.
 //!
-//! Nor is anything else bounding them. **A revoked device's writes are
-//! unbounded today.** The relay would have to be told out of band and cannot
-//! be: `DELETE /api/v1/devices/{device_id}` names the relay's own ULID for a
-//! device and a vault knows only its 16-byte device id, so there is no id to
-//! put in the request (#80). A convergent peer-side check is #82. Revocation
-//! is a read boundary and only a read boundary.
+//! The bound on a revoked device's writes lives at the relay instead, and it
+//! is told out of band: `Command::RevokeDevice` queues an intent that the sync
+//! driver sends to `DELETE /api/v1/devices/by-vault-id/{id}` — the vault-side
+//! id, because a vault holds no peer's relay ULID. `relay_learns_revocation.rs`
+//! covers that half, and `docs/03-crypto/key-rotation.md` §Revocation states
+//! the three conditions that bound it. A convergent peer-side check is #82, and
+//! it is defence in depth over the relay bound rather than a substitute for it.
 //!
 //! It also does not assert forward secrecy against the *account creator*. That
 //! device, and one restored from the recovery code, hold `ID_D_priv` and can
@@ -63,11 +64,14 @@
 //! `self_authenticating_signer` admits that cert, applying it runs
 //! `backfill_key_envelopes`, and the fresh id is sealed the current epoch of
 //! every stream — so revocation is undone in one round trip and nothing today
-//! stands in the way. Two things would: identity rotation, which is what makes
+//! stands in the way. One thing would: identity rotation, which is what makes
 //! a revoked device's `ID_S_priv` stop signing valid certs at all
-//! (`docs/03-crypto/key-rotation.md` §Identity rotation, unbuilt), and
-//! refusing to backfill a device id first seen in a cert whose signer is
-//! already revoked, which is narrower and does not need the identity to move.
+//! (`docs/03-crypto/key-rotation.md` §Identity rotation, unbuilt). Refusing to
+//! backfill a device id first seen in a cert whose signer is already revoked
+//! used to be named here as a narrower alternative; ADR-0032 establishes that
+//! there is no signer to key it on — the cert is signed by the account's
+//! `ID_S_priv` and the op by the subject's own `D_S_priv`, both of which a
+//! revoked device minting a fresh id controls.
 //! Neither is built.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]

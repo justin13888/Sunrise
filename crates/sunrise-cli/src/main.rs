@@ -1345,6 +1345,11 @@ fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
         device_pub_s: login::device_id_hex(core),
         device_pub_d: None,
         device_cert: None,
+        // The only name a peer can revoke this device by: the relay mints its
+        // own id and never sends it back through the op stream, so a sibling
+        // device holds this one and nothing else. Omitting it registers a
+        // device that cannot be revoked at the relay at all.
+        vault_device_id: Some(sunrise_id::crockford::encode_bytes(&core.device_id())),
         nickname: "sunrise-cli".to_owned(),
         platform: if cfg!(target_os = "macos") {
             "macos".to_owned()

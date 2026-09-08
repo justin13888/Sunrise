@@ -35,6 +35,13 @@ pub const MAX_NICKNAME_BYTES: usize = 64;
 pub struct DeviceMeta {
     /// Crockford base-32 of 16 bytes.
     pub device_id: String,
+    /// The id this device answers to inside the vault, when it supplied one.
+    ///
+    /// The relay's own `device_id` above is a ULID minted here at
+    /// registration; nothing carries it back into the vault, so no device
+    /// holds a peer's. A `device_revoke` op names *this* id, which is what
+    /// makes it the only correlation key a client can act on.
+    pub vault_device_id: Option<String>,
     /// User-set name.
     pub nickname: String,
     /// Platform tag.
@@ -57,6 +64,7 @@ impl From<Device> for DeviceMeta {
     fn from(d: Device) -> Self {
         Self {
             device_id: d.device_id,
+            vault_device_id: d.vault_device_id,
             nickname: d.nickname,
             platform: d.platform,
             app_version: d.app_version,
@@ -83,6 +91,14 @@ pub struct DeviceRegisterRequest {
     /// `Command::TrustDevice`, and ADR-0024 is what gives it an identity anchor.
     #[serde(default)]
     pub device_cert: Option<String>,
+    /// This device's vault-side id, Crockford base-32 of 16 bytes.
+    ///
+    /// Optional because it is additive to a shipped route, and a client that
+    /// predates it still registers. A device that omits it cannot afterwards
+    /// be revoked through `DELETE /api/v1/devices/by-vault-id/{id}`, because
+    /// there is nothing on the row for that route to match.
+    #[serde(default)]
+    pub vault_device_id: Option<String>,
     /// User-visible name.
     pub nickname: String,
     /// Platform tag.
@@ -123,6 +139,13 @@ pub struct PushRegistration {
 pub struct DeviceIdPath {
     /// The device being addressed.
     pub device_id: String,
+}
+
+/// `{vault_device_id}` in a device path.
+#[derive(Debug, Clone, Deserialize, kynos::PathParams, kynos::Schema)]
+pub struct VaultDeviceIdPath {
+    /// The vault-side id of the device being addressed.
+    pub vault_device_id: String,
 }
 
 /// Whether `s` decodes to a *usable* Ed25519 public key.
@@ -187,6 +210,17 @@ pub async fn register(
             "platform must be one of {PLATFORMS:?}"
         )));
     }
+    // Refused at registration rather than stored and found unmatchable later:
+    // an id that is not a well-formed vault id can never equal one a real
+    // `device_revoke` names, so accepting it would register a device that
+    // looks revocable and is not.
+    if let Some(vault_device_id) = body.vault_device_id.as_deref() {
+        if sunrise_id::crockford::decode_str(vault_device_id).is_err() {
+            return Err(ApiError::validation(
+                "vault_device_id must be 26 Crockford base-32 characters",
+            ));
+        }
+    }
 
     let device = state.store.register_device(
         &caller.principal.account.account_id,
@@ -194,6 +228,7 @@ pub async fn register(
             device_pub_s: body.device_pub_s,
             device_pub_d: body.device_pub_d,
             device_cert: body.device_cert,
+            vault_device_id: body.vault_device_id,
             nickname: body.nickname,
             platform: body.platform,
             app_version: body.app_version,
@@ -253,6 +288,71 @@ pub async fn revoke(
     Ok(NoContent)
 }
 
+/// Revoke a device by the id it answers to inside the vault.
+///
+/// The route above names the relay's own ULID, and a vault has no way to learn
+/// a peer's: the ULID is minted here at registration and travels back only to
+/// the device that registered. What a vault holds for a peer is the 16-byte id
+/// a `device_revoke` op names, so before this route existed a revocation was
+/// not expressible against this API at all, whatever the client did
+/// ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+///
+/// Every active row carrying the id is revoked, not one: a device
+/// re-registering is a second row rather than an error, and all of them are the
+/// device the caller means.
+///
+/// `404` is the answer for a vault id no active row on this account carries.
+/// That covers a second revoke, another account's device, **and** a device that
+/// registered before it sent a `vault_device_id` — the last of which is still
+/// accepted by this relay under a row the caller cannot name, so a client must
+/// not read this `404` as "the device is now refused".
+#[kynos::delete(
+    "/api/v1/devices/by-vault-id/{vault_device_id}",
+    operation_id = "revokeDeviceByVaultId"
+)]
+pub async fn revoke_by_vault_id(
+    Inject(state): Inject<ServerState>,
+    Path(path): Path<VaultDeviceIdPath>,
+    SignedParts(caller): SignedParts,
+) -> Result<NoContent, ApiError> {
+    if sunrise_id::crockford::decode_str(&path.vault_device_id).is_err() {
+        return Err(ApiError::validation(
+            "vault_device_id must be 26 Crockford base-32 characters",
+        ));
+    }
+    // The same rule as `revoke`, read off the other id: a device a thief holds
+    // must not be able to erase the evidence of its own theft, and it would
+    // otherwise reach the same row by its vault name.
+    if caller
+        .device
+        .as_ref()
+        .and_then(|d| d.vault_device_id.as_deref())
+        .is_some_and(|id| id == path.vault_device_id)
+    {
+        return Err(ApiError::forbidden(
+            codes::AUTH_DEVICE_NOT_OWNER,
+            "a device cannot revoke itself; revoke it from another paired device",
+        ));
+    }
+
+    state
+        .store
+        .revoke_devices_by_vault_id(
+            &caller.principal.account.account_id,
+            &path.vault_device_id,
+            state.clock.now_ms(),
+        )
+        .map_err(|e| match e {
+            crate::store::StoreError::NotFound => ApiError::not_found(
+                codes::DEVICE_NOT_FOUND,
+                "no active device on this account carries that vault device id",
+            ),
+            other => other.into(),
+        })?;
+    state.metrics.incr("sunrise_devices_revoke_total");
+    Ok(NoContent)
+}
+
 /// File a push token against one of the caller's devices.
 #[kynos::post("/api/v1/devices/push-tokens", operation_id = "registerPushToken")]
 pub async fn push_tokens(
@@ -300,7 +400,7 @@ pub async fn push_tokens(
 #[cfg(test)]
 mod tests {
     use crate::api::error::codes;
-    use crate::api::testing::Client;
+    use crate::api::testing::{code_of, register_device, send_signed, Client};
     use crate::ServerConfig;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
@@ -491,6 +591,325 @@ mod tests {
             rendered.contains("sunrise_push_register_total"),
             "filing a push token must be counted; got:\n{rendered}"
         );
+    }
+
+    // -- revocation ---------------------------------------------------------
+    //
+    // Issue #81: the relay's enforcement was read out of the handler and rested
+    // on two store-layer tests. Everything below drives it through HTTP.
+
+    /// A vault id, Crockford base-32 of 16 bytes, the way a `device_revoke`
+    /// names one.
+    const PHONE_VAULT_ID: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
+    /// A second one, for the laptop doing the revoking.
+    const LAPTOP_VAULT_ID: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W80";
+
+    /// The whole point of the route: a vault can name the device it revoked.
+    ///
+    /// `DELETE /api/v1/devices/{device_id}` takes the relay's own ULID, minted
+    /// here at registration and never carried into the vault, so a client
+    /// holding only the 16-byte id its `device_revoke` op names had no
+    /// expressible request to make.
+    #[tokio::test]
+    async fn a_device_is_revocable_by_the_id_its_vault_knows_it_by() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, _phone_key) =
+            register_device(&client, 20, "phone", Some(PHONE_VAULT_ID)).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 21, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        // The row survives revocation, so the listing reports it — and reports
+        // the vault id, which is what let the client address it.
+        let listed = send_signed(
+            &client,
+            "GET",
+            "/api/v1/devices",
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await;
+        listed.assert_status(StatusCode::OK);
+        let rows = listed.json();
+        let phone = rows
+            .as_array()
+            .expect("an array")
+            .iter()
+            .find(|d| d["device_id"] == phone_id)
+            .expect("the phone is still listed")
+            .clone();
+        assert_eq!(phone["revoked"], serde_json::json!(true));
+        assert_eq!(phone["vault_device_id"], serde_json::json!(PHONE_VAULT_ID));
+    }
+
+    /// A revoked device's signed request is refused, and this drives it
+    /// through the HTTP surface rather than through `Store::active_device`.
+    ///
+    /// The SQL that enforces it ends `AND revoked = 0`, so a revoked device
+    /// resolves to no device at all — which is why the refusal is a 401 about
+    /// the credential rather than a 403 about the action.
+    #[tokio::test]
+    async fn a_revoked_devices_signed_request_is_401() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, phone_key) =
+            register_device(&client, 22, "phone", Some(PHONE_VAULT_ID)).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 23, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        // Before: the phone is an ordinary authenticated client.
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::OK);
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        // After: the same request, signed by the same key, resolves to no
+        // device and is refused.
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// A device a thief holds must not be able to erase the evidence of its
+    /// own theft — by either of the two names it now answers to.
+    #[tokio::test]
+    async fn a_device_cannot_revoke_itself_by_either_id() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, phone_key) =
+            register_device(&client, 24, "phone", Some(PHONE_VAULT_ID)).await;
+
+        let by_relay_id = send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/{phone_id}"),
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await;
+        by_relay_id.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(code_of(&by_relay_id), codes::AUTH_DEVICE_NOT_OWNER);
+
+        // The vault id is a second name for the same row, so the same rule has
+        // to be read off it or the route is a way round the first one.
+        let by_vault_id = send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await;
+        by_vault_id.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(code_of(&by_vault_id), codes::AUTH_DEVICE_NOT_OWNER);
+
+        // And it is still authenticating, which is what the refusal is for.
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::OK);
+    }
+
+    /// A device that re-registers is a second row, and all of its rows are the
+    /// device the caller is revoking.
+    ///
+    /// `docs/06-server/api.md` records the re-registration as deliberate — it
+    /// is what lets a client run the bootstrap on every start. Revoking one row
+    /// and leaving the rest would leave the device authenticating under a row
+    /// its owner has no way to name.
+    #[tokio::test]
+    async fn revoking_by_vault_id_revokes_every_row_that_device_registered() {
+        let client = Client::new(ServerConfig::default());
+        let (first, first_key) = register_device(&client, 25, "phone", Some(PHONE_VAULT_ID)).await;
+        let (second, second_key) =
+            register_device(&client, 26, "phone", Some(PHONE_VAULT_ID)).await;
+        assert_ne!(first, second, "re-registering mints a second row");
+        let (laptop_id, laptop_key) =
+            register_device(&client, 27, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        for (id, key) in [(&first, &first_key), (&second, &second_key)] {
+            send_signed(&client, "GET", "/api/v1/accounts/me", id, key, None)
+                .await
+                .assert_status(StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    /// A vault id no active row carries is a 404, and a client must not read
+    /// that as "the device is now refused".
+    ///
+    /// The three cases behind it are a second revoke, another account's device,
+    /// and — the dangerous one — a device that registered before it sent a
+    /// `vault_device_id` at all, which this relay is still accepting under a
+    /// row the caller cannot name.
+    #[tokio::test]
+    async fn a_vault_id_no_active_row_carries_is_404() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, phone_key) = register_device(&client, 28, "phone", None).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 29, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        let res = send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await;
+        res.assert_status(StatusCode::NOT_FOUND);
+        assert_eq!(code_of(&res), codes::DEVICE_NOT_FOUND);
+
+        // And the phone really is still accepted, which is the fact the 404
+        // hides and the reason the client logs it as a warning.
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::OK);
+
+        // A second revoke of a device that *was* revoked lands in the same
+        // place, so the two are indistinguishable to a caller — deliberately.
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{LAPTOP_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    }
+
+    /// An id that is not a well-formed vault id can never equal one a real
+    /// `device_revoke` names, so accepting it at registration would file a
+    /// device that looks revocable and is not.
+    #[tokio::test]
+    async fn a_malformed_vault_device_id_is_refused_at_registration() {
+        let client = Client::new(ServerConfig::default());
+        let res = client
+            .send(
+                Method::POST,
+                "/api/v1/devices",
+                Some(&serde_json::json!({
+                    "device_pub_s": b64(SigningKey::from_bytes(&[30u8; 32])
+                        .verifying_key()
+                        .as_bytes()),
+                    "vault_device_id": "not-a-vault-id",
+                    "nickname": "phone",
+                    "platform": "linux",
+                })),
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(code_of(&res), codes::VALIDATION_INVALID);
+    }
+
+    /// The gap, pinned rather than left to be discovered.
+    ///
+    /// `require_device_sig` defaults to false. With no `X-Sunrise-Device-Sig`,
+    /// `verify_bytes` returns `Ok(None)`: no device is resolved, so no
+    /// revocation check runs at all. A revoked device that simply stops signing
+    /// keeps working, and nothing in the relay notices.
+    ///
+    /// This asserts the hole so that closing it fails a test rather than
+    /// passing silently, and so that nobody reads the tests above as a
+    /// guarantee that holds for a deployment leaving the flag alone.
+    #[tokio::test]
+    async fn without_a_device_signature_a_revoked_device_is_not_device_bound() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, phone_key) =
+            register_device(&client, 31, "phone", Some(PHONE_VAULT_ID)).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 32, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        // Signed: refused, as the tests above establish.
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+        // Unsigned, same bearer: served. Nothing bound the request to the
+        // revoked device, so there was nothing to refuse.
+        client
+            .send(Method::GET, "/api/v1/accounts/me", None)
+            .await
+            .assert_status(StatusCode::OK);
     }
 
     /// Sign-up being disabled is a statement about the server, not about the
