@@ -99,6 +99,30 @@ run = "cargo check --workspace --all-targets"
 description = "Run the Rust test suite"
 run = "cargo test --workspace --all-targets"
 
+[tasks.storage-fixtures]
+description = "Rewrite the committed old-vault fixtures under crates/sunrise-storage/fixtures/"
+shell = "bash -c"
+# The generator is an `#[ignore]`d test rather than a binary, so that the
+# fixtures and the assertions about them are the same code reading the same
+# constants: a `main.rs` that drifted from the test would produce a file the
+# test then rejects, and the fix would be to edit the generator to agree with
+# itself. `--ignored` is what keeps `mise run rust-test` reading the committed
+# files instead of rewriting them, and `--exact` keeps this from picking up the
+# ordinary fixture tests beside it.
+#
+# Regenerate deliberately. A fixture rewritten at today's schema is no longer
+# old, and the migration chain it exists to exercise then runs over nothing —
+# the `the_committed_v13_fixture_is_a_sealed_vault_stamped_at_the_baseline`
+# test is the tripwire for exactly that.
+run = """
+set -euo pipefail
+cargo test -p sunrise-storage --lib \
+  vault_fixtures::regenerate_the_committed_vault_fixtures -- --ignored --exact
+echo
+echo "rewritten: crates/sunrise-storage/fixtures/"
+git status --short crates/sunrise-storage/fixtures/
+"""
+
 [tasks.rust-doctest]
 description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 # `--all-targets` above silently excludes doc tests, so this is the only local
