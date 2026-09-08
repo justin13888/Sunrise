@@ -3812,29 +3812,30 @@ impl Engine {
         Ok(())
     }
 
-    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
-    /// every other member about it if the stream has none.
+    /// Mint the account's base epochs if they do not exist yet.
     ///
-    /// The order inside the mint branch matters and is not incidental: the key
-    /// row is written **before** the `key_envelope` ops are emitted, because
-    /// emitting one is itself an `ops_insert` into the vault-meta stream, which
-    /// re-enters here. With the row already present the re-entry terminates
-    /// immediately; without it, minting the meta stream's own first key would
-    /// recurse forever.
-    /// Mint the account's base epochs if they do not exist yet, so that a
-    /// pairing payload assembled next carries them.
-    ///
-    /// A payload is built from the keys this device *holds*, and a vault that
-    /// has never written anything holds none — so a device paired from a
-    /// freshly created account used to receive an empty `stream_keys` map. That
-    /// was survivable only because it could open the identity-sealed copy of
-    /// every `key_envelope` with the `ID_D_priv` the payload also carried.
-    /// Neither is true now: without the vault-meta key a paired device cannot
-    /// read a single control op, so it cannot even learn the keys it is
+    /// A pairing payload is built from the keys this device *holds*, and a
+    /// vault that has never written anything holds none — so a device paired
+    /// from a freshly created account used to receive an empty `stream_keys`
+    /// map. That was survivable only because it could open the identity-sealed
+    /// copy of every `key_envelope` with the `ID_D_priv` the payload also
+    /// carried. Neither is true now: without the vault-meta key a paired device
+    /// cannot read a single control op, so it cannot even learn the keys it is
     /// missing, and it sits in `CatchingUp` forever parking everything.
     ///
     /// The Inbox is minted alongside because it is the one stream every account
     /// has whether or not the user has made any of their own.
+    ///
+    /// `Core::open` is the only caller, and that placement is the point.
+    /// `Core::export_pairing_payload` called it for one revision, which is
+    /// where the need was discovered; it made opening a pairing screen a
+    /// durable write that syncs, on a call every layer above had written
+    /// against as a read. Having base epochs is an invariant of a vault rather
+    /// than a fact about pairing, so it is established when the vault is
+    /// opened. This is idempotent — `ensure_stream_epoch` returns the existing
+    /// key when there is one — so it also repairs a vault created before the
+    /// move, and mints nothing on a device that imported the account's epochs
+    /// from a pairing payload.
     ///
     /// # Errors
     /// Storage failures.
