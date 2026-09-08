@@ -196,6 +196,19 @@ description = "Reject a markdown link or heading anchor that resolves to nothing
 # second over 130 files and needs no toolchain but python3.
 run = ".github/scripts/docs-link-gate.py"
 
+[tasks.proptest-persistence]
+description = "Reject a tests/ proptest that does not set failure_persistence (the CI gate, run locally)"
+# #118 settled the convention and nothing asserted it. proptest's default walks
+# up from the source for a `lib.rs`, finds none above a `tests/` file, and
+# writes a flat `<name>.proptest-regressions` beside the test instead of the
+# tracked `proptest-regressions/tests/<name>.txt` — and the only thing between
+# that and a silent divergence was somebody noticing an untracked file in
+# `git status`. The script checks that every `proptest!` block under a crate's
+# `tests/` carries a config, that the file names the persistence path derived
+# from its own name, and that git neither ignores that path nor leaves an
+# existing counterexample untracked.
+run = ".github/scripts/proptest-persistence-gate.py"
+
 [tasks.observability-catalog]
 description = "Reject an observability.md event or metric block that has drifted from the tree (the CI gate, run locally)"
 # `docs/06-server/observability.md` carries the operator-facing inventory of

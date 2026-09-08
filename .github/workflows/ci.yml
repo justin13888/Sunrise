@@ -670,6 +670,27 @@ jobs:
         run: .github/scripts/orphan-crate-gate.py
 
 
+  proptest-persistence:
+    name: Proptest persistence gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over the 40
+    # tracked integration-test files. No toolchain, nothing to cache, no
+    # network call. It shells out to `git ls-files` and `git check-ignore`,
+    # which is why it needs the checkout and nothing else.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a tests/ proptest that does not set failure_persistence
+        # A shrunken counterexample is the one output of a property test that
+        # cannot be regenerated on demand, so #118 made these files tracked and
+        # gave every `tests/` proptest an explicit
+        # `FileFailurePersistence::Direct`. Without it proptest writes a flat
+        # `<name>.proptest-regressions` beside the test, which `.gitignore`
+        # deliberately does not hide — and "somebody will notice it in
+        # `git status`" is the enforcement this repository has replaced with a
+        # gate everywhere else.
+        run: .github/scripts/proptest-persistence-gate.py
+
   observability-catalog:
     name: Observability catalogue gate
     runs-on: ubuntu-latest

@@ -347,7 +347,12 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
 | `mise run rust-check`        | Type-check the Rust workspace                          |
 | `mise run rust-test`         | Run the Rust test suite                                |
+| `mise run rust-doc`          | Build the rustdoc with every rustdoc warning denied     |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
+| `mise run docs-links`        | Fail on a markdown link or heading anchor that resolves to nothing |
+| `mise run doc-comments`      | Fail on a doc comment mangled into a shape rustdoc misreads |
+| `mise run observability-catalog` | Fail if observability.md's extracted event or metric block has drifted |
+| `mise run proptest-persistence`  | Fail if a `tests/` proptest does not set `failure_persistence` |
 | `mise run apple-xcframework` | Build the Swift bindings + `SunriseCore.xcframework`   |
 | `mise run macos-run`         | Build the macOS app and **open it**                    |
 | `mise run ios-run`           | Build the iOS app and **launch it on the simulator**   |
