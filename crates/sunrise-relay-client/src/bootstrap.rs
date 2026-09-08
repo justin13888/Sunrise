@@ -132,9 +132,19 @@ pub async fn bootstrap(
             None,
             &api::types::AccountCreateRequest {
                 email: account.email,
-                identity_signing_pub: account.identity_signing_pub,
-                identity_dh_pub: account.identity_dh_pub,
-                recovery_blob: account.recovery_blob,
+                identity_signing_pub: sunrise_onboarding::encode_public_key(
+                    &account.identity_signing_pub,
+                ),
+                identity_dh_pub: sunrise_onboarding::encode_public_key(&account.identity_dh_pub),
+                // The empty string is how the description says "no blob": the
+                // handler filters it out before the store sees it, so a device
+                // that cannot seal one leaves the column exactly as the
+                // founding device wrote it.
+                recovery_blob: account
+                    .recovery_blob
+                    .as_deref()
+                    .map(sunrise_onboarding::encode_recovery_blob)
+                    .unwrap_or_default(),
                 terms_at_ms: terms_at_ms(account.terms_at_ms)?,
             },
         )
