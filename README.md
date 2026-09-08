@@ -2,7 +2,7 @@
 
 Sunrise is an open-source daily routine app that helps you focus on what matters. It aims to be accessible, available on all major desktop and mobile platforms, open source, and built with performant technologies.
 
-> **Status:** Sunrise is undergoing a v1 rewrite. The architecture below is in active development.
+> **Status (Sept 8, 2026):** Sunrise is near ready for first alpha release since rewrite. Focused on Apple devices and UX refinement.
 
 <!-- TODO: Add screenshot and demo link -->
 
