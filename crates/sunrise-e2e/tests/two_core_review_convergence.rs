@@ -3,8 +3,8 @@
 //! §Activity timeline.
 //!
 //! Companion to `two_core_focus_convergence.rs`: same in-process relay, same
-//! real `WebSocket`s and wire protocol. Two properties have to hold, and they
-//! are the two the representation was chosen for.
+//! real SSE + `POST` sync transport and wire protocol. Two properties have to
+//! hold, and they are the two the representation was chosen for.
 //!
 //! 1. **A review snapshot is an event, not a register.** Both devices finish a
 //!    review of the *same week*, each with its own reflection. Under a

@@ -1,8 +1,8 @@
 //! Task dependencies converge across two real `Core`s through the real relay.
 //!
 //! Companion to `two_core_context_convergence.rs`: same in-process relay, same
-//! real WebSockets and wire protocol, but exercising the derived `blocked` /
-//! `blocks_others` pair from `docs/02-domain/tasks.md`.
+//! real SSE + `POST` sync transport and wire protocol, but exercising the
+//! derived `blocked` / `blocks_others` pair from `docs/02-domain/tasks.md`.
 //!
 //! Neither is stored on the Task and neither rides the wire — both are
 //! recomputed from the dependency index against the blockers' *current* states.

@@ -1,7 +1,8 @@
 //! The bearer a sync session presents, and where it lives.
 //!
-//! The relay authenticates at the **upgrade** (`docs/06-server/auth.md`), so
-//! every reconnect needs a token — and it needs the *current* one. A sync
+//! The relay authenticates **every sync operation** (`docs/06-server/auth.md`):
+//! each `POST` and the event stream carries `Authorization: Bearer`, so every
+//! reconnect needs a token — and it needs the *current* one. A sync
 //! session outlives many tokens: it renews in-band with `0x12 RefreshToken`
 //! while connected, and after a drop it reconnects with whatever the OIDC
 //! client has obtained since.

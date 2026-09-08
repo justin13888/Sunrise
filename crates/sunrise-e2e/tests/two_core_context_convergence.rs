@@ -1,10 +1,11 @@
 //! Contexts converge across two real `Core`s through the real relay.
 //!
 //! Companion to `two_core_relay_convergence.rs`: same in-process relay, same
-//! real WebSockets and wire protocol, but exercising the Context lifecycle —
-//! create, rename, and the delete that must strip the Context from every Task
-//! carrying it on *both* replicas (per `docs/02-domain/contexts-and-tags.md`),
-//! without shipping one op per affected Task.
+//! real SSE + `POST` sync transport and wire protocol, but exercising the
+//! Context lifecycle — create, rename, and the delete that must strip the
+//! Context from every Task carrying it on *both* replicas (per
+//! `docs/02-domain/contexts-and-tags.md`), without shipping one op per affected
+//! Task.
 
 #![allow(
     clippy::missing_panics_doc,

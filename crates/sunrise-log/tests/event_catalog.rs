@@ -213,20 +213,39 @@ fn extra_manifests() -> Vec<PathBuf> {
 /// derivation and the gate that checks it cannot disagree about what a
 /// `--manifest-path` says — the same reason an event name is read out of the
 /// field parse rather than by a second search of its own.
+///
+/// # Comments are not invocations
+///
+/// A whole-line comment that merely *names* the flag is skipped. Every format
+/// this scan reads comments with `#` — TOML, YAML, `Dockerfile` and the shell
+/// inside a mise task — so one rule covers all four. Without it a reworded
+/// sentence in `mise.toml` fails the gate, and the failure names this test
+/// rather than the comment, which costs a full `rust-test` cycle to work out
+/// (#147). The scan is line-oriented for that reason; a flag and its argument
+/// on separate lines are not read, and no invocation here writes one.
+///
+/// A comment *trailing* real content on the same line is still read. Narrowing
+/// further would mean knowing where each format's strings and comments start,
+/// which is a parser for four grammars in service of a case nothing has hit.
 fn manifest_path_args(text: &str) -> Vec<String> {
     const FLAG: &str = "--manifest-path";
     let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(at) = text[from..].find(FLAG).map(|r| from + r) {
-        from = at + FLAG.len();
-        let rest = text[from..].trim_start_matches([' ', '=']);
-        let path = rest
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .trim_matches(['"', '\'']);
-        if !path.is_empty() {
-            found.push(path.to_owned());
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(at) = line[from..].find(FLAG).map(|r| from + r) {
+            from = at + FLAG.len();
+            let rest = line[from..].trim_start_matches([' ', '=']);
+            let path = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches(['"', '\'']);
+            if !path.is_empty() {
+                found.push(path.to_owned());
+            }
         }
     }
     found
@@ -2193,5 +2212,31 @@ fn the_build_config_scan_actually_reads_cargo_invocations() {
         "the `--manifest-path` parser found {found:?}, which does not include the \
          one manifest mise.toml names — `extra_manifests` reads the same parser, \
          so the file set would be short a crate"
+    );
+}
+
+#[test]
+fn a_commented_out_manifest_path_is_not_read_as_an_invocation() {
+    // #147: `mise.toml` carries a long prose comment about why the bindgen
+    // manifest is written out literally, and a rewording of it that spelled the
+    // flag was enough to fail this gate — the scan could not tell a sentence
+    // about the flag from a cargo call using it. The comment had to be written
+    // around the word instead, which is the tail wagging the dog.
+    let text = "\
+# cargo metadata --manifest-path tools/nonexistent/Cargo.toml is what this used
+  # to say, indented, and it is still only a comment
+cargo build --manifest-path tools/uniffi-bindgen/Cargo.toml
+";
+    assert_eq!(
+        manifest_path_args(text),
+        vec!["tools/uniffi-bindgen/Cargo.toml".to_owned()],
+        "a `#` comment naming the flag must not be read as an invocation"
+    );
+
+    // The converse, so the skip cannot quietly swallow real calls: a trailing
+    // `#` after content leaves the line readable.
+    assert_eq!(
+        manifest_path_args("cargo build --manifest-path a/Cargo.toml # note"),
+        vec!["a/Cargo.toml".to_owned()]
     );
 }
