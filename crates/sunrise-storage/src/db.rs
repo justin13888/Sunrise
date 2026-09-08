@@ -133,6 +133,64 @@ impl Db {
         Ok(Self { conn })
     }
 
+    /// Key `path` and apply the pragmas, but run no migration and check no
+    /// version.
+    ///
+    /// Test-only. It is how `crate::vault_fixtures` reads a committed old
+    /// vault's stamp without upgrading the file it is asserting about —
+    /// `Db::open` would migrate it first, and the question is what it held
+    /// before that.
+    #[cfg(test)]
+    pub(crate) fn open_unmigrated(path: &Path, vault_root: &VaultRootKey) -> Result<Self, DbError> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Self::apply_sqlcipher_key(&conn, vault_root)?;
+        Self::apply_pragmas(&conn)?;
+        Ok(Self { conn })
+    }
+
+    /// Create an encrypted vault at `path` whose schema is exactly what this
+    /// build's migrations produce at `target_v`, stamped at `target_v`.
+    ///
+    /// Test-only, and it stays that way. Nothing a user runs has a reason to
+    /// write a vault at a version this binary has already migrated past; the
+    /// one caller is the fixture generator in `crate::vault_fixtures`, which
+    /// needs to produce a genuine old vault so the migration chain can be run
+    /// against one.
+    ///
+    /// It lives here rather than in that module because keying a database is
+    /// this type's private business. A fixture built by re-deriving the
+    /// SQLCipher key in the test would prove that *some* derivation opens the
+    /// file, not that `Db::open`'s does — and the day the derivation changed,
+    /// the generator would go on producing files `Db::open` refuses.
+    #[cfg(test)]
+    pub(crate) fn create_at_storage_v(
+        path: &Path,
+        vault_root: &VaultRootKey,
+        target_v: u32,
+    ) -> Result<Self, DbError> {
+        let mut db = Self::open_unmigrated(path, vault_root)?;
+        let tx = db.conn.transaction()?;
+        for m in MIGRATIONS.iter().filter(|m| m.id <= target_v) {
+            tx.execute_batch(m.sql)
+                .map_err(|source| DbError::Migration {
+                    id: m.id,
+                    name: m.name,
+                    source,
+                })?;
+        }
+        tx.execute(
+            "UPDATE schema_meta SET storage_v = ?, applied_at_ms = ?",
+            rusqlite::params![target_v, 0],
+        )?;
+        tx.commit()?;
+        Ok(db)
+    }
+
     fn apply_sqlcipher_key(conn: &Connection, vault_root: &VaultRootKey) -> Result<(), DbError> {
         // Derive a 32-byte SQLCipher raw key from vault_root.
         let raw = sunrise_crypto::derive_key("sunrise.sqlcipher_key.v1", vault_root.as_bytes(), 32);

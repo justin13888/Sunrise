@@ -4,28 +4,31 @@ status: accepted
 
 # Migrations
 
-> **Pre-1.0 baseline, and three appends on top of it.** `BASELINE_STORAGE_V` is
+> **Pre-1.0 baseline, and appends on top of it.** `BASELINE_STORAGE_V` is
 > **13**: migrations 0001–0012 were collapsed into
 > `crates/sunrise-storage/migrations/0013_baseline.sql` and deleted, and a vault
 > stamped `0 < storage_v < 13` is **refused**
 > (`DbError::StorageVPreBaseline` → `STORAGE_V_TOO_OLD`) rather than upgraded.
-> `STORAGE_V` is now **16**, and the whole of `MIGRATIONS` is four files:
-> `0013_baseline.sql`, `0014_stream_sort_order.sql`,
-> `0015_entity_extra_columns.sql` and
-> `0016_stream_description_and_default_context.sql`. 0014 was the first
-> migration appended after the reset, and 0013 was not touched to make room for
-> it — which is exactly the append-only rule the reset reinstated. 0015 adds the
-> `extra BLOB` column to the five column-projected entities whose forward-compat
-> unknowns had nowhere to live (see
-> [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md)
-> §Compatibility windows). 0016 gives `Stream.description` and
-> `Stream.default_context` the columns their CDDL has always declared — the
-> first of which was accepted, carried in the op, and then erased on every
-> replica by the next update, because the projection could not hold it. All
-> three obey the same rule.
-> The runner, the ordering rule and the single-transaction guarantee are
-> unchanged. See [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why
-> the collapse was done once, and why it does not happen again after 1.0.
+> That number is frozen — ADR-0018 collapses once — so it is the one this page
+> states.
+>
+> **The current `STORAGE_V` is deliberately not written here.** It is
+> `crates/sunrise-cbor/src/version.rs`'s constant, it equals the highest-numbered
+> file in
+> [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/),
+> and `migrations.rs`'s `current_storage_v_matches_the_version_constant` fails
+> the build if those two ever disagree. So is the number of migrations: it is
+> the file count of that directory. A count in prose has to be hand-edited every
+> time a migration lands, which means it is wrong from the next merge until
+> someone notices — this page carried "`STORAGE_V` is **16** … four files"
+> through four appends, which is the whole argument for not saying it again.
+> Read the directory; it cannot drift from itself.
+>
+> Every file after 0013 was appended, and 0013 was not touched to make room for
+> any of them — which is exactly the append-only rule the reset reinstated. The
+> runner, the ordering rule and the single-transaction guarantee are unchanged.
+> See [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why the collapse
+> was done once, and why it does not happen again after 1.0.
 
 Two kinds of migrations:
 
@@ -37,22 +40,60 @@ Two kinds of migrations:
 Each migration:
 
 - Has a numeric version (`db_schema_version`), migrations applied in order.
-- Is idempotent (re-running is a no-op).
+- Runs **at most once per vault**, and the *runner* is what guarantees that —
+  not the SQL. See §Who provides the no-op below before writing one.
 - Is forward-only. No down-migration. (Restore from backup if a migration is wrong.)
 - Lives in `crates/sunrise-storage/migrations/<NNNN>_<name>.sql` *or* a Rust function for non-trivial transforms.
 
-Framework: a custom thin layer (we don't use `refinery` because we want explicit transactions and a per-migration commit checkpoint that includes the version write).
+### Who provides the no-op
 
-Sample:
+This page used to say each migration "is idempotent (re-running is a no-op)".
+**That is false of the SQL and always was.** Not one migration in the tree is
+re-runnable on its own: they are bare `ALTER TABLE … ADD COLUMN` and
+`CREATE TABLE` statements, and SQLite fails the second one with "duplicate
+column name" or "table already exists". Replay 0017 and it renames a
+`stream_keys` that is already the new shape.
+
+The property is real, but it comes from the runner, twice over:
+
+1. `Db::run_migrations` applies `MIGRATIONS.iter().filter(|m| m.id > from_v)`,
+   where `from_v` is the vault's stamped `storage_v`. A migration at or below
+   the stamp is never handed to SQLite at all.
+2. `Db::ensure_schema` only calls the runner `if db_v < binary_v`, so a current
+   vault does no work.
+
+The guard is genuinely doubled: mutating the outer comparison to `<=` still
+produces a no-op, because the inner filter catches it.
+
+Why this distinction is worth a section rather than a footnote: it decides what
+a migration author is allowed to write. Someone who believes their SQL will be
+replayed writes defensively — `IF NOT EXISTS`, `INSERT OR IGNORE`, a
+re-runnable `UPDATE` — and someone who knows it will not writes the direct
+statement and lets it fail loudly if it ever runs twice, which is what every
+migration here does. The contract you are writing to is **exactly once, inside
+one transaction, forward only**.
+
+Framework: a custom thin layer (we don't use `refinery` because we want the
+transaction and the version write under our own control). One transaction spans
+the **whole batch**, not one per migration — a 13-era vault reaching the current
+version either arrives there or is left untouched at 13, and never rests at an
+intermediate version no build was ever tested against.
+
+Sample — a whole migration file, and nothing else:
 
 ```sql
--- 0007_add_task_energy.sql
+-- 0021_add_task_energy.sql
 ALTER TABLE tasks ADD COLUMN energy TEXT;
-
-UPDATE schema_meta SET db_schema_version = 7;
 ```
 
-Migrations run in a single transaction per migration; failure rolls back; the app refuses to launch on migration failure and surfaces a clear error with a "send diagnostics" path.
+The file does **not** stamp the version. `Db::run_migrations` writes
+`schema_meta.storage_v` once, after the last migration in the batch, inside the
+same transaction — so a migration that stamped it itself would be overwritten
+by the runner anyway, and a chain of five would stamp four versions no vault
+ever rested at. (The column is `storage_v`; there has never been a
+`db_schema_version` column in this schema.)
+
+Migrations run in a single transaction; failure rolls back; the app refuses to launch on migration failure and surfaces a clear error with a "send diagnostics" path.
 
 ### Failure recovery
 
@@ -176,14 +217,49 @@ files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
 - migration ids strictly ascend, and `current_storage_v()` equals the
   `STORAGE_V` constant, so the list and the constant cannot drift apart.
 
-The fixture regime below is **specified and not implemented**. No migration in
-the tree ships a before/after fixture — there is no fixture directory under
-`crates/sunrise-storage/` — and no CI job runs migrations over prior fixtures or
-fuzzes their ordering. The 0014 backfill assertion above is the closest thing
-that exists, and it is a hand-replayed unit test rather than a fixture regime.
-What is written below is what should apply to 0014, 0015 and every migration
-after them:
+Every one of those replays SQL into a connection this build just created. None
+of them opens an *old vault*, and for a long time nothing did — which meant the
+migrations had never run against the thing they exist for.
 
-- Each migration ships with a "before" fixture (a small vault file) and an "after" expected state.
-- CI runs every migration over every prior fixture to ensure forward migration is correct.
-- A "fuzz" job randomly orders migrations against random data states.
+### Old-vault fixtures
+
+`crates/sunrise-storage/fixtures/` holds encrypted SQLCipher vaults written at
+historical `STORAGE_V`s.
+[`src/vault_fixtures.rs`](../../crates/sunrise-storage/src/vault_fixtures.rs)
+generates them, states their contents, copies each to a temporary directory,
+opens the copy with the ordinary public `Db::open`, and asserts on the contents
+afterwards — **not** on the open returning `Ok`. A migration that runs clean and
+drops a column's data passes a "does it open" test, so success is not the
+assertion: the rows are.
+
+Three decisions are worth knowing before adding one.
+
+- **The vault root key is committed beside the fixtures**, and that is correct.
+  An encrypted fixture is useless without its key, and an unencrypted one does
+  not go through the `PRAGMA key` path a real vault does. It guards invented
+  rows and has never keyed anything else; `fixtures/README.md` says so where a
+  reader who finds the binary first will see it.
+- **The fixtures are regenerable**, by `mise run storage-fixtures`, which runs
+  an `#[ignore]`d test so an ordinary `cargo test` reads the committed files
+  rather than rewriting them. Regenerate rarely: a fixture rewritten at today's
+  schema is no longer old, and the chain it exists to exercise then runs over
+  nothing. One test asserts the v13 file is still stamped 13 for exactly that
+  reason.
+- **Not every version needs one.** The rule is the oldest supported version,
+  plus any later version whose successor migrations move *data* the older
+  fixture cannot contain. That is 13 and 17 today. Of the appended migrations,
+  three move data rather than only schema — 0014's `sort_order` backfill,
+  0017's `stream_keys` drop / `device_revocations` carry / Inbox re-point, and
+  0019's `minted_by_device_id` backfill and `id_d_priv_wrapped` blanking — and
+  the v13 fixture reaches the first two but structurally cannot reach the third,
+  because `identity` does not exist before 0017 and 0017 creates it empty. 0015,
+  0016, 0018 and 0020 are pure `ADD COLUMN` / `CREATE TABLE` and earn no fixture
+  of their own.
+
+What is still **specified and not implemented**:
+
+- CI runs every migration over every prior fixture. There is no such job; the
+  fixtures are ordinary `cargo test` unit tests, which is why they run at all.
+- A "fuzz" job randomly orders migrations against random data states. Nothing
+  like it exists, and it is a doubtful fit — the runner applies ids in ascending
+  order and a random order is not a state any vault can reach.
