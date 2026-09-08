@@ -39,6 +39,17 @@ pub enum StoreError {
     /// No such row for this account.
     #[error("not found")]
     NotFound,
+    /// A `recovery_blob` was offered for an account that already holds a
+    /// different one.
+    ///
+    /// The column is write-once. It used to be silently so: `set_identity`
+    /// wrote `COALESCE(?4, recovery_blob)`, so a second, different blob was
+    /// accepted with a `201` and dropped on the floor — and the client that
+    /// sent it had just shown its user a recovery code for a blob the server
+    /// does not hold. Refusing is what makes a displayed code trustworthy;
+    /// re-sending the *same* bytes is still idempotent and still succeeds.
+    #[error("this account already holds a different recovery blob")]
+    RecoveryBlobExists,
 }
 
 /// A Sunrise account.
@@ -357,6 +368,16 @@ impl Store {
     ) -> Result<Account, StoreError> {
         {
             let conn = self.conn.lock();
+            // The blob is write-once, and a second *different* one is a
+            // conflict rather than a no-op: see `StoreError::RecoveryBlobExists`
+            // for why silently coalescing it was worse than refusing.
+            if let Some(offered) = recovery_blob {
+                if let Some(existing) = select_recovery_blob(&conn, account_id)? {
+                    if existing != offered {
+                        return Err(StoreError::RecoveryBlobExists);
+                    }
+                }
+            }
             conn.execute(
                 "UPDATE accounts
                     SET identity_pub_s = COALESCE(identity_pub_s, ?2),
@@ -374,6 +395,25 @@ impl Store {
             )?;
         }
         self.account(account_id)?.ok_or(StoreError::NotFound)
+    }
+
+    /// The account's sealed recovery blob, as it was uploaded.
+    ///
+    /// Opaque base64url ciphertext. The server has never introspected it and
+    /// does not start here — `docs/06-server/relay-and-blob-storage.md` records
+    /// the column as "ciphertext, opaque", and the only thing that can open it
+    /// is the user's offline recovery code.
+    ///
+    /// `Ok(None)` means the account exists and has no blob, which is a `404` to
+    /// the caller and not an error here: an account created before the client
+    /// ever sealed one is the ordinary state of every account on this relay
+    /// today.
+    ///
+    /// # Errors
+    /// SQLite failures.
+    pub fn recovery_blob(&self, account_id: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock();
+        Ok(select_recovery_blob(&conn, account_id)?)
     }
 
     /// Register a device under an account.
@@ -619,6 +659,21 @@ fn select_account_by_oidc(
         row_to_account,
     )
     .optional()
+}
+
+/// The stored blob for an account, or `None` when the account has none — or
+/// does not exist, which the callers already distinguish by other means.
+fn select_recovery_blob(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT recovery_blob FROM accounts WHERE account_id = ?1",
+        params![account_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 fn row_to_account(r: &rusqlite::Row<'_>) -> Result<Account, rusqlite::Error> {
@@ -1010,6 +1065,52 @@ mod tests {
             "a second POST /accounts must not swap the identity key"
         );
         assert_eq!(retry.terms_at_ms, Some(NOW));
+    }
+
+    /// The recovery blob is write-once, and a *different* one is refused
+    /// rather than silently dropped.
+    ///
+    /// Dropping it is what the `COALESCE` did, and it is a quiet way to
+    /// mislead a user: a second `sunrise bootstrap` seals a fresh blob, gets a
+    /// `201`, prints twenty-four words, and the account is still openable only
+    /// by the first code. Re-sending the identical bytes is still idempotent,
+    /// which is the retry case the route promises.
+    #[test]
+    fn a_second_different_recovery_blob_is_refused_and_the_same_one_is_not() {
+        let s = store();
+        let acct = s.resolve_account(&subject("alice"), true, NOW).unwrap();
+        s.set_identity(&acct.account_id, "PUB_S", "PUB_D", Some("first"), NOW)
+            .unwrap();
+
+        assert!(matches!(
+            s.set_identity(&acct.account_id, "PUB_S", "PUB_D", Some("second"), NOW + 1),
+            Err(StoreError::RecoveryBlobExists)
+        ));
+        assert_eq!(
+            s.recovery_blob(&acct.account_id).unwrap().as_deref(),
+            Some("first"),
+            "the refusal must not have written anything"
+        );
+
+        s.set_identity(&acct.account_id, "PUB_S", "PUB_D", Some("first"), NOW + 2)
+            .expect("re-sending the same blob is the dropped-response retry");
+    }
+
+    /// An account with no blob reads as `None`, which is the state of every
+    /// account this relay holds today and is a `404` rather than a failure.
+    #[test]
+    fn an_account_without_a_recovery_blob_reads_as_absent() {
+        let s = store();
+        let acct = s.resolve_account(&subject("alice"), true, NOW).unwrap();
+        assert_eq!(s.recovery_blob(&acct.account_id).unwrap(), None);
+        assert_eq!(s.recovery_blob("nobody").unwrap(), None);
+
+        s.set_identity(&acct.account_id, "PUB_S", "PUB_D", Some("blob"), NOW)
+            .unwrap();
+        assert_eq!(
+            s.recovery_blob(&acct.account_id).unwrap().as_deref(),
+            Some("blob")
+        );
     }
 
     #[test]

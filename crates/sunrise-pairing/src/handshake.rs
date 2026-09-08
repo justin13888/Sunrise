@@ -129,10 +129,15 @@ impl PairingSession {
 
     /// Both halves of a fresh static keypair.
     ///
-    /// The **public** half is what the QR carries as `n_static_pub`, and it is
-    /// the whole of the QR path's authentication: a 256-bit value transferred
-    /// out of band binds the handshake, so a MITM on the relay has nothing to
-    /// substitute. [`Self::generate_static_key`] discards it, which is fine
+    /// The **public** half is what the QR carries as `n_static_pub`. It is the
+    /// QR path's authentication, but only for a scanner that *checks* it: a
+    /// 256-bit value transferred out of band leaves a MITM on the relay with
+    /// nothing to substitute, and the check that makes that true is comparing
+    /// the QR's value against [`Self::peer_static_key`] once the transcript has
+    /// carried the peer's static. Noise XX authenticates the transcript; it has
+    /// no opinion about which static key *should* have been on the other end.
+    ///
+    /// [`Self::generate_static_key`] discards the public half, which is fine
     /// for a test driving both sides in one process and useless for a device
     /// that has to publish a QR.
     pub fn generate_static_keypair() -> Result<StaticKeyPair, PairingError> {
@@ -148,6 +153,32 @@ impl PairingSession {
     #[must_use]
     pub const fn role(&self) -> Role {
         self.role
+    }
+
+    /// The peer's Noise static public key, once the transcript has carried it.
+    ///
+    /// `None` until then, and after [`Self::into_channel`] has consumed the
+    /// handshake. In XX the responder learns the initiator's static from the
+    /// third message and the initiator learns the responder's from the second,
+    /// so on the QR path — where the new device is the initiator and publishes
+    /// its static — the existing device can only make its comparison once
+    /// [`Self::is_complete`] holds.
+    ///
+    /// Exposed because the comparison it enables is the QR path's
+    /// authentication (issue #152) and it has to happen *outside* this crate:
+    /// only the scanner holds the value the QR carried. `sunrise-pairing` has
+    /// no idea a QR exists. A caller that skips the comparison is relying on
+    /// the SAS alone, which is six digits.
+    ///
+    /// The value is a public key. It is not secret, and comparing it does not
+    /// want a constant-time equality: an attacker who can time the comparison
+    /// already has the key it is being compared against, since it published it.
+    #[must_use]
+    pub fn peer_static_key(&self) -> Option<Vec<u8>> {
+        self.state
+            .as_ref()
+            .and_then(HandshakeState::get_remote_static)
+            .map(<[u8]>::to_vec)
     }
 
     /// Whether the three-message transcript has completed.

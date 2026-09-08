@@ -32,6 +32,7 @@ jiff = { workspace = true }
 parking_lot = { workspace = true }
 rand_core = { workspace = true }
 rand_chacha = { workspace = true }
+rusqlite = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
 
@@ -59,4 +60,8 @@ harness = false
 
 [[bench]]
 name = "sync_session"
+harness = false
+
+[[bench]]
+name = "vault_open"
 harness = false

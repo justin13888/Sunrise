@@ -247,7 +247,8 @@ fn finish(out: Vec<u8>) -> String {
 ///
 /// The default `docs/02-domain/streams.md` specifies for a new Stream:
 /// "between the last and 'end'". Infallible, unlike [`between`], because the
-/// end of a list is always open — see `after_key`.
+/// end of a list is always open: there is always room above any key, so this
+/// has no failure to report.
 ///
 /// A malformed `last` cannot be improved on: no key over `A`..=`Z` sorts after
 /// one containing a byte outside it. Callers pass the largest **well-formed**

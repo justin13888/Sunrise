@@ -375,3 +375,106 @@ fn a_payload_naming_an_identity_its_signing_key_does_not_derive_is_refused() {
         "the receiver must recompute identity_id rather than trust it"
     );
 }
+
+/// **The #152 test.** The static key the responder ends up talking to is the
+/// one the QR published — and it is a *substituted* one when a third party
+/// drives the transcript instead.
+///
+/// This is the assertion `qr.rs` describes as the QR path's authentication, and
+/// until `PairingSession::peer_static_key` existed it could not be made from
+/// outside the crate at all: Noise XX carries the initiator's static in the
+/// third message, `snow`'s `get_remote_static` is not re-exported, and nothing
+/// on `PairingSession` surfaced it. A dependent could drive the whole flow and
+/// still not check the one value the user transferred out of band.
+///
+/// Note what fails and what does not. The impostor's transcript **completes**,
+/// and both its sides read a SAS; Noise authenticates that the two ends of a
+/// transcript agree, not that either is who a QR said it would be. The QR is
+/// the only thing that can tell them apart, and only if someone compares it.
+#[test]
+fn the_responder_can_check_the_peer_static_against_the_qr_it_scanned() {
+    // The new device publishes a QR carrying the public half of the static key
+    // it will drive the handshake with.
+    let published = PairingSession::generate_static_keypair().expect("keypair");
+    let qr = QrPayload {
+        magic_v1: MAGIC_V1_HEX.to_string(),
+        pair_id: URL_SAFE_NO_PAD.encode([0x0e_u8; 16]),
+        n_static_pub: URL_SAFE_NO_PAD.encode(&published.public),
+        account_email_hash: hex::encode(account_email_hash("Justin@Example.com")),
+        relay_url: "https://relay.example.com".into(),
+    };
+    let scanned = decode_qr_payload(&encode_qr_payload(&qr).expect("encode")).expect("decode");
+    let from_the_qr = URL_SAFE_NO_PAD
+        .decode(scanned.n_static_pub.as_bytes())
+        .expect("base64");
+
+    let run = |initiator_key: &[u8]| -> Option<Vec<u8>> {
+        let e_key = PairingSession::generate_static_key().expect("static key");
+        let mut new_device =
+            PairingSession::new(Role::NewDevice, initiator_key).expect("initiator");
+        let mut existing = PairingSession::new(Role::ExistingDevice, &e_key).expect("responder");
+
+        // Before the third message the responder has learned nothing about
+        // the initiator: XX defers identity, which is why the check cannot be
+        // made any earlier than completion.
+        let m1 = new_device.write_message(&[]).expect("-> e");
+        existing.read_message(&m1).expect("read e");
+        assert!(
+            existing.peer_static_key().is_none(),
+            "the responder must not claim a peer static before XX carries one"
+        );
+        let m2 = existing.write_message(&[]).expect("<- e ee s es");
+        new_device.read_message(&m2).expect("read ee es");
+        let m3 = new_device.write_message(&[]).expect("-> s se");
+        existing.read_message(&m3).expect("read se");
+
+        assert!(existing.is_complete());
+        // The transcript completes, and a SAS exists, whoever drove it.
+        assert_eq!(
+            existing.sas().expect("sas"),
+            new_device.sas().expect("sas"),
+            "both ends of any completed transcript read the same code"
+        );
+        existing.peer_static_key()
+    };
+
+    assert_eq!(
+        run(&published.private).as_deref(),
+        Some(from_the_qr.as_slice()),
+        "the honest new device's static must be the one the QR carried"
+    );
+
+    let impostor = PairingSession::generate_static_keypair().expect("keypair");
+    assert_ne!(
+        run(&impostor.private).as_deref(),
+        Some(from_the_qr.as_slice()),
+        "a substituted static must not pass for the QR's, or the QR authenticates nothing"
+    );
+}
+
+/// A consumed handshake reports no peer static.
+///
+/// `into_channel` takes the `HandshakeState`, and an accessor that kept
+/// answering afterwards would be reading a key out of a session whose material
+/// is supposed to be gone.
+#[test]
+fn a_consumed_session_has_no_peer_static_to_report() {
+    let n_key = PairingSession::generate_static_key().expect("static key");
+    let e_key = PairingSession::generate_static_key().expect("static key");
+    let mut new_device = PairingSession::new(Role::NewDevice, &n_key).expect("initiator");
+    let mut existing = PairingSession::new(Role::ExistingDevice, &e_key).expect("responder");
+
+    let m1 = new_device.write_message(&[]).expect("-> e");
+    existing.read_message(&m1).expect("read e");
+    let m2 = existing.write_message(&[]).expect("<- e ee s es");
+    new_device.read_message(&m2).expect("read ee es");
+    let m3 = new_device.write_message(&[]).expect("-> s se");
+    existing.read_message(&m3).expect("read se");
+
+    assert!(existing.peer_static_key().is_some());
+    let _channel = existing.into_channel(true).expect("confirm");
+    // `existing` is consumed; the new device's own view is the one still open,
+    // and it too reports a peer static until it is consumed.
+    assert!(new_device.peer_static_key().is_some());
+    let _other = new_device.into_channel(true).expect("confirm");
+}

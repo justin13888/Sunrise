@@ -117,6 +117,13 @@ pub struct DevicePairing {
     /// The QR this device publishes; only the new device has one.
     qr: Option<String>,
     session: Mutex<Option<PairingSession>>,
+    /// The `n_static_pub` this device scanned, on the existing device.
+    ///
+    /// `None` on the new device, which published the QR rather than reading
+    /// one and so has nothing to compare the peer against. On the existing
+    /// device it is the QR path's authentication, and
+    /// [`DevicePairing::receive_message`] is where it is spent.
+    expected_peer_static: Option<Vec<u8>>,
     channel: Mutex<Option<PairedChannel>>,
     /// Set once the channel has carried the root, so a UI can stop.
     finished: Mutex<bool>,
@@ -163,7 +170,7 @@ impl DevicePairing {
         };
         let qr = encode_qr_payload(&payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
         let session = PairingSession::new(Role::NewDevice, &keys.private)?;
-        Ok(Self::wrap(PairingRole::NewDevice, Some(qr), session))
+        Ok(Self::wrap(PairingRole::NewDevice, Some(qr), session, None))
     }
 
     /// Begin pairing on the **existing** device, from the QR the new one
@@ -174,20 +181,29 @@ impl DevicePairing {
     /// is refused here rather than producing a handshake that fails later for
     /// no visible reason.
     ///
+    /// `n_static_pub` is **kept**, not merely validated. Noise XX defers
+    /// identity: the responder learns the initiator's static key from the third
+    /// message and has no opinion about which key that should have been, so the
+    /// QR value binds the handshake only if something compares the two.
+    /// [`DevicePairing::receive_message`] is what does, the moment the
+    /// transcript completes.
+    ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] with the decoder's own message.
     #[uniffi::constructor]
     pub fn accept(qr_payload: String) -> Result<Self, BindingError> {
-        // Decoded for validation. Nothing in the payload is needed to build
-        // the responder: Noise XX defers identity, so the existing device
-        // learns the peer's static key from the transcript itself. Checking it
-        // anyway is the point — a QR that does not parse is a paste error, and
-        // saying so now is much cheaper than a Noise decrypt failure later.
-        let _ = decode_qr_payload(&qr_payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let scanned =
+            decode_qr_payload(&qr_payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let expected = decode_b64(&scanned.n_static_pub, "n_static_pub")?;
         let keys = PairingSession::generate_static_keypair()?;
         let session = PairingSession::new(Role::ExistingDevice, &keys.private)?;
-        Ok(Self::wrap(PairingRole::ExistingDevice, None, session))
+        Ok(Self::wrap(
+            PairingRole::ExistingDevice,
+            None,
+            session,
+            Some(expected),
+        ))
     }
 
     /// This device's role.
@@ -249,11 +265,20 @@ impl DevicePairing {
 
     /// Consume the peer's handshake message.
     ///
+    /// On the existing device, the message that completes the transcript is
+    /// also where the QR is spent: the peer's Noise static key has arrived by
+    /// then, and it must be the one the QR carried. A mismatch ends the pairing
+    /// here rather than handing the user a SAS screen — an attacker who has
+    /// substituted its own static has only six digits left to guess, and there
+    /// is no reason to make it play for them when the out-of-band value already
+    /// says it is the wrong device.
+    ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] for a message that is not base64url, arrives
     /// out of turn, or fails to decrypt — which is what a mismatched or
-    /// tampered transcript looks like.
+    /// tampered transcript looks like — and for a completed transcript whose
+    /// peer static is not the QR's `n_static_pub`.
     pub fn receive_message(&self, message: String) -> Result<(), BindingError> {
         let raw = decode_b64(&message, "handshake message")?;
         let mut guard = self.session.lock().unwrap_or_else(PoisonError::into_inner);
@@ -261,6 +286,18 @@ impl DevicePairing {
             .as_mut()
             .ok_or_else(|| BindingError::Pairing("this pairing is over".into()))?;
         session.read_message(&raw)?;
+        if let Some(expected) = self.expected_peer_static.as_deref() {
+            if session.is_complete() && session.peer_static_key().as_deref() != Some(expected) {
+                // Drop the handshake state with it: there is no recovering
+                // from this, and a session left in the map is one a UI could
+                // still call `sas()` on.
+                *guard = None;
+                *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
+                return Err(BindingError::Pairing(
+                    "the peer's Noise static key is not the one the QR published".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -418,11 +455,17 @@ impl std::fmt::Debug for PairedBundle {
 }
 
 impl DevicePairing {
-    fn wrap(role: PairingRole, qr: Option<String>, session: PairingSession) -> Self {
+    fn wrap(
+        role: PairingRole,
+        qr: Option<String>,
+        session: PairingSession,
+        expected_peer_static: Option<Vec<u8>>,
+    ) -> Self {
         Self {
             role,
             qr,
             session: Mutex::new(Some(session)),
+            expected_peer_static,
             channel: Mutex::new(None),
             finished: Mutex::new(false),
         }

@@ -33,6 +33,15 @@ pub struct Principal {
     pub subject: crate::auth::Subject,
     /// The account `(iss, sub)` resolves to.
     pub account: Account,
+    /// What the token said about how recently and how strongly its holder
+    /// authenticated.
+    ///
+    /// Carried on the principal rather than consulted at the verifier because
+    /// only the *route* knows what it demands: nothing on this surface needs a
+    /// step-up except `GET /api/v1/accounts/me/recovery_blob`, and a verifier
+    /// that refused a token for lacking one would lock every other operation
+    /// out of every deployment whose IdP omits the claims.
+    pub step_up: crate::auth::StepUp,
     /// The bearer's `exp`, carried because a sync session outlives the request
     /// that opened it and has to end when the credential does.
     ///
@@ -134,6 +143,7 @@ pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Princip
     Ok(Principal {
         subject: verified.subject,
         account,
+        step_up: verified.step_up,
         expires_at_ms: verified.expires_at_ms,
     })
 }

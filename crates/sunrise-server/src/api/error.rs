@@ -63,6 +63,18 @@ pub mod codes {
     pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
     /// The relay could not read or write its durable op log.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
+    /// `POST /accounts` offered a recovery blob for an account that already
+    /// holds a different one. The column is write-once; re-sending the same
+    /// bytes still succeeds.
+    pub const RECOVERY_BLOB_EXISTS: &str = "RECOVERY_BLOB_EXISTS";
+    /// The account has no recovery blob to serve.
+    pub const RECOVERY_BLOB_NOT_FOUND: &str = "RECOVERY_BLOB_NOT_FOUND";
+    /// The bearer is valid and the authentication behind it is not recent or
+    /// strong enough for the operation. The client re-runs its OIDC
+    /// authorization request with `max_age=0` (or `prompt=login`, or the
+    /// operator's `acr_values`) and retries; refreshing the token does not
+    /// help, because a refresh does not move `auth_time`.
+    pub const AUTH_STEP_UP_REQUIRED: &str = "AUTH_STEP_UP_REQUIRED";
 
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
@@ -358,6 +370,10 @@ impl From<crate::store::StoreError> for ApiError {
             // A server-policy refusal, not a caller failure: 403 with its own
             // code, matching what the surface this replaces returned.
             crate::store::StoreError::SignupDisabled => Self::signup_disabled(),
+            crate::store::StoreError::RecoveryBlobExists => Self::conflict(
+                codes::RECOVERY_BLOB_EXISTS,
+                "this account already holds a different recovery blob".to_owned(),
+            ),
             crate::store::StoreError::NotFound => Self::not_found(
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),

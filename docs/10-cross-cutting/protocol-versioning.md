@@ -40,7 +40,7 @@ ENVELOPE_FORMAT_V = 3
 DOC_SCHEMA_V      = 5
 DOC_SCHEMA_FLOOR  = 1
 CRYPTO_SUITE_V    = 2
-STORAGE_V         = 17
+STORAGE_V         = 21
 ```
 
 Wire frames, op envelopes, recovery blobs, and storage rows all carry their respective version constants.
@@ -72,7 +72,9 @@ redefinition. The change itself is required for correctness — an id-only delet
 cannot converge under entity-level LWW
 ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)).
 
-`STORAGE_V` is per-device and never appears on the wire. It is `16`; the *floor* is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and a vault below **that** is refused rather than upgraded. Three migrations have been appended since the reset — `0014_stream_sort_order.sql`, `0015_entity_extra_columns.sql` and `0016_stream_description_and_default_context.sql` — so the two numbers have parted company and should not be quoted as one — a vault at 13 upgrades, a vault at 12 is refused.
+`STORAGE_V` is per-device and never appears on the wire, and this page does not name its value in prose: it moves with every migration, and a number that has to be hand-edited on every append will be wrong most of the time — it was wrong here through four of them. `crates/sunrise-cbor/src/version.rs` is where it lives, and a unit test asserts `current_storage_v()` equals it, so the constant and the migration list cannot part company.
+
+What is worth stating, because it is *frozen*: the floor is a separate constant, `BASELINE_STORAGE_V = 13`, the pre-1.0 baseline reset ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)). A vault at 13 upgrades; a vault at 12 is refused rather than upgraded, with a typed `STORAGE_V_PRE_BASELINE`. The two numbers are not interchangeable and should never be quoted as one.
 
 ---
 

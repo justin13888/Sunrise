@@ -30,11 +30,9 @@ const DEVICE_CERT_DOMAIN: &[u8] = b"sunrise.device_cert.v1";
 /// The upper bound on a device nickname, in **bytes** of UTF-8.
 ///
 /// This is the number the CDDL at the top of this module writes as
-/// `tstr .size (1..64)`, and it is the one the code reads: both `body_to_cbor`
-/// and `body_from_cbor` check against this constant rather than against a
-/// literal, so the encoder and the decoder cannot drift apart. (Code spans
-/// rather than intra-doc links: both are private to this module, and
-/// `mise run rust-doc` denies a public item linking into one.)
+/// `tstr .size (1..64)`, and it is the one the code reads: this module's
+/// encoder and decoder both check against this constant rather than against a
+/// literal, so the two cannot drift apart.
 ///
 /// The bound is not only this crate's. `sunrise-server` refuses a
 /// device-registration whose `nickname` exceeds the same number, and the two

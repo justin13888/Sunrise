@@ -68,7 +68,7 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 | POST | `/api/v1/accounts` | `AccountCreateRequest` = `{ email, identity_signing_pub, identity_dh_pub, recovery_blob, terms_at_ms }` | `201` + `AccountInfo` | implemented |
 | GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
 | PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
-| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | **NOT IMPLEMENTED** |
+| GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
 | POST | `/api/v1/accounts/me/delete/initiate` | — | 202; issues a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) which the OIDC issuer relays to the user's verified email | **NOT IMPLEMENTED** |
 | DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) | **NOT IMPLEMENTED** |
 
@@ -88,21 +88,37 @@ means anything — there are no plan tiers in v1
 
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
 the account `identity_id`; `GET /api/v1/devices` is where device metadata comes
-from. `POST /accounts` neither chooses nor returns a new account id: the account
+from. `GET /api/v1/accounts/me` is implemented and, like that route, uncalled:
+`bootstrap` issues the `POST` and never reads the account back, so the first
+surface that shows an account is its first caller. `POST /accounts` neither chooses nor returns a new account id: the account
 is already provisioned by the bearer's `(iss, sub)` (see [`auth.md`](./auth.md)
 §per-request-auth), and the call attaches identity material to it. It is
 idempotent by construction — `Store::set_identity` writes each field under
-`COALESCE`, so a retry cannot swap the identity key.
+`COALESCE`, so a retry cannot swap the identity key. The one exception is
+`recovery_blob`, which is write-once and *reports* the conflict rather than
+coalescing it; see below.
 
-**The recovery flow this document and [`auth.md`](./auth.md) describe is
-unreachable.** `accounts.recovery_blob` is written by `POST /api/v1/accounts`
-and is read back by nothing: no `SELECT` names the column, and `row_to_account`
-does not project it. Neither the `PUT` nor the `GET` above exists, so a blob
-that goes in cannot come out and a fresh device has no way to fetch the
-ciphertext it must decrypt.
-[ADR-0024](../11-adr/0024-key-hierarchy.md) depends on this being fixed: its
-recovery path opens identity-sealed `key_envelope` ops with `ID_D_priv`, which
-lives in exactly this blob.
+**The `GET` is built; the `PUT` is not.** `Store::recovery_blob` reads the
+column and `getRecoveryBlob` serves it, so a fresh device can fetch the
+ciphertext it must decrypt — which is what
+[ADR-0024](../11-adr/0024-key-hierarchy.md)'s recovery path depends on, since it
+opens identity-sealed `key_envelope` ops with the `ID_D_priv` this blob carries.
+
+Two things gate it.
+
+* **An OIDC step-up.** The bearer must carry an `auth_time` within
+  `[auth] recovery_max_auth_age_secs` (default 300), and the `acr`/`amr` values
+  an operator listed in `recovery_acr_values` / `recovery_amr_values`, if any.
+  An ordinary bearer is refused with `403 AUTH_STEP_UP_REQUIRED` — see
+  [`auth.md`](./auth.md) §Recovery for why this replaces the email OTP earlier
+  revisions specified, and why it is a `403` rather than a `401`. The
+  single-tenant self-host verifier is exempt: it has no IdP to ask.
+* **Write-once.** `POST /accounts` refuses a `recovery_blob` that differs from
+  one already stored, with `409 RECOVERY_BLOB_EXISTS`. It used to accept it,
+  answer `201` and discard it under the `COALESCE` below — after which a client
+  had shown its user a recovery code for a blob the relay does not hold.
+  Re-sending identical bytes still succeeds, so the dropped-response retry is
+  unchanged. Rotation therefore has no route yet; it needs the `PUT`.
 
 The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
@@ -114,6 +130,9 @@ The `recovery_blob` is stored opaquely. The server does not validate its interna
 | 401 | `AUTH_TOKEN_INVALID` | OIDC token signature/issuer/audience invalid. | No. |
 | 401 | `AUTH_TOKEN_EXPIRED` | Token `exp` past. | After OIDC refresh. |
 | 403 | `AUTH_SIGNUP_DISABLED` | First-login attempt for unknown account when `auth.allow_signup = false`. | No. |
+| 403 | `AUTH_STEP_UP_REQUIRED` | `GET /accounts/me/recovery_blob` with a bearer whose authentication is not recent or strong enough. | After a fresh OIDC authorization request (`max_age=0` / `prompt=login`), **not** after a token refresh — a refresh does not move `auth_time`. |
+| 404 | `RECOVERY_BLOB_NOT_FOUND` | The account has no recovery blob. Only reachable *after* the step-up, so it is not an oracle for which accounts have one. | No. |
+| 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; rotation needs the unbuilt `PUT`. |
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
 
@@ -164,6 +183,19 @@ token is stored. A device id the caller does not own — or one it owns but has
 revoked — is a `403 AUTH_DEVICE_NOT_OWNER`, so ownership and revocation are
 settled in one lookup. `platform` is the `PushPlatform` enum (`apns` / `fcm` /
 `webpush`), not a free-form `provider` string.
+
+**Two of these five have no caller in this workspace.** `GET /api/v1/devices`
+and `POST /api/v1/devices/push-tokens` are both expressible by the generated
+relay client, and `sunrise-relay-client`'s `bootstrap` issues neither; nothing
+else reaches for them either. Neither is dead weight. The device list is what a
+device-management surface reads —
+[#144](https://github.com/justin13888/Sunrise/issues/144) and
+[#160](https://github.com/justin13888/Sunrise/issues/160) both want one, and
+[#170](https://github.com/justin13888/Sunrise/issues/170) wants somewhere on the
+Apple clients to keep the relay device id such a list is keyed by — and the
+push-token route waits on a push pipeline whose client half v1 does not have.
+Whoever adds a caller signs it: every route here takes a signed extractor and
+`SseTransport::with_device_signer` is the pattern.
 
 `POST /api/v1/devices` validates `device_pub_s` as a parseable Ed25519 key,
 `nickname` as 1..=64 bytes, `platform` against the six-value list in
@@ -317,6 +349,21 @@ content address, and writes the **manifest last**. A reader that finds no
 manifest sees no blob, so a crash mid-commit leaves an invisible partial rather
 than a short read.
 
+**No client calls any of the four.** Outside the handlers, the only mentions in
+the workspace are this document, the generator's two omit rules
+(`crates/sunrise-relay-client/build.rs:42`, `:46`) and the log field catalogue.
+They are the API for a client that has not landed rather than dead weight:
+`Core::attach_file` seals an attachment's chunks into the *local* vault's blob
+store and stops there, so until an uploader drives these routes an attachment is
+readable only on the device that made it
+([`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch,
+[#176](https://github.com/justin13888/Sunrise/issues/176)). Two of the four are
+also absent from the generated relay
+client — the raw-binary chunk `PUT` and the blob `GET` — because kynos and
+spargen disagree about how OpenAPI 3.1 describes a raw binary body; `build.rs`
+records the disagreement, so whoever writes the caller hand-writes those two and
+generates `init` and `finalize`.
+
 **Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
 an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
 §Deletion makes it a tombstone plus a device-cursor quorum and a 30-day grace
@@ -453,7 +500,8 @@ that have not been built.
 | Endpoint | Managed | Self-host (default) | Self-host (single-binary) |
 |---|---|---|---|
 | `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
-| `/api/v1/accounts/me/recovery_blob`, `/api/v1/accounts/me/delete/*` | yes | yes | **no route** |
+| `/api/v1/accounts/me/recovery_blob` (GET) | yes | yes | **yes — built, behind an OIDC step-up** |
+| `/api/v1/accounts/me/recovery_blob` (PUT), `/api/v1/accounts/me/delete/*` | yes | yes | **no route** |
 | `/api/v1/identities` (discovery) | yes | yes | **no route** |
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
