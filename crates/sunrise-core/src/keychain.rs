@@ -323,7 +323,7 @@ impl Keychain {
         let device_dh = DeviceDhKeyPair::from_secret_bytes(dh_secret);
         dh_secret.zeroize();
 
-        let identity = unwrap_identity(&vault_root, row)?;
+        let identity = unwrap_identity(&vault_root, row, Some(&local.device_id))?;
         Ok(Self {
             device_id: local.device_id,
             signing,
@@ -369,7 +369,11 @@ impl Keychain {
                 }
                 identity
             }
-            (None, Some(row)) => unwrap_identity(&vault_root, row)?,
+            // No `local_identity` row, so this vault is about to mint a
+            // device id it does not have yet, which is by construction not the
+            // one that minted an identity already sitting on disk. `None`
+            // therefore withholds `ID_D_priv`, and correctly.
+            (None, Some(row)) => unwrap_identity(&vault_root, row, None)?,
             (None, None) => {
                 let mut seed = [0u8; 32];
                 rng.fill_bytes(&mut seed);
@@ -406,10 +410,14 @@ impl Keychain {
             wrap_device_secrets(&vault_root, &signing, &device_dh, &device_id, rng);
         let imported = paired.map(|p| p.stream_keys.clone()).unwrap_or_default();
         let write_identity = existing.is_none();
+        // The founder arm of the match above is the one that generated
+        // `ID_S`/`ID_D` here, so it is the only case whose device may be
+        // recorded as the identity's minter. See [`insert_identity_row`].
+        let minted_by = (paired.is_none() && write_identity).then_some(&device_id);
 
         db.with_tx(|tx| {
             if write_identity {
-                insert_identity_row(tx, &identity, &wrapped_identity, now_ms)?;
+                insert_identity_row(tx, &identity, &wrapped_identity, minted_by, now_ms)?;
             }
             insert_local_identity_row(
                 tx,
@@ -562,7 +570,10 @@ impl Keychain {
         let streams = legacy_stream_set(db)?;
 
         db.with_tx(|tx| {
-            insert_identity_row(tx, &identity, &wrapped_identity, now_ms)?;
+            // A pre-0017 vault mints the account identity right here, which
+            // makes this device its creator on exactly the terms the founder
+            // branch of `create` is.
+            insert_identity_row(tx, &identity, &wrapped_identity, Some(&device_id), now_ms)?;
             tx.execute(
                 "UPDATE local_identity
                  SET signing_secret_wrapped = ?, dh_secret_wrapped = ?, cert_blob = ?
@@ -798,20 +809,35 @@ impl Keychain {
 
     // ---- Stream keys ----
 
-    /// The **current** epoch of each stream this device holds a key for.
+    /// **Every** `(stream_id, epoch)` this device holds a key for.
     ///
-    /// `MAX(epoch)` per stream, not every epoch. A backfill exists to close the
-    /// window between "an epoch was minted" and "the minter had heard of this
-    /// device", and that window only ever contains current epochs: a device
-    /// paired earlier received every older epoch in field 6 of its
-    /// `PairingPayload`, and one paired later will receive them the same way.
-    /// Sending all of them would re-send, as ops, keys the payload had already
-    /// delivered — `S x E x D` sealed control ops on the first cert publication
-    /// of every new device, retained in `ops` forever. This is `S x D`.
+    /// It used to be `MAX(epoch)` per stream, and the reasoning recorded
+    /// alongside it was that older epochs had already travelled in the new
+    /// device's `PairingPayload`. That holds only when a device pairs and is
+    /// certified in one uninterrupted step. A rotation between the two — and
+    /// one is minted whenever a Stream is created, which is an ordinary event
+    /// rather than a rare one — left the device with the payload's epochs and
+    /// the current one, and a permanent hole where the epochs in between should
+    /// have been. Ops sealed under those parked in `deferred_ops` until
+    /// [`DEFERRED_TTL_MS`](crate::engine) dropped them, and nothing surfaced
+    /// it: it presents as "some items from around when I set up this device
+    /// never arrived". That was
+    /// [#107](https://github.com/justin13888/Sunrise/issues/107).
     ///
-    /// It also bounds how long a wrongly-recorded `key_envelope_recipients` row
-    /// can suppress a backfill: the next rotation of that stream mints a new
-    /// epoch, which is a key this table has no row for.
+    /// The cost of the wider set is real and is bounded twice over.
+    /// `key_envelope_recipients` (migration 0018) records who has been sent
+    /// which `(stream, epoch)`, so each pair is sealed to a given device **at
+    /// most once per replica** however many certs it republishes — the `S x E x
+    /// D` figure is the worst case of a first backfill, not a recurring one.
+    /// And the epochs a replica holds are the epochs that stream has ever had
+    /// on it, which grows only by rotation.
+    ///
+    /// A tempting third bound was rejected: deriving the set from the epochs
+    /// still referenced by parked `deferred_ops`. Those rows live on the
+    /// replica running the backfill and describe what *it* could not open — a
+    /// replica that has been online throughout has none, and the device that
+    /// actually needs the keys is the one whose state nobody here can see. It
+    /// bounds the wrong replica's ignorance.
     ///
     /// Read from `stream_keys` rather than the in-memory cache so that a key
     /// absorbed inside the caller's own open transaction is included: the cache
@@ -822,11 +848,11 @@ impl Keychain {
     /// Sorted so that two devices running the same backfill emit the same
     /// envelopes in the same order, which keeps a diff of two vaults' op logs
     /// readable.
-    pub(crate) fn held_current_epochs_tx(
+    pub(crate) fn held_epochs_tx(
         tx: &rusqlite::Transaction<'_>,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         let mut stmt = tx.prepare(
-            "SELECT stream_id, MAX(epoch) FROM stream_keys GROUP BY stream_id ORDER BY stream_id",
+            "SELECT DISTINCT stream_id, epoch FROM stream_keys ORDER BY stream_id, epoch",
         )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
@@ -1185,8 +1211,10 @@ impl Keychain {
     /// a formality, and this is how the engine test builds the op that check
     /// has to refuse. The underlying gap -- every member can mint a valid cert,
     /// so a revoked device can certify itself under a fresh id -- is not closed
-    /// by revocation and needs identity rotation; see
-    /// `docs/03-crypto/key-rotation.md` §Identity rotation.
+    /// by revocation and needs identity rotation. There is no narrower check:
+    /// both signatures on a self-issued cert belong to the party producing it,
+    /// so nothing about it attributes it to the device that signed. See
+    /// ADR-0032 and `docs/03-crypto/key-rotation.md` §Identity rotation.
     #[cfg(test)]
     pub(crate) fn issue_cert_for(
         &self,
@@ -1479,15 +1507,31 @@ fn wrap_identity(
     (wrapped_s, wrapped_d)
 }
 
+/// Rebuild the account [`Identity`] from its stored row.
+///
+/// `this_device` is the device id of the vault doing the unwrapping, or `None`
+/// when there is not one yet. `ID_D_priv` is loaded **only** when the row names
+/// that same device as the identity's minter, and this is the runtime half of
+/// what migration 0019 does at rest: the column and the guard have to agree,
+/// because a row that survived the migration's `UPDATE` by some path nobody
+/// anticipated must still not hand a paired device the account's unwrapping
+/// key. A row whose blob is present but whose `minted_by_device_id` says
+/// otherwise is treated exactly as an absent blob, which is the state a paired
+/// device has had since #86.
 fn unwrap_identity(
     vault_root: &VaultRootKey,
     row: &AccountIdentityRow,
+    this_device: Option<&[u8; 16]>,
 ) -> Result<Identity, KeychainError> {
     let aad = identity_aad(&row.identity_id);
     let mut s = unwrap_secret(vault_root, &row.id_s_priv_wrapped, &aad)?;
     let signing = IdentitySigningKeyPair::from_secret_bytes(&s);
     s.zeroize();
-    let dh_secret = if row.id_d_priv_wrapped.is_empty() {
+    let minted_here = match (row.minted_by_device_id.as_ref(), this_device) {
+        (Some(minter), Some(me)) => minter == me,
+        _ => false,
+    };
+    let dh_secret = if row.id_d_priv_wrapped.is_empty() || !minted_here {
         None
     } else {
         let mut d = unwrap_secret(vault_root, &row.id_d_priv_wrapped, &aad)?;
@@ -1519,16 +1563,26 @@ fn unwrap_identity(
     })
 }
 
+/// Write the account identity row.
+///
+/// `minted_by` is `Some` only on the two paths that actually generate
+/// `ID_S`/`ID_D` — a founding vault and a pre-0017 vault being adopted — and
+/// `None` when the identity arrived in a `PairingPayload`. It is what lets
+/// [`unwrap_identity`] tell "this row holds the only copy of `ID_D_priv`" from
+/// "this row holds a copy this device should not have", which migration 0018
+/// could not and 0019 backfills.
 fn insert_identity_row(
     tx: &rusqlite::Transaction<'_>,
     identity: &Identity,
     wrapped: &(Vec<u8>, Vec<u8>),
+    minted_by: Option<&[u8; 16]>,
     now_ms: u64,
 ) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO identity
-         (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped, created_at_ms)
-         VALUES (1, ?, ?, ?, ?, ?, ?)",
+         (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
+          created_at_ms, minted_by_device_id)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &identity.identity_id[..],
             &identity.signing.public_bytes()[..],
@@ -1536,6 +1590,7 @@ fn insert_identity_row(
             wrapped.0,
             wrapped.1,
             now_ms,
+            minted_by.map(|d| d.to_vec()),
         ],
     )?;
     Ok(())
@@ -1640,6 +1695,11 @@ struct AccountIdentityRow {
     id_d_pub: [u8; 32],
     id_s_priv_wrapped: Vec<u8>,
     id_d_priv_wrapped: Vec<u8>,
+    /// The device that minted this identity, or `None` when it was adopted
+    /// from a `PairingPayload`. Migration 0019 backfills it from
+    /// `stream_keys.source`; see that file for why that is a proof and not a
+    /// guess.
+    minted_by_device_id: Option<[u8; 16]>,
 }
 
 fn load_identity_row(db: &Db) -> Result<Option<IdentityRow>, KeychainError> {
@@ -1674,7 +1734,8 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
     let row = db
         .conn()
         .query_row(
-            "SELECT identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped
+            "SELECT identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
+                    minted_by_device_id
              FROM identity WHERE id = 1",
             [],
             |r| {
@@ -1684,17 +1745,23 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
                     r.get::<_, Vec<u8>>(2)?,
                     r.get::<_, Vec<u8>>(3)?,
                     r.get::<_, Vec<u8>>(4)?,
+                    r.get::<_, Option<Vec<u8>>>(5)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(id, sp, dp, sw, dw)| {
+    row.map(|(id, sp, dp, sw, dw, mb)| {
         Ok(AccountIdentityRow {
             identity_id: to16(&id).ok_or(KeychainError::CorruptRow("identity.identity_id"))?,
             id_s_pub: to32(&sp).ok_or(KeychainError::CorruptRow("identity.id_s_pub"))?,
             id_d_pub: to32(&dp).ok_or(KeychainError::CorruptRow("identity.id_d_pub"))?,
             id_s_priv_wrapped: sw,
             id_d_priv_wrapped: dw,
+            // A malformed blob reads as "not this device", which withholds the
+            // key rather than granting it. Every other short blob in this
+            // loader is a `CorruptRow`, because every other one names something
+            // the vault cannot work without.
+            minted_by_device_id: mb.as_deref().and_then(to16),
         })
     })
     .transpose()
@@ -2081,6 +2148,82 @@ mod tests {
                 Err(KeychainError::IdentitySecretAbsent)
             ),
             "nor recover it on the next unlock"
+        );
+    }
+
+    /// A device that already has `ID_D_priv` in its own `identity` row — the
+    /// state STORAGE_V 17 left every paired device in — does not get to use it.
+    ///
+    /// Issue #87. Dropping the key from `PairingPayload` fixed the devices
+    /// paired afterwards and did nothing for the ones paired before, and
+    /// migration 0018 could not clear the column because on the account's
+    /// creator that same column holds the only copy in existence. 0019 clears
+    /// it from the rows it can prove are not the creator's, and
+    /// `minted_by_device_id` is the runtime half of the same test: the blob is
+    /// ignored unless the row names *this* device as the identity's minter, so
+    /// a copy that reaches the column by any route the migration did not
+    /// anticipate is still inert.
+    ///
+    /// The blob planted below is the inviter's own, byte for byte. Both vaults
+    /// share a root and an `identity_id` in this test, which are exactly the
+    /// two inputs to the wrap — so this is not an approximation of what 17 did,
+    /// it is the same bytes in the same column.
+    #[test]
+    fn a_wrapped_identity_key_on_a_paired_device_is_inert() {
+        let root = VaultRootKey::from_bytes([0x3c; 32]);
+        let mut inviter_db = db(&root);
+        let inviter = open(&mut inviter_db, &root);
+        let sid = [0x22; 16];
+        let key = StreamKey::from_bytes([0x65; 32]);
+        let sealed = inviter
+            .seal_key_envelope(&inviter.identity_dh_pub(), &sid, 4, &key, &SystemRng)
+            .unwrap();
+
+        let payload = inviter.export_pairing_payload(&inviter_db).unwrap();
+        let mut paired_db = db(&root);
+        drop(
+            Keychain::open(
+                &mut paired_db,
+                root.clone(),
+                &clock(),
+                &SystemRng,
+                Some(&payload),
+            )
+            .unwrap(),
+        );
+
+        // Reproduce the 17-era row: the wrapped secret present, and nothing
+        // saying which device minted the identity.
+        let stolen: Vec<u8> = inviter_db
+            .conn()
+            .query_row(
+                "SELECT id_d_priv_wrapped FROM identity WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!stolen.is_empty(), "the creator's row carries the key");
+        paired_db
+            .conn()
+            .execute(
+                "UPDATE identity
+                 SET id_d_priv_wrapped = ?, minted_by_device_id = NULL
+                 WHERE id = 1",
+                rusqlite::params![stolen],
+            )
+            .unwrap();
+
+        let reopened = open(&mut paired_db, &root);
+        assert!(
+            !reopened.holds_only_copy_of_identity_key(),
+            "a paired device does not hold the identity key however the column got filled"
+        );
+        assert!(
+            matches!(
+                reopened.open_key_envelope(EnvelopeRecipient::Identity, &sid, 4, &sealed),
+                Err(KeychainError::IdentitySecretAbsent)
+            ),
+            "and it must not read through a revocation using the identity copy"
         );
     }
 

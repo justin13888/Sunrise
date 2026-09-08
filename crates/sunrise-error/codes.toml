@@ -260,6 +260,14 @@ retryable = false
 since = "v1"
 docs = "The relay evicted retained frames past the subscriber's cursor, so the gap cannot be served from the ring. Recovery is a resync from a peer, not a retry of the same subscribe."
 
+[[code]]
+id = 513
+name = "SYNC_RESUME_CONFLICT"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "GET /sync/events presented a Last-Event-ID on the first stream after a Subscribe. The id names what the client received; the Subscribe's cursors name what it applied, and the two disagree exactly on the recovery path. Recovery is to drop the id and reopen, not to retry the same request."
+
 # --- Relay ----------------------------------------------------------------
 
 [[code]]

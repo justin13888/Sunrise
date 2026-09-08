@@ -269,7 +269,9 @@ was deleted elsewhere is an ordinary event, not a failure.
 > nowhere to take it would be the one failure this section rules out — a link
 > that goes somewhere plausible and wrong. The shape is kept because it is
 > still the design; it will be built with the sharing model ADR-0020 defers,
-> and is tracked there rather than by an issue of its own.
+> and is tracked by [#133](https://github.com/justin13888/Sunrise/issues/133),
+> which is closed by whatever change introduces that model rather than on its
+> own.
 
 ## Conflict-of-shortcut handling
 

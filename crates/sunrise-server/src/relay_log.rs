@@ -255,6 +255,15 @@ impl Store {
     /// and it takes precedence over the cursors for that reason: the client is
     /// reporting what it actually received on *this* stream rather than what it
     /// had applied when it subscribed.
+    ///
+    /// That precedence is safe only because the caller does not hand both a
+    /// non-zero `after_id` and a cursor set the client has just restated. A
+    /// `Last-Event-ID` presented on the first stream after a `Subscribe` is
+    /// refused with `SYNC_RESUME_CONFLICT` in
+    /// [`crate::api::sync::events`] before this is reached, so the two
+    /// statements never race here and the id-only selection below cannot skip
+    /// what a cursor asked for. Any future caller passing a non-zero
+    /// `after_id` owes the same check.
     pub fn relay_replay_after(
         &self,
         key: ChannelKey,

@@ -756,7 +756,9 @@ impl Engine {
         //    is applied like any other. Revocation is enforced against a
         //    device's *reads* — it is sealed no new epoch — and not against its
         //    writes, which is deliberate and not pending: see this function's
-        //    own step 2 above for why refusing here would not converge.
+        //    own step 2 above for why refusing here would not converge, and
+        //    ADR-0034 (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`)
+        //    for the decision and what would reopen it.
         let d_s_pub = match self.lookup_device_cert(db, &env.device_id)? {
             Some(cert_blob) => {
                 let cert = DeviceCert::from_cbor(&cert_blob)
@@ -1387,6 +1389,43 @@ impl Engine {
                         "a published device cert does not verify under this account identity"
                     );
                     return Ok(Vec::new());
+                }
+                // A device id nobody has seen before, appearing in an
+                // account that has revoked something, is the observable
+                // signature of the one bypass revocation does not close: a
+                // revoked device still holds `ID_S_priv`, so it can mint a
+                // fresh id, sign a valid cert for it, and rejoin under a name
+                // the register does not list
+                // ([#105](https://github.com/justin13888/Sunrise/issues/105)).
+                //
+                // It is the signature of an ordinary pairing too, and nothing
+                // here can tell the two apart — that is exactly what #105 is,
+                // and ADR-0032 records why no check available today separates
+                // them without either over-blocking honest devices or diverging
+                // replicas. So this discloses and does not gate: the cert is
+                // applied either way, every replica applies it, and the account
+                // converges. What changes is that the event exists to be seen.
+                let readmission = {
+                    let known: bool = tx
+                        .query_row(
+                            "SELECT 1 FROM devices WHERE device_id = ?",
+                            params![&cert.body.device_id[..]],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    let revocations: i64 =
+                        tx.query_row("SELECT count(*) FROM device_revocations", [], |r| r.get(0))?;
+                    !known && revocations > 0
+                };
+                if readmission {
+                    tracing::warn!(
+                        ev = "core.device.admitted_after_revocation",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        "a device id this vault has never seen joined an account that \
+                         has revoked a device"
+                    );
                 }
                 tx.execute(
                     "INSERT INTO devices
@@ -3966,14 +4005,19 @@ impl Engine {
     ///
     /// Every device that applies the cert runs this, and that is deliberate:
     /// picking one emitter would mean picking a device that might be offline.
-    /// Two things bound the redundancy. The set is the *current* epoch of each
-    /// stream rather than every epoch held — see
-    /// [`Keychain::held_current_epochs_tx`] for why the older ones are already
-    /// the pairing payload's job — and `key_envelope_recipients` carries the
-    /// first emitter's rows along with its ops, so a device that applies those
-    /// before it applies the cert emits nothing. The first round is still a
-    /// race between however many devices are online, and absorption being
-    /// idempotent is what makes that merely wasteful.
+    /// `key_envelope_recipients` carries the first emitter's rows along with
+    /// its ops, so a device that applies those before it applies the cert
+    /// emits nothing. The first round is still a race between however many
+    /// devices are online, and absorption being idempotent is what makes that
+    /// merely wasteful.
+    ///
+    /// The set is **every** epoch this replica holds, not the current one per
+    /// stream. Current-epoch-only was the first shape and it was wrong for a
+    /// reason that is ordinary rather than adversarial: a rotation landing
+    /// between a device's pairing and its certificate leaves that device
+    /// holding the payload's epochs and the live one, with a permanent hole in
+    /// between. See [`Keychain::held_epochs_tx`] for the cost this trades
+    /// against and for the derivation that was rejected.
     ///
     /// A revoked device is skipped, on the same presence test the recipient
     /// query uses, so this route cannot readmit a device the rotation just
@@ -3995,7 +4039,7 @@ impl Engine {
         if self.is_revoked(tx, device_id)? {
             return Ok(());
         }
-        for (stream_id, epoch) in Keychain::held_current_epochs_tx(tx)? {
+        for (stream_id, epoch) in Keychain::held_epochs_tx(tx)? {
             let already: i64 = tx.query_row(
                 "SELECT count(*) FROM key_envelope_recipients
                  WHERE stream_id = ? AND epoch = ? AND recipient = ?",
@@ -12642,8 +12686,11 @@ mod tests {
     /// Refusing at apply time is also not convergent: a replica that applied an
     /// op before the revocation arrived cannot un-apply it, and there is no
     /// projection rebuild in this engine to make it, so two replicas with the
-    /// same op set would disagree forever. That is #78, and #82 is where a
-    /// convergent form belongs.
+    /// same op set would disagree forever. Because nothing refuses, they do
+    /// not: delivery order is not an input to the materialized state, and a
+    /// cut correction is lossless. Decided in ADR-0034
+    /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`), which closed
+    /// #78; #82 is where a convergent form belongs, after the relay bound.
     ///
     /// What *is* enforced here is reads, and that is the test below.
     #[test]
@@ -12734,9 +12781,7 @@ mod tests {
             envelopes_to(&ea, &dba, &b_id).is_empty(),
             "B cannot have been sealed to before A had its cert"
         );
-        let held = dba
-            .with_tx(Keychain::held_current_epochs_tx)
-            .expect("held epochs");
+        let held = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
         assert!(
             held.len() >= 2,
             "the capture minted at least the meta and Inbox epochs"
@@ -12762,6 +12807,87 @@ mod tests {
             envelopes_to(&ea, &dba, &b_id).len(),
             before,
             "a re-published cert must not re-send every key"
+        );
+    }
+
+    /// A device certified after a **rotation** receives the epoch it missed,
+    /// not only the live one.
+    ///
+    /// The gap this closes is [#107](https://github.com/justin13888/Sunrise/issues/107)
+    /// and it is silent: ops written under the superseded epoch park in
+    /// `deferred_ops` on the new device and expire at `DEFERRED_TTL_MS`, so it
+    /// presents to the user as "some items from around when I set up this
+    /// device never arrived" and to every log as nothing at all.
+    ///
+    /// The rotation here is `Command::RotateStreamKey`, but the ordinary cause
+    /// is creating a Stream or revoking a device — both mint — so the race is
+    /// between a new device's certificate and any of the account's routine
+    /// key-minting activity, which is not a corner.
+    #[test]
+    fn a_device_certified_after_a_rotation_receives_the_epoch_it_missed() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+
+        // Epoch 1 of the Inbox exists and carries a task, all while B is
+        // unknown to A.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "written under epoch 1".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        // The rotation that lands between B's pairing and B's certificate.
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        let live = dba
+            .with_tx(|tx| ea.keychain.current_epoch_tx(tx, &INBOX_STREAM_BYTES))
+            .unwrap()
+            .expect("the Inbox has a key");
+        assert!(
+            live >= 2,
+            "the rotation must have superseded epoch 1, or this test proves nothing"
+        );
+
+        trust_at(&ea, &mut dba, &eb, T0);
+
+        let sealed = envelopes_to(&ea, &dba, &b_id);
+        assert!(
+            sealed.contains(&(INBOX_STREAM_BYTES, live)),
+            "the live epoch is sealed to a newly certified device"
+        );
+        assert!(
+            sealed.contains(&(INBOX_STREAM_BYTES, 1)),
+            "and so is the superseded epoch, or every op written under it is \
+             undecryptable on B and expires out of `deferred_ops` unremarked"
+        );
+
+        // Every epoch, not merely the two this assertion names, and not twice.
+        let held = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
+        let mut want = held;
+        want.sort_unstable();
+        let mut got = sealed;
+        got.sort_unstable();
+        assert_eq!(
+            got, want,
+            "the backfill emits exactly the epochs this replica holds"
+        );
+
+        let before = envelopes_to(&ea, &dba, &b_id).len();
+        trust_at(&ea, &mut dba, &eb, T0 + 1);
+        assert_eq!(
+            envelopes_to(&ea, &dba, &b_id).len(),
+            before,
+            "`key_envelope_recipients` still makes a re-published cert emit nothing"
         );
     }
 
@@ -12793,6 +12919,79 @@ mod tests {
         assert!(
             envelopes_to(&ea, &dba, &b_id).is_empty(),
             "a revoked device must not recover its keys by re-sending its cert"
+        );
+    }
+
+    /// **A revoked device rejoins under a fresh device id, and every replica
+    /// lets it.** This test asserts the bypass, not a defence against it.
+    ///
+    /// [#105](https://github.com/justin13888/Sunrise/issues/105). Revocation
+    /// names a *device id*; the capability it needs to take away is
+    /// `ID_S_priv`, which every paired device holds and no revocation touches.
+    /// So the revoked device mints a fresh keypair, signs a `DeviceCert` for it
+    /// under the account identity, publishes it — sealed under the pre-rotation
+    /// vault-meta epoch it still has — and `backfill_key_envelopes` hands the
+    /// new id every key the revocation had just rotated away.
+    ///
+    /// Both engines below are built from the same vault root, which is what
+    /// gives them the same account identity, and that models the situation
+    /// exactly: the revoked device *is* holding the key that signs certs. The
+    /// new id is not a forgery. It verifies.
+    ///
+    /// It is pinned here because it was a claim in three documents and an
+    /// assertion in none, and because it is the test that has to flip when the
+    /// fix lands. ADR-0032 records why the fix is identity rotation and not any
+    /// of the narrower checks that were considered here.
+    #[test]
+    fn a_revoked_device_rejoins_under_a_fresh_device_id() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        // The same account identity, a device id nobody has revoked: what the
+        // revoked device produces for itself out of the `ID_S_priv` it kept.
+        let ec2 = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let c_id = ec.keychain.device_id();
+        let c2_id = ec2.keychain.device_id();
+
+        trust(&ea, &mut dba, &ec);
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+        let after_the_cut = envelopes_to(&ea, &dba, &c_id).len();
+
+        // The fresh cert verifies under this account's identity: nothing in
+        // `DeviceCertPublish` has anything to check a revocation against,
+        // because a `DeviceCert` names no issuer.
+        trust_at(&ea, &mut dba, &ec2, T0 + 1);
+
+        assert!(
+            ea.is_revoked(dba.conn(), &c_id).unwrap(),
+            "the register still names the old id"
+        );
+        assert!(
+            !ea.is_revoked(dba.conn(), &c2_id).unwrap(),
+            "and has nothing to say about the new one"
+        );
+        assert_eq!(
+            envelopes_to(&ea, &dba, &c_id).len(),
+            after_the_cut,
+            "the read bound holds for the id it names, which is the whole of what it does"
+        );
+
+        let mut got = envelopes_to(&ea, &dba, &c2_id);
+        got.sort_unstable();
+        let mut want = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
+        want.sort_unstable();
+        assert!(!want.is_empty(), "the revocation rotated something");
+        assert_eq!(
+            got, want,
+            "every key the revocation rotated away is handed back to the same \
+             device under a name the register does not list"
         );
     }
 

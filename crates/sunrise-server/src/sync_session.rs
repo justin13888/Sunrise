@@ -70,6 +70,24 @@ pub struct Session {
     /// semantics a re-sent `Subscribe` frame had, where a second subscription
     /// for one stream replaced the first rather than duplicating it.
     pub streams: Vec<SubscribeEntry>,
+    /// Whether a `Subscribe` has replaced the stream set and no
+    /// `GET /sync/events` has served those cursors yet.
+    ///
+    /// This is what makes the resume order a server property rather than a
+    /// client convention. A `Last-Event-ID` says "I *received* everything
+    /// through this frame"; the cursors in a `Subscribe` say "I have
+    /// *applied* everything through these seqs", and the two diverge exactly
+    /// when delivery succeeded and application did not — which is the state a
+    /// client re-sends `Subscribe` to get out of. While this flag is set, a
+    /// resume id is an older statement than the cursors beside it, so
+    /// [`crate::api::sync::events`] refuses the pair with
+    /// `SYNC_RESUME_CONFLICT` instead of silently honouring one and dropping
+    /// the frames the other asked for.
+    ///
+    /// Cleared by the stream that serves the set, so an ordinary reconnect —
+    /// a stream that follows another stream rather than a `Subscribe` —
+    /// resumes on its id as before.
+    pub subscribe_unserved: bool,
     /// When this session was last touched, for idle collection.
     pub seen_ms: u64,
 }
@@ -193,6 +211,7 @@ mod tests {
                 server_time_ms: 0,
             },
             streams: Vec::new(),
+            subscribe_unserved: false,
             seen_ms,
         }
     }

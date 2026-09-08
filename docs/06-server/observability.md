@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 25 `ev` names the server emits, complete:
+The 26 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 25 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: c3c54ac -->
+     Last extracted: 519ea28 -->
 
 ```
 srv.start                        srv.req.start
@@ -60,7 +60,7 @@ srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected
 srv.sync.stream_closed           srv.sync.refresh_identity_mismatch
 srv.sync.token_expired           srv.sync.refreshed
-srv.sync.device_revoked
+srv.sync.device_revoked          srv.sync.resume_conflict
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -130,7 +130,7 @@ complete set the server emits today:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: c3c54ac -->
+     Last extracted: 519ea28 -->
 
 ```
 sunrise_account_create_total
@@ -152,11 +152,12 @@ sunrise_relay_batch_duplicate_total
 sunrise_relay_cursor_gap_total
 sunrise_sync_negotiate_refused_total
 sunrise_sync_refresh_total
+sunrise_sync_resume_conflict_total
 sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-21 metric names, and four that earlier revisions of this file listed and the
+22 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -165,9 +166,9 @@ tree does not define: `sunrise_sync_token_expired_total`,
 under `srv.sync.*` above, which is why the names look familiar.
 
 `sunrise_relay_batch_duplicate_total` is the counter for op-batch
-de-duplication, and it gets commentary the other twenty do not because its key
-is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's **content**:
-`ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
+de-duplication, and it gets commentary the other twenty-one do not because its
+key is not the obvious one. `POST /api/v1/sync/ops` keys on the batch's
+**content**: `ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
 `PRIMARY KEY (account_h, stream_id, ops_h)` in `relay_batches`. When that
 content is already stored for the channel, the handler increments this counter,
 logs `srv.relay.batch_duplicate`, publishes nothing to live subscribers, and

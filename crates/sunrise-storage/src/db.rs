@@ -645,6 +645,100 @@ mod tests {
         assert_eq!(revocations, 0, "an unrevoked device carries no register");
     }
 
+    /// 0019 clears `identity.id_d_priv_wrapped` on a device that was *paired*
+    /// at STORAGE_V 17, and leaves it alone on the account's creator.
+    ///
+    /// This is issue #87. 0018 declined to touch the column because the schema
+    /// recorded nothing that told the two apart; `stream_keys.source` does,
+    /// because only a founding vault mints the vault-meta stream's first epoch
+    /// itself. Both halves are asserted, because either alone is worthless: a
+    /// migration that clears every row trades a revocation gap for an account
+    /// whose `ID_D_priv` no longer exists anywhere.
+    #[test]
+    fn migration_0019_clears_a_paired_devices_identity_key_and_keeps_the_creators() {
+        // `source` is the discriminator, so the two vaults differ in exactly
+        // that one column and in nothing else.
+        let build = |meta_key_source: &str| -> Connection {
+            let mut conn = Connection::open_in_memory().unwrap();
+            Db::apply_pragmas(&conn).unwrap();
+            let tx = conn.transaction().unwrap();
+            for m in MIGRATIONS.iter().filter(|m| m.id <= 18) {
+                tx.execute_batch(m.sql).unwrap();
+            }
+            tx.execute(
+                "INSERT INTO local_identity
+                 (id, device_id, signing_secret_wrapped, cert_blob, created_at_ms)
+                 VALUES (1, ?, X'00', X'00', 0)",
+                rusqlite::params![vec![3u8; 16]],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO identity
+                 (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped,
+                  id_d_priv_wrapped, created_at_ms)
+                 VALUES (1, ?, ?, ?, X'aa', X'bb', 0)",
+                rusqlite::params![vec![4u8; 16], vec![5u8; 32], vec![6u8; 32]],
+            )
+            .unwrap();
+            // Epoch 1 of the vault-meta stream: sixteen zero bytes.
+            tx.execute(
+                "INSERT INTO stream_keys
+                 (stream_id, epoch, key_id, wrapped, source, created_at_ms)
+                 VALUES (?, 1, X'0102030405060708', X'00', ?, 0)",
+                rusqlite::params![vec![0u8; 16], meta_key_source],
+            )
+            .unwrap();
+            tx.execute_batch(
+                MIGRATIONS
+                    .iter()
+                    .find(|m| m.id == 19)
+                    .expect("0019 is registered")
+                    .sql,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            conn
+        };
+        let read = |conn: &Connection| -> (Vec<u8>, Option<Vec<u8>>) {
+            conn.query_row(
+                "SELECT id_d_priv_wrapped, minted_by_device_id FROM identity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        let (wrapped, minted_by) = read(&build("pairing"));
+        assert!(
+            wrapped.is_empty(),
+            "a device whose vault-meta key came from a pairing payload never \
+             minted the identity, and must not keep its unwrapping key"
+        );
+        assert!(minted_by.is_none(), "and it is recorded as not the minter");
+
+        let (wrapped, minted_by) = read(&build("envelope"));
+        assert!(
+            wrapped.is_empty(),
+            "nor may one whose vault-meta key arrived in a `key_envelope` op"
+        );
+        assert!(minted_by.is_none());
+
+        for source in ["local", "legacy"] {
+            let (wrapped, minted_by) = read(&build(source));
+            assert_eq!(
+                wrapped,
+                vec![0xbbu8],
+                "the creator's copy is the only one in existence and must survive \
+                 ({source})"
+            );
+            assert_eq!(
+                minted_by,
+                Some(vec![3u8; 16]),
+                "and the row now names it, so nothing has to infer it again"
+            );
+        }
+    }
+
     /// A vault from before the reset is REFUSED, with its own error — not
     /// silently upgraded, and not confused with a too-new one.
     #[test]
