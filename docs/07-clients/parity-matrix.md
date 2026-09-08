@@ -219,7 +219,7 @@ guessing would have left every such vault readable by anyone holding a copy of
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **21 met, 2 unmet.** iOS carries no MUSTs
+everything below it. **23 met.** iOS carries no MUSTs
 ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)), so nothing here is a v1 release gate;
 it is the record of what a user can actually reach on a phone.
 
@@ -234,15 +234,15 @@ it is the record of what a user can actually reach on a phone.
 | Attachments — view image/PDF | met | task editor → Attachments pane (`TaskEditorView.swift:93`); `PDFView` bridged through `UIViewRepresentable` (`AttachmentsView.swift:165-169`) |
 | Attachments — upload | met | `.fileImporter` (`AttachmentsView.swift:38`) and a URL drop target beside it (`:32`) |
 | Search (FTS) | met *(plain-text half)* | the `.search`-role tab (`VaultTabs.swift:90-92`) → the shared `SearchView`. It issues the identical literal-AND FTS query the Mac does and inherits the identical narrowness ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
-| Saved searches / views | **unmet** | `SavedViewsModel` is built by the shared `VaultModels` and the shell even loads it (`VaultTabs.swift:456`) — but `SavedViewsMenu` is instantiated in exactly one place in the tree, `macOS/VaultWindow.swift:89`. A working, tested model with no iOS surface |
+| Saved searches / views | met | the shared `SavedViewsMenu` on the toolbar of the three screens a saved view can name — Today, a pushed list and Search (`iOS/VaultTabs.swift`, `savedViewsButton(for:)`) — recalling through the same `show(_:)` a deep link uses, and saving through `SaveViewSheet` on a detent (`iOS/VaultSurfaces.swift`, `LibrarySurfaces`). Not Browse's overflow, where "Save this view…" would have meant the sidebar. Driven end to end by `LibraryReachUITests` |
 | Keyboard navigation | met *(list keymap)* | `onKeyChord(scope: .list…)` on the shared `TaskListView` (`:118`) — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. **Nothing above it**: `onKeyChord` is applied in that one place in the whole tree, so every `.application`-scoped chord (`Keymap.swift:177-199`) reaches a user only through the Mac's `Commands` scene, and the palette and the cheat sheet are handed inert closures (`VaultTabs.swift:283-288`) |
-| Drag-and-drop | met *(six of eight cells)* | six of the eight cells, from shared files with no platform fork. `.draggable` on the task row (`TaskRowView.swift:74`) is the source for three of them — stream and context rows accept it (`BrowseSidebar.swift:175`, `:218`) and other task rows accept it for reorder (`TaskListView.swift:192`). The other three need no task drag: stream order is `ForEach.onMove` (`BrowseSidebar.swift:45`), files drop onto the attachments pane (`AttachmentsView.swift:32`), and a block moves and resizes inside the grid by its own gestures (`BlockChip`, `CalendarView.swift:408`, `:445`). The gesture is a long-press drag rather than a click-drag. Two cells are **No**. *Calendar block → Task* is unbuilt on both platforms (`BlockChip` carries no `.draggable`; `TaskListView`'s drop only reorders). *Task → Calendar block* — a **Yes** on macOS — fails on iOS for reach: the grid's `dropDestination` (`CalendarView.swift:221`) is shared and built, and `accept(items:at:)` (`:312`) takes `tsk_` payloads only, so it serves this cell and no other — but no iOS screen shows a task row and the grid together, no `Tab` carries a `dropDestination`, and nothing configures spring-loading. Whether a drag *held* across a tab switch would bridge them is a runtime question no reading of the tree settles ([#72](https://github.com/justin13888/Sunrise/issues/72)), and it is what would overturn this cell. Of the six, *File → Task* needs iPad multitasking ([`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix)) |
+| Drag-and-drop | met *(six of eight cells)* | six of the eight cells, from shared files with no platform fork. `.draggable` on the task row (`TaskRowView.swift:74`) is the source for three of them — stream and context rows accept it (`BrowseSidebar.swift:175`, `:218`) and other task rows accept it for reorder (`TaskListView.swift:192`). The other three need no task drag: stream order is `ForEach.onMove` (`BrowseSidebar.swift:45`), files drop onto the attachments pane (`AttachmentsView.swift:32`), and a block moves and resizes inside the grid by its own gestures (`BlockChip`, `CalendarView.swift:408`, `:445`). The gesture is a long-press drag rather than a click-drag. Two cells are **No**. *Calendar block → Task* is unbuilt on both platforms (`BlockChip` carries no `.draggable`; `TaskListView`'s drop only reorders). *Task → Calendar block* — a **Yes** on macOS — fails on iOS for reach: the grid's `dropDestination` (`CalendarView.swift:221`) is shared and built, and `accept(items:at:)` (`:312`) takes `tsk_` payloads only, so it serves this cell and no other — but no iOS screen shows a task row and the grid together, no `Tab` carries a `dropDestination`, and nothing configures spring-loading. Whether a drag *held* across a tab switch would bridge them ([#72](https://github.com/justin13888/Sunrise/issues/72)) was the one link no reading of the tree could settle, and it has now been run: `DragAcrossTabsUITests` lifts a task row, drags it onto the Calendar tab and holds it there for two seconds, and the tab does not change — the bar does not spring-load, so the one-handed gesture cannot bridge them. The two-handed one stays unmeasured, because XCUITest has no API for two independent simultaneous touches; the cell stays **No** on this table's own rule that a completable path has to be shown. Of the six, *File → Task* needs iPad multitasking ([`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix)) |
 | Quick capture (system surface) | met | a **Capture** toolbar button on all five tab roots and on every pushed task list (`VaultTabs.swift:318-324`, attached at `:74`, `:84`, `:137`, `:146`, `:161`, `:225`; the six other pushed destinations at `:227-238` carry none, because a `.toolbar` on a `NavigationStack` root is not inherited by a `navigationDestination`), routed to the inline bar where the list has one and to the sheet where it does not (`:339-362`, `:471-498`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:198-201`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`VaultTabs.swift:454`); the category, its three buttons and the response delegate are one shared file (`NotificationCenterClient.swift:60-105`); Settings asks for authorization (`VaultTabs.swift:374`) |
 | Multi-account | met | More → Settings (`VaultTabs.swift:364-386`) → the vault picker (`AccountView.swift:131-145`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:183`); teardown before reopen is in the method itself — `await bridge?.shutdown()` then re-point (`SessionModel.swift:257`, `:269-272`) |
 | Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field (`:233-240`), reached from Settings → **Add a device…** (`AccountView.swift:159`) and from `LockedView` (`:62`). **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS |
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
-| iCal import / export | **unmet** | the picker-driven `importIcal()` / `exportIcal(_:)` are inside `#if os(macOS)` (`Sunrise/Ical/AppSurfaces+Ical.swift:52-75`), the `IcalSurfaces` modifier is applied only at `macOS/VaultWindow.swift:141`, and the File menu items live in `macOS/AppCommands.swift:104-118`. The URL-taking halves and `CoreBridge.importIcal` / `.exportIcal` are shared and have no iOS caller — the same shape as saved views |
+| iCal import / export | met *(windowed, no round-trip)* | Browse → More → **Import calendar…** / **Export calendar ▸ Today \| This Week** (`iOS/VaultTabs.swift`, `overflowMenu`), into the same URL-taking `AppSurfaces.importIcal(from:)` / `exportIcal(_:to:)` the Mac's File menu reaches — a `fileImporter` and a `fileExporter` in place of the Mac's two `NSPanel`s (`iOS/VaultSurfaces.swift`, `iOS/IcalDocuments.swift`), and `IcalSurfaces` hung on the tab shell as the Mac hangs it on its window, so the notice report an import produces is shown here too. The picked document's security scope is held across the read. Same scope note as the Mac's row, and for the same reason: it is the seam's |
 | Background sync | met *(frontmost only)* | `startSync` on the shell's `.task` and again on every relay-URL change (`VaultTabs.swift:388-394`, `:448-457`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
 | OS automation (App Intents) | met | `Sunrise/Intents/` compiles into both products; the iOS target names `AppIntents.framework` (`project.yml:173`), which is what makes Xcode write the metadata bundle without which the intents link and are never offered; six `AppShortcut`s (`SunriseShortcuts.swift:22-83`); the live vault is adopted at `AppSurfaces.swift:162` so an intent fired while the app is open is answered rather than refused |
 | Vim-style modal navigation | met | the same ten-binding subset behind the same toggle — `onKeyChord(… vim:)` (`TaskListView.swift:118`) and Settings → Keyboard → **Vim-style motions** (`AccountView.swift:216-228`). Needs an attached keyboard, which is the row's own scope |
@@ -295,9 +295,11 @@ over:
   narrowness — the operator grammar
   [search.md](../08-features/search.md) specifies is matched literally; see
   the macOS note above.
-- **iOS.** Two SHOULDs are unmet, and both for the same shape of reason — a
-  working, tested shared model with no iOS caller: **saved views** and **iCal
-  import / export**. Background sync runs only while the app is frontmost.
+- **iOS.** No SHOULD is unmet. The two that were — **saved views** and **iCal
+  import / export**, a working, tested shared model with no iOS caller in each
+  case — now have one: a toolbar menu on the screens a saved view can name, and
+  a document importer and exporter behind Browse's overflow where the Mac has a
+  File menu. Background sync runs only while the app is frontmost.
   Keyboard navigation is the list keymap and nothing above it, because
   `onKeyChord` is applied in exactly one place in the tree; an iPad that draws
   a system menu bar therefore gets only the system's own items, since the
@@ -306,42 +308,40 @@ over:
   and *Task → Calendar block*, a drag macOS has, is **No** here: its two ends
   are shared and unguarded but no screen shows them together, and the target
   declares no `UIApplicationSupportsMultipleScenes`, so there is no second
-  window to span either. What the tree cannot settle is whether a drag held
-  across a tab switch would bridge them — a runtime question tracked as
-  [#72](https://github.com/justin13888/Sunrise/issues/72) and recorded in
-  [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix) as
-  the thing that would overturn the cell. Search and *Pairing — scan QR* are
+  window to span either. The runtime question the tree could not settle —
+  whether a drag held across a tab switch bridges them
+  ([#72](https://github.com/justin13888/Sunrise/issues/72)) — has been run on
+  the simulator: the tab bar does not spring-load a held drag, so the
+  one-handed gesture ends where it started, and the two-handed one is beyond
+  what XCUITest can express. Both halves are written up in
+  [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix).
+  Search and *Pairing — scan QR* are
   narrow here in exactly the way they are on the Mac, and neither narrowness is
   iOS's: the literal-AND FTS query is the seam's, while the absent camera
   scanner is shared SwiftUI rather than anything in the core. See the macOS
   note above.
 
-  Two further things are narrow that no row is about, and they are worth
-  naming here rather than losing. **The shared sheets are Mac-shaped**: seven
-  unconditional `.frame(width:)` calls the tab shell can put on screen, every
-  one wider than the `iPhone 17 Pro` the UI tests run on (about 402 points
-  portrait; the narrowest of the seven is 420) — 520 points on the settings
-  `Form` (`AccountView`,
-  `AccountView.swift:101`), 560×520 on the pairing sheet (`PairingView`,
-  `PairingView.swift:25`), 460 on the task editor (`TaskEditorView`,
-  `TaskEditorView.swift:97`), 440 on the routine editor (`RoutineEditorView`,
-  `RoutineEditorView.swift:132`), and three inside `BlockEditorView.swift`:
-  420 on the block draft sheet (`BlockDraftSheetView`, `:35`), 460 on the block
-  editor itself (`BlockEditorView`, `:155`) and 620 on the conflict adjuster
-  (`AdjustBlocksView`, `:280`).
-  **And the copy still calls the device a Mac**: `Platform.deviceName`
-  (`PlatformKit.swift:163-183`) exists for exactly this and has two callers,
-  while twenty-eight further lines across six shared files put "Mac" in a
-  string the user reads —
-  among them the pairing sheet's own title (`PairingView.swift:32`) and the
-  vim toggle's caption (`AccountView.swift:222`, "Stored on this Mac only").
-  Neither sinks a verdict, because the rows they sit in are reachable. Both
-  are real, and neither has an issue of its own yet.
+  Two things that were narrow here are no longer, and both are recorded rather
+  than deleted, because a green row is a claim somebody traced. **The shared
+  sheets were Mac-shaped**: seven unconditional `.frame(width:)` calls the tab
+  shell could put on screen, every one wider than the `iPhone 17 Pro` the UI
+  tests run on. All seven now go through `.macSheetFrame(width:height:)`
+  (`PlatformKit.swift`), which is the Mac's frame on macOS and nothing at all
+  on iOS, so a sheet takes the width the phone has. Two more went with them for
+  the same reason and are not in the seven: `IcalView.swift`'s 520×460 and
+  `SavedViewsMenu.swift`'s 360, both of which the row above has just made
+  reachable. **And the copy called the device a Mac**: twenty-eight lines
+  across six shared files. The ones about *this* device now interpolate
+  `Platform.deviceName` (`PlatformKit.swift`), which is what it exists for; the
+  ones about the *other* end of a pairing say "device", because this end cannot
+  know what is at the other, and the two in `SyncPresentation.swift` and the
+  one in `NotificationAuthorization.swift` say "device" too — both types are
+  plain values constructed off the main actor by their tests, and
+  `deviceName` is main-actor isolated.
 
-Every one of these is inside a row graded **met** — the two iOS rows named
-unmet above are the exception — because each row asks for a capability and
-each capability is reachable. They are written down so that "met"
-never has to be re-derived from scratch to find out what it covered.
+Every one of these is inside a row graded **met**, because each row asks for a
+capability and each capability is reachable. They are written down so that
+"met" never has to be re-derived from scratch to find out what it covered.
 
 ## Hard rules
 

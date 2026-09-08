@@ -227,10 +227,12 @@ private struct NoteBlockRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 TextField("Language", text: $block.language, prompt: Text("swift"))
+                    .textInput(.identifier)
                     .font(.caption)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
                 TextEditor(text: $block.code)
+                    .textInput(.opaque)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 64)
                     .scrollContentBackground(.hidden)

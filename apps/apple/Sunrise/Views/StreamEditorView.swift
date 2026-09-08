@@ -38,6 +38,7 @@ struct StreamEditorView: View {
             // test reaching for "the first text field" was as likely to type
             // the stream's name into a task.
             TextField("Name", text: $name)
+                .textInput(.identifier)
                 .accessibilityIdentifier("stream.name")
 
             Picker("Colour", selection: $color) {
@@ -145,6 +146,7 @@ struct ContextEditorView: View {
     var body: some View {
         Form {
             TextField("Name", text: $name, prompt: Text("errands"))
+                .textInput(.identifier)
             TextField("Description", text: $description, prompt: Text("Optional"))
 
             Section {

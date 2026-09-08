@@ -67,6 +67,10 @@ struct RoutineEditorView: View {
                     text: $recurrence.text,
                     prompt: Text("every 2 weeks on tue")
                 )
+                // A grammar too, and one the core parses word by word: an
+                // autocorrect that turns `tue` into `true` produces a rule
+                // the field then reports as unreadable.
+                .textInput(.syntax)
                 if let summary = recurrence.summary {
                     Label(summary, systemImage: "checkmark.circle")
                         .font(.caption)
@@ -109,6 +113,7 @@ struct RoutineEditorView: View {
                 LabeledContent("Estimate") {
                     HStack {
                         TextField("", value: $estimateMinutes, format: .number)
+                            .textInput(.number)
                             .frame(width: 60)
                         Text(estimateMinutes > 0
                             ? shortDuration(secs: UInt64(estimateMinutes * 60))
@@ -129,7 +134,7 @@ struct RoutineEditorView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
+        .macSheetFrame(width: 440)
         .padding(.vertical, 8)
         .navigationTitle(isCreating ? "New routine" : "Edit routine")
     }

@@ -62,7 +62,7 @@ enum NotificationAuthorization: Equatable, Sendable {
             "Notifications are turned off for Sunrise in System Settings. "
                 + "Nothing else is affected — the morning and evening views are still in the sidebar."
         case .authorized:
-            "Reminders for scheduled tasks and time blocks are delivered by this Mac."
+            "Reminders for scheduled tasks and time blocks are delivered by this device."
         case .provisional:
             "Reminders arrive quietly, in Notification Centre only, until you allow them properly."
         case let .unavailable(reason):

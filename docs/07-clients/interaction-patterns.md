@@ -152,19 +152,27 @@ shows a task row and the grid together, no `Tab` carries a `dropDestination`,
 and nothing configures spring-loading. Nothing in the tree shows a path that
 completes the gesture, and that is what the **No** records.
 
-**One path this file cannot settle, and it is the one that would overturn the
-verdict.** On iOS and iPadOS a drag session survives navigation — an item held
-under one finger stays held while a second finger taps a tab — and that needs
-neither spring-loading nor a second scene. If a task row held that way reaches
-the Calendar tab and lands on the grid's `dropDestination`, the cell is a
-**Yes** and the paragraph above is wrong about the consequence, though not
-about any of its three facts. Reading the source cannot decide it: the question
-is what UIKit delivers to a drop target across a tab change at runtime, not
-what the tree declares, and nobody has run it. It is tracked as
-[#72](https://github.com/justin13888/Sunrise/issues/72). The verdict stays **No** on the
-evidence that exists — a completable path has to be shown, not merely left
-open — but it is the cheapest of these cells to overturn, and it takes a
-simulator rather than another grep.
+**The one path this file could not settle has now been run, and it does not
+open.** The question [#72](https://github.com/justin13888/Sunrise/issues/72)
+asked was whether a drag held across a tab switch bridges the two ends, which
+no reading of the tree can answer. `SunriseiOSUITests/DragAcrossTabsUITests`
+answers the half a test harness can reach: it lifts a task row on Today, drags
+it onto the **Calendar** tab and holds it there for two seconds — about four
+times what iOS gives a spring-loaded control — and the tab does not change. The
+tab bar does not spring-load a drag, so the **one-handed** gesture ends where
+it started, and there is no point in the app at which the grid is under the
+finger holding the row.
+
+The **two-handed** gesture — hold the row with one finger, tap a tab with the
+other — is still unmeasured, and deliberately recorded as unmeasured rather
+than assumed either way. XCUITest drives one gesture at a time and offers no
+API for two independent simultaneous touches, so the harness that runs on every
+build cannot express it; settling it would take a person with a device, and a
+result nothing in CI would then hold in place. The verdict stays **No** on the
+rule this table already applies: a completable path has to be *shown*, not left
+open. What would overturn it is no longer a grep or a simulator run but a
+built path — a drop destination on the tab itself, spring-loading configured,
+or a screen that shows a list and the grid together.
 
 **The other way out would be a second window, and that one the tree does
 close.** It is also what separates this cell from *File → Task*. A second

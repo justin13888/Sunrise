@@ -32,7 +32,7 @@ struct IcalReportView: View {
             }
             .padding(12)
         }
-        .frame(width: 520, height: 460)
+        .macSheetFrame(width: 520, height: 460)
         .accessibilityIdentifier("ical-report")
     }
 

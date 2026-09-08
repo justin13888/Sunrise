@@ -47,15 +47,18 @@ struct AccountView: View {
 
             Section("Sync") {
                 TextField("Relay URL", text: $settings.relayURL, prompt: Text("http://127.0.0.1:8443"))
+                    .textInput(.url)
                     .textContentType(.URL)
-                Text("Leave empty to work entirely on this Mac.")
+                Text("Leave empty to work entirely on this \(Platform.deviceName).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Account") {
                 TextField("OIDC issuer", text: $settings.oidcIssuer, prompt: Text("https://issuer.example"))
+                    .textInput(.url)
                 TextField("Client ID", text: $settings.oidcClientID)
+                    .textInput(.opaque)
                 LabeledContent("This device", value: String(deviceID.prefix(16)))
                     .monospaced()
                 accountRow
@@ -98,7 +101,7 @@ struct AccountView: View {
             notificationSections
         }
         .formStyle(.grouped)
-        .frame(width: 520)
+        .macSheetFrame(width: 520)
         .padding(.vertical, 8)
         .sheet(item: $pairing) { model in
             PairingView(model: model) { pairing = nil }
@@ -162,7 +165,7 @@ struct AccountView: View {
                 }
                 Text(
                     """
-                    "Add a device" hands this vault's key to another Mac, after \
+                    "Add a device" hands this vault's key to another device, after \
                     you have compared six digits on both screens.
                     """
                 )
@@ -219,7 +222,7 @@ struct AccountView: View {
                 .accessibilityIdentifier("account.vimMode")
             Text(
                 "h j k l, gg, G, u, ⌃R, / and : in any list. Additive — ⌘N, X and the "
-                    + "rest keep working. Stored on this Mac only, never synced."
+                    + "rest keep working. Stored on this \(Platform.deviceName) only, never synced."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -258,11 +261,11 @@ struct AccountView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Remind me on this Mac", isOn: $notifications.isEnabled)
+            Toggle("Remind me on this \(Platform.deviceName)", isOn: $notifications.isEnabled)
             Toggle("This is my primary device", isOn: $notifications.isPrimaryDevice)
             Text(
                 "Only the primary device delivers reminders — the core hands the others "
-                    + "nothing to schedule, so an account with four Macs still rings once."
+                    + "nothing to schedule, so an account with four devices still rings once."
             )
             .font(.caption)
             .foregroundStyle(.secondary)

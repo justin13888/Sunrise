@@ -234,3 +234,135 @@ extension PlatformImage {
         #endif
     }
 }
+
+// MARK: - Sheet sizing
+
+extension View {
+    /// The width a sheet takes **on a Mac**, and nothing at all on a phone.
+    ///
+    /// A `.frame(width:)` on a sheet is a macOS idiom: there the sheet is a
+    /// panel over a resizable window and something has to say how wide it
+    /// should be. On iOS the sheet already has a width — the screen's — and a
+    /// fixed one wider than the device clips its own content, which is what
+    /// every editor sheet shared with the Mac did on an iPhone. The reference
+    /// device is the `iPhone 17 Pro` simulator `mise.toml` pins, about 402
+    /// points across in portrait; the frames this replaces ran from 420 to
+    /// 620.
+    ///
+    /// A hard `#if` rather than a horizontal size class, and deliberately.
+    /// A size class would also make an iPad's regular width take the Mac's
+    /// number, and an iPad sheet is a system-sized card whose width is the
+    /// system's business — the Mac's 620 is not a better answer there than the
+    /// one iPadOS already has.
+    @ViewBuilder
+    func macSheetFrame(width: CGFloat, height: CGFloat? = nil) -> some View {
+        #if os(macOS)
+        frame(width: width, height: height)
+        #else
+        self
+        #endif
+    }
+}
+
+// MARK: - Software-keyboard input modes
+
+/// What a text field holds, as far as a software keyboard is concerned.
+///
+/// `docs/08-features/keyboard.md` §Mobile keyboards requires a `text` input
+/// mode with autocorrect off wherever capture syntax is typed, so that `#`,
+/// `@`, `^`, `!` and `~` are read as the parser will read them and predictive
+/// text cannot rewrite a token. The cases below are the field's *content*
+/// rather than a platform's spelling of it, because that is the thing a call
+/// site can be right or wrong about: a task title genuinely wants autocorrect,
+/// and a relay URL genuinely does not.
+///
+/// Fields that hold ordinary prose — a task title, a routine title, a block
+/// title, a review note, a stream description, a note body — get **no** case
+/// here and keep the system defaults. Autocorrect on a sentence somebody
+/// dictated is the feature, not the defect.
+enum TextInputKind {
+    /// Capture and search: the app's own syntax, typed literally.
+    case syntax
+    /// A lowercase name that is also a token elsewhere — a stream, a context,
+    /// a saved view, a code block's language.
+    case identifier
+    /// An opaque block of ASCII the user pastes or reads out: a pairing
+    /// message, an OIDC client id, a fenced code block.
+    case opaque
+    case url
+    case email
+    /// A count with no units in the field itself.
+    case number
+}
+
+extension View {
+    /// Say what this field holds, so a software keyboard can stop guessing.
+    func textInput(_ kind: TextInputKind) -> some View {
+        modifier(TextInputMode(kind: kind))
+    }
+}
+
+/// The platform half of ``TextInputKind``.
+///
+/// `keyboardType` and `textInputAutocapitalization` do not exist in macOS's
+/// SwiftUI at all — not as no-ops, as absent declarations — so this cannot be
+/// a flat list of modifiers at the call sites. `autocorrectionDisabled` does
+/// exist on both and means the same thing on both, so it is applied on both:
+/// a Mac's automatic substitutions have no more business inside `#travel`
+/// than a phone's.
+///
+/// `textContentType` is deliberately **not** here. It is an autofill hint
+/// rather than an input mode, and its argument is a different type on each
+/// platform (`UITextContentType` against `NSTextContentType`, whose case list
+/// is much the smaller), so it belongs at the one call site that wants it.
+private struct TextInputMode: ViewModifier {
+    let kind: TextInputKind
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        switch kind {
+        // Nothing to say about a count on a Mac: `autocorrectionDisabled(false)`
+        // would be a decision where the field previously had none.
+        case .number: content
+        default: content.autocorrectionDisabled()
+        }
+        #else
+        switch kind {
+        // One arm, two cases, and both are worth keeping: they ask for the
+        // same keyboard today and they are different claims about the field.
+        // A stream name is a name that happens to be lowercase; a capture line
+        // is a grammar. If the grammar ever wants a key row of its own, this
+        // is where the two part company.
+        case .syntax, .identifier:
+            content
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.default)
+        case .opaque:
+            content
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.asciiCapable)
+        case .url:
+            content
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+        case .email:
+            content
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+        case .number:
+            // `.numbersAndPunctuation` rather than `.numberPad`, which is the
+            // obvious choice and the wrong one here. The number pad has no
+            // return key, and these two fields sit inside a `Form` in a sheet
+            // where there is nothing else to tap — so the pad puts digits one
+            // tap closer and takes away the only way out. This layout leads
+            // with the digits and keeps the key that dismisses it.
+            content.keyboardType(.numbersAndPunctuation)
+        }
+        #endif
+    }
+}

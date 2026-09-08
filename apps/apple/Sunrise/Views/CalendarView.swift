@@ -34,36 +34,95 @@ struct CalendarView: View {
         }
     }
 
+    /// Span, the date stepper and the snap size.
+    ///
+    /// Two layouts, chosen by whether the first one fits. Everything in the
+    /// wide row has a real intrinsic width — two pickers, three controls and a
+    /// date that runs to "Monday 8 September" — and their sum is well over an
+    /// iPhone's 402 points, so on a phone this row overflowed: the stepper ran
+    /// off the trailing edge and the date between the chevrons was squeezed
+    /// into a column of single characters.
+    ///
+    /// `ViewThatFits` rather than a size class or a width test, because the
+    /// question really is "does this row fit", and the answer depends on the
+    /// date being drawn as much as on the device. A Mac window and an iPad
+    /// take the wide row; an iPhone takes the stacked one; a Mac window
+    /// dragged narrow takes the stacked one too, which is the right answer
+    /// there for the same reason.
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            Picker("Span", selection: $model.span) {
-                ForEach(CalendarSpan.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 140)
-
-            Button("Previous", systemImage: "chevron.left") {
-                Task { await model.step(-1) }
-            }
-            .labelStyle(.iconOnly)
-            Button("Today") { Task { await model.goToToday() } }
-            Button("Next", systemImage: "chevron.right") {
-                Task { await model.step(1) }
-            }
-            .labelStyle(.iconOnly)
-
-            Text(rangeTitle).font(.headline)
-            Spacer()
-
-            Picker("Snap", selection: $model.snapMinutes) {
-                ForEach(CalendarModel.snapChoices, id: \.self) { Text("\($0) min").tag($0) }
-            }
-            .frame(width: 130)
+        ViewThatFits(in: .horizontal) {
+            wideToolbar
+            stackedToolbar
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .accessibilityIdentifier("calendar-toolbar")
+    }
+
+    private var wideToolbar: some View {
+        HStack(spacing: 12) {
+            spanPicker.frame(width: 140)
+            stepper
+            dateLabel
+            Spacer()
+            snapPicker.frame(width: 130)
+        }
+    }
+
+    private var stackedToolbar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                spanPicker
+                snapPicker
+                    .labelsHidden()
+                    .fixedSize()
+            }
+            HStack(spacing: 12) {
+                stepper
+                dateLabel
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var spanPicker: some View {
+        Picker("Span", selection: $model.span) {
+            ForEach(CalendarSpan.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+    }
+
+    private var snapPicker: some View {
+        Picker("Snap", selection: $model.snapMinutes) {
+            ForEach(CalendarModel.snapChoices, id: \.self) { Text("\($0) min").tag($0) }
+        }
+    }
+
+    @ViewBuilder
+    private var stepper: some View {
+        Button("Previous", systemImage: "chevron.left") {
+            Task { await model.step(-1) }
+        }
+        .labelStyle(.iconOnly)
+        Button("Today") { Task { await model.goToToday() } }
+        Button("Next", systemImage: "chevron.right") {
+            Task { await model.step(1) }
+        }
+        .labelStyle(.iconOnly)
+    }
+
+    /// The date, on one line whatever happens.
+    ///
+    /// `lineLimit(1)` is the half that matters: without it a `Text` given less
+    /// width than one word wraps per character, which is what turned this into
+    /// a vertical column of letters on an iPhone rather than merely truncating
+    /// it.
+    private var dateLabel: some View {
+        Text(rangeTitle)
+            .font(.headline)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private var rangeTitle: String {

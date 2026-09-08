@@ -32,6 +32,12 @@ struct VaultTabs: View {
     @State private var palette = CommandPaletteModel()
     @State private var showingCheatSheet = false
     @State private var creatingStream = false
+    /// The screen a "Save this view…" is about, and the name being typed for
+    /// it. `nil` means the sheet is closed.
+    @State private var savingView: Destination?
+    @State private var newViewName = ""
+    @State private var importingIcal = false
+    @State private var exportingIcal: IcalDocument?
 
     init(bridge: CoreBridge, session: SessionModel, surfaces: AppSurfaces) {
         self.bridge = bridge
@@ -45,6 +51,7 @@ struct VaultTabs: View {
             .modifier(CaptureSheet(surfaces: surfaces))
             .modifier(rowSheets)
             .sheet(isPresented: $showingSettings) { settingsSheet }
+            .modifier(library)
             .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform))
             .modifier(Lifecycle(
                 bridge: bridge,
@@ -120,6 +127,27 @@ struct VaultTabs: View {
         )
     }
 
+    /// Saved views and iCalendar: the two shared capabilities whose only
+    /// callers were `macOS/VaultWindow.swift` and the Mac's File menu, so both
+    /// compiled into this product and neither was reachable from it.
+    private var library: LibrarySurfaces {
+        LibrarySurfaces(
+            surfaces: surfaces,
+            savingView: $savingView,
+            newViewName: $newViewName,
+            importingIcal: $importingIcal,
+            exportingIcal: $exportingIcal,
+            save: { name, destination in
+                await models.savedViews.save(
+                    name: name,
+                    destination: destination,
+                    query: models.search.text,
+                    contexts: destination.contextNames(in: models.list.names)
+                )
+            }
+        )
+    }
+
     // MARK: - Tab roots
 
     private var todayRoot: some View {
@@ -134,7 +162,10 @@ struct VaultTabs: View {
         )
         .navigationTitle("Today")
         .navigationDestination(for: Destination.self) { pushed(destination: $0) }
-        .toolbar { captureButton }
+        .toolbar {
+            captureButton
+            savedViewsButton(for: .list(.todayAll))
+        }
         .task { await models.list.show(.todayAll) }
     }
 
@@ -158,7 +189,10 @@ struct VaultTabs: View {
             focus: $pane
         )
         .navigationTitle("Search")
-        .toolbar { captureButton }
+        .toolbar {
+            captureButton
+            savedViewsButton(for: .search)
+        }
     }
 
     /// What a phone's tab bar cannot hold.
@@ -179,6 +213,28 @@ struct VaultTabs: View {
                 Section {
                     menuLink(to: .routines)
                     menuLink(to: .review)
+                }
+                // The Mac's File ▸ Import / Export Calendar, which is a scene
+                // command there and has no counterpart here — so it lands in
+                // the same overflow the tab-less screens do. `importIcal` runs
+                // the system document picker and `exportIcal` the exporter;
+                // the report both produce is `IcalSurfaces`, hung on the shell
+                // exactly as the Mac hangs it on its window.
+                Section("Calendar") {
+                    Button("Import calendar…", systemImage: "square.and.arrow.down") {
+                        importingIcal = true
+                    }
+                    .disabled(surfaces.ical == nil)
+                    .accessibilityIdentifier("ical.import")
+                    Menu("Export calendar", systemImage: "square.and.arrow.up") {
+                        ForEach(ExportWindow.menuOrder, id: \.self) { window in
+                            Button(window.menuTitle) {
+                                Task { await beginIcalExport(window) }
+                            }
+                        }
+                    }
+                    .disabled(surfaces.ical == nil)
+                    .accessibilityIdentifier("ical.export")
                 }
                 Section {
                     Button(models.undo.undoTitle, systemImage: "arrow.uturn.backward") {
@@ -222,7 +278,10 @@ struct VaultTabs: View {
                 focus: $pane
             )
             .navigationTitle(kind.title)
-            .toolbar { captureButton }
+            .toolbar {
+                captureButton
+                savedViewsButton(for: .list(kind))
+            }
             .task { await models.list.show(kind) }
         case .calendar:
             CalendarView(model: models.calendar).navigationTitle("Calendar")
@@ -286,7 +345,18 @@ struct VaultTabs: View {
     }
 
     @FocusState private var pane: PaneFocus?
+}
 
+// The rest of the shell: how it routes, what its toolbars offer, and the
+// long-lived work it starts.
+//
+// An extension rather than more of the struct, and for a reason worth
+// stating: `VaultTabs` is one screen's worth of state and about a dozen
+// screens' worth of wiring, and the wiring is what grows. Splitting it here
+// keeps the type's own body — its state, its `body`, its tab roots — short
+// enough to read in one pass, which is what `type_body_length` is asking
+// for.
+extension VaultTabs {
     private var escapes: ListEscapes {
         ListEscapes(
             showFocus: { tab = .focus },
@@ -332,6 +402,32 @@ struct VaultTabs: View {
             Button("Capture", systemImage: "square.and.pencil", action: openCapture)
                 .accessibilityIdentifier("capture")
         }
+    }
+
+    /// Recall a saved view, or save the one on screen.
+    ///
+    /// On the Mac this is a toolbar menu on the one window; here it goes on
+    /// the three screens that actually *are* a view worth saving — Today, a
+    /// pushed list and Search. Putting it in Browse's overflow instead would
+    /// have made "Save this view…" mean the sidebar, which is not a view the
+    /// recall side can land on.
+    @ToolbarContentBuilder
+    private func savedViewsButton(for destination: Destination) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            SavedViewsMenu(
+                model: models.savedViews,
+                contexts: models.list.names,
+                recall: show,
+                saveCurrent: { savingView = destination }
+            )
+            .accessibilityIdentifier("saved-views")
+        }
+    }
+
+    /// Render one window of the calendar, then hand it to the exporter.
+    private func beginIcalExport(_ window: ExportWindow) async {
+        guard let text = await surfaces.ical?.exportDocument(window: window) else { return }
+        exportingIcal = IcalDocument(text: text, filename: window.suggestedFilename)
     }
 
     /// Capture, into whichever surface this screen already has.
@@ -411,106 +507,6 @@ struct VaultTabs: View {
             deviceID: deviceID,
             nowMs: await bridge.nowMs()
         )
-    }
-}
-
-/// Every route into the app, delivered to the shell.
-///
-/// A `sunrise://` link, a tapped reminder, an App Intent, the Control Center
-/// control and the widget all set `pendingDestination` or `pendingCommand` on
-/// the shared ``AppSurfaces``; the macOS window takes the same values into its
-/// sidebar selection. Split into a modifier because `body` could not be
-/// type-checked with it inline.
-private struct Routing: ViewModifier {
-    let surfaces: AppSurfaces
-    let show: (Destination) -> Void
-    let reveal: (EntityRef) -> Void
-    let perform: (AppAction) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: surfaces.pendingDestination) { _, destination in
-                guard let destination else { return }
-                show(destination)
-                surfaces.destinationTaken()
-            }
-            .onChange(of: surfaces.pendingReveal) { _, entity in
-                guard let entity else { return }
-                surfaces.revealTaken()
-                reveal(entity)
-            }
-            .onChange(of: surfaces.pendingCommand) { _, command in
-                guard let command else { return }
-                surfaces.commandTaken()
-                perform(command)
-            }
-            .onChange(of: surfaces.notifications.policy) {
-                Task { await surfaces.reminders?.reconcile() }
-            }
-    }
-}
-
-/// The long-lived work an open vault starts: sync, the reminder schedule, the
-/// undo feed and the saved-view list. The same set the macOS window starts,
-/// and for the same reasons.
-private struct Lifecycle: ViewModifier {
-    let bridge: CoreBridge
-    let models: VaultModels
-    let surfaces: AppSurfaces
-    @Binding var deviceID: String
-    let startSync: () async -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .task {
-                deviceID = await bridge.deviceId()
-                models.account.restore()
-                await startSync()
-            }
-            .task { await models.sync.poll(from: bridge) }
-            .task { await surfaces.reminders?.follow() }
-            .task { await models.undo.follow() }
-            .task { await models.savedViews.load() }
-            .onChange(of: models.settings.relayURL) { Task { await startSync() } }
-            .onChange(of: models.account.accessToken) { _, token in
-                Task { await bridge.setSyncCredential(token) }
-            }
-    }
-}
-
-/// The capture sheet.
-///
-/// iOS's answer to the Mac's borderless panel: `AppSurfaces.openQuickCapture`
-/// sets a flag here rather than presenting a window, because a sheet can only
-/// be presented by a view that is already on screen. `.presentationDetents`
-/// keeps it to the height a single field needs — a full-screen sheet for one
-/// line of text is the thing that makes quick capture stop feeling quick.
-private struct CaptureSheet: ViewModifier {
-    let surfaces: AppSurfaces
-
-    func body(content: Content) -> some View {
-        content.sheet(
-            isPresented: Binding(
-                get: { surfaces.isCapturing },
-                set: { if !$0 { surfaces.captureDismissed() } }
-            )
-        ) {
-            if let capture = surfaces.capture {
-                QuickCaptureView(
-                    model: capture,
-                    commit: { try await surfaces.commitCapture($0) },
-                    dismiss: { surfaces.captureDismissed() }
-                )
-                // `.medium` beside the fixed height, not instead of it. The
-                // small detent is the point — a full-screen sheet for one line
-                // of text is what makes quick capture stop feeling quick — but
-                // the content grows: one label per token the parser could not
-                // place, and enough of those would push Add, the sheet's only
-                // commit control, past a height nothing can scroll.
-                .presentationDetents([.height(280), .medium])
-                .presentationDragIndicator(.visible)
-            }
-        }
     }
 }
 

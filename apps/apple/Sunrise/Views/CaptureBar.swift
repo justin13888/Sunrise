@@ -26,6 +26,12 @@ struct CaptureBar: View {
                     prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
                 )
                 .textFieldStyle(.plain)
+                // The grammar in the placeholder is the reason. Left to the
+                // iOS defaults this field autocapitalises `renew` and offers
+                // to correct `#travel`, and what the parser then reads is not
+                // what was typed. See `docs/08-features/keyboard.md`
+                // §Mobile keyboards.
+                .textInput(.syntax)
                 .focused(focus, equals: .capture)
                 .onSubmit(submit)
                 .accessibilityIdentifier("capture.field")

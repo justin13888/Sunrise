@@ -31,6 +31,9 @@ struct QuickCaptureView: View {
                     prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
                 )
                 .textFieldStyle(.plain)
+                // The same grammar as the inline bar's field, so the same
+                // input mode. See ``CaptureBar``.
+                .textInput(.syntax)
                 .font(.title3)
                 .focused($focused)
                 .onSubmit(submit)
@@ -85,6 +88,14 @@ struct QuickCaptureView: View {
             #endif
         }
         .padding(16)
+        #if !os(macOS)
+        // Top, not centre. A sheet hands its content the whole detent, and a
+        // `VStack` given more height than it needs centres itself in it — so
+        // one field and two buttons sat halfway down an otherwise empty card,
+        // which is what the iPhone walk photographed. The Mac's panel sizes
+        // itself to its content and never had the spare height.
+        .frame(maxHeight: .infinity, alignment: .top)
+        #endif
         #if os(macOS)
         // The panel's own width. On iOS the sheet takes the screen's, and a
         // fixed 560 would be wider than an iPhone.

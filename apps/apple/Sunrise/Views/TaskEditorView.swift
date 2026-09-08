@@ -94,7 +94,7 @@ struct TaskEditorView: View {
             case .activity: ActivityTimelineView(model: activity)
             }
         }
-        .frame(width: 460)
+        .macSheetFrame(width: 460)
         .padding(.vertical, 8)
     }
 
@@ -117,6 +117,7 @@ struct TaskEditorView: View {
             LabeledContent("Estimate") {
                 HStack {
                     TextField("", value: $estimateMinutes, format: .number)
+                        .textInput(.number)
                         .frame(width: 60)
                     Text(estimateMinutes > 0 ? shortDuration(secs: UInt64(estimateMinutes * 60)) : "none")
                         .foregroundStyle(.secondary)
