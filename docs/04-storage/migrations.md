@@ -82,7 +82,7 @@ intermediate version no build was ever tested against.
 Sample — a whole migration file, and nothing else:
 
 ```sql
--- 0021_add_task_energy.sql
+-- 00NN_add_task_energy.sql
 ALTER TABLE tasks ADD COLUMN energy TEXT;
 ```
 
@@ -253,8 +253,8 @@ Three decisions are worth knowing before adding one.
   0019's `minted_by_device_id` backfill and `id_d_priv_wrapped` blanking — and
   the v13 fixture reaches the first two but structurally cannot reach the third,
   because `identity` does not exist before 0017 and 0017 creates it empty. 0015,
-  0016, 0018 and 0020 are pure `ADD COLUMN` / `CREATE TABLE` and earn no fixture
-  of their own.
+  0016, 0018, 0020 and 0021 are pure `ADD COLUMN` / `CREATE TABLE` /
+  `CREATE INDEX` and earn no fixture of their own.
 
 What is still **specified and not implemented**:
 
