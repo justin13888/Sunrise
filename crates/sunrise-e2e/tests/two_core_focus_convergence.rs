@@ -2,9 +2,9 @@
 //! relay — the property [ADR-0013] turns on.
 //!
 //! Companion to `two_core_blocker_convergence.rs`: same in-process relay, same
-//! real `WebSocket`s and wire protocol. What has to hold here is the thing the
-//! ADR's original OR-Set was reaching for and that an append-only row keyed by
-//! its own `EntityRef` gives for free:
+//! real SSE + `POST` sync transport and wire protocol. What has to hold here is
+//! the thing the ADR's original OR-Set was reaching for and that an append-only
+//! row keyed by its own `EntityRef` gives for free:
 //!
 //! 1. **Two devices each starting a session on the same task both survive.**
 //!    They mint different `fcs_` ids, so there is no register for them to fight

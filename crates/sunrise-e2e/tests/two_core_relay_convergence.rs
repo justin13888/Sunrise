@@ -1,11 +1,11 @@
 //! The flagship end-to-end: two real `Core`s converging through the real
-//! `sunrise-server` relay over real WebSockets.
+//! `sunrise-server` relay over the real SSE + `POST` sync transport.
 //!
 //! This is the acceptance test for the entire sync stack — envelope sealing
 //! (S6), wire payloads + the relay replay ring (S7), `apply_remote` / LWW (S8),
 //! and the client sync driver (S9). Everything runs in-process but over actual
-//! TCP/WebSocket sockets and the production wire protocol; nothing here is
-//! mocked.
+//! TCP sockets, the relay's real HTTP sync surface and the production wire
+//! protocol; nothing here is mocked.
 
 #![allow(
     clippy::missing_panics_doc,

@@ -10,18 +10,20 @@
 //! router is that a handler which cannot be described does not compile. The
 //! document is generated from the operations, not maintained beside them.
 //!
-//! ## Why this module exists beside `routes/`
+//! ## Why this module is the whole surface
 //!
-//! Ported routes live here; the rest stay in `routes/` on axum until they move.
-//! Both are served from one listener by the dispatcher in [`crate::serve`],
-//! which owns its own accept loop and hands everything that is not `/sync` to
-//! the kynos service. That is the embedding kynos's `Service::call` documents,
-//! and it is deliberately *not* `into_tower_unchecked`: that conversion flags
-//! every operation in the document as `OpaqueReason::UntypedLayer`, which would
-//! spend this ADR's entire benefit for the whole length of the migration.
+//! It was not always. The migration ran two stacks: ported routes here, the
+//! rest on axum behind a hand-written dispatcher in [`crate::serve`] that owned
+//! its own accept loop and handed everything that was not `/sync` to the kynos
+//! service. That embedding was the one kynos's `Service::call` documents, and
+//! deliberately *not* `into_tower_unchecked`: that conversion flags every
+//! operation in the document as `OpaqueReason::UntypedLayer`, which would have
+//! spent this ADR's entire benefit for the whole length of the migration.
 //!
-//! The two-stack state ends with [ADR-0023](../../../../docs/11-adr/0023-sse-sync-transport.md),
-//! when `/sync` stops being a WebSocket and axum leaves the workspace.
+//! [ADR-0023](../../../../docs/11-adr/0023-sse-sync-transport.md) ended the
+//! two-stack state by making `/sync` describable — an SSE stream downstream and
+//! typed `POST`s upstream, in [`sync`]. axum has left the workspace, so there is
+//! one stack, no dispatcher, and nothing left beside this module.
 
 use crate::state::ServerState;
 

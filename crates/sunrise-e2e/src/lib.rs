@@ -4,9 +4,10 @@
 //! Used by Phase 17 release-gating checks per `docs/10-cross-cutting/testing.md`.
 //!
 //! This crate's library surface is a **test harness**: helpers to boot the real
-//! relay in-process, open [`Core`] instances wired to it over real `WebSocket`s,
-//! exchange device trust, and assert convergence with event-driven waits (no
-//! bare sleeps for correctness — only a short poll interval inside a timeout).
+//! relay in-process, open [`Core`] instances wired to it over the real SSE +
+//! `POST` sync transport, exchange device trust, and assert convergence with
+//! event-driven waits (no bare sleeps for correctness — only a short poll
+//! interval inside a timeout).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

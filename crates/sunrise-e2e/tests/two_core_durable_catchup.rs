@@ -1,6 +1,9 @@
 //! The outcome pass for issues #19 and #20: two real `Core`s, the real relay,
-//! real WebSockets, and a device that comes back to find history it could
-//! previously never recover.
+//! and a device that comes back to find history it could previously never
+//! recover.
+//!
+//! What is under test is the relay's durable op log, so no transport is named
+//! here: the same guarantee has to hold whatever the devices reconnect over.
 //!
 //! Both scenarios here were **guaranteed data loss** before the durable op log,
 //! and neither is detectable from the client side:
@@ -10,8 +13,8 @@
 //!   together, so the relay could not even tell the client something was
 //!   missing. It reported no gap and the client believed it was caught up.
 //!
-//! Both are driven end to end here rather than at the socket level, because the
-//! thing under test is what a *device* ends up holding.
+//! Both are driven end to end here rather than at the transport level, because
+//! the thing under test is what a *device* ends up holding.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
