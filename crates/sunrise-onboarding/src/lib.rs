@@ -11,5 +11,8 @@
 pub mod account;
 pub mod recovery;
 
-pub use account::{AccountCreateRequest, AccountInfo};
-pub use recovery::{recover_identity, RecoveryFlowError};
+pub use account::{
+    decode_recovery_blob, encode_public_key, encode_recovery_blob, AccountCreateRequest,
+    AccountInfo,
+};
+pub use recovery::{recover_identity, recover_identity_from_code, RecoveryFlowError};

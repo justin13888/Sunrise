@@ -89,6 +89,9 @@ USAGE:
     sunrise login                sign in via OIDC and store the token
     sunrise logout               forget the stored token
     sunrise whoami               report the stored token's state
+    sunrise bootstrap [email]    publish this vault's identity to the relay,
+                                 register this device, and print the 24-word
+                                 recovery code once. Write that code down
 
   plumbing
     sunrise focus <id>           open a focus session on a task
@@ -358,10 +361,11 @@ async fn dispatch(
             let url = std::env::var(livesync::ENV_SYNC_URL)
                 .map_err(|_| format!("set {} to the relay origin", livesync::ENV_SYNC_URL))?;
 
+            let (account, recovery_code) = bootstrap_account(core, rest)?;
             let outcome = sunrise_relay_client::bootstrap(
                 &url,
                 &creds.access_token,
-                bootstrap_account(rest),
+                account,
                 bootstrap_device(core),
             )
             .await?;
@@ -383,6 +387,23 @@ async fn dispatch(
                 "Account {} ({}) ready; this device is {}.",
                 outcome.identity_id, outcome.email, outcome.device_id
             );
+            // Printed only after the relay accepted the blob. A second
+            // bootstrap that seals a *different* blob is refused with
+            // `409 RECOVERY_BLOB_EXISTS` and never reaches this line, so a code
+            // this command shows is always the code the stored blob opens.
+            match recovery_code {
+                Some(code) => print_recovery_code(&code),
+                None => {
+                    #[allow(clippy::print_stderr)]
+                    {
+                        eprintln!(
+                            "note: this vault was paired into an existing account, so it holds no \
+                             identity key and cannot produce a recovery code. The device that \
+                             created the account is the one that can."
+                        );
+                    }
+                }
+            }
             return Ok(());
         }
         _ => {}
@@ -1339,19 +1360,97 @@ fn print_tasks(r: QueryResult) {
     }
 }
 
-/// The account this device is claiming.
+/// The account this device is claiming, and the recovery code that goes with
+/// it.
 ///
 /// The email is a fallback the server reads only when the IdP emits no `email`
 /// claim, so a CLI that has one passes it and otherwise sends the empty string
 /// rather than inventing an address.
-fn bootstrap_account(rest: &[String]) -> sunrise_onboarding::account::AccountCreateRequest {
-    sunrise_onboarding::account::AccountCreateRequest {
-        email: rest.first().cloned().unwrap_or_default(),
-        identity_signing_pub: String::new(),
-        identity_dh_pub: String::new(),
-        recovery_blob: String::new(),
-        terms_at_ms: 0,
+///
+/// # The identity keys, which used to be empty strings
+///
+/// This function sent `String::new()` for both, and `POST /api/v1/accounts`
+/// answers `400 "identity keys required"` to that — so `sunrise bootstrap`
+/// against a real relay could not create an account at all. They come from the
+/// vault now, which is the only place they exist.
+///
+/// # The recovery code
+///
+/// `Some` on the device that created the account, `None` on one admitted by
+/// pairing. Only the creator holds `ID_D_priv`, so only the creator can seal a
+/// blob that restores an identity able to open the identity-addressed
+/// `key_envelope` ops recovery replays; a paired device that sealed one would
+/// hand its user a code that decrypts to a key opening nothing, which is worse
+/// than having no code because the user believes they are covered.
+///
+/// The seed is drawn here, used twice, and dropped: nothing writes it to disk,
+/// and the returned code is the only copy that leaves this function.
+fn bootstrap_account(
+    core: &Core,
+    rest: &[String],
+) -> Result<
+    (
+        sunrise_onboarding::account::AccountCreateRequest,
+        Option<sunrise_crypto::bip39::RecoveryCode>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use sunrise_core::config::Rng as _;
+
+    let (recovery_blob, code) = if core.holds_identity_key() {
+        let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
+        SystemRng.fill_bytes(&mut seed);
+        let blob = core.seal_recovery_blob(&seed)?;
+        let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
+        zeroize::Zeroize::zeroize(&mut seed);
+        (Some(blob), Some(code))
+    } else {
+        (None, None)
+    };
+
+    Ok((
+        sunrise_onboarding::account::AccountCreateRequest {
+            email: rest.first().cloned().unwrap_or_default(),
+            identity_signing_pub: core.identity_signing_pub(),
+            identity_dh_pub: core.identity_dh_pub(),
+            recovery_blob,
+            terms_at_ms: core.now_ms(),
+        },
+        code,
+    ))
+}
+
+/// Show the recovery code, once, with what it is for and what losing it costs.
+///
+/// **On stdout and nowhere else.** It never becomes a `tracing` field: the type
+/// implements no `Display` and no `tracing::Value`, its `Debug` prints only the
+/// word count, and `sunrise-log`'s allowlist carries no field name for it — so
+/// there is no spelling of a log call that could carry it even by accident. It
+/// is also never written to a file: `docs/03-crypto/key-rotation.md` records
+/// that a vault holding the only copy of `ID_D_priv` cannot be recovered by any
+/// feature added later, and a copy this process saved would be a copy an
+/// attacker who reaches the machine also has, while doing nothing for the user
+/// who loses the machine.
+fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
+    #![allow(clippy::print_stdout)]
+    println!();
+    println!("Your recovery code — write it down now, on paper:");
+    println!();
+    // Six lines of four, because twenty-four words on one wrapped terminal
+    // line is what a transcription error looks like before it happens.
+    for row in code.reveal().split(' ').collect::<Vec<_>>().chunks(4) {
+        println!("    {}", row.join(" "));
     }
+    println!();
+    println!(
+        "This code and your devices are the only two ways into this account. \n\
+         Sunrise is end-to-end encrypted: the relay stores your recovery blob \n\
+         as ciphertext it cannot open, and nobody — including us — can reset \n\
+         the account for you. Lose every device and this code, and the data is \n\
+         gone permanently.\n\
+         \n\
+         It is shown once. It is not written to any file and not in any log."
+    );
 }
 
 /// How this device introduces itself.

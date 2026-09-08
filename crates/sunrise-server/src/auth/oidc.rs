@@ -34,7 +34,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 
 use super::http::{CachePolicy, HttpFetch, HttpResponse};
-use super::{AuthError, Subject, TokenVerifier, Verified};
+use super::{AuthError, StepUp, Subject, TokenVerifier, Verified};
 use crate::state::Clock;
 
 /// The URI-namespaced device-id claim from `docs/06-server/auth.md`
@@ -315,6 +315,44 @@ struct Claims {
     email: Option<String>,
     #[serde(default, rename = "https://sunrise.app/device_id")]
     device_id: Option<String>,
+    /// Authentication context class reference (OIDC Core §2).
+    #[serde(default)]
+    acr: Option<String>,
+    /// Authentication methods (RFC 8176). Either a list or, from issuers that
+    /// send one method as a bare string, a single value.
+    #[serde(default)]
+    amr: Amr,
+    /// When the end user authenticated, seconds since the epoch. Distinct from
+    /// `iat`, which a refresh moves and this does not — see
+    /// [`super::StepUp`].
+    #[serde(default)]
+    auth_time: Option<i64>,
+}
+
+/// `amr` is an array by RFC 8176, and some issuers send a bare string.
+///
+/// Accepted rather than refused because the shape is the issuer's choice and
+/// refusing it would fail *closed on the wrong axis*: a token that really does
+/// carry a strong method would be read as carrying none, and the operator
+/// would conclude their `amr` policy is broken rather than that their IdP
+/// spells the claim differently.
+#[derive(Debug, Deserialize, Default)]
+#[serde(untagged)]
+enum Amr {
+    One(String),
+    Many(Vec<String>),
+    #[default]
+    Absent,
+}
+
+impl Amr {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(a) => vec![a],
+            Self::Many(v) => v,
+            Self::Absent => Vec::new(),
+        }
+    }
 }
 
 #[async_trait]
@@ -411,6 +449,15 @@ impl TokenVerifier for OidcVerifier {
                 email: claims.email,
                 device_id: claims.device_id,
             },
+            step_up: StepUp {
+                acr: claims.acr,
+                amr: claims.amr.into_vec(),
+                // A negative `auth_time` is not "the epoch": it is a claim
+                // this server cannot read, and dropping it is what keeps the
+                // absent case and the nonsensical case on the same side of
+                // the gate — which is the closed one.
+                auth_time_secs: claims.auth_time.and_then(|t| u64::try_from(t).ok()),
+            },
             expires_at_ms: Some(expires_at_ms),
         })
     }
@@ -447,6 +494,16 @@ mod tests {
         }
         assert!(is_supported_alg(Algorithm::RS256));
         assert!(is_supported_alg(Algorithm::ES256));
+    }
+
+    /// `amr` in both the shapes issuers actually send.
+    #[test]
+    fn amr_reads_the_array_and_the_bare_string() {
+        let one: Amr = serde_json::from_str(r#""pwd""#).unwrap();
+        assert_eq!(one.into_vec(), vec!["pwd".to_owned()]);
+        let many: Amr = serde_json::from_str(r#"["pwd","otp"]"#).unwrap();
+        assert_eq!(many.into_vec(), vec!["pwd".to_owned(), "otp".to_owned()]);
+        assert!(Amr::Absent.into_vec().is_empty());
     }
 
     #[test]

@@ -623,6 +623,56 @@ impl Core {
         self.engine.keychain().identity_id()
     }
 
+    /// The account identity's Ed25519 public key (`ID_S_pub`).
+    ///
+    /// What `POST /api/v1/accounts` registers as `identity_signing_pub`. Raw
+    /// bytes; the wire form is base64url no-pad.
+    #[must_use]
+    pub fn identity_signing_pub(&self) -> [u8; 32] {
+        self.engine.keychain().identity_signing_pub()
+    }
+
+    /// The account identity's X25519 public key (`ID_D_pub`).
+    ///
+    /// What `POST /api/v1/accounts` registers as `identity_dh_pub`, and the
+    /// recipient every `key_envelope` seals a second copy to so that a
+    /// recovered identity can read the vault's history.
+    #[must_use]
+    pub fn identity_dh_pub(&self) -> [u8; 32] {
+        self.engine.keychain().identity_dh_pub()
+    }
+
+    /// Whether this vault holds `ID_D_priv` — and so whether it can produce a
+    /// recovery blob at all.
+    ///
+    /// True on the device that created the account and false on every device
+    /// admitted by pairing. See
+    /// [`crate::keychain::Keychain::holds_only_copy_of_identity_key`] for what
+    /// a client is expected to do with the answer, which is to surface it.
+    #[must_use]
+    pub fn holds_identity_key(&self) -> bool {
+        self.engine.keychain().holds_only_copy_of_identity_key()
+    }
+
+    /// Seal this account's identity keys into a recovery blob under `seed`.
+    ///
+    /// `seed` is the 32 bytes behind the user's BIP-39 recovery code
+    /// (`sunrise_crypto::bip39`), which the caller generates, shows to the
+    /// user once, and does not store. The blob is what
+    /// `POST /api/v1/accounts` uploads and what
+    /// `GET /api/v1/accounts/me/recovery_blob` serves back.
+    ///
+    /// # Errors
+    /// [`CoreError`] wrapping
+    /// [`crate::keychain::KeychainError::IdentitySecretAbsent`] on a device
+    /// admitted by pairing, which holds no `ID_D_priv` to seal.
+    pub fn seal_recovery_blob(&self, seed: &[u8; 32]) -> Result<Vec<u8>, CoreError> {
+        Ok(self
+            .engine
+            .keychain()
+            .seal_recovery_blob(seed, self.rng())?)
+    }
+
     /// This device's stable id.
     ///
     /// The OIDC login binds a token to it (`device_id` claim), and the relay

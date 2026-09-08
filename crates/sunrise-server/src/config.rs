@@ -56,6 +56,29 @@ pub struct ServerConfig {
     /// JWKS cache lifetime used when the issuer publishes no `Cache-Control`.
     #[serde(default = "default_jwks_ttl_secs")]
     pub jwks_default_ttl_secs: u64,
+    /// How recently the end user must have authenticated for
+    /// `GET /api/v1/accounts/me/recovery_blob` to serve, in seconds.
+    ///
+    /// The one step-up setting that needs no knowledge of the deployment's
+    /// IdP, which is why it is the one with a default: the client asks for a
+    /// fresh login with `max_age`, and the token comes back with an
+    /// `auth_time` this window is measured against. See
+    /// [`crate::auth::step_up`] for what is being guarded and why an ordinary
+    /// bearer is not enough.
+    #[serde(default = "default_recovery_max_auth_age_secs")]
+    pub recovery_max_auth_age_secs: u64,
+    /// `acr` values accepted on that route. Empty accepts any.
+    ///
+    /// No default is possible: `acr` values are the IdP's vocabulary, and one
+    /// this server invented would match nothing anywhere. An operator who
+    /// knows their issuer writes theirs here and gets a stronger gate than
+    /// freshness alone.
+    #[serde(default)]
+    pub recovery_acr_values: Vec<String>,
+    /// `amr` values accepted on that route, satisfied by intersection. Empty
+    /// accepts any.
+    #[serde(default)]
+    pub recovery_amr_values: Vec<String>,
     /// Self-host SQLite path (None = ephemeral in-memory, suitable for
     /// tests).
     pub sqlite_path: Option<PathBuf>,
@@ -98,6 +121,13 @@ const fn default_jwks_ttl_secs() -> u64 {
     300
 }
 
+/// Five minutes: long enough to walk through an IdP's login and MFA prompt on
+/// a phone, short enough that the fresh authentication is still the one the
+/// person at the keyboard performed.
+const fn default_recovery_max_auth_age_secs() -> u64 {
+    300
+}
+
 /// Why a [`ServerConfig`] was rejected at startup.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -131,6 +161,12 @@ pub enum ConfigError {
          on-path attacker can replace"
     )]
     InsecureIssuer(String),
+    /// A step-up window no authentication can ever satisfy.
+    #[error(
+        "recovery_max_auth_age_secs is zero: no `auth_time` can be inside a window of no width, \
+         so GET /api/v1/accounts/me/recovery_blob would refuse every caller forever"
+    )]
+    ZeroRecoveryAuthAge,
     /// Device signatures demanded with no way to tell devices apart.
     #[error(
         "require_device_sig is set while the single-tenant self-host verifier is in use: every \
@@ -174,6 +210,12 @@ impl ServerConfig {
         if self.require_device_sig && single_tenant {
             return Err(ConfigError::DeviceSigWithoutOidc);
         }
+        // A misconfiguration that boots and then refuses every recovery is
+        // exactly the failure `validate` exists to catch at the only point it
+        // is cheap to fix.
+        if self.recovery_max_auth_age_secs == 0 {
+            return Err(ConfigError::ZeroRecoveryAuthAge);
+        }
         Ok(())
     }
 }
@@ -203,6 +245,9 @@ impl Default for ServerConfig {
             device_recheck_ms: default_device_recheck_ms(),
             token_leeway_secs: default_token_leeway_secs(),
             jwks_default_ttl_secs: default_jwks_ttl_secs(),
+            recovery_max_auth_age_secs: default_recovery_max_auth_age_secs(),
+            recovery_acr_values: Vec::new(),
+            recovery_amr_values: Vec::new(),
             sqlite_path: None,
             blob_root: None,
             allowed_origins: Vec::new(),
@@ -818,5 +863,18 @@ mod file_tests {
         std::fs::write(&path, "[server]\nlisten = \"127.0.0.1:9999\"").unwrap();
         let args = vec!["--config".to_string(), path.display().to_string()];
         assert_eq!(load(&args).unwrap().bind, "127.0.0.1:9999");
+    }
+}
+
+impl ServerConfig {
+    /// The step-up this deployment demands in front of the recovery blob.
+    #[must_use]
+    pub fn recovery_step_up(&self) -> crate::auth::step_up::StepUpPolicy {
+        crate::auth::step_up::StepUpPolicy {
+            max_auth_age_secs: self.recovery_max_auth_age_secs,
+            acr_values: self.recovery_acr_values.clone(),
+            amr_values: self.recovery_amr_values.clone(),
+            leeway_secs: self.token_leeway_secs,
+        }
     }
 }

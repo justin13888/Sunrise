@@ -2737,6 +2737,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -2818,6 +2819,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_bytes",
+ "sha2",
  "subtle",
  "sunrise-cbor",
  "sunrise-crypto-test-vectors",
@@ -2867,7 +2869,9 @@ dependencies = [
  "sunrise-domain",
  "sunrise-http-sig",
  "sunrise-id",
+ "sunrise-onboarding",
  "sunrise-pairing",
+ "sunrise-relay-client",
  "sunrise-server",
  "sunrise-sync",
  "sunrise-wire-protocol",
@@ -2944,6 +2948,7 @@ dependencies = [
 name = "sunrise-onboarding"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
