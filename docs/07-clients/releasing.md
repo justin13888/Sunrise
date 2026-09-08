@@ -143,8 +143,9 @@ wrong, and the message does not say which.
 3. **`xcodegen generate` then `xcodebuild archive`** on the `Sunrise` macOS
    scheme, `-destination 'generic/platform=macOS'`, `-configuration Release`,
    with `ARCHS=arm64`, `CODE_SIGN_STYLE=Manual`, `CODE_SIGN_IDENTITY="Developer
-   ID Application"`, `DEVELOPMENT_TEAM=$MACOS_TEAM_ID`,
-   `ENABLE_HARDENED_RUNTIME=YES` and `OTHER_CODE_SIGN_FLAGS=--timestamp`.
+   ID Application"`, `DEVELOPMENT_TEAM=$MACOS_TEAM_ID` and
+   `OTHER_CODE_SIGN_FLAGS=--timestamp`. The hardened runtime is **not** passed
+   here; `project.yml` carries it (see below).
    `MARKETING_VERSION` comes from the tag rather than from `project.yml`'s
    pinned `0.1.0`, so the About box and the file name agree.
 
@@ -177,21 +178,22 @@ wrong, and the message does not say which.
    `.sha256`, attached to the Release by the `release` job and listed in its
    notes.
 
-### Two settings that are overridden rather than committed
+### One setting that is overridden rather than committed
 
-- **`ENABLE_HARDENED_RUNTIME`.** `apps/apple/project.yml` sets it to `NO`. The
-  notary service **rejects** a submission without the hardened runtime, so the
-  workflow passes `ENABLE_HARDENED_RUNTIME=YES` on the archive command line.
-  **This should become `YES` in `project.yml`**, so that a developer running
-  `xcodebuild archive` locally gets the same bundle the pipeline signs; an
-  override that lives only in CI is a difference between the two that nobody
-  discovers until a local archive is rejected by the notary service. It is a
-  one-line change and it is not made here. It is unrelated to the App Sandbox,
-  which stays off — see [`desktop.md`](./desktop.md) §Sandboxing.
 - **`DEVELOPMENT_TEAM`.** `project.yml` has it empty, which is correct: a team
   id belongs in the secret, not in a committed file, and an empty value is what
   keeps `mise run macos-app` working for a contributor who has no Apple
   account.
+
+`ENABLE_HARDENED_RUNTIME` used to be the second, overridden to `YES` on the
+archive command line over a `NO` in the project file. It is now
+`ENABLE_HARDENED_RUNTIME: YES` in `project.yml`'s `settings.base` and is passed
+nowhere, which is what makes a local `xcodebuild archive` the same bundle this
+job signs. The setting changes how the process runs — library loading is
+restricted and the DYLD environment variables are ignored — so a difference
+there was one nobody could see until the notary service or a user's crash
+report reported it. It is unrelated to the App Sandbox, which stays off; see
+[`desktop.md`](./desktop.md) §Sandboxing.
 
 ## Verifying a release by hand
 
@@ -283,7 +285,7 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 | `errSecInternalComponent` from `codesign` | `security set-key-partition-list` did not run or did not match the keychain password. The workflow does it; a local reproduction usually has not. |
 | `No signing certificate "Developer ID Application" found` | The `.p12` has the certificate and not its private key. Re-export from the Mac that generated the signing request. |
 | notarytool: `Team is not yet configured for notarization` | The Apple Developer Program membership is not active, or the account has not accepted the current agreements. |
-| notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME` did not reach the build. See the override note above. |
+| notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME: YES` is missing from `apps/apple/project.yml`'s `settings.base`, or a target overrode it back to `NO`. |
 | notarytool status `Invalid`, log says `The signature does not include a secure timestamp` | `--timestamp` did not reach `codesign`, usually because `OTHER_CODE_SIGN_FLAGS` was overridden elsewhere. |
 | `stapler` fails with `Error 65` | The submission is notarized but Apple's ticket has not propagated yet. It is a retry, not a rebuild. |
 | A tag pushed an image to GHCR but created no Release | `macos-app` (or `binaries`) failed after `image` had already pushed. `release` needs all three, so it did not run — which is the intended failure mode: no Release is better than one advertising an artifact that does not exist. Fix the cause and re-run the failed jobs; `release` runs on the same tag. The preflight on `verify` exists so that the commonest reason for this — no signing secrets — cannot reach that state at all. |

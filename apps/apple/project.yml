@@ -43,6 +43,27 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "-"
+    # macOS-only in effect (iOS has no such setting and ignores it), and here
+    # rather than on the macOS target so there is exactly one place it lives.
+    #
+    # `YES` because the notary service rejects a submission without it, so a
+    # release build has it whatever this file says — and until this line
+    # existed, `release.yml` supplied it on the archive command line, which
+    # made a developer's local archive a different bundle from the one that
+    # ships in a setting that changes how the process runs. The hardened
+    # runtime restricts library loading, ignores the DYLD environment
+    # variables and requires an entitlement for each exception, so a crash it
+    # causes appears first in a notarized build and nowhere earlier.
+    #
+    # No entitlement exception is needed today: the app loads one statically
+    # linked xcframework and no plug-ins, `RegisterEventHotKey` is a Carbon
+    # registration rather than an event tap, and `AXIsProcessTrusted` only
+    # reads a permission. Anything that later needs an exception adds a
+    # `com.apple.security.cs.*` entitlement here, not a `NO`.
+    #
+    # Unrelated to the App Sandbox, which stays off — see the note on the
+    # macOS target below and ADR-0031.
+    ENABLE_HARDENED_RUNTIME: YES
 
 # Builds `out/SunriseCore.xcframework` + `out/swift/sunrise_core_bindings.swift`.
 # Cargo decides whether there is anything to do, so an unchanged core costs a
@@ -119,7 +140,9 @@ targets:
         # No App Sandbox in v1. Sandboxing moves Keychain items into an
         # app-scoped group, which would have to land together with the
         # entitlement and a signing identity; both are release work.
-        ENABLE_HARDENED_RUNTIME: NO
+        #
+        # The hardened runtime is a different setting and is on; it lives in
+        # `settings.base` above, where its note explains why.
     # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting
     # behind it, so registering `sunrise://` needs a real plist. It is
     # generated from here and gitignored, like the `.xcodeproj`: this file

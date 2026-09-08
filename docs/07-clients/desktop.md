@@ -261,12 +261,14 @@ uses most. A Mac App Store build would have to trade that away, and
 Store is **not** a v1 channel, and v1 ships the direct `.dmg` alone. The
 sandbox stays off.
 
-The **hardened runtime**, which is a different setting, is on for a release
-build and has to be: Apple's notary service rejects a submission without it.
-`apps/apple/project.yml` still records `ENABLE_HARDENED_RUNTIME: NO`, and
-`release.yml` overrides it on the archive command line — see
-[`releasing.md`](./releasing.md) §Two settings that are overridden rather than
-committed, which asks for the project-file change as the durable fix.
+The **hardened runtime**, which is a different setting, is on and has to be:
+Apple's notary service rejects a submission without it.
+`apps/apple/project.yml` sets `ENABLE_HARDENED_RUNTIME: YES` in
+`settings.base`, and that is the only place it is set — a local
+`xcodebuild archive` therefore produces the same bundle the release pipeline
+signs. The app needs no `com.apple.security.cs.*` exception for it: it loads a
+statically linked xcframework and no plug-ins, and neither `RegisterEventHotKey`
+nor `AXIsProcessTrusted` is restricted by the runtime.
 
 ## Multi-vault
 
