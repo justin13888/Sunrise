@@ -57,6 +57,9 @@ struct SaveViewSheet: View {
             Text("Save this view").font(.headline)
             Text(summary).font(.caption).foregroundStyle(.secondary)
             TextField("Name", text: $name, prompt: Text("errands"))
+                // The name `sunrise` recalls this view by on the command
+                // line, so a capitalised first letter is a different view.
+                .textInput(.identifier)
                 .onSubmit(commit)
             Text(
                 "Saved to the same file `sunrise` reads, so this view is recallable "

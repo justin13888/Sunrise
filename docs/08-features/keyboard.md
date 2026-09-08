@@ -175,13 +175,33 @@ focused) the browser keeps the binding.
   cheat sheet are handed inert closures in the tab shell, so `?` in a list does
   nothing there. An iPad that draws a system menu bar gets only the system's
   own items, for the same reason. Android tablets are a deferred client.
-- **Software keyboards are specified here and not yet configured in the app.**
-  The intent is a `text` input mode with autocorrect off, so that `#`, `@`,
+- **A software keyboard is told what the field holds.** Capture takes a `text`
+  input mode with autocorrect off and no autocapitalisation, so that `#`, `@`,
   `^`, `!` and `~` are typed as-is and predictive text cannot rewrite a token
-  the parser is about to read. Nothing in `apps/apple` sets it: neither capture
-  field carries `autocorrectionDisabled`, `textInputAutocapitalization` or
-  `keyboardType`, so on iOS both get the system defaults today. This paragraph
-  is the requirement, not a description.
+  the parser is about to read. Both capture fields carry it — the inline bar's
+  (`CaptureBar.swift`) and the sheet's (`QuickCaptureView.swift`) — and so does
+  search, whose operator grammar has the same exposure.
+- **The split is the specification, not the modifier.** The rule is stated over
+  a field's *content*: syntax, an identifier the CLI also reads, an opaque
+  block of ASCII, a URL, an address, a count. Ordinary prose — a task title, a
+  routine title, a block title, a review note — is **not** in that list and
+  keeps the system defaults, because autocorrect on a sentence somebody
+  dictated is the feature. `TextInputKind` (`PlatformKit.swift`) is the
+  vocabulary and `.textInput(_:)` applies it; `keyboardType` and
+  `textInputAutocapitalization` have no macOS declaration at all, so the `#if`
+  lives there and not at the call sites. `textContentType` is not part of it —
+  it is an autofill hint rather than an input mode, and its argument is a
+  different type on each platform. `autocorrectionDisabled` does exist on
+  both and is applied on both: a Mac's automatic substitutions have no more
+  business inside `#travel` than a phone's.
+- **Smart Punctuation is not a control this app has.** SwiftUI exposes no
+  spell-checking or smart-quote modifier on either platform — the UIKit traits
+  that would resolve them (`smartQuotesType`, `smartDashesType`) have no
+  SwiftUI spelling — so an in-app toggle for it cannot be built without
+  dropping to `UITextField`. It is left to the system setting. Capture syntax
+  uses `#`, `@`, `^`, `!` and `~`, none of which smart punctuation rewrites,
+  so the exposure this paragraph would have covered is autocorrect and
+  autocapitalisation, and those are configured above.
 - **What a phone does have** is the affordances a hardware keyboard made
   unnecessary: an explicit **Done** in the capture bar's toolbar, because there
   is no Escape key to hand focus back with, and **Cancel** / **Add** buttons in

@@ -23,6 +23,10 @@ struct SearchView: View {
                     prompt: Text("Titles and notes")
                 )
                 .textFieldStyle(.plain)
+                // Search takes the same punctuation capture does — a saved
+                // view's summary is `search · /passport · @errands` — so it
+                // takes the same input mode.
+                .textInput(.syntax)
                 .focused(focus, equals: .search)
                 .accessibilityIdentifier("search.field")
                 // Down out of the field and into the results, which is where

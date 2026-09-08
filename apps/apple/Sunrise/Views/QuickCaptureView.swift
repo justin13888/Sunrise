@@ -31,6 +31,9 @@ struct QuickCaptureView: View {
                     prompt: Text("Renew passport #travel ^next saturday !1 ~1h")
                 )
                 .textFieldStyle(.plain)
+                // The same grammar as the inline bar's field, so the same
+                // input mode. See ``CaptureBar``.
+                .textInput(.syntax)
                 .font(.title3)
                 .focused($focused)
                 .onSubmit(submit)

@@ -47,6 +47,7 @@ struct AccountView: View {
 
             Section("Sync") {
                 TextField("Relay URL", text: $settings.relayURL, prompt: Text("http://127.0.0.1:8443"))
+                    .textInput(.url)
                     .textContentType(.URL)
                 Text("Leave empty to work entirely on this Mac.")
                     .font(.caption)
@@ -55,7 +56,9 @@ struct AccountView: View {
 
             Section("Account") {
                 TextField("OIDC issuer", text: $settings.oidcIssuer, prompt: Text("https://issuer.example"))
+                    .textInput(.url)
                 TextField("Client ID", text: $settings.oidcClientID)
+                    .textInput(.opaque)
                 LabeledContent("This device", value: String(deviceID.prefix(16)))
                     .monospaced()
                 accountRow

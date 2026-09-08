@@ -171,6 +171,7 @@ struct PairingView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             TextField("Email", text: $model.accountEmail, prompt: Text("you@example.com"))
+                .textInput(.email)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("pairing.email")
             if !model.accountTag.isEmpty {
@@ -231,6 +232,12 @@ struct PairingView: View {
             // works on a Mac with the lid shut, and is the only thing that can
             // carry the Noise messages anyway — they are far too long to scan.
             TextEditor(text: $model.pasted)
+                // A Noise message in base64. Autocapitalising its first
+                // character or "correcting" a run of letters inside it
+                // produces a block that looks right and no longer decodes,
+                // which is the worst failure this screen can have: the
+                // handshake is refused and nothing on screen says why.
+                .textInput(.opaque)
                 .font(.system(.body, design: .monospaced))
                 .frame(height: 120)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
