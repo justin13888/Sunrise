@@ -27,6 +27,23 @@ use thiserror::Error;
 
 const DEVICE_CERT_DOMAIN: &[u8] = b"sunrise.device_cert.v1";
 
+/// The upper bound on a device nickname, in **bytes** of UTF-8.
+///
+/// This is the number the CDDL at the top of this module writes as
+/// `tstr .size (1..64)`, and it is the one the code reads: both
+/// [`body_to_cbor`] and [`body_from_cbor`] check against this constant rather
+/// than against a literal, so the encoder and the decoder cannot drift apart.
+///
+/// The bound is not only this crate's. `sunrise-server` refuses a
+/// device-registration whose `nickname` exceeds the same number, and the two
+/// have to agree in both directions: a server bound *below* this one accepts
+/// certs it will not register, and a server bound *above* it registers a device
+/// whose cert no peer's decoder will read. Nothing in the type system links
+/// them, so `sunrise-e2e/tests/nickname_bound_agreement.rs` — the one crate that
+/// already depends on both — asserts the equality and exercises the boundary
+/// against the real handler.
+pub const MAX_NICKNAME_BYTES: usize = 64;
+
 /// Parsed inner body of a `DeviceCert`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCertInner {
@@ -42,13 +59,15 @@ pub struct DeviceCertInner {
     pub identity_id: [u8; 16],
     /// Cert creation time (ms since epoch).
     pub created_at_ms: u64,
-    /// Human-readable nickname, 1..=64 **bytes** of UTF-8 (not characters).
+    /// Human-readable nickname, 1..=[`MAX_NICKNAME_BYTES`] **bytes** of UTF-8
+    /// (not characters).
     ///
     /// The CDDL above says `tstr .size (1..64)`, and `.size` on a CDDL `tstr`
-    /// bounds bytes. `sunrise-server` applies the same 64-byte *upper* bound to
-    /// the `nickname` field of a device-registration request
-    /// (`MAX_NICKNAME_BYTES`), so a character bound here would let a client
-    /// build a cert naming a nickname its own registration call cannot carry.
+    /// bounds bytes. `sunrise-server` applies the same upper bound to the
+    /// `nickname` field of a device-registration request (its own
+    /// `MAX_NICKNAME_BYTES`, asserted equal to this one), so a character bound
+    /// here would let a client build a cert naming a nickname its own
+    /// registration call cannot carry.
     ///
     /// The *lower* bounds deliberately differ, and this is not the same bound:
     /// this codec refuses only `""`, because a cert is a wire object and
@@ -95,7 +114,7 @@ pub enum DeviceCertError {
 }
 
 fn body_to_cbor(body: &DeviceCertInner) -> Result<Vec<u8>, DeviceCertError> {
-    if body.nickname.is_empty() || body.nickname.len() > 64 {
+    if body.nickname.is_empty() || body.nickname.len() > MAX_NICKNAME_BYTES {
         return Err(DeviceCertError::Validation("nickname length"));
     }
     let map = vec![
@@ -206,7 +225,7 @@ fn body_from_cbor(bytes: &[u8]) -> Result<DeviceCertInner, DeviceCertError> {
     if !got.iter().all(|x| *x) {
         return Err(DeviceCertError::BadField("missing body field"));
     }
-    if inner.nickname.is_empty() || inner.nickname.len() > 64 {
+    if inner.nickname.is_empty() || inner.nickname.len() > MAX_NICKNAME_BYTES {
         return Err(DeviceCertError::Validation("nickname length"));
     }
     Ok(inner)

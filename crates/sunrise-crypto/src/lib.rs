@@ -56,7 +56,7 @@ pub use blob_chunk::{
     chunk_aad, chunk_count_for, chunk_nonce, content_hash, open_chunk, seal_chunk, verify_content,
     BlobChunkError, CHUNK_PLAINTEXT_LEN,
 };
-pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner};
+pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner, MAX_NICKNAME_BYTES};
 pub use hpke_seal::{
     hpke_open, hpke_open_identity, hpke_seal, key_envelope_info, HpkeError, HPKE_ENC_LEN,
     HPKE_TAG_LEN,
