@@ -369,12 +369,24 @@ pub struct OpsResponse {
 /// drops an acked op from its outbox, so the op would be gone from both sides
 /// at once. A storage failure is reported as a 503 with nothing acked, which
 /// leaves the batch in the outbox to retry.
+///
+/// **Re-submitting a batch is safe and is not a second append.** A batch whose
+/// ops the channel already holds is acked without being stored or fanned out
+/// again, and the ack carries `server_first_seen_ms` from the **first** copy —
+/// so a client that re-sends must not read that field as "now". The client
+/// cannot avoid re-sending: a session that dies between the append and the ack
+/// leaves the batch in the outbox, and every reconnect re-drains it.
+///
+/// The key is the batch's **content**, not its `batch_id`, and it is the
+/// *whole* batch. A re-send that adds an op — one the user made between a lost
+/// ack and the reconnect — is different content and therefore a fresh append,
+/// so the ops it repeats are stored twice. Re-applying them is harmless,
+/// because ops are idempotent; what it costs is the relay's disk and fan-out.
+/// A client that wants to avoid that persists its batch partition rather than
+/// re-grouping its outbox.
 //
-// A batch the channel already holds is acked without being stored or fanned out
-// a second time, and the ack carries the timestamp the *first* copy got. The
-// client cannot avoid re-sending: a session that dies between the append and
-// the ack leaves the batch in the outbox, and every reconnect re-drains it. See
-// `batch_ops_hash` for why the key is the content rather than the `batch_id`.
+// See `batch_ops_hash` for why the key is the content rather than the
+// `batch_id`.
 //
 // The key is the *whole* batch, which bounds what "already seen" can mean. Two
 // of the three re-send shapes are covered: an in-session retransmit replays
@@ -394,10 +406,11 @@ pub struct OpsResponse {
 // fix (persist the partition in the outbox) as the cheaper one if it is ever
 // measured to matter.
 //
-// Deliberately a `//` comment rather than a `///` one: kynos publishes a
-// handler's doc comment as the operation `description`, and
-// `schemas/generated/openapi.v1.json` is a committed artefact this change has no business
-// touching — the request and response shapes are identical either way.
+// The paragraphs above this one are `///` and reach the published
+// `description`, because a client author needs them to write a correct
+// retry. Everything below stays `//`: it is the argument for the design
+// rather than the contract, and an operation description is not where a
+// reader should meet ADR-0033.
 #[kynos::post("/api/v1/sync/ops", operation_id = "publishOps")]
 pub async fn ops(
     Inject(state): Inject<ServerState>,
