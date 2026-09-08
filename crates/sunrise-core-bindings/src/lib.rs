@@ -648,8 +648,9 @@ impl SunriseCore {
         self.inner.device_cert()
     }
 
-    /// Start the live-sync driver against `url` (a relay `/sync` WebSocket),
-    /// presenting `bearer` on the upgrade.
+    /// Start the live-sync driver against `url` (a relay `/sync` endpoint:
+    /// Server-Sent Events downstream, typed `POST` upstream, per ADR-0023),
+    /// presenting `bearer` on every request.
     ///
     /// `bearer` is empty only for a self-host relay: every other deployment
     /// refuses an unauthenticated upgrade with `401`. Renewing is
