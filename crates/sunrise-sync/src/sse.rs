@@ -30,7 +30,7 @@
 //! and `Hello::negotiate`'s frozen fixtures keep testing the thing they were
 //! written for.
 
-use crate::transport::{Transport, TransportError};
+use crate::transport::{RevokeOutcome, Transport, TransportError};
 use async_trait::async_trait;
 use base64::Engine as _;
 use http_body_util::{BodyExt as _, Full};
@@ -562,6 +562,43 @@ impl Transport for SseTransport {
         self.events = None;
         self.buf.clear();
         Ok(())
+    }
+
+    async fn revoke_device(
+        &mut self,
+        device_id: [u8; 16],
+    ) -> Result<RevokeOutcome, TransportError> {
+        // `by-vault-id`, not `/{device_id}`: that route names the ULID the
+        // relay minted, which this vault has never held for any peer. Naming
+        // the vault id is the whole reason the route exists.
+        let (status, body) = self
+            .call(
+                "DELETE",
+                &format!(
+                    "/api/v1/devices/by-vault-id/{}",
+                    sunrise_id::crockford::encode_bytes(&device_id)
+                ),
+                None,
+            )
+            .await?;
+        if status.is_success() {
+            return Ok(RevokeOutcome::Revoked);
+        }
+        // Terminal but not success. The relay holds no active row with this
+        // vault id, and no amount of retrying will make one appear — but the
+        // device may still be registered under a row from before
+        // `vault_device_id` existed, in which case it is still being accepted.
+        // The caller says so out loud rather than reporting a revocation.
+        if status.as_u16() == 404 {
+            return Ok(RevokeOutcome::Unknown);
+        }
+        Err(TransportError::Server {
+            code: "AUTH_DEVICE_REVOKE_FAILED",
+            message: format!(
+                "relay refused the revocation: {status} {}",
+                String::from_utf8_lossy(&body)
+            ),
+        })
     }
 }
 

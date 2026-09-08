@@ -102,4 +102,11 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// mints the vault-meta stream's first epoch -- so 19 reads it, records the
 /// minting device on the `identity` row, and clears the column everywhere
 /// else.
-pub const STORAGE_V: u16 = 19;
+///
+/// `20` is migration `0020_relay_revocation_intents.sql`, the queue that
+/// carries the relay's half of a revocation. A `device_revoke` op is sealed
+/// under the vault-meta Stream key and the relay holds no Stream keys, so the
+/// relay has to be told out of band; `revoke_device` must work with no network,
+/// because a device that is gone is the whole scenario, so the telling cannot
+/// be part of the command. The row is what remembers it is owed.
+pub const STORAGE_V: u16 = 20;

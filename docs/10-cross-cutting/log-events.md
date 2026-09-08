@@ -81,6 +81,9 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | Event | Level | Meaning |
 |---|---|---|
 | `sync.session.opening` | info | Sync driver started against a relay; `relay` (host only). |
+| `sync.device.revoke_relayed` | info | The relay accepted a device revocation and will no longer take that device's uploads or hold its stream; `subject_h`. The vault half of a revocation is an op the relay cannot read, so this is the second, out-of-band half, and it is the one that actually bounds the device's writes. |
+| `sync.device.revoke_unknown_to_relay` | warn | The relay holds no active device row carrying this vault device id, so the intent is dropped — retrying cannot make one appear; `subject_h`. **Not a revocation.** It is also the answer for a device that registered before clients sent `vault_device_id`, which that relay is still accepting under a row this vault cannot name. |
+| `sync.device.revoke_not_relayed` | warn | The relay refused a device revocation; `subject_h`, `attempt`, `cause`. **The revoked device is still accepted by the relay until this succeeds.** The intent stays queued and is retried on the next session; a rising `attempt` on the same `subject_h` means a relay that keeps saying no, which is an operator-visible problem rather than a transient one. |
 | `sync.session.opened` | info | Every subscribed stream caught up and the outbox drained — the driver is `Live`; `n_streams`. |
 | `sync.session.closed` | info | Session ended; `result` distinguishes a clean shutdown from a drop. |
 | `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |

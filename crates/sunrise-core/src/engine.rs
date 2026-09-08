@@ -570,6 +570,22 @@ impl Engine {
             // local device is then the only replica accepting a window of ops,
             // which is precisely the divergence the register exists to prevent.
 
+            // The relay's half of the revocation, queued rather than called.
+            // `revoke_device` has to work with no network -- a device that is
+            // gone is the whole scenario -- so the call cannot be part of the
+            // command. The row goes in *this* transaction so the intent and the
+            // op cannot diverge: a vault that believes it revoked a device and
+            // never queued the telling is the failure this whole mechanism
+            // exists to prevent. `Core::drain_relay_revocations` makes the call
+            // when a session is up, and until then this row is what remembers
+            // that it is owed.
+            tx.execute(
+                "INSERT INTO relay_revocation_intents (device_id, created_at_ms)
+                 VALUES (?, ?)
+                 ON CONFLICT(device_id) DO NOTHING",
+                params![&revoked[..], now_ms],
+            )?;
+
             // 2 + 3. Rotate everything, and seal each new epoch to every
             //        *unrevoked* device. One mechanism holds that, and the
             //        ordering above is what makes it sufficient: the register
@@ -6344,7 +6360,7 @@ fn to16(raw: &[u8]) -> Option<[u8; 16]> {
     raw.try_into().ok()
 }
 
-fn hex_short(b: &[u8; 16]) -> String {
+pub(crate) fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
         use core::fmt::Write;
@@ -12479,6 +12495,67 @@ mod tests {
             )
             .optional()
             .unwrap()
+    }
+
+    /// The relay's half of a revocation is queued by the same transaction that
+    /// writes the op, so the two cannot diverge.
+    ///
+    /// A vault that believes it revoked a device and never queued the telling
+    /// is the failure the queue exists to prevent — and it is silent, because
+    /// the local half succeeds and the user sees the device marked revoked. It
+    /// is one transaction rather than two writes for the same reason the outbox
+    /// row shares its op's transaction.
+    ///
+    /// The queue is a queue rather than a call because `revoke_device` has to
+    /// work with no network at all: a device that is gone is the whole
+    /// scenario, and it is exactly the moment a user is least likely to be
+    /// online. `sync_driver::drain_relay_revocations` makes the call.
+    #[test]
+    fn revoking_a_device_queues_the_relays_half_in_the_same_transaction() {
+        let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+
+        assert!(
+            pending_relay_revocations(&dba).is_empty(),
+            "nothing is owed before a revocation"
+        );
+
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            pending_relay_revocations(&dba),
+            vec![eb.keychain.device_id()],
+            "the op and the intent are written together or not at all"
+        );
+        assert!(
+            revocation_row(&dba, &eb.keychain.device_id()).is_some(),
+            "and the register itself is still written"
+        );
+    }
+
+    /// The queued vault device ids, oldest first.
+    fn pending_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT device_id FROM relay_revocation_intents ORDER BY created_at_ms ASC")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect()
     }
 
     /// Two replicas, the same two revocation ops, opposite arrival orders, one

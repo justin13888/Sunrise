@@ -28,6 +28,37 @@ pub enum TransportError {
     /// Operation cancelled (e.g., shutdown).
     #[error("transport cancelled")]
     Cancelled,
+    /// This transport has no account API behind it.
+    ///
+    /// The loopback and in-process transports carry the op stream and nothing
+    /// else; asking one of them to change an account's device list is a
+    /// category error rather than a failure, and the caller distinguishes the
+    /// two — an unsupported transport leaves the request queued for a
+    /// transport that does support it, where a failure counts as an attempt.
+    #[error("transport has no account API")]
+    Unsupported,
+}
+
+/// What the relay said about a revocation it was asked to make.
+///
+/// Two arms rather than `Ok(())`, because the two are different facts about
+/// the user's security posture and only one of them is the outcome they asked
+/// for. Collapsing them is the defect PR #86 withdrew: it read a `404` as
+/// success and logged "the relay has been told to stop accepting a revoked
+/// device" about a request that had named a device the relay had never heard
+/// of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// The relay revoked it. It will take no more uploads from that device and
+    /// will tear down any stream it is holding.
+    Revoked,
+    /// The relay holds no active device row carrying that vault id.
+    ///
+    /// Terminal — retrying cannot make a row appear — but **not** success. It
+    /// covers a device that was already revoked, and it covers a device that
+    /// registered before it sent a `vault_device_id`, which the relay is still
+    /// accepting under a row this vault cannot name.
+    Unknown,
 }
 
 /// Async wire transport. Both client and server sides implement this.
@@ -44,6 +75,30 @@ pub trait Transport: Send + Sync {
 
     /// Initiate graceful close.
     async fn close(&mut self) -> Result<(), TransportError>;
+
+    /// Ask the relay to stop accepting `device_id`'s uploads and to end any
+    /// session it is holding.
+    ///
+    /// `device_id` is the **vault-side** id — the one a `device_revoke` op
+    /// names and the only one a revoking device holds. The relay's own id for
+    /// a device is a ULID it mints at registration and never sends back
+    /// through the op stream.
+    ///
+    /// This is out-of-band on purpose and is the only way it can be done. A
+    /// `device_revoke` is an inner op sealed under the vault-meta Stream key,
+    /// so the relay cannot read it; promoting the revoked id into the cleartext
+    /// envelope header would tell the relay which of an account's devices had
+    /// been revoked and when, for every account it serves, which is the
+    /// metadata leak the blind-relay property exists to prevent.
+    ///
+    /// Defaulted to [`TransportError::Unsupported`] because the frame-only
+    /// transports have no account API to call; `SseTransport` overrides it.
+    async fn revoke_device(
+        &mut self,
+        _device_id: [u8; 16],
+    ) -> Result<RevokeOutcome, TransportError> {
+        Err(TransportError::Unsupported)
+    }
 }
 
 #[cfg(test)]
