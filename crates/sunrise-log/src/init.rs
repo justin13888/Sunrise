@@ -15,6 +15,7 @@
 //! `tracing`'s. Only the middle layer is ours.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use thiserror::Error;
 use tracing::{Dispatch, Subscriber};
@@ -187,6 +188,96 @@ where
     }
 }
 
+/// A registered subscriber that does nothing, kept alive for the process.
+///
+/// See `pin_interest_cache` for the single reason it exists. It is inert in
+/// both directions a registered dispatcher can influence the process:
+/// `register_callsite` answers `never`, which is the identity of the fold
+/// `tracing-core` runs over the registry, and `max_level_hint` answers `OFF`,
+/// which is the identity of the maximum it takes there. Registering it can
+/// therefore neither enable a callsite nor raise the global level filter.
+#[derive(Debug)]
+struct Inert;
+
+impl Subscriber for Inert {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::never()
+    }
+
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::OFF)
+    }
+
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The pin, built once and never dropped.
+static INTEREST_PIN: OnceLock<Dispatch> = OnceLock::new();
+
+/// Register a second, permanently live dispatcher.
+///
+/// # The defect this closes
+///
+/// `tracing` caches an `Interest` per callsite, globally, and the first thread
+/// to reach a callsite is the one that computes it. `tracing-core` has a fast
+/// path for computing it: while **exactly one** `Dispatch` is registered
+/// process-wide, `Dispatchers::rebuilder` returns `Rebuilder::JustOne`, whose
+/// `for_each` calls `dispatcher::get_default` — *the registering thread's own
+/// default subscriber* — instead of reading the registry. That thread is not
+/// necessarily the thread that owns the dispatcher, and
+/// `tracing::dispatcher::with_default` is thread-local.
+///
+/// So in a test binary, where one test installs a capture subscriber on its own
+/// thread while its neighbours run with none:
+///
+/// 1. the capture test builds its `Dispatch` — one live dispatcher, so the fast
+///    path arms;
+/// 2. a neighbour thread with no subscriber reaches the callsite first and wins
+///    the `Once` that registers it;
+/// 3. the interest is computed against *that* thread's default, which is
+///    `NoSubscriber`, and is cached as `Interest::never()`;
+/// 4. the capture test then emits into a callsite the macro skips entirely, and
+///    captures **nothing** — not the wrong records, none at all.
+///
+/// The poisoning lasts until some later `Dispatch::new` rebuilds the whole
+/// cache from the registry, which is why the same test passes on the next run
+/// and why it only shows up when the machine is loaded enough for step 2 to
+/// land inside step 1's window.
+///
+/// # Why a second dispatcher fixes it
+///
+/// The fast path is gated on `dispatchers.len() <= 1`. A dispatcher that is
+/// registered and never dropped keeps the count at two or more for the life of
+/// the process, so every rebuild takes the accurate path and folds the
+/// interest over the dispatchers that are actually registered — including the
+/// capture subscriber, whichever thread happens to be asking.
+///
+/// The cost is that a callsite the capture subscriber wants becomes
+/// `Interest::sometimes` rather than `Interest::always`, so `tracing` consults
+/// `Subscriber::enabled` per event instead of trusting the cache. That is the
+/// price of a correct answer and it is paid only in the processes that build a
+/// capture — [`build_subscriber_with`] pins nothing for a stderr or file
+/// target, and an installed global default cannot hit the defect anyway
+/// because `get_default` returns it on every thread.
+fn pin_interest_cache() {
+    INTEREST_PIN.get_or_init(|| Dispatch::new(Inert));
+}
+
 /// Assemble a subscriber without installing it.
 ///
 /// Tests use this with `tracing::subscriber::with_default` so each one gets
@@ -211,6 +302,12 @@ pub fn build_subscriber_with(
         filter,
         format,
     } = cfg;
+
+    // Before the `Dispatch::new` below, so the registry never holds this
+    // subscriber alone.
+    if matches!(target, LogTarget::Capture(_)) {
+        pin_interest_cache();
+    }
 
     // An unparsable directive string falls back to the default rather than
     // aborting startup: `SUNRISE_LOG=inf` should cost you verbosity, not the
