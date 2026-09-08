@@ -1,10 +1,13 @@
 //! What the typed surface is allowed to say about a request.
 //!
 //! Everything here exists because the obvious thing to log is the thing we must
-//! not. A stock request log records the URI, and on this server that is where
-//! browser clients put `?access_token=…` — a bearer reached the log once
-//! already, which is why `crate::logging`'s span was hand-assembled rather than
-//! configured.
+//! not. A stock request log records the URI, and the query string is where a
+//! bearer reached this server's log once already — browser clients put
+//! `?access_token=` there, back when a `WebSocket` upgrade could not carry an
+//! `Authorization` header. That is why `crate::logging`'s span was
+//! hand-assembled rather than configured. No route reads the parameter today
+//! (`docs/05-sync/wire-protocol.md` records it as reserved), and the hazard
+//! outlives the transport: a browser `EventSource` cannot set headers either.
 //!
 //! kynos narrows the hazard rather than mitigating it after the fact. An
 //! [`Observer`] is handed the matched [`Route`], whose `path()` is "the `paths`

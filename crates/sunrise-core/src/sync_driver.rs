@@ -126,9 +126,10 @@ pub const MIN_RESYNC_GAP: Duration = Duration::from_millis(250);
 /// Callers that need to compare configuration compare the fields they mean.
 #[derive(Clone)]
 pub struct SyncConfig {
-    /// Relay `/sync` endpoint URL (e.g. `wss://relay.example/sync`). Used by
-    /// the production WebSocket factory the app assembles; the driver itself
-    /// takes an already-built [`TransportFactory`].
+    /// Relay `/sync` endpoint URL (e.g. `https://relay.example/sync`). Used
+    /// by the production transport factory the app assembles — Server-Sent
+    /// Events downstream and typed `POST` upstream, per ADR-0023; the driver
+    /// itself takes an already-built [`TransportFactory`].
     pub url: String,
     /// How often a live session re-subscribes with its current cursors as an
     /// anti-entropy backstop. Tests shorten it; see [`DEFAULT_RESYNC_INTERVAL`].

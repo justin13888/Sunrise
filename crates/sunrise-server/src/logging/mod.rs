@@ -1,11 +1,18 @@
 //! The server's logging surface: what it is allowed to say about a request.
 //!
 //! Everything here exists because the obvious thing to log is the thing we
-//! must not. `tower-http`'s stock `TraceLayer` records `http.uri` — which on
-//! this server is where browser clients put `?access_token=…`, because a
-//! `WebSocket` upgrade cannot carry an `Authorization` header. A default
-//! request-log configuration would therefore write bearer tokens to disk on
-//! every `/sync` connection.
+//! must not. `tower-http`'s stock `TraceLayer` records `http.uri`, and the
+//! query string is where this server leaked a credential once: browser clients
+//! put `?access_token=` there, because the `WebSocket` upgrade of the day could
+//! not carry an `Authorization` header. A default request-log configuration
+//! wrote bearer tokens to disk on every `/sync` connection.
+//!
+//! Neither half of that is live now. The socket went with ADR-0023, and no
+//! route reads `?access_token=` — `docs/05-sync/wire-protocol.md` records the
+//! parameter as reserved rather than available. The hazard is kept written down
+//! because the successor has the same shape: a browser `EventSource` cannot set
+//! request headers either, so the first real web client will ask for this door
+//! again.
 //!
 //! The request log itself is `api::observe` now. kynos hands an observer the
 //! *matched route* rather than the request's URI, so the query string it must
