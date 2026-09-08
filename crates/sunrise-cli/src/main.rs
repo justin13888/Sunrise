@@ -1342,7 +1342,13 @@ fn bootstrap_account(rest: &[String]) -> sunrise_onboarding::account::AccountCre
 /// How this device introduces itself.
 fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
     sunrise_relay_client::DeviceIdentity {
-        device_pub_s: login::device_id_hex(core),
+        // `D_S_pub`, the key the relay checks every `X-Sunrise-Device-Sig`
+        // against. This was `login::device_id_hex(core)` — hex of the 16-byte
+        // *device id*, which is what the OIDC `device_id` claim carries and has
+        // nothing to do with a signing key. It base64url-decodes to 24 bytes,
+        // so `POST /api/v1/devices` answered 400 and `sunrise login` against a
+        // real relay could not register a device at all.
+        device_pub_s: core.device_signing_pub(),
         device_pub_d: None,
         device_cert: None,
         // The only name a peer can revoke this device by: the relay mints its

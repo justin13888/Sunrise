@@ -22,9 +22,19 @@ use sunrise_onboarding::account::AccountCreateRequest;
 /// What a device needs to introduce itself.
 #[derive(Debug, Clone)]
 pub struct DeviceIdentity {
-    /// Ed25519 signing key, base64url no-pad. The public half of what signs
-    /// `header_sig_v2`.
-    pub device_pub_s: String,
+    /// The public half of the Ed25519 key that signs `header_sig_v2`
+    /// (`D_S_pub`), as raw bytes.
+    ///
+    /// Bytes rather than the base64url-no-pad string the wire carries, and
+    /// that is the whole point. The relay validates this field with
+    /// `VerifyingKey::from_bytes` over a base64url decode and answers `400`
+    /// otherwise, and the CLI — the only caller — passed
+    /// `hex(core.device_id())` here: 32 hex characters of a 16-byte *id*,
+    /// which decode to 24 bytes and can never be a key, so `sunrise login`
+    /// against a real relay could not register a device at all. A field that
+    /// takes the key itself has nowhere for that mistake to live, and
+    /// [`bootstrap`] does the encoding once, with the crate that defines it.
+    pub device_pub_s: [u8; 32],
     /// X25519 key, base64url no-pad, when the device has one.
     pub device_pub_d: Option<String>,
     /// Self-signed device certificate, opaque to the server.
@@ -136,7 +146,7 @@ pub async fn bootstrap(
         .register_device(
             None,
             &api::types::DeviceRegisterRequest {
-                device_pub_s: device.device_pub_s,
+                device_pub_s: sunrise_http_sig::device_pub_b64(&device.device_pub_s),
                 device_pub_d: device.device_pub_d,
                 device_cert: device.device_cert,
                 vault_device_id: device.vault_device_id,
