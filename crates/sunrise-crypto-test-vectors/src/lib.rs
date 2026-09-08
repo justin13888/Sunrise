@@ -238,10 +238,11 @@ pub mod sealed_envelope {
 ///
 /// HPKE is **randomised** — the ephemeral KEM key is drawn per seal — so unlike
 /// every other vector here this one is only reproducible against a stated
-/// CSPRNG state. [`SEALED`] is what `hpke_seal` produces from a
+/// CSPRNG state. [`key_envelope::SEALED`] is what `hpke_seal` produces from a
 /// `ChaCha20Rng::seed_from_u64(RNG_SEED)`, and the assertion that pins it says
-/// so. The unconditional half of the same test — that [`SEALED`] opens under
-/// [`RECIPIENT_SECRET`] to [`STREAM_KEY`], and that its first 32 bytes are the
+/// so. The unconditional half of the same test — that [`key_envelope::SEALED`]
+/// opens under [`key_envelope::RECIPIENT_SECRET`] to [`key_envelope::STREAM_KEY`],
+/// and that its first 32 bytes are the
 /// encapsulated key — needs no seed and holds against any implementation.
 ///
 /// The point of freezing it at all is the same as for the blob-chunk nonce: the

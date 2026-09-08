@@ -46,6 +46,15 @@ directory cargo gives a test binary.
 is tracked; the flat shape means a proptest is missing that setting, and it
 should be visible in `git status` rather than hidden.
 
+`.github/scripts/proptest-persistence-gate.py` enforces all of that
+(`mise run proptest-persistence`): every `proptest!` block under a crate's
+`tests/` carries a `#![proptest_config(…)]`, the file names the
+`proptest-regressions/tests/<name>.txt` derived from its own path, git ignores
+neither that path nor an existing counterexample file, and no flat
+`<name>.proptest-regressions` sits beside a test. Noticing the untracked file in
+`git status` was the previous enforcement, which is the kind this repository has
+replaced with a gate everywhere else.
+
 #### Convergence property-test determinism
 
 - **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches is meant to come from `cargo-fuzz` binaries, which are specified but not built — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set and status, rather than restating it here.

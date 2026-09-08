@@ -6,7 +6,8 @@
 //! `GET /accounts/me` used to answer `200 {"identity_id":"unauthenticated"}` to
 //! anybody. Those are regression-tested in `routes::accounts` and the property
 //! is preserved here by construction: the only account id in scope comes from
-//! [`Principal`], which only [`Auth`] can produce.
+//! [`Principal`](crate::api::auth::Principal), which only
+//! [`Auth`](kynos::security::auth::Auth) can produce.
 //!
 //! # Why the request types live here
 //!

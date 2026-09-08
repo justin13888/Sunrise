@@ -117,6 +117,25 @@ jobs:
         run: |
           cargo test --workspace --exclude sunrise-server --doc
           cargo test -p sunrise-server --doc -- --skip relative_uri
+      # A step in this job rather than a gate job of its own, because rustdoc
+      # needs the same dependency graph `cargo test` above just compiled and
+      # this job's cache is already warm — standing it up separately would pay
+      # a cold workspace build for a check that runs in about a minute here.
+      #
+      # `cargo build`, `cargo clippy` and `cargo test` are all blind to a broken
+      # intra-doc link: it renders as literal text for exactly the reader the
+      # comment was written for, and nothing goes red. Forty-eight such errors
+      # were standing on master when this step was added.
+      # `--document-private-items` documents the private half of every crate, so
+      # a link inside a private item is checked rather than skipped, and it
+      # turns on `rustdoc::private_intra_doc_links` — the lint for a *public*
+      # comment pointing somewhere a public reader cannot follow. `--no-deps`
+      # keeps the verdict about this workspace. `mise run rust-doc` is this
+      # command verbatim -- keep them in step.
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --document-private-items
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
@@ -650,6 +669,70 @@ jobs:
         # reason, and fails when one of them goes stale.
         run: .github/scripts/orphan-crate-gate.py
 
+
+  proptest-persistence:
+    name: Proptest persistence gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over the 40
+    # tracked integration-test files. No toolchain, nothing to cache, no
+    # network call. It shells out to `git ls-files` and `git check-ignore`,
+    # which is why it needs the checkout and nothing else.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a tests/ proptest that does not set failure_persistence
+        # A shrunken counterexample is the one output of a property test that
+        # cannot be regenerated on demand, so #118 made these files tracked and
+        # gave every `tests/` proptest an explicit
+        # `FileFailurePersistence::Direct`. Without it proptest writes a flat
+        # `<name>.proptest-regressions` beside the test, which `.gitignore`
+        # deliberately does not hide — and "somebody will notice it in
+        # `git status`" is the enforcement this repository has replaced with a
+        # gate everywhere else.
+        run: .github/scripts/proptest-persistence-gate.py
+
+  observability-catalog:
+    name: Observability catalogue gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script that walks
+    # `crates/sunrise-server/src` and one markdown file. No toolchain, nothing
+    # to cache, no network call.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, because the gate resolves each block's
+          # `Last extracted:` marker to a commit. Under the default shallow
+          # checkout that object is absent and the script skips the check,
+          # which would quietly retire half of what this job is for.
+          fetch-depth: 0
+      - name: Reject an extracted block that has drifted from the tree
+        # The two blocks in observability.md are what an operator reads to know
+        # what this server emits, and a missing entry is invisible in a way a
+        # stale document usually is not: it still parses, still reads
+        # coherently, and its own marker says it was checked. It had drifted
+        # twice in one cycle before anything ran the extraction.
+        run: .github/scripts/observability-catalog-gate.py
+
+  doc-comments:
+    name: Doc comment gate
+    runs-on: ubuntu-latest
+    # The same shape and the same cost as `docs-links` below: `actions/checkout`
+    # plus one standard-library Python script over the 234 tracked `.rs` files,
+    # no network call, no toolchain to install and nothing to cache. Well under
+    # a second locally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a doc comment mangled into a shape rustdoc misreads
+        # `cargo fmt` does not reflow comments — rustfmt says so deliberately —
+        # and clippy has no rule for comment shape, so a doc comment folded onto
+        # one physical line, split in two by a stray blank line, stranded below
+        # an attribute, or indented until rustdoc reads it as code passes
+        # everything else in this file. PR #77 created the folded shape twice,
+        # the second time while fixing the first. The script carries its own
+        # self-test and runs it as a precondition of the check.
+        run: .github/scripts/doc-comment-gate.py
 
   docs-links:
     name: Docs link gate

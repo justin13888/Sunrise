@@ -116,6 +116,27 @@ run = [
   "cargo test -p sunrise-server --doc -- --skip relative_uri",
 ]
 
+[tasks.rust-doc]
+description = "Build the rustdoc for the workspace with every rustdoc warning denied"
+# The third documentation gate, and the one a compiler decides. `cargo build`,
+# `cargo clippy` and `cargo test` are all blind to a broken intra-doc link:
+# `[`Foo`]` that resolves to nothing renders as literal text for exactly the
+# reader the comment was written for, and nothing goes red. Forty-eight such
+# errors were standing on master when this task was added — an ambiguous
+# `[init]`, links to items in other crates that were never imported, and a row
+# of public doc comments pointing at private items, which break in the published
+# docs even though `--document-private-items` resolves them here.
+#
+# `--document-private-items` is deliberate: it documents the private half of
+# every crate, so a link inside a private item is checked too rather than
+# skipped. It also turns on `rustdoc::private_intra_doc_links`, which is the
+# lint that catches a *public* comment linking somewhere a public reader cannot
+# follow.
+#
+# `--no-deps` keeps this about this workspace. A dependency's rustdoc is its
+# author's problem and would make the gate flap on a version bump.
+run = 'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items'
+
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
 run = ".github/scripts/orphan-crate-gate.py"
@@ -174,6 +195,43 @@ description = "Reject a markdown link or heading anchor that resolves to nothing
 # outage, and a gate people learn to ignore protects nothing. Runs in under a
 # second over 130 files and needs no toolchain but python3.
 run = ".github/scripts/docs-link-gate.py"
+
+[tasks.proptest-persistence]
+description = "Reject a tests/ proptest that does not set failure_persistence (the CI gate, run locally)"
+# #118 settled the convention and nothing asserted it. proptest's default walks
+# up from the source for a `lib.rs`, finds none above a `tests/` file, and
+# writes a flat `<name>.proptest-regressions` beside the test instead of the
+# tracked `proptest-regressions/tests/<name>.txt` — and the only thing between
+# that and a silent divergence was somebody noticing an untracked file in
+# `git status`. The script checks that every `proptest!` block under a crate's
+# `tests/` carries a config, that the file names the persistence path derived
+# from its own name, and that git neither ignores that path nor leaves an
+# existing counterexample untracked.
+run = ".github/scripts/proptest-persistence-gate.py"
+
+[tasks.observability-catalog]
+description = "Reject an observability.md event or metric block that has drifted from the tree (the CI gate, run locally)"
+# `docs/06-server/observability.md` carries the operator-facing inventory of
+# what this server emits, extracted from the source and marked as such. Nothing
+# re-ran the extraction, and it had already drifted twice in one cycle. The
+# script reads each block's own `grep` command out of the marker above it and
+# runs that, so the document and the gate cannot disagree about what to extract,
+# then diffs the result against the block in both directions — a name the
+# catalogue advertises and the tree does not define is as much a defect as the
+# reverse.
+run = ".github/scripts/observability-catalog-gate.py"
+
+[tasks.doc-comments]
+description = "Reject a doc comment mangled into a shape rustdoc misreads (the CI gate, run locally)"
+# `cargo fmt` does not reflow comments and clippy has no rule for comment
+# *shape*, so a folded, split or detached doc comment passes every other gate
+# here. Five decidable shapes, no prose style rule: two markers on one physical
+# line (the PR #77 defect, created twice in one branch), an unclosed code fence,
+# a paragraph indented into a code block that rustdoc then compiles (the #58/#60
+# defect), a doc comment stranded below an outer attribute (the PR #63 defect),
+# and two blocks split by a blank line that Rust silently rejoins. Standard
+# library Python over every tracked `.rs`, in under a second.
+run = ".github/scripts/doc-comment-gate.py"
 
 # --- Apple clients (Swift / UniFFI) ---
 

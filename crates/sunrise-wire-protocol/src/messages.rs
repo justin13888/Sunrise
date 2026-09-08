@@ -69,7 +69,7 @@ pub enum MsgKind {
     /// tokens do — and without this frame the only remedy is to close the
     /// socket and renegotiate, which drops the subscription, re-runs the
     /// handshake, and loses every op in flight. With it, the server closes
-    /// with [`ErrorCode::AuthTokenExpired`] only when the client fails to
+    /// with [`sunrise_error::ErrorCode::AuthTokenExpired`] only when the client fails to
     /// refresh, not merely because time passed.
     ///
     /// This commit adds the protocol surface; the behaviour behind it is

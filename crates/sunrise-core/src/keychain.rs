@@ -14,7 +14,7 @@
 //!
 //! Every op the engine emits is sealed through here: the inner-op CBOR is
 //! encrypted under the Stream key for the stream's live epoch and signed with
-//! `D_S` into a real [`OpEnvelope`].
+//! `D_S` into a real [`sunrise_crypto::OpEnvelope`].
 //!
 //! ## What ADR-0024 changed
 //!
@@ -1143,7 +1143,7 @@ impl Keychain {
 
     // ---- op envelopes ----
 
-    /// Seal an inner-op CBOR blob into a real [`OpEnvelope`] under an explicit
+    /// Seal an inner-op CBOR blob into a real [`sunrise_crypto::OpEnvelope`] under an explicit
     /// `(epoch, key)`, and sign it with `D_S`.
     ///
     /// The epoch is passed in rather than looked up because a rotation has to

@@ -2,7 +2,7 @@
 //!
 //! This module implements the expansion half of the recurrence engine
 //! described in `docs/08-features/recurrence-engine.md` and
-//! `docs/02-domain/routines-and-recurrence.md`. [`RRule`](crate::rrule::RRule)
+//! `docs/02-domain/routines-and-recurrence.md`. [`RRule`]
 //! (parsed in [`crate::rrule`]) describes *which* wall-clock instants recur;
 //! [`expand`] turns a rule + anchor + timezone + window into concrete
 //! [`Occurrence`] instants.
@@ -64,7 +64,7 @@ pub struct Occurrence {
 /// Errors returned by [`expand`] / [`Routine::occurrences_in`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExpandError {
-    /// The scan exceeded [`MAX_PERIODS`] interval periods without terminating.
+    /// The scan exceeded `MAX_PERIODS` interval periods without terminating.
     #[error("recurrence expansion window too large")]
     WindowTooLarge,
     /// The routine's IANA timezone string did not resolve against the bundled
@@ -321,7 +321,7 @@ fn apply_setpos(dates: &[Date], setpos: &[i32]) -> Vec<Date> {
 /// # Errors
 ///
 /// Returns [`ExpandError::WindowTooLarge`] if the scan would exceed
-/// [`MAX_PERIODS`] interval periods.
+/// `MAX_PERIODS` interval periods.
 pub fn expand(
     rrule: &RRule,
     anchor: Timestamp,

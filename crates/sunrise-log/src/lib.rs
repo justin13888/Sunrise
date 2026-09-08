@@ -18,7 +18,7 @@
 //!    `.expose()`d somewhere legitimate and then logged.
 //!
 //! Around those sit the pieces a subscriber needs and `tracing-subscriber`
-//! deliberately leaves to the application: [`init`] assembles the stack,
+//! deliberately leaves to the application: [`init()`] assembles the stack,
 //! [`writer`] provides a size-capped file sink and an in-memory test sink,
 //! [`time`] stamps records RFC 3339 in UTC, and [`event`] validates the
 //! hierarchical `ev` names catalogued in
