@@ -160,13 +160,83 @@ pub fn sign<T: serde::Serialize>(
     date: &str,
     value: Option<&T>,
 ) -> Result<String, SigError> {
+    sign_with(
+        |msg| signing_key.sign(msg).to_bytes(),
+        method,
+        path_and_query,
+        date,
+        value,
+    )
+}
+
+/// [`sign`], for a client that does not hold a [`SigningKey`] to hand over.
+///
+/// The device's Ed25519 secret lives inside the vault keychain and is never
+/// handed out — `sunrise_core::Core` signs on a caller's behalf and returns the
+/// 64 bytes. `sign` would need the key itself, so this takes the *operation*
+/// instead: the caller supplies something that turns a message into a
+/// signature, and the canonical string, the hash and the base64url encoding
+/// stay here, where the verifier's half of each already is.
+///
+/// # Errors
+/// [`SigError::NotCanonicalizable`] when `value` cannot be canonicalized.
+pub fn sign_with<T: serde::Serialize>(
+    sign_bytes: impl FnOnce(&[u8]) -> [u8; 64],
+    method: &str,
+    path_and_query: &str,
+    date: &str,
+    value: Option<&T>,
+) -> Result<String, SigError> {
     let body = match value {
         Some(v) => canonical_json(v)?,
         None => Vec::new(),
     };
     let canonical = canonical_string(method, path_and_query, date, &body);
-    let sig = signing_key.sign(canonical.as_bytes());
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes()))
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sign_bytes(canonical.as_bytes())))
+}
+
+/// Encode an Ed25519 public key the way `device_pub_s` is registered and read.
+///
+/// The inverse of `parse_verifying_key`, and it sits beside it deliberately.
+/// `POST /api/v1/devices` refuses anything this does not produce, and the one
+/// caller that registered a device got the encoding wrong — it sent the hex of
+/// a 16-byte device *id*, which decodes to 24 bytes and can never be a key, so
+/// every request that device signed afterwards was a 401 nobody could act on.
+/// A client that reaches for this rather than formatting bytes itself cannot
+/// repeat that.
+#[must_use]
+pub fn device_pub_b64(device_pub_s: &[u8; 32]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(device_pub_s)
+}
+
+/// Format `now_ms` as the `Date` header this scheme signs.
+///
+/// Takes the instant rather than reading one: `clippy.toml`'s disallowed-methods
+/// list and the CI determinism gate forbid an ambient clock, so the caller
+/// passes whatever its own injected clock said. That is also what makes a
+/// skewed-clock test possible at all — a helper that called `SystemTime::now`
+/// could only ever be tested against the truth.
+#[must_use]
+pub fn date_header(now_ms: u64) -> String {
+    let secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
+    jiff::Timestamp::from_second(secs)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .strftime("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
+/// How far `date` sits from `now_ms`, in seconds, or `None` if it is not an
+/// RFC 2822 date.
+///
+/// Exposed for the client half: a refused signature is most often a clock, and
+/// "your clock is 412 s from the relay's" is a thing a user can fix where a
+/// bare 401 is not. Signed rather than absolute, so a client can say *which*
+/// way it is wrong.
+#[must_use]
+pub fn skew_secs(date: &str, now_ms: u64) -> Option<i64> {
+    let parsed = jiff::fmt::rfc2822::parse(date.trim()).ok()?;
+    let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
+    Some(now_secs - parsed.timestamp().as_second())
 }
 
 /// Decode a base64url-no-pad Ed25519 public key.
@@ -184,11 +254,9 @@ fn parse_verifying_key(device_pub_s: &str) -> Result<VerifyingKey, SigError> {
 /// [`SigError::MalformedHeader`] if `date` is not an RFC 2822 date, or
 /// [`SigError::StaleDate`] if it is outside the window.
 pub fn check_date(date: &str, now_ms: u64) -> Result<(), SigError> {
-    let parsed =
-        jiff::fmt::rfc2822::parse(date.trim()).map_err(|_| SigError::MalformedHeader("date"))?;
-    let signed_at = parsed.timestamp().as_second();
-    let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
-    let skew = (now_secs - signed_at).abs();
+    let skew = skew_secs(date, now_ms)
+        .ok_or(SigError::MalformedHeader("date"))?
+        .abs();
     if skew > MAX_CLOCK_SKEW_SECS {
         return Err(SigError::StaleDate { skew });
     }
@@ -286,6 +354,80 @@ mod tests {
             zeta: "z".into(),
             alpha: 1,
         }
+    }
+
+    /// The registration bug, pinned from both directions.
+    ///
+    /// `device_pub_b64` must produce exactly what `parse_verifying_key` reads
+    /// back, and the shape that shipped instead — hex of a 16-byte device id —
+    /// must not survive the decode. Nothing asserted either before: the encoder
+    /// did not exist, so every caller invented its own and one of them invented
+    /// the wrong one.
+    #[test]
+    fn a_device_public_key_round_trips_through_its_wire_form() {
+        let k = key();
+        let encoded = device_pub_b64(&k.verifying_key().to_bytes());
+        assert_eq!(encoded, pub_b64(&k));
+        assert_eq!(
+            parse_verifying_key(&encoded).expect("the encoder's output must parse"),
+            k.verifying_key()
+        );
+
+        // 32 hex characters of a 16-byte id: the right length for a *string*
+        // and 24 bytes once base64url-decoded, so it can never be a key.
+        let device_id_hex = "0102030405060708090a0b0c0d0e0f10";
+        assert_eq!(device_id_hex.len(), 32);
+        assert_eq!(
+            parse_verifying_key(device_id_hex),
+            Err(SigError::BadDeviceKey)
+        );
+    }
+
+    /// A client that holds its key behind an abstraction signs identically to
+    /// one that hands the key over, which is what lets the core keep `D_S_priv`
+    /// and still produce a request the relay accepts.
+    #[test]
+    fn signing_through_a_closure_matches_signing_with_the_key() {
+        let k = key();
+        let direct = sign(&k, "POST", "/api/v1/sync/ops", DATE, Some(&body())).unwrap();
+        let indirect = sign_with(
+            |msg| k.sign(msg).to_bytes(),
+            "POST",
+            "/api/v1/sync/ops",
+            DATE,
+            Some(&body()),
+        )
+        .unwrap();
+        assert_eq!(direct, indirect);
+        verify(
+            &pub_b64(&k),
+            &indirect,
+            "POST",
+            "/api/v1/sync/ops",
+            DATE,
+            Some(&body()),
+            NOW_MS,
+        )
+        .expect("the closure-signed request must verify");
+    }
+
+    /// The `Date` a client emits is the one the verifier parses back, and
+    /// `NOW_MS` is `DATE` — so this pins the format against the constant the
+    /// rest of the module already trusts.
+    #[test]
+    fn the_date_header_round_trips_through_the_skew_check() {
+        assert_eq!(date_header(NOW_MS), DATE);
+        assert_eq!(skew_secs(DATE, NOW_MS), Some(0));
+        check_date(&date_header(NOW_MS), NOW_MS).expect("a freshly formatted date is not stale");
+    }
+
+    /// Signed, not absolute: a client ahead of the relay and a client behind it
+    /// need different advice.
+    #[test]
+    fn skew_is_signed_so_a_client_can_say_which_way_it_is_wrong() {
+        assert_eq!(skew_secs(DATE, NOW_MS + 90_000), Some(90));
+        assert_eq!(skew_secs(DATE, NOW_MS - 90_000), Some(-90));
+        assert_eq!(skew_secs("not a date", NOW_MS), None);
     }
 
     #[test]

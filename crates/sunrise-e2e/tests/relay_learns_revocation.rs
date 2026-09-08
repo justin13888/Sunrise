@@ -27,10 +27,17 @@
 //! That the relay then refuses the revoked device's uploads. It does — the SQL
 //! behind `active_device` ends `AND revoked = 0`, and
 //! `sunrise_server::api::devices` and `::sync` drive that through HTTP — but not
-//! here, because `SseTransport` signs no request, so nothing in this harness is
-//! device-bound and there is no binding for the relay to refuse. That condition
-//! is `[auth] require_device_sig`, and it is stated in
-//! `docs/03-crypto/key-rotation.md` §Revocation rather than hidden.
+//! here: this relay runs `ServerConfig::default()`, where `require_device_sig`
+//! is off, so an absent binding is the configured state and there is nothing
+//! for the relay to refuse. That condition is `[auth] require_device_sig`, and
+//! it is stated in `docs/03-crypto/key-rotation.md` §Revocation rather than
+//! hidden.
+//!
+//! `device_bound_sync.rs` is the same revocation with the flag *on* and a
+//! signing client in front of it. When this file was written there was no such
+//! client — `SseTransport` signed nothing, which is issue #159 — so the two
+//! tests are the same fact either side of that gap, and this one stays because
+//! the flag-off deployment is still a real one.
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 

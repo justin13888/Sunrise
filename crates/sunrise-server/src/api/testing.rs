@@ -321,12 +321,14 @@ impl Res {
 /// The server's clock rather than the process's: a test that signs against
 /// `SystemTime` is a test that fails whenever the state under it carries a
 /// [`crate::state::TestClock`], and the failure looks like a signature bug.
+///
+/// The formatting itself is `sunrise_http_sig`'s, not restated here. This was
+/// the only implementation of it in the workspace and it lived in a test
+/// module, which is exactly why the client half of the scheme could be missing
+/// for as long as it was — the reference implementation was somewhere no
+/// client could call it.
 pub(crate) fn now_rfc2822(client: &Client) -> String {
-    let secs = i64::try_from(client.clock_now_ms() / 1000).expect("a sane clock");
-    jiff::Timestamp::from_second(secs)
-        .expect("a valid timestamp")
-        .strftime("%a, %d %b %Y %H:%M:%S GMT")
-        .to_string()
+    sunrise_http_sig::date_header(client.clock_now_ms())
 }
 
 /// Register a device and hand back the relay id it was given and the key it

@@ -30,7 +30,7 @@
 //! pairing works — real pairing seals it through the Noise XX channel in
 //! `sunrise-pairing`, which is what the app does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 use sunrise_auth::CredentialStore;
@@ -40,7 +40,7 @@ use sunrise_core::{
     TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_sync::SseTransport;
+use sunrise_sync::{DeviceSigner, SseTransport};
 
 /// Env var: relay **origin** for the `/api/v1/sync` surface. Unset ⇒ sync
 /// stays off.
@@ -62,6 +62,55 @@ pub const ENV_ADOPT_PAIRING: &str = "SUNRISE_PAIRING_FILE";
 /// viable against a self-host relay running `NullVerifier`; every other
 /// deployment answers an unauthenticated request with `401`.
 pub const ENV_SYNC_TOKEN: &str = "SUNRISE_SYNC_TOKEN";
+/// Env var: the id the relay minted for this device, presented as
+/// `X-Sunrise-Device` and signed for on every request.
+///
+/// Normally unset — `sunrise bootstrap` records the id it was given in the
+/// vault directory and this reads it from there. The override exists for the
+/// same reason [`ENV_SYNC_TOKEN`] does: a relay whose registration happened
+/// somewhere else.
+pub const ENV_SYNC_DEVICE_ID: &str = "SUNRISE_SYNC_DEVICE_ID";
+
+/// Filename, inside the vault directory, of the relay's id for this device.
+///
+/// A plain file rather than a mode-0600 one: the relay minted this id, sends
+/// it in the clear on every request that uses it, and it unlocks nothing on its
+/// own. What it names is the row a signature is checked against, and the
+/// signature is what the secrecy rests on.
+const RELAY_DEVICE_FILE: &str = "relay-device";
+
+/// The path `sunrise bootstrap` records the relay's device id at.
+#[must_use]
+pub fn relay_device_path(vault_dir: &Path) -> PathBuf {
+    vault_dir.join(RELAY_DEVICE_FILE)
+}
+
+/// Record the id the relay minted for this device, so later runs can sign.
+///
+/// Without this the CLI has a signing key and no way to say *whose* it is:
+/// `X-Sunrise-Device` names a row the relay assigned at registration and never
+/// mentions again, so a client that does not keep it cannot produce a binding
+/// however good its key is.
+///
+/// # Errors
+/// Any I/O failure creating the vault directory or writing the file.
+pub fn save_relay_device_id(vault_dir: &Path, device_id: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(vault_dir)?;
+    std::fs::write(relay_device_path(vault_dir), device_id.trim())
+}
+
+/// The recorded relay device id, if `sunrise bootstrap` has run here.
+///
+/// A missing or unreadable file is `None` rather than an error: an unregistered
+/// device is a normal state — it is what every self-host walkthrough is — and
+/// the relay refuses an unbound request only where it is configured to.
+#[must_use]
+pub fn load_relay_device_id(vault_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(relay_device_path(vault_dir))
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+}
 
 /// Raw environment inputs. Kept separate from parsing so [`plan_from_env`]
 /// stays a pure function over explicit values.
@@ -78,6 +127,11 @@ pub struct SyncEnv {
     /// Access token from a previous `sunrise login`, if any. Lower precedence
     /// than [`SyncEnv::token`].
     pub stored_token: Option<String>,
+    /// Raw `SUNRISE_SYNC_DEVICE_ID`.
+    pub device_id: Option<String>,
+    /// The relay device id `sunrise bootstrap` recorded, if any. Lower
+    /// precedence than [`SyncEnv::device_id`].
+    pub stored_device_id: Option<String>,
 }
 
 impl SyncEnv {
@@ -90,6 +144,8 @@ impl SyncEnv {
             adopt_pairing: std::env::var(ENV_ADOPT_PAIRING).ok(),
             token: std::env::var(ENV_SYNC_TOKEN).ok(),
             stored_token: None,
+            device_id: std::env::var(ENV_SYNC_DEVICE_ID).ok(),
+            stored_device_id: None,
         }
     }
 
@@ -107,6 +163,13 @@ impl SyncEnv {
             .map(|c| c.access_token);
         self
     }
+
+    /// Attach the relay device id `sunrise bootstrap` recorded in `vault_dir`.
+    #[must_use]
+    pub fn with_relay_device(mut self, vault_dir: &Path) -> Self {
+        self.stored_device_id = load_relay_device_id(vault_dir);
+        self
+    }
 }
 
 /// Parsed, validated live-sync plan the runtime executes on startup.
@@ -121,6 +184,12 @@ pub struct SyncPlan {
     pub export_pairing: Option<PathBuf>,
     /// `Some` ⇒ adopt this pairing payload when opening the vault.
     pub adopt_pairing: Option<PathBuf>,
+    /// `Some` ⇒ bind every relay request to this device row.
+    ///
+    /// `None` leaves the transport unsigned, which reaches a self-host relay
+    /// running `NullVerifier` and is refused by anything with
+    /// `require_device_sig` set.
+    pub device_id: Option<String>,
 }
 
 impl SyncPlan {
@@ -147,6 +216,11 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
         sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
         export_pairing: clean(env.export_pairing.as_deref()).map(PathBuf::from),
         adopt_pairing: clean(env.adopt_pairing.as_deref()).map(PathBuf::from),
+        // Same precedence as the bearer, for the same reason: the override is
+        // for a registration that happened somewhere else, and a user who ran
+        // `sunrise bootstrap` should not also have to export a variable.
+        device_id: clean(env.device_id.as_deref())
+            .or_else(|| clean(env.stored_device_id.as_deref())),
     }
 }
 
@@ -161,14 +235,29 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 ///
 /// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
 /// transport-agnostic and calls it once per connection attempt.
+///
+/// `signer` is the ADR-0022 device binding. It is cloned per attempt rather
+/// than captured into one transport for the same reason the bearer is read per
+/// attempt: a reconnect is a new transport and has to carry the binding too,
+/// and the one route where that matters most is the revocation `DELETE`, which
+/// runs on whatever connection the driver has at the time.
 #[must_use]
-pub fn ws_factory(url: &str, credential: TokenSource) -> TransportFactory {
+pub fn ws_factory(
+    url: &str,
+    credential: TokenSource,
+    signer: Option<Arc<dyn DeviceSigner>>,
+) -> TransportFactory {
     let url = url.to_string();
     Arc::new(move || {
         let url = url.clone();
         let bearer = credential.get();
+        let signer = signer.clone();
         Box::pin(async move {
             let t = SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = match signer {
+                Some(s) => t.with_device_signer(s),
+                None => t,
+            };
             Ok(Box::new(t) as BoxTransport)
         }) as ConnectFuture
     })
@@ -241,34 +330,46 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
         }
     }
 
+    // The relay's id for this device plus the core's signing key is the whole
+    // binding; either half missing means an unsigned transport, which a
+    // `require_device_sig` relay refuses and a self-host one accepts.
+    let signer = plan.device_id.as_ref().map(|id| core.device_signer(id));
     match &plan.sync {
-        Some(sc) => match core.start_sync(ws_factory(&sc.url, sc.credential.clone())) {
-            Ok(()) => {
-                // The relay *host* is the sanctioned connection-diagnostic
-                // identifier (logging.md §6.2); the full URL could carry a
-                // query string, so only the host goes in.
-                tracing::info!(
-                    ev = "sync.session.opening",
-                    relay = %relay_host(&sc.url),
-                    result = "ok",
-                    "sync driver started"
-                );
-                log.push(format!("sync driver started -> {}", sc.url));
+        Some(sc) => {
+            match core.start_sync(ws_factory(&sc.url, sc.credential.clone(), signer.clone())) {
+                Ok(()) => {
+                    // The relay *host* is the sanctioned connection-diagnostic
+                    // identifier (logging.md §6.2); the full URL could carry a
+                    // query string, so only the host goes in.
+                    tracing::info!(
+                        ev = "sync.session.opening",
+                        relay = %relay_host(&sc.url),
+                        result = "ok",
+                        "sync driver started"
+                    );
+                    log.push(format!("sync driver started -> {}", sc.url));
+                    if signer.is_none() {
+                        log.push(format!(
+                        "sync is not device-bound (no relay device id); run `sunrise bootstrap` \
+                         or set {ENV_SYNC_DEVICE_ID}"
+                    ));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ev = "sync.session.error",
+                        relay = %relay_host(&sc.url),
+                        result = "failed",
+                        err_code = "SYNC_START_FAILED",
+                        err_kind = "transient",
+                        retryable = true,
+                        cause = %e,
+                        "sync driver did not start"
+                    );
+                    log.push(format!("start_sync failed: {e}"));
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    ev = "sync.session.error",
-                    relay = %relay_host(&sc.url),
-                    result = "failed",
-                    err_code = "SYNC_START_FAILED",
-                    err_kind = "transient",
-                    retryable = true,
-                    cause = %e,
-                    "sync driver did not start"
-                );
-                log.push(format!("start_sync failed: {e}"));
-            }
-        },
+        }
         None => {
             tracing::info!(ev = "sync.session.off", result = "skipped", "sync disabled");
             log.push(format!("sync off (set {ENV_SYNC_URL} to enable)"));
@@ -377,6 +478,79 @@ pub async fn open_with_plan(
 mod tests {
     use super::*;
 
+    /// The id the relay minted has to survive the process that received it:
+    /// `X-Sunrise-Device` names that row on every later request and the relay
+    /// never repeats the id, so a client that only printed it would hold a
+    /// signing key with nothing to attach it to.
+    #[test]
+    fn a_recorded_relay_device_id_comes_back_and_reaches_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_relay_device_id(dir.path()).is_none());
+
+        save_relay_device_id(dir.path(), "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y").unwrap();
+        assert_eq!(
+            load_relay_device_id(dir.path()).as_deref(),
+            Some("dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y")
+        );
+
+        let plan = plan_from_env(
+            &SyncEnv {
+                url: Some("http://127.0.0.1:8443".into()),
+                ..SyncEnv::default()
+            }
+            .with_relay_device(dir.path()),
+        );
+        assert_eq!(
+            plan.device_id.as_deref(),
+            Some("dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y"),
+            "a bootstrapped vault signs without anyone exporting a variable"
+        );
+    }
+
+    /// An unregistered vault is a valid plan — it is what every self-host
+    /// walkthrough is — so a missing file leaves the transport unbound rather
+    /// than failing the startup.
+    #[test]
+    fn an_unregistered_vault_plans_an_unbound_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_from_env(
+            &SyncEnv {
+                url: Some("http://127.0.0.1:8443".into()),
+                ..SyncEnv::default()
+            }
+            .with_relay_device(dir.path()),
+        );
+        assert!(plan.device_id.is_none());
+        assert!(!plan.is_off());
+    }
+
+    /// The override beats the recorded id, matching the bearer's precedence:
+    /// both exist for a registration that happened somewhere else.
+    #[test]
+    fn the_env_override_beats_the_recorded_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        save_relay_device_id(dir.path(), "dev_recorded").unwrap();
+        let plan = plan_from_env(
+            &SyncEnv {
+                url: Some("http://127.0.0.1:8443".into()),
+                device_id: Some("  dev_from_env  ".into()),
+                ..SyncEnv::default()
+            }
+            .with_relay_device(dir.path()),
+        );
+        assert_eq!(plan.device_id.as_deref(), Some("dev_from_env"));
+    }
+
+    /// A blank recorded id is unset, not a device named "": an empty
+    /// `X-Sunrise-Device` is refused where an absent one is at least the
+    /// self-host case.
+    #[test]
+    fn a_blank_recorded_device_id_is_treated_as_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(relay_device_path(dir.path()), "   \n").unwrap();
+        assert!(load_relay_device_id(dir.path()).is_none());
+    }
+
     #[test]
     fn plan_is_off_with_no_env() {
         let plan = plan_from_env(&SyncEnv::default());
@@ -435,6 +609,8 @@ mod tests {
             adopt_pairing: Some("   ".into()), // whitespace-only -> None
             token: None,
             stored_token: None,
+            device_id: None,
+            stored_device_id: None,
         };
         let plan = plan_from_env(&env);
         assert_eq!(
@@ -502,6 +678,8 @@ mod tests {
             adopt_pairing: None,
             token: None,
             stored_token: None,
+            device_id: None,
+            stored_device_id: None,
         }
         .with_stored(&store, 0);
         let plan = plan_from_env(&env);
@@ -530,6 +708,8 @@ mod tests {
             adopt_pairing: None,
             token: Some("from-env".into()),
             stored_token: None,
+            device_id: None,
+            stored_device_id: None,
         }
         .with_stored(&store, 0);
         assert_eq!(
@@ -563,6 +743,8 @@ mod tests {
             adopt_pairing: None,
             token: None,
             stored_token: None,
+            device_id: None,
+            stored_device_id: None,
         }
         .with_stored(&store, 10_000);
         assert_eq!(

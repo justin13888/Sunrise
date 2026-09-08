@@ -286,8 +286,10 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     if sub != "sync" {
         env.url = None;
     }
-    let plan =
-        livesync::plan_from_env(&env.with_stored(&login::store_for(&dir_for_store), core.now_ms()));
+    let plan = livesync::plan_from_env(
+        &env.with_stored(&login::store_for(&dir_for_store), core.now_ms())
+            .with_relay_device(&dir_for_store),
+    );
     // The startup banner names the files it touched, which is what the
     // two-replica walkthrough needs to see. stderr, because stdout is the
     // contract a script reads — and not a log record, because those strings
@@ -363,6 +365,19 @@ async fn dispatch(
                 bootstrap_device(core),
             )
             .await?;
+
+            // Recorded, not merely printed: `X-Sunrise-Device` names this row
+            // on every later request, and the relay never sends the id again.
+            // A client that dropped it would hold a signing key it could not
+            // say whose it was.
+            if let Err(e) = livesync::save_relay_device_id(vault_dir, &outcome.device_id) {
+                return Err(format!(
+                    "registered as {} but could not record it at {}: {e}",
+                    outcome.device_id,
+                    livesync::relay_device_path(vault_dir).display()
+                )
+                .into());
+            }
 
             println!(
                 "Account {} ({}) ready; this device is {}.",
@@ -1342,7 +1357,13 @@ fn bootstrap_account(rest: &[String]) -> sunrise_onboarding::account::AccountCre
 /// How this device introduces itself.
 fn bootstrap_device(core: &Core) -> sunrise_relay_client::DeviceIdentity {
     sunrise_relay_client::DeviceIdentity {
-        device_pub_s: login::device_id_hex(core),
+        // `D_S_pub`, the key the relay checks every `X-Sunrise-Device-Sig`
+        // against. This was `login::device_id_hex(core)` — hex of the 16-byte
+        // *device id*, which is what the OIDC `device_id` claim carries and has
+        // nothing to do with a signing key. It base64url-decodes to 24 bytes,
+        // so `POST /api/v1/devices` answered 400 and `sunrise login` against a
+        // real relay could not register a device at all.
+        device_pub_s: core.device_signing_pub(),
         device_pub_d: None,
         device_cert: None,
         // The only name a peer can revoke this device by: the relay mints its

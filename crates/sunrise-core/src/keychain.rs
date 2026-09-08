@@ -677,6 +677,23 @@ impl Keychain {
         self.signing.public_bytes()
     }
 
+    /// Sign `message` with `D_S_priv`; 64 raw Ed25519 bytes.
+    ///
+    /// The counterpart accessor — one that handed `D_S_priv` out — is
+    /// deliberately absent. This module's whole premise is that the device
+    /// secrets live wrapped under the vault root and are unwrapped only here;
+    /// the one method that exports key material is called
+    /// `export_vault_root_for_pairing`, at that length, so that adding a second
+    /// is a decision somebody has to defend rather than a convenience.
+    ///
+    /// A caller that needs a request signature does not need the key, so it
+    /// gets the signature. `sunrise_http_sig::sign_with` is written to take
+    /// exactly this.
+    #[must_use]
+    pub fn sign_device(&self, message: &[u8]) -> [u8; 64] {
+        self.signing.sign(message)
+    }
+
     /// The device DH public key (`D_D_pub`) — what a `key_envelope` seals to.
     #[must_use]
     pub fn device_dh_pub(&self) -> [u8; 32] {

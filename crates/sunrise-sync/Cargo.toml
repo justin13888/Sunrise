@@ -31,6 +31,7 @@ sse = [
     "dep:serde_json",
     "dep:sunrise-wire-protocol",
     "dep:sunrise-error",
+    "dep:sunrise-http-sig",
     "dep:sunrise-id",
 ]
 
@@ -50,8 +51,13 @@ hyper-rustls = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true, features = ["client-legacy", "http1"] }
 serde_json = { workspace = true, optional = true }
 sunrise-error = { workspace = true, optional = true }
+sunrise-http-sig = { workspace = true, optional = true }
 sunrise-id = { workspace = true, optional = true }
 sunrise-wire-protocol = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The `sse` tests sign a request the way a real client does and verify it back,
+# which needs a concrete key. The crate itself never holds one: it asks a
+# `DeviceSigner` for signatures.
+ed25519-dalek = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
