@@ -101,6 +101,11 @@ pub static ALLOWED: &[&str] = &[
     // client's own IP in connection diagnostics.
     "relay",
     "result",
+    // Whether an SSE stream opened on a `Last-Event-ID` or cold. A bool the
+    // server derives from the *presence* of that header, never from its value,
+    // which is what makes it safe beside `account_h`: the ratio of resumes to
+    // cold opens is the only thing it can say.
+    "resumed",
     "retryable",
     "routine_h",
     // --- per-device device-id hashes on control ops ---

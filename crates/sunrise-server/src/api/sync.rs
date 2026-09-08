@@ -734,6 +734,17 @@ pub async fn events(
     }
 
     state.metrics.incr("sunrise_sync_stream_total");
+    // `resumed` is the reason this event is worth emitting rather than
+    // deleting from the catalogue: a stream that opens cold is a client that
+    // has no `Last-Event-ID` to present, and a step change in the cold rate
+    // after a deploy is clients losing the id rather than choosing not to use
+    // it. The counter beside this one cannot tell those apart.
+    tracing::info!(
+        ev = "srv.sync.stream_open",
+        account_h = %crate::logging::account_h(&session.account_id),
+        resumed = after.is_some(),
+        "sync event stream opened"
+    );
 
     Ok(
         Sse::new(spawn_stream(state, id, session, after)).keep_alive(
@@ -2237,6 +2248,63 @@ mod tests {
         assert!(!body.contains("id: 1"), "already had: {body}");
         assert!(!body.contains("id: 2"), "already had: {body}");
         assert!(body.contains("id: 3"), "not yet had: {body}");
+    }
+
+    /// The catalogue's `srv.sync.stream_open`, and the field that is the
+    /// reason for emitting it.
+    ///
+    /// A plain `#[test]` with its own runtime rather than `#[tokio::test]`,
+    /// because installing a dispatcher is synchronous and has to wrap the whole
+    /// exchange rather than sit inside it.
+    ///
+    /// Both opens are asserted, not just the resumed one: `resumed` is only
+    /// readable as a ratio, and a field that is always true measures nothing.
+    #[test]
+    fn a_stream_open_records_whether_it_resumed() {
+        use sunrise_log::{build_subscriber, Capture, LogConfig, LogFormat, LogTarget};
+
+        let cap = Capture::new();
+        let dispatch = build_subscriber(LogConfig {
+            target: LogTarget::Capture(cap.clone()),
+            filter: "info".to_owned(),
+            format: LogFormat::Ndjson,
+        })
+        .expect("subscriber builds");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tracing::dispatcher::with_default(&dispatch, || {
+            rt.block_on(async {
+                let client = Client::new(ServerConfig::default());
+                let id = establish(&client).await;
+                subscribe(&client, &id, None).await;
+                assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+
+                // A cold open first: the ids a resume names come from it.
+                let first = read(&client, &id, &[]).await;
+                assert!(first.contains("id: 1"), "no id to resume from: {first}");
+                let _ = read(&client, &id, &[("last-event-id", "1")]).await;
+            });
+        });
+
+        let out = cap.contents();
+        assert!(!out.is_empty(), "the capture received no records at all");
+        let opens: Vec<serde_json::Value> = out
+            .lines()
+            .filter(|l| l.contains(r#""ev":"srv.sync.stream_open""#))
+            .map(|l| serde_json::from_str(l).expect("record is JSON"))
+            .collect();
+        assert_eq!(opens.len(), 2, "one record per opened stream: {out}");
+        assert_eq!(opens[0]["resumed"], serde_json::json!(false), "{out}");
+        assert_eq!(opens[1]["resumed"], serde_json::json!(true), "{out}");
+        for open in &opens {
+            assert!(
+                open["account_h"].is_string(),
+                "the record is scoped to an account by hash: {open}"
+            );
+        }
     }
 
     /// The defect #101 names, at the boundary.
