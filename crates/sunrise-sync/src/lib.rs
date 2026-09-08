@@ -10,6 +10,7 @@
 //! - [`Backoff`] — exponential backoff with jitter.
 //! - [`TokenSource`] — the shared, swappable bearer a session presents.
 //! - [`Transport`] — async trait the driver drives.
+//! - [`DeviceSigner`] — the device binding a transport puts on every request.
 //! - [`SseTransport`] — the production SSE + POST client transport (`sse`
 //!   feature).
 
@@ -23,6 +24,7 @@
 
 pub mod backoff;
 pub mod credential;
+pub mod signer;
 #[cfg(feature = "sse")]
 pub mod sse;
 pub mod state;
@@ -30,6 +32,7 @@ pub mod transport;
 
 pub use backoff::Backoff;
 pub use credential::{TokenSource, TokenWatch};
+pub use signer::DeviceSigner;
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;
 pub use state::SyncState;

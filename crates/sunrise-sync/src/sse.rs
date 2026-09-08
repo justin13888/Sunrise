@@ -21,6 +21,22 @@
 //! frame bytes, so that direction is a base64 decode rather than a re-encoding:
 //! what the driver applies is exactly what the relay stored.
 //!
+//! # The device binding
+//!
+//! Every one of those operations is bound to a [`DeviceSigner`] when the caller
+//! supplies one. Six routes are reached from here — the four `POST`s above, the
+//! revocation `DELETE`, and the `GET /sync/events` that opens the stream — and
+//! `sunrise_server::api::signed` demands a binding on all six under
+//! `require_device_sig`. The two bootstrap routes are not reached from here:
+//! `sunrise_relay_client::bootstrap` makes those, and a device cannot sign
+//! before the relay has a row for it, which is the exemption ADR-0022 records.
+//!
+//! A transport built without a signer sends no binding at all, which is what a
+//! self-host relay running `NullVerifier` expects and what
+//! `ServerConfig::validate` guarantees is the configured state there. So the
+//! signer is an option rather than a constructor argument: the unauthenticated
+//! path is a real deployment, not an omission.
+//!
 //! # Why the frames survive at all
 //!
 //! Because the payload types and their canonical CBOR encoding are unchanged —
@@ -30,6 +46,7 @@
 //! and `Hello::negotiate`'s frozen fixtures keep testing the thing they were
 //! written for.
 
+use crate::signer::DeviceSigner;
 use crate::transport::{RevokeOutcome, Transport, TransportError};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -38,6 +55,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, CaughtUpPayload, ClosePayload, CursorEntry,
     ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
@@ -60,6 +78,8 @@ pub struct SseTransport {
     /// Origin, no trailing slash: `http://127.0.0.1:8443`.
     base: String,
     bearer: Option<String>,
+    /// The device binding this transport presents, when it has one.
+    signer: Option<Arc<dyn DeviceSigner>>,
     /// Set by the reply to `Hello`. Every later operation presents it.
     session: Option<String>,
     /// Frames produced by an operation's own reply, waiting to be read.
@@ -78,6 +98,7 @@ impl std::fmt::Debug for SseTransport {
         f.debug_struct("SseTransport")
             .field("base", &self.base)
             .field("session", &self.session.is_some())
+            .field("bound", &self.signer.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -109,6 +130,7 @@ impl SseTransport {
             client: Client::builder(TokioExecutor::new()).build(https),
             base: base.trim_end_matches('/').to_owned(),
             bearer: bearer.map(ToOwned::to_owned),
+            signer: None,
             session: None,
             inbound: VecDeque::new(),
             events: None,
@@ -118,13 +140,53 @@ impl SseTransport {
         }
     }
 
+    /// Bind `signer`'s device to every request this transport makes.
+    ///
+    /// Builder rather than a constructor argument, so the unauthenticated
+    /// self-host path keeps the two-argument `connect` it already had — and so
+    /// the caller that *can* sign is the one that says so, rather than every
+    /// caller having to pass a `None`.
+    #[must_use]
+    pub fn with_device_signer(mut self, signer: Arc<dyn DeviceSigner>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// The three `header_sig_v2` headers for one request, or none if this
+    /// transport carries no binding.
+    ///
+    /// `body` is the value that will be sent, not the bytes: ADR-0022 signs the
+    /// RFC 8785 canonical form of the request *value*, which is what lets the
+    /// relay recompute the same string from what it parsed. Signing the octets
+    /// this client happens to emit would break the moment either side changed
+    /// its key order.
+    fn binding(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Vec<(&'static str, String)>, TransportError> {
+        let Some(signer) = &self.signer else {
+            return Ok(Vec::new());
+        };
+        let date = sunrise_http_sig::date_header(signer.now_ms());
+        let signature =
+            sunrise_http_sig::sign_with(|msg| signer.sign(msg), method, path, &date, body)
+                .map_err(|e| protocol(&e))?;
+        Ok(vec![
+            (sunrise_http_sig::DEVICE_HEADER, signer.device_id()),
+            (sunrise_http_sig::DEVICE_SIG_HEADER, signature),
+            ("date", date),
+        ])
+    }
+
     /// Issue one JSON request and read the whole reply.
     async fn call(
         &self,
         method: &str,
         path: &str,
         body: Option<serde_json::Value>,
-    ) -> Result<(hyper::StatusCode, Vec<u8>), TransportError> {
+    ) -> Result<Reply, TransportError> {
         let mut request = hyper::Request::builder()
             .method(method)
             .uri(format!("{}{path}", self.base));
@@ -133,6 +195,9 @@ impl SseTransport {
         }
         if let Some(session) = &self.session {
             request = request.header("x-sunrise-session", session);
+        }
+        for (name, value) in self.binding(method, path, body.as_ref())? {
+            request = request.header(name, value);
         }
         let request = match body {
             Some(value) => request
@@ -150,6 +215,7 @@ impl SseTransport {
             .await
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         let status = response.status();
+        let date = server_date(response.headers());
         let bytes = response
             .into_body()
             .collect()
@@ -157,7 +223,11 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?
             .to_bytes()
             .to_vec();
-        Ok((status, bytes))
+        Ok(Reply {
+            status,
+            date,
+            bytes,
+        })
     }
 
     /// Turn a non-2xx into the typed error the driver branches on.
@@ -170,27 +240,35 @@ impl SseTransport {
     /// stays as the fallback for a code this build does not know and for a body
     /// that carries none, which is what keeps an older client working against a
     /// newer relay.
-    fn refuse(status: hyper::StatusCode, body: &[u8]) -> TransportError {
+    ///
+    /// A refused *binding* additionally gets [`binding_advice`] appended, since
+    /// the code alone still leaves the user with nothing to do.
+    fn refuse(&self, reply: &Reply) -> TransportError {
         // The problem document carries the stable code as an extension member,
         // which is exactly what a client is meant to switch on.
-        let code = serde_json::from_slice::<serde_json::Value>(body)
+        let reported = serde_json::from_slice::<serde_json::Value>(&reply.bytes)
             .ok()
             .and_then(|v| {
                 v.get("code")
                     .and_then(|c| c.as_str())
                     .map(ToOwned::to_owned)
             })
-            .unwrap_or_else(|| status.as_str().to_owned());
-        let by_status = match status.as_u16() {
+            .unwrap_or_else(|| reply.status.as_str().to_owned());
+        let by_status = match reply.status.as_u16() {
             401 | 403 => "AUTH_TOKEN_INVALID",
             503 => "RELAY_STORAGE_UNAVAILABLE",
             _ => "SYNC_OP_INVALID",
         };
-        TransportError::Server {
-            code: sunrise_error::ErrorCode::from_wire_str(&code)
-                .map_or(by_status, sunrise_error::ErrorCode::as_str),
-            message: format!("{status}: {code}"),
+        let code = sunrise_error::ErrorCode::from_wire_str(&reported)
+            .map_or(by_status, sunrise_error::ErrorCode::as_str);
+        let mut message = format!("{}: {reported}", reply.status);
+        if code == sunrise_error::ErrorCode::AuthDeviceSigInvalid.as_str() {
+            message.push_str(&binding_advice(
+                reply.date.as_deref(),
+                self.signer.as_ref().map(|s| s.now_ms()),
+            ));
         }
+        TransportError::Server { code, message }
     }
 
     /// Open the event stream, resuming from the last id if there is one.
@@ -200,9 +278,12 @@ impl SseTransport {
                 "no sync session: send Hello first".to_owned(),
             ));
         };
+        // `SignedParts`: the stream is a bound route like every other, and
+        // hashes the empty string because it carries no body.
+        let target = "/api/v1/sync/events";
         let mut request = hyper::Request::builder()
             .method("GET")
-            .uri(format!("{}/api/v1/sync/events", self.base))
+            .uri(format!("{}{target}", self.base))
             .header("x-sunrise-session", session)
             .header(hyper::header::ACCEPT, "text/event-stream");
         if let Some(bearer) = &self.bearer {
@@ -210,6 +291,9 @@ impl SseTransport {
         }
         if let Some(id) = &self.last_event_id {
             request = request.header("last-event-id", id);
+        }
+        for (name, value) in self.binding("GET", target, None)? {
+            request = request.header(name, value);
         }
         let request = request
             .body(Full::new(Bytes::new()))
@@ -221,7 +305,14 @@ impl SseTransport {
             .await
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         if !response.status().is_success() {
-            return Err(Self::refuse(response.status(), &[]));
+            // The body is left unread rather than collected: a stream refusal
+            // is diagnosed from its status, its code and the relay's `Date`,
+            // and this path never had the body anyway.
+            return Err(self.refuse(&Reply {
+                status: response.status(),
+                date: server_date(response.headers()),
+                bytes: Vec::new(),
+            }));
         }
         self.events = Some(response.into_body());
         Ok(())
@@ -335,7 +426,7 @@ impl Transport for SseTransport {
                 // here, so this matches what the driver encodes today.
                 let hello: Hello =
                     ciborium::de::from_reader(&payload[..]).map_err(|e| protocol(&e))?;
-                let (status, body) = self
+                let reply = self
                     .call(
                         "POST",
                         "/api/v1/sync/session",
@@ -351,23 +442,23 @@ impl Transport for SseTransport {
                         })),
                     )
                     .await?;
-                if !status.is_success() {
-                    return Err(Self::refuse(status, &body));
+                if !reply.status.is_success() {
+                    return Err(self.refuse(&reply));
                 }
-                let reply: serde_json::Value =
-                    serde_json::from_slice(&body).map_err(|e| protocol(&e))?;
-                self.session = reply
+                let parsed: serde_json::Value =
+                    serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
+                self.session = parsed
                     .get("session_id")
                     .and_then(|s| s.as_str())
                     .map(ToOwned::to_owned);
 
                 let ack = HelloAck {
-                    server_app_v: field_str(&reply, "server_app_v"),
-                    wire_proto: field_u32(&reply, "wire_proto")?,
-                    crypto_suite: field_u32(&reply, "crypto_suite")?,
-                    doc_schema_floor: field_u32(&reply, "doc_schema_floor")?,
-                    capabilities: field_u64(&reply, "capabilities"),
-                    server_time_ms: field_u64(&reply, "server_time_ms"),
+                    server_app_v: field_str(&parsed, "server_app_v"),
+                    wire_proto: field_u32(&parsed, "wire_proto")?,
+                    crypto_suite: field_u32(&parsed, "crypto_suite")?,
+                    doc_schema_floor: field_u32(&parsed, "doc_schema_floor")?,
+                    capabilities: field_u64(&parsed, "capabilities"),
+                    server_time_ms: field_u64(&parsed, "server_time_ms"),
                 };
                 let mut payload = Vec::new();
                 ciborium::ser::into_writer(&ack, &mut payload).map_err(|e| protocol(&e))?;
@@ -389,15 +480,15 @@ impl Transport for SseTransport {
                         })
                     })
                     .collect();
-                let (status, body) = self
+                let reply = self
                     .call(
                         "POST",
                         "/api/v1/sync/subscribe",
                         Some(serde_json::json!({ "streams": streams })),
                     )
                     .await?;
-                if !status.is_success() {
-                    return Err(Self::refuse(status, &body));
+                if !reply.status.is_success() {
+                    return Err(self.refuse(&reply));
                 }
                 // The stream set changed, so the open stream is stale. Dropping
                 // it makes the next read reopen against the new set.
@@ -424,7 +515,7 @@ impl Transport for SseTransport {
                     .iter()
                     .map(|o| base64::engine::general_purpose::STANDARD.encode(o))
                     .collect();
-                let (status, body) = self
+                let reply = self
                     .call(
                         "POST",
                         "/api/v1/sync/ops",
@@ -435,15 +526,15 @@ impl Transport for SseTransport {
                         })),
                     )
                     .await?;
-                if !status.is_success() {
-                    return Err(Self::refuse(status, &body));
+                if !reply.status.is_success() {
+                    return Err(self.refuse(&reply));
                 }
-                let reply: serde_json::Value =
-                    serde_json::from_slice(&body).map_err(|e| protocol(&e))?;
+                let parsed: serde_json::Value =
+                    serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
                 let ack = AckPayload {
                     batch_id: batch.batch_id,
                     stream_id: batch.stream_id,
-                    server_first_seen_ms: field_u64(&reply, "server_first_seen_ms"),
+                    server_first_seen_ms: field_u64(&parsed, "server_first_seen_ms"),
                 };
                 let payload = ack.encode().map_err(|e| protocol(&e))?;
                 self.inbound.push_back(
@@ -454,20 +545,20 @@ impl Transport for SseTransport {
 
             MsgKind::RefreshToken => {
                 let refresh = RefreshTokenPayload::decode(&payload).map_err(|e| protocol(&e))?;
-                let (status, body) = self
+                let reply = self
                     .call(
                         "POST",
                         "/api/v1/sync/session/refresh",
                         Some(serde_json::json!({ "token": refresh.token })),
                     )
                     .await?;
-                if !status.is_success() {
-                    return Err(Self::refuse(status, &body));
+                if !reply.status.is_success() {
+                    return Err(self.refuse(&reply));
                 }
-                let reply: serde_json::Value =
-                    serde_json::from_slice(&body).map_err(|e| protocol(&e))?;
+                let parsed: serde_json::Value =
+                    serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
                 let ack = RefreshTokenAckPayload {
-                    expires_at_ms: field_u64(&reply, "expires_at_ms"),
+                    expires_at_ms: field_u64(&parsed, "expires_at_ms"),
                 };
                 let payload = ack.encode().map_err(|e| protocol(&e))?;
                 self.inbound.push_back(
@@ -571,7 +662,7 @@ impl Transport for SseTransport {
         // `by-vault-id`, not `/{device_id}`: that route names the ULID the
         // relay minted, which this vault has never held for any peer. Naming
         // the vault id is the whole reason the route exists.
-        let (status, body) = self
+        let reply = self
             .call(
                 "DELETE",
                 &format!(
@@ -581,7 +672,7 @@ impl Transport for SseTransport {
                 None,
             )
             .await?;
-        if status.is_success() {
+        if reply.status.is_success() {
             return Ok(RevokeOutcome::Revoked);
         }
         // Terminal but not success. The relay holds no active row with this
@@ -589,16 +680,81 @@ impl Transport for SseTransport {
         // device may still be registered under a row from before
         // `vault_device_id` existed, in which case it is still being accepted.
         // The caller says so out loud rather than reporting a revocation.
-        if status.as_u16() == 404 {
+        if reply.status.as_u16() == 404 {
             return Ok(RevokeOutcome::Unknown);
         }
         Err(TransportError::Server {
             code: "AUTH_DEVICE_REVOKE_FAILED",
             message: format!(
-                "relay refused the revocation: {status} {}",
-                String::from_utf8_lossy(&body)
+                "relay refused the revocation: {} {}{}",
+                reply.status,
+                String::from_utf8_lossy(&reply.bytes),
+                // The one request whose entire purpose is to work when a device
+                // has been lost, so a refusal that is really a clock has to say
+                // so here too rather than reading as "the relay would not".
+                binding_advice(
+                    reply.date.as_deref(),
+                    self.signer.as_ref().map(|s| s.now_ms())
+                )
             ),
         })
+    }
+}
+
+/// One reply, already read.
+struct Reply {
+    /// The status line.
+    status: hyper::StatusCode,
+    /// The relay's own `Date`, when it sent one.
+    ///
+    /// The only statement of server time a *refused* request carries, and
+    /// therefore the only way this side can tell "your clock is wrong" from
+    /// "your key is not registered" without a second round trip. hyper's
+    /// server writes one on every HTTP/1 response, but nothing in the scheme
+    /// requires it, so it is an `Option` and its absence degrades the advice
+    /// rather than the diagnosis.
+    date: Option<String>,
+    /// The whole body.
+    bytes: Vec<u8>,
+}
+
+/// The `Date` a response carried, if it carried a readable one.
+fn server_date(headers: &hyper::HeaderMap) -> Option<String> {
+    headers
+        .get(hyper::header::DATE)?
+        .to_str()
+        .ok()
+        .map(ToOwned::to_owned)
+}
+
+/// What to tell a user whose device binding was refused.
+///
+/// `AUTH_DEVICE_SIG_INVALID` covers four different situations — a clock outside
+/// the replay window, an unregistered key, a revoked device, and a binding that
+/// was not sent at all — and only one of them is the user's to fix. A bare 401
+/// sent them to `sunrise login`, which cannot help with any of the four.
+///
+/// The clock is separated out because it is both the commonest cause and the
+/// only one this side can *measure*: the relay's `Date` on the very response
+/// that refused the request is server time, so the skew is arithmetic rather
+/// than a guess. Where it can be measured and exceeds the window, that is
+/// stated as the cause; otherwise the remaining possibilities are listed, since
+/// naming a clock that is fine would send the user to fix the wrong thing.
+///
+/// `now_ms` is `None` for a transport carrying no signer, which is the fourth
+/// case and is named directly.
+fn binding_advice(server_date: Option<&str>, now_ms: Option<u64>) -> String {
+    let Some(now_ms) = now_ms else {
+        return " — this client sent no device binding and the relay requires one; register                 this device and give its transport a DeviceSigner"
+            .to_owned();
+    };
+    match server_date.and_then(|d| sunrise_http_sig::skew_secs(d, now_ms)) {
+        Some(skew) if skew.abs() > sunrise_http_sig::MAX_CLOCK_SKEW_SECS => format!(
+            " — this device's clock is {skew}s from the relay's, outside the {}s the              signature allows; set the system clock and retry",
+            sunrise_http_sig::MAX_CLOCK_SKEW_SECS
+        ),
+        _ => " — the relay refused this device's signature; the device may not be registered,               or may have been revoked"
+            .to_owned(),
     }
 }
 
@@ -654,8 +810,52 @@ fn error_frame(code: sunrise_error::ErrorCode, reason: &str) -> Result<Vec<u8>, 
 
 #[cfg(test)]
 mod tests {
-    use super::SseTransport;
+    use super::{binding_advice, Reply, SseTransport};
+    use crate::signer::DeviceSigner;
     use crate::transport::{Transport, TransportError};
+    use std::sync::Arc;
+
+    /// A signer over a fixed key and a fixed clock — the shape a test needs
+    /// and, minus the fixtures, the shape `Core` provides.
+    #[derive(Debug)]
+    struct FixedSigner {
+        key: ed25519_dalek::SigningKey,
+        device_id: String,
+        now_ms: u64,
+    }
+
+    impl DeviceSigner for FixedSigner {
+        fn device_id(&self) -> String {
+            self.device_id.clone()
+        }
+        fn sign(&self, message: &[u8]) -> [u8; 64] {
+            use ed25519_dalek::Signer as _;
+            self.key.sign(message).to_bytes()
+        }
+        fn now_ms(&self) -> u64 {
+            self.now_ms
+        }
+    }
+
+    fn signer(now_ms: u64) -> Arc<dyn DeviceSigner> {
+        Arc::new(FixedSigner {
+            key: ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]),
+            device_id: "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y".to_owned(),
+            now_ms,
+        })
+    }
+
+    /// `NOW_MS` is the instant `DATE` names.
+    const DATE: &str = "Mon, 31 Aug 2026 00:00:00 GMT";
+    const NOW_MS: u64 = 1_788_134_400_000;
+
+    fn reply(status: u16, body: &[u8], date: Option<&str>) -> Reply {
+        Reply {
+            status: hyper::StatusCode::from_u16(status).expect("a status"),
+            date: date.map(ToOwned::to_owned),
+            bytes: body.to_vec(),
+        }
+    }
 
     /// Compile-time assertion that this still fits the driver's transport slot.
     #[test]
@@ -683,13 +883,15 @@ mod tests {
         }
     }
 
+    const SIG_INVALID: &[u8] = br#"{"type":"https://sunrise.app/problems/unauthenticated","status":401,"code":"AUTH_DEVICE_SIG_INVALID"}"#;
+
     /// The regression: a `401` whose body names a code this build knows keeps
     /// that code. Flattening it to the status map is what left a client
     /// refreshing a bearer to cure a clock.
     #[test]
     fn a_typed_code_survives_the_status_map() {
-        let body = br#"{"type":"https://sunrise.app/problems/unauthenticated","status":401,"code":"AUTH_DEVICE_SIG_INVALID"}"#;
-        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, body);
+        let t = SseTransport::connect("http://127.0.0.1:1");
+        let err = t.refuse(&reply(401, SIG_INVALID, None));
         assert_eq!(code_of(&err), "AUTH_DEVICE_SIG_INVALID");
     }
 
@@ -698,11 +900,143 @@ mod tests {
     /// rather than dropped on the floor.
     #[test]
     fn an_untyped_401_still_maps_to_the_token_code() {
-        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, b"");
+        let t = SseTransport::connect("http://127.0.0.1:1");
+        let err = t.refuse(&reply(401, b"", None));
         assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
 
         let unknown = br#"{"status":401,"code":"AUTH_SOMETHING_FROM_THE_FUTURE"}"#;
-        let err = SseTransport::refuse(hyper::StatusCode::UNAUTHORIZED, unknown);
+        let err = t.refuse(&reply(401, unknown, None));
         assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+    }
+
+    fn message_of(err: &TransportError) -> String {
+        match err {
+            TransportError::Server { message, .. } => message.clone(),
+            other => panic!("expected a server refusal, got {other}"),
+        }
+    }
+
+    /// A clock outside the replay window is the commonest cause of this
+    /// refusal and the only one the user can fix, so the measurement the relay
+    /// handed back on the refusing response is turned into an instruction. The
+    /// bare code alone sent people to `sunrise login`, which cures nothing
+    /// here.
+    #[test]
+    fn a_skewed_clock_is_named_and_measured() {
+        let late = NOW_MS + (sunrise_http_sig::MAX_CLOCK_SKEW_SECS as u64 + 100) * 1000;
+        let t = SseTransport::connect("http://127.0.0.1:1").with_device_signer(signer(late));
+        let err = t.refuse(&reply(401, SIG_INVALID, Some(DATE)));
+        let message = message_of(&err);
+        assert!(message.contains("400s from the relay's"), "{message}");
+        assert!(message.contains("set the system clock"), "{message}");
+    }
+
+    /// And a clock that is *fine* must not be blamed: the same code then means
+    /// the key is unregistered or the device revoked, and naming the clock
+    /// would send the user to fix the one thing that is right.
+    #[test]
+    fn a_correct_clock_is_not_blamed_for_a_refused_key() {
+        let t = SseTransport::connect("http://127.0.0.1:1").with_device_signer(signer(NOW_MS));
+        let message = message_of(&t.refuse(&reply(401, SIG_INVALID, Some(DATE))));
+        assert!(!message.contains("clock is"), "{message}");
+        assert!(message.contains("revoked"), "{message}");
+
+        // A relay that sent no `Date` leaves the skew unmeasurable, which is
+        // the same "cannot blame the clock" answer rather than a guess.
+        let message = message_of(&t.refuse(&reply(401, SIG_INVALID, None)));
+        assert!(!message.contains("clock is"), "{message}");
+    }
+
+    /// A transport with no signer against a relay that requires one gets the
+    /// fourth case named, because "your signature is wrong" is misleading when
+    /// none was sent.
+    #[test]
+    fn an_unbound_transport_is_told_it_sent_no_binding() {
+        let t = SseTransport::connect("http://127.0.0.1:1");
+        let message = message_of(&t.refuse(&reply(401, SIG_INVALID, Some(DATE))));
+        assert!(message.contains("sent no device binding"), "{message}");
+    }
+
+    /// The advice is a pure function of the two facts it has, so the branch
+    /// boundary is pinned rather than approached only through a transport.
+    #[test]
+    fn the_skew_advice_turns_on_the_scheme_s_own_tolerance() {
+        let max = sunrise_http_sig::MAX_CLOCK_SKEW_SECS as u64;
+        let inside = binding_advice(Some(DATE), Some(NOW_MS + max * 1000));
+        assert!(!inside.contains("clock is"), "{inside}");
+        let outside = binding_advice(Some(DATE), Some(NOW_MS + (max + 1) * 1000));
+        assert!(outside.contains("clock is 301s"), "{outside}");
+    }
+
+    /// Every route this transport reaches is one `signed.rs` binds, so a
+    /// binding is produced for all of them — including the bodyless `GET` that
+    /// opens the stream and the revocation `DELETE`, which are the two easiest
+    /// to leave out because neither has a body to sign over.
+    #[test]
+    fn every_operation_this_transport_makes_carries_a_binding() {
+        let t = SseTransport::connect("http://127.0.0.1:1").with_device_signer(signer(NOW_MS));
+        for (method, path, body) in [
+            (
+                "POST",
+                "/api/v1/sync/session",
+                Some(serde_json::json!({"a": 1})),
+            ),
+            (
+                "POST",
+                "/api/v1/sync/subscribe",
+                Some(serde_json::json!({"streams": []})),
+            ),
+            (
+                "POST",
+                "/api/v1/sync/ops",
+                Some(serde_json::json!({"ops": []})),
+            ),
+            (
+                "POST",
+                "/api/v1/sync/session/refresh",
+                Some(serde_json::json!({"token": "t"})),
+            ),
+            ("GET", "/api/v1/sync/events", None),
+            (
+                "DELETE",
+                "/api/v1/devices/by-vault-id/01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                None,
+            ),
+        ] {
+            let headers = t.binding(method, path, body.as_ref()).expect("a binding");
+            let names: Vec<&str> = headers.iter().map(|(n, _)| *n).collect();
+            assert_eq!(
+                names,
+                vec!["x-sunrise-device", "x-sunrise-device-sig", "date"],
+                "{method} {path} must carry the whole binding"
+            );
+
+            // And the signature verifies against the key, over this exact
+            // target — which is what makes the header more than three
+            // well-named strings.
+            let key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+            sunrise_http_sig::verify(
+                &sunrise_http_sig::device_pub_b64(&key.verifying_key().to_bytes()),
+                &headers[1].1,
+                method,
+                path,
+                &headers[2].1,
+                body.as_ref(),
+                NOW_MS,
+            )
+            .unwrap_or_else(|e| panic!("{method} {path} must verify: {e}"));
+        }
+    }
+
+    /// A transport with no signer sends no binding at all, which is the
+    /// self-host `NullVerifier` deployment rather than an omission: sending an
+    /// empty or partial one would be refused where an absent one is accepted.
+    #[test]
+    fn an_unsigned_transport_sends_no_binding_headers() {
+        let t = SseTransport::connect("http://127.0.0.1:1");
+        assert!(t
+            .binding("GET", "/api/v1/sync/events", None)
+            .expect("no binding is not an error")
+            .is_empty());
     }
 }
