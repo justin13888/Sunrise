@@ -286,8 +286,10 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     if sub != "sync" {
         env.url = None;
     }
-    let plan =
-        livesync::plan_from_env(&env.with_stored(&login::store_for(&dir_for_store), core.now_ms()));
+    let plan = livesync::plan_from_env(
+        &env.with_stored(&login::store_for(&dir_for_store), core.now_ms())
+            .with_relay_device(&dir_for_store),
+    );
     // The startup banner names the files it touched, which is what the
     // two-replica walkthrough needs to see. stderr, because stdout is the
     // contract a script reads — and not a log record, because those strings
@@ -363,6 +365,19 @@ async fn dispatch(
                 bootstrap_device(core),
             )
             .await?;
+
+            // Recorded, not merely printed: `X-Sunrise-Device` names this row
+            // on every later request, and the relay never sends the id again.
+            // A client that dropped it would hold a signing key it could not
+            // say whose it was.
+            if let Err(e) = livesync::save_relay_device_id(vault_dir, &outcome.device_id) {
+                return Err(format!(
+                    "registered as {} but could not record it at {}: {e}",
+                    outcome.device_id,
+                    livesync::relay_device_path(vault_dir).display()
+                )
+                .into());
+            }
 
             println!(
                 "Account {} ({}) ready; this device is {}.",

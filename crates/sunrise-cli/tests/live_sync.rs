@@ -94,6 +94,7 @@ async fn tui_wiring_reaches_live_and_converges() {
         sync: Some(SyncConfig::new(url.clone())),
         export_pairing: Some(pairing_a.clone()),
         adopt_pairing: None,
+        device_id: None,
     };
     let (core_a, _log_a) = open_with_plan(
         dir_a.path().to_path_buf(),
@@ -116,6 +117,7 @@ async fn tui_wiring_reaches_live_and_converges() {
         sync: Some(SyncConfig::new(url.clone())),
         export_pairing: None,
         adopt_pairing: Some(pairing_a.clone()),
+        device_id: None,
     };
     let (core_b, _log_b) = open_with_plan(
         dir_b.path().to_path_buf(),
