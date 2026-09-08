@@ -1767,6 +1767,49 @@ async fn each_side_can_only_do_its_own_half() {
     ));
 }
 
+/// A device that is not the one the QR came from cannot finish the handshake,
+/// even though its transcript is perfectly well-formed.
+///
+/// Noise XX authenticates that the two ends of a transcript agree; it has no
+/// opinion about *which* static key the initiator should have presented, and
+/// the responder learns that key only in the third message. So the QR value is
+/// the only thing that can tell the honest new device from a relay sitting in
+/// the middle, and it authenticates nothing unless the scanner compares it
+/// (issue #152). The impostor here gets as far as the last message and no
+/// further — in particular, not as far as a SAS screen, where it would be
+/// playing for six digits.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_did_not_publish_the_qr_is_refused_before_the_sas() {
+    use sunrise_core_bindings::{DevicePairing, PairingStep};
+
+    let honest = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer");
+    let qr = honest.qr_payload().expect("qr");
+
+    // Somebody else drives the transcript against the scanned QR.
+    let impostor = DevicePairing::offer("wss://relay.example".into(), "ada@example.com".into())
+        .expect("offer");
+    let old_device = DevicePairing::accept(qr).expect("accept");
+
+    let m1 = impostor.next_message().expect("-> e");
+    old_device.receive_message(m1).expect("read e");
+    let m2 = old_device.next_message().expect("<- e ee s es");
+    impostor.receive_message(m2).expect("read ee es");
+    let m3 = impostor.next_message().expect("-> s se");
+
+    // The message decrypts. It is the identity behind it that is wrong.
+    assert!(matches!(
+        old_device.receive_message(m3),
+        Err(BindingError::Pairing(_))
+    ));
+    assert_eq!(old_device.step(), PairingStep::Finished);
+    assert!(matches!(old_device.sas(), Err(BindingError::Pairing(_))));
+    assert!(matches!(
+        old_device.confirm(true),
+        Err(BindingError::Pairing(_))
+    ));
+}
+
 /// The account tag in a QR names an account without naming a person: it is
 /// four bytes of BLAKE3 over the normalized address.
 #[tokio::test(flavor = "multi_thread")]

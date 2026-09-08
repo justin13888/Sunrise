@@ -320,22 +320,30 @@ impl Engine {
     /// divergence, from an ordinary backgrounded-app restart.
     ///
     /// The op log is the right source because `ops.ts_ms` **is** the stamp's
-    /// physical half for every row: `ops_insert_at` writes
-    /// `hlc.physical_ms` for a locally emitted op and
-    /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for an absorbed
-    /// one. Every durable stamp elsewhere — a materialized row's `lww_*`
+    /// physical half for every row: the local emit path writes
+    /// `hlc.physical_ms` for an op this device mints and
+    /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for one it
+    /// absorbs. Every durable stamp elsewhere — a materialized row's `lww_*`
     /// columns, a `device_revocations` cut — was carried by an op, so the log
     /// dominates all of them and no other table needs reading.
     ///
     /// The logical half is not a column, so it comes from decoding the
-    /// envelopes at that one millisecond. That is a handful of rows (`ts_ms` is
-    /// indexed only by stream, so this is one scan of a narrow column at open),
-    /// and it is needed: priming the physical half alone would leave a device
+    /// envelopes at that one millisecond. That is a handful of rows — usually
+    /// one — and it is needed: priming the physical half alone would leave a device
     /// that emitted `(t, 5)` before the restart emitting `(t, 1)` after it,
     /// which is the same inversion in the other half of the pair. An envelope
     /// that will not decode is skipped rather than fatal — it cannot have been
     /// applied, and refusing to open the vault over one is a worse answer than
     /// ignoring it.
+    ///
+    /// Both queries want `ops_by_ts` (migration 0021), and this is the only
+    /// caller that does. Without it they are two full scans of the widest table
+    /// in the vault, decrypted a page at a time, on **every** open, and the
+    /// cost grows for the life of the vault: measured at 18.1 ms for a 10k-op
+    /// log, 183 ms at 100k and 2.01 s at 1M, against about 60 us at all three
+    /// sizes with the index (issue #156;
+    /// `crates/sunrise-bench/benches/vault_open.rs` re-derives it, and
+    /// toggles the index itself so it still reads on both sides of 0021).
     ///
     /// See ADR-0036 (`docs/11-adr/0036-hlc-restored-at-open.md`) for the
     /// decision, including why this is a restore rather than the durable write
@@ -1080,6 +1088,38 @@ impl Engine {
     /// standing between a member and unbounded storage on every peer is the
     /// two caps. Overflow evicts oldest-first; see [`DEFERRED_TOTAL_CAP`] for
     /// why that direction and not the other.
+    ///
+    /// # Why `env.hlc` is deliberately not observed here
+    ///
+    /// [`Self::apply_remote_all`] absorbs a peer's stamp at its step (e), which
+    /// is *after* the decrypt at step (d) — so an op that parks here returns
+    /// before `self.hlc.observe(env.hlc)` and its stamp does not enter this
+    /// device's clock until its key arrives and [`Self::drain_deferred`] retries
+    /// it through the whole path. That omission is the intended behaviour, and
+    /// there are three reasons it is (issue #157):
+    ///
+    /// 1. **It would not survive an open.** [`Self::prime_hlc`] restores the
+    ///    clock from `ops`, and a parked op is in `deferred_ops`, which has no
+    ///    stamp column and is not read at open. Observing it would put the
+    ///    process above a reading the next restart cannot reproduce — an
+    ///    invented, unrepeatable clock position rather than a restored one.
+    /// 2. **A parked op is not necessarily an op at all.** It expires at
+    ///    `DEFERRED_TTL_MS`, it is evicted when either cap overflows, and a
+    ///    drained op that still will not apply is dropped. Absorbing the stamp
+    ///    of ciphertext this replica may never open drags every subsequent LWW
+    ///    comparison forward on the strength of a byte string it cannot read.
+    /// 3. **The clock bounds what was applied, not what arrived.** That is
+    ///    exactly what makes it usable: everything this device emits sorts above
+    ///    everything it has *acted on*. An op it cannot decrypt is not one it
+    ///    has acted on, and the retry re-runs the full path, so nothing is lost.
+    ///
+    /// What this costs is that between arrival and drain — unbounded, for a
+    /// device offline across a rotation — this replica holds a stamp on disk
+    /// that its clock does not reflect. Nothing reads [`HlcClock::peek`] for a
+    /// decision today; revocation did for one revision and
+    /// [`Self::is_revoked`] records why it stopped. Anything that starts
+    /// comparing against the local reading again has to answer this window
+    /// first.
     fn defer_op(
         &self,
         db: &mut Db,
@@ -7084,8 +7124,8 @@ fn insert_review_snapshot_row(
 /// routine ops: a calendar is per-Stream in the UI, so routing there keeps a
 /// Block's `seq` independent of the meta stream's.
 ///
-/// `Task.blocks` is never written. It is derived from `block_tasks` on read
-/// (see `read_task_blocks`), which is what makes the spec's "Bound Task's
+/// `Task.blocks` is never written. It is derived from the `block_tasks` join
+/// every time a Task is read, which is what makes the spec's "Bound Task's
 /// `blocks` field updates symmetrically" hold by construction: one writer, one
 /// op, and nothing for a concurrent edit of the Task to overwrite.
 impl Engine {

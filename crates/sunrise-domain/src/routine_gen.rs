@@ -49,7 +49,13 @@ use thiserror::Error;
 /// giving up. A daily rule over ~270 years still fits; anything larger is a
 /// pathological window and returns [`ExpandError::WindowTooLarge`] rather than
 /// spinning.
-const MAX_PERIODS: usize = 100_000;
+///
+/// Public because [`ExpandError::WindowTooLarge`] is public and this is the
+/// number that produced it. A caller that hits it has to decide whether to
+/// narrow the window or reject the rule, and that decision needs the bound;
+/// reading it out of this crate's source is not an answer for a caller in
+/// another crate.
+pub const MAX_PERIODS: usize = 100_000;
 
 /// One materialized occurrence of a routine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +70,7 @@ pub struct Occurrence {
 /// Errors returned by [`expand`] / [`Routine::occurrences_in`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExpandError {
-    /// The scan exceeded `MAX_PERIODS` interval periods without terminating.
+    /// The scan exceeded [`MAX_PERIODS`] interval periods without terminating.
     #[error("recurrence expansion window too large")]
     WindowTooLarge,
     /// The routine's IANA timezone string did not resolve against the bundled
@@ -357,7 +363,7 @@ fn apply_setpos(dates: &[Date], setpos: &[i32]) -> Vec<Date> {
 /// # Errors
 ///
 /// Returns [`ExpandError::WindowTooLarge`] if the scan would exceed
-/// `MAX_PERIODS` interval periods.
+/// [`MAX_PERIODS`] interval periods.
 pub fn expand(
     rrule: &RRule,
     anchor: Timestamp,

@@ -17,6 +17,7 @@
 // of the workspace relaxes this pedantic lint the same way.
 #![allow(clippy::doc_markdown)]
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -36,6 +37,10 @@ pub const FIXED_NOW_MS: u64 = 1_750_000_000_000;
 
 /// Milliseconds in a day.
 const DAY_MS: i64 = 86_400_000;
+
+/// The vault root key every seeded bench vault is encrypted under. Fixed so a
+/// bench can reopen [`BenchVault::db_path`] on its own connection.
+pub const VAULT_ROOT_KEY_BYTES: [u8; 32] = [7u8; 32];
 
 /// A rare marker word injected into ~1% of seeded titles. Benches search for it
 /// to exercise the FTS path against a realistically selective query.
@@ -85,8 +90,22 @@ pub struct BenchVault {
     pub engine: Engine,
     /// The open, file-backed SQLCipher database.
     pub db: Db,
+    // The file behind `db`, so a bench can reopen it on a cold connection.
+    db_path: PathBuf,
     // Kept last so the DB is dropped before the directory is removed.
     _dir: TempDir,
+}
+
+impl BenchVault {
+    /// The SQLCipher file behind [`Self::db`].
+    ///
+    /// A bench that wants a *cold* connection — no warm page cache, which is
+    /// what a real `Core::open` gets — reopens this path with
+    /// [`VAULT_ROOT_KEY_BYTES`] rather than reusing [`Self::db`].
+    #[must_use]
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
 }
 
 /// Open a fresh, empty, file-backed SQLCipher vault in a tempdir, wired to an
@@ -102,13 +121,14 @@ pub struct BenchVault {
 pub fn open_vault(seed: u64) -> BenchVault {
     let dir = tempfile::tempdir().expect("create tempdir");
     let db_path = dir.path().join("vault.db");
-    let mut db = Db::open(&db_path, &VaultRootKey::from_bytes([7u8; 32])).expect("open vault db");
+    let mut db =
+        Db::open(&db_path, &VaultRootKey::from_bytes(VAULT_ROOT_KEY_BYTES)).expect("open vault db");
 
     let clock: Arc<dyn Clock> = Arc::new(FixedClock(FIXED_NOW_MS));
     let rng: Arc<dyn Rng> = Arc::new(SeededRng::new(seed));
     let keychain = Keychain::open(
         &mut db,
-        VaultRootKey::from_bytes([7u8; 32]),
+        VaultRootKey::from_bytes(VAULT_ROOT_KEY_BYTES),
         clock.as_ref(),
         rng.as_ref(),
         None,
@@ -119,6 +139,7 @@ pub fn open_vault(seed: u64) -> BenchVault {
     BenchVault {
         engine,
         db,
+        db_path,
         _dir: dir,
     }
 }
@@ -220,6 +241,108 @@ pub fn seed_tasks(vault: &mut BenchVault, n: usize, content_seed: u64) -> Vec<St
         }
     }
     ids
+}
+
+/// How many real commands [`grow_op_log`] applies before it starts cloning.
+///
+/// Public for the same reason [`FIXED_NOW_MS`] and [`RARE_WORD`] are: it
+/// describes the data a bench is measuring against, and a bench that reasons
+/// about how many *distinct* envelopes its vault holds needs the number.
+pub const OP_LOG_REAL_TASKS: usize = 200;
+
+/// The window [`grow_op_log`] spreads `ts_ms` over: two years, in milliseconds.
+///
+/// Public because it, with the row count, is what says how many rows are
+/// expected to share a millisecond — the quantity that decides whether a
+/// `WHERE ts_ms = ?` lookup returns one row or a thousand.
+pub const OP_LOG_SPAN_MS: i64 = 2 * 365 * DAY_MS;
+
+/// Grow `vault`'s **op log** to about `n` rows, with `ts_ms` spread over two
+/// years and exactly one row at the maximum.
+///
+/// Driving `n` real commands is not viable past a few tens of thousands — each
+/// `Engine::apply` is its own SQLCipher transaction — so this applies
+/// [`OP_LOG_REAL_TASKS`] real ones and then clones those rows, doubling, until
+/// the table is big enough. A clone is a byte-identical `envelope` under a
+/// fresh `op_id` and a shifted `seq`, so the rows are the size and shape the
+/// real path produces and the table occupies a realistic number of pages,
+/// which is what an unindexed scan pays for.
+///
+/// `ts_ms` is then spread uniformly over [`OP_LOG_SPAN_MS`] ending at
+/// [`FIXED_NOW_MS`], and one real row is put back at `FIXED_NOW_MS` so that
+/// `MAX(ts_ms)` selects a single row whose envelope really does carry that
+/// physical half. That is the realistic case: a vault's newest op is one op,
+/// not a burst sharing a millisecond.
+///
+/// The result is a vault suitable for **op-log scan** benchmarks only. Cloned
+/// rows repeat their source envelope's identity, so their `ts_ms` no longer
+/// agrees with the stamp inside their `envelope` and nothing that reads an op's
+/// content should be pointed at one.
+///
+/// Returns the resulting row count.
+///
+/// # Panics
+/// Panics if seeding or any of the bulk statements fails.
+pub fn grow_op_log(vault: &mut BenchVault, n: usize) -> usize {
+    seed_tasks(vault, OP_LOG_REAL_TASKS, 100);
+    let real: i64 = vault
+        .db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM ops", [], |r| r.get(0))
+        .expect("count ops");
+    let target = i64::try_from(n).expect("target fits i64");
+
+    let mut have = real;
+    while have < target {
+        // Copy at most what is still missing, so the table lands near `n`
+        // rather than at the next power of two above it.
+        let take = (target - have).min(have);
+        let max_seq: Option<i64> = vault
+            .db
+            .conn()
+            .query_row("SELECT MAX(seq) FROM ops", [], |r| r.get(0))
+            .expect("max seq");
+        let seq_shift = max_seq.unwrap_or(0) + 1;
+        vault
+            .db
+            .with_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO ops
+                       (op_id, stream_id, device_id, seq, ts_ms, envelope,
+                        inner_kind, target_kind, target_id, applied_at,
+                        received_from, received_at)
+                     SELECT randomblob(16), stream_id, device_id, seq + ?1, ts_ms, envelope,
+                            inner_kind, target_kind, target_id, applied_at,
+                            received_from, received_at
+                       FROM ops
+                      ORDER BY rowid
+                      LIMIT ?2",
+                    rusqlite::params![seq_shift, take],
+                )?;
+                Ok(())
+            })
+            .expect("clone ops");
+        have += take;
+    }
+
+    let base = i64::try_from(FIXED_NOW_MS).expect("fixed now fits i64") - OP_LOG_SPAN_MS;
+    vault
+        .db
+        .with_tx(|tx| {
+            tx.execute(
+                "UPDATE ops SET ts_ms = ?1 + (abs(random()) % ?2)",
+                rusqlite::params![base, OP_LOG_SPAN_MS],
+            )?;
+            // One row, and a real one, at the maximum.
+            tx.execute(
+                "UPDATE ops SET ts_ms = ?1 WHERE rowid = 1",
+                rusqlite::params![i64::try_from(FIXED_NOW_MS).expect("fixed now fits i64")],
+            )?;
+            Ok(())
+        })
+        .expect("spread ts_ms");
+
+    usize::try_from(have).expect("row count fits usize")
 }
 
 /// Convert epoch-ms to a jiff [`Timestamp`], clamping to the valid range.

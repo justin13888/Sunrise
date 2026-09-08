@@ -160,13 +160,14 @@ CJK quality is acknowledged as basic; v1.1 introduces a per-locale CJK tokenizer
 
 ## Indexes
 
-Defined alongside their tables in the baseline. The ones that carry a read path
-rather than merely a foreign key:
+Defined alongside their tables in the baseline, except where a later migration
+is named. The ones that carry a read path rather than merely a foreign key:
 
 | Index | What it serves |
 |---|---|
 | `ops_by_stream (stream_id, seq)` | Replay and backfill in causal order. |
 | `ops_unapplied (applied_at) WHERE applied_at IS NULL` | The reconciliation pass. |
+| `ops_by_ts (ts_ms)` (migration 0021) | The HLC restore at open. Without it the two queries `Engine::prime_hlc` runs are full scans of `ops`, which is 2.0 s on a million-op vault. |
 | `tasks_by_due (due_at_ms) WHERE due_at_ms IS NOT NULL` | Today and the deadline views. |
 | `task_blockers_by_blocker` | The reverse dependency direction. |
 | `contexts_by_name (name COLLATE NOCASE) WHERE deleted = 0` | `@name` resolution during capture. Deliberately **not** UNIQUE — see the baseline's comment. |

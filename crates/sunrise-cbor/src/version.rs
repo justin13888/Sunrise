@@ -109,4 +109,11 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// relay has to be told out of band; `revoke_device` must work with no network,
 /// because a device that is gone is the whole scenario, so the telling cannot
 /// be part of the command. The row is what remembers it is owed.
-pub const STORAGE_V: u16 = 20;
+///
+/// `21` is migration `0021_ops_by_ts.sql`, an index on `ops (ts_ms)`. The HLC
+/// restore at open (`Engine::prime_hlc`, ADR-0036) reads the greatest stamp in
+/// the op log, and `ops` carried no index on that column, so every open ran two
+/// full scans of the widest table in the vault, decrypting it a page at a time.
+/// Measured at 18.1 ms for a 10k-op log, 183 ms at 100k and 2.01 s at 1M;
+/// with the index, about 60 us at all three.
+pub const STORAGE_V: u16 = 21;
