@@ -32,5 +32,9 @@ rand_core = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }
+# The device-bound scenario registers a real `D_S_pub` and reads the scheme's
+# own clock tolerance; both belong to the crate that defines `header_sig_v2`
+# rather than being restated here.
+sunrise-http-sig = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3"
