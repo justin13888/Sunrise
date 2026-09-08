@@ -1,0 +1,14 @@
+# Every file under this directory is a **fuzz corpus input**: a byte string
+# that is fed to a parser verbatim. Several are not text at all (encoded
+# `OpEnvelope`s, wire frames, a sealed recovery blob, NUL-separated OAuth
+# triples), and the `.ics` seeds are CRLF-terminated because RFC 5545 §3.1
+# says content lines are — the same reason
+# `crates/sunrise-integrations/testdata/.gitattributes` exists, and these are
+# copies of those fixtures.
+#
+# Without `-text` the repo's `core.autocrlf=input` rewrites CRLF to LF on
+# commit, which silently changes what the fuzzer is seeded with: the `ical`
+# target would start from a folding shape no calendar client emits, and a
+# binary seed could be corrupted outright. `-diff` keeps `git log -p` from
+# rendering a page of mojibake for a blob nobody reads as text.
+* -text -diff

@@ -188,7 +188,11 @@ fn rel(path: &Path, root: &Path) -> String {
 ///
 /// Derived from `mise.toml`, which is where every build command in this repo
 /// lives: a `--manifest-path` there is the build system naming a crate outside
-/// the workspace, and `tools/uniffi-bindgen` is the one it names today.
+/// the workspace. Two are named today — `tools/uniffi-bindgen`, by
+/// `apple-xcframework`, and `fuzz/`, by `rust-fmt-check`. `fuzz/` is reached
+/// by `cargo fuzz --fuzz-dir` rather than by `--manifest-path` when it is
+/// *fuzzed*, which this scan would not see; what puts it in the set is that
+/// its formatting is checked by manifest path like any other crate's.
 ///
 /// This is deliberately *not* a directory walk. What matters is what the repo
 /// builds, and a walk answers a different question — it finds `cargo vendor`
@@ -608,14 +612,27 @@ struct BuildTool {
     why: &'static str,
 }
 
-const BUILD_TOOLS: &[BuildTool] = &[BuildTool {
-    package: "uniffi-bindgen",
-    why: "eleven lines calling `uniffi::uniffi_bindgen_main()`, quarantined from \
-          the workspace on purpose and driven only by `mise run apple-xcframework`. \
-          Its output is Swift source, not operator logs. Its own manifest says \
-          `Build tool only; never shipped`. Those eleven lines are read by the \
-          guard rather than described to it.",
-}];
+const BUILD_TOOLS: &[BuildTool] = &[
+    BuildTool {
+        package: "uniffi-bindgen",
+        why: "eleven lines calling `uniffi::uniffi_bindgen_main()`, quarantined from \
+              the workspace on purpose and driven only by `mise run apple-xcframework`. \
+              Its output is Swift source, not operator logs. Its own manifest says \
+              `Build tool only; never shipped`. Those eleven lines are read by the \
+              guard rather than described to it.",
+    },
+    BuildTool {
+        package: "sunrise-fuzz",
+        why: "six `cargo-fuzz` harnesses, one file per target, each of which decodes \
+              attacker bytes through a workspace crate's public API and asserts an \
+              invariant. Quarantined from the workspace because `cargo-fuzz` needs a \
+              nightly rustc for `-Zsanitizer=address` and this one is pinned to \
+              1.91.1 (ADR-0026). Its output is a libFuzzer corpus and, on a finding, \
+              a reproducer file — never operator logs. Each of the six files is read \
+              by the guard, and the code they *drive* is workspace source, scanned \
+              from dep-info like everything else.",
+    },
+];
 
 /// Every shipped target, as `(package, src_path, in the workspace)`.
 fn shipped_targets() -> Vec<(String, PathBuf, bool)> {

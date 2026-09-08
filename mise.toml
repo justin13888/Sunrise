@@ -79,13 +79,33 @@ run = "bun run test:coverage"
 
 # --- Rust (Cargo) ---
 
+# Two commands, not one, on both of these. `--all` means "every member of the
+# workspace this manifest names", and `fuzz/` is deliberately its own workspace
+# root (see `fuzz/Cargo.toml`), so the root invocation cannot reach it. Naming
+# its manifest here is also what puts `fuzz/Cargo.toml` in front of
+# `crates/sunrise-log/tests/event_catalog.rs`, which derives the
+# out-of-workspace half of its file set from the manifest paths this file
+# names. (Spelling that flag out in prose is not possible here: the scan is a
+# text search over this file and would read the word in a comment as a path,
+# then fail because no manifest is at `\``.) The same scan is why the manifest
+# path is not the last token of either command: it reads the path as the next
+# whitespace-delimited word and strips quotes, not the `",` that closes a TOML
+# array element, so a path at the end of one of these strings is read as
+# `fuzz/Cargo.toml",` and the gate fails closed on a manifest that is not
+# there. Do not "tidy" the flag order back.
 [tasks.rust-fmt-check]
 description = "Check Rust formatting, no writes"
-run = "cargo fmt --all -- --check"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check",
+]
 
 [tasks.rust-fmt]
 description = "Format Rust code in place"
-run = "cargo fmt --all"
+run = [
+  "cargo fmt --all",
+  "cargo fmt --manifest-path fuzz/Cargo.toml --all",
+]
 
 [tasks.rust-clippy]
 description = "Lint Rust with Clippy (warnings denied)"
@@ -176,6 +196,76 @@ rustc --edition 2021 --crate-type rlib --emit=metadata \
   --out-dir "$meta" packages/sunrise-ui-tokens/generated/tokens.rs
 rustfmt --check --edition 2021 packages/sunrise-ui-tokens/generated/tokens.rs
 '''
+
+# --- Fuzzing (cargo-fuzz) ---
+#
+# The harnesses live in `fuzz/`, which is its own cargo workspace. Two things
+# force that and neither is negotiable:
+#
+# 1. `cargo-fuzz` compiles a target with `-Zsanitizer=address` and the `sancov`
+#    coverage passes, which are **nightly** rustc flags. This workspace pins
+#    1.91.1 in `rust-toolchain.toml` under ADR-0026, and CI asserts that four
+#    separate files agree about that number.
+# 2. `libfuzzer-sys` and its C++ runtime would otherwise land in the root
+#    `Cargo.lock` and be resolved on every ordinary workspace build.
+#
+# So the toolchain is selected per invocation with `+`, defaulting to whatever
+# `nightly` currently resolves to. `SUNRISE_FUZZ_TOOLCHAIN` pins it to a dated
+# nightly when a run has to be reproducible:
+# `SUNRISE_FUZZ_TOOLCHAIN=nightly-2026-06-10 mise run fuzz-build`. There is no
+# pin in this file because a pinned nightly nobody refreshes rots into "install
+# this exact 400 MB toolchain to run one gate", and the harnesses use no
+# nightly *language* feature — only the sanitizer flags, which every nightly
+# has.
+#
+# `cargo-fuzz` must be installed first: `cargo install cargo-fuzz --locked`. It
+# is not in `[tools]` because mise has no backend for it, and a `cargo:`
+# backend entry would build it from source on every developer's first task.
+
+[tasks.fuzz-build]
+description = "Build every cargo-fuzz target (the compile gate for fuzz/, run locally)"
+shell = "bash -c"
+run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
+
+# Ten seconds a target, six targets: about a minute once the build is warm.
+# This is not a search — ten seconds finds nothing a corpus does not already
+# contain. What it proves is that each harness starts, reads its committed
+# seeds, and does not abort on one of them, which is the failure `fuzz-build`
+# cannot catch and the one that actually happens when a crate under test
+# changes its behaviour.
+#
+# `SUNRISE_FUZZ_SECONDS` raises the budget. Note it is a different name from
+# `SUNRISE_FUZZ_SEED`, which `docs/10-cross-cutting/testing.md` §5 documents as
+# the chaos harness's variable and says is the only consumer in the workspace;
+# that sentence stays true.
+[tasks.fuzz-smoke]
+description = "Run every fuzz target briefly against its committed seeds. Proves they execute"
+shell = "bash -c"
+run = """
+set -euo pipefail
+seconds="${SUNRISE_FUZZ_SECONDS:-10}"
+for target in op_envelope wire_frame rrule ical oauth_state recovery_blob; do
+  mkdir -p "fuzz/corpus/$target"
+  echo "== $target (${seconds}s)"
+  cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$target" \
+    "fuzz/corpus/$target" "fuzz/seeds/$target" -- -max_total_time="$seconds"
+done
+"""
+
+[tasks.fuzz]
+description = "Fuzz one target for a while: `mise run fuzz op_envelope 3600`"
+shell = "bash -c"
+usage = """
+arg "<target>" default="op_envelope"
+arg "<seconds>" default="600"
+"""
+run = """
+set -euo pipefail
+mkdir -p "fuzz/corpus/$usage_target"
+cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$usage_target" \
+  "fuzz/corpus/$usage_target" "fuzz/seeds/$usage_target" \
+  -- -max_total_time="$usage_seconds"
+"""
 
 [tasks.bench]
 description = "Run the Criterion benchmark suite (submit / query_today / fts / sync_session)"
