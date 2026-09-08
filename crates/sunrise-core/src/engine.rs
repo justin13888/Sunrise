@@ -1088,6 +1088,38 @@ impl Engine {
     /// standing between a member and unbounded storage on every peer is the
     /// two caps. Overflow evicts oldest-first; see [`DEFERRED_TOTAL_CAP`] for
     /// why that direction and not the other.
+    ///
+    /// # Why `env.hlc` is deliberately not observed here
+    ///
+    /// [`Self::apply_remote_all`] absorbs a peer's stamp at its step (e), which
+    /// is *after* the decrypt at step (d) — so an op that parks here returns
+    /// before `self.hlc.observe(env.hlc)` and its stamp does not enter this
+    /// device's clock until its key arrives and [`Self::drain_deferred`] retries
+    /// it through the whole path. That omission is the intended behaviour, and
+    /// there are three reasons it is (issue #157):
+    ///
+    /// 1. **It would not survive an open.** [`Self::prime_hlc`] restores the
+    ///    clock from `ops`, and a parked op is in `deferred_ops`, which has no
+    ///    stamp column and is not read at open. Observing it would put the
+    ///    process above a reading the next restart cannot reproduce — an
+    ///    invented, unrepeatable clock position rather than a restored one.
+    /// 2. **A parked op is not necessarily an op at all.** It expires at
+    ///    `DEFERRED_TTL_MS`, it is evicted when either cap overflows, and a
+    ///    drained op that still will not apply is dropped. Absorbing the stamp
+    ///    of ciphertext this replica may never open drags every subsequent LWW
+    ///    comparison forward on the strength of a byte string it cannot read.
+    /// 3. **The clock bounds what was applied, not what arrived.** That is
+    ///    exactly what makes it usable: everything this device emits sorts above
+    ///    everything it has *acted on*. An op it cannot decrypt is not one it
+    ///    has acted on, and the retry re-runs the full path, so nothing is lost.
+    ///
+    /// What this costs is that between arrival and drain — unbounded, for a
+    /// device offline across a rotation — this replica holds a stamp on disk
+    /// that its clock does not reflect. Nothing reads [`HlcClock::peek`] for a
+    /// decision today; revocation did for one revision and
+    /// [`Self::is_revoked`] records why it stopped. Anything that starts
+    /// comparing against the local reading again has to answer this window
+    /// first.
     fn defer_op(
         &self,
         db: &mut Db,
