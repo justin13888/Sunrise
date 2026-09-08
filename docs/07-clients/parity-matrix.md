@@ -140,8 +140,8 @@ around it is recorded in the cells below and in
 | Focus mode | met | sidebar → `FocusView` → `FocusModel` (plan, start, interrupt, cascade) |
 | Time-blocking on calendar grid | met | sidebar → `CalendarView` → `CalendarModel`; day and week |
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
-| Attachments — view image/PDF | met | task editor → Attachments pane; `PDFKit` inline, images inline |
-| Attachments — upload | met | `Attach…` file importer **and** a drop target on the pane |
+| Attachments — view image/PDF | met *(bytes this device holds)* | task editor → Attachments pane; `PDFKit` inline, images inline. What it can draw is what is stored here: an attachment whose metadata arrived from a paired device has no chunks on this one and draws greyed as "not on this device", per the *upload* row below |
+| Attachments — upload | met *(into this device's vault; no relay upload)* | `Attach…` file importer (`AttachmentsView.swift:38`) **and** a drop target on the pane (`:32`) → `AttachmentsModel.attach(contentsOf:)` (`:102`) → `CoreBridge.attachFile` (`:109`) → the seam (`sunrise-core-bindings/src/lib.rs:547`) → `Core::attach_file` (`sunrise-core/src/attach.rs:100`), which mints a per-blob key, seals each chunk and writes it to **this vault's** blob store — `$VAULT/blobs/…` on the local filesystem (`sunrise-storage/src/blob_store.rs:31`, `:46`) — before submitting `Command::AttachFile`. That is where the bytes stop. The metadata op travels (an ordinary `InnerOp::AttachmentCreate` sequenced under the parent Task's Stream, `engine.rs:7634`) and the ciphertext does not, because nothing in the workspace calls `POST /blobs/init` → `PUT` → `finalize` ([#176](https://github.com/justin13888/Sunrise/issues/176)). A **met** on this table's own rule — the row's core action completes and its result is listed, previewed, opened and exported on the device that took it — with the qualifier carrying the half that is not built |
 | Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
 | Keyboard navigation | met | every binding in [keyboard.md](../08-features/keyboard.md)'s macOS column, transcribed as data in `Keymap.swift`, plus the palette and the cheat sheet |
@@ -231,8 +231,8 @@ it is the record of what a user can actually reach on a phone.
 | Focus mode | met | Focus tab (`VaultTabs.swift:80-86`) → the shared `FocusView`, and **Start focus session** on any row (`TaskListView.swift:225`) |
 | Time-blocking on calendar grid | met | Calendar tab (`VaultTabs.swift:70-76`) → the shared `CalendarView`: drag-to-create (`:220`), block move (`:408`) and resize (`:445`), `BlockEditorView` on tap |
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor` (`TaskEditorView.swift:92`). Checklist ticks draw as filling circles rather than switches, because the iOS default for a `Toggle` says "this setting is on" where a checklist means "this is done" (`PlatformKit.swift:187-212`). Scope per ADR-0020 |
-| Attachments — view image/PDF | met | task editor → Attachments pane (`TaskEditorView.swift:93`); `PDFView` bridged through `UIViewRepresentable` (`AttachmentsView.swift:165-169`) |
-| Attachments — upload | met | `.fileImporter` (`AttachmentsView.swift:38`) and a URL drop target beside it (`:32`) |
+| Attachments — view image/PDF | met *(bytes this device holds)* | task editor → Attachments pane (`TaskEditorView.swift:93`); `PDFView` bridged through `UIViewRepresentable` (`AttachmentsView.swift:165-169`). Same scope note as the Mac's row and for the same reason: only chunks stored on this device can be drawn |
+| Attachments — upload | met *(into this device's vault; no relay upload)* | `.fileImporter` (`AttachmentsView.swift:38`) and a URL drop target beside it (`:32`) — the same shared `AttachmentsModel` and the same core path the Mac reaches, since `apps/apple/Sunrise/` compiles into both targets (`project.yml:75`, `:169`). Narrow here exactly as on the Mac, and the narrowness is the seam's rather than iOS's: the sealed chunks land in this vault's blob store and no client drives the relay's upload routes ([#176](https://github.com/justin13888/Sunrise/issues/176)). See the macOS row above |
 | Search (FTS) | met *(plain-text half)* | the `.search`-role tab (`VaultTabs.swift:90-92`) → the shared `SearchView`. It issues the identical literal-AND FTS query the Mac does and inherits the identical narrowness ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | the shared `SavedViewsMenu` on the toolbar of the three screens a saved view can name — Today, a pushed list and Search (`iOS/VaultTabs.swift`, `savedViewsButton(for:)`) — recalling through the same `show(_:)` a deep link uses, and saving through `SaveViewSheet` on a detent (`iOS/VaultSurfaces.swift`, `LibrarySurfaces`). Not Browse's overflow, where "Save this view…" would have meant the sidebar. Driven end to end by `LibraryReachUITests` |
 | Keyboard navigation | met *(list keymap)* | `onKeyChord(scope: .list…)` on the shared `TaskListView` (`:118`) — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. **Nothing above it**: `onKeyChord` is applied in that one place in the whole tree, so every `.application`-scoped chord (`Keymap.swift:177-199`) reaches a user only through the Mac's `Commands` scene, and the palette and the cheat sheet are handed inert closures (`VaultTabs.swift:283-288`) |
@@ -275,7 +275,18 @@ over:
   field to hold them — so a recurring event lands as a single occurrence. Every
   loss raises a notice rather than passing silently, but the round-trip the
   mapping rules describe does not exist yet. Print covers four surfaces and
-  skips two by decision. Search reaches FTS5 on tasks only,
+  skips two by decision. **Attachments keep their bytes at home**:
+  `Core::attach_file` seals the chunks into *this* vault's blob store
+  (`sunrise-core/src/attach.rs:100-137`) and the metadata op syncs, but nothing
+  in the workspace calls the relay's `init` → `PUT` → `finalize`, so an
+  attachment made here cannot be opened on a paired device — which the pane
+  renders as a greyed row reading "not on this device"
+  (`AttachmentsView.swift:120`, `:131`) rather than as a failure, because
+  `Core::attachment_is_local` distinguishes the two cases. The *upload* row is a
+  met for the action a user completes; the byte sync a reader would take it to
+  imply is filed as
+  [#176](https://github.com/justin13888/Sunrise/issues/176). Search reaches
+  FTS5 on tasks only,
   as a literal AND of quoted terms: every operator
   [search.md](../08-features/search.md) specifies is currently matched as a
   literal word, and the by-kind grouping does not exist.
@@ -315,10 +326,11 @@ over:
   one-handed gesture ends where it started, and the two-handed one is beyond
   what XCUITest can express. Both halves are written up in
   [`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix).
-  Search and *Pairing — scan QR* are
-  narrow here in exactly the way they are on the Mac, and neither narrowness is
-  iOS's: the literal-AND FTS query is the seam's, while the absent camera
-  scanner is shared SwiftUI rather than anything in the core. See the macOS
+  Search, *Pairing — scan QR* and the two *Attachments* rows are
+  narrow here in exactly the way they are on the Mac, and none of the three
+  narrownesses is iOS's: the literal-AND FTS query and the attachment byte path
+  are the seam's, while the absent camera scanner is shared SwiftUI rather than
+  anything in the core. See the macOS
   note above.
 
   Two things that were narrow here are no longer, and both are recorded rather

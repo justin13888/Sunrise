@@ -317,6 +317,21 @@ content address, and writes the **manifest last**. A reader that finds no
 manifest sees no blob, so a crash mid-commit leaves an invisible partial rather
 than a short read.
 
+**No client calls any of the four.** Outside the handlers, the only mentions in
+the workspace are this document, the generator's two omit rules
+(`crates/sunrise-relay-client/build.rs:42`, `:46`) and the log field catalogue.
+They are the API for a client that has not landed rather than dead weight:
+`Core::attach_file` seals an attachment's chunks into the *local* vault's blob
+store and stops there, so until an uploader drives these routes an attachment is
+readable only on the device that made it
+([`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch,
+[#176](https://github.com/justin13888/Sunrise/issues/176)). Two of the four are
+also absent from the generated relay
+client — the raw-binary chunk `PUT` and the blob `GET` — because kynos and
+spargen disagree about how OpenAPI 3.1 describes a raw binary body; `build.rs`
+records the disagreement, so whoever writes the caller hand-writes those two and
+generates `init` and `finalize`.
+
 **Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
 an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
 §Deletion makes it a tombstone plus a device-cursor quorum and a 30-day grace

@@ -98,7 +98,9 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 - Re-tapping a `partial: true` attachment retries from byte 0 (chunks are 256 KiB each, per [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) §blob-chunks; the cache uses chunk granularity but resume-from-partial is not implemented in v1).
 - Cellular vs Wi-Fi: per-platform setting `auto_fetch_on_cellular: bool = false`.
 
-> **Lazy fetch is not reachable in v1.** There is no client-side uploader:
+> **Lazy fetch is not reachable in v1**
+> ([#176](https://github.com/justin13888/Sunrise/issues/176)). There is no
+> client-side uploader:
 > `Core::attach_file` seals chunks into the *local* vault's `BlobStore` and the
 > metadata op syncs, but nothing drives the relay's
 > `init` → `PUT` → `finalize` flow, which is implemented and tested
@@ -110,8 +112,12 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 ## Client limitations
 
 - `sunrise-cli` has no attachment surface at all — no subcommand reaches
-  `AttachFile`, `DetachFile` or `TaskAttachments`. Attachments are macOS-only
-  in v1 (`apps/apple/Sunrise/Tasks/AttachmentsModel.swift`).
+  `AttachFile`, `DetachFile` or `TaskAttachments`. The pane is Apple-only in
+  v1, and it is *shared* rather than macOS-only:
+  `apps/apple/Sunrise/Views/AttachmentsView.swift` and
+  `apps/apple/Sunrise/Tasks/AttachmentsModel.swift` compile into both targets
+  (`apps/apple/project.yml:75`, `:169`) and are reached from the task editor on
+  each (`apps/apple/Sunrise/Views/TaskEditorView.swift:93`).
 - Web in private-browsing mode cannot persist large attachment caches; falls back to per-session memory cache.
 
 ## Deletion
