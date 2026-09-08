@@ -234,6 +234,18 @@ description = "Reject a doc comment mangled into a shape rustdoc misreads (the C
 run = ".github/scripts/doc-comment-gate.py"
 
 # --- Apple clients (Swift / UniFFI) ---
+#
+# `--manifest-path` arguments in this file are an input to a test in another
+# crate. `crates/sunrise-log/tests/event_catalog.rs` derives the out-of-workspace
+# crates whose log vocabulary it gates by scanning this file for them, and it
+# refuses a path it cannot resolve — so every one of them has to stay a literal.
+# Factoring `tools/uniffi-bindgen/Cargo.toml` into a shell function parameter
+# took 12 of that gate's 23 tests down, because the scan then finds `$1` (#138).
+# The coupling is real and undeclared anywhere cargo can see, which is why it is
+# written here, where the person editing the paths is looking.
+#
+# Comments are exempt: the scan skips lines whose first non-whitespace character
+# is `#`, so prose here may name the flag freely (#147).
 
 [tasks.apple-xcframework]
 description = "Build the Swift bindings + SunriseCore.xcframework both Apple apps link"
@@ -268,8 +280,7 @@ mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 #    it cannot tell which manifest that resolves to. So the bindgen manifest
 #    is written out literally below, and the workspace query names none at
 #    all — the task runs at the workspace root, like every cargo call here.
-#    For the same reason the flag itself is not spelled out in this comment:
-#    that scan is a plain text search over the whole file.
+#    See the note at the top of this section.
 target_directory() {
   python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
 }
