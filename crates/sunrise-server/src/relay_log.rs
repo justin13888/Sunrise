@@ -336,6 +336,61 @@ impl Store {
         Ok((out, gaps))
     }
 
+    /// The highest sequence this channel has ever held for each device.
+    ///
+    /// The maximum over two sources, because either alone is a wrong answer.
+    /// `relay_frame_heads` covers what is retained; `relay_evicted` covers what
+    /// retention has already deleted and outlives the frames it names, so a
+    /// channel that has rolled still knows an op was once stored here. Reading
+    /// only the first would report a re-send of an evicted op as new work.
+    ///
+    /// A device absent from the result has never been seen on this channel,
+    /// which is a different statement from a head of zero and is why the map
+    /// carries no default.
+    ///
+    /// # Errors
+    /// [`StoreError::Sqlite`] if either read fails.
+    pub fn relay_device_heads(
+        &self,
+        key: ChannelKey,
+    ) -> Result<HashMap<[u8; 16], u64>, StoreError> {
+        let (account_h, stream_id) = key;
+        let conn = self.conn.lock();
+        let mut out: HashMap<[u8; 16], u64> = HashMap::new();
+
+        let mut stmt = conn.prepare(
+            "SELECT h.device_id, MAX(h.max_seq) FROM relay_frame_heads h
+             JOIN relay_frames f ON f.id = h.frame_id
+             WHERE f.account_h = ?1 AND f.stream_id = ?2
+             GROUP BY h.device_id",
+        )?;
+        let retained = stmt
+            .query_map(params![&account_h[..], &stream_id[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut gone_stmt = conn.prepare(
+            "SELECT device_id, evicted_through FROM relay_evicted
+             WHERE account_h = ?1 AND stream_id = ?2",
+        )?;
+        let evicted = gone_stmt
+            .query_map(params![&account_h[..], &stream_id[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (dev, seq) in retained.into_iter().chain(evicted) {
+            let Some(device_id) = to_id(&dev) else {
+                continue;
+            };
+            let seq = u64::try_from(seq).unwrap_or(0);
+            let slot = out.entry(device_id).or_insert(0);
+            *slot = (*slot).max(seq);
+        }
+        Ok(out)
+    }
+
     /// Number of retained frames for a channel (tests and diagnostics).
     pub fn relay_len(&self, key: ChannelKey) -> Result<usize, StoreError> {
         let (account_h, stream_id) = key;

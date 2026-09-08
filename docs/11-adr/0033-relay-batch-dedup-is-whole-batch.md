@@ -163,17 +163,27 @@ and it is not.
   citation of this ADR in place of "tracked separately".
 - **The gap in observability is now a stated gap.** Nothing counts a
   re-partitioned re-send, which is exactly why the revisit trigger below has to
-  name a proxy measurement rather than a direct one.
+  name a proxy measurement rather than a direct one. *(Closed since: trigger 1
+  below now names `sunrise_relay_batch_overlap_total`, which counts exactly
+  that. The decision is unchanged; only the evidence available to reverse it
+  is.)*
 
 ## What would force revisiting this
 
-1. **A measurement that the uncovered shape dominates.** The proxy available
-   today is `sunrise_relay_batch_duplicate_total` against the total append rate
-   and the reconnect rate: if reconnects far exceed caught duplicates, the
-   re-sends being missed are the re-partitioned ones. A direct measurement is
-   better and cheap — count appends whose ops overlap an already-stored batch
-   without equalling it — and building that counter is the first step of
-   revisiting, not the fix.
+1. **A measurement that the uncovered shape dominates.** The direct
+   measurement this asked for — count appends whose ops overlap an
+   already-stored batch without equalling it — now exists as
+   `sunrise_relay_batch_overlap_total`
+   ([#146](https://github.com/justin13888/Sunrise/issues/146)), read as a ratio
+   against the append rate and beside
+   `sunrise_relay_batch_duplicate_total`: `duplicate` is the churn the
+   whole-batch key caught, `overlap` is the churn it accepted, and this
+   decision is worth re-pricing when the second approaches the first. The proxy
+   this trigger originally had to name — reconnects far exceeding caught
+   duplicates — is no longer the best available evidence and should not be
+   argued from now that a direct one is graphable. Building the counter was the
+   first step of revisiting and is not itself the fix; the decision above stands
+   until the counter says otherwise.
 2. **A channel hitting its 256 MiB or 30-day bound on re-sent duplicates.**
    Eviction is what turns wasted disk into a `CursorGap` and a latched data-loss
    warning, which is a user-visible outcome rather than an operator-visible one.
