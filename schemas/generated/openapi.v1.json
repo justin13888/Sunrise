@@ -913,6 +913,173 @@
         ]
       }
     },
+    "/api/v1/devices/by-vault-id/{vault_device_id}": {
+      "delete": {
+        "summary": "Revoke a device by the id it answers to inside the vault.",
+        "description": "The route above names the relay's own ULID, and a vault has no way to learn\na peer's: the ULID is minted here at registration and travels back only to\nthe device that registered. What a vault holds for a peer is the 16-byte id\na `device_revoke` op names, so before this route existed a revocation was\nnot expressible against this API at all, whatever the client did\n([#80](https://github.com/justin13888/Sunrise/issues/80)).\n\nEvery active row carrying the id is revoked, not one: a device\nre-registering is a second row rather than an error, and all of them are the\ndevice the caller means.\n\n`404` is the answer for a vault id no active row on this account carries.\nThat covers a second revoke, another account's device, **and** a device that\nregistered before it sent a `vault_device_id` — the last of which is still\naccepted by this relay under a row the caller cannot name, so a client must\nnot read this `404` as \"the device is now refused\".",
+        "operationId": "revokeDeviceByVaultId",
+        "parameters": [
+          {
+            "name": "vault_device_id",
+            "in": "path",
+            "description": "The vault-side id of the device being addressed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
     "/api/v1/devices/push-tokens": {
       "post": {
         "summary": "File a push token against one of the caller's devices.",
@@ -3021,6 +3188,13 @@
             "type": "string",
             "description": "Crockford base-32 of 16 bytes."
           },
+          "vault_device_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The id this device answers to inside the vault, when it supplied one.\n\nThe relay's own `device_id` above is a ULID minted here at\nregistration; nothing carries it back into the vault, so no device\nholds a peer's. A `device_revoke` op names *this* id, which is what\nmakes it the only correlation key a client can act on."
+          },
           "nickname": {
             "type": "string",
             "description": "User-set name."
@@ -3092,6 +3266,13 @@
               "null"
             ],
             "description": "Self-signed device certificate. Opaque to the server, which never parses\nit — trust in a device cert is established client-side by\n`Command::TrustDevice`, and ADR-0024 is what gives it an identity anchor."
+          },
+          "vault_device_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "This device's vault-side id, Crockford base-32 of 16 bytes.\n\nOptional because it is additive to a shipped route, and a client that\npredates it still registers. A device that omits it cannot afterwards\nbe revoked through `DELETE /api/v1/devices/by-vault-id/{id}`, because\nthere is nothing on the row for that route to match."
           },
           "nickname": {
             "type": "string",

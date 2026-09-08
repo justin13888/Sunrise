@@ -29,6 +29,15 @@ pub struct DeviceIdentity {
     pub device_pub_d: Option<String>,
     /// Self-signed device certificate, opaque to the server.
     pub device_cert: Option<String>,
+    /// The id this device answers to *inside the vault*, Crockford base-32 of
+    /// 16 bytes.
+    ///
+    /// The relay mints its own id for a device and returns it here, and that id
+    /// never travels back through the op stream — so a peer that later revokes
+    /// this device holds only the vault id. Registering it is what makes
+    /// `DELETE /api/v1/devices/by-vault-id/{id}` able to name this row; a
+    /// device that registers `None` cannot be revoked at the relay at all.
+    pub vault_device_id: Option<String>,
     /// User-visible name.
     pub nickname: String,
     /// One of `ios`, `android`, `macos`, `windows`, `linux`, `web`.
@@ -130,6 +139,7 @@ pub async fn bootstrap(
                 device_pub_s: device.device_pub_s,
                 device_pub_d: device.device_pub_d,
                 device_cert: device.device_cert,
+                vault_device_id: device.vault_device_id,
                 nickname: device.nickname,
                 platform: device.platform,
                 app_version: device.app_version,

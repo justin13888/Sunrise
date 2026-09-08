@@ -29,11 +29,15 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 This is honest disclosure to users, not a defect. The list is the relay's actual schema (`crates/sunrise-server/src/store.rs`), not a summary of it:
 
 - **Account email** — `accounts.email`, plaintext, plus the OIDC subject that identifies the user to the issuer: `accounts.oidc_iss` and `accounts.oidc_sub`.
-- **Per device:** its id, its **public keys** (`device_pub_s`, `device_pub_d`), its **nickname** — a free-form human-readable device name — its **platform**, its reported **app version**, and created/last-seen timestamps. The `device_cert` is stored too, as opaque `TEXT` the server never parses or verifies.
+- **Per device:** its id, its **vault-side device id** (`devices.vault_device_id`, when the device supplied one), its **public keys** (`device_pub_s`, `device_pub_d`), its **nickname** — a free-form human-readable device name — its **platform**, its reported **app version**, and created/last-seen timestamps. The `device_cert` is stored too, as opaque `TEXT` the server never parses or verifies.
 - **Push tokens per device**, in plaintext (`push_tokens`).
 - **Per frame of ciphertext:** its size and arrival timestamp, plus the routing ids the relay parses out of each envelope header — `(stream_id, device_id, seq)` — which is what makes op counts and per-device sizes derivable.
 - **IP and approximate geo per request** (kept ≤14 days).
 - **Sharing graph:** identity X has shared *something* with identity Y, including counts of ops in shared documents. (Not yet reachable — sharing is unimplemented; see [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md).)
+
+`vault_device_id` is a **binding**, not a new identifier, and it is worth saying which. The vault-side device id is already on this list one line down: it is the `device_id` the relay parses out of every envelope header and stores in `relay_frame_heads`, and it always has been. What the column adds is a durable join between that id and the account's device row — a join the relay could already compute online, because a signed upload is bound to a device row and carries envelopes headed by the vault id in the same request. It exists because a revocation is otherwise inexpressible: a vault knows no peer's relay ULID, so `DELETE /api/v1/devices/{device_id}` names an id no revoking device holds ([#80](https://github.com/justin13888/Sunrise/issues/80), [`../06-server/api.md`](../06-server/api.md) §Two names for one device).
+
+The alternative that would have added nothing at all — promoting `revoked_device_id` into the cleartext envelope header so the relay reads a revocation out of the op stream — is strictly worse and is refused: it would tell the relay **which** of an account's devices was revoked and **when**, for every account it serves, on a channel with no authentication behind it. A `DELETE` is an authenticated request from one named device about another, which is a narrower disclosure than a broadcast header field, and it is the reason the two halves of a revocation travel separately.
 
 `nickname`, `platform` and `app_version` were absent from earlier revisions of this list. A nickname is the most user-legible item on it — it names a machine the way its owner does — so it is disclosed explicitly rather than folded into "device IDs".
 

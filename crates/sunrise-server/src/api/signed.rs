@@ -528,7 +528,7 @@ impl RequestContent for SignedBinary {
 #[cfg(test)]
 mod tests {
     use crate::api::error::codes::{AUTH_DEVICE_SIG_INVALID, AUTH_TOKEN_INVALID};
-    use crate::api::testing::{Client, BEARER};
+    use crate::api::testing::{code_of, now_rfc2822, send_signed, Client, BEARER};
     use crate::ServerConfig;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
@@ -538,71 +538,13 @@ mod tests {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
     }
 
-    /// The problem document's `code` extension member — the thing a client
-    /// switches on, and the whole point of the two-tier rule.
-    fn code_of(res: &crate::api::testing::Res) -> String {
-        res.json()["code"]
-            .as_str()
-            .unwrap_or_else(|| panic!("a code member: {}", res.json()))
-            .to_owned()
-    }
-
-    /// The server's own now, formatted as the `Date` the scheme signs.
-    fn now_rfc2822(client: &Client) -> String {
-        let secs = i64::try_from(client.clock_now_ms() / 1000).expect("a sane clock");
-        jiff::Timestamp::from_second(secs)
-            .expect("a valid timestamp")
-            .strftime("%a, %d %b %Y %H:%M:%S GMT")
-            .to_string()
-    }
-
     /// Register a device and hand back its id and signing key.
+    ///
+    /// A thin alias over the shared helper: this module's tests are about the
+    /// binding rather than about what a device registers, so they take the
+    /// default nickname and no vault id.
     async fn paired(client: &Client, seed: u8) -> (String, SigningKey) {
-        let sk = SigningKey::from_bytes(&[seed; 32]);
-        let res = client
-            .send(
-                Method::POST,
-                "/api/v1/devices",
-                Some(&serde_json::json!({
-                    "device_pub_s": b64(sk.verifying_key().as_bytes()),
-                    "nickname": "laptop",
-                    "platform": "linux",
-                })),
-            )
-            .await;
-        res.assert_status(StatusCode::CREATED);
-        let id = res.json()["device_id"]
-            .as_str()
-            .expect("a device id")
-            .to_owned();
-        (id, sk)
-    }
-
-    /// Send a request bound to `device_id` by `key`.
-    async fn send_signed(
-        client: &Client,
-        method: &str,
-        target: &str,
-        device_id: &str,
-        key: &SigningKey,
-        body: Option<&serde_json::Value>,
-    ) -> crate::api::testing::Res {
-        let date = now_rfc2822(client);
-        let signature = sunrise_http_sig::sign(key, method, target, &date, body)
-            .expect("the client half signs");
-        client
-            .send_with(
-                method.parse().expect("a method"),
-                target,
-                Some(BEARER),
-                body,
-                &[
-                    ("x-sunrise-device", device_id),
-                    ("x-sunrise-device-sig", &signature),
-                    ("date", &date),
-                ],
-            )
-            .await
+        crate::api::testing::register_device(client, seed, "laptop", None).await
     }
 
     /// A correctly signed request reaches the handler.
