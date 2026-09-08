@@ -320,7 +320,7 @@ impl Engine {
     /// divergence, from an ordinary backgrounded-app restart.
     ///
     /// The op log is the right source because `ops.ts_ms` **is** the stamp's
-    /// physical half for every row: [`Self::ops_insert_at`] writes
+    /// physical half for every row: `ops_insert_at` writes
     /// `hlc.physical_ms` for a locally emitted op and
     /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for an absorbed
     /// one. Every durable stamp elsewhere — a materialized row's `lww_*`
