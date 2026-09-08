@@ -209,6 +209,40 @@ fn task_id_derivation_is_deterministic_and_key_sensitive() {
     assert_eq!(a.kind(), EntityKind::Task);
 }
 
+/// A large `INTERVAL` must not crash the process.
+///
+/// `Span::new().days(n)` panics when `n` leaves jiff's per-unit range, and
+/// `expand` built one from `p * interval` before any `checked_add` could
+/// refuse it. `FREQ=DAILY;INTERVAL=700017975` is the minimized case the
+/// `rrule` fuzz target found within ten seconds of its first run; the property
+/// test below never could, because it samples `interval in 1u32..=3`.
+///
+/// An `RRULE` reaches this from an `.ics` subscription and from anything a
+/// user types, so the answer has to be an empty expansion or an `ExpandError`
+/// — never an abort. All four frequencies are checked: each builds its span
+/// from a different jiff unit with a different bound.
+#[test]
+fn an_interval_too_large_for_jiff_is_not_a_panic() {
+    let tz = TimeZone::get("America/Los_Angeles").unwrap();
+    let anchor = at(&tz, 2025, 1, 1, 9, 0);
+    let window = (anchor, at(&tz, 2026, 1, 1, 0, 0));
+    for freq in ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"] {
+        for interval in [700_017_975u32, u32::MAX, 7_304_485, 1_043_498, 120_001] {
+            let r = rule(&format!("FREQ={freq};INTERVAL={interval}"));
+            // Whatever it answers, it answers. The anchor itself is the only
+            // occurrence any of these can have inside a one-year window, and
+            // an `ExpandError` is an equally acceptable result.
+            if let Ok(occ) = expand(&r, anchor, &tz, window) {
+                assert!(
+                    occ.len() <= 1,
+                    "FREQ={freq};INTERVAL={interval} produced {} occurrences in one year",
+                    occ.len()
+                );
+            }
+        }
+    }
+}
+
 mod prop {
     use super::*;
     use proptest::prelude::*;

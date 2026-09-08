@@ -1,0 +1,23 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//FastMail/1.0/EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d
+DTSTAMP:20260225T090000Z
+DTSTART:20260305T190000
+DTEND:20260305T203000
+SUMMARY:Choir practice (floating: whatever local time I am in)
+DESCRIPTION:A deliberately long description that has to be folded across 
+ more than one content line so the unfolder is exercised by a fixture and 
+ not only by a unit test with a synthetic string in it.
+CATEGORIES:personal
+END:VEVENT
+BEGIN:VTODO
+UID:f6e5d4c3-b2a1-4098-8765-4321fedcba09
+DTSTAMP:20260225T090000Z
+SUMMARY:Renew passport
+DUE;VALUE=DATE:20260401
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR

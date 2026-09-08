@@ -1,0 +1,114 @@
+# `cargo-fuzz` harnesses for the byte-facing parsers, per
+# `docs/10-cross-cutting/testing.md` §Continuous fuzz targets.
+#
+# NOT a member of the root workspace, for the same class of reason
+# `tools/uniffi-bindgen` is not (see that manifest): a `cargo-fuzz` target is
+# built by a **nightly** rustc with `-Zsanitizer=address` and
+# `-Cpassess=sancov-*`, and the workspace pins 1.91.1 in `rust-toolchain.toml`
+# with an ADR guarding the pin. Folding this in would either break every
+# workspace command on a stable toolchain or force the whole tree onto nightly
+# for the sake of six harnesses.
+#
+# The `[workspace]` table below is what makes this its own workspace root, so
+# `cargo` inside `fuzz/` does not walk up to the root manifest and refuse a
+# package the root does not list. It also keeps `libfuzzer-sys` and
+# `arbitrary` out of the root `Cargo.lock` and out of every workspace build.
+#
+# The path dependencies still resolve their `*.workspace = true` inheritance
+# against the ROOT manifest, because cargo resolves inheritance from the
+# workspace each dependency itself belongs to. So these are the same crates the
+# workspace builds, not copies.
+# `fuzz/Cargo.lock` is committed beside this manifest, for the same reason
+# `tools/uniffi-bindgen`'s is: a fuzz finding is only worth anything if the run
+# that found it can be reproduced, and a silent resolver move in a transitive
+# dependency is not something a diff would otherwise show. The tasks do not
+# pass `--locked`, so a path dependency's version bump updates it in place
+# rather than failing the build.
+[package]
+name = "sunrise-fuzz"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.91.1"
+license = "AGPL-3.0-only"
+authors = ["Sunrise contributors"]
+repository = "https://github.com/justin13888/Sunrise"
+publish = false
+description = "cargo-fuzz harnesses for Sunrise's byte-facing parsers. Test tool only; never shipped."
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Under test. Every one of these is reached through its ordinary public API —
+# nothing here is `pub(crate)`-widened for the fuzzer's benefit, because a
+# surface only a fuzzer can reach is a surface no attacker reaches either.
+sunrise-crypto = { path = "../crates/sunrise-crypto" }
+sunrise-domain = { path = "../crates/sunrise-domain" }
+sunrise-integrations = { path = "../crates/sunrise-integrations" }
+sunrise-server = { path = "../crates/sunrise-server" }
+sunrise-wire-protocol = { path = "../crates/sunrise-wire-protocol" }
+
+# The frozen envelope vectors under `fuzz/seeds/op_envelope/` were minted from
+# these constants; naming the crate here is what keeps the harness's fixed
+# device key and the seed corpus the same key.
+sunrise-crypto-test-vectors = { path = "../crates/sunrise-crypto-test-vectors" }
+
+# `jiff` drives the DST-aware half of the `rrule` target. Features match the
+# root workspace's entry exactly — `tzdb-bundle-always` is what makes a named
+# IANA zone resolve identically here and in the shipped binaries.
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+
+# `OidcVerifier::verify` is `async` behind `async_trait`. A single-threaded
+# block-on is all the `oauth_state` target needs; spinning up a tokio runtime
+# per iteration would dominate the measurement.
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+async-trait = { version = "0.1", default-features = false }
+
+# Fuzz targets are `bin`s. `test`/`doc`/`bench` are off on every one: they have
+# no test harness and `#![no_main]` has nothing for libtest to link.
+
+[[bin]]
+name = "op_envelope"
+path = "fuzz_targets/op_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_frame"
+path = "fuzz_targets/wire_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rrule"
+path = "fuzz_targets/rrule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ical"
+path = "fuzz_targets/ical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oauth_state"
+path = "fuzz_targets/oauth_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recovery_blob"
+path = "fuzz_targets/recovery_blob.rs"
+test = false
+doc = false
+bench = false

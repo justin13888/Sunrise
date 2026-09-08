@@ -760,3 +760,102 @@ jobs:
         # the docs cite many third-party URLs and a gate that goes red on
         # someone else's outage is one people learn to ignore.
         run: .github/scripts/docs-link-gate.py
+
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    # Derived, not measured: no run of this job has ever executed a step, and
+    # neither has any other job in this file since the billing block. 30
+    # minutes of fuzzing per the step below, plus a `cargo install cargo-fuzz`
+    # and a cold `-Zbuild-std` build of the standard library and this
+    # workspace under Address Sanitizer, which took 4m10s on an M-series
+    # laptop from a warm registry. Sixty is double the sum on that machine and
+    # wants replacing with a real figure the first time a nightly completes.
+    timeout-minutes: 60
+    # Nightly and on demand, never on a pull request — the same gate the
+    # `mutants` job carries, for two reasons rather than one:
+    #
+    # 1. Cost. Half an hour a target and six targets is three hours of runner
+    #    time, and every one of those hours is spent re-deriving what the
+    #    committed corpus in `fuzz/seeds/` already covers unless the run is
+    #    long enough to explore past it. That is a nightly's shape, not a pull
+    #    request's.
+    # 2. Toolchain. `cargo-fuzz` needs a nightly rustc for
+    #    `-Zsanitizer=address`, and this repository pins 1.91.1 in four places
+    #    with the `rust` job asserting they agree. Putting a nightly on the
+    #    critical path of every pull request would mean a pull request can go
+    #    red because a nightly rustc regressed, which is not a fact about the
+    #    change under review.
+    #
+    # `docs/10-cross-cutting/testing.md` §Continuous fuzz targets records that
+    # the short per-commit budget the original specification asked for is
+    # deliberately not wired, and why.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      # Not fail-fast: a finding in one parser must not hide whether the other
+      # five ran clean. Each target is an independent search.
+      fail-fast: false
+      matrix:
+        target:
+          - op_envelope
+          - wire_frame
+          - rrule
+          - ical
+          - oauth_state
+          - recovery_blob
+    env:
+      # This workflow sets `RUSTFLAGS: -D warnings` globally. `cargo-fuzz`
+      # composes its own `RUSTFLAGS` (the sanitizer and `sancov` passes) on top
+      # of whatever it inherits, and `-Zbuild-std` then recompiles the standard
+      # library with the result. Denying warnings in code this repository does
+      # not own turns an upstream lint change into a red gate here, so the
+      # inherited value is cleared for this job only. Warnings in `fuzz/` are
+      # caught by `cargo clippy` never seeing it and by review — stated plainly
+      # rather than implied, because it is a real gap.
+      RUSTFLAGS: ""
+      # `rust-toolchain.toml` overrides the toolchain for the whole checkout,
+      # and it names 1.91.1. `RUSTUP_TOOLCHAIN` takes precedence over a
+      # directory override, which is what makes the nightly installed below the
+      # one `cargo fuzz` actually uses.
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # `-Zbuild-std` compiles the standard library from source, which is
+          # what makes the sanitizer see inside it.
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        # From source rather than through an install action: `cargo-fuzz` is
+        # not a tool this repository has ever seen an action resolve, and a
+        # nightly job can afford the two minutes. Locked, so a resolver move in
+        # a transitive dependency cannot change what a nightly ran.
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        # The committed seeds are passed as a second, read-only corpus. The
+        # first directory is the one libFuzzer writes newly interesting inputs
+        # into; nothing carries it between runs yet, so each nightly starts
+        # from the seeds. Persisting a growing corpus across nightlies is the
+        # obvious next step and is deliberately not in this commit — it needs a
+        # cache key policy nobody has watched behave.
+        run: |
+          set -euo pipefail
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cargo fuzz run --fuzz-dir fuzz "${{ matrix.target }}" \
+            "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.target }}" \
+            -- -max_total_time=1800
+      - name: Upload the input a finding left behind
+        # `fuzz/artifacts/<target>/crash-<sha1>` is the reproducer, and it is
+        # the only thing a red run produces that is worth anything. Without
+        # this step the finding is a stack trace in a log and the input that
+        # caused it is gone with the runner.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
