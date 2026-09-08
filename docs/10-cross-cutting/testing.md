@@ -185,18 +185,37 @@ that run the same way.
 
 ### Cost, measured
 
-| Crate | mutants | `cargo test -p` |
+| Crate | mutants | `cargo test -p`, rebuilt |
 |---|---:|---:|
-| `sunrise-domain` | 1 352 | 8.8 s |
-| `sunrise-core` | 740 | 22.9 s |
-| `sunrise-crypto` | 296 | 11.4 s |
-| `sunrise-sync` | 94 | 9.1 s |
+| `sunrise-domain` | 1 349 | 4.9 s |
+| `sunrise-core` | 982 | 14.0 s |
+| `sunrise-crypto` | 349 | 2.7 s |
+| `sunrise-sync` | 97 | 1.2 s |
+
+Both columns are reproducible, and the left one is cheap enough that there is no
+excuse for it being wrong:
+
+```
+cargo mutants --list -p <crate> | wc -l
+```
+
+`--list` parses the crate and prints one line per mutant **without building
+anything**, so all four counts take seconds. The right column is
+`cargo clean -p <crate> && cargo test -p <crate>` — the crate and its test
+binaries rebuilt against already-built dependencies, wall clock, which is the
+shape of the work `cargo-mutants` repeats once per mutant. Two runs agreed to
+within 7%. It is *not* a from-cold figure and it is not the per-mutant cost:
+`cargo-mutants` copies the whole source tree per job and builds inside the copy.
+An earlier version of this table gave the column no definition at all, which is
+why its numbers could not be checked and drifted by up to a third before anyone
+noticed.
 
 At `--jobs 1`: **604 MB peak RSS** — about one `cargo build` — and roughly
-1.8 s per mutant on `sunrise-sync`. Each additional job is another copy of the
-source tree on disk and another resident rustc, which is why `mise run mutants`
-pins one and says so. A full pass over all four is hours, which is why it runs
-nightly and sharded rather than on a pull request.
+1.8 s per mutant on `sunrise-sync`. (Those two are the original measurements and
+were not re-taken.) Each additional job is another copy of the source tree on
+disk and another resident rustc, which is why `mise run mutants` pins one and
+says so. A full pass over all four is hours, which is why it runs nightly and
+sharded rather than on a pull request.
 
 `sunrise-crypto` needs the generous `timeout_multiplier`: it runs Argon2id at
 production parameters (64 MiB, t=3, p=1), deliberately not weakened for tests,
