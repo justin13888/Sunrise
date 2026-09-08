@@ -402,11 +402,12 @@ struct VaultWindow: View {
     /// picks a new credential up on its next connect, and a repeated start
     /// against the same URL is refused by the core rather than doubled.
     private func startSync() async {
-        guard case let .connect(url, bearer) = SyncPlan(
+        guard case let .connect(url, bearer, relayDeviceID) = SyncPlan(
             relayURL: settings.relayURL,
-            accessToken: account.accessToken
+            accessToken: account.accessToken,
+            relayDeviceID: session.relayDeviceID
         ) else { return }
-        try? await bridge.startSync(url: url, bearer: bearer)
+        try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }
 
     private func signIn() async {

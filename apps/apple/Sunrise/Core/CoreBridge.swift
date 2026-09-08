@@ -183,8 +183,13 @@ actor CoreBridge {
 
     /// Start the live-sync driver. `bearer` is `nil` only against a self-host
     /// relay; every other deployment refuses an unauthenticated upgrade.
-    func startSync(url: String, bearer: String?) throws {
-        try core.startSync(url: url, bearer: bearer)
+    ///
+    /// `relayDeviceID` is the ADR-0022 device binding — the ULID the relay
+    /// minted at registration, not `deviceId()`, which is this vault's own id
+    /// and names no relay row. `nil` starts an unbound driver, which a relay
+    /// with `require_device_sig` refuses.
+    func startSync(url: String, bearer: String?, relayDeviceID: String?) throws {
+        try core.startSync(url: url, bearer: bearer, relayDeviceId: relayDeviceID)
     }
 
     /// Hand the driver a renewed token. It is picked up on the next connect,

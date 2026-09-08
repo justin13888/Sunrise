@@ -36,5 +36,10 @@ parking_lot = { workspace = true }
 # own clock tolerance; both belong to the crate that defines `header_sig_v2`
 # rather than being restated here.
 sunrise-http-sig = { workspace = true }
+# The recovery round trip drives the generated REST client and the account
+# shapes it sends, rather than hand-rolling requests: the point of that test is
+# that the bytes a real client produces survive a real relay.
+sunrise-relay-client = { workspace = true }
+sunrise-onboarding = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3"

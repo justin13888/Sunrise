@@ -40,11 +40,11 @@
 //! epoch minted before it paired, and it is a `Recipient::Device` on every
 //! epoch minted after — sealed to its own `D_D_pub`, which a revocation can
 //! stop addressing. `ID_D_priv` stays on the device that *created* the account
-//! and is destined for the recovery blob behind the BIP-39 code, which is what
-//! will let a recovery with no surviving device restore readable content. That
-//! blob is specified and not built — `seal_recovery_blob` has no production
-//! caller — so today the creator's vault is the only place the key exists, and
-//! revoking that one device does not bound its reads.
+//! and travels in the recovery blob behind the BIP-39 code, which is what lets
+//! a recovery with no surviving device restore readable content. `sunrise
+//! bootstrap` seals that blob at account creation; the Apple clients do not
+//! yet, so on a vault created there the creator's is still the only copy of the
+//! key. Either way, revoking that one device does not bound its reads.
 //!
 //! Which device that is stopped being guesswork in `STORAGE_V` 19:
 //! `identity.minted_by_device_id` records it at mint time, and `Keychain::load`

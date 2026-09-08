@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 27 `ev` names the server emits, complete:
+The 28 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,14 +44,14 @@ The 27 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: b448dcc -->
+     Last extracted: 556ff2a -->
 
 ```
 srv.start                        srv.req.start
 srv.start.failed                 srv.req.end
 srv.start.refused                srv.store.failed
 srv.start.single_tenant          srv.auth.device_sig_rejected
-srv.start.metrics_withheld
+srv.start.metrics_withheld       srv.auth.step_up_required
 srv.stop                         srv.relay.fanout
 srv.stop.failed                  srv.relay.append_failed
                                  srv.relay.replay_failed
@@ -131,7 +131,7 @@ complete set the server emits today:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 8d8aef3 -->
+     Last extracted: 556ff2a -->
 
 ```
 sunrise_account_create_total
@@ -145,6 +145,8 @@ sunrise_devices_list_total
 sunrise_devices_register_total
 sunrise_devices_revoke_total
 sunrise_push_register_total
+sunrise_recovery_blob_fetch_total
+sunrise_recovery_step_up_refused_total
 sunrise_push_apns_total          (LoggingProvider; never reached)
 sunrise_push_fcm_total           (LoggingProvider; never reached)
 sunrise_push_web_total           (LoggingProvider; never reached)
@@ -159,7 +161,7 @@ sunrise_sync_session_total
 sunrise_sync_stream_total
 ```
 
-23 metric names, and four that earlier revisions of this file listed and the
+25 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

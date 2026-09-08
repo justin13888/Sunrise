@@ -124,6 +124,9 @@ pub enum KeychainError {
     /// Envelope seal/open failure.
     #[error("op envelope: {0}")]
     Envelope(#[from] OpEnvelopeError),
+    /// Recovery-blob seal failure.
+    #[error("recovery blob: {0}")]
+    Recovery(#[from] sunrise_crypto::RecoveryError),
     /// HPKE seal/open failure.
     #[error("key envelope: {0}")]
     Hpke(#[from] HpkeError),
@@ -202,6 +205,14 @@ pub struct Identity {
     /// seal to the identity and cannot open what was sealed to it, which is
     /// the asymmetry the whole mechanism rests on.
     dh_secret: Option<IdentityDhKeyPair>,
+    /// When the account identity was minted, ms since the epoch.
+    ///
+    /// The `identity` row has carried this since migration 0017 and nothing
+    /// read it back. It is field 6 of the recovery blob's plaintext
+    /// (`docs/03-crypto/recovery.md` §Recovery blob construction), which calls
+    /// it `created_at` and means the *account's* creation rather than the
+    /// blob's — so it is loaded from the row rather than stamped at seal time.
+    created_at_ms: u64,
 }
 
 impl std::fmt::Debug for Identity {
@@ -337,6 +348,74 @@ impl Keychain {
         })
     }
 
+    /// Which account identity a vault being created belongs to.
+    ///
+    /// Split out of [`Self::create`] because it is a decision with three
+    /// distinct answers and one consequence — whether this device ends up
+    /// holding `ID_D_priv` — and that consequence is now readable in one place
+    /// rather than spread through the rest of the open path.
+    fn identity_for_create(
+        vault_root: &VaultRootKey,
+        rng: &dyn Rng,
+        paired: Option<&PairingPayload>,
+        existing: Option<&AccountIdentityRow>,
+        now_ms: u64,
+    ) -> Result<Identity, KeychainError> {
+        match (paired, existing) {
+            // A device being paired adopts the account's identity wholesale.
+            (Some(p), existing) => {
+                let identity = Identity {
+                    identity_id: p.identity_id,
+                    signing: IdentitySigningKeyPair::from_secret_bytes(&p.id_s_priv),
+                    dh_pub: p.id_d_pub,
+                    // The point of the whole change: a paired device adopts the
+                    // identity's public half and never its unwrapping key.
+                    dh_secret: None,
+                    // A paired device cannot seal a recovery blob at all, so
+                    // this stamp is never the one a blob reports.
+                    created_at_ms: now_ms,
+                };
+                if identity_id_from_pub(&identity.signing.public_bytes()) != identity.identity_id {
+                    return Err(KeychainError::IdentityIdMismatch);
+                }
+                if let Some(row) = existing {
+                    if row.identity_id != identity.identity_id {
+                        return Err(KeychainError::IdentityConflict);
+                    }
+                }
+                Ok(identity)
+            }
+            // No `local_identity` row, so this vault is about to mint a
+            // device id it does not have yet, which is by construction not the
+            // one that minted an identity already sitting on disk. `None`
+            // therefore withholds `ID_D_priv`, and correctly.
+            (None, Some(row)) => unwrap_identity(vault_root, row, None),
+            (None, None) => {
+                let mut seed = [0u8; 32];
+                rng.fill_bytes(&mut seed);
+                let signing = IdentitySigningKeyPair::from_secret_bytes(&seed);
+                seed.zeroize();
+                let mut dh_seed = [0u8; 32];
+                rng.fill_bytes(&mut dh_seed);
+                let dh = IdentityDhKeyPair::from_secret_bytes(dh_seed);
+                dh_seed.zeroize();
+                let identity_id = identity_id_from_pub(&signing.public_bytes());
+                Ok(Identity {
+                    identity_id,
+                    dh_pub: dh.public_bytes(),
+                    signing,
+                    // The account's creator keeps it, because until the
+                    // recovery blob exists this is the only copy and dropping
+                    // it would make the account unrecoverable. That is the one
+                    // device a revocation cannot bound the reads of; see
+                    // `docs/03-crypto/key-rotation.md` §Revocation.
+                    dh_secret: Some(dh),
+                    created_at_ms: now_ms,
+                })
+            }
+        }
+    }
+
     /// Cases 1 and 2: no `local_identity` row at all.
     fn create(
         db: &mut Db,
@@ -348,55 +427,8 @@ impl Keychain {
         let now_ms = clock.now_ms();
         let existing = load_account_identity_row(db)?;
 
-        let identity = match (paired, existing.as_ref()) {
-            // A device being paired adopts the account's identity wholesale.
-            (Some(p), existing) => {
-                let identity = Identity {
-                    identity_id: p.identity_id,
-                    signing: IdentitySigningKeyPair::from_secret_bytes(&p.id_s_priv),
-                    dh_pub: p.id_d_pub,
-                    // The point of the whole change: a paired device adopts the
-                    // identity's public half and never its unwrapping key.
-                    dh_secret: None,
-                };
-                if identity_id_from_pub(&identity.signing.public_bytes()) != identity.identity_id {
-                    return Err(KeychainError::IdentityIdMismatch);
-                }
-                if let Some(row) = existing {
-                    if row.identity_id != identity.identity_id {
-                        return Err(KeychainError::IdentityConflict);
-                    }
-                }
-                identity
-            }
-            // No `local_identity` row, so this vault is about to mint a
-            // device id it does not have yet, which is by construction not the
-            // one that minted an identity already sitting on disk. `None`
-            // therefore withholds `ID_D_priv`, and correctly.
-            (None, Some(row)) => unwrap_identity(&vault_root, row, None)?,
-            (None, None) => {
-                let mut seed = [0u8; 32];
-                rng.fill_bytes(&mut seed);
-                let signing = IdentitySigningKeyPair::from_secret_bytes(&seed);
-                seed.zeroize();
-                let mut dh_seed = [0u8; 32];
-                rng.fill_bytes(&mut dh_seed);
-                let dh = IdentityDhKeyPair::from_secret_bytes(dh_seed);
-                dh_seed.zeroize();
-                let identity_id = identity_id_from_pub(&signing.public_bytes());
-                Identity {
-                    identity_id,
-                    dh_pub: dh.public_bytes(),
-                    signing,
-                    // The account's creator keeps it, because until the
-                    // recovery blob exists this is the only copy and dropping
-                    // it would make the account unrecoverable. That is the one
-                    // device a revocation cannot bound the reads of; see
-                    // `docs/03-crypto/key-rotation.md` §Revocation.
-                    dh_secret: Some(dh),
-                }
-            }
-        };
+        let identity =
+            Self::identity_for_create(&vault_root, rng, paired, existing.as_ref(), now_ms)?;
 
         let (signing, device_dh, device_id) = mint_device_keys(rng);
         let nickname = "sunrise-device".to_string();
@@ -550,6 +582,7 @@ impl Keychain {
             // here, which makes this device its creator; it keeps the secret
             // for the same reason the founder branch does.
             dh_secret: Some(id_dh),
+            created_at_ms: now_ms,
         };
 
         // A fresh D_D, since the old private half was never stored.
@@ -721,7 +754,7 @@ impl Keychain {
     }
 
     /// Whether this vault holds `ID_D_priv`, the account identity's X25519
-    /// secret — and therefore, today, whether it holds the **only** copy.
+    /// secret — and therefore whether it can seal a recovery blob.
     ///
     /// True on exactly one device per account: the one that created it.
     /// `Keychain::create` mints the identity there and keeps `dh_secret`;
@@ -729,27 +762,78 @@ impl Keychain {
     /// `PairingPayload` stopped carrying the key (that is the whole of the #76
     /// read bound — see [`sunrise_pairing::payload`]).
     ///
-    /// **The consequence, which nothing else in the tree states:** the second
-    /// copy is supposed to be the recovery blob, and the recovery blob is not
-    /// built — `seal_recovery_blob` has no production caller. So while this
-    /// returns `true`, this device's vault is the only place `ID_D_priv`
-    /// exists. If it is lost, the key is gone permanently: every
-    /// `Recipient::Identity` copy in the op log becomes unopenable forever, and
-    /// no recovery feature shipped afterwards can retrieve it, because there is
-    /// nothing left to seal a blob from. Before `ID_D_priv` was dropped from
-    /// the pairing payload, any surviving paired device could have produced
-    /// that blob later; now none can.
+    /// **Whether it is the *only* copy depends on the client.** The second
+    /// copy is the recovery blob, and [`Self::seal_recovery_blob`] now has a
+    /// production caller — `sunrise bootstrap` seals one at account creation.
+    /// The Apple clients do not, so a vault created there is still the only
+    /// place `ID_D_priv` exists, and if it is lost the key is gone
+    /// permanently: every `Recipient::Identity` copy in the op log becomes
+    /// unopenable forever, and no recovery feature shipped afterwards can
+    /// retrieve it, because sealing a blob needs the key it would carry.
     ///
-    /// Callers should surface this, not act on it. It is a disclosure about
-    /// what the user's backup situation actually is, not a capability check —
-    /// and it stops being an alarming answer the moment the recovery blob
-    /// ships, at which point this method still answers "does this device hold
-    /// the key" and no longer implies "solely".
+    /// Callers should surface this, not act on it. It answers "does this
+    /// device hold the key" and, on a client that seals no blob, "is this the
+    /// last place it exists".
     ///
     /// See `docs/03-crypto/recovery.md` §Implementation status.
     #[must_use]
     pub fn holds_only_copy_of_identity_key(&self) -> bool {
         self.identity.dh_secret.is_some()
+    }
+
+    /// Seal this account's identity keys into a recovery blob under `seed`.
+    ///
+    /// `seed` is the 32 bytes behind the user's BIP-39 recovery code
+    /// (`sunrise_crypto::bip39`). The result is the opaque ciphertext
+    /// `POST /api/v1/accounts` stores and
+    /// `GET /api/v1/accounts/me/recovery_blob` serves back;
+    /// `docs/03-crypto/recovery.md` §Recovery blob construction is its format.
+    ///
+    /// This is the **second copy** of `ID_D_priv` that
+    /// [`Self::holds_only_copy_of_identity_key`] says does not exist until it
+    /// is made. Sealing one is therefore the one operation that turns that
+    /// method's answer from "the only copy is here" into "this device holds
+    /// the key", and the reason it is a method on the keychain rather than an
+    /// exported secret: the counterpart accessor that handed `ID_S_priv` and
+    /// `ID_D_priv` out would be a second `export_vault_root_for_pairing`, and
+    /// this module's premise is that there is exactly one of those.
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySecretAbsent`] on a device admitted by
+    /// pairing. That device holds `ID_D_pub` and not `ID_D_priv`, so a blob it
+    /// sealed would restore an identity that cannot open a single
+    /// identity-addressed `key_envelope` — a recovery code that decrypts to a
+    /// useless key is worse than no recovery code, because the user believes
+    /// they have one. The founding device is the only one that can produce
+    /// this, which is exactly the asymmetry `#76` introduced.
+    ///
+    /// Also Argon2id parameter or CBOR failures, which are structural.
+    pub fn seal_recovery_blob(
+        &self,
+        seed: &[u8; 32],
+        rng: &dyn Rng,
+    ) -> Result<Vec<u8>, KeychainError> {
+        let dh = self
+            .identity
+            .dh_secret
+            .as_ref()
+            .ok_or(KeychainError::IdentitySecretAbsent)?;
+        let mut payload = sunrise_crypto::recovery::RecoveryPayload {
+            id_s_priv: self.identity.signing.secret_bytes(),
+            id_d_priv: dh.secret_bytes(),
+            id_s_pub: self.identity.signing.public_bytes(),
+            id_d_pub: self.identity.dh_pub,
+            identity_id: self.identity.identity_id,
+            created_at_ms: self.identity.created_at_ms,
+        };
+        // The salt and the nonce come from the core's injected `Rng`, through
+        // the same adapter every other seal in this module uses, so the whole
+        // vault draws from one source of randomness and a seeded test is
+        // reproducible end to end.
+        let mut adapter = RngAdapter(rng);
+        let out = sunrise_crypto::seal_recovery_blob(seed, &payload, &mut adapter);
+        payload.zeroize();
+        Ok(out?)
     }
 
     /// The identity-signed device cert bytes (canonical CBOR).
@@ -1298,6 +1382,7 @@ impl Keychain {
             signing: id_signing,
             dh_pub: id_dh.public_bytes(),
             dh_secret: Some(id_dh),
+            created_at_ms: 0,
         };
         let cert_blob = issue_cert(
             &identity,
@@ -1577,6 +1662,7 @@ fn unwrap_identity(
         signing,
         dh_pub,
         dh_secret,
+        created_at_ms: row.created_at_ms,
     })
 }
 
@@ -1717,6 +1803,8 @@ struct AccountIdentityRow {
     /// `stream_keys.source`; see that file for why that is a proof and not a
     /// guess.
     minted_by_device_id: Option<[u8; 16]>,
+    /// When this identity was minted, ms since the epoch.
+    created_at_ms: u64,
 }
 
 fn load_identity_row(db: &Db) -> Result<Option<IdentityRow>, KeychainError> {
@@ -1752,7 +1840,7 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
         .conn()
         .query_row(
             "SELECT identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
-                    minted_by_device_id
+                    minted_by_device_id, created_at_ms
              FROM identity WHERE id = 1",
             [],
             |r| {
@@ -1763,11 +1851,12 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
                     r.get::<_, Vec<u8>>(3)?,
                     r.get::<_, Vec<u8>>(4)?,
                     r.get::<_, Option<Vec<u8>>>(5)?,
+                    r.get::<_, i64>(6)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(id, sp, dp, sw, dw, mb)| {
+    row.map(|(id, sp, dp, sw, dw, mb, created_at_ms)| {
         Ok(AccountIdentityRow {
             identity_id: to16(&id).ok_or(KeychainError::CorruptRow("identity.identity_id"))?,
             id_s_pub: to32(&sp).ok_or(KeychainError::CorruptRow("identity.id_s_pub"))?,
@@ -1779,6 +1868,7 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
             // loader is a `CorruptRow`, because every other one names something
             // the vault cannot work without.
             minted_by_device_id: mb.as_deref().and_then(to16),
+            created_at_ms: u64::try_from(created_at_ms).unwrap_or(0),
         })
     })
     .transpose()
@@ -2285,6 +2375,83 @@ mod tests {
         drop(paired);
         assert!(open(&mut creator_db, &root).holds_only_copy_of_identity_key());
         assert!(!open(&mut paired_db, &root).holds_only_copy_of_identity_key());
+    }
+
+    /// The recovery blob is the second copy of `ID_D_priv`, and this is the
+    /// whole of it: the creator seals one, the code that opens it recovers the
+    /// identity byte for byte, and a wrong code recovers nothing.
+    ///
+    /// `sunrise_onboarding::recover_identity` is the other end and asserts the
+    /// same thing against a hand-built payload; what this adds is that the
+    /// bytes come out of a *real vault* rather than out of a fixture, which is
+    /// the step nothing exercised before — `seal_recovery_blob` had no caller
+    /// outside `sunrise-crypto`'s own tests.
+    #[test]
+    fn the_creators_recovery_blob_restores_its_identity() {
+        let root = VaultRootKey::from_bytes([0x7a; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+
+        let seed = *sunrise_crypto::bip39::decode_recovery_code(
+            sunrise_crypto::bip39::encode_recovery_code(&[0x11; 32]).reveal(),
+        )
+        .expect("a code this workspace produced decodes");
+        let blob = kc.seal_recovery_blob(&seed, &SystemRng).unwrap();
+
+        let payload =
+            sunrise_crypto::unseal_recovery_blob(&blob, &seed, &kc.identity_id()).unwrap();
+        assert_eq!(payload.id_s_pub, kc.identity_signing_pub());
+        assert_eq!(payload.id_d_pub, kc.identity_dh_pub());
+        assert_eq!(payload.identity_id, kc.identity_id());
+        assert_eq!(
+            payload.created_at_ms,
+            clock().now_ms(),
+            "field 6 is the account's creation time, read from the identity row"
+        );
+
+        // The identity keys really are the vault's: an `ID_D_priv` that does
+        // not match the `ID_D_pub` every `key_envelope` was sealed to would
+        // restore an account that reads nothing.
+        assert_eq!(
+            sunrise_crypto::keys::IdentityDhKeyPair::from_secret_bytes(payload.id_d_priv)
+                .public_bytes(),
+            kc.identity_dh_pub()
+        );
+
+        let wrong = [0u8; 32];
+        assert!(sunrise_crypto::unseal_recovery_blob(&blob, &wrong, &kc.identity_id()).is_err());
+    }
+
+    /// A paired device cannot seal a recovery blob at all.
+    ///
+    /// It holds `ID_D_pub` and not `ID_D_priv` (#76), so the blob it produced
+    /// would restore an identity that opens none of the identity-addressed
+    /// `key_envelope` ops the recovery path exists to replay. A recovery code
+    /// that decrypts to a useless key is worse than none, because the user
+    /// believes they have one — so this refuses rather than sealing something
+    /// partial.
+    #[test]
+    fn a_paired_device_cannot_seal_a_recovery_blob() {
+        let root = VaultRootKey::from_bytes([0x7b; 32]);
+        let mut creator_db = db(&root);
+        let creator = open(&mut creator_db, &root);
+        let payload = creator.export_pairing_payload(&creator_db).unwrap();
+
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&payload),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            paired.seal_recovery_blob(&[9u8; 32], &SystemRng),
+            Err(KeychainError::IdentitySecretAbsent)
+        ));
+        assert!(creator.seal_recovery_blob(&[9u8; 32], &SystemRng).is_ok());
     }
 
     /// A vault written by the pre-ADR-0024 code path opens, gains an identity,

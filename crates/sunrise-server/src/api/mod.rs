@@ -89,7 +89,11 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
         ))
         .mount(kynos::routes![health::health])
         .mount(kynos::routes![meta::meta])
-        .mount(kynos::routes![accounts::create, accounts::me])
+        .mount(kynos::routes![
+            accounts::create,
+            accounts::me,
+            accounts::recovery_blob
+        ])
         .mount(kynos::routes![
             devices::list,
             devices::register,
@@ -272,6 +276,7 @@ mod tests {
             "/api/v1/meta",
             "/api/v1/accounts",
             "/api/v1/accounts/me",
+            "/api/v1/accounts/me/recovery_blob",
             "/api/v1/devices",
             "/api/v1/devices/{device_id}",
             "/api/v1/devices/push-tokens",

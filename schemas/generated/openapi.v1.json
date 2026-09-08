@@ -397,6 +397,171 @@
         ]
       }
     },
+    "/api/v1/accounts/me/recovery_blob": {
+      "get": {
+        "summary": "The calling account's sealed recovery blob.",
+        "description": "# Why this route exists\n\nIt is the one thing missing between a user who has lost every device and\ntheir data. `POST /api/v1/accounts` stored `recovery_blob` and nothing read\nit back — `docs/03-crypto/recovery.md` §Implementation status called it \"a\nwrite-only column\" — so the recovery flow's step 2 had no route to call and\na recovery code was not usable even once one existed.\n\n# The step-up, and why it is not the email OTP the spec asked for\n\n`recovery.md`:103 specifies a 6-digit email OTP in front of this fetch, and\n`docs/00-product/non-goals.md` forbids implementing OTP delivery. #56\nresolves the contradiction the way the rest of the product resolves every\nauthentication question: the IdP performs the ceremony and this server reads\nthe claims that describe it. The client re-runs its authorization request\nwith `max_age=0` — or `prompt=login`, or an operator-configured\n`acr_values` — and the resulting token carries an `auth_time` this route\nchecks. [`crate::auth::step_up`] carries the full reasoning, including why\n`exp` cannot stand in for `auth_time`.\n\n**An ordinary bearer is refused.** That is the whole point: a stolen session\nis exactly an ordinary bearer, and the blob plus a guessable recovery code\nis the account.\n\n# `403` rather than `401`\n\nThe credential is not wrong; a stronger one is required. A `401` drives a\nclient's token-refresh path, and a refresh mints a token with the same\n`auth_time` — so the client would refresh into the identical refusal\nforever, which is precisely the failure `AUTH_DEVICE_SIG_INVALID` exists to\navoid one route away. RFC 9470 defines a `401` with\n`insufficient_user_authentication` for this, and this surface's error type\ncarries no `WWW-Authenticate` parameters to make that answer actionable, so\nthe code says it instead.",
+        "operationId": "getRecoveryBlob",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryBlobResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit"
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
     "/api/v1/devices": {
       "get": {
         "summary": "Every device on the calling account, revoked ones included.",
@@ -3181,6 +3346,19 @@
           "created_at_ms"
         ],
         "description": "An account, as this surface reports it."
+      },
+      "RecoveryBlobResponse": {
+        "properties": {
+          "recovery_blob": {
+            "type": "string",
+            "description": "The sealed blob, base64url no-pad, exactly as it was uploaded."
+          }
+        },
+        "type": "object",
+        "required": [
+          "recovery_blob"
+        ],
+        "description": "`GET /api/v1/accounts/me/recovery_blob` response body.\n\nOne field, deliberately: the blob is the whole answer, and the salt and\nnonce the client needs to open it are inside it — `magic(5) || salt(16) ||\nnonce(24) || ct`, per `docs/03-crypto/recovery.md`. Reporting them\nseparately would be the server describing a format it does not parse."
       },
       "DeviceMeta": {
         "properties": {

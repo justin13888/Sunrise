@@ -191,12 +191,20 @@ document's intent, not yet implemented).
   are **views**, and nothing schedules a notification for them.
 - **built — Keychain** holds the unlock material. Nothing else does. The
   account is **per vault**, so a second vault gets its own item rather than
-  overwriting the first. The vault root asks for
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, but **the Mac does not
-  honour it**: without the App Sandbox or a keychain-access-group entitlement
-  the app uses the file-based login keychain, which stores no protection class
-  at all, so a Mac moved by Migration Assistant or restored from Time Machine
-  carries the vault root with it. iOS enforces the class; see
+  overwriting the first. Two items, under two services, and **both** ask for
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
+  `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials` and
+  `dev.sunrise.Sunrise.relay-device-id`.
+  An item an older build left in the weaker `…AfterFirstUnlock` is raised on
+  the next load rather than left where it was, and a Keychain that refuses the
+  raise fails the load rather than handing back a secret whose guarantee is not
+  the one the app claims.
+
+  **The Mac does not honour the class**: without the App Sandbox or a
+  keychain-access-group entitlement the app uses the file-based login keychain,
+  which stores no protection class at all, so a Mac moved by Migration
+  Assistant or restored from Time Machine carries all three items with it. iOS
+  enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
   inbox, start focus, end focus — plus a `TaskEntity` with an
@@ -261,12 +269,50 @@ uses most. A Mac App Store build would have to trade that away, and
 Store is **not** a v1 channel, and v1 ships the direct `.dmg` alone. The
 sandbox stays off.
 
-The **hardened runtime**, which is a different setting, is on for a release
-build and has to be: Apple's notary service rejects a submission without it.
-`apps/apple/project.yml` still records `ENABLE_HARDENED_RUNTIME: NO`, and
-`release.yml` overrides it on the archive command line — see
-[`releasing.md`](./releasing.md) §Two settings that are overridden rather than
-committed, which asks for the project-file change as the durable fix.
+### The data-protection keychain is not a one-line entitlement
+
+The Mac's missing protection class (§Platform integration, and
+[`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root))
+is fixed by moving the app onto the **data-protection keychain**, which needs
+the `keychain-access-groups` entitlement — *not* the App Sandbox, which stays
+off. Three things were measured on an Apple-silicon Mac, and together they say
+what that costs:
+
+1. **Unsigned, as `mise run macos-app` builds today:** the file-based login
+   keychain accepts `SecItemAdd` and reads back **no** `kSecAttrAccessible` at
+   all, and `SecItemAdd` with `kSecUseDataProtectionKeychain` returns
+   `errSecMissingEntitlement` (-34018).
+2. **Ad-hoc signed with `keychain-access-groups`:** the process is
+   **`Killed: 9` before `main`**. `codesign -v -vvv` reports the binary "valid
+   on disk" and "satisfies its Designated Requirement"; the kill is AMFI
+   refusing a *restricted* entitlement that no provisioning profile grants. A
+   team-prefixed group (`$(AppIdentifierPrefix)…`) dies the same way — the
+   entitlement is restricted, not the name.
+3. **Ad-hoc signed with `com.apple.security.application-groups`** — the other
+   entitlement that reaches the data-protection keychain — the process *runs*,
+   and `SecItemAdd` with `kSecUseDataProtectionKeychain` still returns -34018,
+   because an ad-hoc signature carries no team id for the group to be validated
+   against.
+
+So the entitlement is not a setting that can be committed on its own: a build
+carrying it will not launch without a real signing identity, and
+`mise run macos-app` builds `CODE_SIGNING_ALLOWED=NO` — which is what keeps the
+Mac app buildable by a contributor with no Apple account, the same thing
+`DEVELOPMENT_TEAM: ""` exists for. Whoever lands this has to answer that
+question too, on top of the migration the existing login-keychain items need:
+read the old item, write the new one, **verify the read-back**, and only then
+delete the old, safe to interrupt at every step, because a build that silently
+starts reading an empty data-protection keychain looks exactly like a lost
+vault.
+
+The **hardened runtime**, which is a different setting, is on and has to be:
+Apple's notary service rejects a submission without it.
+`apps/apple/project.yml` sets `ENABLE_HARDENED_RUNTIME: YES` in
+`settings.base`, and that is the only place it is set — a local
+`xcodebuild archive` therefore produces the same bundle the release pipeline
+signs. The app needs no `com.apple.security.cs.*` exception for it: it loads a
+statically linked xcframework and no plug-ins, and neither `RegisterEventHotKey`
+nor `AXIsProcessTrusted` is restricted by the runtime.
 
 ## Multi-vault
 
@@ -287,6 +333,56 @@ panel closes and the menu bar and reminder models are dropped and remade.
 The seam supports many vaults **sequentially**, not concurrently: `shutdown()`
 then `open()`. There is no way to hold two vaults open at once, and there cannot
 be without changing the lock rule.
+
+## Device binding
+
+Every request the sync driver makes can carry the
+[ADR-0022](../11-adr/0022-device-signature-canonical-json.md) binding: an
+`X-Sunrise-Device` naming a relay device row, an `X-Sunrise-Device-Sig` over the
+canonical request, and the `Date` the signature covers. A relay configured with
+`require_device_sig` refuses anything else.
+
+The signing half has always been available — it is the vault's own `D_S_priv`,
+and `Core::device_signer` reaches it across the seam. What was missing was a
+home for the other half: the **relay device id**, a ULID the relay mints at
+`POST /api/v1/devices` and returns **only** to the registering device. It never
+travels back through the op stream, so a client that loses it cannot get it
+again.
+
+It lives in the Keychain, under `dev.sunrise.Sunrise.relay-device-id`, per
+vault, in the vault root's own protection class
+(`KeychainRelayDeviceIDStore`). The class is not about secrecy — the id is sent
+in the clear on every request that uses it, which is why the CLI keeps its copy
+in a plain file. It is about the id and the key it names being present or absent
+*together*: a device holding one without the other signs with a key the named
+row does not hold, and the relay answers that as a bad **bearer** — deliberately
+indistinguishable from a token problem, so that a caller cannot enumerate an
+account's devices, and therefore undiagnosable from the client.
+
+The two rejected homes, for the record:
+
+- **`UserDefaults`**, where the relay URL and the vault registry correctly live,
+  because neither is a secret and both must be repairable without a vault. A
+  preference domain that gets reset costs a setting the user can retype, and
+  costs this one a binding nobody can retype.
+- **The vault**, which would carry the id with the *account* rather than the
+  installation — and would put per-device data in a synced, converging store,
+  where every device replicates every other device's id and a merge has to
+  decide which one is "this" one.
+
+**The app cannot yet register itself.** `sunrise_relay_client::bootstrap` — the
+`POST /api/v1/accounts` then `POST /api/v1/devices` pair the CLI runs as
+`sunrise bootstrap` — is not exposed across the UniFFI seam, so nothing in the
+app produces an id. Until it is, the only way an Apple client is device-bound is
+the environment override the CLI has for the same case: launch it with
+`SUNRISE_SYNC_DEVICE_ID` set to an id registered elsewhere, and the driver
+presents and signs for it. That is the same variable name, the same precedence
+(override before stored) and the same meaning as
+`sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
+
+An unbound driver is not a failure state and is not refused: it is what every
+self-host relay runs, and a client that would not connect without a binding
+could never reach the relay that mints one.
 
 ## Pairing
 

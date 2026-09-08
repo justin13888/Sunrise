@@ -36,6 +36,7 @@
 )]
 
 pub mod aead;
+pub mod bip39;
 pub mod blake3_kdf;
 pub mod blob_chunk;
 pub mod device_cert;
@@ -50,6 +51,10 @@ pub mod suite;
 
 pub use aead::{
     aead_open_xchacha, aead_seal_xchacha, AeadError, AEAD_KEY_LEN, AEAD_NONCE_LEN, AEAD_TAG_LEN,
+};
+pub use bip39::{
+    decode_recovery_code, encode_recovery_code, Bip39Error, RecoveryCode, RECOVERY_ENTROPY_LEN,
+    RECOVERY_WORD_COUNT,
 };
 pub use blake3_kdf::{derive_key, BLAKE3_OUT_LEN};
 pub use blob_chunk::{

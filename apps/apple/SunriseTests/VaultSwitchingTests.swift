@@ -50,11 +50,13 @@ struct VaultSwitchingTests {
                 descriptor.id == VaultRegistry.firstVaultID
                     ? VaultBinding(
                         location: VaultLocation(directory: firstDirectory),
-                        rootStore: firstStore
+                        rootStore: firstStore,
+                        relayDeviceStore: InMemoryRelayDeviceIDStore()
                     )
                     : VaultBinding(
                         location: VaultLocation(directory: secondDirectory),
-                        rootStore: secondStore
+                        rootStore: secondStore,
+                        relayDeviceStore: InMemoryRelayDeviceIDStore()
                     )
             }
         )
