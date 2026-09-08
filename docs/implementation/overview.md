@@ -423,7 +423,16 @@ Recorded because each presented as something other than what it was:
   theirs from the first nightly and until then fail the gate for having none.
   `CODEOWNERS` now encodes the security-review gate, though GitHub only enforces
   it once branch protection requires code-owner review.
-- **`cargo-fuzz` targets** — `testing.md` specifies six; `fuzz/` does not exist.
+- **`cargo-fuzz` targets** — all six now exist under `fuzz/`, which is its own
+  cargo workspace because `cargo-fuzz` needs a nightly rustc for
+  `-Zsanitizer=address` and this one is pinned to 1.91.1. `mise run fuzz-build`
+  compiles them, `mise run fuzz-smoke` runs each for ten seconds against a
+  tracked seed corpus, and `.github/workflows/ci.yml`'s `fuzz` job runs them
+  nightly at 30 minutes a target. The short per-commit budget the specification
+  also asked for is deliberately not wired; `testing.md` §Continuous fuzz
+  targets carries the argument. The first run found a panic in
+  `routine_gen::expand` on `FREQ=DAILY;INTERVAL=700017975`, fixed in the same
+  change.
 
 ## Test suite
 

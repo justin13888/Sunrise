@@ -57,7 +57,7 @@ replaced with a gate everywhere else.
 
 #### Convergence property-test determinism
 
-- **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches is meant to come from `cargo-fuzz` binaries, which are specified but not built — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set and status, rather than restating it here.
+- **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches comes from the `cargo-fuzz` binaries in `fuzz/` — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set, the seed corpus and the CI shape, rather than restating them here. The division of labour is the point: a property test generates *valid* structures, a fuzzer generates arbitrary bytes, and the first crash the `rrule` target found was an `INTERVAL` value the property test's `1u32..=3` strategy could never draw.
 - **Reproducing a failure**: proptest's own persistence file. When a property test finds a counterexample it writes the case to disk and replays it on every later run, and that is the only reproduction mechanism any property test in this workspace has. **`SUNRISE_FUZZ_SEED` is not one of them** — no proptest reads it and no suite logs a resolved seed, so exporting it changes nothing here. It is the chaos harness's convention and is documented under [Network / chaos tests](#5-network--chaos-tests), where it is implemented and tested. Where those files land is settled in [§2](#2-property-tests-thinner-deep): a `tests/` proptest names its own path under `proptest-regressions/tests/`, the files are tracked rather than ignored, and a flat `<name>.proptest-regressions` beside a test file is the visible symptom of a proptest that forgot to say so.
 - **Specified, not built:** one seed convention across both harnesses. The earlier text of this bullet asked every property test to read `SUNRISE_FUZZ_SEED` (hex), to fall back to the first 8 bytes of the workspace `HEAD` hash, and to log the resolved seed in a suite header. Nothing does. Plumbing a resolved seed into `ProptestConfig`'s RNG and logging it would make the sentence true everywhere and leave one reproduction story instead of two; it does not remove the need for the persistence file, because the shrinker still replays a *specific* minimal case. Tracked in [#119](https://github.com/justin13888/Sunrise/issues/119).
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
@@ -289,23 +289,109 @@ Security testing is a first-class layer alongside unit and property tests. It ha
 
 ### Continuous fuzz targets
 
-> **Specified, not built.** There is no `fuzz/` directory in this repository,
-> no `cargo-fuzz` dependency, and no fuzz job in CI. The table below is the
-> target set, not an inventory — tracked in
-> [#32](https://github.com/justin13888/Sunrise/issues/32).
+`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All six of the
+v1 target set are built and run.** Each drives a workspace crate through its
+ordinary public API — nothing was widened to `pub` for the fuzzer's benefit,
+because a surface only a fuzzer can reach is one no attacker reaches either.
 
-`cargo-fuzz` binaries will live in `fuzz/` and run on every CI build (short budget) and nightly (long budget). The v1 target set:
+| Target | Scope | What it asserts beyond "does not panic" |
+|---|---|---|
+| `op_envelope` | `sunrise-crypto` envelope decode + signature verify path. | Re-signing a decoded envelope yields a signature this build verifies, and changes no field but `sig`. |
+| `wire_frame` | `sunrise-wire-protocol` framing + magic-prefix parser, and the canonical-CBOR payload codec behind each `MsgKind`. | Header and payload survive an encode/decode round trip, and the payload is exactly `decompressed_len` bytes long. |
+| `rrule` | RRULE parser and DST-aware expansion (`sunrise-domain`). | `to_rfc5545` round-trips and is idempotent; `expand` stays inside its window and honours `COUNT`, across four zones including a 30-minute DST shift and a 12:45 base offset. |
+| `ical` | inbound iCalendar feed parser (`sunrise-integrations`). | `ical::write` is a fixed point over `ical::parse`, and re-parsing its own output raises no notices. |
+| `oauth_state` | bearer-token verification in `sunrise-server::auth`: JWT header parse, JWKS resolution, algorithm pinning, claim checks. | Verification never *succeeds*. No seed carries a private key, so an `Ok` is an accepted forgery — including the `HS256`-signed-with-the-public-key and `alg: none` classics. |
+| `recovery_blob` | recovery-blob decode + KDF input validation (`sunrise-crypto`). | A payload that comes back is bound to the identity the caller demanded. |
 
-| Target | Scope |
-|---|---|
-| `op_envelope` | `sunrise-crypto` envelope decode + signature verify path. |
-| `wire_frame` | `sunrise-sync` framing + magic-prefix parser. |
-| `rrule` | RRULE parser and DST-aware expansion. |
-| `ical` | inbound iCalendar feed parser (`sunrise-integrations`). |
-| `oauth_state` | OAuth/PKCE state-machine transitions in `sunrise-server::auth`. |
-| `recovery_blob` | recovery-blob decode + KDF input validation. |
+One scope has been corrected against the original specification. `oauth_state`
+was written as "OAuth/PKCE state-machine transitions in `sunrise-server::auth`",
+and those are two different things: the PKCE and `state` exchange is a *client*
+concern, implemented in `crates/sunrise-auth/src/login.rs`, where
+`parse_redirect` is private and reachable only through a real loopback
+listener. What `sunrise-server::auth` owns is the other half of the same trust
+decision — a bearer token from an unauthenticated caller plus a discovery
+document and a JWKS from a remote issuer — and that is what the target drives.
 
-Any new crash discovered by a fuzz target opens a P1 bug and the corresponding minimized input is added to the seed corpus.
+#### Running them
+
+`cargo-fuzz` needs a **nightly** toolchain for `-Zsanitizer=address`, and this
+workspace pins 1.91.1 (ADR-0026) with CI asserting that four files agree about
+it. `fuzz/` is therefore its own cargo workspace, excluded from the root one
+for the same class of reason `tools/uniffi-bindgen` is; `fuzz/Cargo.toml`
+carries the argument. Nothing in `fuzz/` enters the root `Cargo.lock` and
+nothing there is built by an ordinary workspace command.
+
+```sh
+cargo install cargo-fuzz --locked   # once
+mise run fuzz-build                 # compile all six
+mise run fuzz-smoke                 # 10s each against the committed seeds
+mise run fuzz op_envelope 3600      # one target, one hour
+```
+
+`SUNRISE_FUZZ_TOOLCHAIN` pins the nightly when a run has to be reproducible;
+`SUNRISE_FUZZ_SECONDS` raises the smoke budget. Neither is
+[`SUNRISE_FUZZ_SEED`](#5-network--chaos-tests), which remains the chaos
+harness's variable and its only consumer in the workspace.
+
+Being a separate workspace has a cost worth stating rather than leaving to be
+discovered. `mise run rust-clippy` and `mise run rust-doc` are `--workspace`
+commands, so **neither reaches `fuzz/`** — the six harnesses are not lint-gated
+and not rustdoc-gated. `mise run rust-fmt-check` does reach them, because it
+names the manifest rather than the workspace. What holds the rest is that each
+file is short, that `mise run fuzz-build` fails on anything the compiler
+rejects, and that `crates/sunrise-log/tests/event_catalog.rs` reads all six as
+a `BUILD_TOOLS` entry and refuses one that names `tracing` or grows a `mod`.
+
+#### Seed corpus
+
+`fuzz/seeds/<target>/` is **tracked**; `fuzz/corpus/`, `fuzz/artifacts/` and
+`fuzz/target/` are ignored. The split matters: an empty corpus means a fuzzer
+spends its whole budget rediscovering a six-byte magic prefix, and a corpus
+that libFuzzer writes into is not something a reviewer can read a diff of.
+Every seed comes from something the tree already had:
+
+| Target | Seeds | Provenance |
+|---|---|---|
+| `op_envelope` | `signed_only`, `sealed` | The two frozen envelope vectors in `crates/sunrise-crypto-test-vectors` — `signed_only_envelope::ENCODED` and `sealed_envelope::ENCODED`, byte for byte. The harness's fixed device key is that crate's `DEVICE_SIGNING_SECRET`, so the seeds verify rather than merely decode. |
+| `wire_frame` | `ping`, `ack`, `subscribe`, `stream_update_caught_up`, `close`, `op_batch`, `op_batch_zstd` | `encode_frame` output for each `MsgKind` that has a canonical payload codec, over the same `STREAM_ID` / `DEVICE_ID` the crypto vectors use. `op_batch` carries both frozen envelopes as its `ops`; `op_batch_zstd` is the same batch with the compression bit set, and is the only seed that reaches the decompression path and its bomb caps at all. |
+| `rrule` | nine rule bodies | Every distinct valid `RRULE` the workspace's own tests and `.ics` fixtures use, plus `regression_interval_overflow` (below). |
+| `ical` | `apple.ics`, `google.ics`, `fastmail.ics`, `outlook.ics` | `crates/sunrise-integrations/testdata/<vendor>/basic.ics`, unmodified. Four vendors fold, escape and time-zone their output differently, so the fuzzer starts from four shapes of line folding rather than one. |
+| `oauth_state` | `rs256_full`, `no_keys`, `symmetric_jwks` | Hand-built `<bearer>\0<discovery>\0<JWKS>` triples: a well-formed RS256 token against a 2048-bit RSA key set, the same token against an empty key set, and the same token against an `oct` key set — the algorithm-confusion branch. |
+| `recovery_blob` | `sealed` | `seal_recovery_blob` output for a fixed seed, identity and CSPRNG state; the harness unseals against the same constants. |
+
+Any new crash a target finds opens a P1 bug, and the minimized input joins the
+seed corpus. That has already happened once, on the first run:
+`fuzz/seeds/rrule/regression_interval_overflow` is
+`FREQ=DAILY;INTERVAL=700017975`, which aborted the process inside
+`routine_gen::expand` — jiff's `Span::new().days(n)` panics outside
+±7,304,484 and the guard around it was a `checked_add` that never ran. Fixed in
+`crates/sunrise-domain/src/routine_gen.rs` with a regression test beside the
+golden DST cases. The property test in the same file could not have found it:
+it samples `interval in 1u32..=3`.
+
+#### CI shape
+
+The earlier text of this section said the targets "run on every CI build (short
+budget) and nightly (long budget)". Half of that is now wired and half is
+withdrawn:
+
+- **Nightly — wired.** `.github/workflows/ci.yml`'s `fuzz` job, one matrix leg
+  per target, 30 minutes each, gated to `schedule` and `workflow_dispatch`
+  exactly like the `mutants` job. A finding uploads its reproducer as an
+  artifact. **No run of it has ever completed**: GitHub Actions on this
+  repository is billing-blocked and every job finishes in ~6 seconds having
+  executed zero steps, so its timeout is derived rather than measured and the
+  job's comment says so.
+- **Short budget on every CI build — deliberately not wired.** Two independent
+  reasons. It needs a nightly rustc, which would put a pull request's verdict
+  at the mercy of a toolchain this repository does not pin and cannot assert;
+  and a budget short enough for a pull request explores nothing the committed
+  seed corpus does not already contain, so it would spend three runner-hours
+  a day to re-derive a file that is already in the diff. What a pull request
+  needs from `fuzz/` is that the harnesses still compile against the crates
+  they drive, and that is `mise run fuzz-build` — cheap, but still a nightly
+  toolchain, so it is a local gate rather than a CI job until the billing
+  block lifts and someone can watch one run.
 
 ### Quarterly external pen test
 
