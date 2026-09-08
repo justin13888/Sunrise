@@ -755,6 +755,14 @@ async fn session(
                 return SessionEnd::Shutdown;
             }
             SessionEvent::Submit => {
+                // The same wake the outbox row uses, for the row written in
+                // the same transaction. Without this a revocation made while
+                // the session is already up would wait for the connection to
+                // drop before the relay heard about it — which is the one case
+                // where the user is watching, and the relay-side bound is the
+                // whole point of pressing the button. The read is a single-row
+                // query against an almost always empty table.
+                drain_relay_revocations(core, transport.as_mut()).await;
                 if build_outbox_frames(
                     core,
                     &mut subscribed,
