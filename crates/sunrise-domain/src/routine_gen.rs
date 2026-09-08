@@ -140,6 +140,41 @@ fn matches_bymonthday(date: Date, rrule: &RRule) -> bool {
     })
 }
 
+/// A `Span` of `n` days, weeks or months, or `None` when jiff cannot express
+/// one that long.
+///
+/// `Span::new().days(n)` and its two siblings are infallible by signature and
+/// **panic** when `n` leaves the unit's range (jiff caps days at ±7,304,484,
+/// weeks at ±1,043,497, months at ±120,000). Every caller below already
+/// treated an out-of-range *date* as "this period has no candidates" via
+/// `checked_add(..).ok()` — but the panic fires while the span is being
+/// built, before `checked_add` is ever reached, so that guard never saw it.
+///
+/// `interval` comes straight out of an `RRULE` that a user typed or an `.ics`
+/// subscription served, so `p * interval` reaches those bounds from ordinary
+/// input: `FREQ=DAILY;INTERVAL=700017975` is the case the `rrule` fuzz target
+/// found, and it crashed the process rather than returning
+/// [`ExpandError::WindowTooLarge`] as [`expand`]'s contract says it may. These
+/// are the fallible halves of the same builders, and a period nobody can
+/// express is a period with no candidates.
+fn span_of(unit: Unit, n: i64) -> Option<Span> {
+    let span = Span::new();
+    match unit {
+        Unit::Days => span.try_days(n),
+        Unit::Weeks => span.try_weeks(n),
+        Unit::Months => span.try_months(n),
+    }
+    .ok()
+}
+
+/// The three calendar units [`span_of`] builds.
+#[derive(Debug, Clone, Copy)]
+enum Unit {
+    Days,
+    Weeks,
+    Months,
+}
+
 /// The earliest date of interval period `p` — used purely for the loop's
 /// stop condition (a conservative lower bound on that period's occurrences).
 fn period_start_date(
@@ -150,14 +185,13 @@ fn period_start_date(
     interval: i64,
 ) -> Option<Date> {
     match rrule.freq {
-        Frequency::Daily => anchor_date.checked_add(Span::new().days(p * interval)).ok(),
-        Frequency::Weekly => week_start(anchor_date, wkst)
-            .checked_add(Span::new().weeks(p * interval))
-            .ok(),
-        Frequency::Monthly => anchor_date
-            .first_of_month()
-            .checked_add(Span::new().months(p * interval))
-            .ok(),
+        Frequency::Daily => {
+            span_of(Unit::Days, p * interval).and_then(|s| anchor_date.checked_add(s).ok())
+        }
+        Frequency::Weekly => span_of(Unit::Weeks, p * interval)
+            .and_then(|s| week_start(anchor_date, wkst).checked_add(s).ok()),
+        Frequency::Monthly => span_of(Unit::Months, p * interval)
+            .and_then(|s| anchor_date.first_of_month().checked_add(s).ok()),
         Frequency::Yearly => {
             let y = i64::from(anchor_date.year()) + p * interval;
             i16::try_from(y).ok().and_then(|y| Date::new(y, 1, 1).ok())
@@ -179,7 +213,9 @@ fn period_candidates(
 ) -> Vec<Date> {
     match rrule.freq {
         Frequency::Daily => {
-            let Ok(d) = anchor_date.checked_add(Span::new().days(p * interval)) else {
+            let Some(d) =
+                span_of(Unit::Days, p * interval).and_then(|s| anchor_date.checked_add(s).ok())
+            else {
                 return Vec::new();
             };
             if matches_bymonth(d, rrule) && matches_byday(d, rrule) && matches_bymonthday(d, rrule)
@@ -190,7 +226,8 @@ fn period_candidates(
             }
         }
         Frequency::Weekly => {
-            let Ok(ws) = week_start(anchor_date, wkst).checked_add(Span::new().weeks(p * interval))
+            let Some(ws) = span_of(Unit::Weeks, p * interval)
+                .and_then(|s| week_start(anchor_date, wkst).checked_add(s).ok())
             else {
                 return Vec::new();
             };
@@ -211,9 +248,8 @@ fn period_candidates(
             out
         }
         Frequency::Monthly => {
-            let Ok(first) = anchor_date
-                .first_of_month()
-                .checked_add(Span::new().months(p * interval))
+            let Some(first) = span_of(Unit::Months, p * interval)
+                .and_then(|s| anchor_date.first_of_month().checked_add(s).ok())
             else {
                 return Vec::new();
             };
