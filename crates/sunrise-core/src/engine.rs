@@ -328,14 +328,22 @@ impl Engine {
     /// dominates all of them and no other table needs reading.
     ///
     /// The logical half is not a column, so it comes from decoding the
-    /// envelopes at that one millisecond. That is a handful of rows (`ts_ms` is
-    /// indexed only by stream, so this is one scan of a narrow column at open),
-    /// and it is needed: priming the physical half alone would leave a device
+    /// envelopes at that one millisecond. That is a handful of rows — usually
+    /// one — and it is needed: priming the physical half alone would leave a device
     /// that emitted `(t, 5)` before the restart emitting `(t, 1)` after it,
     /// which is the same inversion in the other half of the pair. An envelope
     /// that will not decode is skipped rather than fatal — it cannot have been
     /// applied, and refusing to open the vault over one is a worse answer than
     /// ignoring it.
+    ///
+    /// Both queries want `ops_by_ts` (migration 0021), and this is the only
+    /// caller that does. Without it they are two full scans of the widest table
+    /// in the vault, decrypted a page at a time, on **every** open, and the
+    /// cost grows for the life of the vault: measured at 18.1 ms for a 10k-op
+    /// log, 183 ms at 100k and 2.01 s at 1M, against about 60 us at all three
+    /// sizes with the index (issue #156;
+    /// `crates/sunrise-bench/benches/vault_open.rs` re-derives it, and
+    /// toggles the index itself so it still reads on both sides of 0021).
     ///
     /// See ADR-0036 (`docs/11-adr/0036-hlc-restored-at-open.md`) for the
     /// decision, including why this is a restore rather than the durable write

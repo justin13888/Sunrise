@@ -1,0 +1,18 @@
+-- 0021: an index on `ops (ts_ms)`, for the clock restore at open.
+--
+-- `Engine::prime_hlc` runs on every `Core::open` and asks the op log two
+-- questions: `SELECT MAX(ts_ms) FROM ops`, and then `SELECT envelope FROM ops
+-- WHERE ts_ms = ?` for the logical half of that stamp. 0013 gave `ops` an index
+-- by `(stream_id, seq)` and a partial one on unapplied rows, and nothing on
+-- `ts_ms`, so both of those were full scans -- of the widest table in the vault,
+-- through SQLCipher, on every open, growing for the life of the vault.
+--
+-- Measured (issue #156, `crates/sunrise-bench/benches/vault_open.rs`, a cold
+-- connection per iteration): 18.1 ms at 10k ops, 183 ms at 100k, 2.01 s at 1M.
+-- With this index: 56.8 us, 64.1 us, 62.5 us -- flat, because both queries
+-- become a seek to one end of it.
+--
+-- The cost is one b-tree over an 8-byte column, written on every op insert.
+-- `ops` is append-mostly with a monotonic-ish `ts_ms`, so those writes land at
+-- the right-hand edge of the index rather than scattering it.
+CREATE INDEX ops_by_ts ON ops (ts_ms);
