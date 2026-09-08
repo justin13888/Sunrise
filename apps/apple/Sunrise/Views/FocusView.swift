@@ -5,6 +5,13 @@ import SwiftUI
 struct FocusView: View {
     @Bindable var model: FocusModel
 
+    #if os(iOS)
+    /// Whether this is a phone-width column. `horizontalSizeClass` is an iOS
+    /// environment value and has no macOS declaration at all, so it cannot
+    /// simply be read and compared on both.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
     var body: some View {
         VStack(spacing: 0) {
             controls
@@ -35,27 +42,69 @@ struct FocusView: View {
         .onDisappear { model.stopTicking() }
     }
 
+    /// The two things you choose before a session: how much you have in you,
+    /// and how long you want.
+    ///
+    /// Side by side on a Mac and an iPad, stacked on an iPhone. The two
+    /// pickers ask for up to 200 and 260 points, and on a phone the row they
+    /// share is 378 — so the energy picker was allotted about a character's
+    /// width and "any" came out as "an" over "y". Neither number is a minimum,
+    /// so side by side is not a layout a phone can be made to hold; it is one
+    /// to stop asking for.
+    ///
+    /// A size class rather than `ViewThatFits`, which the calendar toolbar
+    /// beside this uses and which does not work here. `ViewThatFits` measures
+    /// each candidate's *ideal* width, and a menu picker's ideal width is just
+    /// its current selection — "any" and "one pomodoro" — so the wide row
+    /// reports that it fits and then draws exactly the way this is trying to
+    /// stop. The calendar's row is fixed-width segmented controls, whose ideal
+    /// widths really do say whether the row fits.
     private var controls: some View {
+        layout
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var layout: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            VStack(alignment: .leading, spacing: 8) {
+                energyPicker
+                sessionPicker
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            wideControls
+        }
+        #else
+        wideControls
+        #endif
+    }
+
+    private var wideControls: some View {
         HStack(spacing: 16) {
-            Picker("Energy", selection: $model.energy) {
-                Text(energyLabel(energy: nil)).tag(nil as Energy?)
-                Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
-                Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
-                Text(energyLabel(energy: .high)).tag(Energy.high as Energy?)
-            }
-            .frame(maxWidth: 200)
-
-            Picker("Session", selection: $model.length) {
-                ForEach(SessionLength.offered, id: \.self) { option in
-                    Text(sessionLengthLabel(length: option)).tag(option)
-                }
-            }
-            .frame(maxWidth: 260)
-
+            energyPicker.frame(maxWidth: 200)
+            sessionPicker.frame(maxWidth: 260)
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+    }
+
+    private var energyPicker: some View {
+        Picker("Energy", selection: $model.energy) {
+            Text(energyLabel(energy: nil)).tag(nil as Energy?)
+            Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
+            Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
+            Text(energyLabel(energy: .high)).tag(Energy.high as Energy?)
+        }
+    }
+
+    private var sessionPicker: some View {
+        Picker("Session", selection: $model.length) {
+            ForEach(SessionLength.offered, id: \.self) { option in
+                Text(sessionLengthLabel(length: option)).tag(option)
+            }
+        }
     }
 
     @ViewBuilder
