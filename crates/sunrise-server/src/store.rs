@@ -72,6 +72,14 @@ pub struct Device {
     /// Owning account.
     #[serde(skip)]
     pub account_id: String,
+    /// The id this device answers to *inside the vault*, Crockford base-32 of
+    /// 16 bytes, when the device supplied one at registration.
+    ///
+    /// This is the only name a vault can use for a peer: a `device_revoke` op
+    /// carries the vault id and no device knows any peer's relay ULID. Without
+    /// it a revocation is inexpressible against this API — see
+    /// `docs/06-server/api.md` §Revocation.
+    pub vault_device_id: Option<String>,
     /// Device Ed25519 signing key, base64url no-pad. Verifies
     /// `X-Sunrise-Device-Sig`.
     pub device_pub_s: String,
@@ -98,6 +106,8 @@ pub struct Device {
 pub struct NewDevice {
     /// Ed25519 signing key, base64url no-pad.
     pub device_pub_s: String,
+    /// The device's vault-side id, Crockford base-32 of 16 bytes.
+    pub vault_device_id: Option<String>,
     /// X25519 key, base64url no-pad.
     pub device_pub_d: Option<String>,
     /// Self-signed device certificate, opaque to the server.
@@ -145,6 +155,7 @@ CREATE TABLE IF NOT EXISTS devices (
     device_pub_s    TEXT NOT NULL,
     device_pub_d    TEXT,
     device_cert     TEXT,
+    vault_device_id TEXT,
     nickname        TEXT NOT NULL,
     platform        TEXT NOT NULL,
     app_version     TEXT,
@@ -223,6 +234,21 @@ CREATE TABLE IF NOT EXISTS relay_batches (
 CREATE INDEX IF NOT EXISTS relay_batches_by_frame ON relay_batches(frame_id);
 ";
 
+/// Indexes over columns [`add_missing_columns`] may have just added.
+///
+/// Separate from `SCHEMA` because of the order: `SCHEMA` runs against a
+/// database an earlier release created, where the column does not exist yet, so
+/// an index naming it there fails with `no such column` and takes the whole
+/// startup with it.
+const LATE_INDEXES: &str = r"
+-- Revocation arrives naming a vault id, so this is the lookup that route runs.
+-- Deliberately *not* unique: `docs/06-server/api.md` records that a device
+-- re-registering is a second row rather than an error, and all of that device's
+-- rows must be revoked together.
+CREATE INDEX IF NOT EXISTS devices_by_vault_id
+    ON devices(account_id, vault_device_id);
+";
+
 impl Store {
     /// Open the store. `None` opens a private in-memory database.
     pub fn open(path: Option<&Path>) -> Result<Self, StoreError> {
@@ -235,6 +261,8 @@ impl Store {
         // device its owner believes is gone.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
+        add_missing_columns(&conn)?;
+        conn.execute_batch(LATE_INDEXES)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -359,14 +387,16 @@ impl Store {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO devices (device_id, account_id, device_pub_s, device_pub_d, device_cert, \
-             nickname, platform, app_version, created_at_ms, last_seen_at_ms, revoked) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 0)",
+             vault_device_id, nickname, platform, app_version, created_at_ms, last_seen_at_ms, \
+             revoked) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 0)",
             params![
                 device_id,
                 account_id,
                 new.device_pub_s,
                 new.device_pub_d,
                 new.device_cert,
+                new.vault_device_id,
                 new.nickname,
                 new.platform,
                 new.app_version,
@@ -378,6 +408,7 @@ impl Store {
             account_id: account_id.to_string(),
             device_pub_s: new.device_pub_s.clone(),
             device_pub_d: new.device_pub_d.clone(),
+            vault_device_id: new.vault_device_id.clone(),
             nickname: new.nickname.clone(),
             platform: new.platform.clone(),
             app_version: new.app_version.clone(),
@@ -393,8 +424,9 @@ impl Store {
     pub fn list_devices(&self, account_id: &str) -> Result<Vec<Device>, StoreError> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT device_id, account_id, device_pub_s, device_pub_d, nickname, platform, \
-             app_version, created_at_ms, last_seen_at_ms, revoked, revoked_at_ms \
+            "SELECT device_id, account_id, device_pub_s, device_pub_d, vault_device_id, \
+             nickname, platform, app_version, created_at_ms, last_seen_at_ms, revoked, \
+             revoked_at_ms \
              FROM devices WHERE account_id = ?1 ORDER BY created_at_ms, device_id",
         )?;
         let rows = stmt.query_map(params![account_id], row_to_device)?;
@@ -429,8 +461,9 @@ impl Store {
         let conn = self.conn.lock();
         Ok(conn
             .query_row(
-                "SELECT device_id, account_id, device_pub_s, device_pub_d, nickname, platform, \
-                 app_version, created_at_ms, last_seen_at_ms, revoked, revoked_at_ms \
+                "SELECT device_id, account_id, device_pub_s, device_pub_d, vault_device_id, \
+                 nickname, platform, app_version, created_at_ms, last_seen_at_ms, revoked, \
+                 revoked_at_ms \
                  FROM devices WHERE account_id = ?1 AND device_id = ?2 AND revoked = 0",
                 params![account_id, device_id],
                 row_to_device,
@@ -469,6 +502,61 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Revoke every active device row carrying `vault_device_id`, and drop
+    /// their push tokens, in one transaction.
+    ///
+    /// This is the route a vault can actually reach. `revoke_device` above
+    /// names the relay's own ULID, minted here at registration and never
+    /// carried back into the vault; a `device_revoke` op names a 16-byte
+    /// vault-side id and no device holds any peer's ULID, so a revocation had
+    /// no expressible target until this existed.
+    ///
+    /// *Every* matching row rather than one, because a device re-registering
+    /// with the same keys is a second row rather than an error
+    /// (`docs/06-server/api.md`), and every one of those rows is the device the
+    /// caller is revoking. Revoking one and leaving the others would leave the
+    /// device authenticating under a row the caller has no way to name.
+    ///
+    /// Returns [`StoreError::NotFound`] when no active row on this account
+    /// carries that vault id — a second revoke, a device that never registered
+    /// its vault id, and one aimed at another account's device all land here.
+    pub fn revoke_devices_by_vault_id(
+        &self,
+        account_id: &str,
+        vault_device_id: &str,
+        now_ms: u64,
+    ) -> Result<usize, StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        // Collected before the update, because afterwards the predicate that
+        // selects them no longer holds and the push tokens would survive.
+        let ids: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT device_id FROM devices \
+                 WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 0",
+            )?;
+            let rows = stmt.query_map(params![account_id, vault_device_id], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        if ids.is_empty() {
+            return Err(StoreError::NotFound);
+        }
+        tx.execute(
+            "UPDATE devices SET revoked = 1, revoked_at_ms = ?3 \
+             WHERE account_id = ?1 AND vault_device_id = ?2 AND revoked = 0",
+            params![
+                account_id,
+                vault_device_id,
+                i64::try_from(now_ms).unwrap_or(i64::MAX)
+            ],
+        )?;
+        for id in &ids {
+            tx.execute("DELETE FROM push_tokens WHERE device_id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(ids.len())
     }
 
     /// Record the last time a device made an authenticated request.
@@ -547,19 +635,58 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> Result<Account, rusqlite::Error> {
     })
 }
 
+/// Columns added to a table that already exists on a running relay.
+///
+/// `SCHEMA` is `CREATE TABLE IF NOT EXISTS`, so it is inert against a database
+/// a previous release created and a column added there is never applied. There
+/// is no migration framework here and this does not want to become one: SQLite
+/// has no `ADD COLUMN IF NOT EXISTS`, so the presence check is `PRAGMA
+/// table_info` and the whole mechanism is one idempotent statement per column.
+///
+/// Every column added this way must be nullable with no default, which is the
+/// only shape `ALTER TABLE ... ADD COLUMN` applies to a populated table without
+/// rewriting it.
+fn add_missing_columns(conn: &Connection) -> Result<(), StoreError> {
+    add_column_if_absent(conn, "devices", "vault_device_id", "TEXT")
+}
+
+/// One idempotent `ALTER TABLE ... ADD COLUMN`.
+///
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so the presence check is a
+/// `pragma_table_info` count. `table`, `column` and `decl` are interpolated
+/// into the statement because SQLite binds values and not identifiers; every
+/// caller is a literal in this file, and nothing here takes one from a request.
+fn add_column_if_absent(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), StoreError> {
+    let present: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |r| r.get(0),
+    )?;
+    if present == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    }
+    Ok(())
+}
+
 fn row_to_device(r: &rusqlite::Row<'_>) -> Result<Device, rusqlite::Error> {
     Ok(Device {
         device_id: r.get(0)?,
         account_id: r.get(1)?,
         device_pub_s: r.get(2)?,
         device_pub_d: r.get(3)?,
-        nickname: r.get(4)?,
-        platform: r.get(5)?,
-        app_version: r.get(6)?,
-        created_at_ms: unsigned(r.get::<_, i64>(7)?),
-        last_seen_at_ms: unsigned(r.get::<_, i64>(8)?),
-        revoked: r.get::<_, i64>(9)? != 0,
-        revoked_at_ms: r.get::<_, Option<i64>>(10)?.map(unsigned),
+        vault_device_id: r.get(4)?,
+        nickname: r.get(5)?,
+        platform: r.get(6)?,
+        app_version: r.get(7)?,
+        created_at_ms: unsigned(r.get::<_, i64>(8)?),
+        last_seen_at_ms: unsigned(r.get::<_, i64>(9)?),
+        revoked: r.get::<_, i64>(10)? != 0,
+        revoked_at_ms: r.get::<_, Option<i64>>(11)?.map(unsigned),
     })
 }
 
@@ -663,6 +790,7 @@ mod tests {
                     device_pub_s: "k".into(),
                     device_pub_d: None,
                     device_cert: None,
+                    vault_device_id: None,
                     nickname: "laptop".into(),
                     platform: "linux".into(),
                     app_version: None,
@@ -706,6 +834,7 @@ mod tests {
                     device_pub_s: "k".into(),
                     device_pub_d: None,
                     device_cert: None,
+                    vault_device_id: None,
                     nickname: "laptop".into(),
                     platform: "linux".into(),
                     app_version: None,
@@ -738,6 +867,7 @@ mod tests {
                     device_pub_s: "k".into(),
                     device_pub_d: None,
                     device_cert: None,
+                    vault_device_id: None,
                     nickname: "phone".into(),
                     platform: "ios".into(),
                     app_version: None,
@@ -751,6 +881,116 @@ mod tests {
             s.revoke_device(&acct.account_id, &d.device_id, NOW),
             Err(StoreError::NotFound)
         ));
+    }
+
+    /// A vault id is a *filter* on the caller's own rows, like every other
+    /// device id in this store, and this is the test that says so.
+    ///
+    /// Two accounts can hold the same vault device id without contriving
+    /// anything — nothing coordinates 16-byte ids across accounts — so a
+    /// lookup by vault id alone, compared afterwards, would revoke a stranger's
+    /// device on a request that had every right to be made.
+    #[test]
+    fn one_account_cannot_revoke_anothers_device_by_its_vault_id() {
+        const VAULT_ID: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
+        let s = store();
+        let alice = s.resolve_account(&subject("alice"), true, NOW).unwrap();
+        let bob = s.resolve_account(&subject("bob"), true, NOW).unwrap();
+        let d = s
+            .register_device(
+                &alice.account_id,
+                &NewDevice {
+                    device_pub_s: "k".into(),
+                    device_pub_d: None,
+                    device_cert: None,
+                    vault_device_id: Some(VAULT_ID.into()),
+                    nickname: "laptop".into(),
+                    platform: "linux".into(),
+                    app_version: None,
+                },
+                NOW,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            s.revoke_devices_by_vault_id(&bob.account_id, VAULT_ID, NOW),
+            Err(StoreError::NotFound)
+        ));
+        assert!(
+            s.active_device(&alice.account_id, &d.device_id)
+                .unwrap()
+                .is_some(),
+            "alice's device must still be active"
+        );
+
+        assert_eq!(
+            s.revoke_devices_by_vault_id(&alice.account_id, VAULT_ID, NOW)
+                .unwrap(),
+            1
+        );
+        assert!(s
+            .active_device(&alice.account_id, &d.device_id)
+            .unwrap()
+            .is_none());
+    }
+
+    /// A column added to a table an earlier release created.
+    ///
+    /// `SCHEMA` is `CREATE TABLE IF NOT EXISTS`, so it is inert against an
+    /// existing database: without `add_missing_columns` a relay upgraded in
+    /// place would answer every query touching `vault_device_id` with "no such
+    /// column", which is every device query there is.
+    #[test]
+    fn a_column_added_after_release_reaches_a_database_that_predates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        {
+            // The `devices` table as it stood before this column existed.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                     device_id       TEXT PRIMARY KEY,
+                     account_id      TEXT NOT NULL,
+                     device_pub_s    TEXT NOT NULL,
+                     device_pub_d    TEXT,
+                     device_cert     TEXT,
+                     nickname        TEXT NOT NULL,
+                     platform        TEXT NOT NULL,
+                     app_version     TEXT,
+                     created_at_ms   INTEGER NOT NULL,
+                     last_seen_at_ms INTEGER NOT NULL,
+                     revoked         INTEGER NOT NULL DEFAULT 0,
+                     revoked_at_ms   INTEGER
+                 );",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(Some(&path)).unwrap();
+        let acct = s.resolve_account(&subject("alice"), true, NOW).unwrap();
+        let d = s
+            .register_device(
+                &acct.account_id,
+                &NewDevice {
+                    device_pub_s: "k".into(),
+                    device_pub_d: None,
+                    device_cert: None,
+                    vault_device_id: Some("01J8ZQ7X9K3M5N7P9R1T3V5W7Y".into()),
+                    nickname: "laptop".into(),
+                    platform: "linux".into(),
+                    app_version: None,
+                },
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            s.list_devices(&acct.account_id).unwrap()[0].vault_device_id,
+            Some("01J8ZQ7X9K3M5N7P9R1T3V5W7Y".into())
+        );
+        assert!(s
+            .active_device(&acct.account_id, &d.device_id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

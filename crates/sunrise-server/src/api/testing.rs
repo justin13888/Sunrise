@@ -315,3 +315,105 @@ impl Res {
         self
     }
 }
+
+/// The server's own now, formatted as the `Date` that `header_sig_v2` signs.
+///
+/// The server's clock rather than the process's: a test that signs against
+/// `SystemTime` is a test that fails whenever the state under it carries a
+/// [`crate::state::TestClock`], and the failure looks like a signature bug.
+pub(crate) fn now_rfc2822(client: &Client) -> String {
+    let secs = i64::try_from(client.clock_now_ms() / 1000).expect("a sane clock");
+    jiff::Timestamp::from_second(secs)
+        .expect("a valid timestamp")
+        .strftime("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
+/// Register a device and hand back the relay id it was given and the key it
+/// signs with.
+///
+/// `vault_device_id` is the id the device answers to inside the vault, which is
+/// the only name a peer can revoke it by; `None` registers a device that
+/// predates that field, which is the case a test of the `404` needs.
+pub(crate) async fn register_device(
+    client: &Client,
+    seed: u8,
+    nickname: &str,
+    vault_device_id: Option<&str>,
+) -> (String, ed25519_dalek::SigningKey) {
+    use base64::Engine as _;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut body = serde_json::json!({
+        "device_pub_s": base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sk.verifying_key().as_bytes()),
+        "nickname": nickname,
+        "platform": "linux",
+    });
+    if let Some(vault_device_id) = vault_device_id {
+        body["vault_device_id"] = serde_json::Value::String(vault_device_id.to_owned());
+    }
+    let res = client
+        .send(Method::POST, "/api/v1/devices", Some(&body))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    let id = res.json()["device_id"]
+        .as_str()
+        .expect("a device id")
+        .to_owned();
+    (id, sk)
+}
+
+/// Send a request bound to `device_id` by `key`, the way a real client does.
+pub(crate) async fn send_signed(
+    client: &Client,
+    method: &str,
+    target: &str,
+    device_id: &str,
+    key: &ed25519_dalek::SigningKey,
+    body: Option<&serde_json::Value>,
+) -> Res {
+    send_signed_with(client, method, target, device_id, key, body, &[]).await
+}
+
+/// [`send_signed`], carrying extra headers — `X-Sunrise-Session`, chiefly.
+///
+/// The signature covers the method, the target, the `Date` and the canonical
+/// body and nothing else, so extra headers ride alongside it rather than
+/// through it.
+pub(crate) async fn send_signed_with(
+    client: &Client,
+    method: &str,
+    target: &str,
+    device_id: &str,
+    key: &ed25519_dalek::SigningKey,
+    body: Option<&serde_json::Value>,
+    extra: &[(&str, &str)],
+) -> Res {
+    let date = now_rfc2822(client);
+    let signature =
+        sunrise_http_sig::sign(key, method, target, &date, body).expect("the client half signs");
+    let mut headers = vec![
+        ("x-sunrise-device", device_id),
+        ("x-sunrise-device-sig", signature.as_str()),
+        ("date", date.as_str()),
+    ];
+    headers.extend_from_slice(extra);
+    client
+        .send_with(
+            method.parse().expect("a method"),
+            target,
+            Some(BEARER),
+            body,
+            &headers,
+        )
+        .await
+}
+
+/// The problem document's `code` extension member — the thing a client
+/// switches on.
+pub(crate) fn code_of(res: &Res) -> String {
+    res.json()["code"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a code member: {}", res.json()))
+        .to_owned()
+}

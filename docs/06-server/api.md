@@ -150,8 +150,9 @@ The user's `identity_pub_*` is signed-by-self; a hostile server substituting key
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/devices` | `{ device_pub_s, device_pub_d?, device_cert?, nickname, platform, app_version? }` | `201` + `{ device_id }` |
+| POST | `/api/v1/devices` | `{ device_pub_s, device_pub_d?, device_cert?, vault_device_id?, nickname, platform, app_version? }` | `201` + `{ device_id }` |
 | DELETE | `/api/v1/devices/<dev_id>` | — | 204 (revocation; only callable by another paired device) |
+| DELETE | `/api/v1/devices/by-vault-id/<vault_dev_id>` | — | 204 (the same revocation, addressed by the id the vault knows the device by) |
 | GET | `/api/v1/devices` | — | `[DeviceMeta]` |
 | POST | `/api/v1/devices/push-tokens` | `PushRegistration` = `{ device_id, platform, token }` | `200` + `{ "registered": true }` |
 
@@ -165,9 +166,40 @@ settled in one lookup. `platform` is the `PushPlatform` enum (`apns` / `fcm` /
 `webpush`), not a free-form `provider` string.
 
 `POST /api/v1/devices` validates `device_pub_s` as a parseable Ed25519 key,
-`nickname` as 1..=64 bytes, and `platform` against the six-value list in
-`DeviceMeta`; each failure is a `400 VALIDATION_INVALID`. It rides the bootstrap
+`nickname` as 1..=64 bytes, `platform` against the six-value list in
+`DeviceMeta`, and `vault_device_id` — when present — as 26 Crockford base-32
+characters; each failure is a `400 VALIDATION_INVALID`. It rides the bootstrap
 exemption, because the device it registers cannot have signed the request.
+
+#### Two names for one device, and why the second exists
+
+`device_id` is a ULID the relay mints at registration and returns to the device
+that registered. Nothing carries it any further: a vault knows its **own**
+relay id and no peer's, because a peer's arrives at the relay and never travels
+back through the op stream.
+
+What a vault holds for a peer is the peer's 16-byte **vault** device id — the id
+a `device_revoke` op names, the id in every op envelope's cleartext routing
+header. So a revocation, expressed by the only name the revoking device has,
+had no route to send it to until `DELETE /api/v1/devices/by-vault-id/<id>`
+existed ([#80](https://github.com/justin13888/Sunrise/issues/80)); the
+device-id route was unreachable in principle rather than merely uncalled.
+
+`vault_device_id` is optional on registration and nullable on `DeviceMeta`,
+because it is additive to a shipped route. A device that registered without it
+**cannot be revoked at the relay at all** — there is nothing on its row to
+match, and the `by-vault-id` route answers `404` while that device goes on
+authenticating. Clients treat that `404` as the warning it is rather than as
+success.
+
+What this tells the relay that it did not already know is a **binding**, not a
+new identifier. The vault device id is already cleartext in every op envelope
+and already stored in `relay_frame_heads`; the relay could already observe, at
+upload time, that a signed request from device row *Y* carried envelopes headed
+*X*. This makes that join durable and explicit rather than derivable, which is
+the honest cost of making a revocation expressible, and it is confined to
+material the relay handles already. See
+[`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md).
 
 #### Revocation is a soft delete
 
@@ -180,10 +212,18 @@ as revoked rather than as absent.
 
 Three consequences are observable and tested:
 
-- **A device cannot revoke itself.** `api/devices.rs` refuses a `DELETE`
-  whose target is the caller's own bound device with `403 AUTH_DEVICE_NOT_OWNER`.
+- **A device cannot revoke itself, by either of its names.** `api/devices.rs`
+  refuses a `DELETE` whose target is the caller's own bound device with
+  `403 AUTH_DEVICE_NOT_OWNER`, and reads the same rule off `vault_device_id` on
+  the `by-vault-id` route — a second name for one row is otherwise a way round
+  the first rule.
   A device that can revoke itself is a device a thief can use to erase the
   evidence; signing out locally is a key wipe, not a server call.
+- **The `by-vault-id` route revokes *every* active row carrying that vault id**,
+  not one. A device re-registering is a second row rather than an error (it is
+  what lets a client run the bootstrap on every start), and every one of those
+  rows is the device the caller means; revoking one and leaving the rest would
+  leave the device authenticating under a row its owner cannot name.
 - **Revoking twice is a `404 DEVICE_NOT_FOUND`**, because the `UPDATE` is
   guarded by `revoked = 0` and a zero-row update maps to `StoreError::NotFound`.
   Revoking another account's device lands in the same place — the account id is
@@ -199,7 +239,8 @@ Three consequences are observable and tested:
 
 ```cddl
 DeviceMeta = {
-  device_id:       tstr,        ; Crockford base32 of 16 bytes
+  device_id:       tstr,        ; Crockford base32 of 16 bytes; the relay's own ULID
+  vault_device_id: tstr / null, ; Crockford base32 of 16 bytes; the id the vault knows it by
   nickname:        tstr,        ; user-set; ≤ 64 bytes; default = platform default ("MacBook Air", etc.)
   platform:       "ios" / "android" / "macos" / "windows" / "linux" / "web",
   app_version:    tstr / null,  ; e.g. "1.4.2"; client-reported, absent by default
@@ -219,7 +260,7 @@ DeviceMeta = {
 | 403 | `AUTH_DEVICE_NOT_OWNER` | Caller is not a paired device of the account; the `DELETE` target is the caller itself; or a push registration names a device the account does not actively own. | No. |
 | 401 | `AUTH_DEVICE_SIG_INVALID` | The caller **is** an active device of this account and its `header_sig_v2` binding still did not check out: an unverifiable `X-Sunrise-Device-Sig`, no `Date` header alongside it, or a `Date` outside ±300 s. Also returned, before any device lookup, when `require_device_sig` is set and the caller did not present a **complete** binding — `X-Sunrise-Device` and `X-Sunrise-Device-Sig` are read together, so either one missing takes this path, not only both — which `GET /meta`'s `device_binding_required` already advertises. | No — re-sign with a correct clock. Never refresh the bearer; it was not the problem. |
 | 401 | `AUTH_TOKEN_INVALID` | `X-Sunrise-Device` names a device that is **not** an active row on this account, or the token's own `device_id` claim disagrees with it. Deliberately the same answer a bad bearer gets: a finer code here would tell an unauthenticated caller which devices an account has. | No. |
-| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. | No. |
+| 404 | `DEVICE_NOT_FOUND` | `<dev_id>` does not match any **active** device on this account — including a device already revoked. For `by-vault-id`, also a device that registered before it sent a `vault_device_id`, which is **still accepted by this relay**: the `404` is not a statement that the device is refused. | No. |
 
 ### Blobs
 

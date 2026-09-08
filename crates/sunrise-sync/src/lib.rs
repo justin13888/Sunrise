@@ -33,4 +33,4 @@ pub use credential::{TokenSource, TokenWatch};
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;
 pub use state::SyncState;
-pub use transport::{Transport, TransportError};
+pub use transport::{RevokeOutcome, Transport, TransportError};
