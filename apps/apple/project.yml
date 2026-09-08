@@ -141,6 +141,16 @@ targets:
         # app-scoped group, which would have to land together with the
         # entitlement and a signing identity; both are release work.
         #
+        # Nor is there a `keychain-access-groups` entitlement, which is a
+        # *different* thing and is what the data-protection keychain needs —
+        # the one that would make the vault root's `ThisDeviceOnly` class mean
+        # something on the Mac. It cannot be committed on its own: it is a
+        # restricted entitlement, and an ad-hoc-signed build carrying it is
+        # killed by AMFI before `main`, so adding it here would break
+        # `mise run macos-app` for everyone without an Apple team. See
+        # docs/07-clients/desktop.md §The data-protection keychain is not a
+        # one-line entitlement for the three configurations that were measured.
+        #
         # The hardened runtime is a different setting and is on; it lives in
         # `settings.base` above, where its note explains why.
     # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting

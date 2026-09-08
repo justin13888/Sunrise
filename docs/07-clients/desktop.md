@@ -268,6 +268,42 @@ uses most. A Mac App Store build would have to trade that away, and
 Store is **not** a v1 channel, and v1 ships the direct `.dmg` alone. The
 sandbox stays off.
 
+### The data-protection keychain is not a one-line entitlement
+
+The Mac's missing protection class (§Platform integration, and
+[`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root))
+is fixed by moving the app onto the **data-protection keychain**, which needs
+the `keychain-access-groups` entitlement — *not* the App Sandbox, which stays
+off. Three things were measured on an Apple-silicon Mac, and together they say
+what that costs:
+
+1. **Unsigned, as `mise run macos-app` builds today:** the file-based login
+   keychain accepts `SecItemAdd` and reads back **no** `kSecAttrAccessible` at
+   all, and `SecItemAdd` with `kSecUseDataProtectionKeychain` returns
+   `errSecMissingEntitlement` (-34018).
+2. **Ad-hoc signed with `keychain-access-groups`:** the process is
+   **`Killed: 9` before `main`**. `codesign -v -vvv` reports the binary "valid
+   on disk" and "satisfies its Designated Requirement"; the kill is AMFI
+   refusing a *restricted* entitlement that no provisioning profile grants. A
+   team-prefixed group (`$(AppIdentifierPrefix)…`) dies the same way — the
+   entitlement is restricted, not the name.
+3. **Ad-hoc signed with `com.apple.security.application-groups`** — the other
+   entitlement that reaches the data-protection keychain — the process *runs*,
+   and `SecItemAdd` with `kSecUseDataProtectionKeychain` still returns -34018,
+   because an ad-hoc signature carries no team id for the group to be validated
+   against.
+
+So the entitlement is not a setting that can be committed on its own: a build
+carrying it will not launch without a real signing identity, and
+`mise run macos-app` builds `CODE_SIGNING_ALLOWED=NO` — which is what keeps the
+Mac app buildable by a contributor with no Apple account, the same thing
+`DEVELOPMENT_TEAM: ""` exists for. Whoever lands this has to answer that
+question too, on top of the migration the existing login-keychain items need:
+read the old item, write the new one, **verify the read-back**, and only then
+delete the old, safe to interrupt at every step, because a build that silently
+starts reading an empty data-protection keychain looks exactly like a lost
+vault.
+
 The **hardened runtime**, which is a different setting, is on and has to be:
 Apple's notary service rejects a submission without it.
 `apps/apple/project.yml` sets `ENABLE_HARDENED_RUNTIME: YES` in
