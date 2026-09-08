@@ -30,7 +30,7 @@ use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::{SunriseTime, Task, TaskState};
 use sunrise_id::EntityRef;
 use sunrise_server::{ServerConfig, ServerState};
-use sunrise_sync::SseTransport;
+use sunrise_sync::{DeviceSigner, SseTransport};
 use tokio::task::JoinHandle;
 
 /// Crate-level marker used by the test harness.
@@ -89,6 +89,36 @@ pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
         let url = url.clone();
         Box::pin(async move {
             let t = SseTransport::connect(&url);
+            Ok(Box::new(t) as BoxTransport)
+        }) as sunrise_core::ConnectFuture
+    })
+}
+
+/// Build a [`TransportFactory`] that reaches `http://{addr}` presenting
+/// `bearer` and bound to `signer` — the shape a real deployment uses.
+///
+/// [`ws_factory`] is the self-host shape: no bearer, no binding, against a
+/// relay running `NullVerifier`. Nothing in this harness had ever been
+/// device-bound, which is why the relay's refusal of a revoked device could
+/// only be covered through `sunrise-server`'s own HTTP tests.
+///
+/// The signer is cloned per attempt for the same reason the bearer is read per
+/// attempt: every reconnect is a new transport and has to carry the binding
+/// too.
+#[must_use]
+pub fn signed_ws_factory(
+    addr: SocketAddr,
+    bearer: Option<String>,
+    signer: Arc<dyn DeviceSigner>,
+) -> TransportFactory {
+    let url = format!("http://{addr}");
+    Arc::new(move || {
+        let url = url.clone();
+        let bearer = bearer.clone();
+        let signer = Arc::clone(&signer);
+        Box::pin(async move {
+            let t = SseTransport::connect_with_bearer(&url, bearer.as_deref())
+                .with_device_signer(signer);
             Ok(Box::new(t) as BoxTransport)
         }) as sunrise_core::ConnectFuture
     })
@@ -162,7 +192,7 @@ pub async fn open_core_with_factory(
     // the anti-entropy backstop is clocked in hundreds of milliseconds rather
     // than the production 30 s. The mechanism is the same one; only its period
     // is tuned, exactly like a backoff constant.
-    open_core_paired(vault_dir, root, addr, clock, factory, None).await
+    open_core_paired(vault_dir, root, addr, clock, Some(factory), None).await
 }
 
 /// Open a **second device on the same account** as `existing`.
@@ -204,10 +234,42 @@ pub async fn open_paired_core_with_factory(
         root,
         addr,
         clock,
-        factory,
+        Some(factory),
         Some(Box::new(payload)),
     )
     .await
+}
+
+/// Open a core with **no sync driver running**, so the caller can register its
+/// device at the relay before deciding what transport to give it.
+///
+/// The device binding needs both halves of a fact the ordinary helpers cannot
+/// have at once: the relay's id for this device, which only exists after
+/// registration, and the vault's signing key, which only exists after the open.
+/// Splitting the open from the `start_sync` is what lets a test hold both —
+/// and it is the same order a real client runs in, since
+/// `sunrise_relay_client::bootstrap` also registers before any signed request.
+pub async fn open_core_offline(
+    vault_dir: &Path,
+    root: [u8; 32],
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+) -> Arc<Core> {
+    open_core_paired(vault_dir, root, addr, clock, None, None).await
+}
+
+/// [`open_core_offline`], as a second device on `existing`'s account.
+pub async fn open_paired_core_offline(
+    vault_dir: &Path,
+    existing: &Core,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+) -> Arc<Core> {
+    let payload = existing
+        .export_pairing_payload()
+        .expect("export pairing payload");
+    let root = payload.vault_root;
+    open_core_paired(vault_dir, root, addr, clock, None, Some(Box::new(payload))).await
 }
 
 async fn open_core_paired(
@@ -215,7 +277,7 @@ async fn open_core_paired(
     root: [u8; 32],
     addr: SocketAddr,
     clock: Arc<dyn Clock>,
-    factory: TransportFactory,
+    factory: Option<TransportFactory>,
     paired: Option<Box<sunrise_pairing::PairingPayload>>,
 ) -> Arc<Core> {
     let cfg = CoreConfig {
@@ -234,7 +296,9 @@ async fn open_core_paired(
     .await
     .expect("open core");
     let core = Arc::new(core);
-    core.start_sync(factory).expect("start sync");
+    if let Some(factory) = factory {
+        core.start_sync(factory).expect("start sync");
+    }
     core
 }
 

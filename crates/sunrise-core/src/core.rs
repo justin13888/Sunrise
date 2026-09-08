@@ -633,6 +633,52 @@ impl Core {
         self.engine.keychain().device_id()
     }
 
+    /// This device's Ed25519 signing public key (`D_S_pub`).
+    ///
+    /// What `POST /api/v1/devices` registers as `device_pub_s`, and therefore
+    /// what the relay checks every `X-Sunrise-Device-Sig` against. Raw bytes;
+    /// `sunrise_http_sig::device_pub_b64` puts them in the wire form, which is
+    /// the encoding the relay's own validator reads and the one a caller that
+    /// invented its own got wrong.
+    #[must_use]
+    pub fn device_signing_pub(&self) -> [u8; 32] {
+        self.engine.keychain().device_signing_pub()
+    }
+
+    /// Sign `message` with this device's signing key; 64 raw Ed25519 bytes.
+    ///
+    /// The key itself is not obtainable, here or from [`crate::keychain`]:
+    /// `D_S_priv` stays wrapped under the vault root, and a caller that needs a
+    /// bound request needs signatures rather than the secret that makes them.
+    /// See [`Self::device_signer`] for the shape a transport takes.
+    #[must_use]
+    pub fn sign_with_device_key(&self, message: &[u8]) -> [u8; 64] {
+        self.engine.keychain().sign_device(message)
+    }
+
+    /// The device binding a transport presents, for the relay device row
+    /// `relay_device_id` names.
+    ///
+    /// `relay_device_id` is the ULID the relay minted at registration and
+    /// returned from `POST /api/v1/devices` — not [`Self::device_id`], which is
+    /// this vault's own 16-byte id and is a name the relay holds for no device
+    /// but the one registering. Handing the wrong one over produces a signature
+    /// that verifies against nothing, which the relay reports as a bad *bearer*
+    /// so that a caller cannot enumerate an account's devices.
+    ///
+    /// The clock comes from [`crate::CoreConfig`], so the `Date` this signs is
+    /// the one the rest of the core reads and a test can skew it.
+    #[must_use]
+    pub fn device_signer(
+        self: &Arc<Self>,
+        relay_device_id: impl Into<String>,
+    ) -> Arc<dyn sunrise_sync::DeviceSigner> {
+        Arc::new(CoreDeviceSigner {
+            core: Arc::clone(self),
+            relay_device_id: relay_device_id.into(),
+        })
+    }
+
     /// Devices this vault has revoked and not yet told the relay about.
     ///
     /// The 16-byte ids are the vault's own, which is the only name a revoking
@@ -869,6 +915,45 @@ impl Drop for Core {
         if let Some(h) = self.sync_handle.lock().take() {
             h.abort();
         }
+    }
+}
+
+/// The [`sunrise_sync::DeviceSigner`] a [`Core`] hands its transport.
+///
+/// Holds the `Core`, not a key: `sign` reaches through to
+/// [`Core::sign_with_device_key`], so `D_S_priv` stays wrapped under the vault
+/// root and the transport layer never has a copy to leak, log or serialize.
+/// `now_ms` reads the injected clock for the same reason the core does
+/// everywhere else — the `Date` it stamps is signed, and an ambient clock here
+/// would be both a determinism-gate violation and untestable.
+struct CoreDeviceSigner {
+    core: Arc<Core>,
+    relay_device_id: String,
+}
+
+impl std::fmt::Debug for CoreDeviceSigner {
+    /// Names the device row and nothing else. The relay device id is an
+    /// opaque identifier the relay itself minted, not a secret and not a
+    /// user identifier; the key it signs with is not reachable from here to
+    /// print in the first place.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoreDeviceSigner")
+            .field("relay_device_id", &self.relay_device_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl sunrise_sync::DeviceSigner for CoreDeviceSigner {
+    fn device_id(&self) -> String {
+        self.relay_device_id.clone()
+    }
+
+    fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.core.sign_with_device_key(message)
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.core.now_ms()
     }
 }
 

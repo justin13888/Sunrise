@@ -26,6 +26,15 @@ pub mod migrations;
 pub mod oplog;
 pub mod sync_local;
 
+/// The committed old-vault fixtures and the migration chain run over them.
+///
+/// Test-only. It is a module inside the crate rather than a file under
+/// `tests/` because generating a genuine old vault needs `Db`'s private
+/// keying, and a fixture built by re-deriving that key in an integration test
+/// would prove the wrong thing.
+#[cfg(test)]
+mod vault_fixtures;
+
 pub use blob_store::{BlobStore, BlobStoreError};
 pub use db::{Db, DbError};
 pub use migrations::{current_storage_v, MIGRATIONS};

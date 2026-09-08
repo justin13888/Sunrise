@@ -32,9 +32,10 @@ All multi-row writes are wrapped in a single `BEGIN IMMEDIATE … COMMIT`. Reads
 > [`crates/sunrise-storage/migrations/0013_baseline.sql`](../../crates/sunrise-storage/migrations/0013_baseline.sql),
 > and that file is the source of truth**, together with the migrations appended
 > after it, listed in
-> [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/)
-> — four files today, the baseline plus three. Naming them here is what rotted
-> last time; the directory is the list. The baseline is a collapse, not a sequence
+> [`crates/sunrise-storage/migrations/`](../../crates/sunrise-storage/migrations/).
+> Naming them here is what rotted last time, and so is counting them — this
+> sentence said "four files today" through four appends. The directory is the
+> list. The baseline is a collapse, not a sequence
 > ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)), and it carries the
 > design rationale for each table on the table. This section describes the
 > *shape and the reasons*; it deliberately does not restate every column, because
