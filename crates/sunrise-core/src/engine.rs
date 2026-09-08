@@ -320,10 +320,10 @@ impl Engine {
     /// divergence, from an ordinary backgrounded-app restart.
     ///
     /// The op log is the right source because `ops.ts_ms` **is** the stamp's
-    /// physical half for every row: `ops_insert_at` writes
-    /// `hlc.physical_ms` for a locally emitted op and
-    /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for an absorbed
-    /// one. Every durable stamp elsewhere — a materialized row's `lww_*`
+    /// physical half for every row: the local emit path writes
+    /// `hlc.physical_ms` for an op this device mints and
+    /// [`Self::apply_remote_all`] writes `env.hlc.physical_ms` for one it
+    /// absorbs. Every durable stamp elsewhere — a materialized row's `lww_*`
     /// columns, a `device_revocations` cut — was carried by an op, so the log
     /// dominates all of them and no other table needs reading.
     ///
@@ -7124,8 +7124,8 @@ fn insert_review_snapshot_row(
 /// routine ops: a calendar is per-Stream in the UI, so routing there keeps a
 /// Block's `seq` independent of the meta stream's.
 ///
-/// `Task.blocks` is never written. It is derived from `block_tasks` on read
-/// (see `read_task_blocks`), which is what makes the spec's "Bound Task's
+/// `Task.blocks` is never written. It is derived from the `block_tasks` join
+/// every time a Task is read, which is what makes the spec's "Bound Task's
 /// `blocks` field updates symmetrically" hold by construction: one writer, one
 /// op, and nothing for a concurrent edit of the Task to overwrite.
 impl Engine {

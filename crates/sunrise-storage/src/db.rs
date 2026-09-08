@@ -42,8 +42,8 @@ pub enum DbError {
     /// Schema version mismatch (DB older; needs upgrade).
     ///
     /// Retained for wire-code stability ([`ErrorCode::StorageVTooOld`]) but no
-    /// longer produced by `Db::ensure_schema`, which auto-applies pending
-    /// migrations instead of erroring on an older DB.
+    /// longer produced: [`Db::open`] auto-applies pending migrations instead of
+    /// erroring on an older DB.
     #[error("STORAGE_V too old: db is {db_v}, binary expects {binary_v}")]
     StorageVTooOld {
         /// Version found in the DB.
