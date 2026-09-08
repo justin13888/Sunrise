@@ -173,7 +173,10 @@ struct CheatSheetView: View {
             Divider()
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Vim-style motions", isOn: $preferences.vimMode)
-                Text("h j k l, gg, G, u, ⌃R, / and : — on this Mac only, never synced.")
+                Text(
+                    "h j k l, gg, G, u, ⌃R, / and : — on this "
+                        + "\(Platform.deviceName) only, never synced."
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

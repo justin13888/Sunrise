@@ -76,7 +76,7 @@ struct SaveViewSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .macSheetFrame(width: 360)
     }
 
     private func commit() {

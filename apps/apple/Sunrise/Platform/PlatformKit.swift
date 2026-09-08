@@ -235,6 +235,35 @@ extension PlatformImage {
     }
 }
 
+// MARK: - Sheet sizing
+
+extension View {
+    /// The width a sheet takes **on a Mac**, and nothing at all on a phone.
+    ///
+    /// A `.frame(width:)` on a sheet is a macOS idiom: there the sheet is a
+    /// panel over a resizable window and something has to say how wide it
+    /// should be. On iOS the sheet already has a width — the screen's — and a
+    /// fixed one wider than the device clips its own content, which is what
+    /// every editor sheet shared with the Mac did on an iPhone. The reference
+    /// device is the `iPhone 17 Pro` simulator `mise.toml` pins, about 402
+    /// points across in portrait; the frames this replaces ran from 420 to
+    /// 620.
+    ///
+    /// A hard `#if` rather than a horizontal size class, and deliberately.
+    /// A size class would also make an iPad's regular width take the Mac's
+    /// number, and an iPad sheet is a system-sized card whose width is the
+    /// system's business — the Mac's 620 is not a better answer there than the
+    /// one iPadOS already has.
+    @ViewBuilder
+    func macSheetFrame(width: CGFloat, height: CGFloat? = nil) -> some View {
+        #if os(macOS)
+        frame(width: width, height: height)
+        #else
+        self
+        #endif
+    }
+}
+
 // MARK: - Software-keyboard input modes
 
 /// What a text field holds, as far as a software keyboard is concerned.

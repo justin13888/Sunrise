@@ -355,7 +355,7 @@ extension PairingModel {
 
     private var doneSummary: String {
         intent == .addThisMac
-            ? "This Mac is paired. Your vault is open here."
+            ? "This \(Platform.deviceName) is paired. Your vault is open here."
             : "The other device has your vault key. It can open your vault now."
     }
 
@@ -366,11 +366,11 @@ extension PairingModel {
         case .code:
             HandOff(
                 leg: leg,
-                title: "Show this to the Mac that has your vault",
+                title: "Show this to the device that has your vault",
                 instruction: """
                     Scan the code, or copy the text below and paste it into \
-                    Settings › Vaults › Add a device on the Mac that already \
-                    has your vault.
+                    Settings › Vaults › Add a device on your other device — \
+                    the one that already has your vault.
                     """,
                 text: text,
                 drawsCode: true
@@ -378,10 +378,10 @@ extension PairingModel {
         case .first, .second, .third:
             HandOff(
                 leg: leg,
-                title: "Copy this to the other Mac",
+                title: "Copy this to the other device",
                 instruction: """
-                    Paste it into the field the other Mac is showing, then come \
-                    back here and continue.
+                    Paste it into the field the other device is showing, then \
+                    come back here and continue.
                     """,
                 text: text,
                 drawsCode: false
@@ -391,7 +391,7 @@ extension PairingModel {
         case .root:
             HandOff(
                 leg: leg,
-                title: "Copy this last block to the other Mac",
+                title: "Copy this last block to the other device",
                 instruction: """
                     This is your vault key, sealed so that only the device whose \
                     digits you just confirmed can open it. Anything it passes \
@@ -409,17 +409,17 @@ extension PairingModel {
         case .code:
             Prompt(
                 leg: leg,
-                title: "Paste the code from the Mac you are adding",
+                title: "Paste the code from the device you are adding",
                 instruction: """
-                    That Mac is showing a QR code with the same text underneath \
-                    it. Paste the text here.
+                    That device is showing a QR code with the same text \
+                    underneath it. Paste the text here.
                     """
             )
         case .first, .second, .third:
             Prompt(
                 leg: leg,
-                title: "Paste what the other Mac is showing",
-                instruction: "Copy the block from the other Mac's screen and paste it here."
+                title: "Paste what the other device is showing",
+                instruction: "Copy the block from the other device's screen and paste it here."
             )
         case .compare:
             Prompt(leg: leg, title: "", instruction: "")
@@ -428,7 +428,7 @@ extension PairingModel {
                 leg: leg,
                 title: "Paste the sealed key",
                 instruction: """
-                    The other Mac is showing one last block, now that you have \
+                    The other device is showing one last block, now that you have \
                     both confirmed the digits. It is the only thing in this \
                     whole exchange that carries your vault key.
                     """

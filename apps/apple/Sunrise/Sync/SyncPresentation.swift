@@ -76,7 +76,7 @@ struct SyncPresentation: Equatable {
             self.init(
                 label: "Offline",
                 detail: pending == 0
-                    ? "Your tasks are on this Mac and up to date here."
+                    ? "Your tasks are on this device and up to date here."
                     : Self.pendingPhrase(pending),
                 symbol: "icloud.slash",
                 tone: .idle,
@@ -90,7 +90,7 @@ struct SyncPresentation: Equatable {
             self.init(
                 label: "Changes missing",
                 detail: """
-                    The relay can no longer supply some changes this Mac never \
+                    The relay can no longer supply some changes this device never \
                     received. Another device may hold edits that will not \
                     arrive over this connection.
                     """,

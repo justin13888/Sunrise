@@ -22,14 +22,18 @@ struct PairingView: View {
             Divider()
             footer
         }
-        .frame(width: 560, height: 520)
+        .macSheetFrame(width: 560, height: 520)
     }
 
     // MARK: - Chrome
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(model.intent == .addThisMac ? "Pair this Mac" : "Add a device")
+            Text(
+                model.intent == .addThisMac
+                    ? "Pair this \(Platform.deviceName)"
+                    : "Add a device"
+            )
                 .font(.headline)
             Spacer()
             if let progress = model.progress {
@@ -120,7 +124,7 @@ struct PairingView: View {
         case .working:
             Label(
                 model.intent == .addThisMac
-                    ? "Opening your vault on this Mac…"
+                    ? "Opening your vault on this \(Platform.deviceName)…"
                     : "Sealing your vault key for the other device…",
                 systemImage: "hourglass"
             )
@@ -164,7 +168,7 @@ struct PairingView: View {
             Text(
                 """
                 Sunrise puts a four-byte hash of this address in the pairing \
-                code so the other Mac can tell it is being asked about the \
+                code so the other device can tell it is being asked about the \
                 right account. The address itself does not travel.
                 """
             )
@@ -204,7 +208,8 @@ struct PairingView: View {
                     // below is a complete substitute and the user needs to know
                     // it is the one to use.
                     Label(
-                        "This Mac could not draw the code. Copy the text instead.",
+                        "This \(Platform.deviceName) could not draw the code. "
+                            + "Copy the text instead.",
                         systemImage: "exclamationmark.triangle"
                     )
                     .foregroundStyle(.orange)
@@ -294,7 +299,7 @@ private struct SASConfirmation: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Do both Macs show these digits?")
+            Text("Do both devices show these digits?")
                 .font(.title3.weight(.semibold))
 
             Text(spaced)
@@ -307,7 +312,7 @@ private struct SASConfirmation: View {
 
             Text(
                 """
-                Read them aloud, or look at the other screen. Both Macs must be \
+                Read them aloud, or look at the other screen. Both devices must be \
                 showing the same six digits, and both of you have to confirm \
                 before anything is sent.
                 """
@@ -318,15 +323,16 @@ private struct SASConfirmation: View {
             Text(
                 isNewDevice
                     ? """
-                        These digits are derived from every message the two Macs \
+                        These digits are derived from every message the two devices \
                         have exchanged. If anything were sitting between them, it \
                         could not make both screens agree — it would have to guess \
                         six digits, once, with you watching.
                         """
                     : """
-                        Nothing has left this Mac yet. Your vault key is sealed and \
-                        sent only after you confirm below, and only for the device \
-                        on the other end of these digits.
+                        Nothing has left this \(Platform.deviceName) yet. Your \
+                        vault key is sealed and sent only after you confirm \
+                        below, and only for the device on the other end of \
+                        these digits.
                         """
             )
             .font(.footnote)

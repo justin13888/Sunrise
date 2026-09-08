@@ -134,7 +134,7 @@ struct RoutineEditorView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
+        .macSheetFrame(width: 440)
         .padding(.vertical, 8)
         .navigationTitle(isCreating ? "New routine" : "Edit routine")
     }

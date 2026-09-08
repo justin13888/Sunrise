@@ -94,7 +94,7 @@ struct TaskEditorView: View {
             case .activity: ActivityTimelineView(model: activity)
             }
         }
-        .frame(width: 460)
+        .macSheetFrame(width: 460)
         .padding(.vertical, 8)
     }
 

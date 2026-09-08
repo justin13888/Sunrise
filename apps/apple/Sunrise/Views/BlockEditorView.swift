@@ -32,7 +32,7 @@ struct BlockDraftSheetView: View {
             TimeKindPicker(kind: $kind)
         }
         .formStyle(.grouped)
-        .frame(width: 420)
+        .macSheetFrame(width: 420)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
@@ -152,7 +152,7 @@ struct BlockEditorView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
+        .macSheetFrame(width: 460)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
@@ -277,7 +277,7 @@ struct AdjustBlocksView: View {
             }
         }
         .padding(16)
-        .frame(width: 620)
+        .macSheetFrame(width: 620)
     }
 
     private var shared: String {
