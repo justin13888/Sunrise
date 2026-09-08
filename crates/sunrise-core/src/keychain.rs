@@ -754,7 +754,7 @@ impl Keychain {
     }
 
     /// Whether this vault holds `ID_D_priv`, the account identity's X25519
-    /// secret — and therefore, today, whether it holds the **only** copy.
+    /// secret — and therefore whether it can seal a recovery blob.
     ///
     /// True on exactly one device per account: the one that created it.
     /// `Keychain::create` mints the identity there and keeps `dh_secret`;
@@ -762,22 +762,18 @@ impl Keychain {
     /// `PairingPayload` stopped carrying the key (that is the whole of the #76
     /// read bound — see [`sunrise_pairing::payload`]).
     ///
-    /// **The consequence, which nothing else in the tree states:** the second
-    /// copy is supposed to be the recovery blob, and the recovery blob is not
-    /// built — `seal_recovery_blob` has no production caller. So while this
-    /// returns `true`, this device's vault is the only place `ID_D_priv`
-    /// exists. If it is lost, the key is gone permanently: every
-    /// `Recipient::Identity` copy in the op log becomes unopenable forever, and
-    /// no recovery feature shipped afterwards can retrieve it, because there is
-    /// nothing left to seal a blob from. Before `ID_D_priv` was dropped from
-    /// the pairing payload, any surviving paired device could have produced
-    /// that blob later; now none can.
+    /// **Whether it is the *only* copy depends on the client.** The second
+    /// copy is the recovery blob, and [`Self::seal_recovery_blob`] now has a
+    /// production caller — `sunrise bootstrap` seals one at account creation.
+    /// The Apple clients do not, so a vault created there is still the only
+    /// place `ID_D_priv` exists, and if it is lost the key is gone
+    /// permanently: every `Recipient::Identity` copy in the op log becomes
+    /// unopenable forever, and no recovery feature shipped afterwards can
+    /// retrieve it, because sealing a blob needs the key it would carry.
     ///
-    /// Callers should surface this, not act on it. It is a disclosure about
-    /// what the user's backup situation actually is, not a capability check —
-    /// and it stops being an alarming answer the moment the recovery blob
-    /// ships, at which point this method still answers "does this device hold
-    /// the key" and no longer implies "solely".
+    /// Callers should surface this, not act on it. It answers "does this
+    /// device hold the key" and, on a client that seals no blob, "is this the
+    /// last place it exists".
     ///
     /// See `docs/03-crypto/recovery.md` §Implementation status.
     #[must_use]
