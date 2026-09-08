@@ -69,6 +69,12 @@ pub mod codes {
     pub const RECOVERY_BLOB_EXISTS: &str = "RECOVERY_BLOB_EXISTS";
     /// The account has no recovery blob to serve.
     pub const RECOVERY_BLOB_NOT_FOUND: &str = "RECOVERY_BLOB_NOT_FOUND";
+    /// The bearer is valid and the authentication behind it is not recent or
+    /// strong enough for the operation. The client re-runs its OIDC
+    /// authorization request with `max_age=0` (or `prompt=login`, or the
+    /// operator's `acr_values`) and retries; refreshing the token does not
+    /// help, because a refresh does not move `auth_time`.
+    pub const AUTH_STEP_UP_REQUIRED: &str = "AUTH_STEP_UP_REQUIRED";
 
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";

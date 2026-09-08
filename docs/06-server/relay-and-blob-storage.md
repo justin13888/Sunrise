@@ -57,7 +57,7 @@ What that file exposes, stated plainly rather than left to inference:
 |---|---|---|
 | `accounts.email` | **plaintext** | the IdP's `email` claim, refreshed on each login |
 | `accounts.oidc_iss` / `oidc_sub` | plaintext | the IdP's identifiers for the user |
-| `accounts.recovery_blob` | ciphertext | opaque; written by `POST /accounts`, read by nothing |
+| `accounts.recovery_blob` | ciphertext | opaque; written by `POST /accounts`, served back by `GET /accounts/me/recovery_blob` behind an OIDC step-up. Write-once: a differing blob is `409`, not a silent overwrite |
 | `devices.nickname`, `devices.platform`, `devices.app_version` | **plaintext** | user-set name and client-reported platform/version |
 | `devices.device_pub_s` / `device_pub_d` / `device_cert` | public keys | |
 | `push_tokens.token` | **plaintext** | see [`push-notifications.md`](./push-notifications.md) |

@@ -22,6 +22,7 @@
 
 pub mod http;
 pub mod oidc;
+pub mod step_up;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,36 @@ impl Subject {
     }
 }
 
+/// What a token says about *how recently and how strongly* its holder
+/// authenticated.
+///
+/// Three claims, all standard, all optional, and none of them read by this
+/// server until the recovery blob got a route: `acr` (RFC 9068 §2.2 / OIDC
+/// Core §2, the authentication context class the IdP applied), `amr` (the
+/// methods it used) and `auth_time` (when the user actually authenticated, as
+/// opposed to when this token was minted).
+///
+/// The distinction `auth_time` carries is the whole point. `exp` and `iat`
+/// move every time a refresh token is exchanged, so a token minted one second
+/// ago can represent a login from six months ago — which is exactly the
+/// credential a stolen session holds. `auth_time` does not move on a refresh,
+/// so it is the only claim that can say "this person proved who they are just
+/// now".
+///
+/// Absent claims are represented as absent rather than as defaults: an IdP
+/// that emits no `auth_time` has said nothing about freshness, and reading
+/// that as "fresh" is the direction that fails open.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StepUp {
+    /// OIDC `acr` — the authentication context class reference.
+    pub acr: Option<String>,
+    /// OIDC `amr` — the authentication methods used. Empty when absent.
+    pub amr: Vec<String>,
+    /// OIDC `auth_time` — seconds since the epoch at which the end user
+    /// authenticated. **Not** `iat`: a refresh moves `iat` and leaves this.
+    pub auth_time_secs: Option<u64>,
+}
+
 /// A verified token: who it names, and when it stops being valid.
 ///
 /// The expiry is the reason this exists rather than [`TokenVerifier::verify`]
@@ -91,6 +122,9 @@ impl Subject {
 pub struct Verified {
     /// The principal the token names.
     pub subject: Subject,
+    /// What the token says about how recently and how strongly its holder
+    /// authenticated. Empty from a verifier that reads no such claims.
+    pub step_up: StepUp,
     /// Wall-clock milliseconds at which the token's `exp` falls.
     ///
     /// `None` means **this verifier issues no deadline at all**, not "already
@@ -104,13 +138,25 @@ pub struct Verified {
 }
 
 impl Verified {
-    /// A verification result with no expiry deadline.
+    /// A verification result with no expiry deadline and no step-up claims.
     #[must_use]
     pub const fn new(subject: Subject) -> Self {
         Self {
             subject,
+            step_up: StepUp {
+                acr: None,
+                amr: Vec::new(),
+                auth_time_secs: None,
+            },
             expires_at_ms: None,
         }
+    }
+
+    /// Attach the step-up claims the token carried.
+    #[must_use]
+    pub fn with_step_up(mut self, step_up: StepUp) -> Self {
+        self.step_up = step_up;
+        self
     }
 
     /// Attach the deadline the token's `exp` falls at.
@@ -202,6 +248,23 @@ impl StaticVerifier {
     #[must_use]
     pub fn with(mut self, bearer: impl Into<String>, subject: Subject) -> Self {
         self.allowed.insert(bearer.into(), Verified::new(subject));
+        self
+    }
+
+    /// Accept `bearer` as `subject`, carrying `step_up`.
+    ///
+    /// The only way a test drives the recovery-blob gate without a live IdP:
+    /// the claims it checks are on the token, so a test that wants to prove
+    /// the gate refuses a stale login has to be able to mint a stale one.
+    #[must_use]
+    pub fn with_step_up(
+        mut self,
+        bearer: impl Into<String>,
+        subject: Subject,
+        step_up: StepUp,
+    ) -> Self {
+        self.allowed
+            .insert(bearer.into(), Verified::new(subject).with_step_up(step_up));
         self
     }
 
