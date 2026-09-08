@@ -88,7 +88,9 @@ means anything — there are no plan tiers in v1
 
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
 the account `identity_id`; `GET /api/v1/devices` is where device metadata comes
-from. `POST /accounts` neither chooses nor returns a new account id: the account
+from. `GET /api/v1/accounts/me` is implemented and, like that route, uncalled:
+`bootstrap` issues the `POST` and never reads the account back, so the first
+surface that shows an account is its first caller. `POST /accounts` neither chooses nor returns a new account id: the account
 is already provisioned by the bearer's `(iss, sub)` (see [`auth.md`](./auth.md)
 §per-request-auth), and the call attaches identity material to it. It is
 idempotent by construction — `Store::set_identity` writes each field under
@@ -164,6 +166,19 @@ token is stored. A device id the caller does not own — or one it owns but has
 revoked — is a `403 AUTH_DEVICE_NOT_OWNER`, so ownership and revocation are
 settled in one lookup. `platform` is the `PushPlatform` enum (`apns` / `fcm` /
 `webpush`), not a free-form `provider` string.
+
+**Two of these five have no caller in this workspace.** `GET /api/v1/devices`
+and `POST /api/v1/devices/push-tokens` are both expressible by the generated
+relay client, and `sunrise-relay-client`'s `bootstrap` issues neither; nothing
+else reaches for them either. Neither is dead weight. The device list is what a
+device-management surface reads —
+[#144](https://github.com/justin13888/Sunrise/issues/144) and
+[#160](https://github.com/justin13888/Sunrise/issues/160) both want one, and
+[#170](https://github.com/justin13888/Sunrise/issues/170) wants somewhere on the
+Apple clients to keep the relay device id such a list is keyed by — and the
+push-token route waits on a push pipeline whose client half v1 does not have.
+Whoever adds a caller signs it: every route here takes a signed extractor and
+`SseTransport::with_device_signer` is the pattern.
 
 `POST /api/v1/devices` validates `device_pub_s` as a parseable Ed25519 key,
 `nickname` as 1..=64 bytes, `platform` against the six-value list in
