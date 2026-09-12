@@ -215,34 +215,31 @@ pub const TRACKED_TASK_FIELDS: [&str; 15] = [
 /// changed and so tests read as facts rather than as arithmetic.
 #[must_use]
 pub fn changed_task_fields(prev: &Task, next: &Task) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    let mut check = |changed: bool, name: &'static str| {
-        if changed {
-            out.push(name);
-        }
-    };
-    check(prev.title != next.title, "title");
-    check(prev.body != next.body, "body");
-    check(prev.stream_id != next.stream_id, "stream_id");
-    check(prev.contexts != next.contexts, "contexts");
-    check(prev.state != next.state, "state");
-    check(prev.priority != next.priority, "priority");
-    check(prev.energy != next.energy, "energy");
-    check(
+    // One comparison per entry of `TRACKED_TASK_FIELDS`, in that order. The
+    // length is written as the constant's own so the two cannot drift: adding
+    // a name there without adding its comparison here does not compile.
+    let changed: [bool; TRACKED_TASK_FIELDS.len()] = [
+        prev.title != next.title,
+        prev.body != next.body,
+        prev.stream_id != next.stream_id,
+        prev.contexts != next.contexts,
+        prev.state != next.state,
+        prev.priority != next.priority,
+        prev.energy != next.energy,
         prev.estimated_duration_s != next.estimated_duration_s,
-        "estimated_duration_s",
-    );
-    check(prev.scheduled_at != next.scheduled_at, "scheduled_at");
-    check(prev.due_at != next.due_at, "due_at");
-    check(
+        prev.scheduled_at != next.scheduled_at,
+        prev.due_at != next.due_at,
         prev.scheduling_constraints != next.scheduling_constraints,
-        "scheduling_constraints",
-    );
-    check(prev.blocked_by != next.blocked_by, "blocked_by");
-    check(prev.assignee != next.assignee, "assignee");
-    check(prev.archived != next.archived, "archived");
-    check(prev.deferred_count != next.deferred_count, "deferred_count");
-    out
+        prev.blocked_by != next.blocked_by,
+        prev.assignee != next.assignee,
+        prev.archived != next.archived,
+        prev.deferred_count != next.deferred_count,
+    ];
+    TRACKED_TASK_FIELDS
+        .iter()
+        .zip(changed)
+        .filter_map(|(name, changed)| changed.then_some(*name))
+        .collect()
 }
 
 /// Fold decoded op rows into an activity feed.
