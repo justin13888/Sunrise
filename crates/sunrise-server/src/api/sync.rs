@@ -1155,6 +1155,7 @@ mod tests {
     //! by the schema rather than nacked, and the handshake round trip is an HTTP
     //! response rather than a frame exchange.
 
+    use crate::api::error::codes;
     use crate::api::testing::{register_device, send_signed, send_signed_with, Client, BEARER};
     use crate::relay::RingCaps;
     use crate::relay_log::DurableCaps;
@@ -1593,14 +1594,36 @@ mod tests {
     ///
     /// Shape changed: a `Nack` frame becomes a refusal status, and the body is
     /// caught before the handler rather than after a decode.
+    ///
+    /// The exact status and code rather than `is_client_error`: the loose form
+    /// was satisfied by any 4xx, including the 401 an unauthenticated request
+    /// produces and the 422 a schema rejection produces — neither of which is
+    /// this refusal, and both of which would have hidden the handler no longer
+    /// decoding the ops at all.
     #[tokio::test]
     async fn a_malformed_batch_is_refused_and_never_fans_out() {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
         subscribe(&client, &id, None).await;
 
-        let status = publish(&client, &id, vec!["not base64!!".to_owned()], 1).await;
-        assert!(status.is_client_error(), "got {status}");
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/ops",
+                Some(BEARER),
+                Some(&serde_json::json!({
+                    "stream_id": stream_hex(),
+                    "batch_id": 1,
+                    "ops": ["not base64!!"],
+                })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::VALIDATION_INVALID)
+        );
 
         let body = read(&client, &id, &[]).await;
         assert!(
@@ -2249,7 +2272,7 @@ mod tests {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
 
-        let status = client
+        let res = client
             .send_with(
                 Method::POST,
                 "/api/v1/sync/session/refresh",
@@ -2257,9 +2280,13 @@ mod tests {
                 Some(&serde_json::json!({ "not_a_token": 1 })),
                 &[("x-sunrise-session", &id)],
             )
-            .await
-            .status;
-        assert!(status.is_client_error(), "got {status}");
+            .await;
+        // kynos's, not this surface's: a body that is JSON but does not match
+        // the declared schema never reaches the handler, so `RefreshRequest`'s
+        // `deny_unknown_fields` and its missing `token` are refused at the
+        // extractor. `is_client_error` could not tell that from the handler
+        // accepting the body and failing later.
+        res.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // -- the surface's own invariants ---------------------------------------

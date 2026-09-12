@@ -12,6 +12,7 @@
     clippy::doc_markdown
 )]
 
+use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
 use sunrise_server::{ServerConfig, ServerState};
 
 async fn boot() -> std::net::SocketAddr {
@@ -56,7 +57,34 @@ async fn health_meta_metrics_round_trip() {
 
     let (s, body) = get(&addr, "/api/v1/meta").await;
     assert_eq!(s, 200, "meta body: {body}");
-    assert!(body.contains("wire_proto") || body.contains("crypto_suite"));
+
+    // The substring check this replaces — `contains("wire_proto") ||
+    // contains("crypto_suite")` on the raw response string — was satisfied by
+    // the field names alone, either one of them sufficing, and never read a
+    // value. What a client actually negotiates against is the numbers, so the
+    // body is decoded through the generated client and compared with the
+    // constants the server re-exports them from.
+    let meta = sunrise_relay_client::api::Client::new(&format!("http://{addr}"))
+        .expect("a client over the booted relay")
+        .meta()
+        .await
+        .expect("meta must decode into the described shape")
+        .into_inner();
+    assert_eq!(
+        meta.wire_proto_supported,
+        vec![i64::from(WIRE_PROTO_V)],
+        "the relay must advertise the wire protocol this build speaks"
+    );
+    assert_eq!(
+        meta.crypto_suite_supported,
+        vec![i64::from(CRYPTO_SUITE_V)],
+        "and the crypto suite"
+    );
+    assert_eq!(
+        meta.doc_schema_floor,
+        i64::from(DOC_SCHEMA_FLOOR),
+        "and the lowest document schema it still accepts"
+    );
 
     let (s, body) = get(&addr, "/metrics").await;
     assert_eq!(s, 200, "metrics body: {body}");
