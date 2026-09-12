@@ -56,7 +56,13 @@ use ciborium::value::Value;
 /// Past this, performance degrades and the UI should nudge toward splitting.
 pub const NOTE_BODY_SOFT_LIMIT_BYTES: usize = 64 * 1024;
 
-/// Hard length limit for one body, per `docs/02-domain/notes.md` §Length.
+/// Length limit for one body, per `docs/02-domain/notes.md` §Length.
+///
+/// Advisory, and deliberately not enforced by this module: neither [`encode`]
+/// nor [`decode`] compares against it, and a larger body round-trips intact.
+/// It is published for the editing surface to apply -- where a user can be
+/// warned before they lose work, rather than after the codec has refused it --
+/// and that is the only place it binds today.
 pub const NOTE_BODY_MAX_BYTES: usize = 1024 * 1024;
 
 /// How deep list nesting may go before [`decode`] stops descending.
@@ -497,7 +503,11 @@ fn inline_to_value(inline: &Inline) -> Value {
 ///    not name are skipped.
 /// 3. Valid UTF-8 that is not a CBOR array → one paragraph per non-blank
 ///    line. This is the `sunrise` CLI's plain-text body, and a note editor
-///    that showed nothing for one would look broken.
+///    that showed nothing for one would look broken. Capped at 4096
+///    paragraphs (`MAX_PLAIN_TEXT_PARAGRAPHS`); lines past it are dropped.
+///    The body is [`Fidelity::Lossy`] either way, so the original bytes are
+///    kept — but a renderer showing a very long plain-text note shows a
+///    prefix of it, with no marker at the cut.
 /// 4. Anything else → no blocks.
 ///
 /// Steps 3 and 4 are always [`Fidelity::Lossy`], as is any step-2 body this

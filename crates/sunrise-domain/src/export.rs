@@ -100,8 +100,14 @@ impl Cell {
 ///
 /// The invariant every renderer relies on is that each row has exactly
 /// `columns.len()` cells. [`Table::push`] enforces it by padding short rows
-/// with [`Cell::Null`] and truncating long ones, so a caller cannot construct
-/// a ragged table and discover it only in the output.
+/// with [`Cell::Null`] and truncating long ones.
+///
+/// The enforcement lives in `push`, not in the type: `columns` and `rows` are
+/// public, so a caller that appends to `rows` directly bypasses it. A ragged
+/// row built that way is not caught here -- [`Table::to_json`] indexes
+/// `columns` by the row's own cell position and panics past its end, and
+/// [`Table::to_csv`] silently writes an over-wide record. Build rows with
+/// `push`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table {
     /// Dataset name (`"trends"`, `"activity"`, …).

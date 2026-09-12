@@ -156,7 +156,15 @@ pub struct WeeklyReview {
     pub drifting_routines: Vec<RoutineDrift>,
     /// Step 3 — every live Routine's streak, longest first.
     pub streaks: Vec<StreakRow>,
-    /// Step 4 — commitments due or scheduled in the window and still open.
+    /// Step 4 — commitments that came due on or before the window's end and
+    /// are still open.
+    ///
+    /// Deliberately **not** bounded below by the window. Step 4 asks what the
+    /// user has broken their word about, and a commitment that slipped three
+    /// weeks ago is still slipped; bounding it to the window would hide
+    /// exactly the items most in need of a decision. One consequence worth
+    /// knowing: this list grows over a vault's lifetime, so the first weekly
+    /// review of an old vault can be long.
     pub slipped: Vec<Task>,
     /// Step 5 — the counts.
     pub totals: ReviewTotals,
