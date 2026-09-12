@@ -26,6 +26,7 @@
 use crate::routine::Routine;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use sunrise_id::EntityRef;
 
 /// Default completion grace window: 24 hours.
 pub const DEFAULT_GRACE_WINDOW_S: u64 = 24 * 60 * 60;
@@ -38,6 +39,19 @@ pub const FORGIVENESS_WINDOW_S: i64 = 30 * 24 * 60 * 60;
 
 /// Forgivenesses allowed per rolling window.
 pub const FORGIVENESS_ALLOWANCE: u32 = 1;
+
+/// A Routine's streak, for step 3 and the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreakRow {
+    /// Routine id.
+    pub routine: EntityRef,
+    /// Template title.
+    pub title: String,
+    /// Current streak counter.
+    pub streak: i64,
+    /// Last completion (ms since epoch).
+    pub last_completed_at_ms: Option<u64>,
+}
 
 /// What a completion did to the streak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

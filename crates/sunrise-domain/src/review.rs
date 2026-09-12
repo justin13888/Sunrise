@@ -50,6 +50,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_id::EntityRef;
 
+/// A Routine's streak, for step 3 and the snapshot.
+///
+/// Defined in [`crate::streak`], which owns the streak mechanics; re-exported
+/// here because the review is where a streak is read.
+pub use crate::streak::StreakRow;
+
 /// A half-open review window `[start_ms, end_ms)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewWindow {
@@ -137,19 +143,6 @@ pub struct ReviewTotals {
     pub reopened: u32,
 }
 
-/// A Routine's streak, for step 3 and the snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreakRow {
-    /// Routine id.
-    pub routine: EntityRef,
-    /// Template title.
-    pub title: String,
-    /// Current streak counter.
-    pub streak: i64,
-    /// Last completion (ms since epoch).
-    pub last_completed_at_ms: Option<u64>,
-}
-
 /// The assembled weekly review — one value per spec step.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WeeklyReview {
@@ -163,7 +156,15 @@ pub struct WeeklyReview {
     pub drifting_routines: Vec<RoutineDrift>,
     /// Step 3 — every live Routine's streak, longest first.
     pub streaks: Vec<StreakRow>,
-    /// Step 4 — commitments due or scheduled in the window and still open.
+    /// Step 4 — commitments that came due on or before the window's end and
+    /// are still open.
+    ///
+    /// Deliberately **not** bounded below by the window. Step 4 asks what the
+    /// user has broken their word about, and a commitment that slipped three
+    /// weeks ago is still slipped; bounding it to the window would hide
+    /// exactly the items most in need of a decision. One consequence worth
+    /// knowing: this list grows over a vault's lifetime, so the first weekly
+    /// review of an old vault can be long.
     pub slipped: Vec<Task>,
     /// Step 5 — the counts.
     pub totals: ReviewTotals,
