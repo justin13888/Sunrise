@@ -603,6 +603,50 @@ mod tests {
         );
     }
 
+    /// The cap is on the **wait**, not on the window.
+    ///
+    /// Worth stating, because the constant's own doc reads as if a long quiet
+    /// window drops everything inside it. It does not: the 22:00..07:00 window
+    /// here is nine hours long, and a notification landing three hours before
+    /// its end still fires. What is measured is `end - at`, from the
+    /// notification's own time — so the same window queues a 06:15 and drops a
+    /// 22:30.
+    ///
+    /// Pinned at the boundary in both directions, because `>` and `>=` are one
+    /// character apart and a whole class of reminders sits on the line.
+    #[test]
+    fn the_queue_cap_is_measured_from_the_notification_and_is_inclusive() {
+        let q = quiet(QuietHoursPolicy::Queue);
+
+        // 03:00 → 07:00 is exactly four hours: the cap itself, which fires.
+        let at_the_cap = at_local(3, 0);
+        assert_eq!(
+            at_local(7, 0).timestamp().as_second() - at_the_cap.timestamp().as_second(),
+            QUIET_HOURS_QUEUE_CAP_S,
+            "the fixture must sit exactly on the cap or it pins nothing"
+        );
+        assert_eq!(
+            apply_quiet_hours(&at_the_cap, Some(&q)),
+            Some(at_local(7, 0).timestamp()),
+            "a wait of exactly the cap is not longer than the cap"
+        );
+
+        // One second earlier is one second over, and is dropped.
+        let over_the_cap = civil::date(2026, 3, 4)
+            .at(2, 59, 59, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap();
+        assert_eq!(
+            at_local(7, 0).timestamp().as_second() - over_the_cap.timestamp().as_second(),
+            QUIET_HOURS_QUEUE_CAP_S + 1
+        );
+        assert_eq!(
+            apply_quiet_hours(&over_the_cap, Some(&q)),
+            None,
+            "one second past the cap is dropped, not fired late"
+        );
+    }
+
     #[test]
     fn drop_policy_drops_it_outright() {
         let at = at_local(6, 15);
@@ -654,6 +698,45 @@ mod tests {
             out[0].fire_at,
             ts(at - i64::from(BLOCK_DEFAULT_LEAD_S) * 1_000)
         );
+    }
+
+    /// `ReminderKind::Routine` is constructed nowhere else in the workspace,
+    /// so nothing said which floor it falls back to. It is the device's
+    /// `default_lead_s`, like a Task: only a Block gets the 15-minute floor.
+    #[test]
+    fn a_routine_reminder_falls_back_to_the_device_default_not_the_block_floor() {
+        let at = 1_772_000_000_000;
+        let settings = ReminderSettings {
+            default_lead_s: 300,
+            ..ReminderSettings::default()
+        };
+        assert_ne!(
+            settings.default_lead_s, BLOCK_DEFAULT_LEAD_S,
+            "the two floors must differ or this test cannot tell them apart"
+        );
+        let out = plan_reminders(
+            &[
+                candidate(1, ReminderKind::Routine, at),
+                candidate(2, ReminderKind::Block, at),
+            ],
+            ts(at - DAY_MS),
+            ts(at + DAY_MS),
+            &TimeZone::UTC,
+            &settings,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[0].fire_at,
+            ts(at - i64::from(BLOCK_DEFAULT_LEAD_S) * 1_000),
+            "the Block still uses its own 15-minute floor"
+        );
+        assert_eq!(out[0].kind, ReminderKind::Block);
+        assert_eq!(
+            out[1].fire_at,
+            ts(at - 300_000),
+            "the routine uses the device default, five minutes here"
+        );
+        assert_eq!(out[1].kind, ReminderKind::Routine);
     }
 
     #[test]
@@ -870,6 +953,92 @@ mod tests {
             plan.unscheduled.iter().map(|t| t.id).collect::<Vec<_>>(),
             vec![floating.id],
             "a done task is not a planning candidate"
+        );
+    }
+
+    /// `plan_order` is three keys deep — "earliest first, then most urgent,
+    /// then by id so two devices agree" — and every other test of the two
+    /// views produces a single-element list, which pins none of them.
+    ///
+    /// This fixture ties deliberately: four tasks, three of them landing on
+    /// the same instant, two of those also sharing a priority. So the expected
+    /// order can only come out right if all three keys are applied, in order.
+    fn tied_fixture(landing_ms: i64) -> [Task; 4] {
+        // Earliest, and *least* urgent — so it can only lead on key one.
+        let mut earliest = task(9);
+        earliest.scheduled_at = Some(SunriseTime::instant(ts(landing_ms - 1)));
+        earliest.priority = None;
+
+        // The three below all land together. `urgent` can only lead on key
+        // two; `tie_a` and `tie_b` are separated by key three alone.
+        let mut tie_b = task(2);
+        tie_b.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        tie_b.priority = Some(5);
+
+        let mut urgent = task(3);
+        urgent.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        urgent.priority = Some(1);
+
+        let mut tie_a = task(1);
+        tie_a.scheduled_at = Some(SunriseTime::instant(ts(landing_ms)));
+        tie_a.priority = Some(5);
+
+        [earliest, tie_b, urgent, tie_a]
+    }
+
+    /// The order the three keys, applied in order, must produce: the earliest
+    /// (id 9) despite having no priority at all, then the urgent one, then the
+    /// two that tie on both keys, in id order.
+    fn expected_plan_order(tasks: &[Task; 4]) -> Vec<EntityRef> {
+        vec![tasks[0].id, tasks[2].id, tasks[3].id, tasks[1].id]
+    }
+
+    #[test]
+    fn the_end_of_day_plan_orders_by_landing_then_urgency_then_id() {
+        let day = 1_772_064_000_000i64;
+        let today = tied_fixture(day + 3_600_000);
+        let next_week = tied_fixture(day + 3 * DAY_MS);
+
+        let mut tasks = today.to_vec();
+        tasks.extend(next_week.iter().map(|t| {
+            // Distinct ids across the two buckets, same shape within each.
+            let mut t = t.clone();
+            t.id = EntityRef::new(EntityKind::Task, [t.id.bytes()[0] + 10; 16]);
+            t
+        }));
+        let plan = build_end_of_day_plan(&tasks, ts(day), ts(day + DAY_MS), ts(day + 8 * DAY_MS));
+
+        assert_eq!(
+            plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
+            expected_plan_order(&today),
+            "earliest first, then most urgent, then by id"
+        );
+        let expected_week: Vec<EntityRef> = expected_plan_order(&next_week)
+            .into_iter()
+            .map(|id| EntityRef::new(EntityKind::Task, [id.bytes()[0] + 10; 16]))
+            .collect();
+        assert_eq!(
+            plan.week_ahead.iter().map(|t| t.id).collect::<Vec<_>>(),
+            expected_week,
+            "the week-ahead bucket sorts by the same three keys"
+        );
+    }
+
+    #[test]
+    fn the_morning_summary_orders_due_today_by_landing_then_urgency_then_id() {
+        let day = 1_772_064_000_000i64;
+        let tasks = tied_fixture(day + 3_600_000);
+        let s = build_morning_summary(
+            &tasks,
+            ts(day - DAY_MS),
+            ts(day),
+            ts(day + DAY_MS),
+            inbox_stream_ref(),
+        );
+        assert_eq!(
+            s.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
+            expected_plan_order(&tasks),
+            "the morning view uses the same comparator as the evening one"
         );
     }
 

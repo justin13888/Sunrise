@@ -366,7 +366,18 @@ mod tests {
     #[test]
     fn parse_until_iso() {
         let r = RRule::parse("FREQ=DAILY;UNTIL=2027-01-01T00:00:00Z").unwrap();
-        assert!(r.until.is_some());
+        // The instant itself, not just its presence: `UNTIL` is the bound that
+        // stops a routine generating tasks forever, and `is_some()` would hold
+        // for any instant at all.
+        assert_eq!(
+            r.until,
+            Some("2027-01-01T00:00:00Z".parse::<Timestamp>().unwrap())
+        );
+        assert_eq!(
+            r.until.unwrap().as_millisecond(),
+            1_798_761_600_000,
+            "2027-01-01T00:00:00Z in epoch milliseconds"
+        );
     }
 
     #[test]

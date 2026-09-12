@@ -634,6 +634,66 @@ mod tests {
         }
     }
 
+    /// A Sunday-start grid, so the `week_start` parameter is something other
+    /// than the `Weekday::Mo` every caller passes.
+    ///
+    /// **Unobserved in v1.** No product surface is known to set a non-Monday
+    /// week start: every call site in the workspace passes `Weekday::Mo`, and
+    /// there is no setting that would produce anything else. This pins the
+    /// parameter's arithmetic so a later reader can trust it, and says plainly
+    /// that trusting it is not the same as the feature having shipped.
+    #[test]
+    fn a_sunday_start_grid_begins_its_weeks_on_the_sunday_before() {
+        // `MON` is a Monday, so a Sunday-start week containing it began the
+        // day before — the one boundary a Monday-only test can never catch.
+        let g = WeekGrid::trailing(MON + 3_600_000, 3, &utc(), Weekday::Su).unwrap();
+        let sun = MON - 86_400_000;
+        assert_eq!(
+            g.starts(),
+            [sun - 2 * WEEK_MS, sun - WEEK_MS, sun],
+            "three Sundays ending with the one we are in"
+        );
+        assert_eq!(g.end_ms(), sun + WEEK_MS);
+        for start in g.starts() {
+            assert_eq!(
+                ts(*start).to_zoned(utc()).weekday(),
+                JiffWeekday::Sunday,
+                "every bucket starts on the requested weekday"
+            );
+        }
+        // And `MON` itself falls in the *last* bucket, not the first day of a
+        // new one: this is the assertion a Monday-start grid gets wrong.
+        assert_eq!(g.index_of(MON), Some(2));
+        assert_eq!(
+            g.index_of(sun - 2 * WEEK_MS - 1),
+            None,
+            "the instant before the grid"
+        );
+        assert_eq!(g.index_of(sun - 1), Some(1), "the last ms of week 1");
+    }
+
+    /// Asking for zero weeks is clamped to one rather than yielding a grid
+    /// that buckets nothing. `index_of` on an empty grid would answer `None`
+    /// for every instant, which reads as "no activity" instead of "bad call".
+    #[test]
+    fn a_grid_of_zero_weeks_is_clamped_to_one() {
+        let g = WeekGrid::trailing(MON + 3_600_000, 0, &utc(), Weekday::Mo).unwrap();
+        assert_eq!(g.len(), 1, "clamped, not empty");
+        assert!(!g.is_empty());
+        assert_eq!(g.starts(), [MON]);
+        assert_eq!(g.end_ms(), MON + WEEK_MS);
+        assert_eq!(g.last_start_ms(), MON);
+        assert_eq!(g.index_of(MON + 3_600_000), Some(0));
+    }
+
+    /// The two lengths the spec fixes. They are read by callers that size a
+    /// review window, so a change to either is a change to what a user sees.
+    #[test]
+    fn the_trend_and_drift_windows_are_the_lengths_the_spec_states() {
+        assert_eq!(TREND_WEEKS, 12, "the spec asks for the last 12 weeks");
+        assert_eq!(DRIFT_WINDOW_WEEKS, 4, "drift is measured over 4 weeks");
+    }
+
     #[test]
     fn completion_is_credited_to_the_week_of_done_at_not_of_the_op() {
         let g = grid3();
@@ -766,6 +826,11 @@ mod tests {
 
         let line_a = trends.for_stream(eref(EntityKind::Stream, 7)).unwrap();
         let line_b = trends.for_stream(eref(EntityKind::Stream, 8)).unwrap();
+        assert!(
+            trends.for_stream(eref(EntityKind::Stream, 99)).is_none(),
+            "a Stream with no activity in the window has no line at all — not \
+             a zero-filled one, which a chart would draw"
+        );
         assert_eq!(
             line_a.iter().map(|b| b.deferred).collect::<Vec<_>>(),
             vec![0, 1, 2]
@@ -947,6 +1012,146 @@ mod tests {
         .unwrap();
         assert_eq!(d.expected, 0);
         assert!(!d.over_threshold, "no occurrences is not drift");
+    }
+
+    /// `title`, `last_completed_at_ms` and `paused` are carried straight
+    /// through from the Routine, and nothing asserted any of the three: a
+    /// drift row could have reported an empty title, no last completion, and
+    /// the wrong paused flag with the suite green. The fixture sets all three
+    /// away from their defaults so the plumbing is what is being read.
+    #[test]
+    fn drift_carries_the_routines_title_last_completion_and_paused_flag() {
+        let mut r = daily_routine();
+        r.template.title = "Water the ferns".into();
+        r.last_completed_at = Some(ts(MON + 3 * 86_400_000));
+        r.paused = true;
+        r.streak_counter = 4;
+
+        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        assert_eq!(d.routine, r.id);
+        assert_eq!(
+            d.title, "Water the ferns",
+            "the row is what the History view labels the routine with"
+        );
+        assert_eq!(
+            d.last_completed_at_ms,
+            Some(MON + 3 * 86_400_000),
+            "epoch milliseconds, straight off the Routine"
+        );
+        assert!(
+            d.paused,
+            "a paused routine needs no pause suggestion, so the caller must be told"
+        );
+        assert_eq!(d.streak, 4);
+        // And pausing does **not** suppress the occurrence set: `routine_drift`
+        // calls `expand` rather than `Routine::occurrences_in` on purpose, so a
+        // paused routine still reports the drift that led to the pause.
+        assert_eq!(d.expected, 7, "a paused routine is still measured");
+    }
+
+    /// A completion recorded before the epoch cannot be expressed in the
+    /// unsigned field, and is reported as "no completion" rather than as a
+    /// wrapped instant. Only reachable from a corrupt or hostile row.
+    #[test]
+    fn a_pre_epoch_last_completion_is_reported_as_none_not_wrapped() {
+        let mut r = daily_routine();
+        r.last_completed_at = Some(Timestamp::from_millisecond(-1).unwrap());
+        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        assert_eq!(d.last_completed_at_ms, None);
+    }
+
+    /// `ends_at` truncates the occurrence set, so a routine that finished
+    /// mid-window is not scored against the days it was never meant to run.
+    /// Without this, a finished routine reads as 100% drift forever.
+    #[test]
+    fn an_ends_at_inside_the_window_truncates_the_expected_occurrences() {
+        let mut r = daily_routine();
+        // Four days of a seven-day window: MON, +1, +2, +3. The bound is
+        // inclusive (`o.at <= end`), so the occurrence landing exactly on
+        // `ends_at` counts.
+        r.ends_at = Some(ts(MON + 3 * 86_400_000));
+        r.streak_keys = week_keys()[..4].to_vec();
+        r.streak_keys.sort();
+
+        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        assert_eq!(
+            d.expected, 4,
+            "the three days after `ends_at` are not occurrences"
+        );
+        assert_eq!(d.completed, 4);
+        assert_eq!(d.missed, 0, "a routine that ended has not drifted");
+        assert!(!d.over_threshold);
+
+        // The same routine without the bound is scored over the whole window,
+        // which is what makes the truncation load-bearing rather than a no-op.
+        let mut unbounded = r.clone();
+        unbounded.ends_at = None;
+        let d2 = routine_drift(
+            &unbounded,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+        )
+        .unwrap();
+        assert_eq!((d2.expected, d2.missed), (7, 3));
+    }
+
+    /// `skip_dates` holds *instants*, and they are matched by rendering each
+    /// one to a civil-minute key in the routine's own zone — the same way
+    /// `Routine::is_skipped` does it. The comment in `routine_drift` says this
+    /// is so a stored instant a tzdb update moved still matches the occurrence
+    /// it was meant to skip; nothing asserted that the path runs at all.
+    #[test]
+    fn a_skip_date_instant_is_matched_by_civil_key_not_by_equality() {
+        let mut r = daily_routine();
+        // Wednesday of the anchored week, as an instant rather than a key.
+        r.skip_dates = vec![ts(MON + 2 * 86_400_000)];
+
+        let d = routine_drift(&r, (ts(MON), ts(MON + WEEK_MS)), DEFAULT_DRIFT_THRESHOLD).unwrap();
+        assert_eq!(d.expected, 7);
+        assert_eq!(
+            d.skipped, 1,
+            "the instant resolved to an occurrence key and matched it"
+        );
+        assert_eq!(
+            d.missed, 7,
+            "an explicit skip is still a missed occurrence — `skipped` only says why"
+        );
+        // The key it must have produced, spelled out: the same civil minute
+        // the expansion names that occurrence by.
+        assert_eq!(
+            occurrence_key_at("UTC", ts(MON + 2 * 86_400_000)).unwrap(),
+            week_keys()[2]
+        );
+    }
+
+    /// The key is a civil **minute**, which decides how close a stored instant
+    /// has to be. A second's drift still names the same occurrence; a minute's
+    /// names none, and is ignored rather than skipping something adjacent.
+    #[test]
+    fn a_skip_dates_precision_is_the_civil_minute() {
+        let mut within = daily_routine();
+        within.skip_dates = vec![ts(MON + 2 * 86_400_000 + 1_000)];
+        let d = routine_drift(
+            &within,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+        )
+        .unwrap();
+        assert_eq!(d.skipped, 1, "a second's drift is the same civil minute");
+
+        let mut outside = daily_routine();
+        outside.skip_dates = vec![ts(MON + 2 * 86_400_000 + 60_000)];
+        let d = routine_drift(
+            &outside,
+            (ts(MON), ts(MON + WEEK_MS)),
+            DEFAULT_DRIFT_THRESHOLD,
+        )
+        .unwrap();
+        assert_eq!(
+            d.skipped, 0,
+            "a minute's drift names no occurrence, and skips nothing rather than \
+             skipping the nearest one"
+        );
     }
 
     #[test]
