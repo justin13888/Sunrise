@@ -50,7 +50,10 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 
 ## Inbox view
 
-The Inbox is one Stream: `str_INBOX0000000000000000000000`.
+The Inbox is one Stream, under the well-known id
+[`INBOX_STREAM_ID`](../../crates/sunrise-domain/src/inbox.rs)
+(`str_0000076XBEE9MQ6S9ED5Q64VVR`) — three zero bytes followed by the ASCII
+`sunrise.inbox`, not a literal spelling of the word.
 
 Inbox view characteristics:
 
