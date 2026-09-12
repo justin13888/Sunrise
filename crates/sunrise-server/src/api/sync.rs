@@ -2168,6 +2168,58 @@ mod tests {
         );
     }
 
+    /// The other half of the refresh identity check, and the half nothing
+    /// reached.
+    ///
+    /// [`a_refresh_naming_another_principal_ends_the_session`] uses two
+    /// different `sub`s, so `principal_key()` alone decides it and the
+    /// `device_id` clause beside it never has to be the reason. Here the
+    /// principal is identical and only the token's own
+    /// `https://sunrise.app/device_id` claim differs: one device must not be
+    /// able to hand its token to a session another device opened and keep that
+    /// session's stream alive.
+    #[tokio::test]
+    async fn a_refresh_naming_another_device_ends_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let alice = Subject::new(ISSUER, "alice");
+        let verifier = StaticVerifier::default()
+            .with_device_id("phone", alice.clone(), "dev_phone")
+            .with_device_id("phone-renewed", alice.clone(), "dev_phone")
+            .with_device_id("laptop", alice, "dev_laptop");
+        let state = ServerState::with_clock(ServerConfig::default(), clock)
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer phone").await;
+
+        // The control: the same principal and the same device claim renews.
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer phone"),
+                Some(&serde_json::json!({ "token": "phone-renewed" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::OK);
+
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer phone"),
+                Some(&serde_json::json!({ "token": "laptop" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        assert!(
+            client.sessions.get(&id, T0_MS).is_none(),
+            "the session must be gone, not merely refused"
+        );
+    }
+
     /// Was `an_ack_for_a_token_with_no_expiry_reports_zero`.
     #[tokio::test]
     async fn a_refresh_for_a_token_with_no_expiry_reports_zero() {
