@@ -268,6 +268,28 @@ impl StaticVerifier {
         self
     }
 
+    /// Accept `bearer` as `subject`, whose token claims `device_id`.
+    ///
+    /// The `https://sunrise.app/device_id` claim is cross-checked against the
+    /// `X-Sunrise-Device` header by [`crate::api::signed::verify_bytes`] and
+    /// against the session's own subject by the sync refresh, and neither
+    /// check was reachable from a test before this: [`Subject::device_id`] is
+    /// a public field with no builder, so nothing ever set it.
+    #[must_use]
+    pub fn with_device_id(
+        mut self,
+        bearer: impl Into<String>,
+        subject: Subject,
+        device_id: impl Into<String>,
+    ) -> Self {
+        let subject = Subject {
+            device_id: Some(device_id.into()),
+            ..subject
+        };
+        self.allowed.insert(bearer.into(), Verified::new(subject));
+        self
+    }
+
     /// Accept `bearer` as `subject`, expiring at `at_ms`.
     #[must_use]
     pub fn with_expiring(

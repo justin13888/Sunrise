@@ -1155,6 +1155,7 @@ mod tests {
     //! by the schema rather than nacked, and the handshake round trip is an HTTP
     //! response rather than a frame exchange.
 
+    use crate::api::error::codes;
     use crate::api::testing::{register_device, send_signed, send_signed_with, Client, BEARER};
     use crate::relay::RingCaps;
     use crate::relay_log::DurableCaps;
@@ -1593,14 +1594,36 @@ mod tests {
     ///
     /// Shape changed: a `Nack` frame becomes a refusal status, and the body is
     /// caught before the handler rather than after a decode.
+    ///
+    /// The exact status and code rather than `is_client_error`: the loose form
+    /// was satisfied by any 4xx, including the 401 an unauthenticated request
+    /// produces and the 422 a schema rejection produces — neither of which is
+    /// this refusal, and both of which would have hidden the handler no longer
+    /// decoding the ops at all.
     #[tokio::test]
     async fn a_malformed_batch_is_refused_and_never_fans_out() {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
         subscribe(&client, &id, None).await;
 
-        let status = publish(&client, &id, vec!["not base64!!".to_owned()], 1).await;
-        assert!(status.is_client_error(), "got {status}");
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/ops",
+                Some(BEARER),
+                Some(&serde_json::json!({
+                    "stream_id": stream_hex(),
+                    "batch_id": 1,
+                    "ops": ["not base64!!"],
+                })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::VALIDATION_INVALID)
+        );
 
         let body = read(&client, &id, &[]).await;
         assert!(
@@ -1727,6 +1750,15 @@ mod tests {
     }
 
     /// Was `resubscribing_replaces_the_receiver_rather_than_duplicating_it`.
+    ///
+    /// The fan-out assertion first, because it is the fact a client can
+    /// observe. `spawn_stream` walks `session.streams` and replays each entry,
+    /// so a set that grew on the second `Subscribe` delivers the same batch
+    /// once per entry — a subscriber re-applying every op it is sent twice.
+    /// Only the stored-set length was ever asserted, read out of the session
+    /// store through the harness, so the behaviour itself was unpinned and the
+    /// test would fail for a reason that is not a regression the moment that
+    /// field moves.
     #[tokio::test]
     async fn resubscribing_replaces_the_stream_set() {
         let client = Client::new(ServerConfig::default());
@@ -1734,6 +1766,14 @@ mod tests {
 
         subscribe(&client, &id, None).await;
         subscribe(&client, &id, None).await;
+
+        assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "one publish must reach a twice-subscribed session once: {body}"
+        );
 
         let session = client
             .sessions
@@ -2151,6 +2191,58 @@ mod tests {
         );
     }
 
+    /// The other half of the refresh identity check, and the half nothing
+    /// reached.
+    ///
+    /// [`a_refresh_naming_another_principal_ends_the_session`] uses two
+    /// different `sub`s, so `principal_key()` alone decides it and the
+    /// `device_id` clause beside it never has to be the reason. Here the
+    /// principal is identical and only the token's own
+    /// `https://sunrise.app/device_id` claim differs: one device must not be
+    /// able to hand its token to a session another device opened and keep that
+    /// session's stream alive.
+    #[tokio::test]
+    async fn a_refresh_naming_another_device_ends_the_session() {
+        let clock = TestClock::at(T0_MS);
+        let alice = Subject::new(ISSUER, "alice");
+        let verifier = StaticVerifier::default()
+            .with_device_id("phone", alice.clone(), "dev_phone")
+            .with_device_id("phone-renewed", alice.clone(), "dev_phone")
+            .with_device_id("laptop", alice, "dev_laptop");
+        let state = ServerState::with_clock(ServerConfig::default(), clock)
+            .with_verifier(Arc::new(verifier));
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer phone").await;
+
+        // The control: the same principal and the same device claim renews.
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer phone"),
+                Some(&serde_json::json!({ "token": "phone-renewed" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::OK);
+
+        client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer phone"),
+                Some(&serde_json::json!({ "token": "laptop" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+
+        assert!(
+            client.sessions.get(&id, T0_MS).is_none(),
+            "the session must be gone, not merely refused"
+        );
+    }
+
     /// Was `an_ack_for_a_token_with_no_expiry_reports_zero`.
     #[tokio::test]
     async fn a_refresh_for_a_token_with_no_expiry_reports_zero() {
@@ -2180,7 +2272,7 @@ mod tests {
         let client = Client::new(ServerConfig::default());
         let id = establish(&client).await;
 
-        let status = client
+        let res = client
             .send_with(
                 Method::POST,
                 "/api/v1/sync/session/refresh",
@@ -2188,9 +2280,13 @@ mod tests {
                 Some(&serde_json::json!({ "not_a_token": 1 })),
                 &[("x-sunrise-session", &id)],
             )
-            .await
-            .status;
-        assert!(status.is_client_error(), "got {status}");
+            .await;
+        // kynos's, not this surface's: a body that is JSON but does not match
+        // the declared schema never reaches the handler, so `RefreshRequest`'s
+        // `deny_unknown_fields` and its missing `token` are refused at the
+        // extractor. `is_client_error` could not tell that from the handler
+        // accepting the body and failing later.
+        res.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // -- the surface's own invariants ---------------------------------------
