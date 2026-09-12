@@ -688,6 +688,112 @@ mod file_tests {
         assert!(cfg.validate(true).is_ok(), "and still safe");
     }
 
+    /// **Both directions of the one key whose default is computed rather than
+    /// constant.** Unset means "decide from the deployment": a relay with a
+    /// real issuer can tell devices apart, so binding is required there, and
+    /// leaving it off would mean a stolen bearer alone is enough. Nothing
+    /// asserted either direction, so collapsing the `match` to `false` — or to
+    /// `true` — failed no test.
+    #[test]
+    fn an_unset_device_sig_flag_follows_whether_an_issuer_is_configured() {
+        let with_issuer = FileConfig::parse(
+            r#"
+            [auth]
+            oidc_issuer = "https://auth.example.com"
+            oidc_client_id = "sunrise"
+            "#,
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(
+            with_issuer.require_device_sig,
+            "a multi-tenant relay must demand the binding unless told otherwise"
+        );
+
+        let without_issuer = FileConfig::parse("[server]\nlisten = \"127.0.0.1:8080\"", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(
+            !without_issuer.require_device_sig,
+            "single-tenant self-host cannot tell devices apart, and `validate` \
+             rejects the combination outright"
+        );
+    }
+
+    /// An explicit setting wins over the computed default in both directions,
+    /// which is the half a `match` arm ordering could silently lose.
+    #[test]
+    fn an_explicit_device_sig_flag_overrides_the_computed_default() {
+        let off = FileConfig::parse(
+            r#"
+            [auth]
+            oidc_issuer = "https://auth.example.com"
+            oidc_client_id = "sunrise"
+            require_device_sig = false
+            "#,
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(!off.require_device_sig);
+
+        let on = FileConfig::parse("[auth]\nrequire_device_sig = true", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(on.require_device_sig);
+    }
+
+    /// The one key whose file name differs from the field it lands on:
+    /// `[auth] jwks_ttl_secs` sets `jwks_default_ttl_secs`, which is the TTL
+    /// `auth::oidc` caches a JWKS document under when it carries no cache
+    /// headers. Nothing asserted the mapping, so dropping the line — or
+    /// pointing it at `token_leeway_secs` — failed nothing and an operator's
+    /// setting would have been silently ignored.
+    #[test]
+    fn jwks_ttl_secs_lands_on_the_differently_named_field() {
+        let cfg = FileConfig::parse("[auth]\njwks_ttl_secs = 900", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(cfg.jwks_default_ttl_secs, 900);
+        assert_ne!(
+            cfg.jwks_default_ttl_secs,
+            default_jwks_ttl_secs(),
+            "the test is worthless if it happens to be the default"
+        );
+        assert_eq!(
+            cfg.token_leeway_secs,
+            default_token_leeway_secs(),
+            "and it must not have landed on a neighbouring field"
+        );
+    }
+
+    /// `a_file_overlays_only_what_it_sets` asserts these two keep their
+    /// defaults when unset, and nothing asserted they overlay when set — so
+    /// dropping either assignment from `apply` failed no test.
+    #[test]
+    fn the_server_body_and_origin_limits_overlay_when_set() {
+        let cfg = FileConfig::parse(
+            r#"
+            [server]
+            max_body_bytes = 4096
+            allowed_origins = ["https://app.example", "https://admin.example"]
+            "#,
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(cfg.max_body_bytes, 4096);
+        assert_ne!(cfg.max_body_bytes, default_max_body_bytes());
+        assert_eq!(
+            cfg.allowed_origins,
+            vec![
+                "https://app.example".to_string(),
+                "https://admin.example".to_string()
+            ]
+        );
+    }
+
     #[test]
     fn data_dir_expands_to_both_stores() {
         let cfg = FileConfig::parse("[storage]\ndata_dir = \"/var/lib/sunrise\"", "t.toml")
