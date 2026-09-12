@@ -140,6 +140,15 @@ wrong, and the message does not say which.
    prepended to the search list. It is deleted in an `always()` step, so a
    failed archive or a rejected notarization does not leave a private key
    behind.
+
+   The step then **asserts** that the keychain holds a valid `Developer ID
+   Application` identity, and fails the job when it does not. The assertion is
+   the load-bearing part: `security find-identity` exits 0 whether it found an
+   identity or none, so running it proves only that `security` ran. On failure
+   the step prints the identity listing without `-v` (which includes identities
+   that are not currently valid, and names the reason) and the keychain's
+   certificates, because the `-v` output alone cannot separate the causes that
+   leave no valid identity at all.
 3. **`xcodegen generate` then `xcodebuild archive`** on the `Sunrise` macOS
    scheme, `-destination 'generic/platform=macOS'`, `-configuration Release`,
    with `ARCHS=arm64`, `CODE_SIGN_STYLE=Manual`, `CODE_SIGN_IDENTITY="Developer
@@ -283,7 +292,8 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 |---|---|
 | `Missing repository secret(s): …` | The `verify` job's preflight step. Create the named secrets above, then delete and re-push the tag. |
 | `errSecInternalComponent` from `codesign` | `security set-key-partition-list` did not run or did not match the keychain password. The workflow does it; a local reproduction usually has not. |
-| `No signing certificate "Developer ID Application" found` | The `.p12` has the certificate and not its private key. Re-export from the Mac that generated the signing request. |
+| `No Developer ID Application identity in the signing keychain` | The keychain step's assertion. The `.p12` decoded and imported, but the keychain holds no *valid* `Developer ID Application` identity: exported without its private key, a different certificate type, an expired certificate, or a chain that does not validate on the runner. The listings printed under the error say which — an expired or untrusted certificate appears in the non-`-v` identity list with its reason, and a `.p12` that carried no key leaves a certificate but no identity. |
+| `No signing certificate "Developer ID Application" found` from `xcodebuild` | Usually a valid identity that does not match `MACOS_TEAM_ID`, since the assertion above intercepts the missing-private-key case earlier under its own message. Check the team in the identity's name against the secret; a keychain search-list or partition-list problem affecting the `xcodebuild` step alone can also reach here. |
 | notarytool: `Team is not yet configured for notarization` | The Apple Developer Program membership is not active, or the account has not accepted the current agreements. |
 | notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME: YES` is missing from `apps/apple/project.yml`'s `settings.base`, or a target overrode it back to `NO`. |
 | notarytool status `Invalid`, log says `The signature does not include a secure timestamp` | `--timestamp` did not reach `codesign`, usually because `OTHER_CODE_SIGN_FLAGS` was overridden elsewhere. |
