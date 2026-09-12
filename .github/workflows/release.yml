@@ -450,7 +450,49 @@ jobs:
           security list-keychains -d user -s "$keychain" $existing
           rm -f "$RUNNER_TEMP/cert.p12"
           # Prove the identity is usable now, not inside a 20-minute build.
-          security find-identity -v -p codesigning "$keychain"
+          # `security find-identity` exits 0 whether it found an identity or
+          # none, so the bare command established only that `security` ran:
+          # "0 valid identities found" is a successful run, not a successful
+          # search. Four states reached `codesign` in the archive step below
+          # unremarked, and none of the errors there names a secret -- a `.p12`
+          # exported without its private key (a certificate alone imports
+          # fine), one holding a different kind of certificate, one whose
+          # certificate has expired, which `-v` omits rather than reports, and a
+          # `$keychain` that does not exist at all, which `security` reports the
+          # same way it reports an empty one.
+          #
+          # The match is on the identity line and on the name, not on the count:
+          # the archive signs with `CODE_SIGN_IDENTITY="Developer ID
+          # Application"`, and an `Apple Development` certificate would satisfy
+          # a non-zero count and then fail the archive. A here-string rather
+          # than a pipe into `grep -q` as a matter of construction, not of an
+          # observed failure: `grep -q` exits at the first match, and a writer
+          # large enough to still be writing then takes an `EPIPE` that
+          # `pipefail` would surface as the pipeline's status. `security` fully
+          # buffers this listing, so all 123 bytes of it land in one write
+          # before `grep -q` can match and the pipe would not actually misfire
+          # here -- fitting the buffer is not the operative reason, the
+          # buffering is. The here-string removes the question either way.
+          identities=$(security find-identity -v -p codesigning "$keychain")
+          echo "$identities"
+          if ! grep -qE '^ *[0-9]+\) [0-9A-F]{40} "Developer ID Application:' <<<"$identities"; then
+            # Which cause it was, printed rather than asserted. A wrong
+            # certificate type names itself in the `-v` line above, but the
+            # other three -- no private key, expired, no such keychain -- are
+            # byte-identical there (`0 valid identities found`), so the message
+            # below cannot honestly pick one: the listing without `-v` includes
+            # identities that are not currently valid and names the reason, and
+            # the certificate listing shows whether the import landed in this
+            # keychain at all.
+            echo "keychain: $keychain"
+            [ -f "$keychain" ] || echo "  ...which does not exist"
+            echo "--- identities, including invalid ones ---"
+            security find-identity -p codesigning "$keychain" || true
+            echo "--- certificates in this keychain ---"
+            security find-certificate -a "$keychain" | grep -E '"(labl|subj)"' || true
+            echo "::error title=No Developer ID Application identity in the signing keychain::MACOS_CERTIFICATE_P12 decoded and imported, but the keychain holds no *valid* Developer ID Application signing identity. The listings above say which case this is. docs/07-clients/releasing.md gives the openssl command that checks a .p12 for both halves before it is base64'd. Nothing is signed, notarized or published."
+            exit 1
+          fi
       # The repository's own task, not a re-expression of it. It builds the
       # three-slice `out/SunriseCore.xcframework` and
       # `out/swift/sunrise_core_bindings.swift`, and `xcodegen` below needs the
