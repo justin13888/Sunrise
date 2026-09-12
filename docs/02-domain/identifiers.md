@@ -17,7 +17,7 @@ ctx_01HZX2W8P6E5Q4R7Y9N1M0AGHI
 …
 ```
 
-Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`).
+Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`, `rvw_`).
 
 ## Why ULID, not UUID
 
@@ -49,7 +49,7 @@ Code uses a typed reference, not raw strings, except at I/O boundaries:
 ```rust
 pub struct EntityRef(EntityKind, [u8; 16]);
 
-pub enum EntityKind { Task, Stream, Context, Routine, Block, Note, Attachment, Person, Device, Identity }
+pub enum EntityKind { Task, Stream, Context, Routine, Block, Note, Attachment, Person, Device, Identity, FocusSession, ReviewSnapshot }
 ```
 
 Parsing a string ID:

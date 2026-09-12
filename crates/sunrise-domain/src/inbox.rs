@@ -8,8 +8,8 @@ use sunrise_id::EntityRef;
 /// Fixed Inbox stream id (raw bytes): three zero bytes then ASCII
 /// `sunrise.inbox`.
 ///
-/// It used to be sixteen zero bytes, which is also the vault-meta stream id
-/// (`sunrise_core::engine::META_STREAM`) — so Inbox task ops and Stream/routine
+/// It used to be sixteen zero bytes, which is also the id sunrise-core uses
+/// for its vault-meta stream — so Inbox task ops and Stream/routine
 /// lifecycle ops shared one stream and one Stream key. That was survivable
 /// while every key was derived from the vault root and every device held it. It
 /// is not survivable under ADR-0024: rotating the meta stream on a revocation
