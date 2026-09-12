@@ -401,10 +401,12 @@ pub async fn push_tokens(
 mod tests {
     use crate::api::error::codes;
     use crate::api::testing::{code_of, register_device, send_signed, Client};
-    use crate::ServerConfig;
+    use crate::state::ServerState;
+    use crate::{ServerConfig, StaticVerifier, Subject};
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
     use kynos::http::{Method, StatusCode};
+    use std::sync::Arc;
 
     fn b64(b: &[u8]) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
@@ -786,6 +788,148 @@ mod tests {
         }
     }
 
+    /// `DELETE /api/v1/devices/{device_id}` — the success branch, which no
+    /// test drove.
+    ///
+    /// Only the 403 self-revoke refusal reached this route, so replacing the
+    /// store call and its `NotFound` arm with `Ok(())` failed nothing, and
+    /// `sunrise_devices_revoke_total` was never observed at all. The e2e test
+    /// that names this route revokes through `Store` directly and never issues
+    /// the HTTP `DELETE`.
+    #[tokio::test]
+    async fn revoking_another_device_by_its_relay_id_is_204_and_is_counted() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, phone_key) =
+            register_device(&client, 33, "phone", Some(PHONE_VAULT_ID)).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 34, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        assert_eq!(
+            client.metrics.get("sunrise_devices_revoke_total"),
+            0,
+            "nothing has been revoked yet"
+        );
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/{phone_id}"),
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            client.metrics.get("sunrise_devices_revoke_total"),
+            1,
+            "a revocation must be counted"
+        );
+
+        // And it really revoked: the row is a soft delete the listing reports,
+        // and the device no longer authenticates.
+        let listed = send_signed(
+            &client,
+            "GET",
+            "/api/v1/devices",
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await;
+        listed.assert_status(StatusCode::OK);
+        let phone = listed
+            .json()
+            .as_array()
+            .expect("an array")
+            .iter()
+            .find(|d| d["device_id"] == phone_id)
+            .expect("the phone is still listed")
+            .clone();
+        assert_eq!(phone["revoked"], serde_json::json!(true));
+
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &phone_id,
+            &phone_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// The `StoreError::NotFound` arm of the same route, equally undriven.
+    ///
+    /// A relay device id that is not an active row on this account is a 404
+    /// carrying `DEVICE_NOT_FOUND` — for an id that was never issued, and for
+    /// one that was already revoked alike, so the route answers nothing about
+    /// which devices exist. Nothing is counted on either.
+    #[tokio::test]
+    async fn revoking_an_unknown_or_already_revoked_relay_id_is_404() {
+        let client = Client::new(ServerConfig::default());
+        let (phone_id, _phone_key) =
+            register_device(&client, 35, "phone", Some(PHONE_VAULT_ID)).await;
+        let (laptop_id, laptop_key) =
+            register_device(&client, 36, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        let res = send_signed(
+            &client,
+            "DELETE",
+            "/api/v1/devices/dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await;
+        res.assert_status(StatusCode::NOT_FOUND);
+        assert_eq!(code_of(&res), codes::DEVICE_NOT_FOUND);
+        assert_eq!(
+            client.metrics.get("sunrise_devices_revoke_total"),
+            0,
+            "a refusal must not be counted as a revocation"
+        );
+
+        // A second revoke of a device that really was revoked is the same
+        // answer, so the two are indistinguishable to a caller.
+        let target = format!("/api/v1/devices/{phone_id}");
+        send_signed(&client, "DELETE", &target, &laptop_id, &laptop_key, None)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let res = send_signed(&client, "DELETE", &target, &laptop_id, &laptop_key, None).await;
+        res.assert_status(StatusCode::NOT_FOUND);
+        assert_eq!(code_of(&res), codes::DEVICE_NOT_FOUND);
+        assert_eq!(client.metrics.get("sunrise_devices_revoke_total"), 1);
+    }
+
+    /// The malformed-vault-id check exists on *both* sides and only the
+    /// registration side was tested.
+    ///
+    /// An id that is not 26 Crockford base-32 characters can never equal one a
+    /// real `device_revoke` names, so the revoke route refuses it as a 400
+    /// rather than looking it up and answering the 404 that says "no active
+    /// row carries it" — which a client would read as "the device is gone".
+    #[tokio::test]
+    async fn a_malformed_vault_device_id_is_refused_at_revocation() {
+        let client = Client::new(ServerConfig::default());
+        let (laptop_id, laptop_key) =
+            register_device(&client, 37, "laptop", Some(LAPTOP_VAULT_ID)).await;
+
+        let res = send_signed(
+            &client,
+            "DELETE",
+            "/api/v1/devices/by-vault-id/not-a-vault-id",
+            &laptop_id,
+            &laptop_key,
+            None,
+        )
+        .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(code_of(&res), codes::VALIDATION_INVALID);
+    }
+
     /// A vault id no active row carries is a 404, and a client must not read
     /// that as "the device is now refused".
     ///
@@ -910,6 +1054,45 @@ mod tests {
             .send(Method::GET, "/api/v1/accounts/me", None)
             .await
             .assert_status(StatusCode::OK);
+    }
+
+    /// No credential at all, against a verifier that actually checks.
+    ///
+    /// The default `NullVerifier` accepts an absent bearer on purpose — that is
+    /// what makes self-host work and what makes enabling authentication purely
+    /// a matter of configuring a verifier — so every `None` request elsewhere
+    /// in this module proves nothing about whether these routes are
+    /// authenticated at all. Blobs solved this at
+    /// `every_blob_route_requires_a_bearer` and sync at
+    /// `an_unauthenticated_session_is_refused`; the device routes had no
+    /// equivalent, so nothing here would have failed if the security scheme
+    /// came off one of them.
+    #[tokio::test]
+    async fn every_device_route_requires_a_bearer() {
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with("test", Subject::new("https://idp.example", "alice")),
+        ));
+        let client = Client::from_state(state);
+        for (method, path) in [
+            (Method::GET, "/api/v1/devices"),
+            (Method::POST, "/api/v1/devices"),
+            (Method::POST, "/api/v1/devices/push-tokens"),
+            (
+                Method::DELETE,
+                "/api/v1/devices/dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/devices/by-vault-id/01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+            ),
+        ] {
+            let res = client.send_as(method.clone(), path, None, None).await;
+            assert_eq!(
+                res.status,
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} must refuse an unauthenticated caller"
+            );
+        }
     }
 
     /// Sign-up being disabled is a statement about the server, not about the
