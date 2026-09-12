@@ -48,7 +48,7 @@ use std::collections::HashMap;
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::relay::{CursorGap, FrameHead};
+use crate::relay::{CursorGap, FrameHead, StreamKey};
 use crate::store::{Store, StoreError};
 
 /// Default per-channel age bound: 30 days, matching every other retention
@@ -80,9 +80,6 @@ impl Default for DurableCaps {
         }
     }
 }
-
-/// A channel key: `(account_hash, stream_id)`, the same key the ring uses.
-pub type ChannelKey = ([u8; 16], [u8; 16]);
 
 /// One replayed frame: its durable `relay_frames.id` and its verbatim bytes.
 ///
@@ -142,7 +139,7 @@ impl Store {
     /// case nothing was written and the caller must refuse to ack.
     pub fn relay_append(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         bytes: &[u8],
         heads: &[FrameHead],
         ops_h: Option<&[u8; 32]>,
@@ -234,7 +231,7 @@ impl Store {
     /// loss.
     pub fn relay_replay(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), StoreError> {
         let (frames, gaps) = self.relay_replay_after(key, 0, cursors)?;
@@ -266,7 +263,7 @@ impl Store {
     /// `after_id` owes the same check.
     pub fn relay_replay_after(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         after_id: u64,
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<Replay, StoreError> {
@@ -350,10 +347,7 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError::Sqlite`] if either read fails.
-    pub fn relay_device_heads(
-        &self,
-        key: ChannelKey,
-    ) -> Result<HashMap<[u8; 16], u64>, StoreError> {
+    pub fn relay_device_heads(&self, key: StreamKey) -> Result<HashMap<[u8; 16], u64>, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.conn.lock();
         let mut out: HashMap<[u8; 16], u64> = HashMap::new();
@@ -392,7 +386,7 @@ impl Store {
     }
 
     /// Number of retained frames for a channel (tests and diagnostics).
-    pub fn relay_len(&self, key: ChannelKey) -> Result<usize, StoreError> {
+    pub fn relay_len(&self, key: StreamKey) -> Result<usize, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.conn.lock();
         let n: i64 = conn
@@ -514,7 +508,7 @@ mod tests {
     const ACC: [u8; 16] = [0xa1; 16];
     const STREAM: [u8; 16] = [0x11; 16];
     const DEV: [u8; 16] = [0x22; 16];
-    const KEY: ChannelKey = (ACC, STREAM);
+    const KEY: StreamKey = (ACC, STREAM);
 
     fn store() -> Store {
         Store::open(None).unwrap()
