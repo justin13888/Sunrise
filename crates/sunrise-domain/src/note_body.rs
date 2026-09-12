@@ -1264,7 +1264,28 @@ mod tests {
             let body = NoteBody(bytes.clone());
             let doc = decode(&body);
             if doc.is_exact() {
-                assert_eq!(encode(&doc.blocks).0, bytes);
+                assert_eq!(
+                    encode(&doc.blocks).0,
+                    bytes,
+                    "Exact promises re-encoding is a no-op"
+                );
+            } else {
+                // The half the comment above claims and the test used to drop
+                // on the floor. Three of these four inputs take this branch,
+                // so without it the loop asserted one case and silently
+                // skipped the rest. A caller holding a Lossy body keeps its
+                // original bytes; the render it got back is a view, and
+                // producing it must not have consumed or rewritten anything.
+                assert_eq!(
+                    body.0, bytes,
+                    "a Lossy decode must leave the caller's bytes untouched"
+                );
+                assert_ne!(
+                    encode(&doc.blocks).0,
+                    bytes,
+                    "a Lossy render that re-encoded to the input would have \
+                     been Exact — saving it is what the interlock forbids"
+                );
             }
         }
     }
