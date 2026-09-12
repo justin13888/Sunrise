@@ -94,20 +94,6 @@ pub struct Capture {
     pub unresolved: Vec<Unresolved>,
 }
 
-/// Convert a client's `now_ms` into the [`Timestamp`] the parsers want.
-///
-/// Saturates to the epoch rather than failing: an out-of-range clock reading
-/// is not a reason to stop accepting input. Lives here because
-/// [`parse`] and [`crate::annotate::parse`] both take an instant and every
-/// client holds milliseconds.
-#[must_use]
-pub fn now_ts(now_ms: u64) -> Timestamp {
-    i64::try_from(now_ms)
-        .ok()
-        .and_then(|ms| Timestamp::from_millisecond(ms).ok())
-        .unwrap_or(Timestamp::UNIX_EPOCH)
-}
-
 /// Normalised title used for the capture dedup key, per the spec:
 /// lowercase, trimmed, internal whitespace collapsed.
 #[must_use]
