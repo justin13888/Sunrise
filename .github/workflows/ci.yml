@@ -438,6 +438,13 @@ jobs:
         # step's, so 0/2/3 are success here and every other code propagates.
         # Red on this step now means the shard could not be measured at all.
         run: |
+          # cargo-mutants creates its own `mutants.out` but not the parent it
+          # was told to put it in, and `out/` is gitignored, so a fresh
+          # checkout has none. `mise.toml`'s `mutants` task has always created
+          # it; this job never did, so every shard failed here with
+          # `create output parent directory ... No such file or directory`
+          # before it measured a single mutant.
+          mkdir -p out/mutants
           rc=0
           cargo mutants -p ${{ matrix.crate }} \
             --jobs 1 --shard ${{ matrix.shard }} \
