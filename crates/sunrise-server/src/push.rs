@@ -96,6 +96,27 @@ impl PushProvider for LoggingProvider {
 mod tests {
     use super::*;
 
+    /// The `device_id_hex` alias is a documented compatibility promise —
+    /// "accepted so clients written against the pre-persistence shape keep
+    /// parsing" — and nothing tested it, so deleting the attribute would have
+    /// broken exactly those clients silently.
+    #[test]
+    fn the_pre_persistence_device_id_spelling_still_parses() {
+        let legacy: PushRegistration = serde_json::from_str(
+            r#"{"device_id_hex":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
+        )
+        .expect("the alias must keep parsing");
+        assert_eq!(legacy.device_id, "0000000000000000000000000Z");
+
+        // The current spelling reaches the same field, so the alias is an
+        // addition rather than a replacement.
+        let current: PushRegistration = serde_json::from_str(
+            r#"{"device_id":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
+        )
+        .expect("the current spelling parses");
+        assert_eq!(current.device_id, legacy.device_id);
+    }
+
     #[tokio::test]
     async fn logging_provider_increments_counter() {
         let m = crate::Metrics::new();
