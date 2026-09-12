@@ -1727,6 +1727,15 @@ mod tests {
     }
 
     /// Was `resubscribing_replaces_the_receiver_rather_than_duplicating_it`.
+    ///
+    /// The fan-out assertion first, because it is the fact a client can
+    /// observe. `spawn_stream` walks `session.streams` and replays each entry,
+    /// so a set that grew on the second `Subscribe` delivers the same batch
+    /// once per entry — a subscriber re-applying every op it is sent twice.
+    /// Only the stored-set length was ever asserted, read out of the session
+    /// store through the harness, so the behaviour itself was unpinned and the
+    /// test would fail for a reason that is not a regression the moment that
+    /// field moves.
     #[tokio::test]
     async fn resubscribing_replaces_the_stream_set() {
         let client = Client::new(ServerConfig::default());
@@ -1734,6 +1743,14 @@ mod tests {
 
         subscribe(&client, &id, None).await;
         subscribe(&client, &id, None).await;
+
+        assert_eq!(publish(&client, &id, vec![], 1).await, StatusCode::OK);
+        let body = read(&client, &id, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "one publish must reach a twice-subscribed session once: {body}"
+        );
 
         let session = client
             .sessions
