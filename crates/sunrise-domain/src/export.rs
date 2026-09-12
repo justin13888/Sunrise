@@ -31,8 +31,8 @@
 
 use crate::activity::{ActivityEvent, ActivityKind};
 use crate::focus::FocusStats;
-use crate::review::StreakRow;
 use crate::stats::Trends;
+use crate::streak::StreakRow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn focus_and_streak_tables_carry_optional_values_as_empty_fields() {
         use crate::focus::{Calibration, StreamFocus};
-        use crate::review::StreakRow;
+        use crate::streak::StreakRow;
         use sunrise_id::EntityKind;
 
         let stream = EntityRef::new(EntityKind::Stream, [7u8; 16]);

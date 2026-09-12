@@ -50,6 +50,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_id::EntityRef;
 
+/// A Routine's streak, for step 3 and the snapshot.
+///
+/// Defined in [`crate::streak`], which owns the streak mechanics; re-exported
+/// here because the review is where a streak is read.
+pub use crate::streak::StreakRow;
+
 /// A half-open review window `[start_ms, end_ms)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewWindow {
@@ -135,19 +141,6 @@ pub struct ReviewTotals {
     /// Tasks re-opened in the window. Not in the spec's list, but a review
     /// that reports 8 completions while hiding 3 resurrections is misleading.
     pub reopened: u32,
-}
-
-/// A Routine's streak, for step 3 and the snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreakRow {
-    /// Routine id.
-    pub routine: EntityRef,
-    /// Template title.
-    pub title: String,
-    /// Current streak counter.
-    pub streak: i64,
-    /// Last completion (ms since epoch).
-    pub last_completed_at_ms: Option<u64>,
 }
 
 /// The assembled weekly review — one value per spec step.

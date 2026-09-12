@@ -108,8 +108,8 @@ pub use planning::{is_overdue, today_section, TodaySection};
 pub use recur::parse_recurrence;
 pub use review::{
     build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,
-    ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreakRow, StreamReview,
-    WeeklyReview, WeeklyReviewInput,
+    ReviewSnapshotStream, ReviewStream, ReviewTotals, ReviewWindow, StreamReview, WeeklyReview,
+    WeeklyReviewInput,
 };
 pub use routine::{
     materialization_horizon_days, Routine, RoutineCatchupPolicy, RoutineDraft, RoutinePatch,
@@ -130,7 +130,7 @@ pub use stats::{
     WeekBucket, WeekGrid, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS, TREND_WEEKS,
 };
 pub use streak::{
-    StreakOutcome, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE, FORGIVENESS_WINDOW_S,
+    StreakOutcome, StreakRow, DEFAULT_GRACE_WINDOW_S, FORGIVENESS_ALLOWANCE, FORGIVENESS_WINDOW_S,
     MAX_GRACE_WINDOW_S,
 };
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
