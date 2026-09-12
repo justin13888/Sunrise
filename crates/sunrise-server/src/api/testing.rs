@@ -27,6 +27,15 @@ use kynos::router::service::Service;
 /// was presented".
 pub(crate) const BEARER: &str = "Bearer test";
 
+/// A **second** bearer, naming a different principal.
+///
+/// Only [`Client::with_blob_root_and_verifier`] accepts it, and only because
+/// the blob tests need two accounts: `account_root` namespaces every blob path
+/// by the caller, and with one bearer in the harness nothing would have failed
+/// if it stopped doing so. [`BEARER`] alone cannot express a second tenant —
+/// `NullVerifier` maps every credential to one synthetic account by design.
+pub(crate) const SECOND_BEARER: &str = "Bearer second";
+
 /// A client over a built typed surface.
 pub(crate) struct Client {
     service: Service<ServerState>,
@@ -94,6 +103,10 @@ impl Client {
     ///
     /// For the tests that assert a credential is *required*: the default
     /// `NullVerifier` accepts an absent one on purpose.
+    ///
+    /// It accepts [`BEARER`] and [`SECOND_BEARER`], which map to two different
+    /// principals and therefore to two different accounts — the only way to
+    /// state a cross-tenant property about a route at all.
     pub(crate) fn with_blob_root_and_verifier() -> (Self, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("a temp dir");
         let state = ServerState::new(ServerConfig {
@@ -102,7 +115,8 @@ impl Client {
         })
         .with_verifier(std::sync::Arc::new(
             crate::StaticVerifier::default()
-                .with("test", crate::Subject::new("https://idp.example", "alice")),
+                .with("test", crate::Subject::new("https://idp.example", "alice"))
+                .with("second", crate::Subject::new("https://idp.example", "bob")),
         ));
         (Self::from_state(state), dir)
     }
