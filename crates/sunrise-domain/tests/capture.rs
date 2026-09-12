@@ -9,9 +9,7 @@
 
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
-use sunrise_domain::capture::{
-    normalize_title, now_ts, parse, parse_when, Capture, NamedRef, Unresolved,
-};
+use sunrise_domain::capture::{normalize_title, parse, parse_when, Capture, NamedRef, Unresolved};
 use sunrise_domain::SunriseTime;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -416,40 +414,40 @@ fn parsed_drafts_pass_domain_validation() {
 // Clock conversion.
 // ---------------------------------------------------------------------------
 
-/// `now_ts` promises in prose to saturate to the epoch rather than fail, and
+/// `epoch_ms::from_u64` promises in prose to saturate to the epoch rather than fail, and
 /// nothing held it to that. An out-of-range clock reading must not stop the
 /// capture surface accepting input — a device with a wrong clock still needs
 /// to be able to write things down.
 #[test]
-fn now_ts_converts_a_normal_reading_and_saturates_an_impossible_one() {
+fn epoch_ms_converts_a_normal_reading_and_saturates_an_impossible_one() {
     // The ordinary case, which is what makes the two below meaningful.
     assert_eq!(
-        now_ts(1_772_000_000_000),
+        sunrise_domain::epoch_ms::from_u64(1_772_000_000_000),
         Timestamp::from_millisecond(1_772_000_000_000).unwrap()
     );
     assert_eq!(
-        now_ts(1_772_000_000_000).as_millisecond(),
+        sunrise_domain::epoch_ms::from_u64(1_772_000_000_000).as_millisecond(),
         1_772_000_000_000
     );
 
     // Past `i64`: the conversion itself fails.
     assert_eq!(
-        now_ts(u64::MAX),
+        sunrise_domain::epoch_ms::from_u64(u64::MAX),
         Timestamp::UNIX_EPOCH,
         "an unreadable clock is not a reason to refuse input"
     );
     // Inside `i64` but outside the instants jiff represents: the second
     // fallible step, which a test of `u64::MAX` alone would not reach.
     assert_eq!(
-        now_ts(u64::try_from(i64::MAX).unwrap()),
+        sunrise_domain::epoch_ms::from_u64(u64::try_from(i64::MAX).unwrap()),
         Timestamp::UNIX_EPOCH
     );
 
     // The epoch itself is a real reading, not a sentinel — it round-trips as
     // itself, which is what makes the saturation indistinguishable from it and
     // is worth writing down.
-    assert_eq!(now_ts(0), Timestamp::UNIX_EPOCH);
-    assert_eq!(now_ts(0).as_millisecond(), 0);
+    assert_eq!(sunrise_domain::epoch_ms::from_u64(0), Timestamp::UNIX_EPOCH);
+    assert_eq!(sunrise_domain::epoch_ms::from_u64(0).as_millisecond(), 0);
 }
 
 #[test]
