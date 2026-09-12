@@ -63,7 +63,6 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
-ciborium = { workspace = true }
 ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
@@ -91,7 +90,6 @@ sunrise-error = { workspace = true }
 sunrise-http-sig = { workspace = true }
 sunrise-id = { workspace = true }
 sunrise-log = { workspace = true }
-sunrise-onboarding = { workspace = true }
 sunrise-storage = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 
