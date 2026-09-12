@@ -881,6 +881,50 @@ mod tests {
         }
     }
 
+    // -- CBOR fixtures ------------------------------------------------------
+    //
+    // Every test below asserts `decode`'s **public** contract, so none of them
+    // may be built out of the encoder's internals: a fixture spelled with the
+    // private `key` helper reads as a test of `encode`'s guts, and moves
+    // whenever they do. These build the bodies a *peer* writes — an unknown
+    // block kind, an unknown mark, a key this build does not model — which the
+    // public API deliberately cannot express, so a hand-built value is the
+    // only way to reach them. `tests/note_body_proptest.rs` makes the same
+    // choice from outside the crate, and for the same reason.
+
+    /// CBOR `[]`: the explicitly empty document a conforming peer writes.
+    /// Spelled here rather than read off the encoder's private `EMPTY_DOC`,
+    /// because what is being asserted is that *this byte* decodes as empty.
+    const EMPTY_DOC_BYTES: [u8; 1] = [0x80];
+
+    fn cbor_text(s: &str) -> ciborium::value::Value {
+        ciborium::value::Value::Text(s.to_string())
+    }
+
+    fn cbor_int(n: i64) -> ciborium::value::Value {
+        ciborium::value::Value::Integer(n.into())
+    }
+
+    fn cbor_array(items: Vec<ciborium::value::Value>) -> ciborium::value::Value {
+        ciborium::value::Value::Array(items)
+    }
+
+    /// A CBOR map with text keys. Order is irrelevant — `encode_canonical`
+    /// sorts them — so these read in grammar order.
+    fn cbor_map(entries: Vec<(&str, ciborium::value::Value)>) -> ciborium::value::Value {
+        ciborium::value::Value::Map(
+            entries
+                .into_iter()
+                .map(|(k, v)| (cbor_text(k), v))
+                .collect(),
+        )
+    }
+
+    /// Canonical CBOR bytes for `value`, as a body ready to hand to `decode`.
+    fn cbor_body(value: &ciborium::value::Value) -> NoteBody {
+        NoteBody(sunrise_cbor::encode_canonical(value).expect("fixture encodes"))
+    }
+
     #[test]
     fn an_absent_body_is_an_empty_document_not_a_broken_one() {
         let doc = decode(&NoteBody::empty());
@@ -893,10 +937,10 @@ mod tests {
         // `[]` — what a conforming peer writes for a body with no blocks. It
         // is not the same *bytes* as an absent body, and marking it lossy
         // would make every emptied note read-only.
-        let doc = decode(&NoteBody(EMPTY_DOC.to_vec()));
+        let doc = decode(&NoteBody(EMPTY_DOC_BYTES.to_vec()));
         assert!(doc.blocks.is_empty());
         assert!(doc.is_exact());
-        assert_eq!(encode(&[]).0, EMPTY_DOC.to_vec());
+        assert_eq!(encode(&[]).0, EMPTY_DOC_BYTES.to_vec());
     }
 
     #[test]
@@ -1081,15 +1125,14 @@ mod tests {
 
     #[test]
     fn a_block_kind_from_a_newer_build_is_skipped_and_locks_the_body() {
-        let value = Value::Array(vec![
-            Value::Map(vec![
-                (key("kind"), key("p")),
-                (key("inline"), Value::Array(vec![])),
+        let body = cbor_body(&cbor_array(vec![
+            cbor_map(vec![
+                ("kind", cbor_text("p")),
+                ("inline", cbor_array(vec![])),
             ]),
             // Something this build has never heard of.
-            Value::Map(vec![(key("kind"), key("gantt"))]),
-        ]);
-        let body = NoteBody(sunrise_cbor::encode_canonical(&value).expect("encodes"));
+            cbor_map(vec![("kind", cbor_text("gantt"))]),
+        ]));
         let doc = decode(&body);
         assert_eq!(
             doc.blocks,
@@ -1105,20 +1148,19 @@ mod tests {
 
     #[test]
     fn an_unknown_mark_is_dropped_from_the_render_and_locks_the_body() {
-        let value = Value::Array(vec![Value::Map(vec![
-            (key("kind"), key("p")),
+        let body = cbor_body(&cbor_array(vec![cbor_map(vec![
+            ("kind", cbor_text("p")),
             (
-                key("inline"),
-                Value::Array(vec![Value::Map(vec![
-                    (key("text"), key("x")),
+                "inline",
+                cbor_array(vec![cbor_map(vec![
+                    ("text", cbor_text("x")),
                     (
-                        key("marks"),
-                        Value::Array(vec![key("bold"), key("sparkle")]),
+                        "marks",
+                        cbor_array(vec![cbor_text("bold"), cbor_text("sparkle")]),
                     ),
                 ])]),
             ),
-        ])]);
-        let body = NoteBody(sunrise_cbor::encode_canonical(&value).expect("encodes"));
+        ])]));
         let doc = decode(&body);
         assert_eq!(
             doc.blocks,
@@ -1139,12 +1181,11 @@ mod tests {
             (6, HeadingLevel::Three),
             (-9, HeadingLevel::One),
         ] {
-            let value = Value::Array(vec![Value::Map(vec![
-                (key("kind"), key("h")),
-                (key("level"), Value::Integer(written.into())),
-                (key("inline"), Value::Array(vec![])),
-            ])]);
-            let body = NoteBody(sunrise_cbor::encode_canonical(&value).expect("encodes"));
+            let body = cbor_body(&cbor_array(vec![cbor_map(vec![
+                ("kind", cbor_text("h")),
+                ("level", cbor_int(written)),
+                ("inline", cbor_array(vec![])),
+            ])]));
             let doc = decode(&body);
             assert_eq!(
                 doc.blocks,
@@ -1159,12 +1200,11 @@ mod tests {
 
     #[test]
     fn a_field_this_build_does_not_model_makes_the_body_read_only() {
-        let value = Value::Array(vec![Value::Map(vec![
-            (key("kind"), key("p")),
-            (key("inline"), Value::Array(vec![])),
-            (key("alignment"), key("centre")),
-        ])]);
-        let body = NoteBody(sunrise_cbor::encode_canonical(&value).expect("encodes"));
+        let body = cbor_body(&cbor_array(vec![cbor_map(vec![
+            ("kind", cbor_text("p")),
+            ("inline", cbor_array(vec![])),
+            ("alignment", cbor_text("centre")),
+        ])]));
         let doc = decode(&body);
         assert_eq!(
             doc.blocks,
@@ -1180,7 +1220,7 @@ mod tests {
     #[test]
     fn a_top_level_value_that_is_not_a_document_falls_back_to_text() {
         // CBOR that decodes fine but is not `[* NoteBlock]`.
-        let body = NoteBody(sunrise_cbor::encode_canonical(&key("just a string")).expect("enc"));
+        let body = cbor_body(&cbor_text("just a string"));
         let doc = decode(&body);
         assert_eq!(doc.fidelity, Fidelity::Lossy);
     }
