@@ -53,7 +53,7 @@
 //! # Where the deterministic coverage lives
 //!
 //! `BlockDelete` and `AttachmentDelete` were converted last, and their coverage
-//! deliberately does **not** rest on a race. `crates/sunrise-core/src/engine.rs`
+//! deliberately does **not** rest on a race. `crates/sunrise-core/src/engine/tests.rs`
 //! carries three unit tests over two `Engine`s on `FakeClock`s that *choose*
 //! the stamps so the delete always wins, and that drive a delete which
 //! overtakes its own create:
