@@ -3784,6 +3784,21 @@ impl Engine {
     }
 }
 
+/// What `EndFocus` derives when the session says the task was finished: the
+/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
+/// completion triggers when the task is a routine occurrence.
+///
+/// Built and consumed entirely on the local command path, by
+/// [`Engine::autocomplete_focused_task`] and its one caller; a replica applying
+/// a `focus.end` op derives nothing, so the remote materialization never sees
+/// one. This is the first module scope after the focus-session methods, which
+/// is as close to them as a method's return type can live.
+struct FocusCompletion {
+    task: Task,
+    inner: Vec<u8>,
+    streak: Option<(Routine, Vec<u8>)>,
+}
+
 // ---- table operations ----
 
 impl Engine {
@@ -4390,15 +4405,6 @@ pub(crate) struct LwwStamp {
     pub device: [u8; 16],
     /// The writing device's per-`(stream, device)` sequence number.
     pub seq: u64,
-}
-
-/// What `EndFocus` derives when the session says the task was finished: the
-/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
-/// completion triggers when the task is a routine occurrence.
-struct FocusCompletion {
-    task: Task,
-    inner: Vec<u8>,
-    streak: Option<(Routine, Vec<u8>)>,
 }
 
 /// The stamp stored on a materialized row. `device` is `None` only for a
