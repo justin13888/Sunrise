@@ -860,7 +860,7 @@ async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
         &line,
         &streams,
         &contexts,
-        sunrise_domain::now_ts(core.now_ms()),
+        sunrise_domain::epoch_ms::from_u64(core.now_ms()),
         &tz,
     );
     if !edit.errors.is_empty() {
@@ -967,7 +967,7 @@ async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::E
         return Err("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`".into());
     }
     let tz = jiff::tz::TimeZone::system();
-    let now = sunrise_domain::now_ts(core.now_ms());
+    let now = sunrise_domain::epoch_ms::from_u64(core.now_ms());
     let to = sunrise_domain::capture::parse_when(&phrase, now, &tz)
         .ok_or_else(|| format!("could not read the date \"{phrase}\""))?;
     let to_ms = u64::try_from(to.as_millisecond()).map_err(|_| "that date is before the epoch")?;
