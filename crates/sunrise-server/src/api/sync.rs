@@ -251,7 +251,7 @@ pub async fn session(
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceCursor {
-    /// The originating device, 32 lowercase hex characters.
+    /// The originating device, 32 hex characters.
     pub device_id: String,
     /// The highest `seq` from that device this subscriber has applied.
     pub last_applied_seq: u64,
@@ -261,7 +261,7 @@ pub struct DeviceCursor {
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct StreamSubscription {
-    /// The stream, 32 lowercase hex characters.
+    /// The stream, 32 hex characters.
     pub stream_id: String,
     /// Per-device positions. Anything already covered is not replayed.
     #[serde(default)]
@@ -339,7 +339,7 @@ pub async fn subscribe(
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct OpsRequest {
-    /// The stream the batch targets, 32 lowercase hex characters.
+    /// The stream the batch targets, 32 hex characters.
     pub stream_id: String,
     /// Client-generated idempotency key for the batch.
     pub batch_id: u64,
@@ -627,6 +627,15 @@ pub struct RefreshResponse {
 /// refresh that changed either would let one credential hand a live op stream
 /// to another, which is the whole reason the check exists rather than simply
 /// trusting a valid token.
+///
+/// That mismatch does more than refuse the refresh: it **ends the session**
+/// before answering `401`, so the caller has to establish a new one rather
+/// than retry with the credential it still holds. The two failure paths are
+/// asymmetric on purpose. A token that fails *verification* says nothing about
+/// who holds the session, so that one is recoverable and the session keeps the
+/// credential it already has; a token that verifies and names *someone else*
+/// means the channel namespace fixed at establishment no longer matches the
+/// holder, and there is nothing left worth serving on it.
 #[kynos::post("/api/v1/sync/session/refresh", operation_id = "refreshSyncSession")]
 pub async fn refresh(
     Inject(state): Inject<ServerState>,
@@ -1080,7 +1089,13 @@ fn resolve(
     Ok((id.to_owned(), session))
 }
 
-/// Parse a 16-byte id from 32 lowercase hex characters.
+/// Parse a 16-byte id from 32 hex characters.
+///
+/// Case-insensitive, because `hex::decode_to_slice` is. The doc and the
+/// refusal below both used to say *lowercase*, which no input could ever
+/// trigger: an uppercase id has always decoded to the same sixteen bytes. The
+/// prose was corrected rather than the parse, since tightening it would start
+/// refusing requests this server has always accepted.
 fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
@@ -1089,7 +1104,7 @@ fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
         )));
     }
     hex::decode_to_slice(s, &mut out)
-        .map_err(|_| ApiError::validation(format!("{field} must be lowercase hex")))?;
+        .map_err(|_| ApiError::validation(format!("{field} must be hex")))?;
     Ok(out)
 }
 
