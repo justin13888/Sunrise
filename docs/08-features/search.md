@@ -29,7 +29,7 @@ CREATE VIRTUAL TABLE search_idx USING fts5 (
 
 The `kind` column exists so the table can hold more than one entity kind, and
 **only `'task'` is ever written to it.** `ftsr_upsert_task` and
-`ftsr_delete_task` in `crates/sunrise-core/src/engine.rs` are the only inserts
+`ftsr_delete_task` in `crates/sunrise-core/src/engine/task.rs` are the only inserts
 and deletes, they run inside the same transaction that applies the op, and a
 deleted task is removed from the index rather than left as a tombstone. A
 task's `contexts` column carries its context ids as text, so a context id is a

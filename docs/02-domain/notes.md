@@ -12,7 +12,7 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
 > `EntityKind::Note`, though not by name: it falls through to the generic
-> refusal, the wildcard arm at `crates/sunrise-core/src/engine.rs:2504-2507`
+> refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:206-209`
 > ("EntityById not supported for kind {:?} in v1"). What *is* live is `NoteBody`
 > as a **field**, reached three ways — `Task.body`
 > (`crates/sunrise-domain/src/task.rs:97`), `Stream.description`

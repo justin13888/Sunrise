@@ -10,9 +10,10 @@ The op log is the canonical history. Materialized state is derivable from the lo
 > on them describes the target.** `OpLog::insert` in
 > `crates/sunrise-storage/src/oplog.rs` takes a `deps: &[[u8; 16]]` and writes
 > each entry into `op_dep`, and **every caller in the workspace passes `&[]`** —
-> the thirty `self.ops_insert` sites in `crates/sunrise-core/src/engine.rs`,
-> the remote-apply path in the same file, and the storage crate's own tests. The
-> loop therefore never runs and `op_dep` has **zero rows and zero readers**.
+> the thirty `self.ops_insert` sites spread across
+> `crates/sunrise-core/src/engine/`, the remote-apply path in `engine/sync.rs`,
+> and the storage crate's own tests. The loop therefore never runs and
+> `op_dep` has **zero rows and zero readers**.
 >
 > Downstream: causal apply ordering (§Op application order) reduces to "apply on
 > arrival", because "all deps present" is vacuously true; there are no orphans
