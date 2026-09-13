@@ -13,10 +13,12 @@
 /crates/sunrise-crypto-test-vectors/     @justin13888
 /crates/sunrise-sync/                    @justin13888
 /crates/sunrise-server/src/auth/         @justin13888
-# Was `src/ws.rs`, until ADR-0023 deleted it. `api/sync.rs` is what took over
+# Was `src/ws.rs`, until ADR-0023 deleted it. `api/sync/` is what took over
 # the session's credential handling: token expiry, the mid-session refresh, and
 # the device re-check that ends a stream a revoked device is already holding.
-/crates/sunrise-server/src/api/sync.rs   @justin13888
+# The directory rather than one file in it, so the rule cannot come to cover
+# less than it did when the surface was a single module.
+/crates/sunrise-server/src/api/sync/     @justin13888
 # `api/signed.rs` is the single device-signature verification path: the four
 # extractors every typed route is built from, and the only place a request
 # becomes a verified (Principal, Device) pair. `sunrise-http-sig` is the

@@ -1545,7 +1545,7 @@ fn the_scan_reaches_what_cargo_compiles() {
         missing.join("\n  ")
     );
     for expected in [
-        "crates/sunrise-server/src/api/sync.rs",
+        "crates/sunrise-server/src/api/sync/stream.rs",
         "crates/sunrise-core/src/sync_driver.rs",
         "crates/sunrise-log/src/field.rs",
         // Behind `#[cfg(feature = "sse")]`, off by default. Named here because
