@@ -8044,30 +8044,1152 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::config::SystemRng;
+    use crate::events::DomainEvent;
     use parking_lot::Mutex as PLMutex;
     use sunrise_crypto::keys::VaultRootKey;
     use sunrise_domain::ActivityKind;
+    use sunrise_domain::EffectiveTaskState;
+    use sunrise_domain::{EndOfDayPlan, MorningSummary};
+    use sunrise_domain::{RRule, Routine, RoutineCatchupPolicy, RoutineDraft, TaskTemplate};
     use sunrise_storage::Db;
+    use testutil::*;
 
-    #[derive(Debug)]
-    struct FakeClock(PLMutex<u64>);
-    impl Clock for FakeClock {
-        fn now_ms(&self) -> u64 {
-            *self.0.lock()
+    /// Shared test support for every test in this module.
+    ///
+    /// Extracted so that a `mod` boundary can be drawn anywhere in the tests
+    /// below it: a helper physically interleaved with the tests lands inside
+    /// whichever nested module the split puts it in, and a sibling module
+    /// cannot reach another sibling's private items. Everything here is
+    /// `pub(super)`, so it stays reachable from `tests` and from any module
+    /// nested inside it.
+    mod testutil {
+        use super::*;
+
+        #[derive(Debug)]
+        pub(super) struct FakeClock(pub(super) PLMutex<u64>);
+
+        impl Clock for FakeClock {
+            fn now_ms(&self) -> u64 {
+                *self.0.lock()
+            }
         }
-    }
 
-    fn engine() -> Engine {
-        let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        Engine::from_clock(
-            Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
-            Arc::new(SystemRng),
-            keychain,
-        )
-    }
+        pub(super) fn engine() -> Engine {
+            let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+            Engine::from_clock(
+                Arc::new(FakeClock(PLMutex::new(1_700_000_000_000))),
+                Arc::new(SystemRng),
+                keychain,
+            )
+        }
 
-    fn db() -> Db {
-        Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
+        pub(super) fn db() -> Db {
+            Db::open_memory(&VaultRootKey::from_bytes([0xab; 32])).unwrap()
+        }
+
+        pub(super) fn context_rows(e: &Engine, db: &Db) -> Vec<ContextRow> {
+            match e.query(db, Query::Contexts).unwrap() {
+                QueryResult::Contexts(rows) => rows,
+                other => panic!("expected Contexts, got {other:?}"),
+            }
+        }
+
+        pub(super) fn new_context(e: &Engine, db: &mut Db, name: &str) -> EntityRef {
+            e.apply(
+                db,
+                Command::CreateContext(ContextDraft {
+                    name: name.into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn task_context_ids(db: &Db, task: EntityRef) -> BTreeSet<[u8; 16]> {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT context_id FROM task_contexts WHERE task_id = ?")
+                .unwrap();
+            let rows = stmt
+                .query_map(params![task.bytes().to_vec()], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap();
+            rows.map(|r| {
+                let raw = r.unwrap();
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&raw[..16]);
+                a
+            })
+            .collect()
+        }
+
+        /// The externally-tagged [`InnerOp`] variant name carried by `op_id`'s
+        /// sealed envelope.
+        pub(super) fn inner_op_variant(e: &Engine, db: &Db, op_id: &[u8; 16]) -> String {
+            let inner = e.open_op_row(db, op_id).unwrap();
+            let ciborium::value::Value::Map(map) =
+                ciborium::de::from_reader::<ciborium::value::Value, _>(inner.as_slice()).unwrap()
+            else {
+                panic!("inner op must be a map");
+            };
+            match &map[0].0 {
+                ciborium::value::Value::Text(t) => t.clone(),
+                other => panic!("unexpected key {other:?}"),
+            }
+        }
+
+        // Fetch the most-recently-created task id in a stream (highest rowid
+        // proxy via id ordering is unstable, so use created ordering by title
+        // being unavailable — instead read the last inserted via the ops table
+        // is overkill; query tasks table directly).
+        pub(super) fn db_last_task(db: &Db, stream: EntityRef) -> EntityRef {
+            let blob: Vec<u8> = stream.bytes().to_vec();
+            let raw: Vec<u8> = db
+                .conn()
+                .query_row(
+                    "SELECT id FROM tasks WHERE stream_id = ? ORDER BY id DESC LIMIT 1",
+                    params![blob],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut a = [0u8; 16];
+            let take = raw.len().min(16);
+            a[..take].copy_from_slice(&raw[..take]);
+            EntityRef::new(EntityKind::Task, a)
+        }
+
+        pub(super) fn sample_constraint() -> ScheduleConstraint {
+            ScheduleConstraint {
+                time_of_day: Some(sunrise_domain::TimeOfDayRange {
+                    start: jiff::civil::time(9, 0, 0, 0),
+                    end: jiff::civil::time(17, 0, 0, 0),
+                }),
+                days_of_week: sunrise_domain::WeekdaySet::new(),
+                date_range: None,
+                severity: sunrise_domain::ConstraintSeverity::Hard,
+            }
+        }
+
+        pub(super) const NOW: i64 = 1_700_000_000_000;
+
+        pub(super) const DAY_MS: i64 = 86_400_000;
+
+        pub(super) fn stream_ref(b: u8) -> EntityRef {
+            EntityRef::new(EntityKind::Stream, [b; 16])
+        }
+
+        pub(super) fn routine_draft(
+            stream: EntityRef,
+            rrule: &str,
+            starts_ms: i64,
+            policy: RoutineCatchupPolicy,
+            constraints: Vec<ScheduleConstraint>,
+        ) -> RoutineDraft {
+            RoutineDraft {
+                template: TaskTemplate {
+                    title: "Water plants".into(),
+                    stream_id: stream,
+                    contexts: Vec::new(),
+                    energy: None,
+                    priority: None,
+                    estimated_duration_s: None,
+                    body: None,
+                },
+                rrule: RRule::parse(rrule).unwrap(),
+                timezone: "UTC".into(),
+                starts_at: ms_to_ts(starts_ms),
+                ends_at: None,
+                scheduling_constraints: constraints,
+                catchup_policy: policy,
+            }
+        }
+
+        pub(super) fn op_count(db: &Db) -> i64 {
+            db.conn()
+                .query_row("SELECT count(*) FROM ops", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        pub(super) fn live_task_ids(db: &Db) -> BTreeSet<[u8; 16]> {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT id FROM tasks WHERE deleted = 0")
+                .unwrap();
+            let out = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .map(|raw| {
+                    let raw = raw.unwrap();
+                    let mut a = [0u8; 16];
+                    let take = raw.len().min(16);
+                    a[..take].copy_from_slice(&raw[..take]);
+                    a
+                })
+                .collect();
+            out
+        }
+
+        pub(super) fn past_task_count(db: &Db, rid: EntityRef) -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT count(*) FROM tasks
+                     WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
+                    params![rid.bytes().to_vec(), NOW],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+
+        /// A block on 2026-03-04, `hour..hour + len` floating (no zone), which is
+        /// what a calendar grid draws when the user has not pinned a zone.
+        pub(super) fn block_at(hour: i8, len: i8) -> (SunriseTime, SunriseTime) {
+            (
+                SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour, 0, 0, 0)),
+                SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour + len, 0, 0, 0)),
+            )
+        }
+
+        pub(super) fn block_draft(hour: i8, len: i8, title: Option<&str>) -> BlockDraft {
+            let (starts_at, ends_at) = block_at(hour, len);
+            BlockDraft {
+                stream_id: inbox_stream_ref(),
+                starts_at,
+                ends_at,
+                title: title.map(ToOwned::to_owned),
+                title_track_task: false,
+                tasks: Vec::new(),
+            }
+        }
+
+        pub(super) fn day_rows(e: &Engine, db: &Db, at_ms: u64) -> Vec<BlockRow> {
+            match e.query(db, Query::DayBlocks { day_ms: at_ms }).unwrap() {
+                QueryResult::Blocks(rows) => rows,
+                other => panic!("expected blocks, got {other:?}"),
+            }
+        }
+
+        /// The instant a floating civil time on the test date resolves to under the
+        /// engine's device zone (UTC in tests).
+        pub(super) fn day_ms() -> u64 {
+            SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0)).index_ms() as u64
+        }
+
+        pub(super) fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
+            Command::ImportBlock {
+                source: source.into(),
+                uid: uid.into(),
+                draft,
+            }
+        }
+
+        pub(super) fn attachment_draft(parent: EntityRef) -> AttachmentDraft {
+            AttachmentDraft {
+                parent,
+                filename: "receipt.pdf".into(),
+                mime_type: "application/pdf".into(),
+                size_bytes: 4096,
+                blob_key: [7u8; 32],
+                blob_id: [9u8; 16],
+                chunk_count: 2,
+                content_hash: [11u8; 32],
+            }
+        }
+
+        pub(super) fn attachments_of(e: &Engine, db: &Db, task: EntityRef) -> Vec<Attachment> {
+            match e.query(db, Query::TaskAttachments(task)).unwrap() {
+                QueryResult::Attachments(a) => a,
+                other => panic!("expected attachments, got {other:?}"),
+            }
+        }
+
+        pub(super) fn open_session(e: &Engine, db: &mut Db, task: EntityRef) -> EntityRef {
+            e.apply(
+                db,
+                Command::StartFocus(FocusStartDraft {
+                    task_id: task,
+                    kind: FocusKind::Work,
+                    length: SessionLength::OnePomodoro,
+                    energy: None,
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn end_session(
+            e: &Engine,
+            db: &mut Db,
+            session: EntityRef,
+            done: bool,
+        ) -> CommandResult {
+            e.apply(
+                db,
+                Command::EndFocus {
+                    session,
+                    actual_focused_ms: None,
+                    completed_task: done,
+                },
+            )
+            .unwrap()
+        }
+
+        pub(super) fn task_of(e: &Engine, db: &Db, id: EntityRef) -> Task {
+            match e.query(db, Query::EntityById(id)).unwrap() {
+                QueryResult::Task(t) => *t,
+                other => panic!("expected task, got {other:?}"),
+            }
+        }
+
+        /// 2026-03-04 12:00 UTC, and the civil midnights around it.
+        pub(super) const NOTIFY_NOON: i64 = 1_772_625_600_000;
+
+        pub(super) fn engine_at(now_ms: i64) -> (Engine, Db) {
+            let e = engine_seeded(
+                ROOT,
+                [1u8; 32],
+                Arc::new(FakeClock(PLMutex::new(now_ms as u64))),
+            );
+            (e, db_root(ROOT))
+        }
+
+        pub(super) fn morning(e: &Engine, db: &Db, now_ms: i64) -> MorningSummary {
+            match e
+                .query(
+                    db,
+                    Query::MorningSummary {
+                        now_ms: now_ms as u64,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::MorningSummary(s) => *s,
+                other => panic!("expected a morning summary, got {other:?}"),
+            }
+        }
+
+        pub(super) fn evening(e: &Engine, db: &Db, now_ms: i64) -> EndOfDayPlan {
+            match e
+                .query(
+                    db,
+                    Query::EndOfDayPlan {
+                        now_ms: now_ms as u64,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::EndOfDayPlan(p) => *p,
+                other => panic!("expected an end-of-day plan, got {other:?}"),
+            }
+        }
+
+        pub(super) fn reminders(
+            e: &Engine,
+            db: &Db,
+            now_ms: i64,
+            horizon_ms: i64,
+            settings: ReminderSettings,
+        ) -> Vec<sunrise_domain::ReminderIntent> {
+            match e
+                .query(
+                    db,
+                    Query::ReminderIntents {
+                        now_ms: now_ms as u64,
+                        horizon_ms: horizon_ms as u64,
+                        settings,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::Reminders(r) => r,
+                other => panic!("expected reminders, got {other:?}"),
+            }
+        }
+
+        pub(super) fn db_root(root: [u8; 32]) -> Db {
+            Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
+        }
+
+        pub(super) fn engine_seeded(
+            root: [u8; 32],
+            seed: [u8; 32],
+            clock: Arc<FakeClock>,
+        ) -> Engine {
+            let kc = Arc::new(Keychain::for_test_seeded(
+                VaultRootKey::from_bytes(root),
+                seed,
+            ));
+            Engine::from_clock(clock, Arc::new(SystemRng), kc)
+        }
+
+        /// Like [`engine_seeded`] but with **real random** Stream keys, so a key
+        /// this device does not hold is genuinely one it cannot open.
+        ///
+        /// Every other engine unit test derives its keys from the shared vault root
+        /// (see [`Keychain::for_test_seeded`]) precisely so two in-memory engines
+        /// can read each other with no relay to carry `key_envelope` ops. That is
+        /// the wrong world for the deferral path, whose whole subject is an op
+        /// arriving before the key that opens it.
+        pub(super) fn engine_random_keys(
+            root: [u8; 32],
+            seed: [u8; 32],
+            clock: Arc<FakeClock>,
+        ) -> Engine {
+            let kc = Arc::new(Keychain::for_test_random_keys(
+                VaultRootKey::from_bytes(root),
+                seed,
+            ));
+            Engine::from_clock(clock, Arc::new(SystemRng), kc)
+        }
+
+        /// Hand `receiver` the `(epoch, key)` `sender` holds for `stream_id`.
+        ///
+        /// This is what pairing does for real — the payload carries every Stream
+        /// key the inviting device holds — compressed into one call, because these
+        /// engines have no relay and no Noise channel between them.
+        pub(super) fn hand_over_key(
+            receiver: &Engine,
+            rdb: &mut Db,
+            sender: &Engine,
+            sdb: &mut Db,
+            stream: &[u8; 16],
+        ) {
+            let (epoch, key) = sdb
+                .with_tx(|tx| sender.keychain.current_stream_key_tx(tx, stream))
+                .unwrap()
+                .expect("the sender holds a key for this stream");
+            rdb.with_tx(|tx| {
+                receiver.keychain.absorb_stream_key(
+                    tx,
+                    stream,
+                    epoch,
+                    &key,
+                    KeySource::Pairing,
+                    receiver.rng.as_ref(),
+                    T0,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        /// Every sealed `key.envelope` op `db` holds, oldest first.
+        ///
+        /// Not narrowed by stream: a control op is logged with no `target_id` (it
+        /// names no entity of its own), so which stream's key one carries is
+        /// visible only inside the sealed payload. The caller applies them all,
+        /// which is what a replica does anyway.
+        pub(super) fn key_envelope_envs(db: &Db) -> Vec<Vec<u8>> {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT op_id FROM ops
+                     WHERE inner_kind = 'key.envelope'
+                     ORDER BY rowid ASC",
+                )
+                .unwrap();
+            let ids: Vec<Vec<u8>> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            ids.iter()
+                .map(|id| env_bytes(db, &to16(id).expect("op_id is 16 bytes")))
+                .collect()
+        }
+
+        pub(super) fn deferred_rows(db: &Db) -> i64 {
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM deferred_ops", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        /// Apply a `device_revoke` for `target` declared at `hlc_ms`, through the
+        /// same code path the op takes when it arrives over sync.
+        ///
+        /// The cut *is* that HLC: there is no `effective_at` to pass, which is the
+        /// whole of decision 19.
+        pub(super) fn revoke(
+            receiver: &Engine,
+            db: &mut Db,
+            sender: &Engine,
+            target: [u8; 16],
+            hlc_ms: u64,
+        ) {
+            revoke_at(receiver, db, sender, target, Hlc::at(hlc_ms));
+        }
+
+        /// [`revoke`] with the declaring op's full HLC, logical half included, so a
+        /// test can put two revocations inside one millisecond.
+        pub(super) fn revoke_at(
+            receiver: &Engine,
+            db: &mut Db,
+            sender: &Engine,
+            target: [u8; 16],
+            hlc: Hlc,
+        ) {
+            let sender_id = sender.keychain.device_id();
+            let inner = InnerOp::DeviceRevoke(DeviceRevokePayload {
+                revoked_device_id: target,
+                reason_code: RevokeReason::Lost,
+            });
+            db.with_tx(|tx| {
+                receiver
+                    .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms)
+                    .map(|_| ())
+            })
+            .unwrap();
+        }
+
+        pub(super) fn set_clock(c: &FakeClock, v: u64) {
+            *c.0.lock() = v;
+        }
+
+        pub(super) fn env_bytes(db: &Db, op_id: &[u8; 16]) -> Vec<u8> {
+            OpLog::get_envelope(db, op_id).unwrap().unwrap()
+        }
+
+        /// Sealed envelope of the most recent `task.create` op targeting `target`.
+        pub(super) fn create_env_for(db: &Db, target: &[u8; 16]) -> Vec<u8> {
+            let op_id: Vec<u8> = db
+                .conn()
+                .query_row(
+                    "SELECT op_id FROM ops
+                     WHERE target_id = ? AND inner_kind = 'task.create'
+                     ORDER BY rowid DESC LIMIT 1",
+                    params![&target[..]],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&op_id[..16]);
+            env_bytes(db, &a)
+        }
+
+        pub(super) fn read_task_t(e: &Engine, db: &Db, id: EntityRef) -> Task {
+            match e.query(db, Query::EntityById(id)).unwrap() {
+                QueryResult::Task(t) => *t,
+                _ => panic!("expected task"),
+            }
+        }
+
+        /// Put `sender` in `receiver`'s device list, through the same code path a
+        /// `device_cert` op takes when it arrives over sync.
+        ///
+        /// Replaces the old `Command::TrustDevice` submit. Trust is no longer
+        /// something a caller hands the engine — a device publishes its
+        /// identity-signed cert as an op — so a unit test with no relay applies
+        /// that op's effect directly.
+        ///
+        /// It carries no Stream keys, and does not need to: engine unit tests run
+        /// on [`Keychain::for_test_seeded`], whose keys are derived from the shared
+        /// vault root precisely so two in-memory engines can read each other with
+        /// no relay to carry `key_envelope` ops. See that constructor's docs.
+        pub(super) fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
+            let cert = sender.keychain.cert_blob().to_vec();
+            let sender_id = sender.keychain.device_id();
+            db.with_tx(|tx| {
+                receiver
+                    .apply_control_op(
+                        tx,
+                        &InnerOp::DeviceCertPublish(cert),
+                        &sender_id,
+                        Hlc::at(0),
+                        0,
+                    )
+                    .map(|_| ())
+            })
+            .unwrap();
+        }
+
+        /// [`trust`] at a chosen wall clock, for tests that care when the cert
+        /// landed relative to a revocation cut.
+        pub(super) fn trust_at(receiver: &Engine, db: &mut Db, sender: &Engine, now_ms: u64) {
+            let cert = sender.keychain.cert_blob().to_vec();
+            let sender_id = sender.keychain.device_id();
+            db.with_tx(|tx| {
+                receiver
+                    .apply_control_op(
+                        tx,
+                        &InnerOp::DeviceCertPublish(cert),
+                        &sender_id,
+                        Hlc::at(now_ms),
+                        now_ms,
+                    )
+                    .map(|_| ())
+            })
+            .unwrap();
+        }
+
+        /// The `(stream, epoch)` pairs `db`'s owner has sealed to `recipient`.
+        pub(super) fn envelopes_to(
+            engine: &Engine,
+            db: &Db,
+            recipient: &[u8; 16],
+        ) -> Vec<([u8; 16], u32)> {
+            key_envelope_envs(db)
+                .into_iter()
+                .filter_map(|env| engine.keychain.open_op(&env).ok())
+                .filter_map(|cbor| decode_inner_op(&cbor).ok())
+                .filter_map(|inner| match inner {
+                    InnerOp::KeyEnvelope(p) if p.recipient == Recipient::Device(*recipient) => {
+                        Some((p.stream_id, p.epoch))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        pub(super) const ROOT: [u8; 32] = [0x5a; 32];
+
+        pub(super) const T0: u64 = 1_700_000_000_000;
+
+        /// Sealed envelope of the most recent op of `kind` targeting `target`.
+        pub(super) fn env_for_kind(db: &Db, target: &[u8; 16], kind: &str) -> Vec<u8> {
+            let op_id: Vec<u8> = db
+                .conn()
+                .query_row(
+                    "SELECT op_id FROM ops
+                     WHERE target_id = ? AND inner_kind = ?
+                     ORDER BY rowid DESC LIMIT 1",
+                    params![&target[..], kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&op_id[..16]);
+            env_bytes(db, &a)
+        }
+
+        /// Every `task.update` envelope this vault holds for `target`, oldest
+        /// first.
+        pub(super) fn update_envs_for(db: &Db, target: &[u8; 16]) -> Vec<Vec<u8>> {
+            let ids: Vec<[u8; 16]> = db
+                .conn()
+                .prepare(
+                    "SELECT op_id FROM ops
+                     WHERE target_id = ? AND inner_kind = 'task.update'
+                     ORDER BY rowid",
+                )
+                .unwrap()
+                .query_map(params![&target[..]], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .map(|v| {
+                    let v = v.unwrap();
+                    let mut a = [0u8; 16];
+                    a.copy_from_slice(&v[..16]);
+                    a
+                })
+                .collect();
+            ids.iter().map(|id| env_bytes(db, id)).collect()
+        }
+
+        /// The HLC stamp on a materialized task row.
+        pub(super) fn task_stamp(db: &Db, target: &[u8; 16]) -> Hlc {
+            db.conn()
+                .query_row(
+                    "SELECT lww_hlc_ms, lww_hlc_logical FROM tasks WHERE id = ?",
+                    params![&target[..]],
+                    |r| {
+                        Ok(Hlc {
+                            physical_ms: u64::try_from(r.get::<_, i64>(0)?).unwrap(),
+                            logical: u32::try_from(r.get::<_, i64>(1)?).unwrap(),
+                        })
+                    },
+                )
+                .unwrap()
+        }
+
+        pub(super) fn task_title(db: &Db, target: &[u8; 16]) -> String {
+            db.conn()
+                .query_row(
+                    "SELECT title FROM tasks WHERE id = ?",
+                    params![&target[..]],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+
+        /// The whole revocation register a replica holds for `device`, or `None` if
+        /// it holds none.
+        ///
+        /// All four columns, because convergence on the timestamp alone would still
+        /// leave two replicas disagreeing about who did it and why.
+        pub(super) type RevocationRow = (i64, i64, Vec<u8>, String);
+
+        pub(super) fn revocation_row(db: &Db, device: &[u8; 16]) -> Option<RevocationRow> {
+            db.conn()
+                .query_row(
+                    "SELECT cut_ms, cut_logical, revoked_by, reason
+                     FROM device_revocations WHERE device_id = ?",
+                    params![&device[..]],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()
+                .unwrap()
+        }
+
+        /// The queued vault device ids, oldest first.
+        pub(super) fn pending_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
+            let conn = db.conn();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT device_id FROM relay_revocation_intents ORDER BY created_at_ms ASC",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.into_iter()
+                .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+                .collect()
+        }
+
+        pub(super) fn device_rows(db: &Db) -> i64 {
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        /// Read the stored cursor for `(stream, device)`, or 0 if none.
+        pub(super) fn cursor_for(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
+            db.conn()
+                .query_row(
+                    "SELECT last_applied_seq FROM sync_cursors
+                     WHERE stream_id = ? AND device_id = ?",
+                    params![&stream[..], &device[..]],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|v| u64::try_from(v).unwrap_or(0))
+                .unwrap_or(0)
+        }
+
+        pub(super) fn stamp(hlc_ms: u64, logical: u32, device: [u8; 16], seq: u64) -> LwwStamp {
+            LwwStamp {
+                hlc: Hlc {
+                    physical_ms: hlc_ms,
+                    logical,
+                },
+                device,
+                seq,
+            }
+        }
+
+        pub(super) fn row_of(s: &LwwStamp) -> RowLww {
+            RowLww {
+                hlc: s.hlc,
+                device: Some(s.device.to_vec()),
+                seq: s.seq,
+            }
+        }
+
+        /// Build the `unknown` map a newer schema would have written.
+        pub(super) fn future_fields() -> sunrise_domain::Unknowns {
+            use ciborium::value::Value;
+            let mut u = sunrise_domain::Unknowns::new();
+            u.insert(
+                "delegated_to".into(),
+                sunrise_domain::CborValue(Value::Text("prs_future".into())),
+            );
+            u.insert(
+                "zzz_sort_last".into(),
+                sunrise_domain::CborValue(Value::Integer(7.into())),
+            );
+            u
+        }
+
+        /// A clock pinned to a named zone, so a test can move a device between
+        /// timezones the way a plane does.
+        #[derive(Debug)]
+        pub(super) struct ZonedClock(pub(super) u64, pub(super) &'static str);
+
+        impl Clock for ZonedClock {
+            fn now_ms(&self) -> u64 {
+                self.0
+            }
+            fn timezone(&self) -> String {
+                self.1.to_string()
+            }
+        }
+
+        /// One canonical task row: (id, title, state, scheduled_ms, due_ms,
+        /// stream_id, deleted, deferred_count, completed_ms).
+        pub(super) type TaskProjRow = (
+            Vec<u8>,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+            Vec<u8>,
+            i64,
+            i64,
+            Option<i64>,
+        );
+
+        /// Canonical projection of the `tasks` table for convergence assertions:
+        /// every semantic field except op-ids and the LWW bookkeeping columns.
+        pub(super) fn tasks_projection(db: &Db) -> Vec<TaskProjRow> {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT id, title, state, scheduled_at_ms, due_at_ms, stream_id,
+                            deleted, deferred_count, completed_at_ms
+                     FROM tasks ORDER BY id ASC",
+                )
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Vec<u8>>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+        }
+
+        pub(super) fn all_envelopes(db: &Db) -> Vec<Vec<u8>> {
+            let mut stmt = db
+                .conn()
+                .prepare("SELECT envelope FROM ops ORDER BY rowid ASC")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        }
+
+        /// Every open task with its derived dependency counts, ranked.
+        pub(super) fn actionable_rows(e: &Engine, db: &Db) -> Vec<ActionableTask> {
+            match e
+                .query(
+                    db,
+                    Query::Actionable {
+                        stream: None,
+                        limit: 100,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::Actionable(v) => v,
+                _ => panic!("expected Actionable"),
+            }
+        }
+
+        pub(super) fn row_for(rows: &[ActionableTask], id: EntityRef) -> ActionableTask {
+            rows.iter()
+                .find(|r| r.task.id == id)
+                .unwrap_or_else(|| panic!("no actionable row for {id}"))
+                .clone()
+        }
+
+        pub(super) fn new_task(e: &Engine, db: &mut Db, title: &str) -> EntityRef {
+            e.apply(
+                db,
+                Command::CreateTask(TaskDraft {
+                    title: title.into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn set_blockers(
+            e: &Engine,
+            db: &mut Db,
+            task: EntityRef,
+            blockers: Vec<EntityRef>,
+        ) -> Result<CommandResult, EngineError> {
+            e.apply(
+                db,
+                Command::UpdateTask {
+                    id: task,
+                    patch: TaskPatch {
+                        blocked_by: Some(blockers),
+                        ..Default::default()
+                    },
+                },
+            )
+        }
+
+        /// NOW is 2023-11-14T22:13:20Z — a Tuesday evening, outside a 09:00–17:00
+        /// window and inside it ten hours earlier (12:13Z).
+        pub(super) const OUTSIDE_WINDOW_MS: i64 = NOW;
+
+        pub(super) const INSIDE_WINDOW_MS: i64 = NOW - 10 * 3_600_000;
+
+        pub(super) fn soft_9_to_5() -> ScheduleConstraint {
+            ScheduleConstraint {
+                severity: sunrise_domain::ConstraintSeverity::Soft,
+                ..sample_constraint()
+            }
+        }
+
+        pub(super) fn engine_clocked(clock: Arc<FakeClock>) -> Engine {
+            let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+            Engine::from_clock(clock, Arc::new(SystemRng), keychain)
+        }
+
+        pub(super) fn routine_of(e: &Engine, db: &Db, rid: EntityRef) -> Routine {
+            match e.query(db, Query::EntityById(rid)).unwrap() {
+                QueryResult::Routine(r) => *r,
+                _ => panic!("expected Routine"),
+            }
+        }
+
+        /// The first `n` occurrence task ids of `rid`, with their instants.
+        pub(super) fn occurrence_tasks(routine: &Routine, n: usize) -> Vec<(EntityRef, i64)> {
+            let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
+            routine
+                .occurrences_in(window)
+                .unwrap()
+                .into_iter()
+                .take(n)
+                .map(|o| {
+                    (
+                        occurrence_task_id(&routine.id, &o.key),
+                        o.at.as_millisecond(),
+                    )
+                })
+                .collect()
+        }
+
+        pub(super) fn seed_routine(e: &Engine, db: &mut Db) -> (EntityRef, Vec<(EntityRef, i64)>) {
+            let draft = routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                NOW + 3_600_000,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            );
+            let rid = e.apply(db, Command::CreateRoutine(draft)).unwrap().entity;
+            let routine = routine_of(e, db, rid);
+            let occ = occurrence_tasks(&routine, 4);
+            assert_eq!(occ.len(), 4);
+            (rid, occ)
+        }
+
+        pub(super) fn routine_op_count(db: &Db) -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM ops WHERE inner_kind = 'routine.update'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+
+        /// The stored LWW stamp on a row, as the four columns hold it.
+        pub(super) fn row_stamp(
+            db: &Db,
+            table: &str,
+            id_col: &str,
+            id: &EntityRef,
+        ) -> (i64, i64, i64, Vec<u8>) {
+            db.conn()
+                .query_row(
+                    &format!(
+                        "SELECT lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device
+                         FROM {table} WHERE {id_col} = ?"
+                    ),
+                    params![&id.bytes()[..]],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap()
+        }
+
+        pub(super) fn blocker_edges(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
+            let mut stmt = db
+                .conn()
+                .prepare(
+                    "SELECT task_id, blocker_id FROM task_blockers ORDER BY task_id, blocker_id",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        }
+
+        pub(super) fn focus_engine(now_ms: u64) -> (Engine, Arc<FakeClock>) {
+            let clock = Arc::new(FakeClock(PLMutex::new(now_ms)));
+            let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
+            (
+                Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc),
+                clock,
+            )
+        }
+
+        pub(super) fn task_with(e: &Engine, db: &mut Db, title: &str, d: TaskDraft) -> EntityRef {
+            e.apply(
+                db,
+                Command::CreateTask(TaskDraft {
+                    title: title.into(),
+                    ..d
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn start_work(
+            e: &Engine,
+            db: &mut Db,
+            task: EntityRef,
+            len: SessionLength,
+        ) -> EntityRef {
+            e.apply(
+                db,
+                Command::StartFocus(FocusStartDraft {
+                    task_id: task,
+                    kind: FocusKind::Work,
+                    length: len,
+                    energy: None,
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn running(e: &Engine, db: &Db) -> Vec<FocusSessionRow> {
+            match e.query(db, Query::RunningFocusSessions).unwrap() {
+                QueryResult::FocusSessions(v) => v,
+                other => panic!("expected FocusSessions, got {other:?}"),
+            }
+        }
+
+        pub(super) fn sessions_for(e: &Engine, db: &Db, task: EntityRef) -> Vec<FocusSessionRow> {
+            match e
+                .query(db, Query::TaskFocusSessions { task, limit: 50 })
+                .unwrap()
+            {
+                QueryResult::FocusSessions(v) => v,
+                other => panic!("expected FocusSessions, got {other:?}"),
+            }
+        }
+
+        pub(super) fn stats(e: &Engine, db: &Db, now_ms: u64) -> sunrise_domain::FocusStats {
+            match e
+                .query(
+                    db,
+                    Query::FocusStats {
+                        stream: None,
+                        since_ms: None,
+                        now_ms,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::FocusStats(s) => *s,
+                other => panic!("expected FocusStats, got {other:?}"),
+            }
+        }
+
+        pub(super) fn plan(
+            e: &Engine,
+            db: &Db,
+            energy: Option<Energy>,
+        ) -> Vec<crate::queries::FocusPlanRow> {
+            match e
+                .query(
+                    db,
+                    Query::FocusPlan {
+                        stream: None,
+                        energy,
+                        length: SessionLength::OnePomodoro,
+                        limit: 10,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::FocusPlan(v) => v,
+                other => panic!("expected FocusPlan, got {other:?}"),
+            }
+        }
+
+        /// Monday 2026-01-05T00:00:00Z, so every week boundary below is hand-checkable.
+        pub(super) const REVIEW_MON: u64 = 1_767_571_200_000;
+
+        pub(super) const REVIEW_DAY: u64 = 24 * 60 * 60 * 1000;
+
+        pub(super) const REVIEW_WEEK: u64 = 7 * REVIEW_DAY;
+
+        /// An engine whose clock the test drives, plus its DB.
+        pub(super) fn review_fixture() -> (Engine, Db, Arc<FakeClock>) {
+            let clock = Arc::new(FakeClock(PLMutex::new(REVIEW_MON)));
+            let e = engine_seeded([0xab; 32], [0x11; 32], clock.clone());
+            (e, db(), clock)
+        }
+
+        pub(super) fn review_task(
+            e: &Engine,
+            db: &mut Db,
+            title: &str,
+            stream: Option<EntityRef>,
+        ) -> EntityRef {
+            e.apply(
+                db,
+                Command::CreateTask(TaskDraft {
+                    title: title.into(),
+                    stream_id: stream,
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity
+        }
+
+        pub(super) fn weekly(e: &Engine, db: &Db, now_ms: u64) -> WeeklyReview {
+            match e
+                .query(
+                    db,
+                    Query::WeeklyReview {
+                        week_start_ms: None,
+                        now_ms,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::WeeklyReview(r) => *r,
+                other => panic!("expected WeeklyReview, got {other:?}"),
+            }
+        }
+
+        pub(super) fn timeline(e: &Engine, db: &Db, entity: EntityRef) -> Vec<ActivityEvent> {
+            match e
+                .query(db, Query::ActivityTimeline { entity, limit: 100 })
+                .unwrap()
+            {
+                QueryResult::Activity(v) => v,
+                other => panic!("expected Activity, got {other:?}"),
+            }
+        }
+
+        /// The whole-vault + per-Stream trend, as the caller sees it.
+        pub(super) fn trends_of(e: &Engine, db: &Db, now: u64) -> Trends {
+            match e
+                .query(
+                    db,
+                    Query::StreamTrends {
+                        weeks: 4,
+                        now_ms: now,
+                    },
+                )
+                .unwrap()
+            {
+                QueryResult::Trends(t) => *t,
+                other => panic!("expected Trends, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -8292,42 +9414,6 @@ mod tests {
     }
 
     // ---- contexts ----
-
-    fn context_rows(e: &Engine, db: &Db) -> Vec<ContextRow> {
-        match e.query(db, Query::Contexts).unwrap() {
-            QueryResult::Contexts(rows) => rows,
-            other => panic!("expected Contexts, got {other:?}"),
-        }
-    }
-
-    fn new_context(e: &Engine, db: &mut Db, name: &str) -> EntityRef {
-        e.apply(
-            db,
-            Command::CreateContext(ContextDraft {
-                name: name.into(),
-                ..Default::default()
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn task_context_ids(db: &Db, task: EntityRef) -> BTreeSet<[u8; 16]> {
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT context_id FROM task_contexts WHERE task_id = ?")
-            .unwrap();
-        let rows = stmt
-            .query_map(params![task.bytes().to_vec()], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap();
-        rows.map(|r| {
-            let raw = r.unwrap();
-            let mut a = [0u8; 16];
-            a.copy_from_slice(&raw[..16]);
-            a
-        })
-        .collect()
-    }
 
     #[test]
     fn created_context_is_listed_and_readable_by_id() {
@@ -8676,21 +9762,6 @@ mod tests {
             .apply(&mut db, Command::DeleteContext(stream_ref(3)))
             .unwrap_err();
         assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
-    }
-
-    /// The externally-tagged [`InnerOp`] variant name carried by `op_id`'s
-    /// sealed envelope.
-    fn inner_op_variant(e: &Engine, db: &Db, op_id: &[u8; 16]) -> String {
-        let inner = e.open_op_row(db, op_id).unwrap();
-        let ciborium::value::Value::Map(map) =
-            ciborium::de::from_reader::<ciborium::value::Value, _>(inner.as_slice()).unwrap()
-        else {
-            panic!("inner op must be a map");
-        };
-        match &map[0].0 {
-            ciborium::value::Value::Text(t) => t.clone(),
-            other => panic!("unexpected key {other:?}"),
-        }
     }
 
     #[test]
@@ -9318,38 +10389,6 @@ mod tests {
         assert!(empty.is_empty());
     }
 
-    // Fetch the most-recently-created task id in a stream (highest rowid
-    // proxy via id ordering is unstable, so use created ordering by title
-    // being unavailable — instead read the last inserted via the ops table
-    // is overkill; query tasks table directly).
-    fn db_last_task(db: &Db, stream: EntityRef) -> EntityRef {
-        let blob: Vec<u8> = stream.bytes().to_vec();
-        let raw: Vec<u8> = db
-            .conn()
-            .query_row(
-                "SELECT id FROM tasks WHERE stream_id = ? ORDER BY id DESC LIMIT 1",
-                params![blob],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let mut a = [0u8; 16];
-        let take = raw.len().min(16);
-        a[..take].copy_from_slice(&raw[..take]);
-        EntityRef::new(EntityKind::Task, a)
-    }
-
-    fn sample_constraint() -> ScheduleConstraint {
-        ScheduleConstraint {
-            time_of_day: Some(sunrise_domain::TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
-            days_of_week: sunrise_domain::WeekdaySet::new(),
-            date_range: None,
-            severity: sunrise_domain::ConstraintSeverity::Hard,
-        }
-    }
-
     #[test]
     fn create_task_with_constraints_round_trips() {
         let mut db = db();
@@ -9552,77 +10591,6 @@ mod tests {
     }
 
     // ---- routine materialization tests ----
-
-    use sunrise_domain::{RRule, Routine, RoutineCatchupPolicy, RoutineDraft, TaskTemplate};
-
-    const NOW: i64 = 1_700_000_000_000;
-    const DAY_MS: i64 = 86_400_000;
-
-    fn stream_ref(b: u8) -> EntityRef {
-        EntityRef::new(EntityKind::Stream, [b; 16])
-    }
-
-    fn routine_draft(
-        stream: EntityRef,
-        rrule: &str,
-        starts_ms: i64,
-        policy: RoutineCatchupPolicy,
-        constraints: Vec<ScheduleConstraint>,
-    ) -> RoutineDraft {
-        RoutineDraft {
-            template: TaskTemplate {
-                title: "Water plants".into(),
-                stream_id: stream,
-                contexts: Vec::new(),
-                energy: None,
-                priority: None,
-                estimated_duration_s: None,
-                body: None,
-            },
-            rrule: RRule::parse(rrule).unwrap(),
-            timezone: "UTC".into(),
-            starts_at: ms_to_ts(starts_ms),
-            ends_at: None,
-            scheduling_constraints: constraints,
-            catchup_policy: policy,
-        }
-    }
-
-    fn op_count(db: &Db) -> i64 {
-        db.conn()
-            .query_row("SELECT count(*) FROM ops", [], |r| r.get(0))
-            .unwrap()
-    }
-
-    fn live_task_ids(db: &Db) -> BTreeSet<[u8; 16]> {
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT id FROM tasks WHERE deleted = 0")
-            .unwrap();
-        let out = stmt
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .map(|raw| {
-                let raw = raw.unwrap();
-                let mut a = [0u8; 16];
-                let take = raw.len().min(16);
-                a[..take].copy_from_slice(&raw[..take]);
-                a
-            })
-            .collect();
-        out
-    }
-
-    fn past_task_count(db: &Db, rid: EntityRef) -> i64 {
-        db.conn()
-            .query_row(
-                "SELECT count(*) FROM tasks
-                 WHERE routine_id = ? AND deleted = 0 AND scheduled_at_ms <= ?",
-                params![rid.bytes().to_vec(), NOW],
-                |r| r.get(0),
-            )
-            .unwrap()
-    }
 
     #[test]
     fn create_routine_materializes_future_tasks_with_linkage() {
@@ -10035,40 +11003,6 @@ mod tests {
     }
 
     // ---- time blocks (docs/02-domain/time-blocks.md) ----
-
-    /// A block on 2026-03-04, `hour..hour + len` floating (no zone), which is
-    /// what a calendar grid draws when the user has not pinned a zone.
-    fn block_at(hour: i8, len: i8) -> (SunriseTime, SunriseTime) {
-        (
-            SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour, 0, 0, 0)),
-            SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(hour + len, 0, 0, 0)),
-        )
-    }
-
-    fn block_draft(hour: i8, len: i8, title: Option<&str>) -> BlockDraft {
-        let (starts_at, ends_at) = block_at(hour, len);
-        BlockDraft {
-            stream_id: inbox_stream_ref(),
-            starts_at,
-            ends_at,
-            title: title.map(ToOwned::to_owned),
-            title_track_task: false,
-            tasks: Vec::new(),
-        }
-    }
-
-    fn day_rows(e: &Engine, db: &Db, at_ms: u64) -> Vec<BlockRow> {
-        match e.query(db, Query::DayBlocks { day_ms: at_ms }).unwrap() {
-            QueryResult::Blocks(rows) => rows,
-            other => panic!("expected blocks, got {other:?}"),
-        }
-    }
-
-    /// The instant a floating civil time on the test date resolves to under the
-    /// engine's device zone (UTC in tests).
-    fn day_ms() -> u64 {
-        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0)).index_ms() as u64
-    }
 
     #[test]
     fn create_block_round_trips_and_lands_on_the_day_grid() {
@@ -10587,14 +11521,6 @@ mod tests {
 
     // ---- imported blocks (docs/09-integrations/icalendar.md §Import) ----
 
-    fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
-        Command::ImportBlock {
-            source: source.into(),
-            uid: uid.into(),
-            draft,
-        }
-    }
-
     /// The rule the whole importer rests on: the same `(source, uid)` is the
     /// same Block, not a second one.
     #[test]
@@ -10772,26 +11698,6 @@ mod tests {
     }
 
     // ---- attachments (docs/02-domain/attachments.md) ----
-
-    fn attachment_draft(parent: EntityRef) -> AttachmentDraft {
-        AttachmentDraft {
-            parent,
-            filename: "receipt.pdf".into(),
-            mime_type: "application/pdf".into(),
-            size_bytes: 4096,
-            blob_key: [7u8; 32],
-            blob_id: [9u8; 16],
-            chunk_count: 2,
-            content_hash: [11u8; 32],
-        }
-    }
-
-    fn attachments_of(e: &Engine, db: &Db, task: EntityRef) -> Vec<Attachment> {
-        match e.query(db, Query::TaskAttachments(task)).unwrap() {
-            QueryResult::Attachments(a) => a,
-            other => panic!("expected attachments, got {other:?}"),
-        }
-    }
 
     #[test]
     fn an_attached_file_round_trips_with_its_key() {
@@ -11008,39 +11914,6 @@ mod tests {
 
     // ---- auto-completion (issue #10) ----
 
-    fn open_session(e: &Engine, db: &mut Db, task: EntityRef) -> EntityRef {
-        e.apply(
-            db,
-            Command::StartFocus(FocusStartDraft {
-                task_id: task,
-                kind: FocusKind::Work,
-                length: SessionLength::OnePomodoro,
-                energy: None,
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn end_session(e: &Engine, db: &mut Db, session: EntityRef, done: bool) -> CommandResult {
-        e.apply(
-            db,
-            Command::EndFocus {
-                session,
-                actual_focused_ms: None,
-                completed_task: done,
-            },
-        )
-        .unwrap()
-    }
-
-    fn task_of(e: &Engine, db: &Db, id: EntityRef) -> Task {
-        match e.query(db, Query::EntityById(id)).unwrap() {
-            QueryResult::Task(t) => *t,
-            other => panic!("expected task, got {other:?}"),
-        }
-    }
-
     /// The signal: a session closed with `completed_task: true` completes the
     /// task it was opened on, and stamps `completed_at`.
     #[test]
@@ -11148,73 +12021,6 @@ mod tests {
     }
 
     // ---- notification reads (issue #9) ----
-
-    use sunrise_domain::{EndOfDayPlan, MorningSummary};
-
-    /// 2026-03-04 12:00 UTC, and the civil midnights around it.
-    const NOTIFY_NOON: i64 = 1_772_625_600_000;
-
-    fn engine_at(now_ms: i64) -> (Engine, Db) {
-        let e = engine_seeded(
-            ROOT,
-            [1u8; 32],
-            Arc::new(FakeClock(PLMutex::new(now_ms as u64))),
-        );
-        (e, db_root(ROOT))
-    }
-
-    fn morning(e: &Engine, db: &Db, now_ms: i64) -> MorningSummary {
-        match e
-            .query(
-                db,
-                Query::MorningSummary {
-                    now_ms: now_ms as u64,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::MorningSummary(s) => *s,
-            other => panic!("expected a morning summary, got {other:?}"),
-        }
-    }
-
-    fn evening(e: &Engine, db: &Db, now_ms: i64) -> EndOfDayPlan {
-        match e
-            .query(
-                db,
-                Query::EndOfDayPlan {
-                    now_ms: now_ms as u64,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::EndOfDayPlan(p) => *p,
-            other => panic!("expected an end-of-day plan, got {other:?}"),
-        }
-    }
-
-    fn reminders(
-        e: &Engine,
-        db: &Db,
-        now_ms: i64,
-        horizon_ms: i64,
-        settings: ReminderSettings,
-    ) -> Vec<sunrise_domain::ReminderIntent> {
-        match e
-            .query(
-                db,
-                Query::ReminderIntents {
-                    now_ms: now_ms as u64,
-                    horizon_ms: horizon_ms as u64,
-                    settings,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::Reminders(r) => r,
-            other => panic!("expected reminders, got {other:?}"),
-        }
-    }
 
     #[test]
     fn the_morning_summary_reads_the_previous_calendar_date() {
@@ -11612,123 +12418,6 @@ mod tests {
         assert_eq!(rows[0].content_hash, [11u8; 32]);
     }
 
-    use crate::events::DomainEvent;
-
-    fn db_root(root: [u8; 32]) -> Db {
-        Db::open_memory(&VaultRootKey::from_bytes(root)).unwrap()
-    }
-
-    fn engine_seeded(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {
-        let kc = Arc::new(Keychain::for_test_seeded(
-            VaultRootKey::from_bytes(root),
-            seed,
-        ));
-        Engine::from_clock(clock, Arc::new(SystemRng), kc)
-    }
-
-    /// Like [`engine_seeded`] but with **real random** Stream keys, so a key
-    /// this device does not hold is genuinely one it cannot open.
-    ///
-    /// Every other engine unit test derives its keys from the shared vault root
-    /// (see [`Keychain::for_test_seeded`]) precisely so two in-memory engines
-    /// can read each other with no relay to carry `key_envelope` ops. That is
-    /// the wrong world for the deferral path, whose whole subject is an op
-    /// arriving before the key that opens it.
-    fn engine_random_keys(root: [u8; 32], seed: [u8; 32], clock: Arc<FakeClock>) -> Engine {
-        let kc = Arc::new(Keychain::for_test_random_keys(
-            VaultRootKey::from_bytes(root),
-            seed,
-        ));
-        Engine::from_clock(clock, Arc::new(SystemRng), kc)
-    }
-
-    /// Hand `receiver` the `(epoch, key)` `sender` holds for `stream_id`.
-    ///
-    /// This is what pairing does for real — the payload carries every Stream
-    /// key the inviting device holds — compressed into one call, because these
-    /// engines have no relay and no Noise channel between them.
-    fn hand_over_key(
-        receiver: &Engine,
-        rdb: &mut Db,
-        sender: &Engine,
-        sdb: &mut Db,
-        stream: &[u8; 16],
-    ) {
-        let (epoch, key) = sdb
-            .with_tx(|tx| sender.keychain.current_stream_key_tx(tx, stream))
-            .unwrap()
-            .expect("the sender holds a key for this stream");
-        rdb.with_tx(|tx| {
-            receiver.keychain.absorb_stream_key(
-                tx,
-                stream,
-                epoch,
-                &key,
-                KeySource::Pairing,
-                receiver.rng.as_ref(),
-                T0,
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    /// Every sealed `key.envelope` op `db` holds, oldest first.
-    ///
-    /// Not narrowed by stream: a control op is logged with no `target_id` (it
-    /// names no entity of its own), so which stream's key one carries is
-    /// visible only inside the sealed payload. The caller applies them all,
-    /// which is what a replica does anyway.
-    fn key_envelope_envs(db: &Db) -> Vec<Vec<u8>> {
-        let mut stmt = db
-            .conn()
-            .prepare(
-                "SELECT op_id FROM ops
-                 WHERE inner_kind = 'key.envelope'
-                 ORDER BY rowid ASC",
-            )
-            .unwrap();
-        let ids: Vec<Vec<u8>> = stmt
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        ids.iter()
-            .map(|id| env_bytes(db, &to16(id).expect("op_id is 16 bytes")))
-            .collect()
-    }
-
-    fn deferred_rows(db: &Db) -> i64 {
-        db.conn()
-            .query_row("SELECT COUNT(*) FROM deferred_ops", [], |r| r.get(0))
-            .unwrap()
-    }
-
-    /// Apply a `device_revoke` for `target` declared at `hlc_ms`, through the
-    /// same code path the op takes when it arrives over sync.
-    ///
-    /// The cut *is* that HLC: there is no `effective_at` to pass, which is the
-    /// whole of decision 19.
-    fn revoke(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc_ms: u64) {
-        revoke_at(receiver, db, sender, target, Hlc::at(hlc_ms));
-    }
-
-    /// [`revoke`] with the declaring op's full HLC, logical half included, so a
-    /// test can put two revocations inside one millisecond.
-    fn revoke_at(receiver: &Engine, db: &mut Db, sender: &Engine, target: [u8; 16], hlc: Hlc) {
-        let sender_id = sender.keychain.device_id();
-        let inner = InnerOp::DeviceRevoke(DeviceRevokePayload {
-            revoked_device_id: target,
-            reason_code: RevokeReason::Lost,
-        });
-        db.with_tx(|tx| {
-            receiver
-                .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms)
-                .map(|_| ())
-        })
-        .unwrap();
-    }
-
     /// An op that arrives before the key that opens it is parked, not lost, and
     /// the `key_envelope` op carrying that key releases it.
     ///
@@ -11811,170 +12500,6 @@ mod tests {
             "buy milk",
             "and the task is really there"
         );
-    }
-
-    fn set_clock(c: &FakeClock, v: u64) {
-        *c.0.lock() = v;
-    }
-
-    fn env_bytes(db: &Db, op_id: &[u8; 16]) -> Vec<u8> {
-        OpLog::get_envelope(db, op_id).unwrap().unwrap()
-    }
-
-    /// Sealed envelope of the most recent `task.create` op targeting `target`.
-    fn create_env_for(db: &Db, target: &[u8; 16]) -> Vec<u8> {
-        let op_id: Vec<u8> = db
-            .conn()
-            .query_row(
-                "SELECT op_id FROM ops
-                 WHERE target_id = ? AND inner_kind = 'task.create'
-                 ORDER BY rowid DESC LIMIT 1",
-                params![&target[..]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let mut a = [0u8; 16];
-        a.copy_from_slice(&op_id[..16]);
-        env_bytes(db, &a)
-    }
-
-    fn read_task_t(e: &Engine, db: &Db, id: EntityRef) -> Task {
-        match e.query(db, Query::EntityById(id)).unwrap() {
-            QueryResult::Task(t) => *t,
-            _ => panic!("expected task"),
-        }
-    }
-
-    /// Put `sender` in `receiver`'s device list, through the same code path a
-    /// `device_cert` op takes when it arrives over sync.
-    ///
-    /// Replaces the old `Command::TrustDevice` submit. Trust is no longer
-    /// something a caller hands the engine — a device publishes its
-    /// identity-signed cert as an op — so a unit test with no relay applies
-    /// that op's effect directly.
-    ///
-    /// It carries no Stream keys, and does not need to: engine unit tests run
-    /// on [`Keychain::for_test_seeded`], whose keys are derived from the shared
-    /// vault root precisely so two in-memory engines can read each other with
-    /// no relay to carry `key_envelope` ops. See that constructor's docs.
-    fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
-        let cert = sender.keychain.cert_blob().to_vec();
-        let sender_id = sender.keychain.device_id();
-        db.with_tx(|tx| {
-            receiver
-                .apply_control_op(
-                    tx,
-                    &InnerOp::DeviceCertPublish(cert),
-                    &sender_id,
-                    Hlc::at(0),
-                    0,
-                )
-                .map(|_| ())
-        })
-        .unwrap();
-    }
-
-    /// [`trust`] at a chosen wall clock, for tests that care when the cert
-    /// landed relative to a revocation cut.
-    fn trust_at(receiver: &Engine, db: &mut Db, sender: &Engine, now_ms: u64) {
-        let cert = sender.keychain.cert_blob().to_vec();
-        let sender_id = sender.keychain.device_id();
-        db.with_tx(|tx| {
-            receiver
-                .apply_control_op(
-                    tx,
-                    &InnerOp::DeviceCertPublish(cert),
-                    &sender_id,
-                    Hlc::at(now_ms),
-                    now_ms,
-                )
-                .map(|_| ())
-        })
-        .unwrap();
-    }
-
-    /// The `(stream, epoch)` pairs `db`'s owner has sealed to `recipient`.
-    fn envelopes_to(engine: &Engine, db: &Db, recipient: &[u8; 16]) -> Vec<([u8; 16], u32)> {
-        key_envelope_envs(db)
-            .into_iter()
-            .filter_map(|env| engine.keychain.open_op(&env).ok())
-            .filter_map(|cbor| decode_inner_op(&cbor).ok())
-            .filter_map(|inner| match inner {
-                InnerOp::KeyEnvelope(p) if p.recipient == Recipient::Device(*recipient) => {
-                    Some((p.stream_id, p.epoch))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    const ROOT: [u8; 32] = [0x5a; 32];
-    const T0: u64 = 1_700_000_000_000;
-
-    /// Sealed envelope of the most recent op of `kind` targeting `target`.
-    fn env_for_kind(db: &Db, target: &[u8; 16], kind: &str) -> Vec<u8> {
-        let op_id: Vec<u8> = db
-            .conn()
-            .query_row(
-                "SELECT op_id FROM ops
-                 WHERE target_id = ? AND inner_kind = ?
-                 ORDER BY rowid DESC LIMIT 1",
-                params![&target[..], kind],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let mut a = [0u8; 16];
-        a.copy_from_slice(&op_id[..16]);
-        env_bytes(db, &a)
-    }
-
-    /// Every `task.update` envelope this vault holds for `target`, oldest
-    /// first.
-    fn update_envs_for(db: &Db, target: &[u8; 16]) -> Vec<Vec<u8>> {
-        let ids: Vec<[u8; 16]> = db
-            .conn()
-            .prepare(
-                "SELECT op_id FROM ops
-                 WHERE target_id = ? AND inner_kind = 'task.update'
-                 ORDER BY rowid",
-            )
-            .unwrap()
-            .query_map(params![&target[..]], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .map(|v| {
-                let v = v.unwrap();
-                let mut a = [0u8; 16];
-                a.copy_from_slice(&v[..16]);
-                a
-            })
-            .collect();
-        ids.iter().map(|id| env_bytes(db, id)).collect()
-    }
-
-    /// The HLC stamp on a materialized task row.
-    fn task_stamp(db: &Db, target: &[u8; 16]) -> Hlc {
-        db.conn()
-            .query_row(
-                "SELECT lww_hlc_ms, lww_hlc_logical FROM tasks WHERE id = ?",
-                params![&target[..]],
-                |r| {
-                    Ok(Hlc {
-                        physical_ms: u64::try_from(r.get::<_, i64>(0)?).unwrap(),
-                        logical: u32::try_from(r.get::<_, i64>(1)?).unwrap(),
-                    })
-                },
-            )
-            .unwrap()
-    }
-
-    fn task_title(db: &Db, target: &[u8; 16]) -> String {
-        db.conn()
-            .query_row(
-                "SELECT title FROM tasks WHERE id = ?",
-                params![&target[..]],
-                |r| r.get(0),
-            )
-            .unwrap()
     }
 
     /// **A restart must not make a device emit beneath its own ops** (#112).
@@ -12805,25 +13330,6 @@ mod tests {
         );
     }
 
-    /// The whole revocation register a replica holds for `device`, or `None` if
-    /// it holds none.
-    ///
-    /// All four columns, because convergence on the timestamp alone would still
-    /// leave two replicas disagreeing about who did it and why.
-    type RevocationRow = (i64, i64, Vec<u8>, String);
-
-    fn revocation_row(db: &Db, device: &[u8; 16]) -> Option<RevocationRow> {
-        db.conn()
-            .query_row(
-                "SELECT cut_ms, cut_logical, revoked_by, reason
-                 FROM device_revocations WHERE device_id = ?",
-                params![&device[..]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .unwrap()
-    }
-
     /// The relay's half of a revocation is queued by the same transaction that
     /// writes the op, so the two cannot diverge.
     ///
@@ -12867,22 +13373,6 @@ mod tests {
             revocation_row(&dba, &eb.keychain.device_id()).is_some(),
             "and the register itself is still written"
         );
-    }
-
-    /// The queued vault device ids, oldest first.
-    fn pending_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
-        let conn = db.conn();
-        let mut stmt = conn
-            .prepare("SELECT device_id FROM relay_revocation_intents ORDER BY created_at_ms ASC")
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        rows.into_iter()
-            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
-            .collect()
     }
 
     /// Two replicas, the same two revocation ops, opposite arrival orders, one
@@ -14160,12 +14650,6 @@ mod tests {
         assert_eq!(device_rows(&dbb), 1, "and it is one device, not two");
     }
 
-    fn device_rows(db: &Db) -> i64 {
-        db.conn()
-            .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
-            .unwrap()
-    }
-
     /// Revoking a device this vault has never seen is refused, and stays
     /// refused however many revocations of unknown ids have gone past.
     ///
@@ -14246,19 +14730,6 @@ mod tests {
             .unwrap();
         assert!(rows > 1, "the epoch mint emitted envelopes alongside it");
         assert_eq!(rows, distinct, "no two meta-stream ops share a seq");
-    }
-
-    /// Read the stored cursor for `(stream, device)`, or 0 if none.
-    fn cursor_for(db: &Db, stream: &[u8; 16], device: &[u8; 16]) -> u64 {
-        db.conn()
-            .query_row(
-                "SELECT last_applied_seq FROM sync_cursors
-                 WHERE stream_id = ? AND device_id = ?",
-                params![&stream[..], &device[..]],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|v| u64::try_from(v).unwrap_or(0))
-            .unwrap_or(0)
     }
 
     /// The relay filters its replay by this number, so it has to mean "I have
@@ -14442,25 +14913,6 @@ mod tests {
         assert_eq!(read_task_t(&eb, &dbb, res.entity).title, "A-late");
     }
 
-    fn stamp(hlc_ms: u64, logical: u32, device: [u8; 16], seq: u64) -> LwwStamp {
-        LwwStamp {
-            hlc: Hlc {
-                physical_ms: hlc_ms,
-                logical,
-            },
-            device,
-            seq,
-        }
-    }
-
-    fn row_of(s: &LwwStamp) -> RowLww {
-        RowLww {
-            hlc: s.hlc,
-            device: Some(s.device.to_vec()),
-            seq: s.seq,
-        }
-    }
-
     /// Regression: a device's own successive ops must not lose to each other.
     ///
     /// The device-id memcmp breaks *cross-device* ties. Applied to one device's
@@ -14575,21 +15027,6 @@ mod tests {
         let bytes = sunrise_cbor::encode_canonical(&back).unwrap();
         let decoded: sunrise_domain::Stream = sunrise_cbor::decode_canonical(&bytes).unwrap();
         assert_eq!(decoded.icon.as_deref(), Some("briefcase"));
-    }
-
-    /// Build the `unknown` map a newer schema would have written.
-    fn future_fields() -> sunrise_domain::Unknowns {
-        use ciborium::value::Value;
-        let mut u = sunrise_domain::Unknowns::new();
-        u.insert(
-            "delegated_to".into(),
-            sunrise_domain::CborValue(Value::Text("prs_future".into())),
-        );
-        u.insert(
-            "zzz_sort_last".into(),
-            sunrise_domain::CborValue(Value::Integer(7.into())),
-        );
-        u
     }
 
     /// protocol-versioning.md §7: "a v1 client receiving a v2 op preserves the
@@ -14992,19 +15429,6 @@ mod tests {
         let decoded: sunrise_domain::Task = sunrise_cbor::decode_lenient(&bytes)
             .expect("an unknown variant must not reject the op");
         assert_eq!(decoded.state, TaskState::Todo);
-    }
-
-    /// A clock pinned to a named zone, so a test can move a device between
-    /// timezones the way a plane does.
-    #[derive(Debug)]
-    struct ZonedClock(u64, &'static str);
-    impl Clock for ZonedClock {
-        fn now_ms(&self) -> u64 {
-            self.0
-        }
-        fn timezone(&self) -> String {
-            self.1.to_string()
-        }
     }
 
     /// #6: the three zone-less kinds must survive being written on one device
@@ -15608,60 +16032,6 @@ mod tests {
         assert_eq!(read_task_t(&ea, &dba, tid), read_task_t(&eb, &dbb, tid));
     }
 
-    /// One canonical task row: (id, title, state, scheduled_ms, due_ms,
-    /// stream_id, deleted, deferred_count, completed_ms).
-    type TaskProjRow = (
-        Vec<u8>,
-        String,
-        String,
-        Option<i64>,
-        Option<i64>,
-        Vec<u8>,
-        i64,
-        i64,
-        Option<i64>,
-    );
-
-    /// Canonical projection of the `tasks` table for convergence assertions:
-    /// every semantic field except op-ids and the LWW bookkeeping columns.
-    fn tasks_projection(db: &Db) -> Vec<TaskProjRow> {
-        let mut stmt = db
-            .conn()
-            .prepare(
-                "SELECT id, title, state, scheduled_at_ms, due_at_ms, stream_id,
-                        deleted, deferred_count, completed_at_ms
-                 FROM tasks ORDER BY id ASC",
-            )
-            .unwrap();
-        stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, i64>(7)?,
-                r.get::<_, Option<i64>>(8)?,
-            ))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap()
-    }
-
-    fn all_envelopes(db: &Db) -> Vec<Vec<u8>> {
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT envelope FROM ops ORDER BY rowid ASC")
-            .unwrap();
-        stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    }
-
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
 
@@ -15770,62 +16140,6 @@ mod tests {
     }
 
     // ---- task dependencies: derived `blocked` + the reverse index ----
-
-    use sunrise_domain::EffectiveTaskState;
-
-    /// Every open task with its derived dependency counts, ranked.
-    fn actionable_rows(e: &Engine, db: &Db) -> Vec<ActionableTask> {
-        match e
-            .query(
-                db,
-                Query::Actionable {
-                    stream: None,
-                    limit: 100,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::Actionable(v) => v,
-            _ => panic!("expected Actionable"),
-        }
-    }
-
-    fn row_for(rows: &[ActionableTask], id: EntityRef) -> ActionableTask {
-        rows.iter()
-            .find(|r| r.task.id == id)
-            .unwrap_or_else(|| panic!("no actionable row for {id}"))
-            .clone()
-    }
-
-    fn new_task(e: &Engine, db: &mut Db, title: &str) -> EntityRef {
-        e.apply(
-            db,
-            Command::CreateTask(TaskDraft {
-                title: title.into(),
-                ..Default::default()
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn set_blockers(
-        e: &Engine,
-        db: &mut Db,
-        task: EntityRef,
-        blockers: Vec<EntityRef>,
-    ) -> Result<CommandResult, EngineError> {
-        e.apply(
-            db,
-            Command::UpdateTask {
-                id: task,
-                patch: TaskPatch {
-                    blocked_by: Some(blockers),
-                    ..Default::default()
-                },
-            },
-        )
-    }
 
     #[test]
     fn blocked_by_survives_the_materialized_projection() {
@@ -15991,18 +16305,6 @@ mod tests {
     }
 
     // ---- scheduling-constraint enforcement ----
-
-    /// NOW is 2023-11-14T22:13:20Z — a Tuesday evening, outside a 09:00–17:00
-    /// window and inside it ten hours earlier (12:13Z).
-    const OUTSIDE_WINDOW_MS: i64 = NOW;
-    const INSIDE_WINDOW_MS: i64 = NOW - 10 * 3_600_000;
-
-    fn soft_9_to_5() -> ScheduleConstraint {
-        ScheduleConstraint {
-            severity: sunrise_domain::ConstraintSeverity::Soft,
-            ..sample_constraint()
-        }
-    }
 
     #[test]
     fn scheduling_against_a_hard_constraint_is_rejected_on_create() {
@@ -16183,50 +16485,6 @@ mod tests {
 
     // ---- routine streak counter ----
 
-    fn engine_clocked(clock: Arc<FakeClock>) -> Engine {
-        let keychain = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        Engine::from_clock(clock, Arc::new(SystemRng), keychain)
-    }
-
-    fn routine_of(e: &Engine, db: &Db, rid: EntityRef) -> Routine {
-        match e.query(db, Query::EntityById(rid)).unwrap() {
-            QueryResult::Routine(r) => *r,
-            _ => panic!("expected Routine"),
-        }
-    }
-
-    /// The first `n` occurrence task ids of `rid`, with their instants.
-    fn occurrence_tasks(routine: &Routine, n: usize) -> Vec<(EntityRef, i64)> {
-        let window = (ms_to_ts(NOW), ms_to_ts(NOW + 14 * DAY_MS));
-        routine
-            .occurrences_in(window)
-            .unwrap()
-            .into_iter()
-            .take(n)
-            .map(|o| {
-                (
-                    occurrence_task_id(&routine.id, &o.key),
-                    o.at.as_millisecond(),
-                )
-            })
-            .collect()
-    }
-
-    fn seed_routine(e: &Engine, db: &mut Db) -> (EntityRef, Vec<(EntityRef, i64)>) {
-        let draft = routine_draft(
-            stream_ref(5),
-            "FREQ=DAILY",
-            NOW + 3_600_000,
-            RoutineCatchupPolicy::Skip,
-            Vec::new(),
-        );
-        let rid = e.apply(db, Command::CreateRoutine(draft)).unwrap().entity;
-        let routine = routine_of(e, db, rid);
-        let occ = occurrence_tasks(&routine, 4);
-        assert_eq!(occ.len(), 4);
-        (rid, occ)
-    }
-
     #[test]
     fn streak_survives_a_gap_inside_grace_and_resets_outside_it() {
         let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
@@ -16312,16 +16570,6 @@ mod tests {
         assert_eq!(routine_op_count(&db), before);
     }
 
-    fn routine_op_count(db: &Db) -> i64 {
-        db.conn()
-            .query_row(
-                "SELECT COUNT(*) FROM ops WHERE inner_kind = 'routine.update'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
-    }
-
     #[test]
     fn the_streak_advance_converges_to_the_other_replica() {
         // The completion emits BOTH a task.update and a routine.update in one
@@ -16362,20 +16610,6 @@ mod tests {
         assert_eq!(rb.streak_counter, 1, "streak converged");
         assert_eq!(ra.streak_keys, rb.streak_keys);
         assert_eq!(ra.streak_started_at, rb.streak_started_at);
-    }
-
-    /// The stored LWW stamp on a row, as the four columns hold it.
-    fn row_stamp(db: &Db, table: &str, id_col: &str, id: &EntityRef) -> (i64, i64, i64, Vec<u8>) {
-        db.conn()
-            .query_row(
-                &format!(
-                    "SELECT lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device
-                     FROM {table} WHERE {id_col} = ?"
-                ),
-                params![&id.bytes()[..]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap()
     }
 
     /// A command that emits TWO ops must stamp each row with the stamp of the
@@ -16472,17 +16706,6 @@ mod tests {
 
     // ---- out-of-order dependency ops still converge ----
 
-    fn blocker_edges(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT task_id, blocker_id FROM task_blockers ORDER BY task_id, blocker_id")
-            .unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    }
-
     #[test]
     fn a_dependency_op_that_overtakes_its_blocker_still_converges() {
         let ca = Arc::new(FakeClock(PLMutex::new(T0)));
@@ -16554,75 +16777,6 @@ mod tests {
     }
 
     // ---- focus sessions (ADR-0013) ----
-
-    fn focus_engine(now_ms: u64) -> (Engine, Arc<FakeClock>) {
-        let clock = Arc::new(FakeClock(PLMutex::new(now_ms)));
-        let kc = Arc::new(Keychain::for_test(VaultRootKey::from_bytes([0xab; 32])));
-        (
-            Engine::from_clock(clock.clone(), Arc::new(SystemRng), kc),
-            clock,
-        )
-    }
-
-    fn task_with(e: &Engine, db: &mut Db, title: &str, d: TaskDraft) -> EntityRef {
-        e.apply(
-            db,
-            Command::CreateTask(TaskDraft {
-                title: title.into(),
-                ..d
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn start_work(e: &Engine, db: &mut Db, task: EntityRef, len: SessionLength) -> EntityRef {
-        e.apply(
-            db,
-            Command::StartFocus(FocusStartDraft {
-                task_id: task,
-                kind: FocusKind::Work,
-                length: len,
-                energy: None,
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn running(e: &Engine, db: &Db) -> Vec<FocusSessionRow> {
-        match e.query(db, Query::RunningFocusSessions).unwrap() {
-            QueryResult::FocusSessions(v) => v,
-            other => panic!("expected FocusSessions, got {other:?}"),
-        }
-    }
-
-    fn sessions_for(e: &Engine, db: &Db, task: EntityRef) -> Vec<FocusSessionRow> {
-        match e
-            .query(db, Query::TaskFocusSessions { task, limit: 50 })
-            .unwrap()
-        {
-            QueryResult::FocusSessions(v) => v,
-            other => panic!("expected FocusSessions, got {other:?}"),
-        }
-    }
-
-    fn stats(e: &Engine, db: &Db, now_ms: u64) -> sunrise_domain::FocusStats {
-        match e
-            .query(
-                db,
-                Query::FocusStats {
-                    stream: None,
-                    since_ms: None,
-                    now_ms,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::FocusStats(s) => *s,
-            other => panic!("expected FocusStats, got {other:?}"),
-        }
-    }
 
     #[test]
     fn start_focus_mints_an_fcs_entity_and_never_touches_the_task() {
@@ -16937,24 +17091,6 @@ mod tests {
     }
 
     // ---- the planner ----
-
-    fn plan(e: &Engine, db: &Db, energy: Option<Energy>) -> Vec<crate::queries::FocusPlanRow> {
-        match e
-            .query(
-                db,
-                Query::FocusPlan {
-                    stream: None,
-                    energy,
-                    length: SessionLength::OnePomodoro,
-                    limit: 10,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::FocusPlan(v) => v,
-            other => panic!("expected FocusPlan, got {other:?}"),
-        }
-    }
 
     #[test]
     fn planner_prefers_the_high_leverage_actionable_task_at_matching_energy() {
@@ -17348,57 +17484,6 @@ mod tests {
     // not just that the pure folds add up.
     // -----------------------------------------------------------------------
 
-    /// Monday 2026-01-05T00:00:00Z, so every week boundary below is hand-checkable.
-    const REVIEW_MON: u64 = 1_767_571_200_000;
-    const REVIEW_DAY: u64 = 24 * 60 * 60 * 1000;
-    const REVIEW_WEEK: u64 = 7 * REVIEW_DAY;
-
-    /// An engine whose clock the test drives, plus its DB.
-    fn review_fixture() -> (Engine, Db, Arc<FakeClock>) {
-        let clock = Arc::new(FakeClock(PLMutex::new(REVIEW_MON)));
-        let e = engine_seeded([0xab; 32], [0x11; 32], clock.clone());
-        (e, db(), clock)
-    }
-
-    fn review_task(e: &Engine, db: &mut Db, title: &str, stream: Option<EntityRef>) -> EntityRef {
-        e.apply(
-            db,
-            Command::CreateTask(TaskDraft {
-                title: title.into(),
-                stream_id: stream,
-                ..Default::default()
-            }),
-        )
-        .unwrap()
-        .entity
-    }
-
-    fn weekly(e: &Engine, db: &Db, now_ms: u64) -> WeeklyReview {
-        match e
-            .query(
-                db,
-                Query::WeeklyReview {
-                    week_start_ms: None,
-                    now_ms,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::WeeklyReview(r) => *r,
-            other => panic!("expected WeeklyReview, got {other:?}"),
-        }
-    }
-
-    fn timeline(e: &Engine, db: &Db, entity: EntityRef) -> Vec<ActivityEvent> {
-        match e
-            .query(db, Query::ActivityTimeline { entity, limit: 100 })
-            .unwrap()
-        {
-            QueryResult::Activity(v) => v,
-            other => panic!("expected Activity, got {other:?}"),
-        }
-    }
-
     #[test]
     fn activity_timeline_reads_the_op_log_back_through_the_envelope_seal() {
         let (e, mut db, clock) = review_fixture();
@@ -17788,23 +17873,6 @@ mod tests {
             c.factor
         );
         assert_eq!(r.focus.total_focused_ms, 51 * 60 * 1000);
-    }
-
-    /// The whole-vault + per-Stream trend, as the caller sees it.
-    fn trends_of(e: &Engine, db: &Db, now: u64) -> Trends {
-        match e
-            .query(
-                db,
-                Query::StreamTrends {
-                    weeks: 4,
-                    now_ms: now,
-                },
-            )
-            .unwrap()
-        {
-            QueryResult::Trends(t) => *t,
-            other => panic!("expected Trends, got {other:?}"),
-        }
     }
 
     #[test]
