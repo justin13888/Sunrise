@@ -171,7 +171,12 @@ pub struct CursorGap {
     pub evicted_through: u64,
 }
 
-/// `(account_id_hash, stream_id)` channel key.
+/// `(account_id_hash, stream_id)` channel key, shared by the in-memory ring
+/// and the durable log in [`crate::relay_log`].
+///
+/// Not to be confused with `sunrise_crypto::keys::StreamKey`, an unrelated
+/// 32-byte symmetric key. This server does not import that one, so the name
+/// is unambiguous here — but it is not unambiguous across the workspace.
 pub type StreamKey = ([u8; 16], [u8; 16]);
 
 /// Outcome of [`RelayHub::subscribe`]: the retained backlog to replay first,

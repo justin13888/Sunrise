@@ -193,6 +193,23 @@ pub async fn put_chunk(
 }
 
 /// Check every stored chunk and commit the blob under its content address.
+///
+/// # Memory
+///
+/// Every chunk is resident at once. The verification loop reads each chunk
+/// back, hashes it, and keeps it so the commit that follows does not have to
+/// read it a second time; the `MAX_BLOB_BYTES` check runs *after* that loop,
+/// on a total the loop has already accumulated in full. So the 100 MB
+/// per-attachment ceiling does not bound what this holds — `MAX_CHUNK_COUNT` x
+/// `MAX_CHUNK_BYTES`, 4096 x 1 MiB, does, and the peak before the ceiling can
+/// fire is about 4 GiB.
+///
+/// `fetch` streams one chunk at a time, and its doc records why: a single
+/// buffered blob pinned 100 MB of the relay's memory and concurrent fetches
+/// made that an availability problem. This path has the same shape and a
+/// larger bound. It is stated rather than fixed because checking the size
+/// inside the loop changes which requests this endpoint accepts, which is a
+/// decision to take deliberately and not a tidy-up.
 #[kynos::post("/api/v1/blobs/finalize", operation_id = "finalizeBlobUpload")]
 pub async fn finalize(
     Inject(state): Inject<ServerState>,
