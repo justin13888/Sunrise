@@ -1214,6 +1214,127 @@ mod tests {
         core.close().await.unwrap();
     }
 
+    /// The other eight arms of the same match.
+    ///
+    /// `create_and_delete_commands_publish_the_right_change_event` covers six
+    /// of the fourteen enumerated commands. The remaining eight were carried
+    /// entirely by the `_ => DomainEvent::Updated(res.entity)` fallback, which
+    /// is exactly the shape that absorbs a dropped arm without a compile error:
+    /// delete a `Command::DeleteStream(_)` from the `Deleted` list and the
+    /// stream's disappearance is published as an *update*, so a client driving
+    /// its view off `changes()` leaves the row on screen.
+    #[tokio::test]
+    async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
+        use sunrise_domain::inbox::inbox_stream_ref;
+        use sunrise_domain::{
+            ContextDraft, FocusKind, RRule, RoutineCatchupPolicy, RoutineDraft, SessionLength,
+            StreamDraft, TaskDraft, TaskTemplate,
+        };
+
+        async fn next(rx: &mut tokio::sync::broadcast::Receiver<DomainEvent>) -> DomainEvent {
+            rx.recv().await.expect("an event")
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+        let mut events = core.changes();
+        let now_ms = core.now_ms();
+
+        // ---- the four `Created` arms this test owns ----
+
+        let stream = core
+            .submit(Command::CreateStream(StreamDraft {
+                name: "Ops".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == stream));
+
+        let context = core
+            .submit(Command::CreateContext(ContextDraft {
+                name: "errand".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == context));
+
+        let routine = core
+            .submit(Command::CreateRoutine(RoutineDraft {
+                template: TaskTemplate {
+                    title: "Water plants".into(),
+                    stream_id: inbox_stream_ref(),
+                    contexts: Vec::new(),
+                    energy: None,
+                    priority: None,
+                    estimated_duration_s: None,
+                    body: None,
+                },
+                rrule: RRule::parse("FREQ=DAILY").unwrap(),
+                timezone: "UTC".into(),
+                starts_at: jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap())
+                    .unwrap(),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                catchup_policy: RoutineCatchupPolicy::Skip,
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == routine));
+
+        let focus_task = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: "Focus on this".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == focus_task));
+
+        let session = core
+            .submit(Command::StartFocus(crate::commands::FocusStartDraft {
+                task_id: focus_task,
+                kind: FocusKind::Work,
+                length: SessionLength::OnePomodoro,
+                energy: None,
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == session));
+
+        // ---- the four `Deleted` arms ----
+
+        let task = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: "Doomed".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        assert!(matches!(next(&mut events).await, DomainEvent::Created(id) if id == task));
+
+        core.submit(Command::DeleteTask(task)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == task));
+
+        core.submit(Command::DeleteRoutine(routine)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == routine));
+
+        core.submit(Command::DeleteContext(context)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == context));
+
+        core.submit(Command::DeleteStream(stream)).await.unwrap();
+        assert!(matches!(next(&mut events).await, DomainEvent::Deleted(id) if id == stream));
+
+        core.close().await.unwrap();
+    }
+
     /// The three notification reads answer through `Core`, not only through the
     /// engine — which is the surface both clients actually call.
     #[tokio::test]
@@ -1550,26 +1671,125 @@ mod tests {
         ));
     }
 
+    /// Every writing and reading entry point refuses once the core is closed.
+    ///
+    /// `CoreError::Closed` had no assertion anywhere, for all three of its
+    /// guards. This test called nothing at all and asserted nothing: it opened
+    /// a core, closed it, opened a second one and dropped it, with a comment
+    /// explaining that `close(&mut self)` consumed `self` so there was no way
+    /// to call anything on a closed handle. `Core::shutdown(&self)` is that
+    /// way — it is the shutdown path `Arc<Core>` needs and sets the same mark
+    /// — so the branch is reachable and asserted rather than documented.
+    ///
+    /// `apply_remote_all` is handed garbage bytes deliberately: the guard has
+    /// to run *before* the envelope is decoded, or a closed core would still
+    /// report a parse error for work it should have refused outright.
     #[tokio::test]
-    async fn submit_after_close_errors() {
+    async fn every_entry_point_refuses_after_shutdown() {
+        use sunrise_domain::TaskDraft;
+
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-        core.close().await.unwrap();
-        // After close — but Core is consumed. Test the in-flight closed
-        // state by re-opening and toggling the flag indirectly.
-        let core2 = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-        // close() consumed self; we can't test closed-then-call without
-        // a non-consuming closed mark. The Closed branch is exercised by
-        // documentation only in v1.
-        drop(core2);
+
+        // The same calls succeed while the core is open, so the errors below
+        // are the closed mark and not a broken fixture.
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "before".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        core.query(Query::Inbox).await.unwrap();
+
+        core.shutdown().await;
+
+        assert!(matches!(
+            core.submit(Command::CreateTask(TaskDraft {
+                title: "after".into(),
+                ..Default::default()
+            }))
+            .await,
+            Err(CoreError::Closed)
+        ));
+        assert!(matches!(
+            core.query(Query::Inbox).await,
+            Err(CoreError::Closed)
+        ));
+        assert!(matches!(
+            core.apply_remote_all(b"not an envelope").await,
+            Err(CoreError::Closed)
+        ));
+
+        // Idempotent, per `shutdown`'s contract.
+        core.shutdown().await;
+        assert!(matches!(
+            core.query(Query::Inbox).await,
+            Err(CoreError::Closed)
+        ));
     }
 
+    /// Both observer channels actually deliver.
+    ///
+    /// This subscribed to `changes()` and `sync_status()` and dropped both
+    /// receivers, so it held whether `broadcast::Sender::subscribe` returns
+    /// and nothing else: a `submit` that published no event, or a status
+    /// change that reached no subscriber, passed it. A client driving its view
+    /// off these two channels is the only consumer either one has.
     #[tokio::test]
-    async fn changes_subscribe_works() {
+    async fn both_observer_channels_deliver_to_their_subscribers() {
+        use sunrise_domain::TaskDraft;
+        use sunrise_sync::SyncState;
+
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-        let _rx = core.changes();
-        let _rx2 = core.sync_status();
-        drop(core);
+        let mut changes = core.changes();
+        let mut status = core.sync_status();
+
+        let task = core
+            .submit(Command::CreateTask(TaskDraft {
+                title: "observed".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .entity;
+        // Bounded, so a channel that publishes nothing fails the test rather
+        // than hanging the suite.
+        let wait = std::time::Duration::from_secs(5);
+        let event = tokio::time::timeout(wait, changes.recv())
+            .await
+            .expect("submit published a change event")
+            .expect("a change event");
+        assert!(matches!(event, DomainEvent::Created(id) if id == task));
+
+        core.sync_shared.set_state(SyncState::CatchingUp);
+        let snapshot = tokio::time::timeout(wait, status.recv())
+            .await
+            .expect("a state change published a status event")
+            .expect("a status event");
+        assert_eq!(snapshot.state, SyncState::CatchingUp);
+        // Pinned as it behaves today, not as it reads: the depth in a
+        // broadcast snapshot is whatever `SyncShared` was last told, and only
+        // the sync driver ever calls `set_pending`. With no driver running it
+        // is still the count taken at `Core::open`, so it does NOT include the
+        // submit above — while `Query::SyncStatus` reads the outbox directly
+        // and does. The two disagree by exactly the rows submitted since open.
+        let from_query = match core.query(Query::SyncStatus).await.unwrap() {
+            QueryResult::SyncStatus(s) => s,
+            other => panic!("expected SyncStatus, got {other:?}"),
+        };
+        assert_eq!(
+            u64::from(from_query.outbox_pending),
+            core.sync_pending().unwrap(),
+            "the query path reads outbox depth from the database"
+        );
+        assert_eq!(
+            u64::from(snapshot.outbox_pending) + 1,
+            u64::from(from_query.outbox_pending),
+            "and the broadcast snapshot is behind it by the one submit, because \
+             nothing off the driver path republishes the depth"
+        );
+
+        core.close().await.unwrap();
     }
 }
