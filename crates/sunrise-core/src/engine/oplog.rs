@@ -7,7 +7,6 @@
 //! "one op, one envelope, one outbox row, inside the caller's transaction"
 //! checkable in one place.
 
-use super::{Engine, EngineError, META_STREAM};
 use crate::control_op::{KeyEnvelopePayload, Recipient};
 use crate::inner_op::{encode_inner_op, InnerOp};
 use crate::keychain::{to16, Keychain};
@@ -19,6 +18,7 @@ use sunrise_storage::{Db, OpLog, Outbox};
 // `open_op_row` is the only user and is `#[cfg(test)]`.
 #[cfg(test)]
 use super::ids::hex_short;
+use super::{Engine, EngineError, META_STREAM};
 
 impl Engine {
     /// Seal `inner_op` into a real [`sunrise_crypto::OpEnvelope`] under the routing stream's
