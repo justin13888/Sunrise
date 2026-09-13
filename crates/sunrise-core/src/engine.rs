@@ -109,7 +109,19 @@ use thiserror::Error;
 /// [`sunrise_domain::INBOX_STREAM_BYTES`].
 pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
 
-/// Upper bound on the trend window a caller may ask for.
+/// Upper end of the trend window, applied as a silent clamp at **both** ends.
+///
+/// Enforcement is the single `weeks.clamp(1, MAX_TREND_WEEKS)` in the trend
+/// query, and nothing above it validates: a caller asking for 500 weeks gets
+/// 104 and a caller asking for 0 gets 1, each with no error and no signal that
+/// the request was rewritten. It is a bound on what the fold will *do*, not on
+/// what a caller may *ask*.
+///
+/// Deliberately unlike [`MAX_EPOCH_LEAP`], which refuses what it cannot accept
+/// and documents the residual that refusal leaves behind. A rewritten chart
+/// window still renders a correct chart of a different size, so there is
+/// nothing for a caller to recover from; a rewritten epoch would be a key the
+/// caller silently does not hold.
 ///
 /// The trend fold re-reads and decrypts op history, so an unbounded `weeks`
 /// would turn one keypress into a full-log scan. Two years is far past the
@@ -254,8 +266,21 @@ pub enum EngineError {
     Keychain(String),
 }
 
-/// One command-application pipeline. Stateless; holds references to the
-/// injected clock + rng so tests can produce deterministic op-ids.
+/// One command-application pipeline.
+///
+/// Owns no state of its own, but it is not a stateless *type*. Three of its four
+/// fields are read-only injected sources a test replaces to get deterministic
+/// op-ids and stamps: `clock`, `hlc` and `rng`. The fourth, `keychain`, is a
+/// shared [`Keychain`] whose Stream-key cache is a `Mutex<HashMap<…>>` written
+/// through `&self` by the `cache_insert` that both
+/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) and
+/// [`Keychain::absorb_stream_key`](crate::keychain::Keychain::absorb_stream_key)
+/// call. So cloning an `Engine` hands out a second view of one keychain rather
+/// than an independent pipeline.
+///
+/// That the cache is interior-mutable is deliberate, and why — including why it
+/// is allowed to be a superset of the `stream_keys` table — is documented on the
+/// `Keychain::cache` field itself rather than re-argued here.
 #[derive(Clone)]
 pub struct Engine {
     clock: Arc<dyn Clock>,
@@ -1182,6 +1207,16 @@ impl Engine {
     /// gates it would have on first delivery; it is only its *arrival order*
     /// that was wrong. The row is deleted before the retry so a permanently
     /// unopenable op cannot make every subsequent absorb replay it forever.
+    ///
+    /// What that ordering costs is a gap with no transaction over it. The TTL
+    /// sweep is one `with_tx`, the bucket delete is a second, and the
+    /// [`Self::apply_remote_all`] loop runs outside both — so a crash after the
+    /// delete and before the loop finishes loses the parked envelopes on this
+    /// replica. Recovery is the one [`DEFERRED_TOTAL_CAP`] already relies on for
+    /// an evicted op, and for the same reason: a parked op never reached `ops`
+    /// and never advanced the sync cursor, so the relay still counts it as
+    /// undelivered and re-sends it on the next reconnect — by which time the key
+    /// that opens it is already here.
     fn drain_deferred(
         &self,
         db: &mut Db,
