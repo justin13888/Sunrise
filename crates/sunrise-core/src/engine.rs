@@ -9431,6 +9431,157 @@ mod tests {
         assert!(tasks.is_empty());
     }
 
+    /// ADR-0014's full-state-delete rule, for the entity the defect actually
+    /// occurred on.
+    ///
+    /// The rule is asserted deterministically for Block, Context and
+    /// Attachment. It was not for Task: all seven `DeleteTask` tests are
+    /// local-only, none calls `apply_remote`, so nothing raced a Task delete
+    /// against a remote update. The only guard was
+    /// `crates/sunrise-e2e/tests/two_core_delete_convergence.rs`, whose own
+    /// docstring records that the divergence "failed roughly one run in four"
+    /// and was "stable, not transient" — invisible in the UI, because both
+    /// replicas showed a plausible task.
+    ///
+    /// Under an id-only delete there is no state to contribute, so the losing
+    /// update's title survives on the replica that applied it and not on the
+    /// other. The two arrival orders are checked at once: B applies A's delete
+    /// after its own rename, and A applies B's rename after its own delete.
+    #[test]
+    fn a_task_delete_that_wins_lww_replaces_the_whole_row() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "contested".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, task.bytes(), "task.create"))
+            .unwrap();
+
+        // B renames it...
+        set_clock(&cb, T0 + 1_000);
+        eb.apply(
+            &mut dbb,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        // ...and A deletes it strictly later, so the delete wins on both sides.
+        set_clock(&ca, T0 + 2_000);
+        ea.apply(&mut dba, Command::DeleteTask(task)).unwrap();
+
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, task.bytes(), "task.delete"))
+            .unwrap();
+        ea.apply_remote(&mut dba, &env_for_kind(&dbb, task.bytes(), "task.update"))
+            .unwrap();
+
+        let ra = read_task(dba.conn(), task.bytes()).unwrap().unwrap();
+        let rb = read_task(dbb.conn(), task.bytes()).unwrap().unwrap();
+        assert!(ra.deleted && rb.deleted, "both replicas tombstoned it");
+        assert_eq!(
+            ra.title, rb.title,
+            "and agree on the rest of the row, not just the tombstone"
+        );
+        assert_eq!(
+            ra.title, "contested",
+            "the deleting replica's state is what replaced it, so the losing \
+             rename is gone on both sides"
+        );
+        assert_eq!(
+            row_stamp(&dba, "tasks", "id", &task),
+            row_stamp(&dbb, "tasks", "id", &task),
+        );
+    }
+
+    /// The mirror of the above, which is what stops "a delete always wins" from
+    /// passing for the rule. A Task delete is an ordinary full-state op and
+    /// carries no special standing: when the remote update is strictly later it
+    /// wins, and its state — a live task under its new title — replaces the
+    /// tombstone on both replicas.
+    #[test]
+    fn a_task_update_that_wins_lww_replaces_a_delete_it_raced() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        trust(&ea, &mut dba, &eb);
+
+        let task = ea
+            .apply(
+                &mut dba,
+                Command::CreateTask(TaskDraft {
+                    title: "contested".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, task.bytes(), "task.create"))
+            .unwrap();
+
+        // A deletes it first...
+        set_clock(&ca, T0 + 1_000);
+        ea.apply(&mut dba, Command::DeleteTask(task)).unwrap();
+
+        // ...and B renames it strictly later, so the rename wins on both sides.
+        set_clock(&cb, T0 + 2_000);
+        eb.apply(
+            &mut dbb,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+
+        eb.apply_remote(&mut dbb, &env_for_kind(&dba, task.bytes(), "task.delete"))
+            .unwrap();
+        ea.apply_remote(&mut dba, &env_for_kind(&dbb, task.bytes(), "task.update"))
+            .unwrap();
+
+        let ra = read_task(dba.conn(), task.bytes()).unwrap().unwrap();
+        let rb = read_task(dbb.conn(), task.bytes()).unwrap().unwrap();
+        assert_eq!(
+            (ra.deleted, ra.title.as_str()),
+            (rb.deleted, rb.title.as_str()),
+            "the two replicas agree"
+        );
+        assert!(
+            !ra.deleted,
+            "the winning update's state replaces the row, tombstone included"
+        );
+        assert_eq!(ra.title, "renamed");
+        assert_eq!(
+            row_stamp(&dba, "tasks", "id", &task),
+            row_stamp(&dbb, "tasks", "id", &task),
+        );
+    }
+
     #[test]
     fn create_stream_round_trips() {
         let mut db = db();
