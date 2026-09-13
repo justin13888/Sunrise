@@ -7,18 +7,18 @@
 //! smeared across seven: a new entity adds one arm here, and a reader checking
 //! that the merge is uniform across entities reads one function.
 
+use super::attachment::upsert_attachment_row;
+use super::block::{replace_block_tasks, upsert_block_row};
 use super::context::{insert_context_row, purge_context_from_tasks, update_context_row};
 use super::focus::materialize_focus_remote;
+use super::review::insert_review_snapshot_row;
 use super::routine::{insert_routine_row, update_routine_row};
 use super::stream::{ensure_stream_row, insert_stream_row, update_stream_row};
 use super::task::{
     ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row,
     replace_task_blockers, replace_task_contexts, update_task_row,
 };
-use super::{
-    insert_review_snapshot_row, replace_block_tasks, upsert_attachment_row, upsert_block_row,
-    META_STREAM,
-};
+use super::META_STREAM;
 use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;

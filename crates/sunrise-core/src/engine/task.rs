@@ -8,6 +8,7 @@
 //! row itself, so they are one unit of work rather than five. `read_task` is
 //! that unit's shared read, and is reached from five other modules.
 
+use super::block::read_task_blocks;
 use super::ids::{
     blob16, decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, parse_task_state,
     require_kind, task_state_str, time_from_parts, time_to_parts,
@@ -15,7 +16,7 @@ use super::ids::{
 use super::lww::LwwStamp;
 use super::routine::update_routine_row;
 use super::stream::ensure_stream_row;
-use super::{read_task_blocks, Engine, EngineError, META_STREAM};
+use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
 use crate::inner_op::{encode_inner_op, InnerOp};
 use rusqlite::{params, OptionalExtension, Transaction};

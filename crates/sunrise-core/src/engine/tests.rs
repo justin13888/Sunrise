@@ -6,6 +6,21 @@
 //! draws on the `testutil` helpers below, so moving it whole is what keeps the
 //! test diff at zero. Redistributing it module by module is a later change.
 
+use super::*;
+use crate::config::SystemRng;
+use crate::events::DomainEvent;
+use parking_lot::Mutex as PLMutex;
+use sunrise_crypto::keys::VaultRootKey;
+use sunrise_domain::ActivityKind;
+use sunrise_domain::EffectiveTaskState;
+use sunrise_domain::{EndOfDayPlan, MorningSummary};
+use sunrise_domain::{RRule, Routine, RoutineCatchupPolicy, RoutineDraft, TaskTemplate};
+use sunrise_storage::Db;
+use testutil::*;
+// The engine's own imports, which `use super::*` used to supply from the
+// single-file `engine.rs`, plus one glob per sibling module of the split.
+use super::attachment::*;
+use super::block::*;
 use super::context::*;
 use super::focus::*;
 use super::ids::*;
@@ -14,26 +29,19 @@ use super::oplog::*;
 use super::routine::*;
 use super::stream::*;
 use super::task::*;
-use super::*;
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::Clock;
-use crate::config::SystemRng;
 use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
-use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp};
 use crate::keychain::{to16, KeySource, Keychain};
 use crate::queries::{ActionableTask, BlockRow, ContextRow, FocusSessionRow, Query, QueryResult};
-use parking_lot::Mutex as PLMutex;
 use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
-use sunrise_crypto::keys::VaultRootKey;
 use sunrise_crypto::{stream_key_id, StreamKey};
 use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
-use sunrise_domain::ActivityKind;
-use sunrise_domain::EffectiveTaskState;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     imported_block_id, inbox_stream_ref, occurrence_key_at, occurrence_task_id, ActivityEvent,
@@ -43,12 +51,8 @@ use sunrise_domain::{
     StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, Trends,
     ValidationError, WeeklyReview, INBOX_STREAM_BYTES, POMODORO_MS,
 };
-use sunrise_domain::{EndOfDayPlan, MorningSummary};
-use sunrise_domain::{RRule, Routine, RoutineCatchupPolicy, RoutineDraft, TaskTemplate};
 use sunrise_id::{EntityKind, EntityRef};
-use sunrise_storage::Db;
 use sunrise_storage::{OpLog, Outbox};
-use testutil::*;
 
 /// Shared test support for every test in this module.
 ///
