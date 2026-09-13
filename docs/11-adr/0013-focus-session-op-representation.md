@@ -72,10 +72,16 @@ consequences follow directly:
 3. **Re-delivery is a no-op**, so the ops ride the same at-least-once transport
    as everything else without an idempotence layer of their own.
 
-Focus ops are therefore the one op family that **bypasses the LWW comparison** in
-`materialize_remote` (`crates/sunrise-core/src/engine.rs`). Running LWW on them
-would be actively wrong: a `start` stamped later than its own `end` — routine
-under clock skew across two devices — would suppress the `end`.
+Focus ops are therefore one of two op families that **bypass the LWW
+comparison** in `materialize_remote` (`crates/sunrise-core/src/engine.rs`).
+Running LWW on them would be actively wrong: a `start` stamped later than its own
+`end` — routine under clock skew across two devices — would suppress the `end`.
+
+The other is `ReviewSnapshotCreate`, which is routed away from the contest for a
+structurally identical reason: both are append-only records of something that
+happened, and LWW resolves a contest between two versions of one row. A saved
+review is not a version of another saved review, so running LWW on it would let
+one device's review of a week suppress another device's.
 
 ## Amendment (2026-08): OR-Set → append-only row
 
