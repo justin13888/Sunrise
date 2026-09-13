@@ -47,6 +47,7 @@
 //!   `wrap_stream_key(vault_root, key, stream_id, epoch)`.
 
 use crate::config::{Clock, Rng};
+use crate::engine::hex_short;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{BTreeMap, HashMap};
@@ -218,7 +219,7 @@ pub struct Identity {
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Identity")
-            .field("identity_id", &hex16(&self.identity_id))
+            .field("identity_id", &hex_short(&self.identity_id))
             .finish_non_exhaustive()
     }
 }
@@ -268,8 +269,8 @@ pub struct Keychain {
 impl std::fmt::Debug for Keychain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Keychain")
-            .field("device_id", &hex16(&self.device_id))
-            .field("identity_id", &hex16(&self.identity.identity_id))
+            .field("device_id", &hex_short(&self.device_id))
+            .field("identity_id", &hex_short(&self.identity.identity_id))
             .finish_non_exhaustive()
     }
 }
@@ -1876,12 +1877,18 @@ fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, Keyc
 
 /// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
 ///
+/// The crate's one blob-to-id decoder, and it lives here because this is where
+/// its reason does — next to [`to32`], whose doc points at it.
+///
 /// It used to zero-pad, and that was a silent way of manufacturing a *valid*
 /// value from a corrupt one: a truncated `identity_id` padded with zeros still
 /// compares equal to itself, so the vault opened and every cert bound to an
 /// identity that never existed. A short blob is a corrupt row, and the caller
-/// is in a position to say so.
-fn to16(raw: &[u8]) -> Option<[u8; 16]> {
+/// is in a position to say so — which is what every caller does: the
+/// Subscribe-frame builders in `core` skip a row that cannot name a stream or
+/// a device, and [`crate::Engine`]'s `emit_key_envelopes` skips a `devices`
+/// row rather than sealing a Stream key to a padded id.
+pub(crate) fn to16(raw: &[u8]) -> Option<[u8; 16]> {
     raw.try_into().ok()
 }
 
@@ -1889,15 +1896,6 @@ fn to16(raw: &[u8]) -> Option<[u8; 16]> {
 /// See [`to16`] for why this is not a pad.
 fn to32(raw: &[u8]) -> Option<[u8; 32]> {
     raw.try_into().ok()
-}
-
-fn hex16(b: &[u8; 16]) -> String {
-    let mut s = String::with_capacity(8);
-    for byte in b.iter().take(4) {
-        use core::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
 }
 
 /// Adapts the injected [`Rng`] (fill-only) to the `CryptoRngCore` interface the

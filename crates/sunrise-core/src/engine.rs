@@ -52,7 +52,7 @@ use crate::config::{Clock, HlcClock, Rng};
 use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
-use crate::keychain::{EnvelopeRecipient, KeySource, Keychain};
+use crate::keychain::{to16, EnvelopeRecipient, KeySource, Keychain};
 use crate::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
     QueryResult, StreamRow,
@@ -5034,11 +5034,8 @@ fn actionable_scan(
     Ok(rows
         .into_iter()
         .map(|(raw, open, unblocks)| {
-            let mut bytes = [0u8; 16];
-            let take = raw.len().min(16);
-            bytes[..take].copy_from_slice(&raw[..take]);
             (
-                bytes,
+                blob16(&raw),
                 u32::try_from(open.max(0)).unwrap_or(u32::MAX),
                 u32::try_from(unblocks.max(0)).unwrap_or(u32::MAX),
             )
@@ -5048,10 +5045,7 @@ fn actionable_scan(
 
 /// Widen a stored 16-byte id back into a typed [`EntityRef`].
 fn ref_of(kind: EntityKind, raw: &[u8]) -> EntityRef {
-    let mut bytes = [0u8; 16];
-    let take = raw.len().min(16);
-    bytes[..take].copy_from_slice(&raw[..take]);
-    EntityRef::new(kind, bytes)
+    EntityRef::new(kind, blob16(raw))
 }
 
 /// Materialize a placeholder `streams` row for `stream` if none exists yet.
@@ -6438,17 +6432,18 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
-/// Widen a stored blob back to a 16-byte id.
-/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+/// The first four bytes of a 16-byte id as lowercase hex — **8 characters**,
+/// not a full encoding.
 ///
-/// Not a pad, for the reason given on `keychain::to16`. Its one non-test caller
-/// is [`Engine::emit_key_envelopes`], where a `devices` row whose id is the
-/// wrong length would otherwise be padded to `[0u8; 16]` and get a Stream key
-/// sealed to it.
-fn to16(raw: &[u8]) -> Option<[u8; 16]> {
-    raw.try_into().ok()
-}
-
+/// The canonical producer of the `sender_h` and `subject_h` log fields (see
+/// `sunrise_log::field`), and the short form every `Debug` impl in
+/// [`crate::keychain`] prints.
+///
+/// Named for what it does, deliberately: the unqualified name `hex16`
+/// elsewhere in this workspace (`sunrise_domain::export`,
+/// `sunrise_core_bindings::dto`) takes the same `&[u8; 16]` and emits all
+/// **32** characters. A `hex16` that emitted 8 read like a complete id in a
+/// debug dump, which is why that spelling no longer exists here.
 pub(crate) fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
