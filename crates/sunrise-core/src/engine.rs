@@ -8784,6 +8784,49 @@ mod tests {
             }
         }
 
+        /// Stamps drawn from deliberately small domains, so that ties on each
+        /// term are common. The tie-breaks are where a comparator stops being
+        /// an order, so a strategy that rarely collides would pass whatever it
+        /// was given. One arm in sixteen draws a genuinely random device id,
+        /// which is what exercises the 16-byte memcmp itself.
+        pub(super) fn arb_stamp() -> impl proptest::strategy::Strategy<Value = LwwStamp> {
+            use proptest::prelude::Strategy;
+            let device = proptest::prop_oneof![
+                15 => (0u8..3u8).prop_map(|b| [b; 16]),
+                1 => proptest::prelude::any::<[u8; 16]>(),
+            ];
+            (0u64..4, 0u32..3, device, 0u64..4)
+                .prop_map(|(ms, logical, device, seq)| stamp(ms, logical, device, seq))
+        }
+
+        /// `(stream_id, device_id, seq)` triples, again from small domains: an
+        /// injectivity property only means something if the inputs collide.
+        pub(super) fn arb_op_id_triple(
+        ) -> impl proptest::strategy::Strategy<Value = ([u8; 16], [u8; 16], u64)> {
+            use proptest::prelude::Strategy;
+            let id = proptest::prop_oneof![
+                15 => (0u8..3u8).prop_map(|b| [b; 16]),
+                1 => proptest::prelude::any::<[u8; 16]>(),
+            ];
+            (id.clone(), id, 0u64..4)
+        }
+
+        /// How many ops the cursor property delivers.
+        pub(super) const DELIVERY_OPS: usize = 6;
+
+        /// A delivery schedule: an arbitrary noisy run over `0..DELIVERY_OPS`
+        /// — duplicates, repeats and holes at any position — followed by a
+        /// shuffled permutation of all of them, so every op does eventually
+        /// arrive and the cursor has to end at `DELIVERY_OPS`.
+        pub(super) fn delivery_schedule() -> impl proptest::strategy::Strategy<Value = Vec<usize>> {
+            use proptest::prelude::Strategy;
+            (
+                proptest::collection::vec(0..DELIVERY_OPS, 0..=2 * DELIVERY_OPS),
+                proptest::prelude::Just((0..DELIVERY_OPS).collect::<Vec<usize>>()).prop_shuffle(),
+            )
+                .prop_map(|(noisy, tail)| noisy.into_iter().chain(tail).collect())
+        }
+
         /// Build the `unknown` map a newer schema would have written.
         pub(super) fn future_fields() -> sunrise_domain::Unknowns {
             use ciborium::value::Value;
@@ -14981,6 +15024,181 @@ mod tests {
             seq: 0,
         };
         assert!(lww_wins(&stamp(0, 0, [0u8; 16], 0), &row));
+    }
+
+    proptest::proptest! {
+        /// `docs/05-sync/conflict-resolution.md` specifies this comparator as a
+        /// deterministic total order over `(hlc, device, seq)` — "memcmp,
+        /// higher wins … so every replica picks the same winner". Five
+        /// hand-picked examples enforced particular outcomes; nothing asserted
+        /// it was an order at all, and each of the three laws fails in its own
+        /// way:
+        ///
+        /// * not antisymmetric — both replicas decide their own write won, and
+        ///   the two rows diverge permanently with no error anywhere;
+        /// * not transitive — the surviving state depends on the order three
+        ///   ops happened to arrive in, which is exactly what LWW exists to
+        ///   remove;
+        /// * not total — neither op wins, so whichever row each replica
+        ///   already had stays.
+        ///
+        /// Antisymmetry is stated over *distinct* stamps only. Equal stamps
+        /// deliberately win in both directions (`incoming.seq >= row.seq`):
+        /// an equal stamp from the same device is the same op re-delivered, and
+        /// letting the replay rewrite the row unchanged is what keeps
+        /// re-delivery a harmless no-op. Totality and transitivity are stated
+        /// over everything, equal stamps included.
+        #[test]
+        fn lww_is_a_total_order_and_antisymmetric_on_distinct_stamps(
+            a in arb_stamp(),
+            b in arb_stamp(),
+            c in arb_stamp(),
+        ) {
+            let wins = |x: &LwwStamp, y: &LwwStamp| lww_wins(x, &row_of(y));
+
+            proptest::prop_assert!(
+                wins(&a, &b) || wins(&b, &a),
+                "neither {a:?} nor {b:?} wins, so each replica keeps the row it \
+                 already had and the two never converge"
+            );
+
+            if a != b {
+                proptest::prop_assert_ne!(
+                    wins(&a, &b),
+                    wins(&b, &a),
+                    "both orderings agree for distinct stamps {:?} / {:?}, so the \
+                     winner depends on which replica is asking",
+                    a,
+                    b
+                );
+            }
+
+            if wins(&a, &b) && wins(&b, &c) {
+                proptest::prop_assert!(
+                    wins(&a, &c),
+                    "{a:?} beats {b:?} beats {c:?} but loses to {c:?}, so the \
+                     survivor depends on the order the three ops arrived in"
+                );
+            }
+        }
+
+        /// `remote_op_id` had no direct test of any kind, and both of its
+        /// invariants are load-bearing:
+        ///
+        /// * **determinism** is what makes a re-delivered op compute the op-log
+        ///   primary key it already has, so the `UNIQUE(stream, device, seq)`
+        ///   gate sees it as the same row and the replay is a no-op;
+        /// * **injectivity** is the other half — two different ops that derived
+        ///   the same id would alias onto one op-log row, and whichever arrived
+        ///   second would be silently swallowed as a duplicate.
+        ///
+        /// Both hold because the three fields are fixed-width (16 + 16 + 8), so
+        /// the derivation's message determines the triple; a length-prefixed or
+        /// variable-width encoding is where this stops being true.
+        #[test]
+        fn remote_op_id_is_deterministic_and_injective(
+            (sa, da, qa) in arb_op_id_triple(),
+            (sb, db_id, qb) in arb_op_id_triple(),
+        ) {
+            proptest::prop_assert_eq!(
+                remote_op_id(&sa, &da, qa),
+                remote_op_id(&sa, &da, qa),
+                "the same triple derived two different ids, so a re-delivered op \
+                 would be recorded twice"
+            );
+
+            let same_triple = (sa, da, qa) == (sb, db_id, qb);
+            proptest::prop_assert_eq!(
+                remote_op_id(&sa, &da, qa) == remote_op_id(&sb, &db_id, qb),
+                same_triple,
+                "({:?}, {:?}, {}) and ({:?}, {:?}, {}) must share an op id exactly \
+                 when they are the same op",
+                sa,
+                da,
+                qa,
+                sb,
+                db_id,
+                qb
+            );
+        }
+    }
+
+    proptest::proptest! {
+        // Each case builds two engines and two databases and delivers up to 18
+        // envelopes, so the case count is deliberately low.
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+
+        /// `docs/05-sync/wire-protocol.md:447-453` calls the contiguous-prefix
+        /// cursor "a correctness invariant": a `MAX(seq)` cursor "converts an
+        /// accidental, self-healing data-loss window into a permanent and
+        /// silent one", because the relay filters its replay by exactly this
+        /// number and would skip the frame carrying the hole forever.
+        ///
+        /// One three-op example enforced it. This delivers an arbitrary noisy
+        /// run — duplicates, repeats, holes at any position — followed by a
+        /// shuffled permutation of every op, and asserts after **every single
+        /// delivery** that the cursor equals the length of the contiguous
+        /// prefix actually applied, never the maximum seq seen.
+        #[test]
+        fn a_cursor_equals_the_contiguous_prefix_after_every_delivery(
+            schedule in delivery_schedule(),
+        ) {
+            let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+            let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+            let mut dba = db_root(ROOT);
+            let mut dbb = db_root(ROOT);
+            trust(&eb, &mut dbb, &ea);
+
+            let mut envs = Vec::with_capacity(DELIVERY_OPS);
+            for n in 0..DELIVERY_OPS {
+                let res = ea
+                    .apply(
+                        &mut dba,
+                        Command::CreateTask(TaskDraft {
+                            title: format!("op {n}"),
+                            ..Default::default()
+                        }),
+                    )
+                    .unwrap();
+                envs.push(env_bytes(&dba, &res.op_id));
+            }
+            let heads: Vec<_> = envs
+                .iter()
+                .map(|e| sunrise_cbor::decode_envelope_header(e).unwrap())
+                .collect();
+            let (stream, device) = (heads[0].stream_id, heads[0].device_id);
+            proptest::prop_assert_eq!(
+                heads.iter().map(|h| h.seq).collect::<Vec<_>>(),
+                (1..=DELIVERY_OPS as u64).collect::<Vec<_>>(),
+                "the fixture assumes seqs 1..=N on one stream from one device"
+            );
+
+            let mut applied = BTreeSet::new();
+            for idx in schedule {
+                eb.apply_remote(&mut dbb, &envs[idx]).unwrap();
+                applied.insert(heads[idx].seq);
+
+                let mut prefix = 0u64;
+                while applied.contains(&(prefix + 1)) {
+                    prefix += 1;
+                }
+                proptest::prop_assert_eq!(
+                    cursor_for(&dbb, &stream, &device),
+                    prefix,
+                    "after applying {:?} the cursor must claim {} (a max-based \
+                     cursor would claim {})",
+                    applied,
+                    prefix,
+                    applied.iter().copied().max().unwrap_or(0)
+                );
+            }
+
+            proptest::prop_assert_eq!(
+                cursor_for(&dbb, &stream, &device),
+                DELIVERY_OPS as u64,
+                "every op arrived, so the prefix covers all of them"
+            );
+        }
     }
 
     /// `Stream.icon` was `Option<&'static str>` with
