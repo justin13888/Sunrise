@@ -9958,6 +9958,74 @@ mod tests {
         assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
     }
 
+    /// `PromoteToStream` takes two ids and checks the kind of both. The command
+    /// appeared nowhere in this module's tests; its only coverage was a CLI
+    /// happy path, which passes ids the CLI itself resolved and so never hands
+    /// it a mismatched pair. The crate already has this exact test for three
+    /// sibling families (Context, Block, Attachment).
+    ///
+    /// What this pins is the command's observable contract, not the two
+    /// `require_kind` calls in `promote_task` itself: `update_task`, which it
+    /// delegates to, repeats both checks — `require_kind(id, Task)` on entry
+    /// and `require_kind(s, Stream)` on `patch.stream_id` — and returns the
+    /// same `Invalid` variant with the same message. Deleting either call from
+    /// `promote_task` alone changes nothing any caller can see. Deleting both
+    /// copies of either check does, and is what fails this test.
+    #[test]
+    fn promote_to_stream_rejects_either_id_of_the_wrong_kind() {
+        let mut db = db();
+        let e = engine();
+        let task = new_task(&e, &mut db, "promote me");
+        let stream = e
+            .apply(
+                &mut db,
+                Command::CreateStream(StreamDraft {
+                    name: "Ops".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+
+        // A Stream id where the Task belongs.
+        let err = e
+            .apply(&mut db, Command::PromoteToStream { id: stream, stream })
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+
+        // A Task id where the Stream belongs.
+        let err = e
+            .apply(
+                &mut db,
+                Command::PromoteToStream {
+                    id: task,
+                    stream: task,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+
+        // A Context id in the Stream slot: the kind is checked, not merely
+        // "is it not a Task".
+        let ctx = new_context(&e, &mut db, "errand");
+        let err = e
+            .apply(
+                &mut db,
+                Command::PromoteToStream {
+                    id: task,
+                    stream: ctx,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Invalid(_)), "{err:?}");
+
+        // And the well-kinded pair still works, so the rejections above are the
+        // guards and not a broken fixture.
+        e.apply(&mut db, Command::PromoteToStream { id: task, stream })
+            .unwrap();
+        assert_eq!(read_task_t(&e, &db, task).stream_id, stream);
+    }
+
     #[test]
     fn context_ops_seal_their_own_inner_op_variants() {
         let mut db = db();
