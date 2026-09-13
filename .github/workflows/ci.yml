@@ -516,6 +516,17 @@ jobs:
             "determinism" \
             '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
             crates/*/src crates/*/tests crates/*/benches
+      - name: Reject filesystem access outside the core's storage seam
+        # docs/01-architecture/shared-core.md §determinism-rules rule 2 — the
+        # core reads and writes through `CoreConfig::storage`, so a test can
+        # supply one and a vault is the only thing on disk.
+        #
+        # Not a `clippy.toml` entry, and it cannot be: that file is
+        # workspace-wide, and nine of twenty crates touch the filesystem on
+        # purpose. A `std::fs` deny there fires in eight crates the rule was
+        # never about. This is scoped the way the rule is scoped -- one crate --
+        # and carries a visible allowlist of the two documented exceptions.
+        run: python3 .github/scripts/core-filesystem-gate.py
 
   log-redaction:
     name: Log redaction gate
