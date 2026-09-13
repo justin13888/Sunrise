@@ -6,9 +6,14 @@
 //! draws on the `testutil` helpers below, so moving it whole is what keeps the
 //! test diff at zero. Redistributing it module by module is a later change.
 
+use super::context::*;
+use super::focus::*;
 use super::ids::*;
 use super::lww::*;
 use super::oplog::*;
+use super::routine::*;
+use super::stream::*;
+use super::task::*;
 use super::*;
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::Clock;
