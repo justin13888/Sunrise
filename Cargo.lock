@@ -3023,7 +3023,6 @@ dependencies = [
  "sunrise-http-sig",
  "sunrise-id",
  "sunrise-log",
- "sunrise-onboarding",
  "sunrise-storage",
  "sunrise-wire-protocol",
  "tempfile",

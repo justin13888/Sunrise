@@ -24,9 +24,16 @@ pub enum PushPlatform {
     WebPush,
 }
 
-/// One push registration.
+/// One device's registration of a provider push token.
+///
+/// Distinct from [`crate::api::devices::PushRegistration`], which is the
+/// request body `POST /api/v1/devices/push-tokens` accepts. That one is the
+/// wire shape a client sends; this one is what a provider needs in order to
+/// deliver. The two carried the same name until the duplication became a
+/// reader's problem: `api::signed`'s module doc names `Signed<PushRegistration>`
+/// unqualified, and only one of the two can be meant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PushRegistration {
+pub struct PushTokenRegistration {
     /// Owning device id — Crockford base-32 of 16 bytes, as issued by
     /// `POST /api/v1/devices`. The `device_id_hex` alias is accepted so
     /// clients written against the pre-persistence shape keep parsing.
@@ -42,7 +49,7 @@ pub struct PushRegistration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushIntent {
     /// Receiver registration.
-    pub registration: PushRegistration,
+    pub registration: PushTokenRegistration,
     /// Wakeup payload (opaque to v1; clients re-fetch on wake).
     pub payload: String,
 }
@@ -96,12 +103,33 @@ impl PushProvider for LoggingProvider {
 mod tests {
     use super::*;
 
+    /// The `device_id_hex` alias is a documented compatibility promise —
+    /// "accepted so clients written against the pre-persistence shape keep
+    /// parsing" — and nothing tested it, so deleting the attribute would have
+    /// broken exactly those clients silently.
+    #[test]
+    fn the_pre_persistence_device_id_spelling_still_parses() {
+        let legacy: PushTokenRegistration = serde_json::from_str(
+            r#"{"device_id_hex":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
+        )
+        .expect("the alias must keep parsing");
+        assert_eq!(legacy.device_id, "0000000000000000000000000Z");
+
+        // The current spelling reaches the same field, so the alias is an
+        // addition rather than a replacement.
+        let current: PushTokenRegistration = serde_json::from_str(
+            r#"{"device_id":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
+        )
+        .expect("the current spelling parses");
+        assert_eq!(current.device_id, legacy.device_id);
+    }
+
     #[tokio::test]
     async fn logging_provider_increments_counter() {
         let m = crate::Metrics::new();
         let p = LoggingProvider::new(m.clone());
         let intent = PushIntent {
-            registration: PushRegistration {
+            registration: PushTokenRegistration {
                 device_id: "0000000000000000000000000Z".into(),
                 platform: PushPlatform::Fcm,
                 token: "abc".into(),

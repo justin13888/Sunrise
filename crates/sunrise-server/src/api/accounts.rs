@@ -233,9 +233,9 @@ pub async fn recovery_blob(
 #[cfg(test)]
 mod tests {
     use crate::api::error::codes::{
-        AUTH_STEP_UP_REQUIRED, RECOVERY_BLOB_EXISTS, RECOVERY_BLOB_NOT_FOUND,
+        AUTH_STEP_UP_REQUIRED, RECOVERY_BLOB_EXISTS, RECOVERY_BLOB_NOT_FOUND, VALIDATION_INVALID,
     };
-    use crate::api::testing::{code_of, Client, BEARER};
+    use crate::api::testing::{code_of, register_device, send_signed, Client, BEARER};
     use crate::state::{Clock, ServerState};
     use crate::{ServerConfig, StaticVerifier, Subject};
     use kynos::http::{Method, StatusCode};
@@ -303,6 +303,236 @@ mod tests {
     }
 
     type Res = crate::api::testing::Res;
+
+    /// A client whose one bearer carries `email` as its IdP claim.
+    fn client_claiming_email(email: &str) -> Client {
+        let state = ServerState::with_clock(ServerConfig::default(), Arc::new(FixedClock))
+            .with_verifier(Arc::new(StaticVerifier::default().with(
+                "test",
+                Subject::new("https://idp.example", "alice").with_email(email),
+            )));
+        Client::from_state(state)
+    }
+
+    /// `POST /api/v1/accounts` with one member replaced.
+    async fn create_with(client: &Client, field: &str, value: serde_json::Value) -> Res {
+        let mut body = serde_json::json!({
+            "email": "alice@example.com",
+            "identity_signing_pub": "aWRfc19wdWI",
+            "identity_dh_pub": "aWRfZF9wdWI",
+            "recovery_blob": "",
+            "terms_at_ms": 1,
+        });
+        body[field] = value;
+        client
+            .send(Method::POST, "/api/v1/accounts", Some(&body))
+            .await
+    }
+
+    /// An email that is absent in everything but shape buys no account.
+    ///
+    /// The helper every other test in this module uses always sends a
+    /// well-formed body, so this branch and the one below had never been taken.
+    /// Whitespace as well as the empty string: the check is `trim().is_empty()`
+    /// and a space would otherwise be stored as an address.
+    #[tokio::test]
+    async fn account_creation_requires_an_email() {
+        let client = client_with_a_plain_bearer();
+        for empty in ["", "   ", "\t\n"] {
+            let res = create_with(&client, "email", serde_json::json!(empty)).await;
+            res.assert_status(StatusCode::BAD_REQUEST);
+            assert_eq!(code_of(&res), VALIDATION_INVALID, "for {empty:?}");
+        }
+    }
+
+    /// Both identity keys are required, and each is checked.
+    ///
+    /// One refusal covers the pair, so a test that only blanked the signing key
+    /// would leave the `identity_dh_pub` half of the condition unexercised.
+    #[tokio::test]
+    async fn account_creation_requires_both_identity_keys() {
+        let client = client_with_a_plain_bearer();
+        for field in ["identity_signing_pub", "identity_dh_pub"] {
+            let res = create_with(&client, field, serde_json::json!("  ")).await;
+            res.assert_status(StatusCode::BAD_REQUEST);
+            assert_eq!(code_of(&res), VALIDATION_INVALID, "for {field}");
+        }
+
+        // And a well-formed pair still creates, so the checks above refuse the
+        // blank value rather than everything.
+        create_account(&client, "")
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+
+    /// The response email rule, in both directions.
+    ///
+    /// The IdP owns the address: when the token carries an `email` claim that
+    /// is what comes back, verbatim, whatever the body said. Only when the
+    /// verifier emits no claim at all is the body read, and then it is trimmed
+    /// and lowercased so one account cannot be addressed two ways.
+    #[tokio::test]
+    async fn the_idp_email_wins_and_the_bodys_is_the_fallback() {
+        let with_claim = client_claiming_email("Alice@IdP.example");
+        let res = create_with(
+            &with_claim,
+            "email",
+            serde_json::json!("  SOMEONE-ELSE@example.com  "),
+        )
+        .await;
+        res.assert_status(StatusCode::CREATED);
+        assert_eq!(
+            res.json()["email"],
+            serde_json::json!("Alice@IdP.example"),
+            "the claim wins, and is not re-cased on the way out"
+        );
+
+        let without_claim = client_with_a_plain_bearer();
+        let res = create_with(
+            &without_claim,
+            "email",
+            serde_json::json!("  Alice@Example.COM  "),
+        )
+        .await;
+        res.assert_status(StatusCode::CREATED);
+        assert_eq!(
+            res.json()["email"],
+            serde_json::json!("alice@example.com"),
+            "the fallback is trimmed and lowercased"
+        );
+
+        // Pinned, not endorsed: the fallback decorates *this response only*.
+        // The account row's email comes from the token's claim and nothing
+        // else, so with no claim the address the client just sent is not
+        // stored, and the very next `GET /accounts/me` reports the empty
+        // string `info` defaults to.
+        let me = without_claim
+            .send(Method::GET, "/api/v1/accounts/me", None)
+            .await;
+        me.assert_status(StatusCode::OK);
+        assert_eq!(me.json()["email"], serde_json::json!(""));
+    }
+
+    /// **The body of `GET /api/v1/accounts/me`, which nothing ever asserted.**
+    ///
+    /// Every one of its five members was only ever reached as a signature
+    /// target, where the test asserts the status and throws the body away.
+    ///
+    /// This module's own header says the `200 {"identity_id":"unauthenticated"}`
+    /// regression is "regression-tested in `routes::accounts`". No `routes`
+    /// module exists anywhere in the workspace — that string occurs exactly
+    /// once, in the comment claiming it — so the regression had no test at all.
+    /// This is it: the id is the resolved account's, it is stable across calls,
+    /// and two principals do not share one.
+    #[tokio::test]
+    async fn the_account_route_reports_the_identity_the_token_resolved_to() {
+        let client = client_claiming_email("alice@idp.example");
+        let created = create_account(&client, "U1IDAAFibG9i").await;
+        created.assert_status(StatusCode::CREATED);
+        let identity_id = created.json()["identity_id"]
+            .as_str()
+            .expect("an identity id")
+            .to_owned();
+
+        let res = client.send(Method::GET, "/api/v1/accounts/me", None).await;
+        res.assert_status(StatusCode::OK);
+        let me = res.json();
+        assert_ne!(
+            me["identity_id"],
+            serde_json::json!("unauthenticated"),
+            "the id this route once answered to anybody"
+        );
+        assert_eq!(me["identity_id"], serde_json::json!(identity_id));
+        assert_eq!(me["email"], serde_json::json!("alice@idp.example"));
+        assert_eq!(me["tier"], serde_json::json!("free"));
+        assert_eq!(me["device_count"], serde_json::json!(0));
+        assert_eq!(
+            me["created_at_ms"],
+            serde_json::json!(T0_MS),
+            "the row's own creation time, off the server's clock"
+        );
+
+        // A second principal is a second account: the id comes from the
+        // verified token, never from anything the caller sent.
+        let state = ServerState::with_clock(ServerConfig::default(), Arc::new(FixedClock))
+            .with_verifier(Arc::new(
+                StaticVerifier::default()
+                    .with("test", Subject::new("https://idp.example", "alice"))
+                    .with("other", Subject::new("https://idp.example", "bob")),
+            ));
+        let two = Client::from_state(state);
+        let alice = two.send(Method::GET, "/api/v1/accounts/me", None).await;
+        let bob = two
+            .send_as(
+                Method::GET,
+                "/api/v1/accounts/me",
+                Some("Bearer other"),
+                None,
+            )
+            .await;
+        alice.assert_status(StatusCode::OK);
+        bob.assert_status(StatusCode::OK);
+        assert_ne!(alice.json()["identity_id"], bob.json()["identity_id"]);
+    }
+
+    /// `device_count` counts the account's *unrevoked* devices, which is the
+    /// number a user reads as "where am I signed in".
+    #[tokio::test]
+    async fn the_device_count_follows_registration_and_revocation() {
+        const PHONE_VAULT_ID: &str = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
+
+        async fn count(client: &Client) -> serde_json::Value {
+            let res = client.send(Method::GET, "/api/v1/accounts/me", None).await;
+            res.assert_status(StatusCode::OK);
+            res.json()["device_count"].clone()
+        }
+
+        let client = client_with_a_plain_bearer();
+        assert_eq!(count(&client).await, serde_json::json!(0));
+        let (_phone, _) = register_device(&client, 40, "phone", Some(PHONE_VAULT_ID)).await;
+        assert_eq!(count(&client).await, serde_json::json!(1));
+        let (laptop, laptop_key) = register_device(&client, 41, "laptop", None).await;
+        assert_eq!(count(&client).await, serde_json::json!(2));
+
+        send_signed(
+            &client,
+            "DELETE",
+            &format!("/api/v1/devices/by-vault-id/{PHONE_VAULT_ID}"),
+            &laptop,
+            &laptop_key,
+            None,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+        assert_eq!(
+            count(&client).await,
+            serde_json::json!(1),
+            "a revoked device is not one the user is signed in on"
+        );
+    }
+
+    /// No credential at all, against a verifier that actually checks.
+    ///
+    /// The default `NullVerifier` accepts an absent bearer by design, so the
+    /// `None` requests elsewhere prove nothing about whether these routes are
+    /// authenticated. `no_bearer_gets_no_blob` covered the recovery route; the
+    /// other two had no equivalent.
+    #[tokio::test]
+    async fn every_account_route_requires_a_bearer() {
+        let client = client_with_a_plain_bearer();
+        for (method, path) in [
+            (Method::GET, "/api/v1/accounts/me"),
+            (Method::POST, "/api/v1/accounts"),
+            (Method::GET, "/api/v1/accounts/me/recovery_blob"),
+        ] {
+            let res = client.send_as(method.clone(), path, None, None).await;
+            assert_eq!(
+                res.status,
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} must refuse an unauthenticated caller"
+            );
+        }
+    }
 
     /// The route the whole recovery flow was missing: a blob goes up at
     /// account creation and comes back down to a device that has just proved a

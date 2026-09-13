@@ -81,7 +81,7 @@ AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
 `AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
-provisioning (`crates/sunrise-server/src/store.rs:268`) and nothing updates it or
+provisioning (`crates/sunrise-server/src/store.rs:331`) and nothing updates it or
 reads it for a decision. It is retained for wire compatibility, not because it
 means anything — there are no plan tiers in v1
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).

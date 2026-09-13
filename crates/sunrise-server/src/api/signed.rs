@@ -103,6 +103,24 @@ pub struct DeviceSig {
 /// against, and an id that is not an active row on that account resolves to
 /// nothing. A caller cannot borrow another account's device by naming it.
 ///
+/// # Effects
+///
+/// Not a pure check. A verification that succeeds **writes**: the resolved
+/// device's last-seen stamp is bumped through `Store::touch_device`, so every
+/// signed route pays one SQLite `UPDATE` inside the request, on the store's
+/// single mutex-guarded connection. That is the cost this imposes on the whole
+/// signed surface, and it is worth knowing before adding another route to it.
+///
+/// That write's result is deliberately discarded. A failed touch leaves the
+/// stamp stale and the request still succeeds — device liveness is a
+/// diagnostic, not something to fail an otherwise valid request over — but it
+/// also means the failure is silent and never reaches a log.
+///
+/// A verification that fails at the signature itself increments
+/// `sunrise_device_sig_rejected_total` and emits
+/// `srv.auth.device_sig_rejected`, so the metrics registry is mutated on that
+/// path too.
+///
 /// # Errors
 /// A `401` [`ApiError::Unauthenticated`] in every failing case; only the *code*
 /// it carries varies. `AUTH_DEVICE_SIG_INVALID` says "the signature, not the
@@ -140,7 +158,7 @@ pub fn verify<T: serde::Serialize>(
 /// hashing assert the same property from the other direction.
 ///
 /// # Errors
-/// As [`verify`].
+/// As [`verify`], as are the effects: this is the function that performs them.
 pub fn verify_bytes(
     state: &ServerState,
     principal: &Principal,
@@ -529,10 +547,12 @@ impl RequestContent for SignedBinary {
 mod tests {
     use crate::api::error::codes::{AUTH_DEVICE_SIG_INVALID, AUTH_TOKEN_INVALID};
     use crate::api::testing::{code_of, now_rfc2822, send_signed, Client, BEARER};
-    use crate::ServerConfig;
+    use crate::state::ServerState;
+    use crate::{ServerConfig, StaticVerifier, Subject};
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
     use kynos::http::{Method, StatusCode};
+    use std::sync::Arc;
 
     fn b64(b: &[u8]) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
@@ -747,6 +767,67 @@ mod tests {
             )
             .await
             .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    /// The cross-check the module documents as "so a stolen bearer cannot be
+    /// replayed from a different device", which nothing reached.
+    ///
+    /// `Subject::device_id` is a public field with no builder, so no test ever
+    /// set it and deleting the clause in `verify_bytes` failed nothing. The
+    /// refusal is `AUTH_TOKEN_INVALID` rather than `AUTH_DEVICE_SIG_INVALID`:
+    /// the check runs before the device lookup, and the finer code is earned
+    /// only once the named device has resolved to an active row.
+    #[tokio::test]
+    async fn a_token_claiming_another_device_is_refused() {
+        let claimed = "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y";
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with_device_id(
+                "test",
+                Subject::new("https://idp.example", "alice"),
+                claimed,
+            ),
+        ));
+        let client = Client::from_state(state);
+        let (device_id, sk) = paired(&client, 33).await;
+        assert_ne!(
+            device_id, claimed,
+            "the registered device must not be the one the token names"
+        );
+
+        let res = send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &device_id,
+            &sk,
+            None::<&serde_json::Value>,
+        )
+        .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), AUTH_TOKEN_INVALID);
+    }
+
+    /// The control for the test above: the identical request under a token
+    /// that claims *no* device is served. Without it a clause that refused
+    /// unconditionally would look like the cross-check working.
+    #[tokio::test]
+    async fn a_token_claiming_no_device_still_binds_to_the_header() {
+        let state = ServerState::new(ServerConfig::default()).with_verifier(Arc::new(
+            StaticVerifier::default().with("test", Subject::new("https://idp.example", "alice")),
+        ));
+        let client = Client::from_state(state);
+        let (device_id, sk) = paired(&client, 34).await;
+
+        send_signed(
+            &client,
+            "GET",
+            "/api/v1/accounts/me",
+            &device_id,
+            &sk,
+            None::<&serde_json::Value>,
+        )
+        .await
+        .assert_status(StatusCode::OK);
     }
 
     /// The bootstrap exemption covers an absent binding, not a wrong one.

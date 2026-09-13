@@ -1589,6 +1589,7 @@
     "/api/v1/blobs/finalize": {
       "post": {
         "summary": "Check every stored chunk and commit the blob under its content address.",
+        "description": "# Memory\n\nEvery chunk is resident at once. The verification loop reads each chunk\nback, hashes it, and keeps it so the commit that follows does not have to\nread it a second time; the `MAX_BLOB_BYTES` check runs *after* that loop,\non a total the loop has already accumulated in full. So the 100 MB\nper-attachment ceiling does not bound what this holds — `MAX_CHUNK_COUNT` x\n`MAX_CHUNK_BYTES`, 4096 x 1 MiB, does, and the peak before the ceiling can\nfire is about 4 GiB.\n\n`fetch` streams one chunk at a time, and its doc records why: a single\nbuffered blob pinned 100 MB of the relay's memory and concurrent fetches\nmade that an availability problem. This path has the same shape and a\nlarger bound. It is stated rather than fixed because checking the size\ninside the loop changes which requests this endpoint accepts, which is a\ndecision to take deliberately and not a tidy-up.",
         "operationId": "finalizeBlobUpload",
         "parameters": [
           {
@@ -2672,7 +2673,7 @@
     "/api/v1/sync/session/refresh": {
       "post": {
         "summary": "Extend a session without re-establishing it.",
-        "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.",
+        "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.\n\nThat mismatch does more than refuse the refresh: it **ends the session**\nbefore answering `401`, so the caller has to establish a new one rather\nthan retry with the credential it still holds. The two failure paths are\nasymmetric on purpose. A token that fails *verification* says nothing about\nwho holds the session, so that one is recoverable and the session keeps the\ncredential it already has; a token that verifies and names *someone else*\nmeans the channel namespace fixed at establishment no longer matches the\nholder, and there is nothing left worth serving on it.",
         "operationId": "refreshSyncSession",
         "parameters": [
           {
@@ -3752,7 +3753,7 @@
         "properties": {
           "device_id": {
             "type": "string",
-            "description": "The originating device, 32 lowercase hex characters."
+            "description": "The originating device, 32 hex characters."
           },
           "last_applied_seq": {
             "type": "integer",
@@ -3772,7 +3773,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
-            "description": "The stream, 32 lowercase hex characters."
+            "description": "The stream, 32 hex characters."
           },
           "cursors": {
             "items": {
@@ -3808,7 +3809,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
-            "description": "The stream the batch targets, 32 lowercase hex characters."
+            "description": "The stream the batch targets, 32 hex characters."
           },
           "batch_id": {
             "type": "integer",
