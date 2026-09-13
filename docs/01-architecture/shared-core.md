@@ -89,7 +89,14 @@ Datetime types (`jiff::Timestamp` for absolute instants, `jiff::Zoned` / `jiff::
 3. **No randomness except via `CoreConfig::rng`.** Tests can seed; production uses OS RNG.
 4. **No threads spawned except by the core's own runtime.** UI calls into core-owned tokio runtime. No global state.
 
-These rules are enforced by `#![forbid(unsafe_code)]` plus a `clippy.toml` deny list (`std::time::SystemTime::now`, `rand::thread_rng`, `std::fs::*`, …) plus a CI grep.
+These rules are enforced by `#![forbid(unsafe_code)]` plus a `clippy.toml` deny
+list (`std::time::SystemTime::now`, `std::time::Instant::now`,
+`std::process::exit`, `rand::thread_rng`, `rand::random`) plus a CI grep — but
+the coverage is uneven, and it is worth knowing where. The grep (`ci.yml`'s
+`Determinism gate`, "Reject ambient RNG in core crates") backstops **rule 3
+only**: it exists because path-based lints miss turbofish and aliasing, and it
+searches for ambient RNG and nothing else. Rule 4 has no automated enforcement
+at all.
 
 Determinism is **per-device**, and applies to the bytes that leave the device. The op-log encoding (CBOR bytes the device emits over the wire) is bit-for-bit identical for identical input on the same device, time, and RNG seed. SQLite's WAL behavior is allowed to vary across runs; storage internals are not part of the determinism contract. With both `CoreConfig::clock` and `CoreConfig::rng` fixed, op-emit byte sequences are reproducible — this is the basis for sync-protocol round-trip tests.
 
