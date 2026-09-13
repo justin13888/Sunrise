@@ -7,8 +7,12 @@
 //!
 //! Determinism rules (per spec):
 //! 1. No clock access except via `CoreConfig::clock`.
-//! 2. No filesystem access except via `CoreConfig::storage` (well, the
-//!    storage layer; this crate doesn't touch the FS directly).
+//! 2. No filesystem access except via `CoreConfig::storage`, with two
+//!    exceptions this crate does make directly and which
+//!    `.github/scripts/core-filesystem-gate.py` allows by name: the OS
+//!    advisory lock in [`vault_lock`], and the `/etc/localtime` read in
+//!    [`config`] that recovers the host's zone name. Everything else goes
+//!    through the storage handle.
 //! 3. No randomness except via `CoreConfig::rng`.
 //! 4. No threads spawned except by the core's tokio runtime.
 //!
