@@ -1688,7 +1688,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
 
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             insert_task_row(tx, &task, &lww)?;
             insert_task_contexts(tx, &task)?;
             replace_task_blockers(tx, &task)?;
@@ -1834,15 +1834,7 @@ impl Engine {
 
         let task_for_persist = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(
-                tx,
-                &task_for_persist.stream_id,
-                now_ms,
-                None,
-                false,
-                false,
-                false,
-            )?;
+            ensure_stream_row(tx, &task_for_persist.stream_id, now_ms)?;
             update_task_row(tx, &task_for_persist, &lww)?;
             replace_task_contexts(tx, &task_for_persist)?;
             replace_task_blockers(tx, &task_for_persist)?;
@@ -2442,7 +2434,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             insert_routine_row(tx, &routine_clone, now_ms, &lww)?;
             self.ops_insert(
                 tx,
@@ -2534,7 +2526,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             update_routine_row(tx, &routine_clone, &lww)?;
             self.ops_insert(
                 tx,
@@ -2758,15 +2750,7 @@ impl Engine {
         let clock = self.clock.clone();
         let rng = self.rng.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(
-                tx,
-                &routine.template.stream_id,
-                now_ms,
-                None,
-                false,
-                false,
-                false,
-            )?;
+            ensure_stream_row(tx, &routine.template.stream_id, now_ms)?;
             for (key, at, title_override) in &jobs {
                 let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
                 // Each materialized occurrence is its OWN op, so it gets its own
@@ -2936,7 +2920,7 @@ impl Engine {
         let seq = self.next_seq(db, &stream_bytes)?;
         let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &start.stream_id, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &start.stream_id, now_ms)?;
             insert_focus_start_row(tx, &start, &lww)?;
             self.ops_insert(
                 tx,
@@ -4601,7 +4585,7 @@ fn materialize_remote(
     match inner {
         InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) => {
             // The owning stream must exist before the task (FK).
-            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
             if present {
                 update_task_row(tx, t, lww)?;
                 replace_task_contexts(tx, t)?;
@@ -4623,7 +4607,7 @@ fn materialize_remote(
             // whole row is replaced, so two replicas that had diverged on
             // `title` before the delete converge on the deleting replica's
             // state rather than each keeping its own.
-            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
             if present {
                 update_task_row(tx, t, lww)?;
                 replace_task_contexts(tx, t)?;
@@ -4680,7 +4664,7 @@ fn materialize_remote(
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
-            ensure_stream_row(tx, &r.template.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &r.template.stream_id, ts_ms)?;
             if present {
                 update_routine_row(tx, r, lww)?;
             } else {
@@ -4699,7 +4683,7 @@ fn materialize_remote(
         // tombstone flag. That also makes a delete that overtakes its create
         // land as a tombstoned row instead of vanishing.
         InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
-            ensure_stream_row(tx, &b.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &b.stream_id, ts_ms)?;
             upsert_block_row(tx, b, lww)?;
             // Bindings ride along with the full-state Block op, and are written
             // even for Tasks this replica has not materialized yet: a binding
@@ -4743,7 +4727,7 @@ fn materialize_focus_remote(
         InnerOp::FocusStart(f) => {
             // The owning stream row must exist (the session's stream is also
             // its op-log routing stream).
-            ensure_stream_row(tx, &f.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &f.stream_id, ts_ms)?;
             insert_focus_start_row(tx, f, lww)
         }
         InnerOp::FocusEnd(f) => {
@@ -5070,14 +5054,15 @@ fn ref_of(kind: EntityKind, raw: &[u8]) -> EntityRef {
     EntityRef::new(kind, bytes)
 }
 
+/// Materialize a placeholder `streams` row for `stream` if none exists yet.
+///
+/// A no-op when the row is already there: the placeholder exists only so that
+/// an op naming a stream this device never saw created has a row to hang off,
+/// and it must never overwrite a row that already carries real data.
 fn ensure_stream_row(
     tx: &Transaction<'_>,
     stream: &EntityRef,
     now_ms: u64,
-    parent: Option<&EntityRef>,
-    archived: bool,
-    deleted: bool,
-    overwrite: bool,
 ) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = stream.bytes().to_vec();
     let exists: i64 = tx.query_row(
@@ -5085,13 +5070,9 @@ fn ensure_stream_row(
         params![&id_blob],
         |r| r.get(0),
     )?;
-    if exists > 0 && !overwrite {
-        return Ok(());
-    }
     if exists > 0 {
         return Ok(());
     }
-    let parent_blob: Option<Vec<u8>> = parent.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
@@ -5100,9 +5081,9 @@ fn ensure_stream_row(
         params![
             id_blob,
             vec![0u8; 32],
-            parent_blob,
-            archived as i64,
-            deleted as i64,
+            None::<Vec<u8>>,
+            0_i64,
+            0_i64,
             now_ms,
             now_ms,
         ],
@@ -7363,7 +7344,7 @@ impl Engine {
         let stream_bytes = *block.stream_id.bytes();
         let block = block.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &block.stream_id, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &block.stream_id, now_ms)?;
             upsert_block_row(tx, &block, &lww)?;
             replace_block_tasks(tx, &block)?;
             self.ops_insert(
@@ -10968,15 +10949,7 @@ mod tests {
             let e = engine();
             let r = fixed_routine();
             db.with_tx(|tx| {
-                ensure_stream_row(
-                    tx,
-                    &r.template.stream_id,
-                    NOW as u64,
-                    None,
-                    false,
-                    false,
-                    false,
-                )?;
+                ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
                 insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
@@ -16428,15 +16401,7 @@ mod tests {
         let r = fixed_routine();
         for (e, d) in [(&ea, &mut dba), (&eb, &mut dbb)] {
             d.with_tx(|tx| {
-                ensure_stream_row(
-                    tx,
-                    &r.template.stream_id,
-                    NOW as u64,
-                    None,
-                    false,
-                    false,
-                    false,
-                )?;
+                ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
                 insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
