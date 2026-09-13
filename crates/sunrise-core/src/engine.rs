@@ -52,7 +52,7 @@ use crate::config::{Clock, HlcClock, Rng};
 use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
-use crate::keychain::{EnvelopeRecipient, KeySource, Keychain};
+use crate::keychain::{to16, EnvelopeRecipient, KeySource, Keychain};
 use crate::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
     QueryResult, StreamRow,
@@ -109,7 +109,19 @@ use thiserror::Error;
 /// [`sunrise_domain::INBOX_STREAM_BYTES`].
 pub(crate) const META_STREAM: [u8; 16] = [0u8; 16];
 
-/// Upper bound on the trend window a caller may ask for.
+/// Upper end of the trend window, applied as a silent clamp at **both** ends.
+///
+/// Enforcement is the single `weeks.clamp(1, MAX_TREND_WEEKS)` in the trend
+/// query, and nothing above it validates: a caller asking for 500 weeks gets
+/// 104 and a caller asking for 0 gets 1, each with no error and no signal that
+/// the request was rewritten. It is a bound on what the fold will *do*, not on
+/// what a caller may *ask*.
+///
+/// Deliberately unlike [`MAX_EPOCH_LEAP`], which refuses what it cannot accept
+/// and documents the residual that refusal leaves behind. A rewritten chart
+/// window still renders a correct chart of a different size, so there is
+/// nothing for a caller to recover from; a rewritten epoch would be a key the
+/// caller silently does not hold.
 ///
 /// The trend fold re-reads and decrypts op history, so an unbounded `weeks`
 /// would turn one keypress into a full-log scan. Two years is far past the
@@ -254,8 +266,21 @@ pub enum EngineError {
     Keychain(String),
 }
 
-/// One command-application pipeline. Stateless; holds references to the
-/// injected clock + rng so tests can produce deterministic op-ids.
+/// One command-application pipeline.
+///
+/// Owns no state of its own, but it is not a stateless *type*. Three of its four
+/// fields are read-only injected sources a test replaces to get deterministic
+/// op-ids and stamps: `clock`, `hlc` and `rng`. The fourth, `keychain`, is a
+/// shared [`Keychain`] whose Stream-key cache is a `Mutex<HashMap<…>>` written
+/// through `&self` by the `cache_insert` that both
+/// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) and
+/// [`Keychain::absorb_stream_key`](crate::keychain::Keychain::absorb_stream_key)
+/// call. So cloning an `Engine` hands out a second view of one keychain rather
+/// than an independent pipeline.
+///
+/// That the cache is interior-mutable is deliberate, and why — including why it
+/// is allowed to be a superset of the `stream_keys` table — is documented on the
+/// `Keychain::cache` field itself rather than re-argued here.
 #[derive(Clone)]
 pub struct Engine {
     clock: Arc<dyn Clock>,
@@ -1182,6 +1207,16 @@ impl Engine {
     /// gates it would have on first delivery; it is only its *arrival order*
     /// that was wrong. The row is deleted before the retry so a permanently
     /// unopenable op cannot make every subsequent absorb replay it forever.
+    ///
+    /// What that ordering costs is a gap with no transaction over it. The TTL
+    /// sweep is one `with_tx`, the bucket delete is a second, and the
+    /// [`Self::apply_remote_all`] loop runs outside both — so a crash after the
+    /// delete and before the loop finishes loses the parked envelopes on this
+    /// replica. Recovery is the one [`DEFERRED_TOTAL_CAP`] already relies on for
+    /// an evicted op, and for the same reason: a parked op never reached `ops`
+    /// and never advanced the sync cursor, so the relay still counts it as
+    /// undelivered and re-sends it on the next reconnect — by which time the key
+    /// that opens it is already here.
     fn drain_deferred(
         &self,
         db: &mut Db,
@@ -1688,7 +1723,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
 
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             insert_task_row(tx, &task, &lww)?;
             insert_task_contexts(tx, &task)?;
             replace_task_blockers(tx, &task)?;
@@ -1834,15 +1869,7 @@ impl Engine {
 
         let task_for_persist = task.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(
-                tx,
-                &task_for_persist.stream_id,
-                now_ms,
-                None,
-                false,
-                false,
-                false,
-            )?;
+            ensure_stream_row(tx, &task_for_persist.stream_id, now_ms)?;
             update_task_row(tx, &task_for_persist, &lww)?;
             replace_task_contexts(tx, &task_for_persist)?;
             replace_task_blockers(tx, &task_for_persist)?;
@@ -2442,7 +2469,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             insert_routine_row(tx, &routine_clone, now_ms, &lww)?;
             self.ops_insert(
                 tx,
@@ -2534,7 +2561,7 @@ impl Engine {
         let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &stream, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &stream, now_ms)?;
             update_routine_row(tx, &routine_clone, &lww)?;
             self.ops_insert(
                 tx,
@@ -2758,15 +2785,7 @@ impl Engine {
         let clock = self.clock.clone();
         let rng = self.rng.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(
-                tx,
-                &routine.template.stream_id,
-                now_ms,
-                None,
-                false,
-                false,
-                false,
-            )?;
+            ensure_stream_row(tx, &routine.template.stream_id, now_ms)?;
             for (key, at, title_override) in &jobs {
                 let task = build_routine_task(&routine, key, *at, title_override.clone(), now_ms);
                 // Each materialized occurrence is its OWN op, so it gets its own
@@ -2936,7 +2955,7 @@ impl Engine {
         let seq = self.next_seq(db, &stream_bytes)?;
         let lww = self.lww_stamp(seq);
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &start.stream_id, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &start.stream_id, now_ms)?;
             insert_focus_start_row(tx, &start, &lww)?;
             self.ops_insert(
                 tx,
@@ -3800,6 +3819,21 @@ impl Engine {
     }
 }
 
+/// What `EndFocus` derives when the session says the task was finished: the
+/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
+/// completion triggers when the task is a routine occurrence.
+///
+/// Built and consumed entirely on the local command path, by
+/// [`Engine::autocomplete_focused_task`] and its one caller; a replica applying
+/// a `focus.end` op derives nothing, so the remote materialization never sees
+/// one. This is the first module scope after the focus-session methods, which
+/// is as close to them as a method's return type can live.
+struct FocusCompletion {
+    task: Task,
+    inner: Vec<u8>,
+    streak: Option<(Routine, Vec<u8>)>,
+}
+
 // ---- table operations ----
 
 impl Engine {
@@ -4408,15 +4442,6 @@ pub(crate) struct LwwStamp {
     pub seq: u64,
 }
 
-/// What `EndFocus` derives when the session says the task was finished: the
-/// completed Task, its encoded `TaskUpdate` op, and the streak advance the
-/// completion triggers when the task is a routine occurrence.
-struct FocusCompletion {
-    task: Task,
-    inner: Vec<u8>,
-    streak: Option<(Routine, Vec<u8>)>,
-}
-
 /// The stamp stored on a materialized row. `device` is `None` only for a
 /// placeholder row that no real op has yet stamped (the lazily created
 /// inbox/meta stream), which loses to everything.
@@ -4601,7 +4626,7 @@ fn materialize_remote(
     match inner {
         InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) => {
             // The owning stream must exist before the task (FK).
-            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
             if present {
                 update_task_row(tx, t, lww)?;
                 replace_task_contexts(tx, t)?;
@@ -4623,7 +4648,7 @@ fn materialize_remote(
             // whole row is replaced, so two replicas that had diverged on
             // `title` before the delete converge on the deleting replica's
             // state rather than each keeping its own.
-            ensure_stream_row(tx, &t.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
             if present {
                 update_task_row(tx, t, lww)?;
                 replace_task_contexts(tx, t)?;
@@ -4680,7 +4705,7 @@ fn materialize_remote(
             }
         }
         InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
-            ensure_stream_row(tx, &r.template.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &r.template.stream_id, ts_ms)?;
             if present {
                 update_routine_row(tx, r, lww)?;
             } else {
@@ -4699,7 +4724,7 @@ fn materialize_remote(
         // tombstone flag. That also makes a delete that overtakes its create
         // land as a tombstoned row instead of vanishing.
         InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
-            ensure_stream_row(tx, &b.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &b.stream_id, ts_ms)?;
             upsert_block_row(tx, b, lww)?;
             // Bindings ride along with the full-state Block op, and are written
             // even for Tasks this replica has not materialized yet: a binding
@@ -4743,7 +4768,7 @@ fn materialize_focus_remote(
         InnerOp::FocusStart(f) => {
             // The owning stream row must exist (the session's stream is also
             // its op-log routing stream).
-            ensure_stream_row(tx, &f.stream_id, ts_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &f.stream_id, ts_ms)?;
             insert_focus_start_row(tx, f, lww)
         }
         InnerOp::FocusEnd(f) => {
@@ -5050,11 +5075,8 @@ fn actionable_scan(
     Ok(rows
         .into_iter()
         .map(|(raw, open, unblocks)| {
-            let mut bytes = [0u8; 16];
-            let take = raw.len().min(16);
-            bytes[..take].copy_from_slice(&raw[..take]);
             (
-                bytes,
+                blob16(&raw),
                 u32::try_from(open.max(0)).unwrap_or(u32::MAX),
                 u32::try_from(unblocks.max(0)).unwrap_or(u32::MAX),
             )
@@ -5064,20 +5086,18 @@ fn actionable_scan(
 
 /// Widen a stored 16-byte id back into a typed [`EntityRef`].
 fn ref_of(kind: EntityKind, raw: &[u8]) -> EntityRef {
-    let mut bytes = [0u8; 16];
-    let take = raw.len().min(16);
-    bytes[..take].copy_from_slice(&raw[..take]);
-    EntityRef::new(kind, bytes)
+    EntityRef::new(kind, blob16(raw))
 }
 
+/// Materialize a placeholder `streams` row for `stream` if none exists yet.
+///
+/// A no-op when the row is already there: the placeholder exists only so that
+/// an op naming a stream this device never saw created has a row to hang off,
+/// and it must never overwrite a row that already carries real data.
 fn ensure_stream_row(
     tx: &Transaction<'_>,
     stream: &EntityRef,
     now_ms: u64,
-    parent: Option<&EntityRef>,
-    archived: bool,
-    deleted: bool,
-    overwrite: bool,
 ) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = stream.bytes().to_vec();
     let exists: i64 = tx.query_row(
@@ -5085,13 +5105,9 @@ fn ensure_stream_row(
         params![&id_blob],
         |r| r.get(0),
     )?;
-    if exists > 0 && !overwrite {
-        return Ok(());
-    }
     if exists > 0 {
         return Ok(());
     }
-    let parent_blob: Option<Vec<u8>> = parent.map(|p| p.bytes().to_vec());
     tx.execute(
         "INSERT INTO streams
          (stream_id, head_root, last_op_seq,
@@ -5100,9 +5116,9 @@ fn ensure_stream_row(
         params![
             id_blob,
             vec![0u8; 32],
-            parent_blob,
-            archived as i64,
-            deleted as i64,
+            None::<Vec<u8>>,
+            0_i64,
+            0_i64,
             now_ms,
             now_ms,
         ],
@@ -6457,17 +6473,18 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
     jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
 }
 
-/// Widen a stored blob back to a 16-byte id.
-/// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
+/// The first four bytes of a 16-byte id as lowercase hex — **8 characters**,
+/// not a full encoding.
 ///
-/// Not a pad, for the reason given on `keychain::to16`. Its one non-test caller
-/// is [`Engine::emit_key_envelopes`], where a `devices` row whose id is the
-/// wrong length would otherwise be padded to `[0u8; 16]` and get a Stream key
-/// sealed to it.
-fn to16(raw: &[u8]) -> Option<[u8; 16]> {
-    raw.try_into().ok()
-}
-
+/// The canonical producer of the `sender_h` and `subject_h` log fields (see
+/// `sunrise_log::field`), and the short form every `Debug` impl in
+/// [`crate::keychain`] prints.
+///
+/// Named for what it does, deliberately: the unqualified name `hex16`
+/// elsewhere in this workspace (`sunrise_domain::export`,
+/// `sunrise_core_bindings::dto`) takes the same `&[u8; 16]` and emits all
+/// **32** characters. A `hex16` that emitted 8 read like a complete id in a
+/// debug dump, which is why that spelling no longer exists here.
 pub(crate) fn hex_short(b: &[u8; 16]) -> String {
     let mut s = String::with_capacity(8);
     for byte in b.iter().take(4) {
@@ -7363,7 +7380,7 @@ impl Engine {
         let stream_bytes = *block.stream_id.bytes();
         let block = block.clone();
         db.with_tx(|tx| -> rusqlite::Result<()> {
-            ensure_stream_row(tx, &block.stream_id, now_ms, None, false, false, false)?;
+            ensure_stream_row(tx, &block.stream_id, now_ms)?;
             upsert_block_row(tx, &block, &lww)?;
             replace_block_tasks(tx, &block)?;
             self.ops_insert(
@@ -10968,15 +10985,7 @@ mod tests {
             let e = engine();
             let r = fixed_routine();
             db.with_tx(|tx| {
-                ensure_stream_row(
-                    tx,
-                    &r.template.stream_id,
-                    NOW as u64,
-                    None,
-                    false,
-                    false,
-                    false,
-                )?;
+                ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
                 insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
@@ -16428,15 +16437,7 @@ mod tests {
         let r = fixed_routine();
         for (e, d) in [(&ea, &mut dba), (&eb, &mut dbb)] {
             d.with_tx(|tx| {
-                ensure_stream_row(
-                    tx,
-                    &r.template.stream_id,
-                    NOW as u64,
-                    None,
-                    false,
-                    false,
-                    false,
-                )?;
+                ensure_stream_row(tx, &r.template.stream_id, NOW as u64)?;
                 insert_routine_row(tx, &r, NOW as u64, &e.lww_stamp(1))
             })
             .unwrap();
