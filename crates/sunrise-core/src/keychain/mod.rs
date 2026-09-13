@@ -7,7 +7,7 @@
 //! - the **account identity** — `ID_S` (Ed25519) and `ID_D` (X25519), generated
 //!   once per account and independent of every device key,
 //! - this device's id, signing key `D_S` and DH key `D_D`,
-//! - the identity-signed [`DeviceCert`] bytes,
+//! - the identity-signed [`DeviceCert`](sunrise_crypto::DeviceCert) bytes,
 //! - a zeroizing copy of the [`VaultRootKey`] (Core drops its own after
 //!   `Db::open`; the keychain keeps the only live copy), and
 //! - every Stream key this device holds, keyed by `(stream_id, epoch)`.
@@ -28,7 +28,8 @@
 //! They are now **independently random per `(stream_id, epoch)`**, wrapped
 //! under the vault root at rest and distributed between devices by HPKE
 //! `key_envelope` ops. The derivation survives in exactly one place — the
-//! private `legacy_derived_stream_key` below — because a vault written before
+//! private `legacy_derived_stream_key` in the `legacy` submodule — because a
+//! vault written before
 //! this change has ops sealed under those derived keys, and adopting it means
 //! recomputing them once and storing them like any other key.
 //!
@@ -45,20 +46,43 @@
 //!   `"sunrise.local_identity.identity.v1" || identity_id`.
 //! - **stream key** — 32 random bytes; stored as
 //!   `wrap_stream_key(vault_root, key, stream_id, epoch)`.
+//!
+//! ## Module map
+//!
+//! [`Keychain`] itself stays in this file, and so does every `impl` on it. Its
+//! fields are private and nearly every method reads several of them, so moving
+//! methods into siblings would mean publishing the fields of the crate's only
+//! key-custody type to the rest of the crate — a worse trade than a long file.
+//!
+//! What moved out is what never took `&self` and never touched a field:
+//!
+//! - `crypto` — wrapping the device and identity secrets under the vault root,
+//!   and the AAD prefixes that bind each wrapped blob to the id it belongs to.
+//! - `rows` — every `INSERT` and `SELECT` the keychain issues, plus the two row
+//!   structs they load into.
+//! - `device` — minting this device's id, its two keypairs and its cert.
+//! - `legacy` — the pre-ADR-0024 adoption path, deleted whole at 1.0.
+//!
+//! `to16` and `to32` stay here: `to16` is the crate's blob-to-id decoder
+//! and `core` and `engine` reach it as `crate::keychain::to16`.
+
+mod crypto;
+mod device;
+mod legacy;
+mod rows;
 
 use crate::config::{Clock, Rng};
 use crate::engine::hex_short;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{BTreeMap, HashMap};
-use sunrise_crypto::aead::{aead_open_xchacha, aead_seal_xchacha, AEAD_NONCE_LEN};
-use sunrise_crypto::blake3_kdf::derive_key_32;
+use sunrise_crypto::aead::AEAD_NONCE_LEN;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, derive_key, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
-    identity_id_from_pub, key_envelope_info, stream_key_id, unwrap_stream_key, wrap_stream_key,
-    AeadAlgId, DeviceCert, DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError,
-    IdentityDhKeyPair, IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
+    decode_envelope, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
+    identity_id_from_pub, key_envelope_info, unwrap_stream_key, AeadAlgId, DeviceDhKeyPair,
+    DeviceSigningKeyPair, HpkeError, IdentityDhKeyPair, IdentitySigningKeyPair, OpEnvelopeError,
+    StreamKey, VaultRootKey,
 };
 use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_pairing::PairingPayload;
@@ -66,14 +90,22 @@ use sunrise_storage::Db;
 use thiserror::Error;
 use zeroize::Zeroize;
 
-/// AAD prefix binding the wrapped device signing secret to its device id.
-const LOCAL_IDENTITY_AAD_PREFIX: &[u8] = b"sunrise.local_identity.v1";
-/// AAD prefix binding the wrapped device DH secret to its device id.
-const LOCAL_DH_AAD_PREFIX: &[u8] = b"sunrise.local_identity.dh.v1";
-/// AAD prefix binding the wrapped identity secrets to the identity id.
-const IDENTITY_AAD_PREFIX: &[u8] = b"sunrise.local_identity.identity.v1";
-/// Length of a wrapped 32-byte secret: nonce (24) + ciphertext (32) + tag (16).
-const WRAPPED_SECRET_LEN: usize = AEAD_NONCE_LEN + 32 + 16;
+use crypto::{
+    device_aad, device_dh_aad, unwrap_identity, unwrap_secret, wrap_device_secrets, wrap_identity,
+};
+use device::{device_id_from_pub, issue_cert, mint_device_keys};
+use legacy::{legacy_cert_labels, legacy_derived_stream_key, legacy_stream_set, LEGACY_EPOCH};
+use rows::{
+    insert_device_row, insert_identity_row, insert_local_identity_row, insert_stream_key_row,
+    load_account_identity_row, load_identity_row, AccountIdentityRow, IdentityRow,
+};
+// Named only by the tests below and by the test-only `issue_cert_for`: the
+// production cert and Stream-key paths now reach these through `device` and
+// `rows`.
+#[cfg(test)]
+use crypto::wrap_secret;
+#[cfg(test)]
+use sunrise_crypto::{stream_key_id, DeviceCert, DeviceCertInner};
 
 /// Where a Stream key came from. Recorded for forensics, never for policy: a
 /// key opens an op or it does not, whichever route delivered it.
@@ -1406,473 +1438,6 @@ impl Keychain {
             test_derived_keys,
         }
     }
-}
-
-/// The epoch every pre-ADR-0024 op was sealed under.
-const LEGACY_EPOCH: u32 = 1;
-
-/// The pre-ADR-0024 Stream-key derivation.
-///
-/// **Do not call this for anything but legacy adoption.** It is the line
-/// ADR-0024 deletes: because every device holds the vault root, every device
-/// can compute every epoch, so bumping the epoch rotates the ciphertext without
-/// rotating the secret. It survives only because a vault written before the
-/// change has ops sealed under these exact bytes, and adopting it means
-/// recomputing them once.
-///
-/// Every stream a pre-ADR-0024 vault could hold ops for.
-///
-/// The two fixed ids are in the set unconditionally: the vault-meta stream
-/// never has a `streams` row, and the Inbox's only appears once a task has
-/// landed in it.
-///
-/// Delete at 1.0, along with [`Keychain::adopt_legacy_vault`].
-fn legacy_stream_set(db: &Db) -> rusqlite::Result<std::collections::BTreeSet<[u8; 16]>> {
-    let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
-    streams.insert(crate::engine::META_STREAM);
-    streams.insert(INBOX_STREAM_BYTES);
-    let conn = db.conn();
-    for sql in [
-        "SELECT DISTINCT stream_id FROM ops",
-        "SELECT stream_id FROM streams",
-    ] {
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
-        for row in rows {
-            if let Some(id) = to16(&row?) {
-                streams.insert(id);
-            }
-        }
-    }
-    Ok(streams)
-}
-
-/// Delete at 1.0, along with [`Keychain::adopt_legacy_vault`].
-fn legacy_derived_stream_key(
-    vault_root: &VaultRootKey,
-    stream_id: &[u8; 16],
-    epoch: u32,
-) -> StreamKey {
-    let mut km = Vec::with_capacity(32 + 16 + 4);
-    km.extend_from_slice(vault_root.as_bytes());
-    km.extend_from_slice(stream_id);
-    km.extend_from_slice(&epoch.to_be_bytes());
-    let key = derive_key_32("sunrise.stream_key.v1", &km);
-    km.zeroize();
-    StreamKey::from_bytes(key)
-}
-
-/// `device_id = BLAKE3.derive_key("sunrise.device_id.v1", D_S_pub)[..16]`.
-fn device_id_from_pub(d_s_pub: &[u8; 32]) -> [u8; 16] {
-    let bytes = derive_key("sunrise.device_id.v1", d_s_pub, 16);
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    out
-}
-
-fn mint_device_keys(rng: &dyn Rng) -> (DeviceSigningKeyPair, DeviceDhKeyPair, [u8; 16]) {
-    let mut seed = [0u8; 32];
-    rng.fill_bytes(&mut seed);
-    let signing = DeviceSigningKeyPair::from_secret_bytes(&seed);
-    seed.zeroize();
-    let mut dh_seed = [0u8; 32];
-    rng.fill_bytes(&mut dh_seed);
-    let dh = DeviceDhKeyPair::from_secret_bytes(dh_seed);
-    dh_seed.zeroize();
-    let device_id = device_id_from_pub(&signing.public_bytes());
-    (signing, dh, device_id)
-}
-
-fn issue_cert(
-    identity: &Identity,
-    device_id: [u8; 16],
-    signing: &DeviceSigningKeyPair,
-    dh: &DeviceDhKeyPair,
-    now_ms: u64,
-    nickname: &str,
-    platform: &str,
-) -> Result<Vec<u8>, KeychainError> {
-    let body = DeviceCertInner {
-        v: 1,
-        device_id,
-        d_s_pub: signing.public_bytes(),
-        d_d_pub: dh.public_bytes(),
-        identity_id: identity.identity_id,
-        created_at_ms: now_ms,
-        nickname: nickname.to_string(),
-        platform: platform.to_string(),
-    };
-    let cert = DeviceCert::issue(body, &identity.signing)?;
-    Ok(cert.to_cbor()?)
-}
-
-/// Read the nickname/platform out of a legacy self-signed cert so adoption
-/// keeps the device's name rather than renaming it behind the user's back.
-fn legacy_cert_labels(cert_blob: &[u8]) -> (String, String) {
-    DeviceCert::from_cbor(cert_blob).map_or_else(
-        |_| {
-            (
-                "sunrise-device".to_string(),
-                std::env::consts::OS.to_string(),
-            )
-        },
-        |cert| (cert.body.nickname, cert.body.platform),
-    )
-}
-
-fn device_aad(device_id: &[u8; 16]) -> Vec<u8> {
-    prefixed_aad(LOCAL_IDENTITY_AAD_PREFIX, device_id)
-}
-
-fn device_dh_aad(device_id: &[u8; 16]) -> Vec<u8> {
-    prefixed_aad(LOCAL_DH_AAD_PREFIX, device_id)
-}
-
-fn identity_aad(identity_id: &[u8; 16]) -> Vec<u8> {
-    prefixed_aad(IDENTITY_AAD_PREFIX, identity_id)
-}
-
-fn prefixed_aad(prefix: &[u8], id: &[u8; 16]) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(prefix.len() + 16);
-    aad.extend_from_slice(prefix);
-    aad.extend_from_slice(id);
-    aad
-}
-
-fn wrap_secret(vault_root: &VaultRootKey, secret: &[u8; 32], aad: &[u8], rng: &dyn Rng) -> Vec<u8> {
-    let mut nonce = [0u8; AEAD_NONCE_LEN];
-    rng.fill_bytes(&mut nonce);
-    // A 32-byte plaintext never trips the only AEAD error path.
-    let ct = aead_seal_xchacha(vault_root.as_bytes(), &nonce, secret, aad)
-        .expect("aead seal of 32-byte secret");
-    let mut out = Vec::with_capacity(AEAD_NONCE_LEN + ct.len());
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ct);
-    out
-}
-
-fn unwrap_secret(
-    vault_root: &VaultRootKey,
-    wrapped: &[u8],
-    aad: &[u8],
-) -> Result<[u8; 32], KeychainError> {
-    if wrapped.len() != WRAPPED_SECRET_LEN {
-        return Err(KeychainError::WrappedLen);
-    }
-    let (nonce, ct) = wrapped.split_at(AEAD_NONCE_LEN);
-    let mut nonce_arr = [0u8; AEAD_NONCE_LEN];
-    nonce_arr.copy_from_slice(nonce);
-    let pt = aead_open_xchacha(vault_root.as_bytes(), &nonce_arr, ct, aad)
-        .map_err(|_| KeychainError::VaultRootMismatch)?;
-    pt.as_slice()
-        .try_into()
-        .map_err(|_| KeychainError::WrappedLen)
-}
-
-fn wrap_device_secrets(
-    vault_root: &VaultRootKey,
-    signing: &DeviceSigningKeyPair,
-    dh: &DeviceDhKeyPair,
-    device_id: &[u8; 16],
-    rng: &dyn Rng,
-) -> (Vec<u8>, Vec<u8>) {
-    let mut s = signing.secret_bytes();
-    let wrapped_signing = wrap_secret(vault_root, &s, &device_aad(device_id), rng);
-    s.zeroize();
-    let mut d = dh.secret_bytes();
-    let wrapped_dh = wrap_secret(vault_root, &d, &device_dh_aad(device_id), rng);
-    d.zeroize();
-    (wrapped_signing, wrapped_dh)
-}
-
-fn wrap_identity(
-    vault_root: &VaultRootKey,
-    identity: &Identity,
-    rng: &dyn Rng,
-) -> (Vec<u8>, Vec<u8>) {
-    let aad = identity_aad(&identity.identity_id);
-    let mut s = identity.signing.secret_bytes();
-    let wrapped_s = wrap_secret(vault_root, &s, &aad, rng);
-    s.zeroize();
-    // `None` stores a zero-length blob rather than a wrapped zero key: the
-    // column has to distinguish "this device never had the secret" from "the
-    // secret happens to be all zeros", and an empty blob cannot be mistaken
-    // for a nonce-prefixed ciphertext by `unwrap_secret`.
-    let wrapped_d = match identity.dh_secret.as_ref() {
-        Some(dh) => {
-            let mut d = dh.secret_bytes();
-            let w = wrap_secret(vault_root, &d, &aad, rng);
-            d.zeroize();
-            w
-        }
-        None => Vec::new(),
-    };
-    (wrapped_s, wrapped_d)
-}
-
-/// Rebuild the account [`Identity`] from its stored row.
-///
-/// `this_device` is the device id of the vault doing the unwrapping, or `None`
-/// when there is not one yet. `ID_D_priv` is loaded **only** when the row names
-/// that same device as the identity's minter, and this is the runtime half of
-/// what migration 0019 does at rest: the column and the guard have to agree,
-/// because a row that survived the migration's `UPDATE` by some path nobody
-/// anticipated must still not hand a paired device the account's unwrapping
-/// key. A row whose blob is present but whose `minted_by_device_id` says
-/// otherwise is treated exactly as an absent blob, which is the state a paired
-/// device has had since #86.
-fn unwrap_identity(
-    vault_root: &VaultRootKey,
-    row: &AccountIdentityRow,
-    this_device: Option<&[u8; 16]>,
-) -> Result<Identity, KeychainError> {
-    let aad = identity_aad(&row.identity_id);
-    let mut s = unwrap_secret(vault_root, &row.id_s_priv_wrapped, &aad)?;
-    let signing = IdentitySigningKeyPair::from_secret_bytes(&s);
-    s.zeroize();
-    let minted_here = match (row.minted_by_device_id.as_ref(), this_device) {
-        (Some(minter), Some(me)) => minter == me,
-        _ => false,
-    };
-    let dh_secret = if row.id_d_priv_wrapped.is_empty() || !minted_here {
-        None
-    } else {
-        let mut d = unwrap_secret(vault_root, &row.id_d_priv_wrapped, &aad)?;
-        let dh = IdentityDhKeyPair::from_secret_bytes(d);
-        d.zeroize();
-        // Only checkable when the secret is here. On a paired device the
-        // stored `id_d_pub` is what the payload asserted and the Noise channel
-        // is what stands behind it; see `sunrise_pairing::payload`.
-        if dh.public_bytes() != row.id_d_pub {
-            return Err(KeychainError::IdentityIdMismatch);
-        }
-        Some(dh)
-    };
-    let dh_pub: [u8; 32] = row
-        .id_d_pub
-        .as_slice()
-        .try_into()
-        .map_err(|_| KeychainError::IdentityIdMismatch)?;
-    if signing.public_bytes() != row.id_s_pub
-        || identity_id_from_pub(&signing.public_bytes()) != row.identity_id
-    {
-        return Err(KeychainError::IdentityIdMismatch);
-    }
-    Ok(Identity {
-        identity_id: row.identity_id,
-        signing,
-        dh_pub,
-        dh_secret,
-        created_at_ms: row.created_at_ms,
-    })
-}
-
-/// Write the account identity row.
-///
-/// `minted_by` is `Some` only on the two paths that actually generate
-/// `ID_S`/`ID_D` — a founding vault and a pre-0017 vault being adopted — and
-/// `None` when the identity arrived in a `PairingPayload`. It is what lets
-/// [`unwrap_identity`] tell "this row holds the only copy of `ID_D_priv`" from
-/// "this row holds a copy this device should not have", which migration 0018
-/// could not and 0019 backfills.
-fn insert_identity_row(
-    tx: &rusqlite::Transaction<'_>,
-    identity: &Identity,
-    wrapped: &(Vec<u8>, Vec<u8>),
-    minted_by: Option<&[u8; 16]>,
-    now_ms: u64,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO identity
-         (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
-          created_at_ms, minted_by_device_id)
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            &identity.identity_id[..],
-            &identity.signing.public_bytes()[..],
-            &identity.dh_pub[..],
-            wrapped.0,
-            wrapped.1,
-            now_ms,
-            minted_by.map(|d| d.to_vec()),
-        ],
-    )?;
-    Ok(())
-}
-
-fn insert_local_identity_row(
-    tx: &rusqlite::Transaction<'_>,
-    device_id: &[u8; 16],
-    wrapped_signing: &[u8],
-    wrapped_dh: &[u8],
-    cert_blob: &[u8],
-    now_ms: u64,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT INTO local_identity
-         (id, device_id, signing_secret_wrapped, dh_secret_wrapped, cert_blob, created_at_ms)
-         VALUES (1, ?, ?, ?, ?, ?)",
-        params![
-            &device_id[..],
-            wrapped_signing,
-            wrapped_dh,
-            cert_blob,
-            now_ms
-        ],
-    )?;
-    Ok(())
-}
-
-fn insert_device_row(
-    tx: &rusqlite::Transaction<'_>,
-    device_id: &[u8; 16],
-    cert_blob: &[u8],
-    nickname: &str,
-    platform: &str,
-    identity_id: &[u8; 16],
-    d_d_pub: &[u8; 32],
-    now_ms: u64,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO devices
-         (device_id, cert_blob, nickname, platform, created_at_ms,
-          identity_id, d_d_pub)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        params![
-            &device_id[..],
-            cert_blob,
-            nickname,
-            platform,
-            now_ms,
-            &identity_id[..],
-            &d_d_pub[..],
-        ],
-    )?;
-    Ok(())
-}
-
-/// Wrap and store one Stream key. Returns `true` if the row was new.
-fn insert_stream_key_row(
-    tx: &rusqlite::Transaction<'_>,
-    vault_root: &VaultRootKey,
-    stream_id: &[u8; 16],
-    epoch: u32,
-    key: &StreamKey,
-    source: KeySource,
-    rng: &dyn Rng,
-    now_ms: u64,
-) -> rusqlite::Result<bool> {
-    let mut adapter = RngAdapter(rng);
-    // `wrap_stream_key` can only fail on an AEAD size error, impossible for a
-    // 32-byte key.
-    let Ok(wrapped) = wrap_stream_key(vault_root, key, stream_id, epoch, &mut adapter) else {
-        return Ok(false);
-    };
-    let key_id = stream_key_id(key);
-    tx.execute(
-        "INSERT OR IGNORE INTO stream_keys
-         (stream_id, epoch, key_id, wrapped, source, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?)",
-        params![
-            &stream_id[..],
-            epoch,
-            &key_id[..],
-            wrapped,
-            source.as_str(),
-            now_ms
-        ],
-    )?;
-    Ok(tx.changes() > 0)
-}
-
-/// `(device_id, signing_secret_wrapped, dh_secret_wrapped, cert_blob)`.
-struct IdentityRow {
-    device_id: [u8; 16],
-    signing_wrapped: Vec<u8>,
-    dh_wrapped: Option<Vec<u8>>,
-    cert_blob: Vec<u8>,
-}
-
-struct AccountIdentityRow {
-    identity_id: [u8; 16],
-    id_s_pub: [u8; 32],
-    id_d_pub: [u8; 32],
-    id_s_priv_wrapped: Vec<u8>,
-    id_d_priv_wrapped: Vec<u8>,
-    /// The device that minted this identity, or `None` when it was adopted
-    /// from a `PairingPayload`. Migration 0019 backfills it from
-    /// `stream_keys.source`; see that file for why that is a proof and not a
-    /// guess.
-    minted_by_device_id: Option<[u8; 16]>,
-    /// When this identity was minted, ms since the epoch.
-    created_at_ms: u64,
-}
-
-fn load_identity_row(db: &Db) -> Result<Option<IdentityRow>, KeychainError> {
-    let row = db
-        .conn()
-        .query_row(
-            "SELECT device_id, signing_secret_wrapped, dh_secret_wrapped, cert_blob
-             FROM local_identity WHERE id = 1",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, Option<Vec<u8>>>(2)?,
-                    r.get::<_, Vec<u8>>(3)?,
-                ))
-            },
-        )
-        .optional()?;
-    row.map(|(d, s, dh, c)| {
-        Ok(IdentityRow {
-            device_id: to16(&d).ok_or(KeychainError::CorruptRow("local_identity.device_id"))?,
-            signing_wrapped: s,
-            dh_wrapped: dh,
-            cert_blob: c,
-        })
-    })
-    .transpose()
-}
-
-fn load_account_identity_row(db: &Db) -> Result<Option<AccountIdentityRow>, KeychainError> {
-    let row = db
-        .conn()
-        .query_row(
-            "SELECT identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
-                    minted_by_device_id, created_at_ms
-             FROM identity WHERE id = 1",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, Vec<u8>>(2)?,
-                    r.get::<_, Vec<u8>>(3)?,
-                    r.get::<_, Vec<u8>>(4)?,
-                    r.get::<_, Option<Vec<u8>>>(5)?,
-                    r.get::<_, i64>(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    row.map(|(id, sp, dp, sw, dw, mb, created_at_ms)| {
-        Ok(AccountIdentityRow {
-            identity_id: to16(&id).ok_or(KeychainError::CorruptRow("identity.identity_id"))?,
-            id_s_pub: to32(&sp).ok_or(KeychainError::CorruptRow("identity.id_s_pub"))?,
-            id_d_pub: to32(&dp).ok_or(KeychainError::CorruptRow("identity.id_d_pub"))?,
-            id_s_priv_wrapped: sw,
-            id_d_priv_wrapped: dw,
-            // A malformed blob reads as "not this device", which withholds the
-            // key rather than granting it. Every other short blob in this
-            // loader is a `CorruptRow`, because every other one names something
-            // the vault cannot work without.
-            minted_by_device_id: mb.as_deref().and_then(to16),
-            created_at_ms: u64::try_from(created_at_ms).unwrap_or(0),
-        })
-    })
-    .transpose()
 }
 
 /// A 16-byte id read out of a DB blob, or `None` if the blob is not 16 bytes.
