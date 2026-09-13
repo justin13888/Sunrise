@@ -79,10 +79,10 @@ Ops signed by the old device key stand until that op is emitted; after it, every
 mechanisms and the spec has previously conflated them. At the relay, revocation
 arrives through the account API and never through the op: `DELETE
 /api/v1/devices/{device_id}` sets `revoked = 1` on the relay's own `devices` row
-(`crates/sunrise-server/src/store.rs`), `Store::active_device` filters on it,
+(`crates/sunrise-server/src/store/devices.rs`), `Store::active_device` filters on it,
 and that refuses every subsequent signed request
 (`crates/sunrise-server/src/api/signed.rs`) and ends a live SSE session with
-`AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync.rs`). It is a
+`AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync/stream.rs`). It is a
 time-less binary flag on relay metadata the relay already holds, not a content
 check, and it refuses the *device's credential* rather than ops signed by a
 superseded key. In the vault, the matching check would be the receiving client's

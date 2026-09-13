@@ -78,7 +78,7 @@ absence of a disconnect. The operation is gated on the optional
 `SrvTokenRefresh` capability bit, which the server ORs into its negotiated set
 at `POST /sync/session` — a client only refreshes after seeing that bit agreed,
 so a refresh cannot be silently swallowed by a server that predates it.
-Implemented as `refresh` in `crates/sunrise-server/src/api/sync.rs`, specified in
+Implemented as `refresh` in `crates/sunrise-server/src/api/sync/credential.rs`, specified in
 [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by that
 module's own tests — `a_refresh_extends_the_session`,
 `an_unverifiable_refresh_is_refused_but_keeps_the_session`,

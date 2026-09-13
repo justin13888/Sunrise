@@ -10,7 +10,7 @@ upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes
 waiting on an implementation: it is what runs. The client is `SseTransport`
 (`crates/sunrise-sync/src/sse.rs`), used by `sunrise-cli`, the Apple apps
 through `sunrise-core-bindings`, and the `sunrise-e2e` suite; the server is
-`crates/sunrise-server/src/api/sync.rs` over `crates/sunrise-server/src/sync_session.rs`.
+`crates/sunrise-server/src/api/sync/` over `crates/sunrise-server/src/sync_session.rs`.
 
 The WebSocket is gone rather than being replaced. `crates/sunrise-server/src/ws.rs`
 was deleted, and neither `axum` nor `tokio-tungstenite` resolves in `Cargo.lock`
@@ -69,7 +69,7 @@ path would re-enter.
 
 **Keepalive is implemented, and it is a comment rather than a frame.** The
 stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
-(`crates/sunrise-server/src/api/sync.rs:64-69`, `:570-574`). The `0x0C Ping` /
+(`crates/sunrise-server/src/api/sync/stream.rs:26-31`, `:167-171`). The `0x0C Ping` /
 `0x0D Pong` pair still exists in the message catalog and both sides still answer
 one, but neither sends one unprompted: a comment does the same job — stopping an
 intermediary from reaping an idle connection — with no frame type and nothing

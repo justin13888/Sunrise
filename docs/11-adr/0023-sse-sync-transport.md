@@ -77,11 +77,11 @@ rename of machinery that exists and is tested, not new machinery.
 **Amended (2026-09):** the `Subscribe` row was absent when this ADR was
 written and is added here to match what shipped. `POST /api/v1/sync/subscribe`
 is its own operation keyed by session
-(`crates/sunrise-server/src/api/sync.rs`; `subscribeStreams` in
-`schemas/generated/openapi.v1.json`), and the module header there carries the same
-mapping. The socket's `Subscribe` frame carried the same stream set and
-cursors, so this is that frame's replacement rather than a new capability —
-the table was incomplete, not the build.
+(`crates/sunrise-server/src/api/sync/cursors.rs`; `subscribeStreams` in
+`schemas/generated/openapi.v1.json`), and the module header in `api/sync/mod.rs`
+carries the same mapping. The socket's `Subscribe` frame carried the same
+stream set and cursors, so this is that frame's replacement rather than a new
+capability — the table was incomplete, not the build.
 
 The negotiated-session state that `Hello` established once per connection moves
 into `POST /sync/session`, which returns a session id the SSE stream carries.
@@ -130,6 +130,6 @@ reader checking the mapping will be looking.
 
 This corrects the record, not the build: `POST /api/v1/sync/subscribe` shipped
 as its own session-keyed operation, is in `schemas/generated/openapi.v1.json` as
-`subscribeStreams`, and `crates/sunrise-server/src/api/sync.rs` has carried the
+`subscribeStreams`, and `crates/sunrise-server/src/api/sync/mod.rs` has carried the
 complete mapping in its module header since it was written. The implementation
 was never ambiguous about it; this ADR was.

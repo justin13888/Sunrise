@@ -56,7 +56,7 @@ with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
 (`crates/sunrise-sync/src/sse.rs:320-366`). Both bypass the canonicality check
 every other payload gets. The server sees neither frame — `POST /sync/session`
 takes a typed body and rebuilds a `Hello` from its fields
-(`crates/sunrise-server/src/api/sync.rs`) — so the handshake's two hops through
+(`crates/sunrise-server/src/api/sync/credential.rs`) — so the handshake's two hops through
 `ciborium` now happen on one side of the wire, between the driver and the
 adapter that speaks HTTP for it.
 
@@ -245,7 +245,7 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 ### Partial OpBatch on disconnect
 
-A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
+A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync/publish.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
 Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 
@@ -291,7 +291,7 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock` (`crates/sunrise-server/src/api/sync.rs:419`). This is **not** part
+relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:223`). This is **not** part
 of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
 per op.
 
@@ -307,7 +307,7 @@ parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 ## Connection lifecycle
 
 Five typed operations, one of them a stream — four `POST`s and a `GET`, all
-under `/api/v1/` and all in `crates/sunrise-server/src/api/sync.rs`. There is no
+under `/api/v1/` and all in `crates/sunrise-server/src/api/sync/`. There is no
 upgrade and no handshake frame on the wire; the exchange below is what replaced
 them under [ADR-0023](../11-adr/0023-sse-sync-transport.md).
 
@@ -359,7 +359,7 @@ than modelling them as a frame.
 
 The `: sunrise` comment is what replaced `Ping`/`Pong`, and it is an **idle
 timer, not an interval**: every emitted event restarts the 15 s countdown
-(`KEEP_ALIVE_SECS`, `crates/sunrise-server/src/api/sync.rs`), so a stream
+(`KEEP_ALIVE_SECS`, `crates/sunrise-server/src/api/sync/stream.rs`), so a stream
 delivering ops continuously sends no comment at all. A conformance test or a
 proxy healthcheck that expects one within every 15 s window will fail against a
 correct server; what the server promises is that a *silent* stream produces one

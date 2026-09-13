@@ -19,15 +19,15 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync.rs:484`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:278`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
 `Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:143`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
-(`crates/sunrise-server/src/api/sync.rs:451`).
+(`crates/sunrise-server/src/api/sync/publish.rs:207-217`).
 
-`relay_batches` (`crates/sunrise-server/src/store.rs:214`) is keyed
+`relay_batches` (`crates/sunrise-server/src/relay_log.rs:110`) is keyed
 `(account_h, stream_id, ops_h)` and holds `frame_id` as a
 `REFERENCES relay_frames(id) ON DELETE CASCADE`. That is the property worth
 naming: the dedup window and the replay window are the same window by
@@ -53,7 +53,7 @@ partition, and any op authored between attempts changes the partition. The
 length-prefixing is not the problem and is doing its own job: it is what stops a
 *differently* partitioned batch colliding with another one, which the test
 `a_batch_with_different_ops_is_never_deduped`
-(`crates/sunrise-server/src/api/sync.rs`) guards.
+(`crates/sunrise-server/src/api/sync/suite.rs`) guards.
 
 ### What the cost of not fixing it actually is
 
@@ -73,7 +73,7 @@ retention — 30 days and 256 MiB per channel
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
-`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync.rs:452`)
+`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync/publish.rs:208`)
 counts the re-sends the batch key *did* catch, and nothing counts the ones it did
 not — a re-partitioned re-send is indistinguishable, at the relay, from ordinary
 new work.
@@ -106,7 +106,7 @@ anything: a batch `[O1, O2]` with `O1` already seen still has to be stored and
 fanned out for `O2`'s sake, so the disk this was meant to save is still spent.
 To actually save it the relay would have to **filter `O1` out and re-encode the
 frame** — which it is technically able to do, since the REST path already
-rebuilds the frame server-side (`crates/sunrise-server/src/api/sync.rs:391-401`)
+rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:126-137`)
 — and that is where the cost lands:
 
 - `Appended` becomes three-valued, because "partly fresh" is now a real answer,

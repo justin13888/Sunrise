@@ -26,7 +26,7 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 
 ## What the server *can* see (metadata)
 
-This is honest disclosure to users, not a defect. The list is the relay's actual schema (`crates/sunrise-server/src/store.rs`), not a summary of it:
+This is honest disclosure to users, not a defect. The list is the relay's actual schema (`crates/sunrise-server/src/store/` and `crates/sunrise-server/src/relay_log.rs`), not a summary of it:
 
 - **Account email** — `accounts.email`, plaintext, plus the OIDC subject that identifies the user to the issuer: `accounts.oidc_iss` and `accounts.oidc_sub`.
 - **Per device:** its id, its **vault-side device id** (`devices.vault_device_id`, when the device supplied one), its **public keys** (`device_pub_s`, `device_pub_d`), its **nickname** — a free-form human-readable device name — its **platform**, its reported **app version**, and created/last-seen timestamps. The `device_cert` is stored too, as opaque `TEXT` the server never parses or verifies.

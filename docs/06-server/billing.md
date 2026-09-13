@@ -10,8 +10,8 @@ status: proposed
 > work, not a description of anything that ships.
 >
 > **What exists in the tree:** `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'`
-> column (`crates/sunrise-server/src/store.rs:157`) that `resolve_account` sets
-> to `"free"` (`store.rs:331`) and that is read exactly once, to echo onto
+> column (`crates/sunrise-server/src/store/accounts.rs:28`) that `resolve_account`
+> sets to `"free"` (`accounts.rs:107`) and that is read exactly once, to echo onto
 > `AccountInfo` (`api/accounts.rs:86`). Nothing else: no Stripe client, no
 > `processed_stripe_events` table, no webhook route, no quota accounting.
 >
