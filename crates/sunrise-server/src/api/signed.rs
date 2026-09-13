@@ -103,6 +103,24 @@ pub struct DeviceSig {
 /// against, and an id that is not an active row on that account resolves to
 /// nothing. A caller cannot borrow another account's device by naming it.
 ///
+/// # Effects
+///
+/// Not a pure check. A verification that succeeds **writes**: the resolved
+/// device's last-seen stamp is bumped through `Store::touch_device`, so every
+/// signed route pays one SQLite `UPDATE` inside the request, on the store's
+/// single mutex-guarded connection. That is the cost this imposes on the whole
+/// signed surface, and it is worth knowing before adding another route to it.
+///
+/// That write's result is deliberately discarded. A failed touch leaves the
+/// stamp stale and the request still succeeds — device liveness is a
+/// diagnostic, not something to fail an otherwise valid request over — but it
+/// also means the failure is silent and never reaches a log.
+///
+/// A verification that fails at the signature itself increments
+/// `sunrise_device_sig_rejected_total` and emits
+/// `srv.auth.device_sig_rejected`, so the metrics registry is mutated on that
+/// path too.
+///
 /// # Errors
 /// A `401` [`ApiError::Unauthenticated`] in every failing case; only the *code*
 /// it carries varies. `AUTH_DEVICE_SIG_INVALID` says "the signature, not the
@@ -140,7 +158,7 @@ pub fn verify<T: serde::Serialize>(
 /// hashing assert the same property from the other direction.
 ///
 /// # Errors
-/// As [`verify`].
+/// As [`verify`], as are the effects: this is the function that performs them.
 pub fn verify_bytes(
     state: &ServerState,
     principal: &Principal,
