@@ -66,7 +66,7 @@ pub use control_op::{
 pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
-pub use keychain::{KeySource, Keychain, KeychainError, SuccessorPublics};
+pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
     StreamRow,

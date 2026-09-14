@@ -57,8 +57,8 @@ pub use payload::{
     MAX_PAIRING_PAYLOAD,
 };
 pub use protocol::{
-    decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingGrant, PairingOffer,
-    PairingRequest,
+    decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingGrant,
+    PairingJoiner, PairingOffer, PairingRequest,
 };
 pub use qr::{decode_qr_payload, encode_qr_payload, QrPayload, QrPayloadError, MAGIC_V1_HEX};
 pub use rate_limit::{account_email_hash, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY};

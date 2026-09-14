@@ -180,7 +180,7 @@ impl Core {
         // Ordinarily a no-op: it returns immediately when this device already
         // signs under the chain head, which is every open but the first after a
         // rotation it did not itself emit.
-        db.with_tx(|tx| engine.recompute_identity_head(tx, cfg.clock.now_ms()))?;
+        db.with_tx(|tx| engine.recompute_identity_head(tx))?;
         engine.publish_device_cert(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
@@ -606,21 +606,92 @@ impl Core {
         self.engine.keychain().export_vault_root_for_pairing()
     }
 
-    /// Everything a device being paired needs: the account identity, every
-    /// Stream key this device holds, and the vault root.
+    /// Message 1 of a pairing: this account's identity, public halves only.
     ///
     /// **This reads.** Showing a pairing code is not a commitment to pair, so
     /// it leaves nothing behind: a user who opens the screen and closes it has
     /// not changed their vault and has emitted nothing for the other devices to
-    /// absorb. The base epochs the payload has to carry are minted at
+    /// absorb. The base epochs the grant has to carry are minted at
     /// [`Self::open`] instead — they are a property of the vault rather than of
     /// this call, and were the only reason this function ever wrote.
     ///
+    /// It also no longer carries anything worth stealing. The vault root, the
+    /// Stream keys and the joiner's cert all move in
+    /// [`Self::issue_pairing_grant`], which runs only on a request this device
+    /// accepted — and `ID_S_priv` moves nowhere at all, which is `#105`.
+    ///
     /// # Errors
-    /// Storage failures reading this device's labels.
-    pub fn export_pairing_payload(&self) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+    /// Storage failures reading this device's labels or the fold anchor.
+    pub fn export_pairing_offer(&self) -> Result<sunrise_pairing::PairingOffer, CoreError> {
         let db = self.db.lock();
-        Ok(self.engine.keychain().export_pairing_payload(&db)?)
+        Ok(self.engine.keychain().export_pairing_offer(&db)?)
+    }
+
+    /// Message 3 of a pairing: issue the joiner's `DeviceCert` and hand over
+    /// the account.
+    ///
+    /// The step only a device holding `ID_S_priv` can perform, which since
+    /// `#105` is the device that created the account and no other. A vault
+    /// admitted by pairing answers [`CoreError`] here rather than sponsoring,
+    /// and that is the property, not a limitation to route around.
+    ///
+    /// **This reads too.** Issuing a cert is the sponsor signing a statement
+    /// about a device that does not exist yet as far as the op log is
+    /// concerned; the `device_cert` op that makes it real is published by the
+    /// *joiner* at its own first open, through the ordinary path. So a sponsor
+    /// that issues a grant to a user who then abandons the pairing has emitted
+    /// nothing and has no orphan device row to clean up.
+    ///
+    /// # Errors
+    /// [`CoreError`] wrapping `KeychainError::IdentitySigningKeyAbsent` on a
+    /// device admitted by pairing, `IdentityConflict` when the request answers
+    /// another account's offer, and storage failures.
+    pub fn issue_pairing_grant(
+        &self,
+        request: &sunrise_pairing::PairingRequest,
+    ) -> Result<sunrise_pairing::PairingGrant, CoreError> {
+        Ok(self
+            .engine
+            .keychain()
+            .issue_pairing_grant(request, self.now_ms())?)
+    }
+
+    /// Whether this vault can sponsor a pairing at all.
+    ///
+    /// False on a vault admitted by pairing, which holds `ID_S_pub` and no
+    /// signing key — `#105`. A client should read this before offering an "add a
+    /// device" affordance rather than let the user walk a handshake to the point
+    /// where the grant fails.
+    #[must_use]
+    pub fn can_sponsor_pairing(&self) -> bool {
+        self.engine.keychain().can_rotate_identity()
+    }
+
+    /// Run a whole pairing against this vault in one process.
+    ///
+    /// See [`crate::keychain::Keychain::pair_device_in_process`]: the same four
+    /// calls a real driver makes, with no transport between them. Test support,
+    /// and the seam `sunrise-e2e` builds its two-replica fixtures on.
+    ///
+    /// # Errors
+    /// [`CoreError`] wrapping whatever the keychain refuses — including a
+    /// sponsor that holds no `ID_S_priv`.
+    pub fn pair_device_in_process(
+        &self,
+        nickname: String,
+        platform: String,
+        seed_s: [u8; 32],
+        seed_d: [u8; 32],
+    ) -> Result<sunrise_pairing::PairingPayload, CoreError> {
+        let db = self.db.lock();
+        Ok(self.engine.keychain().pair_device_in_process(
+            &db,
+            nickname,
+            platform,
+            seed_s,
+            seed_d,
+            self.now_ms(),
+        )?)
     }
 
     /// This device's identity-signed cert (canonical CBOR).
@@ -1126,13 +1197,17 @@ mod tests {
     /// The three counters are compared rather than one because the write took
     /// three forms: a `stream_keys` row, an op, and an outbox entry.
     #[tokio::test]
-    async fn export_pairing_payload_does_not_write() {
+    async fn assembling_a_pairing_grant_does_not_write() {
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
 
         let before = vault_footprint(&core);
-        let payload = core.export_pairing_payload().unwrap();
-        let again = core.export_pairing_payload().unwrap();
+        let payload = core
+            .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+            .unwrap();
+        let again = core
+            .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+            .unwrap();
         let after = vault_footprint(&core);
 
         assert_eq!(
@@ -1157,7 +1232,9 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-        let payload = core.export_pairing_payload().unwrap();
+        let payload = core
+            .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+            .unwrap();
 
         assert!(
             payload.stream_keys.contains_key(&[0u8; 16]),
