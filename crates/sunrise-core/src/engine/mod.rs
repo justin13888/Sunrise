@@ -94,7 +94,7 @@ mod task;
 mod tests;
 
 // `META_STREAM` and `hex_short` are named from outside `engine` — `core.rs`,
-// `keychain.rs` and `sync_driver.rs` — so the path they name has to keep
+// `keychain/` and `sync_driver.rs` — so the path they name has to keep
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
 // moved to `ids` and is re-exported here at its old name.
 pub(crate) use self::ids::hex_short;

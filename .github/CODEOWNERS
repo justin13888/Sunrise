@@ -29,12 +29,19 @@
 /crates/sunrise-http-sig/                @justin13888
 /crates/sunrise-storage/migrations/      @justin13888
 
-# Pairing and onboarding: the key-distribution path. `keychain.rs` holds the
+# Pairing and onboarding: the key-distribution path. `keychain/` holds the
 # vault root and `vault_lock.rs` guards single-writer access, so both belong
 # under the same gate as the pairing crate itself.
 /crates/sunrise-pairing/                 @justin13888
 /crates/sunrise-onboarding/              @justin13888
-/crates/sunrise-core/src/keychain.rs     @justin13888
+# The directory rather than any one file in it. The split moved
+# `unwrap_identity`, `wrap_secret` and `wrap_identity` into `keychain/crypto.rs`
+# and the device-minting path into `keychain/device.rs`, so a pattern naming the
+# old `keychain.rs` would match nothing — and GitHub reports no error for a
+# CODEOWNERS pattern that matches nothing, so the rule would have gone inert
+# with nothing to notice it. Naming the directory keeps it covering the whole
+# surface however the files inside are arranged next.
+/crates/sunrise-core/src/keychain/       @justin13888
 /crates/sunrise-core/src/vault_lock.rs   @justin13888
 
 # The gates themselves. A change that weakens a check should be as visible as a
