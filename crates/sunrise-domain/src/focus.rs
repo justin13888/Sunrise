@@ -1156,6 +1156,15 @@ mod tests {
         assert_eq!(Segment::Work.kind(), FocusKind::Work);
         assert_eq!(Segment::LongBreak.kind(), FocusKind::Break);
         assert_eq!(Segment::ShortBreak.default_ms(), SHORT_BREAK_MS);
+        // The other two arms, which nothing read: a long break that lasted
+        // five minutes, or a work segment that lasted twenty-five seconds,
+        // would have passed. `LONG_BREAK_MS` had no reader at all.
+        assert_eq!(Segment::LongBreak.default_ms(), LONG_BREAK_MS);
+        assert_eq!(Segment::Work.default_ms(), POMODORO_MS);
+        assert_ne!(
+            SHORT_BREAK_MS, LONG_BREAK_MS,
+            "the two breaks must differ or the arms are indistinguishable"
+        );
     }
 
     // ---- planner ----
