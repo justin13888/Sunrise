@@ -18,9 +18,22 @@
 //!
 //! **Round-trip fidelity only.** Panic-freedom on arbitrary *strings* is not
 //! this file's job and is not asserted here: `fuzz/fuzz_targets/rrule.rs`
-//! already owns it, and `docs/10-cross-cutting/testing.md` §Fuzzing records
-//! that division of labour. Adding a second, weaker version of it here would
-//! put two answers in the repository for one question.
+//! already owns it, and `docs/10-cross-cutting/testing.md` §Convergence
+//! property-test determinism records that division of labour — a property test
+//! generates *valid* structures, a fuzzer generates arbitrary bytes. Adding a
+//! second, weaker version of it here would put two answers in the repository
+//! for one question.
+//!
+//! **This file pins what `RRule::parse` accepts, which is more than RFC 5545
+//! allows.** The strategies below deliberately draw shapes the RFC forbids or
+//! leaves undefined — `BYMONTHDAY` containing `0`, `COUNT` of `0`, `BYSETPOS`
+//! on a `DAILY` rule, and `COUNT` and `UNTIL` both present — because
+//! `RRule::parse` validates only `INTERVAL != 0` and the round trip has to
+//! hold for every rule this build can actually hold. The consequence is worth
+//! stating out loud: **hardening `parse` to reject any of those will fail this
+//! property test**, and the failure will read as a round-trip regression when
+//! it is really an intentional tightening. If that is what you are doing,
+//! narrow the strategy in the same commit rather than chasing the assertion.
 
 #![allow(clippy::unwrap_used)]
 

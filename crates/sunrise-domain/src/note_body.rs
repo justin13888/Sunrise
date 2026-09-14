@@ -1273,13 +1273,16 @@ mod tests {
                 // The half the comment above claims and the test used to drop
                 // on the floor. Three of these four inputs take this branch,
                 // so without it the loop asserted one case and silently
-                // skipped the rest. A caller holding a Lossy body keeps its
-                // original bytes; the render it got back is a view, and
-                // producing it must not have consumed or rewritten anything.
-                assert_eq!(
-                    body.0, bytes,
-                    "a Lossy decode must leave the caller's bytes untouched"
-                );
+                // skipped the rest.
+                //
+                // The other half of the interlock — that a Lossy decode leaves
+                // the caller's bytes alone — is deliberately *not* asserted
+                // here, because it cannot fail. `decode` takes `&NoteBody`, so
+                // the borrow checker already forbids it; an `assert_eq!(body.0,
+                // bytes)` after a `NoteBody(bytes.clone())` compares a value to
+                // its own clone and would pass against any implementation.
+                // Writing it would be the vacuous kind of characterization this
+                // file exists to remove.
                 assert_ne!(
                     encode(&doc.blocks).0,
                     bytes,

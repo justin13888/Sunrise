@@ -605,8 +605,10 @@ mod tests {
 
     /// The cap is on the **wait**, not on the window.
     ///
-    /// Worth stating, because the constant's own doc reads as if a long quiet
-    /// window drops everything inside it. It does not: the 22:00..07:00 window
+    /// Worth stating, because [`apply_quiet_hours`]'s own doc reads as if a
+    /// long quiet window drops everything inside it — "if the window is longer
+    /// than the cap". [`QUIET_HOURS_QUEUE_CAP_S`]'s doc is accurate; the
+    /// function's is the one that misleads. It does not: the 22:00..07:00 window
     /// here is nine hours long, and a notification landing three hours before
     /// its end still fires. What is measured is `end - at`, from the
     /// notification's own time — so the same window queues a 06:15 and drops a
