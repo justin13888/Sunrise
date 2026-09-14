@@ -20,8 +20,31 @@
 //!     7: tstr,            ; nickname of the sending device
 //!     8: tstr,            ; platform of the sending device
 //!     9: bstr .size 32,   ; vault_root
+//!    10: bstr .size 16,   ; genesis_identity_id
+//!    11: bstr .size 32,   ; genesis_id_s_pub
 //! }
 //! ```
+//!
+//! # Why the genesis travels (fields 10 and 11)
+//!
+//! Since ADR-0032 an account's identity is a *chain*, not a value: a rotation
+//! mints a successor and the old identity is retired. Every replica folds that
+//! chain from a fixed point — `identity.genesis_identity_id`, with
+//! `genesis_id_s_pub` beside it so the first link's signature can be checked —
+//! because the identity *in force* moves and a chain read from a moving anchor
+//! is not a chain.
+//!
+//! Fields 5 and 4 carry the identity in force, which is what the joining device
+//! needs to sign and seal with. They are not the genesis once the account has
+//! rotated even once, and a device paired after a rotation used to record the
+//! identity it happened to join at as its own anchor. Two replicas of one
+//! account then folded from different starting points and disagreed about who
+//! the account was — silently, because each was internally consistent.
+//!
+//! So the genesis travels explicitly. The receiver recomputes
+//! `identity_id_from_pub(genesis_id_s_pub)` and refuses a payload where the two
+//! disagree, exactly as it already does for field 5: both are values the sender
+//! chose, and neither is believed.
 //!
 //! # Why `ID_S_priv` travels and `ID_D_priv` does not
 //!
@@ -128,6 +151,14 @@ pub enum PairingPayloadError {
     /// and files itself under a different one.
     #[error("pairing payload identity_id does not match its ID_S_pub")]
     IdentityMismatch,
+    /// `genesis_identity_id` is not the id derived from `genesis_id_s_pub`.
+    ///
+    /// Checked for the same reason [`Self::IdentityMismatch`] is: both are
+    /// values the sender chose, and a mismatched pair would anchor the
+    /// receiver's identity-chain fold at a point no other replica of the
+    /// account can reach.
+    #[error("pairing payload genesis_identity_id does not match its genesis ID_S_pub")]
+    GenesisMismatch,
     /// The encoded payload does not fit in one Noise transport message.
     ///
     /// Surfaced rather than silently truncated. Chunking it across several
@@ -158,8 +189,23 @@ pub struct PairingPayload {
     pub id_s_pub: [u8; 32],
     /// `ID_D_pub`.
     pub id_d_pub: [u8; 32],
-    /// The account's identity id.
+    /// The account's identity id — the one **in force**, which is what the
+    /// joining device signs and seals under.
     pub identity_id: [u8; 16],
+    /// The identity the account **started** as, which no rotation changes.
+    ///
+    /// The fold anchor (`identity.genesis_identity_id`, migration 0022). Equal
+    /// to `identity_id` on an account that has never rotated, and deliberately
+    /// carried anyway rather than inferred: "equal unless rotated" is a rule
+    /// the receiver would have to know, and it has no way to tell.
+    pub genesis_identity_id: [u8; 16],
+    /// `ID_S_pub` of the genesis identity (migration 0023).
+    ///
+    /// The fold checks each link's `prev_sig` under the previous link's key,
+    /// and the genesis key is in no transition row — it is nobody's successor.
+    /// Without it a device paired into a rotated account could never verify a
+    /// cert issued before the rotation it joined after.
+    pub genesis_id_s_pub: [u8; 32],
     /// The vault root, which still keys the local database and wraps
     /// everything at rest.
     pub vault_root: [u8; 32],
@@ -184,6 +230,8 @@ impl Zeroize for PairingPayload {
         self.id_s_pub.zeroize();
         self.id_d_pub.zeroize();
         self.identity_id.zeroize();
+        self.genesis_identity_id.zeroize();
+        self.genesis_id_s_pub.zeroize();
         self.vault_root.zeroize();
         for epochs in self.stream_keys.values_mut() {
             for key in epochs.values_mut() {
@@ -251,6 +299,8 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
         (int(7), Value::Text(p.nickname.clone())),
         (int(8), Value::Text(p.platform.clone())),
         (int(9), Value::Bytes(p.vault_root.to_vec())),
+        (int(10), Value::Bytes(p.genesis_identity_id.to_vec())),
+        (int(11), Value::Bytes(p.genesis_id_s_pub.to_vec())),
     ];
     let mut out = Vec::with_capacity(512);
     ciborium::ser::into_writer(&Value::Map(map), &mut out)
@@ -288,6 +338,8 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     let mut id_s_pub: Option<[u8; 32]> = None;
     let mut id_d_pub: Option<[u8; 32]> = None;
     let mut identity_id: Option<[u8; 16]> = None;
+    let mut genesis_identity_id: Option<[u8; 16]> = None;
+    let mut genesis_id_s_pub: Option<[u8; 32]> = None;
     let mut vault_root: Option<[u8; 32]> = None;
     let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
     let mut nickname: Option<String> = None;
@@ -341,20 +393,27 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             (7, Value::Text(s)) => nickname = Some(s),
             (8, Value::Text(s)) => platform = Some(s),
             (9, Value::Bytes(b)) => vault_root = Some(arr32(&b, "vault_root")?),
+            (10, Value::Bytes(b)) => {
+                genesis_identity_id = Some(arr16(&b, "genesis_identity_id")?);
+            }
+            (11, Value::Bytes(b)) => {
+                genesis_id_s_pub = Some(arr32(&b, "genesis_id_s_pub")?);
+            }
             // The reserved range: every field this version defines, plus the
             // burned field 2. A value in it that matched none of the arms
             // above is either the wrong CBOR shape for a field we know or the
             // burned key itself, and both are errors rather than things to
             // ignore.
             //
-            // The upper bound moves when a field is added -- a future field 10
-            // needs `(1..=10)`. The **lower** bound and field 2's membership do
-            // not move: shrinking the range past 2, or special-casing 2 into
-            // the ignore arm, makes a payload carrying `ID_D_priv` decode
+            // The upper bound moves when a field is added -- it moved to 11
+            // when the genesis anchor arrived, and a future field 12 needs
+            // `(1..=12)`. The **lower** bound and field 2's membership do not
+            // move: shrinking the range past 2, or special-casing 2 into the
+            // ignore arm, makes a payload carrying `ID_D_priv` decode
             // successfully with the key dropped, which is exactly the state
             // `#76` was filed about.
             // `a_payload_still_carrying_the_burned_id_d_priv_is_refused` pins it.
-            (id, _) if (1..=9).contains(&id) => {
+            (id, _) if (1..=11).contains(&id) => {
                 return Err(PairingPayloadError::BadField("field shape"));
             }
             // Forward-compat: a newer sender's extra fields are ignored, not
@@ -368,6 +427,10 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
         id_s_pub: id_s_pub.ok_or(PairingPayloadError::BadField("id_s_pub"))?,
         id_d_pub: id_d_pub.ok_or(PairingPayloadError::BadField("id_d_pub"))?,
         identity_id: identity_id.ok_or(PairingPayloadError::BadField("identity_id"))?,
+        genesis_identity_id: genesis_identity_id
+            .ok_or(PairingPayloadError::BadField("genesis_identity_id"))?,
+        genesis_id_s_pub: genesis_id_s_pub
+            .ok_or(PairingPayloadError::BadField("genesis_id_s_pub"))?,
         vault_root: vault_root.ok_or(PairingPayloadError::BadField("vault_root"))?,
         stream_keys,
         nickname: nickname.ok_or(PairingPayloadError::BadField("nickname"))?,
@@ -385,6 +448,16 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     // but a documented property that the code does not have is worse than
     // either having it or not claiming it, and the fix is one call.
     let id_ok = identity_id_from_pub(&payload.id_s_pub).ct_eq(&payload.identity_id);
+    // The same check on the anchor, and for the same reason: the sender chose
+    // both bytes. A genesis id that does not derive from the genesis key would
+    // anchor this device's fold at a point no other replica can reach, and the
+    // divergence would be silent because each replica stays internally
+    // consistent.
+    let genesis_ok =
+        identity_id_from_pub(&payload.genesis_id_s_pub).ct_eq(&payload.genesis_identity_id);
+    if !bool::from(genesis_ok) {
+        return Err(PairingPayloadError::GenesisMismatch);
+    }
     // `ID_D_pub` used to be checked against the `ID_D_priv` beside it. With the
     // private half gone there is nothing to recompute it from, and no check
     // here can establish that the public key is the account's: a receiver
@@ -445,6 +518,10 @@ mod tests {
             id_s_pub,
             id_d_pub,
             identity_id: identity_id_from_pub(&id_s_pub),
+            // An account that has never rotated is its own genesis, which is
+            // every account these unit tests build.
+            genesis_identity_id: identity_id_from_pub(&id_s_pub),
+            genesis_id_s_pub: id_s_pub,
             vault_root: [0x25; 32],
             stream_keys,
             nickname: "a laptop".into(),

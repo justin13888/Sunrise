@@ -563,10 +563,20 @@ impl Keychain {
         // `ID_S`/`ID_D` here, so it is the only case whose device may be
         // recorded as the identity's minter. See [`insert_identity_row`].
         let minted_by = (paired.is_none() && write_identity).then_some(&device_id);
+        // The anchor. A device being paired takes the sponsor's, which is the
+        // account's; a founding or adopting vault *is* the genesis and says so.
+        // Inferring it from `identity` would be wrong on exactly one path and
+        // silently — a device paired into an account that has already rotated
+        // would record the identity it joined at and fold from a point no peer
+        // shares.
+        let genesis = paired.map_or(
+            (identity.identity_id, identity.signing.public_bytes()),
+            |p| (p.genesis_identity_id, p.genesis_id_s_pub),
+        );
 
         db.with_tx(|tx| {
             if write_identity {
-                insert_identity_row(tx, &identity, &wrapped_identity, minted_by, now_ms)?;
+                insert_identity_row(tx, &identity, &wrapped_identity, minted_by, genesis, now_ms)?;
             }
             insert_local_identity_row(
                 tx,
@@ -715,7 +725,17 @@ impl Keychain {
             // A pre-0017 vault mints the account identity right here, which
             // makes this device its creator on exactly the terms the founder
             // branch of `create` is.
-            insert_identity_row(tx, &identity, &wrapped_identity, Some(&device_id), now_ms)?;
+            // A legacy vault being adopted mints the identity here, so it is
+            // its own genesis by construction.
+            let genesis = (identity.identity_id, identity.signing.public_bytes());
+            insert_identity_row(
+                tx,
+                &identity,
+                &wrapped_identity,
+                Some(&device_id),
+                genesis,
+                now_ms,
+            )?;
             tx.execute(
                 "UPDATE local_identity
                  SET signing_secret_wrapped = ?, dh_secret_wrapped = ?, cert_blob = ?
@@ -885,6 +905,38 @@ impl Keychain {
         self.genesis
     }
 
+    /// The account's fold anchor: `(genesis_identity_id, genesis_id_s_pub)`.
+    ///
+    /// Falls back to the identity in force when the row is absent or its
+    /// columns are NULL. That is exact on a vault that has never rotated —
+    /// which is every vault whose row predates migrations 0022/0023 and every
+    /// keychain the unit tests build — and it is the only case the fallback can
+    /// be reached in, because `insert_identity_row` has written both columns
+    /// since 0023.
+    ///
+    /// # Errors
+    /// SQLite failure.
+    pub fn genesis_pair(&self, db: &Db) -> Result<([u8; 16], [u8; 32]), KeychainError> {
+        /// The two nullable columns, as SQLite hands them back. A `type` alias
+        /// before the first statement, because `clippy::type_complexity` is
+        /// denied and `clippy::items_after_statements` is too.
+        type GenesisColumns = Option<(Option<Vec<u8>>, Option<Vec<u8>>)>;
+        let row: GenesisColumns = db
+            .conn()
+            .query_row(
+                "SELECT genesis_identity_id, genesis_id_s_pub FROM identity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let found = row.and_then(|(id, pk)| {
+            let id = to16(&id?)?;
+            let pk = to32(&pk?)?;
+            Some((id, pk))
+        });
+        Ok(found.unwrap_or(self.genesis))
+    }
+
     /// The identity the account **started** as, which no rotation changes.
     ///
     /// Read from the `identity` row rather than held in memory: it is the fold
@@ -1038,6 +1090,13 @@ impl Keychain {
     /// SQLite failures reading the device labels.
     pub fn export_pairing_payload(&self, db: &Db) -> Result<PairingPayload, KeychainError> {
         let (nickname, platform) = self.local_labels(db)?;
+        // The fold anchor, read from the row rather than assumed equal to the
+        // identity in force. They are equal only until the account rotates
+        // once, and a device paired after that would otherwise anchor its fold
+        // at the identity it happened to join at — leaving two replicas of one
+        // account folding from different starts and disagreeing about who the
+        // account is, silently, because each stays internally consistent.
+        let genesis = self.genesis_pair(db)?;
         let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
         for ((stream_id, epoch), keys) in self.cache.lock().iter() {
             // One key per (stream, epoch) in the payload. Where two devices
@@ -1058,6 +1117,8 @@ impl Keychain {
             id_s_pub: state.identity.signing.public_bytes(),
             id_d_pub: state.identity.dh_pub,
             identity_id: state.identity.identity_id,
+            genesis_identity_id: genesis.0,
+            genesis_id_s_pub: genesis.1,
             vault_root: *self.vault_root.as_bytes(),
             stream_keys,
             nickname,
@@ -2219,6 +2280,7 @@ fn insert_identity_row(
     identity: &Identity,
     wrapped: &(Vec<u8>, Vec<u8>),
     minted_by: Option<&[u8; 16]>,
+    genesis: ([u8; 16], [u8; 32]),
     now_ms: u64,
 ) -> rusqlite::Result<()> {
     // `genesis_identity_id` and `genesis_id_s_pub` are written here and never
@@ -2234,12 +2296,12 @@ fn insert_identity_row(
     // that has already rotated records its anchor as whatever it joined at.
     // That is a real divergence — two replicas of one account would fold from
     // different starts — and closing it is a wire change to the payload rather
-    // than a line here -- and that change is coming anyway, because `ID_S_priv`
-    // is leaving `PairingPayload` in favour of a sponsor-issued cert over the
-    // Noise channel. **The genesis field belongs in the same payload revision:**
-    // add `genesis_identity_id` and `genesis_id_s_pub` beside the identity the
-    // sponsor states, and read them here instead of defaulting to the identity
-    // in force. Nothing has rotated yet, so no such vault exists today.
+    // than a line here, and `genesis` is that line: the caller supplies the
+    // anchor rather than this function assuming the identity being inserted is
+    // it. On the founding and legacy-adoption paths it is, and the caller says
+    // so; on the **pairing** path it is whatever the sponsor's payload carried
+    // (fields 10 and 11), which is the sponsor's own anchor and therefore the
+    // account's.
     //
     // The key is stored beside the id because the fold needs both: it walks
     // genesis -> head checking each link's `prev_sig` under the *previous*
@@ -2259,8 +2321,8 @@ fn insert_identity_row(
             wrapped.1,
             now_ms,
             minted_by.map(|d| d.to_vec()),
-            &identity.identity_id[..],
-            &identity.signing.public_bytes()[..],
+            &genesis.0[..],
+            &genesis.1[..],
         ],
     )?;
     Ok(())
@@ -3321,6 +3383,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(opened, b"from A");
+    }
+
+    /// A device paired **after** a rotation anchors its fold at the account's
+    /// genesis, not at the identity it happened to join at.
+    ///
+    /// The divergence this closes is silent, which is what makes it worth a
+    /// test: each replica stays internally consistent, and the two simply
+    /// disagree about who the account is. Before fields 10 and 11 the joining
+    /// device recorded whatever identity was in force when it arrived, so a
+    /// peer that had been there since the beginning folded from link 0 while
+    /// the newcomer folded from link 1 — and a cert issued under link 0 was a
+    /// stranger's cert to the newcomer.
+    #[test]
+    fn a_device_paired_after_a_rotation_anchors_at_the_genesis() {
+        let root = VaultRootKey::from_bytes([0x74; 32]);
+        let mut da = db(&root);
+        let ka = open(&mut da, &root);
+        let genesis = ka.identity_id();
+        let genesis_pub = ka.identity_signing_pub();
+
+        // A rotates. Its own row moves to the successor; its anchor does not.
+        let successor = ka.mint_successor_identity(&SystemRng);
+        let successor_id = successor.identity_id();
+        da.with_tx(|tx| {
+            Ok(ka
+                .adopt_successor_identity(tx, successor, "a", "test", 1, &SystemRng)
+                .expect("adopt"))
+        })
+        .unwrap();
+        assert_eq!(ka.identity_id(), successor_id);
+        assert_eq!(ka.genesis_pair(&da).unwrap(), (genesis, genesis_pub));
+
+        // B pairs from A now, and gets the anchor rather than the head.
+        let payload = ka.export_pairing_payload(&da).unwrap();
+        assert_eq!(payload.identity_id, successor_id, "the identity in force");
+        assert_eq!(
+            payload.genesis_identity_id, genesis,
+            "and the anchor behind it"
+        );
+        assert_eq!(payload.genesis_id_s_pub, genesis_pub);
+
+        let mut db2 = db(&root);
+        let kb =
+            Keychain::open(&mut db2, root.clone(), &clock(), &SystemRng, Some(&payload)).unwrap();
+        assert_eq!(kb.identity_id(), successor_id);
+        assert_eq!(
+            kb.genesis_pair(&db2).unwrap(),
+            (genesis, genesis_pub),
+            "B folds from the same point A does, which is the whole property"
+        );
     }
 
     #[test]
