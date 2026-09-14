@@ -91,12 +91,32 @@ Datetime types (`jiff::Timestamp` for absolute instants, `jiff::Zoned` / `jiff::
 
 These rules are enforced by `#![forbid(unsafe_code)]` plus a `clippy.toml` deny
 list (`std::time::SystemTime::now`, `std::time::Instant::now`,
-`std::process::exit`, `rand::thread_rng`, `rand::random`) plus a CI grep — but
-the coverage is uneven, and it is worth knowing where. The grep (`ci.yml`'s
-`Determinism gate`, "Reject ambient RNG in core crates") backstops **rule 3
-only**: it exists because path-based lints miss turbofish and aliasing, and it
-searches for ambient RNG and nothing else. Rule 4 has no automated enforcement
-at all.
+`std::process::exit`, `rand::thread_rng`, `rand::random`) and two checks in
+`ci.yml`'s `Determinism gate` job. The coverage is uneven, and it is worth
+knowing where:
+
+| rule | enforced by |
+|---|---|
+| 1 — clock | `clippy.toml`, for the `std::time` spellings. **Not** `tokio::time::Instant`, which `sync_driver` uses for backoff scheduling and which the path-based lint does not match. |
+| 2 — filesystem | `core-filesystem-gate.py`, scoped to `crates/sunrise-core/src`, with a visible allowlist of the two documented exceptions. Its own exit-code and coverage contract is asserted by `test_core_filesystem_gate.py`, because a scanner that stops reading early reports OK either way. |
+| 3 — randomness | `clippy.toml` plus a CI grep, because path-based lints miss turbofish and aliasing. The one rule with two independent layers. |
+| 4 — threads | Nothing. Honoured in practice and checked by review. |
+
+**Rule 2's two exceptions.** `vault_lock.rs` holds the OS advisory lock on
+`<vault>/core.lock` — the cross-process half of the single-writer guarantee,
+which cannot go through `CoreConfig::storage` because the point is a lock the OS
+releases on process death by any means. `config.rs` reads `/etc/localtime` to
+recover the host's IANA zone *name*; `TimeZone::system()` returns a nameless
+zero-offset zone on macOS, so the previous fallback made every Mac claim to be in
+UTC. Both are named in the gate with their reasons, and that list may shrink but
+not grow.
+
+Rule 2 is **not** in `clippy.toml`, and cannot be: that file is workspace-wide
+with no per-crate scoping, and nine of the twenty crates here touch the
+filesystem on purpose. A `std::fs` entry would fire in eight crates the rule was
+never about, and quieting them takes an `#[allow]` at every legitimate call site
+— which is the warning-noise failure `clippy.toml`'s own `rand` comment
+describes. The gate is scoped the way the rule is scoped: one crate.
 
 Determinism is **per-device**, and applies to the bytes that leave the device. The op-log encoding (CBOR bytes the device emits over the wire) is bit-for-bit identical for identical input on the same device, time, and RNG seed. SQLite's WAL behavior is allowed to vary across runs; storage internals are not part of the determinism contract. With both `CoreConfig::clock` and `CoreConfig::rng` fixed, op-emit byte sequences are reproducible — this is the basis for sync-protocol round-trip tests.
 

@@ -839,6 +839,14 @@ description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
 # run nobody waits for.
 run = "python3 .github/scripts/test_mutants_gate.py"
 
+[tasks.core-filesystem-gate-test]
+description = "Assert the core filesystem gate still reports (fast, no cargo)"
+# Runs in about a second: it synthesises a `crates/sunrise-core/src` in a temp
+# directory and never invokes cargo. It exists because the gate's first scanner
+# stopped reading at the first `#[cfg(test)]` line in a file, which after the
+# engine and keychain splits meant it read 3% of engine/oplog.rs and reported OK.
+run = "python3 .github/scripts/test_core_filesystem_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
