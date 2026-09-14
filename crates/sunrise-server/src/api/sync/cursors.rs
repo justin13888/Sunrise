@@ -21,6 +21,7 @@ use super::credential::{resolve, SessionHeader};
 #[serde(deny_unknown_fields)]
 pub struct DeviceCursor {
     /// The originating device, 32 lowercase hex characters.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
     pub device_id: String,
     /// The highest `seq` from that device this subscriber has applied.
     pub last_applied_seq: u64,
@@ -31,6 +32,7 @@ pub struct DeviceCursor {
 #[serde(deny_unknown_fields)]
 pub struct StreamSubscription {
     /// The stream, 32 lowercase hex characters.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
     pub stream_id: String,
     /// Per-device positions. Anything already covered is not replayed.
     #[serde(default)]

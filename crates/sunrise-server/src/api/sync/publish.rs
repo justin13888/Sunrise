@@ -28,6 +28,7 @@ use super::cursors::parse_id;
 #[serde(deny_unknown_fields)]
 pub struct OpsRequest {
     /// The stream the batch targets, 32 lowercase hex characters.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
     pub stream_id: String,
     /// Client-generated idempotency key for the batch.
     pub batch_id: u64,
@@ -43,7 +44,9 @@ pub struct OpsRequest {
 pub struct OpsResponse {
     /// Echoes the acked batch's `batch_id`.
     pub batch_id: u64,
-    /// The stream the batch targeted.
+    /// The stream the batch targeted, echoed verbatim — so it is the same 32
+    /// lowercase hex characters the request carried.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
     pub stream_id: String,
     /// Server wall-clock at which the batch was first seen, for clock-skew
     /// clamping.
