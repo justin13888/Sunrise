@@ -73,7 +73,7 @@ consequences follow directly:
    as everything else without an idempotence layer of their own.
 
 Focus ops are therefore one of two op families that **bypass the LWW
-comparison** in `materialize_remote` (`crates/sunrise-core/src/engine.rs`).
+comparison** in `materialize_remote` (`crates/sunrise-core/src/engine/lww.rs`).
 Running LWW on them would be actively wrong: a `start` stamped later than its own
 `end` — routine under clock skew across two devices — would suppress the `end`.
 

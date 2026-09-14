@@ -28,7 +28,7 @@ listed it. It compiled, its own tests passed, and no product path reached it.
 What actually merges Sunrise data is **entity-level last-writer-wins in
 SQLite**, and it has been for the whole of the v1 build:
 
-- `crates/sunrise-core/src/engine.rs` — `lww_wins(env_ts, env_dev, row_ts,
+- `crates/sunrise-core/src/engine/lww.rs` — `lww_wins(env_ts, env_dev, row_ts,
   row_dev)` compares the incoming envelope's `(ts_ms, device_id)` against the
   materialized row's, greater timestamp wins, ties broken by memcmp on the raw
   16-byte device id. A losing op is applied to the op log and then dropped from
@@ -150,7 +150,7 @@ repetition, and from checking that the test still fails when the fix is
 reverted.
 
 **The better instrument is not to race at all.** `BlockDelete` and
-`AttachmentDelete` are covered by unit tests in `crates/sunrise-core/src/engine.rs`
+`AttachmentDelete` are covered by unit tests in `crates/sunrise-core/src/engine/tests.rs`
 that drive two `Engine`s on `FakeClock`s and *choose* the stamps so the delete
 always wins, plus a delete deliberately delivered ahead of its own create. Both
 of those are properties of the merge rule, not of the scheduler, so a single
@@ -167,7 +167,7 @@ whole materialized schema (`tasks`, `streams`, `routines`) is flat columns. For
 those entity shapes LWW is not an approximation of convergence; it *is*
 convergence, and it is tested as such:
 
-- **`convergence_under_random_interleaving`** (`crates/sunrise-core/src/engine.rs`)
+- **`convergence_under_random_interleaving`** (`crates/sunrise-core/src/engine/tests.rs`)
   — a 32-case proptest that applies a randomly generated op sequence to two
   independent databases under random reordering and duplication, then asserts a
   byte-identical canonical projection of the `tasks` table. This is the flagship
@@ -195,8 +195,8 @@ that today would be paying for the roadmap, not the product.
 
 | Option | Why rejected |
 |---|---|
-| **Realize ADR-0003** — route merge through `sunrise-crdt`/Loro now | Rewrites the entire materialization path in `engine.rs` and the op codec for zero v1-visible behaviour change, since no v1 entity needs a non-LWW type. Reinstates four unmaintained-dependency advisories. |
-| **Per-field LWW** (stamp `(ts_ms, device_id)` per column) | Closes the "different fields, one survivor" gap without a CRDT library, but costs a wide schema migration and per-column merge logic in `engine.rs`. Genuinely attractive; deferred because no shipping surface produces concurrent per-field edits — v1 clients submit whole-entity updates. Recorded as the first thing to reach for (see below). |
+| **Realize ADR-0003** — route merge through `sunrise-crdt`/Loro now | Rewrites the entire materialization path in `crates/sunrise-core/src/engine/lww.rs` and the op codec for zero v1-visible behaviour change, since no v1 entity needs a non-LWW type. Reinstates four unmaintained-dependency advisories. |
+| **Per-field LWW** (stamp `(ts_ms, device_id)` per column) | Closes the "different fields, one survivor" gap without a CRDT library, but costs a wide schema migration and per-column merge logic in `crates/sunrise-core/src/engine/lww.rs`. Genuinely attractive; deferred because no shipping surface produces concurrent per-field edits — v1 clients submit whole-entity updates. Recorded as the first thing to reach for (see below). |
 | **Keep `sunrise-crdt` as a dormant crate** | The status quo, and the reason this ADR exists: a compiling crate named `sunrise-crdt` next to a live merge engine that ignores it is a trap for the next reader. Dormant code with no consumer is a claim the product does not honour. |
 | **Entity-level LWW, crate deleted (chosen)** | One merge model, in one place, with the proptest and chaos suite pointed at it. |
 
