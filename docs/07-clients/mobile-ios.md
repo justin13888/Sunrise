@@ -50,15 +50,15 @@ What exists today:
   the platform where a tap is proved to reach the core on every build.
 - CI: an `ios-app` job on `macos-26`. It carries no `if:` and no path filter,
   so it runs whenever CI runs. Four triggers
-  (`.github/workflows/ci.yml:3-11`), two of them branch-filtered: `push` on
-  `master` or `v1-rewrite` and `pull_request` targeting either — `branches:` is
-  nested under those two events and constrains only them — plus the nightly
-  schedule and `workflow_dispatch`, which carry no `branches:` key. Only one of
-  those two is actually unconstrained. GitHub fires a `schedule` on the
-  repository's **default branch** alone, and that is `master`, so the 04:00
-  nightly builds `master` and never `v1-rewrite` — a branch constraint that
-  comes from GitHub's rule rather than from this file, and one no `--ref` can
-  change. `workflow_dispatch` is the one that will build any ref on request:
+  (`.github/workflows/ci.yml:3-17`), one of them branch-filtered: `push` on
+  `master`. `pull_request` carries no `branches:` key, deliberately — that key
+  filters on the *base* branch, so constraining it meant a pull request stacked
+  on another pull request's branch ran nothing at all. Every pull request is
+  gated now, whatever it targets. The nightly schedule is constrained too, but
+  by GitHub rather than by this file: a `schedule` fires on the repository's
+  **default branch** alone, and that is `master`, so the 04:00 nightly builds
+  `master` and nothing else, and no `--ref` can change it.
+  `workflow_dispatch` is the one that will build any ref on request:
   `gh workflow run ci.yml --ref <branch>`.
 
 ## Run it

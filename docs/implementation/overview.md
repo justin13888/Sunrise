@@ -13,7 +13,8 @@ overstated the product substantially — several "shipped" crates are not
 reachable from any binary. The table below reports *reachability from a running
 client*, which is the only measure that matters to a user.
 
-**Last verified on `v1-rewrite`, after the final wave of client work.** Every
+**Last verified on the v1 rewrite line, now merged to `master`, after the final
+wave of client work.** Every
 row was re-checked against the source, and every number in
 [Test suite](#test-suite) is measured rather than remembered. The companion
 document is the per-capability
@@ -440,8 +441,8 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-All figures below were **measured on `v1-rewrite`** after the final wave, not
-carried over from an earlier revision.
+All figures below were **measured on the v1 rewrite line, now merged to
+`master`** after the final wave, not carried over from an earlier revision.
 
 | Gate | Result |
 |---|---|
