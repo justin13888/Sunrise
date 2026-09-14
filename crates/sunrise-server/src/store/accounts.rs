@@ -15,6 +15,27 @@ use crate::auth::Subject;
 
 use super::{mint_id, unsigned, Store, StoreError};
 
+/// The write-once identity write, as one statement both `set_identity` and the
+/// test that pins its argument order can name.
+///
+/// Every column is column-first — `COALESCE(<column>, <argument>)` — so a
+/// second call cannot move a value already present, and all four read the same
+/// way. `recovery_blob` was the odd one out: written `COALESCE(?4,
+/// recovery_blob)` it was *argument*-first, and by itself overwrote whatever
+/// was there whenever `?4` was non-NULL.
+///
+/// That is defence in depth rather than the enforcement. `set_identity`'s
+/// guard is what refuses a conflicting blob with
+/// [`StoreError::RecoveryBlobExists`]; this statement's job is to make the
+/// wrong thing impossible for anyone who reaches it another way.
+pub(super) const SET_IDENTITY: &str = r"
+UPDATE accounts
+   SET identity_pub_s = COALESCE(identity_pub_s, ?2),
+       identity_pub_d = COALESCE(identity_pub_d, ?3),
+       recovery_blob  = COALESCE(recovery_blob, ?4),
+       terms_at_ms    = COALESCE(terms_at_ms, ?5)
+ WHERE account_id = ?1";
+
 /// The `accounts` table.
 pub(super) const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -141,6 +162,17 @@ impl Store {
     /// is an oversight: see [`StoreError::RecoveryBlobExists`] for why a
     /// second blob is refused rather than dropped.
     ///
+    /// **What enforces write-once is the guard below, not the `COALESCE`.**
+    /// The two are not interchangeable and both are here on purpose. The
+    /// guard is the only thing that can *refuse*: it reads the stored blob,
+    /// compares, and returns [`StoreError::RecoveryBlobExists`], which the
+    /// route turns into a `409`. The `COALESCE` cannot refuse anything — a
+    /// statement either writes or does not — so on its own it would go back
+    /// to silently ignoring the second blob, which is the behaviour
+    /// [`StoreError::RecoveryBlobExists`] exists to end. It stays as defence
+    /// in depth: if a future caller reaches [`SET_IDENTITY`] without the
+    /// guard, the column still does not move.
+    ///
     /// # Errors
     /// [`StoreError::RecoveryBlobExists`] when `recovery_blob` is `Some` and
     /// the account already holds a different one. Nothing is written — the
@@ -171,12 +203,7 @@ impl Store {
                 }
             }
             conn.execute(
-                "UPDATE accounts
-                    SET identity_pub_s = COALESCE(identity_pub_s, ?2),
-                        identity_pub_d = COALESCE(identity_pub_d, ?3),
-                        recovery_blob  = COALESCE(?4, recovery_blob),
-                        terms_at_ms    = COALESCE(terms_at_ms, ?5)
-                  WHERE account_id = ?1",
+                SET_IDENTITY,
                 params![
                     account_id,
                     identity_pub_s,
