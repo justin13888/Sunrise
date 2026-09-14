@@ -18,7 +18,7 @@ use sunrise_core::{
     Clock, Command, CommandResult, Core, CoreConfig, Query, QueryResult, SystemRng, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
-use sunrise_domain::{TaskDraft, TaskState};
+use sunrise_domain::{TaskDraft, TaskPatch, TaskState};
 
 #[derive(Debug)]
 struct FakeClock {
@@ -48,6 +48,21 @@ fn unlock() -> Unlock {
     }
 }
 
+/// Every Task `Query::Today` answers with at `now_ms`.
+async fn today(core: &Core, now_ms: u64) -> Vec<sunrise_domain::Task> {
+    match core
+        .query(Query::Today {
+            now_ms,
+            contexts: vec![],
+        })
+        .await
+        .unwrap()
+    {
+        QueryResult::Tasks(v) => v,
+        other => panic!("expected Tasks, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn create_then_complete_round_trip() {
     let dir = tempfile::tempdir().unwrap();
@@ -62,18 +77,41 @@ async fn create_then_complete_round_trip() {
         .unwrap();
     assert_eq!(state, Some(TaskState::Todo));
 
-    let today = core
-        .query(Query::Today {
-            now_ms: 1_700_000_000_000,
-            contexts: vec![],
-        })
-        .await
-        .unwrap();
-    let n = match today {
-        QueryResult::Tasks(_) => 1, // task has no scheduled/due, so isn't in Today
-        _ => panic!("expected Tasks"),
-    };
-    assert_eq!(n, 1);
+    // This asserted `1 == 1`: the bound was the literal the match arm
+    // produced, and the returned vector was discarded, so `Today` could have
+    // answered with nothing or with ten thousand rows and the test still
+    // passed. The trailing comment said what the author expected — an
+    // unscheduled task is not in Today — so that is what is asserted, and then
+    // the other half, that giving it a due date inside the window puts it
+    // there. Without the second half "Today always answers empty" passes too.
+    assert!(
+        today(&core, 1_700_000_000_000).await.is_empty(),
+        "the task has neither a scheduled nor a due time, so Today holds nothing"
+    );
+
+    core.submit(Command::UpdateTask {
+        id: entity,
+        patch: TaskPatch {
+            due_at: Some(Some(
+                jiff::Timestamp::from_millisecond(1_700_000_000_000 + 3_600_000)
+                    .unwrap()
+                    .into(),
+            )),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let in_today = today(&core, 1_700_000_000_000).await;
+    assert_eq!(
+        in_today
+            .iter()
+            .map(|t| t.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ship the engine"],
+        "due in an hour puts it in Today, and nothing else is there"
+    );
 
     let inbox = core.query(Query::Inbox).await.unwrap();
     let inbox_n = match inbox {
