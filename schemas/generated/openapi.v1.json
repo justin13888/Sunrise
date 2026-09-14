@@ -3753,7 +3753,7 @@
         "properties": {
           "device_id": {
             "type": "string",
-            "description": "The originating device, 32 hex characters."
+            "description": "The originating device, 32 lowercase hex characters."
           },
           "last_applied_seq": {
             "type": "integer",
@@ -3773,7 +3773,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
-            "description": "The stream, 32 hex characters."
+            "description": "The stream, 32 lowercase hex characters."
           },
           "cursors": {
             "items": {
@@ -3809,7 +3809,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
-            "description": "The stream the batch targets, 32 hex characters."
+            "description": "The stream the batch targets, 32 lowercase hex characters."
           },
           "batch_id": {
             "type": "integer",

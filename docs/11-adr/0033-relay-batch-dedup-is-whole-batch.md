@@ -21,7 +21,7 @@ what an `Ack` means.
 
 `batch_ops_hash` (`crates/sunrise-server/src/api/sync.rs:484`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
-`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:143`) looks that
+`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:140`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
@@ -114,7 +114,7 @@ rebuilds the frame server-side (`crates/sunrise-server/src/api/sync.rs:391-401`)
 - `frame_heads` has to be recomputed after filtering, or the heads claim seqs the
   stored frame no longer carries — and the head is exactly what
   `relay_replay`'s skip test reads. Over-claiming a head is data loss
-  (`crates/sunrise-server/src/relay_log.rs:228`).
+  (`crates/sunrise-server/src/relay_log.rs:225`).
 - A per-op table needs the `ON DELETE CASCADE` tie to `relay_frames` that
   `relay_batches` has, or the dedup window and the replay window drift apart —
   and forgetting an op id is precisely what lets a legitimate replay through.

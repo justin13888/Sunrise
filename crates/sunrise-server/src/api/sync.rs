@@ -251,7 +251,7 @@ pub async fn session(
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceCursor {
-    /// The originating device, 32 hex characters.
+    /// The originating device, 32 lowercase hex characters.
     pub device_id: String,
     /// The highest `seq` from that device this subscriber has applied.
     pub last_applied_seq: u64,
@@ -261,7 +261,7 @@ pub struct DeviceCursor {
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct StreamSubscription {
-    /// The stream, 32 hex characters.
+    /// The stream, 32 lowercase hex characters.
     pub stream_id: String,
     /// Per-device positions. Anything already covered is not replayed.
     #[serde(default)]
@@ -339,7 +339,7 @@ pub async fn subscribe(
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct OpsRequest {
-    /// The stream the batch targets, 32 hex characters.
+    /// The stream the batch targets, 32 lowercase hex characters.
     pub stream_id: String,
     /// Client-generated idempotency key for the batch.
     pub batch_id: u64,
@@ -1089,13 +1089,17 @@ fn resolve(
     Ok((id.to_owned(), session))
 }
 
-/// Parse a 16-byte id from 32 hex characters.
+/// Parse a 16-byte id from 32 lowercase hex characters.
 ///
-/// Case-insensitive, because `hex::decode_to_slice` is. The doc and the
-/// refusal below both used to say *lowercase*, which no input could ever
-/// trigger: an uppercase id has always decoded to the same sixteen bytes. The
-/// prose was corrected rather than the parse, since tightening it would start
-/// refusing requests this server has always accepted.
+/// The decode underneath (`hex::decode_to_slice`) is case-insensitive, so the
+/// *lowercase* half of the refusal below cannot fire today: an uppercase id
+/// decodes to the same sixteen bytes and is accepted. That is a gap between
+/// the contract and the parse, and the contract is the half worth keeping —
+/// lowercase is what every id this server emits is spelled in, and the
+/// identically-shaped `api::blobs::parse_upload_id` refuses in the same words.
+/// Loosening the message to "must be hex" would be a user-visible change to a
+/// `400` body, and would publish the laxer rule as the contract rather than
+/// leaving room for the parse to close the gap.
 fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
@@ -1104,7 +1108,7 @@ fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
         )));
     }
     hex::decode_to_slice(s, &mut out)
-        .map_err(|_| ApiError::validation(format!("{field} must be hex")))?;
+        .map_err(|_| ApiError::validation(format!("{field} must be lowercase hex")))?;
     Ok(out)
 }
 
