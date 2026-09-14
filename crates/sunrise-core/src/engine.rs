@@ -4724,8 +4724,11 @@ fn materialize_remote(
         | InnerOp::ReviewSnapshotCreate(_) => {}
         // Unreachable: the guard at the top of this function returns before
         // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
-        // fourth control family cannot be added without being considered here.
-        InnerOp::KeyEnvelope(_) | InnerOp::DeviceRevoke(_) | InnerOp::DeviceCertPublish(_) => {}
+        // fifth control family cannot be added without being considered here.
+        InnerOp::KeyEnvelope(_)
+        | InnerOp::DeviceRevoke(_)
+        | InnerOp::DeviceCertPublish(_)
+        | InnerOp::IdentityTransition(_) => {}
     }
     Ok(())
 }
@@ -7011,6 +7014,7 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
+        | InnerOp::IdentityTransition(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }
