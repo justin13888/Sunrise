@@ -19,7 +19,7 @@ What has closed, and where to look:
 
 - **DeviceCerts are identity-signed.** `DeviceCert::issue` takes an `&IdentitySigningKeyPair`, `verify_binding` checks in constant time that the cert's `identity_id` is the one derived from the `ID_S_pub` it verified under, and a device becomes known to a replica by publishing that cert as a `device_cert` op — self-authenticating, so `Command::TrustDevice` is gone rather than replaced.
 - **Stream keys are generated, not derived.** 32 random bytes per `(stream_id, epoch)`, wrapped under the vault root in `stream_keys`, keyed by `(stream_id, epoch, key_id)` so two devices minting the same epoch concurrently both keep their key. `Keychain::open` reads that table; nothing derives on the read path. A vault written before migration `0017` is adopted once on open, its pre-hierarchy keys recomputed and filed at epoch 1 with `source = 'legacy'`.
-- **The identity is an anchor with keys.** `ID_S_priv` and `ID_D_priv` are minted at account creation, wrapped under the vault root in the `identity` row, and carried to each new device by the pairing payload. `ID_D_priv` opens the identity-sealed half of every `key_envelope`, which is what makes [`recovery.md`](./recovery.md) restore readable content — and, until identity rotation lands, what stops revocation being complete; see [`key-rotation.md`](./key-rotation.md) §Revocation.
+- **The identity is an anchor with keys.** `ID_S_priv` and `ID_D_priv` are minted at account creation, wrapped under the vault root in the `identity` row, and carried to each new device by the pairing payload. `ID_D_priv` opens the identity-sealed half of every `key_envelope`, which is what makes [`recovery.md`](./recovery.md) restore readable content. The identity is **replaceable**: a rotation mints a successor and retires the predecessor, so the anchor that does not move is `genesis_identity_id` rather than the identity in force. See [`key-rotation.md`](./key-rotation.md) §Identity rotation and [ADR-0037](../11-adr/0037-identity-transition.md).
 
 ## Identity
 
@@ -41,7 +41,9 @@ identity_id_str   = "idn_" || crockford_base32( identity_id_bytes )
 
 `crockford_base32` uses Crockford's alphabet (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), uppercase. 16 bytes (128 bits) encode to 26 characters with no padding character used; the encoder handles the partial last group.
 
-The identity ID is stable forever; it does NOT change on identity rotation (a rotation publishes a transition certificate that maps the new keys to the same identity ID; see [`key-rotation.md`](./key-rotation.md)).
+**The identity ID changes on identity rotation, and the account's stable name is `genesis_identity_id`.** An earlier revision of this line said the opposite — that a rotation maps new keys to the same identity ID — and it cannot be true: the ID is a *derivation* of `ID_S_pub`, so a new `ID_S` is a new ID by construction, and a transition asserting otherwise would be a claim no verifier could check.
+
+What is stable is the **genesis**: `identity.genesis_identity_id`, with `genesis_id_s_pub` beside it so the chain's first link can be verified (migrations 0022 and 0023). Every replica folds the chain from there, it is what a user is shown as "your account", and it is what two devices compare to decide they belong together. It travels in `PairingPayload` fields 10 and 11 so a device paired after a rotation anchors at the same point its peers do. See [`key-rotation.md`](./key-rotation.md) §Identity rotation and [ADR-0037](../11-adr/0037-identity-transition.md).
 
 ## Devices
 

@@ -87,34 +87,43 @@
 //! would produce a device that can never admit another one.
 //!
 //! **That it is on every device — a revoked one included — is a hole, and
-//! nothing closes it.** A `DeviceCert` carries no issuer field: `DeviceCertInner`
-//! names the *subject* (`device_id`, `d_s_pub`, `d_d_pub`, `identity_id`) and
-//! the signature is the identity's, which every device can produce. So there is
-//! nothing to check a revocation against, and nothing checks one — the
-//! `DeviceCertPublish` arm of `Engine::apply_control_op` verifies only that the
-//! publisher is the cert's own subject and that the cert binds to this
-//! account's identity. A revoked device therefore mints a fresh device id,
-//! signs a valid cert for it with the `ID_S_priv` it still holds, and
-//! `Engine::backfill_key_envelopes` seals the new id every epoch the applying
-//! replica holds. Revocation is undone in one round trip, and
-//! `sunrise_core`'s `a_revoked_device_rejoins_under_a_fresh_device_id` asserts
-//! it rather than describing it.
+//! identity rotation bounds it rather than closing it.** A `DeviceCert` carries
+//! no issuer field: `DeviceCertInner` names the *subject* (`device_id`,
+//! `d_s_pub`, `d_d_pub`, `identity_id`) and the signature is the identity's,
+//! which every device can produce. So a revoked device mints a fresh device id
+//! and signs a genuinely valid cert for it with the `ID_S_priv` it still holds,
+//! and nothing can refuse the cert on its own terms.
 //!
-//! This paragraph used to end by naming a narrow fix — *refuse to backfill a
-//! device id first seen in a cert whose signer is already revoked* — as
-//! available and merely unbuilt. **It is not available: there is no signer to
-//! key it on.** The certificate's only signature is `ID_S_priv`'s, which
-//! belongs to the account rather than to any device, and the `device_cert` op's
-//! signature is the subject's own `D_S_priv`, which on a fresh device id the
-//! revoked device minted along with everything else. An issuer field would be a
-//! value the attacker picks; in the honest flow it would be a constant, because
-//! `Keychain::create` has the joining device self-issue its own certificate.
+//! What changed with ADR-0037 is what the cert *obtains*. `Command::RevokeDevice`
+//! now rotates the account identity as well as the Stream keys, leaving the
+//! revoked device out of the new roster, so the cert it signs is valid under an
+//! identity the account has **retired**. `Engine::apply_control_op` records
+//! which chain identity verified it, every membership test compares that to the
+//! chain's head, and the fresh id is admitted, current under nothing, and
+//! sealed no key — by `Engine::backfill_key_envelopes` for the initial
+//! hand-back and by `emit_key_envelopes`' `identity_id` clause for every epoch
+//! after it. `sunrise_core`'s
+//! `a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the test that
+//! used to assert the bypass.
 //!
-//! Identity rotation is what closes it — a revoked device's `ID_S_priv` stops
-//! signing anything the account accepts — and it is unbuilt. ADR-0032 records
-//! the narrower shapes that were priced against this tree and what killed each;
-//! `docs/03-crypto/key-rotation.md` §Revocation is where the bypass is
-//! tracked.
+//! A narrow fix once named here — *refuse to backfill a device id first seen in
+//! a cert whose signer is already revoked* — remains unavailable and the reason
+//! is worth keeping: **there is no signer to key it on.** The certificate's only
+//! signature is `ID_S_priv`'s, which belongs to the account rather than to any
+//! device, and the `device_cert` op's signature is the subject's own
+//! `D_S_priv`, which on a fresh device id the revoked device minted along with
+//! everything else.
+//!
+//! **What would close it entirely is `ID_S_priv` not travelling here at all**,
+//! with the sponsoring device issuing the joining device's cert over this same
+//! Noise channel. That needs a second message in the opposite direction — the
+//! sponsor cannot sign a cert for keys the joiner has not minted yet — and
+//! neither the CLI's file-drop pairing nor the one-shot UniFFI seam has one.
+//! It is *not* ADR-0032's rejected alternative 2: there would be no sponsor
+//! countersignature and no sponsor binding on the cert, so revoking a sponsor
+//! would lock nobody out. ADR-0032 records the shapes that do not work,
+//! ADR-0037 the one that does, and `docs/03-crypto/key-rotation.md`
+//! §Identity rotation is the procedure.
 //!
 //! The channel it travels over is the Noise XX transport confirmed by a SAS
 //! both users read aloud. That is the same channel the vault root already used,
