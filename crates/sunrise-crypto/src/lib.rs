@@ -42,6 +42,7 @@ pub mod blob_chunk;
 pub mod device_cert;
 pub mod hpke_seal;
 pub mod identity;
+pub mod identity_transition;
 pub mod keys;
 pub mod merkle;
 pub mod op_envelope;
@@ -63,10 +64,18 @@ pub use blob_chunk::{
 };
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner, MAX_NICKNAME_BYTES};
 pub use hpke_seal::{
-    hpke_open, hpke_open_identity, hpke_seal, key_envelope_info, HpkeError, HPKE_ENC_LEN,
-    HPKE_TAG_LEN,
+    hpke_open, hpke_open_identity, hpke_seal, identity_carry_info, identity_share_info,
+    key_envelope_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
 };
 pub use identity::{identity_id_from_pub, IdentityId};
+// `body_hash` is deliberately not re-exported at the crate root: `device_cert`
+// hashes a body too, and `sunrise_crypto::body_hash` would name neither. It is
+// reachable as `identity_transition::body_hash`.
+pub use identity_transition::{
+    roster_digest, shares_digest, sign_identity_transition, verify_identity_transition,
+    IdentityTransitionBody, IdentityTransitionError, IdentityTransitionSigs, DEVICE_SHARE_LEN,
+    IDENTITY_SHARE_LEN,
+};
 pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,
     StreamKey, VaultRootKey,
