@@ -134,8 +134,8 @@ with someone who does not have access to the referenced entity.
 
 This file is the single definition of both shapes, and **these are shipped
 bytes, not a proposal.** `NoteBody` is live on `Task.body`,
-`Stream.description` and `Routine.template.body` (banner above), and the codec in `crates/sunrise-domain/src/note_body.rs`
-encodes these exact map keys (`:470,:474-481`) and decodes them (`:670-679`).
+`Stream.description` and `Routine.template.body` (banner above), and the codec in `crates/sunrise-domain/src/note_body/`
+encodes these exact map keys (`encode.rs:48-93`) and decodes them (`decode.rs:107-142`).
 Every other spec that shows a reference or a redaction —
 [`../03-crypto/sharing-with-others.md`](../03-crypto/sharing-with-others.md)
 §Egress scrubbing, [`../05-sync/shared-documents.md`](../05-sync/shared-documents.md)
