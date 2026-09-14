@@ -67,7 +67,7 @@ pub use hpke_seal::{
     hpke_open, hpke_open_identity, hpke_seal, identity_carry_info, identity_share_info,
     key_envelope_info, HpkeError, HPKE_ENC_LEN, HPKE_TAG_LEN,
 };
-pub use identity::{identity_id_from_pub, IdentityId};
+pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityId};
 // `body_hash` is deliberately not re-exported at the crate root: `device_cert`
 // hashes a body too, and `sunrise_crypto::body_hash` would name neither. It is
 // reachable as `identity_transition::body_hash`.
