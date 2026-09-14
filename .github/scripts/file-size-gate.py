@@ -46,9 +46,51 @@ Three rules make it debt rather than an amnesty:
   fails the build. Adding a path here is not a fix.
 * **It is paths, not a count.** A count would let one file be fixed while
   another regressed, and the total would look unchanged.
-* **A stale entry fails too.** If a listed file drops below its threshold, the
-  gate says so and asks for the entry to be removed. An allowance nobody
+* **A stale entry is reported too.** If a listed file drops below its threshold,
+  the gate says so and asks for the entry to be removed. An allowance nobody
   revisits is how a baseline becomes permanent.
+
+Two exit codes, because they are two different pieces of news
+-------------------------------------------------------------
+
+* **1 — a file grew past its threshold.** Something in the tree got worse. The
+  remedy is a change to the code.
+* **2 — the baseline no longer matches the tree.** Nothing got worse; a listed
+  file shrank below its threshold or stopped existing, which means somebody did
+  the work this list was tracking. The remedy is a one-line deletion from
+  `BASELINE`, and it is spelled out in the output.
+
+Both are red in CI, which is the point -- an unrevisited allowance is how the
+list rots. But they are not the same event, and a gate that reports them in one
+voice teaches people to read "file-size failed" as "a file is too long" and act
+on the wrong thing. This mirrors `mutants-gate.py`, which separates "scored, and
+the answer is no" from "nothing was scored" for the same reason.
+
+That distinction is doing real work here, because two entries sit three lines
+over their threshold: `sunrise-domain/src/constraint.rs` at 766 against 763, and
+`sunrise-server/src/relay_log.rs` at 860 against 857. Deleting four lines from
+either one turns CI red. The margins are not padded to hide that -- a threshold
+of "p90 plus a bit of slack" is exactly the imported, meaningless number this
+gate's own thresholds were derived to avoid, and padding would only move the
+cliff rather than remove it. What the padding was tempting for is fixed instead:
+the report says what happened and what to type.
+
+Three files sit exactly *at* their package's threshold (`sunrise-core/src/core.rs`
+at 1782, `sunrise-domain/src/activity.rs` at 763, `sunrise-server/src/api/signed.rs`
+at 857) -- unavoidably, since each threshold is its package's p90 and therefore
+one of its own files. Adding a line to any of them is a genuine exit 1, which is
+the gate working: those three are the largest files the distribution calls
+ordinary, and the next line really is the one worth arguing about.
+
+What checks this gate
+---------------------
+
+`.github/scripts/test_file_size_gate.py`, run by the `file-size-gate-contract`
+job ("File size gate contract") on every trigger this workflow has, and by
+`mise run file-size-gate-test`. It synthesises packages in a temp directory and
+asserts each exit code above, because the three failure modes here are
+`new_violations`, `stale` and `missing`, and until that file existed nothing
+asserted any of them.
 """
 
 from __future__ import annotations
@@ -112,8 +154,11 @@ BASELINE: dict[str, str] = {
     ),
     # --- sunrise-server -----------------------------------------------------
     "crates/sunrise-server/src/api/sync/suite.rs": (
-        "8 implementation lines. This is the sync test suite, moved whole when "
-        "api/sync.rs was split so the split's diff carried no test changes."
+        "The sync test suite, moved whole when api/sync.rs was split so the "
+        "split's diff carried no test changes. Everything below its eight-line "
+        "module doc is one `#[cfg(test)] mod tests`, so the 'implementation "
+        "lines' the other entries quote is eight here and means nothing: the "
+        "number worth knowing is that it is the whole suite in one file."
     ),
     "crates/sunrise-server/src/api/devices.rs": (
         "399 implementation lines — below this package's threshold on its own. "
@@ -175,10 +220,11 @@ def main() -> int:
     ]
     missing = [rel for rel in BASELINE if rel not in measured]
 
-    failed = False
+    regressed = False
+    baseline_drifted = False
 
     if new_violations:
-        failed = True
+        regressed = True
         print("::error::file-size: a file grew past its package's threshold.")
         for rel, n, threshold in sorted(new_violations, key=lambda x: -x[1]):
             print(f"  {rel}: {n} lines, over {threshold}")
@@ -194,25 +240,44 @@ def main() -> int:
         )
 
     if stale:
-        failed = True
+        baseline_drifted = True
         print(
-            "::error::file-size: a baseline entry is now under its threshold. "
-            "Remove it — an allowance nobody revisits becomes permanent."
+            "::error::file-size: the baseline is out of date. These files are "
+            "under their threshold now, so somebody did the work this list was "
+            "tracking — bookkeeping, not a regression."
         )
         for rel in sorted(stale):
-            print(f"  {rel}: now {measured[rel]} lines")
+            pkg = next(p for p in THRESHOLDS if rel.startswith(p))
+            print(f"  {rel}: now {measured[rel]} lines, under {THRESHOLDS[pkg]}")
+        print()
+        print(
+            "Delete each of those entries from BASELINE in "
+            ".github/scripts/file-size-gate.py. That is the whole remedy; no "
+            "code change is wanted or implied."
+        )
 
     if missing:
-        failed = True
+        baseline_drifted = True
         print(
-            "::error::file-size: a baseline entry names a file that no longer "
-            "exists. Remove it — a stale entry silently widens the gate."
+            "::error::file-size: the baseline names files that are not in the "
+            "tree — bookkeeping, not a regression. A stale entry silently "
+            "widens the gate."
         )
         for rel in sorted(missing):
             print(f"  {rel}")
+        print()
+        print(
+            "Delete each of those entries from BASELINE in "
+            ".github/scripts/file-size-gate.py, or correct the path if the "
+            "file was moved rather than removed."
+        )
 
-    if failed:
+    # 1 and 2 are different news: see the module docstring. A regression wins
+    # when both are true, because it is the one that asks for a code change.
+    if regressed:
         return 1
+    if baseline_drifted:
+        return 2
 
     counts = ", ".join(
         f"{pkg.split('/')[-1]} ≤{t}" for pkg, t in sorted(THRESHOLDS.items())
