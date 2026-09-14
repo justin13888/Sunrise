@@ -180,6 +180,23 @@ extension Platform {
         UIDevice.current.model
         #endif
     }
+
+    /// The `platform` string this device is recorded under in the account's
+    /// device list.
+    ///
+    /// Stable machine text rather than ``deviceName``'s prose: since #105 the
+    /// sponsor writes it into the `DeviceCert` it signs, so it is the value
+    /// every peer's device list shows and it cannot be changed afterwards
+    /// without a new certificate. It matches the `std::env::consts::OS` a
+    /// founding vault records for itself, so one account's devices are
+    /// described in one vocabulary.
+    static var identifier: String {
+        #if os(macOS)
+        "macos"
+        #else
+        "ios"
+        #endif
+    }
 }
 
 // MARK: - Checklist toggles

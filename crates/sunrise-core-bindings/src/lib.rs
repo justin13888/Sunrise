@@ -585,36 +585,83 @@ impl SunriseCore {
         Ok(self.inner.attachment_is_local(&attachment.to_domain()?)?)
     }
 
-    /// Seal this vault's pairing payload into a confirmed pairing, on the
-    /// existing device.
+    /// Whether this vault can sponsor a pairing at all.
     ///
-    /// The payload never crosses the seam in the clear. A `vault_root()` getter
-    /// would be the obvious shape and the wrong one: it would put the key that
-    /// decrypts everything into a Swift `Data`, where it outlives the call,
-    /// lands in whatever the app logs, and is one autocomplete away from a
-    /// file. That argument is stronger now than it was — the payload carries
-    /// the account identity's private keys and every Stream key as well as the
-    /// root — so the only thing the app gets is the *ciphertext*.
+    /// False on a vault that was itself added by pairing: since #105 it holds
+    /// `ID_S_pub` and no signing key, so it cannot issue the `DeviceCert` a
+    /// joiner needs. Read this before offering an "add a device" affordance
+    /// rather than letting the user walk a six-leg handshake to a grant that
+    /// cannot be produced.
+    #[must_use]
+    pub fn can_sponsor_pairing(&self) -> bool {
+        self.inner.can_sponsor_pairing()
+    }
+
+    /// Seal message 1 — this account's identity — into a confirmed pairing, on
+    /// the device that holds the vault.
+    ///
+    /// Nothing secret crosses the seam in the clear on this leg or any other.
+    /// A `vault_root()` getter would be the obvious shape and the wrong one: it
+    /// would put the key that decrypts everything into a Swift `Data`, where it
+    /// outlives the call, lands in whatever the app logs, and is one
+    /// autocomplete away from a file. So the app only ever gets *ciphertext*,
+    /// and the vault root does not appear even as ciphertext until
+    /// [`Self::send_pairing_grant`], which runs on a request this device
+    /// accepted.
     ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] when the SAS has not been confirmed on this
-    /// device, when this device is the one being added, or when the payload is
-    /// too large for one Noise transport message.
-    pub fn send_pairing_payload(
+    /// device, or when this device is the one being added.
+    pub fn send_pairing_offer(
         &self,
         pairing: Arc<pairing::DevicePairing>,
     ) -> Result<String, BindingError> {
-        let payload = self
+        let offer = self
             .inner
-            .export_pairing_payload()
+            .export_pairing_offer()
             .map_err(|e| BindingError::Core(e.to_string()))?;
-        // `payload` zeroizes itself on drop; the encoding is the same secret in
-        // serialized form, and `seal_pairing_payload` takes ownership of it and
-        // wipes it once the ciphertext exists.
-        let encoded = sunrise_pairing::encode_pairing_payload(&payload)
+        let encoded = offer
+            .encode()
             .map_err(|e| BindingError::Pairing(e.to_string()))?;
-        pairing.seal_pairing_payload(encoded)
+        pairing.seal_pairing_offer(encoded)
+    }
+
+    /// Issue the joiner's `DeviceCert` and seal message 3, on the sponsor.
+    ///
+    /// `sealed_request` is what the joiner's `request_device_cert` produced.
+    /// The request is opened by the pairing object, handed to the vault — which
+    /// is the only thing holding `ID_S_priv` — and the grant it produces goes
+    /// straight back out through the same channel. The cert is signed inside
+    /// the core and the signing key never reaches this seam, let alone Swift.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, when this
+    /// device is the one being added, when the request does not open or decode,
+    /// or when the grant is too large for one Noise transport message.
+    /// [`BindingError::Core`] when this vault holds no `ID_S_priv` — see
+    /// [`Self::can_sponsor_pairing`] — or when the request answers a different
+    /// account's offer.
+    pub fn send_pairing_grant(
+        &self,
+        pairing: Arc<pairing::DevicePairing>,
+        sealed_request: String,
+    ) -> Result<String, BindingError> {
+        let raw = pairing.open_cert_request(sealed_request)?;
+        let request = sunrise_pairing::decode_pairing_request(&raw)
+            .map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let grant = self
+            .inner
+            .issue_pairing_grant(&request)
+            .map_err(|e| BindingError::Core(e.to_string()))?;
+        // `grant` zeroizes itself on drop; the encoding is the same secret in
+        // serialized form, and `seal_pairing_grant` takes ownership of it and
+        // wipes it once the ciphertext exists.
+        let encoded = grant
+            .encode()
+            .map_err(|e| BindingError::Pairing(e.to_string()))?;
+        pairing.seal_pairing_grant(encoded)
     }
 
     /// Stop the sync driver and release the vault lock. Idempotent.

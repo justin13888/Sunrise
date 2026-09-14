@@ -28,7 +28,22 @@ use sunrise_domain::{StreamDraft, TaskDraft};
 use sunrise_e2e::{
     open_paired_core, open_synced_core, spawn_relay, wait_live, wait_tasks_converge,
 };
-use sunrise_pairing::{decode_pairing_payload, encode_pairing_payload, PairingSession, Role};
+use sunrise_pairing::{
+    decode_pairing_grant, decode_pairing_offer, decode_pairing_request, PairingJoiner,
+    PairingSession, Role,
+};
+
+/// 32 unpredictable bytes, from the same CSPRNG that backs the Noise statics.
+///
+/// The joiner's `D_S_priv` is derived from one of these and every op the paired
+/// device ever writes is signed under it, so a fixture constant would be a
+/// fixture constant standing in for the device's whole identity.
+fn random_seed() -> [u8; 32] {
+    let material = PairingSession::generate_static_key().expect("entropy");
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&material[..32]);
+    seed
+}
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -167,15 +182,48 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         .into_channel(true)
         .expect("existing device channel");
 
-    // The existing device hands over the whole pairing payload — the account
-    // identity, every Stream key, and the vault root — through the encrypted
-    // channel. Before ADR-0024 the root alone sufficed, because every Stream
-    // key was derived from it. It no longer is.
-    let payload = core_a
-        .export_pairing_payload()
-        .expect("export the pairing payload");
-    let id_s_priv = payload.id_s_priv;
-    let a_stream_keys: Vec<[u8; 32]> = payload
+    // Three messages over the channel, not one. The offer carries the account's
+    // public identity and no secret; the joiner mints its own `D_S`/`D_D` and
+    // asks to be certified; the sponsor — the only device in the account
+    // holding `ID_S_priv` — issues the cert and hands over the root and every
+    // Stream key. Before ADR-0024 the root alone sufficed, because every Stream
+    // key was derived from it. It no longer is, and since #105 the signing key
+    // never travels at all.
+    let offer = core_a
+        .export_pairing_offer()
+        .expect("export the pairing offer");
+    let offer_wire = existing_channel
+        .send(&offer.encode().expect("encode the offer"))
+        .expect("send the offer");
+    let offer_b = decode_pairing_offer(&new_channel.receive(&offer_wire).expect("receive"))
+        .expect("decode the offer on the new device");
+    assert_eq!(
+        offer_b.identity_id,
+        core_a.identity_id(),
+        "the paired device joins the sending device's account, not a new one"
+    );
+
+    let joiner = PairingJoiner::new(
+        offer_b,
+        "the paired device".into(),
+        "test".into(),
+        random_seed(),
+        random_seed(),
+    );
+    let request_wire = new_channel
+        .send(&joiner.request().encode().expect("encode the request"))
+        .expect("send the request");
+    let request = decode_pairing_request(
+        &existing_channel
+            .receive(&request_wire)
+            .expect("receive the request"),
+    )
+    .expect("decode the request on the sponsor");
+
+    let grant = core_a
+        .issue_pairing_grant(&request)
+        .expect("the sponsor holds ID_S_priv and issues the cert");
+    let a_stream_keys: Vec<[u8; 32]> = grant
         .stream_keys
         .values()
         .flat_map(|epochs| epochs.values().copied())
@@ -184,31 +232,34 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         !a_stream_keys.is_empty(),
         "A has minted at least the meta and inbox keys by now"
     );
-    let encoded = encode_pairing_payload(&payload).expect("encode the pairing payload");
     let wire = existing_channel
-        .send(&encoded)
-        .expect("send pairing payload");
+        .send(&grant.encode().expect("encode the grant"))
+        .expect("send the grant");
 
-    // Nothing in the payload may appear in the clear on the wire. The vault
-    // root was the only secret this used to carry; now the identity signing
-    // seed and every Stream key ride along, and each one is checked.
+    // Nothing the exchange carries may appear in the clear on the wire, on any
+    // of the three legs. The vault root and every Stream key are in the grant.
     //
-    // `ID_D_priv` is deliberately not in this list, because it is no longer in
-    // the payload at all. Checking that an absent field does not appear on the
-    // wire would pass whatever happened; what holds its absence is
+    // Neither identity private key is in this list, because neither is in any
+    // message any more. Checking that an absent field does not appear on the
+    // wire would pass whatever happened; what holds their absence is
+    // `sunrise-pairing`'s `no_message_in_the_exchange_carries_an_identity_private_key`,
     // `sunrise_core::keychain`'s `a_paired_device_cannot_open_the_identity_copy`
     // and `sunrise-e2e`'s own `device_revocation` test.
-    let mut secrets: Vec<[u8; 32]> = vec![root_a, id_s_priv];
+    let mut secrets: Vec<[u8; 32]> = vec![root_a];
     secrets.extend(a_stream_keys);
-    for secret in &secrets {
-        assert!(
-            !wire.windows(32).any(|w| w == secret),
-            "a secret from the pairing payload appeared in the clear on the wire"
-        );
+    for leg in [&offer_wire, &request_wire, &wire] {
+        for secret in &secrets {
+            assert!(
+                !leg.windows(32).any(|w| w == secret),
+                "a secret from the pairing exchange appeared in the clear on the wire"
+            );
+        }
     }
 
-    let received = new_channel.receive(&wire).expect("receive pairing payload");
-    let payload_b = decode_pairing_payload(&received).expect("decode on the new device");
+    let received = new_channel.receive(&wire).expect("receive the grant");
+    let payload_b = joiner
+        .accept(decode_pairing_grant(&received).expect("decode the grant"))
+        .expect("the joiner accepts a cert issued for its own keys");
     let root_b = payload_b.vault_root;
     assert_eq!(
         root_b, root_a,

@@ -1441,13 +1441,30 @@ impl Keychain {
             &request.platform,
             now_ms,
         )?;
+        Ok(PairingGrant {
+            device_cert,
+            vault_root: *self.vault_root.as_bytes(),
+            stream_keys: self.held_stream_keys(),
+        })
+    }
+
+    /// Every Stream key this device holds: `stream_id -> epoch -> key`.
+    ///
+    /// What a [`PairingGrant`] carries, and separately readable because it is
+    /// also the honest answer to "did a revocation actually bound this device's
+    /// reads" — a question that has to be answerable on the **revoked** device,
+    /// which since `#105` cannot sponsor a pairing and so cannot be asked
+    /// through [`Self::issue_pairing_grant`]. Asking what a device holds beats
+    /// asking whether it has had time to receive something.
+    ///
+    /// One key per `(stream, epoch)`. Where two devices minted the same epoch
+    /// concurrently the other still reaches a joiner through the `key_envelope`
+    /// op that distributed it; carrying both would double the message already
+    /// most likely to hit the transport limit.
+    #[must_use]
+    pub fn held_stream_keys(&self) -> BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> {
         let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
         for ((stream_id, epoch), keys) in self.cache.lock().iter() {
-            // One key per (stream, epoch) in the grant. Where two devices
-            // minted the same epoch concurrently the receiver still learns the
-            // other through the `key_envelope` op that distributed it; sending
-            // both here would double the message already most likely to hit the
-            // transport limit.
             if let Some(first) = keys.first() {
                 stream_keys
                     .entry(*stream_id)
@@ -1455,11 +1472,7 @@ impl Keychain {
                     .insert(*epoch, *first.as_bytes());
             }
         }
-        Ok(PairingGrant {
-            device_cert,
-            vault_root: *self.vault_root.as_bytes(),
-            stream_keys,
-        })
+        stream_keys
     }
 
     /// Run a whole pairing against this sponsor, in one process, and return

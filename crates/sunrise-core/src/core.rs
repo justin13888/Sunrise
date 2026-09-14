@@ -656,6 +656,19 @@ impl Core {
             .issue_pairing_grant(request, self.now_ms())?)
     }
 
+    /// Every Stream key this device holds: `stream_id -> epoch -> key`.
+    ///
+    /// See [`crate::keychain::Keychain::held_stream_keys`]. It is what a
+    /// pairing grant carries and, separately, the only honest way to ask
+    /// whether a revocation bounded a device's reads — a revoked device cannot
+    /// sponsor a pairing, so the question cannot be put through the grant.
+    #[must_use]
+    pub fn held_stream_keys(
+        &self,
+    ) -> std::collections::BTreeMap<[u8; 16], std::collections::BTreeMap<u32, [u8; 32]>> {
+        self.engine.keychain().held_stream_keys()
+    }
+
     /// Whether this vault can sponsor a pairing at all.
     ///
     /// False on a vault admitted by pairing, which holds `ID_S_pub` and no

@@ -265,24 +265,25 @@ async fn a_revocation_converges_and_the_survivors_keep_syncing() {
     //    what it has had time to receive.
     wait_revoked(&c, c_device, TIMEOUT).await;
 
-    // Now the mechanism. `export_pairing_payload` is a vault's own statement of
-    // every Stream key it holds, so this asks the question revocation is
-    // actually about — does C hold the key — instead of asking whether two
-    // seconds were enough. A slow device still holds no key it was never sent,
-    // and a dead one fails the positive half below.
-    let held_b = b
-        .export_pairing_payload()
-        .expect("the surviving device exports what it holds");
-    let held_c = c
-        .export_pairing_payload()
-        .expect("the revoked device exports what it holds");
+    // Now the mechanism. `held_stream_keys` is a vault's own statement of every
+    // Stream key it holds, so this asks the question revocation is actually
+    // about — does C hold the key — instead of asking whether two seconds were
+    // enough. A slow device still holds no key it was never sent, and a dead
+    // one fails the positive half below.
+    //
+    // It used to be asked through `export_pairing_payload`, which cannot be
+    // asked of C any more: since #105 a device admitted by pairing cannot
+    // sponsor one, so a revoked device has no pairing payload to export. The
+    // question was never really about pairing.
+    let held_b = b.held_stream_keys();
+    let held_c = c.held_stream_keys();
     let new_stream = *stream.bytes();
     assert!(
-        held_b.stream_keys.contains_key(&new_stream),
+        held_b.contains_key(&new_stream),
         "the survivor holds the post-cut Stream's key, or the next assertion is vacuous"
     );
     assert!(
-        !held_c.stream_keys.contains_key(&new_stream),
+        !held_c.contains_key(&new_stream),
         "the revoked device holds a key for a Stream minted after its cut"
     );
 
@@ -292,13 +293,12 @@ async fn a_revocation_converges_and_the_survivors_keep_syncing() {
     // direction as well as the gap is what stops this passing because C
     // received nothing at all.
     let mut c_is_behind_somewhere = false;
-    for (stream_id, epochs) in &held_c.stream_keys {
+    for (stream_id, epochs) in &held_c {
         let c_max = *epochs
             .keys()
             .next_back()
-            .expect("a stream in the payload has at least one epoch");
+            .expect("a stream this device holds has at least one epoch");
         let b_max = *held_b
-            .stream_keys
             .get(stream_id)
             .and_then(|e| e.keys().next_back())
             .expect("the survivor holds every stream the revoked device does");

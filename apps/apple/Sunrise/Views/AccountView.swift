@@ -160,14 +160,21 @@ struct AccountView: View {
                     }
                     Spacer()
                     Button("Add a device…") { pairing = makePairing(session) }
-                        .disabled(session.bridge == nil)
+                        .disabled(!canSponsor(session))
                         .accessibilityIdentifier("account.addDevice")
                 }
                 Text(
-                    """
-                    "Add a device" hands this vault's key to another device, after \
-                    you have compared six digits on both screens.
-                    """
+                    canSponsor(session)
+                        ? """
+                        "Add a device" hands this vault's key to another device, after \
+                        you have compared six digits on both screens.
+                        """
+                        : """
+                        This \(Platform.deviceName) was itself added by pairing, so it \
+                        cannot add another. Only the device you first created this \
+                        account on can — which is also what stops a device you have \
+                        removed from letting itself back in.
+                        """
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -196,13 +203,28 @@ struct AccountView: View {
         }
     }
 
+    /// Whether this vault can issue another device's certificate.
+    ///
+    /// Two conditions, and the second is new with #105: there has to be an open
+    /// vault, and it has to be one that holds the account's signing key. A vault
+    /// that was itself added by pairing holds only the public half, so the last
+    /// leg of a pairing it sponsored could not be produced — better to say so on
+    /// the button than after eight legs of copying.
+    private func canSponsor(_ session: SessionModel) -> Bool {
+        session.bridge?.canSponsorPairing() ?? false
+    }
+
     private func makePairing(_ session: SessionModel) -> PairingModel {
         PairingModel(
             intent: .addAnotherDevice,
             relayURL: settings.relayURL.trimmed,
-            sealPayload: { [bridge = session.bridge] pairing in
+            sealOffer: { [bridge = session.bridge] pairing in
                 guard let bridge else { throw PairingUIError.noOpenVault }
-                return try await bridge.sendPairingPayload(to: pairing)
+                return try await bridge.sendPairingOffer(to: pairing)
+            },
+            sealGrant: { [bridge = session.bridge] pairing, request in
+                guard let bridge else { throw PairingUIError.noOpenVault }
+                return try await bridge.sendPairingGrant(to: pairing, request: request)
             }
         )
     }
