@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [master, v1-rewrite]
+    branches: [master]
+  # Deliberately unfiltered. `pull_request: branches:` filters on the *base*
+  # branch, so filtering it to `master` meant a pull request stacked on another
+  # pull request's branch triggered no workflow at all — not fmt, not clippy,
+  # not a test, not one gate. A stack is how a large change is made reviewable
+  # here, so the shape this repository actually uses was the one shape nothing
+  # checked, and a gate added on a stacked branch could never run on the branch
+  # that added it. Every pull request is gated, whatever it targets.
   pull_request:
-    branches: [master, v1-rewrite]
   schedule:
     # 04:00 UTC daily.
     - cron: "0 4 * * *"
@@ -512,7 +518,7 @@ jobs:
           # comes from the injected `CoreConfig::rng`, never an ambient source.
           #
           # This backstops clippy.toml's `disallowed-methods`, which binds only
-          # inside crates that depend on `rand` directly (6 of 20). The grep
+          # inside crates that depend on `rand` directly (6 of 23). The grep
           # binds everywhere, and catches spellings a path-based lint would
           # also catch but a naive regex would miss: turbofish
           # (`rand::random::<u64>()`), the rand 0.9 rename (`rand::rng()`),
