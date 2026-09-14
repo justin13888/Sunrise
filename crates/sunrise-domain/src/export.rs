@@ -31,8 +31,8 @@
 
 use crate::activity::{ActivityEvent, ActivityKind};
 use crate::focus::FocusStats;
-use crate::review::StreakRow;
 use crate::stats::Trends;
+use crate::streak::StreakRow;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -100,8 +100,14 @@ impl Cell {
 ///
 /// The invariant every renderer relies on is that each row has exactly
 /// `columns.len()` cells. [`Table::push`] enforces it by padding short rows
-/// with [`Cell::Null`] and truncating long ones, so a caller cannot construct
-/// a ragged table and discover it only in the output.
+/// with [`Cell::Null`] and truncating long ones.
+///
+/// The enforcement lives in `push`, not in the type: `columns` and `rows` are
+/// public, so a caller that appends to `rows` directly bypasses it. A ragged
+/// row built that way is not caught here -- [`Table::to_json`] indexes
+/// `columns` by the row's own cell position and panics past its end, and
+/// [`Table::to_csv`] silently writes an over-wide record. Build rows with
+/// `push`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table {
     /// Dataset name (`"trends"`, `"activity"`, …).
@@ -738,7 +744,7 @@ mod tests {
     #[test]
     fn focus_and_streak_tables_carry_optional_values_as_empty_fields() {
         use crate::focus::{Calibration, StreamFocus};
-        use crate::review::StreakRow;
+        use crate::streak::StreakRow;
         use sunrise_id::EntityKind;
 
         let stream = EntityRef::new(EntityKind::Stream, [7u8; 16]);

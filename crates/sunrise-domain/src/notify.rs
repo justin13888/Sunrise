@@ -168,9 +168,14 @@ pub const fn lead_time_s(own: Option<u32>, stream: Option<u32>, global: u32) -> 
 /// Apply quiet hours to a fire time, in the reading device's zone.
 ///
 /// Returns the instant to fire at, or `None` to drop. A queued notification
-/// moves to the end of the window and no further than
-/// [`QUIET_HOURS_QUEUE_CAP_S`]; if the window is longer than the cap, the
-/// notification is dropped rather than fired inside it.
+/// moves to the end of the window, and is dropped instead if that wait would
+/// exceed [`QUIET_HOURS_QUEUE_CAP_S`].
+///
+/// The cap is on the wait **measured from this notification's own fire time**,
+/// not on the length of the quiet window. A 22:00-07:00 window is nine hours
+/// long -- well past a four-hour cap -- yet a notification landing at 06:00
+/// still queues, because it only waits an hour. What the cap refuses is
+/// holding something so long that firing it is no longer useful.
 #[must_use]
 pub fn apply_quiet_hours(at: &Zoned, quiet: Option<&QuietHours>) -> Option<Timestamp> {
     let Some(q) = quiet else {
@@ -197,14 +202,14 @@ pub fn apply_quiet_hours(at: &Zoned, quiet: Option<&QuietHours>) -> Option<Times
 /// How far a "not now" pushes something out.
 ///
 /// The three answers `docs/08-features/notifications.md` §Action buttons puts
-/// on every reminder, plus the one the defer menu adds. They are an enum
+/// on every reminder. They are an enum
 /// rather than a number of milliseconds because two of them are **civil**
 /// decisions, not durations: "tomorrow" is a date, and a client adding
 /// 86,400,000 ms gets it wrong twice a year — an hour early or an hour late
 /// across a DST boundary, on exactly the reminders someone was relying on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnoozeSpan {
-    /// One hour from now. A real duration, and the only one of the four
+    /// One hour from now. A real duration, and the only one of the three
     /// that is.
     OneHour,
     /// The same wall-clock time tomorrow.

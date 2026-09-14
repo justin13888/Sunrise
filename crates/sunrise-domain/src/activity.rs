@@ -215,34 +215,38 @@ pub const TRACKED_TASK_FIELDS: [&str; 15] = [
 /// changed and so tests read as facts rather than as arithmetic.
 #[must_use]
 pub fn changed_task_fields(prev: &Task, next: &Task) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    let mut check = |changed: bool, name: &'static str| {
-        if changed {
-            out.push(name);
-        }
-    };
-    check(prev.title != next.title, "title");
-    check(prev.body != next.body, "body");
-    check(prev.stream_id != next.stream_id, "stream_id");
-    check(prev.contexts != next.contexts, "contexts");
-    check(prev.state != next.state, "state");
-    check(prev.priority != next.priority, "priority");
-    check(prev.energy != next.energy, "energy");
-    check(
+    // One comparison per entry of `TRACKED_TASK_FIELDS`, in that order.
+    //
+    // The length is written as the constant's own, so the *arity* cannot
+    // drift: adding a name there without adding its comparison here is a type
+    // mismatch. The *pairing* is a different question and the compiler cannot
+    // see it — `zip` pairs by position, so swapping two adjacent comparisons
+    // still yields 15 booleans, still compiles, and silently reports the wrong
+    // field name in the activity feed. That is what
+    // `each_tracked_field_is_reported_under_its_own_name` exists to catch, and
+    // why it names every field rather than sampling.
+    let changed: [bool; TRACKED_TASK_FIELDS.len()] = [
+        prev.title != next.title,
+        prev.body != next.body,
+        prev.stream_id != next.stream_id,
+        prev.contexts != next.contexts,
+        prev.state != next.state,
+        prev.priority != next.priority,
+        prev.energy != next.energy,
         prev.estimated_duration_s != next.estimated_duration_s,
-        "estimated_duration_s",
-    );
-    check(prev.scheduled_at != next.scheduled_at, "scheduled_at");
-    check(prev.due_at != next.due_at, "due_at");
-    check(
+        prev.scheduled_at != next.scheduled_at,
+        prev.due_at != next.due_at,
         prev.scheduling_constraints != next.scheduling_constraints,
-        "scheduling_constraints",
-    );
-    check(prev.blocked_by != next.blocked_by, "blocked_by");
-    check(prev.assignee != next.assignee, "assignee");
-    check(prev.archived != next.archived, "archived");
-    check(prev.deferred_count != next.deferred_count, "deferred_count");
-    out
+        prev.blocked_by != next.blocked_by,
+        prev.assignee != next.assignee,
+        prev.archived != next.archived,
+        prev.deferred_count != next.deferred_count,
+    ];
+    TRACKED_TASK_FIELDS
+        .iter()
+        .zip(changed)
+        .filter_map(|(name, changed)| changed.then_some(*name))
+        .collect()
 }
 
 /// Fold decoded op rows into an activity feed.
@@ -414,9 +418,11 @@ fn event(op: &OpRecord, entity: EntityRef, label: &str, kind: ActivityKind) -> A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::Energy;
+    use crate::common::{Energy, NoteBody};
+    use crate::constraint::{ConstraintSeverity, ScheduleConstraint, WeekdaySet};
     use crate::focus::FocusKind;
     use crate::stream::{StreamColor, StreamReviewCadence};
+    use crate::time::SunriseTime;
     use crate::unknown::Unknowns;
     use jiff::Timestamp;
     use std::collections::BTreeSet;
@@ -512,6 +518,100 @@ mod tests {
         assert_eq!(events[0].label, "Ship it");
         assert_eq!(events[1].kind, ActivityKind::TaskCompleted);
         assert_eq!(events[1].at_ms, T0 + 5_000);
+    }
+
+    /// Each name in `TRACKED_TASK_FIELDS` is paired with the comparison that
+    /// actually observes that field.
+    ///
+    /// `changed_task_fields` joins the name array to a parallel `[bool; N]`
+    /// with `zip`, which pairs by position. The array length is compiler-
+    /// enforced; the correspondence is not. Permuting two comparisons — or
+    /// writing `prev.due_at != next.due_at` where `scheduled_at`'s name sits —
+    /// compiles cleanly and makes the feed name the wrong edit.
+    ///
+    /// So: change exactly one field, and require exactly that field's name
+    /// back. Fifteen mutations for fifteen names, which is the only shape that
+    /// pins the mapping rather than the count.
+    #[test]
+    fn each_tracked_field_is_reported_under_its_own_name() {
+        // One isolated edit: the tracked field's name, and a mutation that
+        // touches that field and no other.
+        type FieldMutation = (&'static str, fn(&mut Task));
+
+        let base = task(1, 2, "Ship it");
+
+        // One mutation per tracked field, in no particular order — the test
+        // asserts the name it gets back, not the position it was written at.
+        let mutations: Vec<FieldMutation> = vec![
+            ("title", |t| t.title = "Ship it properly".into()),
+            ("body", |t| t.body = Some(NoteBody(b"notes".to_vec()))),
+            ("stream_id", |t| t.stream_id = eref(EntityKind::Stream, 9)),
+            ("contexts", |t| {
+                t.contexts.insert(eref(EntityKind::Context, 3));
+            }),
+            ("state", |t| t.state = TaskState::Done),
+            ("priority", |t| t.priority = Some(2)),
+            ("energy", |t| t.energy = Some(Energy::High)),
+            ("estimated_duration_s", |t| {
+                t.estimated_duration_s = Some(900);
+            }),
+            ("scheduled_at", |t| {
+                t.scheduled_at = Some(SunriseTime::Instant {
+                    at: ts(T0 + 60_000),
+                });
+            }),
+            ("due_at", |t| {
+                t.due_at = Some(SunriseTime::Instant {
+                    at: ts(T0 + 120_000),
+                });
+            }),
+            ("blocked_by", |t| {
+                t.blocked_by.insert(eref(EntityKind::Task, 7));
+            }),
+            ("assignee", |t| {
+                t.assignee = Some(eref(EntityKind::Person, 4));
+            }),
+            ("archived", |t| t.archived = true),
+            ("deferred_count", |t| t.deferred_count = 1),
+        ];
+
+        for (name, mutate) in &mutations {
+            let mut next = base.clone();
+            mutate(&mut next);
+            assert_eq!(
+                changed_task_fields(&base, &next),
+                vec![*name],
+                "changing `{name}` must report `{name}` and nothing else"
+            );
+        }
+
+        // `scheduling_constraints` is the fifteenth. It is driven separately
+        // because it needs a real `Constraint` rather than a scalar, and a
+        // closure list of one shape reads worse than naming the exception.
+        let mut next = base.clone();
+        next.scheduling_constraints = vec![ScheduleConstraint {
+            time_of_day: None,
+            days_of_week: WeekdaySet::default(),
+            date_range: None,
+            severity: ConstraintSeverity::Hard,
+        }];
+        assert_eq!(
+            changed_task_fields(&base, &next),
+            vec!["scheduling_constraints"]
+        );
+
+        // The mutation list plus that one covers every tracked name, so a
+        // field added to the constant without a case here fails the count
+        // rather than passing unnoticed.
+        assert_eq!(
+            mutations.len() + 1,
+            TRACKED_TASK_FIELDS.len(),
+            "every tracked field needs a mutation that isolates it"
+        );
+
+        // A no-op edit reports nothing, so the assertions above are the
+        // comparisons firing and not a function that always answers.
+        assert!(changed_task_fields(&base, &base.clone()).is_empty());
     }
 
     #[test]
