@@ -611,7 +611,7 @@ impl Core {
     /// through sync rather than through a manual trust command.
     #[must_use]
     pub fn device_cert(&self) -> Vec<u8> {
-        self.engine.keychain().cert_blob().to_vec()
+        self.engine.keychain().cert_blob()
     }
 
     /// The account identity this vault belongs to.

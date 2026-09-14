@@ -735,7 +735,7 @@ impl Engine {
     /// Storage failures.
     pub fn publish_device_cert(&self, db: &mut Db) -> Result<(), EngineError> {
         let now_ms = self.clock.now_ms();
-        let cert = self.keychain.cert_blob().to_vec();
+        let cert = self.keychain.cert_blob();
         let device_id = self.keychain.device_id();
         let already: i64 = db.conn().query_row(
             "SELECT count(*) FROM ops WHERE inner_kind = 'device.cert' AND device_id = ?",
@@ -11862,7 +11862,7 @@ mod tests {
     /// vault root precisely so two in-memory engines can read each other with
     /// no relay to carry `key_envelope` ops. See that constructor's docs.
     fn trust(receiver: &Engine, db: &mut Db, sender: &Engine) {
-        let cert = sender.keychain.cert_blob().to_vec();
+        let cert = sender.keychain.cert_blob();
         let sender_id = sender.keychain.device_id();
         db.with_tx(|tx| {
             receiver
@@ -11881,7 +11881,7 @@ mod tests {
     /// [`trust`] at a chosen wall clock, for tests that care when the cert
     /// landed relative to a revocation cut.
     fn trust_at(receiver: &Engine, db: &mut Db, sender: &Engine, now_ms: u64) {
-        let cert = sender.keychain.cert_blob().to_vec();
+        let cert = sender.keychain.cert_blob();
         let sender_id = sender.keychain.device_id();
         db.with_tx(|tx| {
             receiver
@@ -12485,12 +12485,17 @@ mod tests {
         // cert verifies perfectly: the check that has to catch it is the one
         // about *who sent it*, not the one about whether it is well formed.
         let a_id = ea.keychain.device_id();
-        let cert = ea.keychain.issue_cert_for(
-            c_id,
-            ec.keychain.device_signing_pub(),
-            ea.keychain.device_dh_pub(),
-            T0,
-        );
+        let cert = ea
+            .keychain
+            .issue_cert_for(
+                c_id,
+                ec.keychain.device_signing_pub(),
+                ea.keychain.device_dh_pub(),
+                "impostor",
+                "macos",
+                T0,
+            )
+            .expect("issue the impostor cert");
         dbb.with_tx(|tx| {
             eb.apply_control_op(
                 tx,
@@ -12523,7 +12528,7 @@ mod tests {
 
         // C publishing its own cert is of course fine, and is how the row is
         // written in the first place.
-        let own = ec.keychain.cert_blob().to_vec();
+        let own = ec.keychain.cert_blob();
         dbb.with_tx(|tx| {
             eb.apply_control_op(
                 tx,
