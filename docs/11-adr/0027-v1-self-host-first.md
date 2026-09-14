@@ -88,10 +88,10 @@ no Android source, no Gradle or SDK configuration, no Android CI job and no
 device anywhere in the repository. The complete set of Android traces in the
 tree is: the string `"android"` in the device-platform allowlist
 (`crates/sunrise-server/src/api/devices.rs:19`, `store.rs:82`,
-`crates/sunrise-relay-client/src/bootstrap.rs:34`), two comments saying Kotlin
+`crates/sunrise-relay-client/src/bootstrap.rs:53`), two comments saying Kotlin
 bindings would be generated "when Android arrives"
 (`crates/sunrise-core-bindings/src/lib.rs:5`, `Cargo.toml:10`), and
-`.github/workflows/release.yml:314`, which says outright: "Google Play — there
+`.github/workflows/release.yml:893`, which says outright: "Google Play — there
 is no Android app."
 
 ### Cross-user shared documents assert enforcement the relay cannot perform

@@ -11,11 +11,11 @@ status: proposed
 >
 > **What exists in the tree:** the string `"android"` in the device-platform
 > allowlist (`crates/sunrise-server/src/api/devices.rs:19`,
-> `store.rs:82`, `crates/sunrise-relay-client/src/bootstrap.rs:34`) and two
+> `store.rs:82`, `crates/sunrise-relay-client/src/bootstrap.rs:53`) and two
 > comments saying Kotlin bindings would be generated when Android arrives
 > (`crates/sunrise-core-bindings/src/lib.rs:5`, its `Cargo.toml:10`). No Android
 > source, no Gradle or SDK configuration, no CI job, no device.
-> `.github/workflows/release.yml:314` puts it plainly: "Google Play — there is
+> `.github/workflows/release.yml:893` puts it plainly: "Google Play — there is
 > no Android app."
 >
 > **Why it is not v1:** [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
