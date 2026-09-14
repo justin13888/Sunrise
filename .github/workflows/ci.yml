@@ -494,6 +494,24 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
 
+  core-filesystem-gate-contract:
+    name: Core filesystem gate contract
+    runs-on: ubuntu-latest
+    # One Python script over a crate it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the mutation gate's contract above, so
+    # it runs on every trigger this workflow has. What it asserts is that the
+    # gate can still say no: the first version stopped reading a file at its
+    # first `#[cfg(test)]` line, which left 97% of engine/oplog.rs and 95% of
+    # keychain/mod.rs unscanned the moment those modules were split -- and
+    # reported OK for both. The `Determinism gate` job below runs the gate; this
+    # one asserts the gate is a check.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code and coverage contract
+        run: python3 .github/scripts/test_core_filesystem_gate.py
+
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest

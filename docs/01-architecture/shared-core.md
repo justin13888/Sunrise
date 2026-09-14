@@ -98,7 +98,7 @@ knowing where:
 | rule | enforced by |
 |---|---|
 | 1 — clock | `clippy.toml`, for the `std::time` spellings. **Not** `tokio::time::Instant`, which `sync_driver` uses for backoff scheduling and which the path-based lint does not match. |
-| 2 — filesystem | `core-filesystem-gate.py`, scoped to `crates/sunrise-core/src`, with a visible allowlist of the two documented exceptions. |
+| 2 — filesystem | `core-filesystem-gate.py`, scoped to `crates/sunrise-core/src`, with a visible allowlist of the two documented exceptions. Its own exit-code and coverage contract is asserted by `test_core_filesystem_gate.py`, because a scanner that stops reading early reports OK either way. |
 | 3 — randomness | `clippy.toml` plus a CI grep, because path-based lints miss turbofish and aliasing. The one rule with two independent layers. |
 | 4 — threads | Nothing. Honoured in practice and checked by review. |
 
