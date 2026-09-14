@@ -52,13 +52,16 @@ use rusqlite::{params, OptionalExtension};
 use std::collections::{BTreeMap, HashMap};
 use sunrise_crypto::aead::{aead_open_xchacha, aead_seal_xchacha, AEAD_NONCE_LEN};
 use sunrise_crypto::blake3_kdf::derive_key_32;
+use sunrise_crypto::identity_transition::{
+    IdentityTransitionBody, IdentityTransitionError, IdentityTransitionSigs,
+};
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
     decode_envelope, derive_key, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
     identity_carry_info, identity_id_from_pub, identity_share_info, key_envelope_info,
-    stream_key_id, unwrap_stream_key, wrap_stream_key, AeadAlgId, DeviceCert, DeviceCertInner,
-    DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError, IdentityDhKeyPair, IdentitySigningKeyPair,
-    OpEnvelopeError, StreamKey, VaultRootKey,
+    sign_identity_transition, stream_key_id, unwrap_stream_key, wrap_stream_key, AeadAlgId,
+    DeviceCert, DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError,
+    IdentityDhKeyPair, IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
 };
 use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_pairing::PairingPayload;
@@ -131,6 +134,9 @@ pub enum KeychainError {
     /// HPKE seal/open failure.
     #[error("key envelope: {0}")]
     Hpke(#[from] HpkeError),
+    /// An `identity_transition` could not be signed or verified.
+    #[error("identity transition: {0}")]
+    Transition(#[from] IdentityTransitionError),
     /// Pairing payload codec failure.
     #[error("pairing payload: {0}")]
     Pairing(#[from] sunrise_pairing::PairingPayloadError),
@@ -214,6 +220,26 @@ pub struct Identity {
     /// it `created_at` and means the *account's* creation rather than the
     /// blob's — so it is loaded from the row rather than stamped at seal time.
     created_at_ms: u64,
+}
+
+impl Identity {
+    /// The `identity_id` — `identity_id_from_pub(ID_S_pub)`.
+    #[must_use]
+    pub const fn identity_id(&self) -> [u8; 16] {
+        self.identity_id
+    }
+
+    /// `ID_S_pub`.
+    #[must_use]
+    pub fn id_s_pub(&self) -> [u8; 32] {
+        self.signing.public_bytes()
+    }
+
+    /// `ID_D_pub`.
+    #[must_use]
+    pub const fn id_d_pub(&self) -> [u8; 32] {
+        self.dh_pub
+    }
 }
 
 impl std::fmt::Debug for Identity {
@@ -315,6 +341,19 @@ pub struct Keychain {
     /// the house style here and it does not poison, so a panic inside one
     /// short critical section does not make the whole keychain unusable.
     identity: Mutex<IdentityState>,
+    /// The account identity this keychain was **constructed** at, which
+    /// adoption deliberately never touches.
+    ///
+    /// The durable copy is `identity.genesis_identity_id` /
+    /// `genesis_id_s_pub`, and that is what a real vault's fold reads. This is
+    /// the in-memory answer for the one shape that has no such row: a keychain
+    /// built by `for_test*`, which every engine unit test uses. Without it the
+    /// fallback would read `self.identity`, which adoption moves — so a test
+    /// vault would forget its own genesis the instant it rotated, and a cert
+    /// issued under the retired identity would stop verifying. That is exactly
+    /// the regression the chain exists to prevent, so the fallback must not be
+    /// the thing that causes it.
+    genesis: ([u8; 16], [u8; 32]),
     vault_root: VaultRootKey,
     /// Every Stream key this device holds, `(stream_id, epoch) -> keys`.
     ///
@@ -741,6 +780,7 @@ impl Keychain {
         Self {
             device_id,
             signing,
+            genesis: (identity.identity_id, identity.signing.public_bytes()),
             device_dh,
             identity: Mutex::new(IdentityState {
                 identity,
@@ -833,6 +873,16 @@ impl Keychain {
     #[must_use]
     pub fn identity_id(&self) -> [u8; 16] {
         self.identity.lock().identity.identity_id
+    }
+
+    /// The identity this keychain was constructed at, for a vault that has no
+    /// `identity` row to read one from.
+    ///
+    /// See the field: this is the unit-test fallback and nothing else. A real
+    /// vault answers from [`Self::genesis_identity_id`] and the row beside it.
+    #[must_use]
+    pub const fn constructed_at_identity(&self) -> ([u8; 16], [u8; 32]) {
+        self.genesis
     }
 
     /// The identity the account **started** as, which no rotation changes.
@@ -1483,6 +1533,66 @@ impl Keychain {
 
     // ---- identity transition (ADR-0032) ----
 
+    /// Issue a cert naming `device_id` under a **successor** identity that is
+    /// not yet in force.
+    ///
+    /// The roster of an `identity_transition` is exactly this, once per
+    /// surviving device: [`Self::issue_cert_for`] signs under the identity the
+    /// keychain currently holds, and a roster signed by the predecessor would
+    /// be a roster no verifier accepts — `apply_control_op` checks every entry
+    /// against `to_id_s_pub`, because a roster is the *successor's* statement
+    /// about who survives rather than a list the emitter wrote.
+    ///
+    /// # Errors
+    /// [`KeychainError::Cert`] for an invalid nickname length or a CBOR
+    /// failure.
+    pub fn issue_roster_cert(
+        successor: &Identity,
+        device_id: [u8; 16],
+        d_s_pub: [u8; 32],
+        d_d_pub: [u8; 32],
+        nickname: &str,
+        platform: &str,
+        now_ms: u64,
+    ) -> Result<Vec<u8>, KeychainError> {
+        let body = DeviceCertInner {
+            v: 1,
+            device_id,
+            d_s_pub,
+            d_d_pub,
+            identity_id: successor.identity_id,
+            created_at_ms: now_ms,
+            nickname: nickname.to_string(),
+            platform: platform.to_string(),
+        };
+        Ok(DeviceCert::issue(body, &successor.signing)?.to_cbor()?)
+    }
+
+    /// Sign a transition body with the **outgoing** identity this keychain
+    /// holds and the successor's own key.
+    ///
+    /// The one place a transition can be signed. `ID_S_priv` never leaves this
+    /// module — the sole exported secret is `export_vault_root_for_pairing`,
+    /// at that length and for that reason — so an emitter hands the body in and
+    /// gets the pair back rather than borrowing the key.
+    ///
+    /// # Errors
+    /// [`KeychainError::Transition`] when the body does not name this
+    /// keychain's identity as its predecessor or the successor's key as its
+    /// successor. Both are checked before either signature is produced.
+    pub fn sign_transition(
+        &self,
+        body: &IdentityTransitionBody,
+        successor: &Identity,
+    ) -> Result<IdentityTransitionSigs, KeychainError> {
+        let state = self.identity.lock();
+        Ok(sign_identity_transition(
+            body,
+            &state.identity.signing,
+            &successor.signing,
+        )?)
+    }
+
     /// Mint a successor account identity: a fresh `ID_S`/`ID_D` pair.
     ///
     /// `created_at_ms` is the **account's** creation, carried forward from the
@@ -1824,6 +1934,7 @@ impl Keychain {
         Self {
             device_id,
             signing,
+            genesis: (identity.identity_id, identity.signing.public_bytes()),
             device_dh,
             identity: Mutex::new(IdentityState {
                 identity,

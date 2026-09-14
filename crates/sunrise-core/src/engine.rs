@@ -52,7 +52,7 @@ use crate::config::{Clock, HlcClock, Rng};
 use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
-use crate::keychain::{EnvelopeRecipient, KeySource, Keychain};
+use crate::keychain::{EnvelopeRecipient, KeySource, Keychain, SuccessorPublics};
 use crate::queries::{
     ActionableTask, BlockRow, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query,
     QueryResult, StreamRow,
@@ -64,8 +64,8 @@ use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::identity_transition::{IdentityTransitionBody, IdentityTransitionSigs};
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope,
-    verify_identity_transition, DeviceCert, StreamKey,
+    decode_envelope, identity_id_from_pub, open_envelope_unverified, roster_digest, shares_digest,
+    stream_key_id, verify_envelope, verify_identity_transition, DeviceCert, StreamKey,
 };
 use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
@@ -683,7 +683,21 @@ impl Engine {
             // would receive a key minted by its own revocation. Ordering the
             // write first is the whole fix; nothing downstream needs the
             // register to be absent.
-            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
+            // The epoch this transaction's ops will be sealed under, read
+            // before anything is minted — the same value `seal_under` below
+            // resolves to, and the one a peer will see as `env.epoch`.
+            let at_epoch = self
+                .keychain
+                .current_epoch_tx(tx, &META_STREAM)?
+                .unwrap_or(0);
+            self.apply_control_op(
+                tx,
+                &revoke,
+                &self.keychain.device_id(),
+                hlc,
+                now_ms,
+                at_epoch,
+            )?;
 
             // The epoch every rotation op is sealed under: read before
             // anything is minted, so it is the epoch the departing devices and
@@ -1024,7 +1038,8 @@ impl Engine {
                 //     state. They have no row and no LWW contest; routing one
                 //     into `materialize_remote` would file it under `tasks`,
                 //     because that function's kind table ends in a `_ =>` arm.
-                absorbed = self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms)?;
+                absorbed =
+                    self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms, env.epoch)?;
             } else {
                 // f. LWW materialization.
                 materialize_remote(tx, &inner, &lww)?;
@@ -1169,49 +1184,32 @@ impl Engine {
         Ok(found.is_some())
     }
 
-    /// The account identity **in force** on this replica.
+    /// The account identity **in force** on this replica: the last link of
+    /// [`Self::chain_identities`].
     ///
-    /// The last link of [`Self::chain_identities`], read back from the
-    /// `identity` row rather than recomputed, because the row is what
-    /// `Keychain::adopt_successor_identity` and
-    /// [`Self::recompute_identity_head`] both write and it is therefore the one
-    /// value every reader on this replica agrees on.
+    /// Derived from the chain at every call and never read off the `identity`
+    /// row, and the difference is load-bearing. That row holds the identity
+    /// **this device signs with**, which is a different fact: a device left out
+    /// of a rotation's roster never adopts the successor and keeps its own row
+    /// unchanged forever. Reading the head from there would let exactly that
+    /// device believe it was still the account — and it is precisely the device
+    /// that must not.
     ///
-    /// Same discipline as [`Self::is_revoked`]: a table read and nothing else.
-    /// No clock — a transition's standing is decided by the op set, and the two
-    /// paragraphs on `is_revoked` about what a wall clock does to a decision
-    /// like this apply here word for word.
-    ///
-    /// # The fallback is for the vault shape the unit tests build
-    ///
-    /// `Keychain::for_test*` constructs a keychain with no `identity` row at
-    /// all, so there is nothing to read. Falling back to the keychain's own
-    /// identity is exact there — a test vault has taken no transitions — and
-    /// unreachable in a real vault, where `Keychain::open` always writes the
-    /// row before an `Engine` exists.
+    /// Same discipline as [`Self::is_revoked`]: table reads and nothing else.
+    /// No clock — the two paragraphs there about what a wall clock does to a
+    /// decision like this apply here word for word.
     pub(crate) fn current_identity(
         &self,
         conn: &rusqlite::Connection,
     ) -> rusqlite::Result<IdentityHead> {
-        let row: Option<(Vec<u8>, Vec<u8>)> = conn
-            .query_row(
-                "SELECT identity_id, id_s_pub FROM identity WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let head = row
-            .and_then(|(id, pk)| {
-                Some(IdentityHead {
-                    identity_id: to16(&id)?,
-                    id_s_pub: to32(&pk)?,
-                })
-            })
-            .unwrap_or_else(|| IdentityHead {
-                identity_id: self.keychain.identity_id(),
-                id_s_pub: self.keychain.identity_signing_pub(),
-            });
-        Ok(head)
+        let chain = self.chain_identities(conn)?;
+        let (identity_id, id_s_pub) = *chain
+            .last()
+            .expect("chain_identities always returns at least the genesis link");
+        Ok(IdentityHead {
+            identity_id,
+            id_s_pub,
+        })
     }
 
     /// Every account identity on this replica's transition chain, genesis
@@ -1263,15 +1261,13 @@ impl Engine {
             .optional()?;
         let start = genesis
             .and_then(|(id, pk)| Some((to16(&id)?, to32(&pk?)?)))
-            // See `current_identity`: the test-shaped vault has no row, and a
-            // vault predating 0022/0023 has NULL columns the backfill filled —
-            // either way the identity in force is the only link there is.
-            .unwrap_or_else(|| {
-                (
-                    self.keychain.identity_id(),
-                    self.keychain.identity_signing_pub(),
-                )
-            });
+            // The test-shaped vault has no `identity` row at all. The
+            // keychain's *constructed-at* identity is the right answer there
+            // and `identity_id()` is not: adoption moves the latter, so a test
+            // vault that rotated would forget its own genesis and stop
+            // verifying every cert issued before the rotation — the exact
+            // regression this chain exists to prevent.
+            .unwrap_or_else(|| self.keychain.constructed_at_identity());
 
         let mut chain = vec![start];
         let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
@@ -1317,6 +1313,115 @@ impl Engine {
             chain.push(next);
         }
         Ok(chain)
+    }
+
+    /// Bring this device's own identity into step with the chain head.
+    ///
+    /// [`Self::chain_identities`] decides who the account *is*; this decides
+    /// whether this device is still it. The two are separate on purpose, and a
+    /// device that cannot follow the chain is not an error — it is the
+    /// mechanism. A rotation's roster names the devices that survive it, and
+    /// only those devices get a share of the successor's `ID_S_priv`, so a
+    /// device left out finds no share here, adopts nothing, and goes on signing
+    /// under an identity that is no longer the head. Every membership test in
+    /// this file then reads it as not-current. **That is the fix for #105
+    /// arriving, not failing.**
+    ///
+    /// Two shares are tried, carry first. The carry copy is sealed to the
+    /// outgoing `ID_D_pub` and carries `ID_D_priv` as well, so a device that
+    /// can open it keeps the account's unwrapping key across the rotation;
+    /// preferring it is what stops the creator silently demoting itself to a
+    /// device that can seal to the identity and not open what it sealed.
+    ///
+    /// Idempotent and safe to call on every open: it returns immediately when
+    /// this device already signs under the head, which is the ordinary case.
+    ///
+    /// # Errors
+    /// SQLite failures only. A share that will not open, a payload that will
+    /// not decode and a successor this device is not in the roster of are all
+    /// the same non-error outcome — no adoption — and are logged rather than
+    /// returned, for the reason `apply_control_op`'s other arms give.
+    pub(crate) fn recompute_identity_head(
+        &self,
+        tx: &Transaction<'_>,
+        now_ms: u64,
+    ) -> rusqlite::Result<()> {
+        let head = self.current_identity(tx)?;
+        if head.identity_id == self.keychain.identity_id() {
+            return Ok(());
+        }
+        let row: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT payload FROM identity_transitions WHERE to_identity_id = ?",
+                params![&head.identity_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(payload) = row else {
+            return Ok(());
+        };
+        let Ok(InnerOp::IdentityTransition(p)) = decode_inner_op(&payload) else {
+            return Ok(());
+        };
+        let publics = SuccessorPublics {
+            identity_id: p.to_identity_id,
+            id_s_pub: p.to_id_s_pub,
+            id_d_pub: p.to_id_d_pub,
+        };
+        let me = self.keychain.device_id();
+        let successor = p
+            .identity_share
+            .as_ref()
+            .and_then(|b| {
+                self.keychain
+                    .open_successor_carry_share(&publics, b.as_slice())
+                    .ok()
+            })
+            .or_else(|| {
+                p.device_shares
+                    .iter()
+                    .find(|s| s.device_id == me)
+                    .and_then(|s| {
+                        self.keychain
+                            .open_successor_device_share(&publics, &s.hpke_ciphertext)
+                            .ok()
+                    })
+            });
+        let Some(successor) = successor else {
+            tracing::warn!(
+                ev = "core.identity.not_in_roster",
+                head_h = hex_short(&head.identity_id),
+                "this device holds no share of the account's current identity and no \
+                 longer speaks for it"
+            );
+            return Ok(());
+        };
+        let (nickname, platform) = Keychain::device_labels_tx(tx, &me)?;
+        match self.keychain.adopt_successor_identity(
+            tx,
+            successor,
+            &nickname,
+            &platform,
+            now_ms,
+            self.rng.as_ref(),
+        ) {
+            Ok(_) => {
+                tracing::info!(
+                    ev = "core.identity.adopted",
+                    head_h = hex_short(&head.identity_id),
+                    "this device adopted the account's successor identity"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    ev = "core.identity.adopt_failed",
+                    head_h = hex_short(&head.identity_id),
+                    cause = %e,
+                    "could not adopt the account's successor identity"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Park an op whose Stream key has not arrived yet.
@@ -1478,6 +1583,14 @@ impl Engine {
 
     /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys
     /// this device newly learned, so the caller can drain their parked ops.
+    /// `meta_epoch` is the vault-meta epoch the op was **sealed under** —
+    /// `env.epoch` on the receive side. Only the `IdentityTransition` arm reads
+    /// it, and it is the first and most important component of the fold's
+    /// ordering key: a revoked device provably cannot raise it, because
+    /// `revoke_device` writes the revocation register before it mints, so
+    /// `emit_key_envelopes`' anti-join excludes that device from every epoch
+    /// minted in the same transaction. It therefore holds no key above the one
+    /// it was cut at, and anything it seals sorts below every honest rotation.
     fn apply_control_op(
         &self,
         tx: &Transaction<'_>,
@@ -1485,6 +1598,7 @@ impl Engine {
         sender: &[u8; 16],
         hlc: Hlc,
         now_ms: u64,
+        meta_epoch: u32,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         match inner {
             InnerOp::KeyEnvelope(p) => {
@@ -1872,6 +1986,121 @@ impl Engine {
                         "could not seal held stream keys to a newly certified device"
                     );
                 }
+                Ok(Vec::new())
+            }
+            InnerOp::IdentityTransition(p) => {
+                // Every rejection below is logged and dropped, never returned,
+                // on this function's existing house rule: `apply_remote` has
+                // already accepted the envelope — the signature verified and
+                // the sender is a member — so failing the whole delivery over a
+                // payload defect would put a well-formed op into the refusal
+                // path. The op is still recorded in `ops`; what does not happen
+                // is that it becomes a link.
+                //
+                // The checks here are **structural only**. `prev_sig` cannot be
+                // checked without a predecessor, and this replica may not have
+                // established one yet: a transition naming an identity two
+                // links ahead is a legitimate op that must be stored now and
+                // verified when its predecessor lands. That is why the
+                // signatures live in [`Self::chain_identities`] and only the
+                // self-contained facts live here.
+                if identity_id_from_pub(&p.to_id_s_pub) != p.to_identity_id {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "id_derivation",
+                        sender_h = hex_short(sender),
+                        "an identity transition names an id that is not the derivation \
+                         of its own successor key"
+                    );
+                    return Ok(Vec::new());
+                }
+                // The digests are **recomputed**, not read: they are in the
+                // signed body and the body is not on the wire, so computing
+                // them is the only way to have them at all. A payload whose
+                // roster or shares are malformed produces no digest, and one
+                // whose contents were swapped produces a digest no signature
+                // covers — which the fold catches. Both failures land in the
+                // same place, which is why this arm does not need to tell them
+                // apart.
+                let certs: Vec<&[u8]> = p.roster.iter().map(|e| e.cert.as_slice()).collect();
+                let Ok(roster_digest) = roster_digest(&certs) else {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "roster",
+                        sender_h = hex_short(sender),
+                        "an identity transition's roster does not decode, or names a \
+                         device twice"
+                    );
+                    return Ok(Vec::new());
+                };
+                let shares: Vec<([u8; 16], &[u8])> = p
+                    .device_shares
+                    .iter()
+                    .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+                    .collect();
+                let Ok(shares_digest) =
+                    shares_digest(&shares, p.identity_share.as_ref().map(|b| b.as_slice()))
+                else {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "shares",
+                        sender_h = hex_short(sender),
+                        "an identity transition's shares are the wrong width or name a \
+                         device twice"
+                    );
+                    return Ok(Vec::new());
+                };
+                // Every roster cert must verify under the **successor**. This
+                // is what makes the roster a statement by the identity being
+                // adopted rather than a list the emitter wrote: a cert in here
+                // signed by anyone else is not a cert this account issued, and
+                // admitting it would let a transition carry a stranger's device
+                // into the new membership.
+                if p.roster.iter().any(|e| {
+                    DeviceCert::from_cbor(&e.cert)
+                        .and_then(|c| c.verify_binding(&p.to_id_s_pub, &p.to_identity_id))
+                        .is_err()
+                }) {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "roster_binding",
+                        sender_h = hex_short(sender),
+                        "an identity transition's roster holds a cert not issued by its \
+                         own successor identity"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                let Ok(payload) = encode_inner_op(inner) else {
+                    return Ok(Vec::new());
+                };
+                // `INSERT OR IGNORE`, keyed on `to_identity_id`: re-delivery of
+                // the same transition is a no-op, and two transitions cannot
+                // collide on that key because the successor id derives from an
+                // independently random key.
+                tx.execute(
+                    "INSERT OR IGNORE INTO identity_transitions
+                     (to_identity_id, from_identity_id, to_id_s_pub, to_id_d_pub,
+                      meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id,
+                      payload, prev_sig, next_sig, roster_digest, shares_digest)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &p.to_identity_id[..],
+                        &p.from_identity_id[..],
+                        &p.to_id_s_pub[..],
+                        &p.to_id_d_pub[..],
+                        meta_epoch,
+                        i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX),
+                        hlc.logical,
+                        &sender[..],
+                        payload,
+                        &p.prev_sig[..],
+                        &p.next_sig[..],
+                        &roster_digest[..],
+                        &shares_digest[..],
+                    ],
+                )?;
+                self.recompute_identity_head(tx, now_ms)?;
                 Ok(Vec::new())
             }
             _ => Ok(Vec::new()),
@@ -8374,6 +8603,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::config::SystemRng;
+    use crate::control_op::{IdentityTransitionPayload, KeyShare, RosterEntry};
     use parking_lot::Mutex as PLMutex;
     use sunrise_crypto::keys::VaultRootKey;
     use sunrise_domain::ActivityKind;
@@ -12053,7 +12283,7 @@ mod tests {
         });
         db.with_tx(|tx| {
             receiver
-                .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms)
+                .apply_control_op(tx, &inner, &sender_id, hlc, hlc.physical_ms, 1)
                 .map(|_| ())
         })
         .unwrap();
@@ -12198,6 +12428,7 @@ mod tests {
                     &sender_id,
                     Hlc::at(0),
                     0,
+                    1,
                 )
                 .map(|_| ())
         })
@@ -12217,6 +12448,7 @@ mod tests {
                     &sender_id,
                     Hlc::at(now_ms),
                     now_ms,
+                    1,
                 )
                 .map(|_| ())
         })
@@ -12829,6 +13061,7 @@ mod tests {
                 &a_id,
                 Hlc::at(T0),
                 T0,
+                1,
             )
             .map(|_| ())
         })
@@ -12862,6 +13095,7 @@ mod tests {
                 &c_id,
                 Hlc::at(T0),
                 T0,
+                1,
             )
             .map(|_| ())
         })
@@ -12901,7 +13135,7 @@ mod tests {
                 key_id: stream_key_id(&key),
                 hpke_ciphertext: sealed,
             });
-            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0))
+            dbb.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0, 1))
                 .unwrap()
         };
 
@@ -12957,7 +13191,7 @@ mod tests {
                 key_id: [0u8; 8],
                 hpke_ciphertext: vec![0u8; 48],
             });
-            db.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0))
+            db.with_tx(|tx| eb.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0, 1))
                 .unwrap();
         };
         let filed = |db: &Db, epoch: u32| -> i64 {
@@ -13735,6 +13969,322 @@ mod tests {
     }
 
     // ---- the verification rule (ADR-0032, #105) ----
+
+    /// Build a complete, valid `identity_transition` from `emitter` onto a
+    /// fresh successor, with `roster` as the surviving devices.
+    ///
+    /// Assembled by hand rather than through a command, because the command is
+    /// the next commit's. Every byte of it is what a real emitter produces —
+    /// the roster is signed by the successor, the shares are real HPKE seals,
+    /// and the two signatures are taken by the keychain over the real digests —
+    /// so a test that applies one is exercising the production path and not a
+    /// fixture.
+    fn build_transition(
+        emitter: &Engine,
+        roster: &[&Engine],
+        carry: bool,
+        now_ms: u64,
+    ) -> (InnerOp, [u8; 16]) {
+        let successor = emitter.keychain.mint_successor_identity(&SystemRng);
+        let mut entries: Vec<RosterEntry> = Vec::new();
+        let mut shares: Vec<KeyShare> = Vec::new();
+        for e in roster {
+            let cert = Keychain::issue_roster_cert(
+                &successor,
+                e.keychain.device_id(),
+                e.keychain.device_signing_pub(),
+                e.keychain.device_dh_pub(),
+                "device",
+                "test",
+                now_ms,
+            )
+            .expect("roster cert");
+            entries.push(RosterEntry { cert });
+            shares.push(KeyShare {
+                device_id: e.keychain.device_id(),
+                hpke_ciphertext: emitter
+                    .keychain
+                    .seal_successor_device_share(
+                        &successor,
+                        &e.keychain.device_dh_pub(),
+                        &e.keychain.device_id(),
+                        &SystemRng,
+                    )
+                    .expect("device share"),
+            });
+        }
+        let identity_share = carry.then(|| {
+            serde_bytes::ByteBuf::from(
+                emitter
+                    .keychain
+                    .seal_successor_carry_share(&successor, &SystemRng)
+                    .expect("carry share"),
+            )
+        });
+
+        let certs: Vec<&[u8]> = entries.iter().map(|e| e.cert.as_slice()).collect();
+        let share_refs: Vec<([u8; 16], &[u8])> = shares
+            .iter()
+            .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+            .collect();
+        let body = sunrise_crypto::IdentityTransitionBody {
+            from_identity_id: emitter.keychain.identity_id(),
+            to_identity_id: successor.identity_id(),
+            to_id_s_pub: successor.id_s_pub(),
+            to_id_d_pub: successor.id_d_pub(),
+            roster_digest: sunrise_crypto::roster_digest(&certs).expect("roster digest"),
+            shares_digest: sunrise_crypto::shares_digest(
+                &share_refs,
+                identity_share.as_ref().map(|b| b.as_slice()),
+            )
+            .expect("shares digest"),
+        };
+        let sigs = emitter
+            .keychain
+            .sign_transition(&body, &successor)
+            .expect("sign");
+        let to = successor.identity_id();
+        (
+            InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+                from_identity_id: body.from_identity_id,
+                to_identity_id: body.to_identity_id,
+                to_id_s_pub: body.to_id_s_pub,
+                to_id_d_pub: body.to_id_d_pub,
+                roster: entries,
+                device_shares: shares,
+                identity_share,
+                prev_sig: sigs.prev_sig,
+                next_sig: sigs.next_sig,
+            })),
+            to,
+        )
+    }
+
+    /// Apply `inner` to `receiver` as `sender`, at a chosen meta epoch.
+    fn apply_control_at(
+        receiver: &Engine,
+        db: &mut Db,
+        inner: &InnerOp,
+        sender: &[u8; 16],
+        hlc: Hlc,
+        meta_epoch: u32,
+    ) {
+        db.with_tx(|tx| {
+            receiver
+                .apply_control_op(tx, inner, sender, hlc, hlc.physical_ms, meta_epoch)
+                .map(|_| ())
+        })
+        .unwrap();
+    }
+
+    /// A valid transition moves the head, and the emitter adopts it.
+    #[test]
+    fn an_applied_transition_moves_the_head() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let before = ea.current_identity(dba.conn()).unwrap();
+
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        apply_control_at(
+            &ea,
+            &mut dba,
+            &inner,
+            &ea.keychain.device_id(),
+            Hlc::at(T0),
+            1,
+        );
+
+        let head = ea.current_identity(dba.conn()).unwrap();
+        assert_eq!(head.identity_id, to);
+        assert_ne!(head.identity_id, before.identity_id);
+        assert_eq!(
+            ea.chain_identities(dba.conn()).unwrap(),
+            vec![
+                (before.identity_id, before.id_s_pub),
+                (head.identity_id, head.id_s_pub)
+            ],
+            "the chain is genesis then successor, in that order"
+        );
+        // The emitter holds the outgoing ID_D_priv, so it opens the carry share
+        // and keeps the account's unwrapping key across the rotation.
+        assert_eq!(ea.keychain.identity_id(), to);
+        assert!(ea.keychain.holds_only_copy_of_identity_key());
+    }
+
+    /// Re-delivery is a no-op: the row is keyed on `to_identity_id`.
+    #[test]
+    fn applying_the_same_transition_twice_changes_nothing() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        let a_id = ea.keychain.device_id();
+        apply_control_at(&ea, &mut dba, &inner, &a_id, Hlc::at(T0), 1);
+        apply_control_at(&ea, &mut dba, &inner, &a_id, Hlc::at(T0 + 5), 1);
+        let n: i64 = dba
+            .conn()
+            .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(ea.current_identity(dba.conn()).unwrap().identity_id, to);
+    }
+
+    /// A device left out of the roster does not adopt, and reads itself as no
+    /// longer speaking for the account. This is the mechanism, not a failure.
+    #[test]
+    fn a_device_left_out_of_the_roster_does_not_adopt() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        trust(&eb, &mut dbb, &ea);
+        // A rotates, and B is not in the roster.
+        let (inner, to) = build_transition(&ea, &[], false, T0);
+        apply_control_at(
+            &eb,
+            &mut dbb,
+            &inner,
+            &ea.keychain.device_id(),
+            Hlc::at(T0),
+            1,
+        );
+
+        assert_eq!(
+            eb.current_identity(dbb.conn()).unwrap().identity_id,
+            to,
+            "B agrees who the account now is"
+        );
+        assert_ne!(
+            eb.keychain.identity_id(),
+            to,
+            "...and knows it is not itself: no share, no adoption"
+        );
+    }
+
+    /// Structural rejections are logged and dropped, never returned, and leave
+    /// the head where it was. Each of the four is a different way to be
+    /// malformed and none of them is a delivery failure.
+    #[test]
+    fn a_malformed_transition_is_dropped_and_moves_nothing() {
+        /// One named way to malform a transition. Declared before the first
+        /// statement, because `clippy::items_after_statements` is denied.
+        type Case<'a> = (
+            &'static str,
+            Box<dyn Fn(&mut IdentityTransitionPayload) + 'a>,
+        );
+
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+        let a_id = ea.keychain.device_id();
+
+        let mutate = |f: &dyn Fn(&mut IdentityTransitionPayload)| {
+            let (inner, _) = build_transition(&ea, &[&eb], true, T0);
+            let InnerOp::IdentityTransition(mut p) = inner else {
+                unreachable!()
+            };
+            f(&mut p);
+            InnerOp::IdentityTransition(p)
+        };
+
+        let cases: Vec<Case<'_>> = vec![
+            // The id is a derivation of the key, so a chosen one is refused.
+            (
+                "id_derivation",
+                Box::new(|p: &mut IdentityTransitionPayload| p.to_identity_id[0] ^= 0x01),
+            ),
+            // A roster entry that is not a cert.
+            (
+                "roster",
+                Box::new(|p: &mut IdentityTransitionPayload| {
+                    p.roster[0].cert = b"not a cert".to_vec();
+                }),
+            ),
+            // A share of the wrong width: the digest refuses to be computed
+            // rather than hashing an ambiguous concatenation.
+            (
+                "shares",
+                Box::new(|p: &mut IdentityTransitionPayload| {
+                    p.device_shares[0].hpke_ciphertext.truncate(60);
+                }),
+            ),
+            // A cert that is a valid cert, but not one the successor issued.
+            (
+                "roster_binding",
+                Box::new(|p: &mut IdentityTransitionPayload| {
+                    p.roster[0].cert = eb.keychain.cert_blob();
+                }),
+            ),
+        ];
+
+        for (name, f) in cases {
+            let inner = mutate(f.as_ref());
+            apply_control_at(&ea, &mut dba, &inner, &a_id, Hlc::at(T0), 1);
+            assert_eq!(
+                ea.current_identity(dba.conn()).unwrap().identity_id,
+                head,
+                "`{name}` must not move the head"
+            );
+            let n: i64 = dba
+                .conn()
+                .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(n, 0, "`{name}` must not become a link");
+        }
+    }
+
+    /// A transition signed by somebody who is not the predecessor is stored —
+    /// applying is unconditional — and is never a link, because the fold checks
+    /// `prev_sig` under the identity it actually claims to succeed.
+    #[test]
+    fn a_transition_from_a_stranger_is_stored_and_never_folded() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        // A second account: same vault root, a different identity seed is not
+        // available through `for_test`, so the stranger is built by rewriting
+        // the body's predecessor to an id this account never had.
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+        let (inner, _) = build_transition(&ea, &[&eb], true, T0);
+        let InnerOp::IdentityTransition(mut p) = inner else {
+            unreachable!()
+        };
+        // The signatures were taken over the real predecessor; naming another
+        // one leaves `prev_sig` covering a body that no longer exists.
+        p.from_identity_id = [0x5e; 16];
+        let inner = InnerOp::IdentityTransition(p);
+        apply_control_at(
+            &ea,
+            &mut dba,
+            &inner,
+            &ea.keychain.device_id(),
+            Hlc::at(T0),
+            1,
+        );
+
+        let n: i64 = dba
+            .conn()
+            .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1, "it is structurally well formed, so it is stored");
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            head,
+            "and it extends nothing: it does not succeed this account's head"
+        );
+    }
 
     /// A vault that has taken no transition has a one-link chain, and the head
     /// is the identity it has always had. The base case every other assertion

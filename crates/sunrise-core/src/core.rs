@@ -163,6 +163,24 @@ impl Core {
         // device arriving by pairing has already imported the account's epochs
         // in `Keychain::open` above, so this finds them and mints nothing.
         engine.ensure_base_epochs(&mut db)?;
+        // Between the two, and in that order for two reasons.
+        //
+        // After `ensure_base_epochs`, because adopting a successor identity
+        // re-issues this device's cert and writes it into `local_identity`, and
+        // it does that inside a transaction that must not be the one that mints
+        // the vault-meta stream's first key.
+        //
+        // Before `publish_device_cert`, because that publishes whatever cert
+        // the keychain currently holds. A device that applied a transition in a
+        // previous session and was shut down before it could publish would
+        // otherwise announce a cert under the identity the account has retired
+        // — and every peer would record it as a non-member, which is the exact
+        // outcome the fix reserves for a device that was actually excluded.
+        //
+        // Ordinarily a no-op: it returns immediately when this device already
+        // signs under the chain head, which is every open but the first after a
+        // rotation it did not itself emit.
+        db.with_tx(|tx| engine.recompute_identity_head(tx, cfg.clock.now_ms()))?;
         engine.publish_device_cert(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
