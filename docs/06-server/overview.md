@@ -8,7 +8,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 
 > **Implementation status.** What `crates/sunrise-server` builds today is the
 > self-host single-binary shape and nothing else: `rusqlite` against one SQLite
-> file (`store.rs`) and blobs on the local filesystem (`sunrise_storage::BlobStore`).
+> file (`store/`) and blobs on the local filesystem (`sunrise_storage::BlobStore`).
 > There is **no** Postgres, S3, Redis, pub/sub, or push delivery anywhere in
 > `crates/` — no `sqlx`, `aws-sdk-s3`, `apns2`, `fcm`, or `web-push` appears in
 > any `Cargo.toml`. The managed and scale-out sections below are design targets;

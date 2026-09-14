@@ -34,7 +34,7 @@ status: proposed
 > **What holds regardless:** the retention *pressure* is real — the op log
 > genuinely grows without bound, and that is a v1 operational fact, bounded on
 > the relay side only by the 30-day / 256 MiB per-channel relay-log retention
-> (`crates/sunrise-server/src/relay_log.rs:54,63`), which trims the relay's copy
+> (`crates/sunrise-server/src/relay_log.rs:121,130`), which trims the relay's copy
 > and not the client's.
 
 Without compaction, the op log grows forever. Compaction trims ops that are no longer needed for sync or audit.

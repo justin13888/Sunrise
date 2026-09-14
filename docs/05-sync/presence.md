@@ -24,7 +24,7 @@ status: proposed
 > emitter. Since [ADR-0023](../11-adr/0023-sse-sync-transport.md) there is not
 > even a frame to send one on — the socket's catch-all inbound dispatch is gone
 > with the socket, and the five sync operations
-> (`crates/sunrise-server/src/api/sync.rs`) are typed one per purpose, so a
+> (`crates/sunrise-server/src/api/sync/`) are typed one per purpose, so a
 > beacon has no route that would accept it. It is now unreachable rather than
 > silently dropped, which is a smaller gap than it sounds: neither state has a
 > handler behind it. Capability bit 36 is defined as

@@ -74,7 +74,7 @@ re-register on next sync.
 
 ## Push fanout flow (not implemented)
 
-No step below runs. `ops` in `crates/sunrise-server/src/api/sync.rs` appends an
+No step below runs. `ops` in `crates/sunrise-server/src/api/sync/publish.rs` appends an
 arriving batch to the durable relay log and publishes it to whatever event
 streams are open; an offline receiver is simply not delivered to, and nothing
 consults `push_tokens`. It catches up by cursor replay on its next

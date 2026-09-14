@@ -10,8 +10,8 @@ Cryptographic E2EE identity (identity + device keypairs) is **separate** from se
 
 > **Implementation status.** Token verification, the account model, `allow_signup`,
 > device binding, the sync session's expiry handling and the **recovery-blob
-> fetch** are built (`crates/sunrise-server/src/auth/`, `store.rs`,
-> `api/accounts.rs`, `api/sync.rs`, `sync_session.rs`). The
+> fetch** are built (`crates/sunrise-server/src/auth/`, `store/`,
+> `api/accounts.rs`, `api/sync/`, `sync_session.rs`). The
 > **account-deletion** flow below is not: no route serves it, and the section
 > says so in place.
 > [ADR-0022](../11-adr/0022-device-signature-canonical-json.md) replaces
@@ -78,7 +78,7 @@ absence of a disconnect. The operation is gated on the optional
 `SrvTokenRefresh` capability bit, which the server ORs into its negotiated set
 at `POST /sync/session` — a client only refreshes after seeing that bit agreed,
 so a refresh cannot be silently swallowed by a server that predates it.
-Implemented as `refresh` in `crates/sunrise-server/src/api/sync.rs`, specified in
+Implemented as `refresh` in `crates/sunrise-server/src/api/sync/credential.rs`, specified in
 [`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md), and covered by that
 module's own tests — `a_refresh_extends_the_session`,
 `an_unverifiable_refresh_is_refused_but_keeps_the_session`,

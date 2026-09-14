@@ -37,9 +37,9 @@ subscriptions, a `processed_stripe_events` table, a webhook route and
 none of it exists. Grep agrees: there is no Stripe client in the workspace, no
 webhook route, no quota accounting in `crates/sunrise-server`. The only trace
 is `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'` column
-(`crates/sunrise-server/src/store.rs:136`) that `resolve_account` sets to
-`"free"` at provisioning (`store.rs:268`) and that is read exactly once, to
-echo onto `AccountInfo` (`api/accounts.rs:72`). Nothing gates on it.
+(`crates/sunrise-server/src/store/accounts.rs:28`) that `resolve_account` sets to
+`"free"` at provisioning (`store/accounts.rs:107`) and that is read exactly once, to
+echo onto `AccountInfo` (`api/accounts.rs:92`). Nothing gates on it.
 
 The numbers do not stay in that file:
 
@@ -71,7 +71,7 @@ records two things this ADR ratifies. First, [ADR-0023](./0023-sse-sync-transpor
 removed the only frame that could carry a beacon: `PresenceBeacon` (`0x0A`) and
 `PresenceUpdate` (`0x0B`) are bare discriminators in
 `crates/sunrise-wire-protocol/src/messages.rs:54,56` with no payload type, and
-the five typed sync operations in `crates/sunrise-server/src/api/sync.rs` are
+the five typed sync operations in `crates/sunrise-server/src/api/sync/` are
 one-per-purpose, so nothing would accept one. Second, and larger: presence is
 specified unencrypted, and it would be **the only user data the relay reads in
 the clear**. That is a posture change — the server moving from "sees no content"
@@ -87,7 +87,7 @@ Xiaomi 13T, OnePlus 11 — under the heading "Device used in CI / QA". There is
 no Android source, no Gradle or SDK configuration, no Android CI job and no
 device anywhere in the repository. The complete set of Android traces in the
 tree is: the string `"android"` in the device-platform allowlist
-(`crates/sunrise-server/src/api/devices.rs:19`, `store.rs:82`,
+(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:90`,
 `crates/sunrise-relay-client/src/bootstrap.rs:53`), two comments saying Kotlin
 bindings would be generated "when Android arrives"
 (`crates/sunrise-core-bindings/src/lib.rs:5`, `Cargo.toml:10`), and
@@ -135,11 +135,11 @@ enforces are fixed operator constants, not per-account accounting:
 
 | Limit | Value | Source |
 |---|---|---|
-| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config.rs:76-77` |
+| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:104-105,110-112` |
 | Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:53` |
 | Blob chunk count | 4096 | `api/blobs.rs:57` |
 | Blob size | 100 MB | `api/blobs.rs:61` |
-| Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log.rs:54,63` |
+| Relay-log retention | 30 days, 256 MiB per channel | `crates/sunrise-server/src/relay_log.rs:121,130` |
 
 No `plan_tier` metric label. No `AUTH_QUOTA_EXCEEDED` or `AUTH_RATE_LIMITED` on
 the typed error surface, and none planned for v1. (`sunrise-error`'s
@@ -174,7 +174,7 @@ therefore the root, which makes a divergent root deniable.
 
 `Ack.server_first_seen_ms` stays on the wire
 (`crates/sunrise-wire-protocol/src/payloads.rs:93`, stamped at
-`api/sync.rs:419`) as an advisory clock-skew hint. It MUST NOT influence merge
+`api/sync/publish.rs:111,223`) as an advisory clock-skew hint. It MUST NOT influence merge
 order, fold order or acceptance.
 
 **7. The relay evaluates no role, no grant, no revocation and no expiry.** Every
