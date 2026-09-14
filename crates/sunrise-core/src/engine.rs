@@ -61,10 +61,11 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
+use sunrise_crypto::identity_transition::{IdentityTransitionBody, IdentityTransitionSigs};
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope, DeviceCert,
-    StreamKey,
+    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope,
+    verify_identity_transition, DeviceCert, StreamKey,
 };
 use sunrise_domain::sort_order;
 use sunrise_domain::time::SunriseTime;
@@ -155,6 +156,79 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
 /// only ways to reach it are a hostile sender and a bug.
 const MAX_EPOCH_LEAP: u32 = 64;
+
+/// How many links [`Engine::chain_identities`] will walk before it stops.
+///
+/// An account rotates its identity on a revocation and on an explicit request,
+/// so 64 is several lifetimes of ordinary use — the bound is not a budget, it
+/// is a termination guarantee for a function that decides who the account is
+/// and must not be able to run forever on a table somebody else's op wrote
+/// into. `to_identity_id` is a primary key, so the only cycle the schema admits
+/// is a self-loop, and the visited set catches that; this catches everything
+/// the schema would admit if it ever stopped being a primary key.
+///
+/// A chain truncated here is not silently wrong in the dangerous direction: the
+/// fold stops early, the head is a *superseded* identity, and every device
+/// certified under the real head reads as not-current. That fails closed —
+/// nothing is sealed to anybody — rather than admitting a device it should not.
+const MAX_TRANSITION_CHAIN: usize = 64;
+
+/// The account identity in force on a replica: the last link of its chain.
+///
+/// A pair rather than the id alone because every use needs both — the id to
+/// compare a `devices` row against, and the key to verify a cert under — and
+/// two separate reads could see them a rotation apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IdentityHead {
+    /// `identity_id` of the identity in force.
+    pub identity_id: [u8; 16],
+    /// Its Ed25519 public key, which every current cert verifies under.
+    pub id_s_pub: [u8; 32],
+}
+
+/// One row of `identity_transitions`, as the seven columns the fold reads.
+///
+/// A type alias declared before the first statement of anything that uses it,
+/// because `clippy::type_complexity` is denied and this shape is genuinely a
+/// row rather than a value worth a struct of its own.
+type TransitionRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+);
+
+/// A candidate next link, reassembled from its row into the shape
+/// [`verify_identity_transition`] takes.
+struct TransitionLink {
+    body: IdentityTransitionBody,
+    sigs: IdentityTransitionSigs,
+}
+
+impl TransitionLink {
+    /// `None` for any column of the wrong width, which is a row no signature
+    /// could have been taken over and therefore not a link.
+    fn from_row(from_identity_id: [u8; 16], row: &TransitionRow) -> Option<Self> {
+        let (to_id, to_s, to_d, roster, shares, prev, next) = row;
+        Some(Self {
+            body: IdentityTransitionBody {
+                from_identity_id,
+                to_identity_id: to16(to_id)?,
+                to_id_s_pub: to32(to_s)?,
+                to_id_d_pub: to32(to_d)?,
+                roster_digest: to32(roster)?,
+                shares_digest: to32(shares)?,
+            },
+            sigs: IdentityTransitionSigs {
+                prev_sig: to64(prev)?,
+                next_sig: to64(next)?,
+            },
+        })
+    }
+}
 
 /// How many ops may sit in `deferred_ops` for one `(stream_id, epoch)`.
 ///
@@ -1018,12 +1092,27 @@ impl Engine {
                     "published cert names another device".into(),
                 ));
             }
-            cert.verify_binding(
-                &self.keychain.identity_signing_pub(),
-                &self.keychain.identity_id(),
-            )
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
-            let _ = db;
+            // Any identity on the chain, not only the head. This function
+            // answers "which key signs this envelope", which is a fact about
+            // the device and not a judgement about its standing —
+            // `lookup_device_cert`'s own doc insists on exactly that
+            // separation, and filtering it there once made revocation
+            // retroactive over work done honestly months earlier.
+            //
+            // So a cert issued under a *superseded* identity still identifies
+            // its device here, and the op still applies. What it does not do is
+            // confer membership: that is `devices.identity_id == head`, tested
+            // at every point of use. Splitting the two is what lets the fix be
+            // convergent — see [`Self::chain_identities`].
+            let chain = self.chain_identities(db.conn())?;
+            if !chain
+                .iter()
+                .any(|(id, pk)| cert.verify_binding(pk, id).is_ok())
+            {
+                return Err(EngineError::RemoteOpInvalid(
+                    "published cert verifies under no identity on this account's chain".into(),
+                ));
+            }
             return Ok(cert.body.d_s_pub);
         }
         Err(EngineError::UnknownDevice)
@@ -1078,6 +1167,156 @@ impl Engine {
             )
             .optional()?;
         Ok(found.is_some())
+    }
+
+    /// The account identity **in force** on this replica.
+    ///
+    /// The last link of [`Self::chain_identities`], read back from the
+    /// `identity` row rather than recomputed, because the row is what
+    /// `Keychain::adopt_successor_identity` and
+    /// [`Self::recompute_identity_head`] both write and it is therefore the one
+    /// value every reader on this replica agrees on.
+    ///
+    /// Same discipline as [`Self::is_revoked`]: a table read and nothing else.
+    /// No clock — a transition's standing is decided by the op set, and the two
+    /// paragraphs on `is_revoked` about what a wall clock does to a decision
+    /// like this apply here word for word.
+    ///
+    /// # The fallback is for the vault shape the unit tests build
+    ///
+    /// `Keychain::for_test*` constructs a keychain with no `identity` row at
+    /// all, so there is nothing to read. Falling back to the keychain's own
+    /// identity is exact there — a test vault has taken no transitions — and
+    /// unreachable in a real vault, where `Keychain::open` always writes the
+    /// row before an `Engine` exists.
+    pub(crate) fn current_identity(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<IdentityHead> {
+        let row: Option<(Vec<u8>, Vec<u8>)> = conn
+            .query_row(
+                "SELECT identity_id, id_s_pub FROM identity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let head = row
+            .and_then(|(id, pk)| {
+                Some(IdentityHead {
+                    identity_id: to16(&id)?,
+                    id_s_pub: to32(&pk)?,
+                })
+            })
+            .unwrap_or_else(|| IdentityHead {
+                identity_id: self.keychain.identity_id(),
+                id_s_pub: self.keychain.identity_signing_pub(),
+            });
+        Ok(head)
+    }
+
+    /// Every account identity on this replica's transition chain, genesis
+    /// first, head last.
+    ///
+    /// This is the fold, and it is the whole of what makes
+    /// [#105](https://github.com/justin13888/Sunrise/issues/105) closable. A
+    /// `DeviceCert` names no issuer, so "was this cert issued by this account"
+    /// has only ever had one answer available — does it verify under the
+    /// identity — and while there was exactly one identity, forever, that
+    /// answer could not distinguish a member from a device that left and kept
+    /// `ID_S_priv`. With a chain it still cannot, and no longer needs to: the
+    /// cert verifies under *some* link, which is a fact, and membership is
+    /// whether that link is the last one, which is a decision taken fresh at
+    /// every point of use.
+    ///
+    /// # What the walk checks, and why here rather than at apply
+    ///
+    /// Each step takes the successors of the current link, picks the greatest
+    /// by `(meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id)`, and
+    /// **verifies both signatures** before extending: `prev_sig` under the
+    /// current link's `ID_S_pub` (the outgoing identity authorizing the
+    /// hand-over) and `next_sig` under the candidate's own (the successor
+    /// accepting it). A link that fails either is not a link.
+    ///
+    /// The signatures are checked here and not in `apply_control_op` because
+    /// `prev_sig` can only be checked against a predecessor the verifier has
+    /// already established, and at apply time it has not: an out-of-order
+    /// transition naming an identity two links ahead is a legitimate op that
+    /// this replica cannot yet verify and must still store. Applying stays
+    /// unconditional (ADR-0034); standing is computed from the op set, so two
+    /// replicas holding the same ops agree whatever order they arrived in.
+    ///
+    /// Bounded at [`MAX_TRANSITION_CHAIN`] links, with the visited set as the
+    /// second bound: `to_identity_id` is a primary key so a self-loop is the
+    /// only cycle the schema admits, but a fold that decides who the account is
+    /// must terminate on a malformed table rather than on an argument about
+    /// one.
+    pub(crate) fn chain_identities(
+        &self,
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<Vec<([u8; 16], [u8; 32])>> {
+        let genesis: Option<(Vec<u8>, Option<Vec<u8>>)> = conn
+            .query_row(
+                "SELECT genesis_identity_id, genesis_id_s_pub FROM identity WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let start = genesis
+            .and_then(|(id, pk)| Some((to16(&id)?, to32(&pk?)?)))
+            // See `current_identity`: the test-shaped vault has no row, and a
+            // vault predating 0022/0023 has NULL columns the backfill filled —
+            // either way the identity in force is the only link there is.
+            .unwrap_or_else(|| {
+                (
+                    self.keychain.identity_id(),
+                    self.keychain.identity_signing_pub(),
+                )
+            });
+
+        let mut chain = vec![start];
+        let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
+        seen.insert(start.0);
+        let mut stmt = conn.prepare(
+            "SELECT to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
+                    shares_digest, prev_sig, next_sig
+             FROM identity_transitions
+             WHERE from_identity_id = ?
+             ORDER BY meta_epoch DESC, hlc_physical_ms DESC, hlc_logical DESC,
+                      emitter_device_id DESC",
+        )?;
+        while chain.len() < MAX_TRANSITION_CHAIN {
+            let (from_id, from_pub) = *chain.last().expect("the chain starts non-empty");
+            let candidates = stmt
+                .query_map(params![&from_id[..]], |r| {
+                    Ok((
+                        r.get::<_, Vec<u8>>(0)?,
+                        r.get::<_, Vec<u8>>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                        r.get::<_, Vec<u8>>(3)?,
+                        r.get::<_, Vec<u8>>(4)?,
+                        r.get::<_, Vec<u8>>(5)?,
+                        r.get::<_, Vec<u8>>(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // The winner is the greatest by the ordering key, but a row that
+            // does not verify is not a candidate at all — so this takes the
+            // first that *verifies* in descending order rather than verifying
+            // only the greatest. A forged row cannot suppress an honest one by
+            // sorting above it.
+            let next = candidates.into_iter().find_map(|row| {
+                let link = TransitionLink::from_row(from_id, &row)?;
+                if seen.contains(&link.body.to_identity_id) {
+                    return None;
+                }
+                verify_identity_transition(&link.body, &from_pub, &link.sigs).ok()?;
+                Some((link.body.to_identity_id, link.body.to_id_s_pub))
+            });
+            let Some(next) = next else { break };
+            seen.insert(next.0);
+            chain.push(next);
+        }
+        Ok(chain)
     }
 
     /// Park an op whose Stream key has not arrived yet.
@@ -1498,20 +1737,45 @@ impl Engine {
                     );
                     return Ok(Vec::new());
                 }
-                if cert
-                    .verify_binding(
-                        &self.keychain.identity_signing_pub(),
-                        &self.keychain.identity_id(),
-                    )
-                    .is_err()
-                {
+                // Which identity on the chain issued it — the head, a
+                // superseded one, or none. `None` is the only rejection; a
+                // superseded issuer is recorded and applied, because the op is
+                // a fact about the device and refusing it here would not
+                // converge (see [`Self::chain_identities`]).
+                let head = self.current_identity(tx)?;
+                let chain = self.chain_identities(tx)?;
+                let Some((issuer, _)) = chain
+                    .iter()
+                    .find(|(id, pk)| cert.verify_binding(pk, id).is_ok())
+                    .copied()
+                else {
                     tracing::warn!(
                         ev = "core.device.cert_rejected",
                         reason = "binding",
                         sender_h = hex_short(sender),
-                        "a published device cert does not verify under this account identity"
+                        "a published device cert verifies under no identity on this \
+                         account's chain"
                     );
                     return Ok(Vec::new());
+                };
+                if issuer != head.identity_id {
+                    // Disclosed and not gated, exactly like the readmission
+                    // warning below. This is the shape a revoked device's
+                    // rejoin takes once rotation exists: it still holds the
+                    // predecessor's `ID_S_priv`, so its cert is genuine under a
+                    // link that is no longer the last one. The row lands, every
+                    // replica agrees it landed, and the device is a recipient
+                    // of nothing — which is the `identity_id` column written
+                    // just below doing the work, not this log line.
+                    tracing::warn!(
+                        ev = "core.device.cert_superseded_identity",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        issuer_h = hex_short(&issuer),
+                        head_h = hex_short(&head.identity_id),
+                        "a device cert was issued under an identity this account has \
+                         retired; the device is recorded but confers no membership"
+                    );
                 }
                 // A device id nobody has seen before, appearing in an
                 // account that has revoked something, is the observable
@@ -1567,7 +1831,13 @@ impl Engine {
                         cert.body.nickname,
                         cert.body.platform,
                         i64::try_from(cert.body.created_at_ms).unwrap_or(i64::MAX),
-                        &cert.body.identity_id[..],
+                        // The identity that actually *verified* the cert, not
+                        // the one the cert's body claims. `verify_binding`
+                        // recomputes the id from the key, so the two agree
+                        // whenever the cert is valid; writing the verified one
+                        // is what makes this column safe to read as a
+                        // membership test rather than as a claim.
+                        &issuer[..],
                         &cert.body.d_d_pub[..],
                     ],
                 )?;
@@ -4032,6 +4302,7 @@ impl Engine {
         seal_under: Option<&(u32, StreamKey)>,
     ) -> rusqlite::Result<()> {
         let key_id = stream_key_id(key);
+        let head = self.current_identity(tx)?;
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
@@ -4056,15 +4327,31 @@ impl Engine {
                 // device that has not yet applied the `device_revoke` op has no
                 // row to read and will seal this epoch to the revoked device.
                 // Revocation propagates like every other op.
+                //
+                // The `identity_id` clause is the other half, and it does what
+                // the anti-join structurally cannot. A revoked device that
+                // mints a fresh id has no revocation row to be excluded by, so
+                // the anti-join lets the new name through forever. What it does
+                // not have is a cert under the identity *in force*: the
+                // rotation that accompanies the revocation moves the head, and
+                // the revoked device cannot follow, because the successor's
+                // `ID_S_priv` travelled as HPKE shares sealed to the surviving
+                // devices' `D_D_pub` and it is not one of them.
+                //
+                // This clause bounds every *subsequent* epoch, which is the
+                // failure ADR-0032's alternative 3 could not close: a one-shot
+                // check at admission time leaves the device on the recipient
+                // list for everything minted afterwards.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
                  WHERE d.d_d_pub IS NOT NULL
+                   AND d.identity_id = ?1
                    AND NOT EXISTS (
                        SELECT 1 FROM device_revocations r
                        WHERE r.device_id = d.device_id
                    )",
             )?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map(params![&head.identity_id[..]], |r| {
                     Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -4161,6 +4448,35 @@ impl Engine {
             return Ok(());
         }
         if self.is_revoked(tx, device_id)? {
+            return Ok(());
+        }
+        // **This is the line that closes #105's round trip.**
+        //
+        // Step 4 of the issue is "`backfill_key_envelopes` then seals C' the
+        // current epoch of every stream": a device revoked under one id mints a
+        // fresh one, self-signs a cert with the `ID_S_priv` it kept, publishes
+        // it, and this function hands the new name every key the revocation had
+        // just rotated away. The revocation register cannot stop it — the new
+        // id is not in it and never was — and no check on the cert can either,
+        // because the cert is genuine.
+        //
+        // What stops it is that the cert is genuine under the *wrong* identity.
+        // A rotation accompanies the revocation, so the head has moved; the
+        // `DeviceCertPublish` arm recorded which chain identity verified the
+        // cert; and a device whose row names anything but the head is not a
+        // member. Nothing here is a judgement about the device — it is a
+        // comparison of two stored values, so every replica holding the same op
+        // set reaches the same answer.
+        let head = self.current_identity(tx)?;
+        let member: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT identity_id FROM devices WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if member.as_deref().and_then(to16) != Some(head.identity_id) {
             return Ok(());
         }
         for (stream_id, epoch) in Keychain::held_epochs_tx(tx)? {
@@ -6468,6 +6784,16 @@ fn ms_to_ts(ms: i64) -> jiff::Timestamp {
 /// wrong length would otherwise be padded to `[0u8; 16]` and get a Stream key
 /// sealed to it.
 fn to16(raw: &[u8]) -> Option<[u8; 16]> {
+    raw.try_into().ok()
+}
+
+/// A 32-byte key read out of a DB blob. See [`to16`]: not a pad.
+fn to32(raw: &[u8]) -> Option<[u8; 32]> {
+    raw.try_into().ok()
+}
+
+/// A 64-byte signature read out of a DB blob. See [`to16`]: not a pad.
+fn to64(raw: &[u8]) -> Option<[u8; 64]> {
     raw.try_into().ok()
 }
 
@@ -13405,6 +13731,147 @@ mod tests {
             got, want,
             "every key the revocation rotated away is handed back to the same \
              device under a name the register does not list"
+        );
+    }
+
+    // ---- the verification rule (ADR-0032, #105) ----
+
+    /// A vault that has taken no transition has a one-link chain, and the head
+    /// is the identity it has always had. The base case every other assertion
+    /// below is a departure from.
+    #[test]
+    fn an_unrotated_account_has_a_one_link_chain() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let dba = db_root(ROOT);
+        let head = ea.current_identity(dba.conn()).unwrap();
+        assert_eq!(head.identity_id, ea.keychain.identity_id());
+        assert_eq!(head.id_s_pub, ea.keychain.identity_signing_pub());
+        assert_eq!(
+            ea.chain_identities(dba.conn()).unwrap(),
+            vec![(head.identity_id, head.id_s_pub)]
+        );
+    }
+
+    /// The rule, stated without the machinery that will produce it: a device
+    /// row naming an identity that is not the head is admitted, keeps its cert,
+    /// and receives nothing.
+    ///
+    /// The stale `identity_id` is written directly here rather than produced by
+    /// a rotation, and deliberately: this asserts the *guard*, which is the
+    /// half that has to exist before anything can emit a transition. The
+    /// end-to-end version — where the staleness comes from a real rotation the
+    /// device could not follow — is the flipped `#105` test.
+    #[test]
+    fn a_device_certified_under_a_non_head_identity_receives_nothing() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+        trust(&ea, &mut dba, &eb);
+
+        // B is a member and a recipient while its row names the head.
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        assert!(
+            !envelopes_to(&ea, &dba, &b_id).is_empty(),
+            "a member is a recipient, or this test proves nothing"
+        );
+        let before = envelopes_to(&ea, &dba, &b_id).len();
+
+        // Its cert is untouched and its row stays; only the identity that
+        // certified it is no longer the one in force.
+        dba.conn()
+            .execute(
+                "UPDATE devices SET identity_id = ? WHERE device_id = ?",
+                params![&[0x9fu8; 16][..], &b_id[..]],
+            )
+            .unwrap();
+        assert!(
+            !ea.is_revoked(dba.conn(), &b_id).unwrap(),
+            "nothing revoked it; membership is the only thing that moved"
+        );
+
+        // No new epoch reaches it...
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            envelopes_to(&ea, &dba, &b_id).len(),
+            before,
+            "the recipient query bounds every subsequent epoch, which is what a \
+             one-shot check at admission could not do"
+        );
+    }
+
+    /// Membership is **derived, never stored as a decision** — the property
+    /// that makes the rule convergent, asserted through the one path that
+    /// recomputes it.
+    ///
+    /// Republishing a cert rewrites `devices.identity_id` from whichever chain
+    /// identity actually verified it. Here that is still the head, because
+    /// nothing has rotated, so the device becomes current again with no other
+    /// change: the stale row was a fact about a past publish and not a verdict
+    /// the account had recorded.
+    ///
+    /// That is also precisely why the real fix works. In the rotated case the
+    /// same recomputation writes the *superseded* issuer, so the republish that
+    /// restores membership here restores nothing there — and the difference is
+    /// entirely in the cert, which is the one thing a departed device cannot
+    /// change.
+    #[test]
+    fn membership_is_recomputed_from_the_issuer_at_every_publish() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+        trust(&ea, &mut dba, &eb);
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+        dba.conn()
+            .execute(
+                "UPDATE devices SET identity_id = ? WHERE device_id = ?",
+                params![&[0x9fu8; 16][..], &b_id[..]],
+            )
+            .unwrap();
+        let stale = envelopes_to(&ea, &dba, &b_id).len();
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        assert_eq!(envelopes_to(&ea, &dba, &b_id).len(), stale);
+
+        // The cert is republished unchanged. It still verifies under the head,
+        // so the row is rewritten to the head and the device is current again.
+        trust_at(&ea, &mut dba, &eb, T0 + 1);
+        let restored: Vec<u8> = dba
+            .conn()
+            .query_row(
+                "SELECT identity_id FROM devices WHERE device_id = ?",
+                params![&b_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            restored,
+            head.to_vec(),
+            "the column records which identity verified the cert, recomputed \
+             each time rather than carried forward"
+        );
+        assert!(
+            envelopes_to(&ea, &dba, &b_id).len() > stale,
+            "and the backfill that runs behind the publish now reaches it"
         );
     }
 

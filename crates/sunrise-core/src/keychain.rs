@@ -2110,7 +2110,8 @@ fn insert_identity_row(
     minted_by: Option<&[u8; 16]>,
     now_ms: u64,
 ) -> rusqlite::Result<()> {
-    // `genesis_identity_id` is written here and never again. Migration 0022
+    // `genesis_identity_id` and `genesis_id_s_pub` are written here and never
+    // again. Migration 0022
     // backfills it on a vault that already had a row; a vault created after
     // 0022 gets no backfill, so leaving it out here would give every new vault
     // a NULL anchor and no fold at all.
@@ -2122,13 +2123,23 @@ fn insert_identity_row(
     // that has already rotated records its anchor as whatever it joined at.
     // That is a real divergence — two replicas of one account would fold from
     // different starts — and closing it is a wire change to the payload rather
-    // than a line here. Nothing has rotated yet, so no such vault exists; the
-    // lane that wires the fold has to close it before one can.
+    // than a line here -- and that change is coming anyway, because `ID_S_priv`
+    // is leaving `PairingPayload` in favour of a sponsor-issued cert over the
+    // Noise channel. **The genesis field belongs in the same payload revision:**
+    // add `genesis_identity_id` and `genesis_id_s_pub` beside the identity the
+    // sponsor states, and read them here instead of defaulting to the identity
+    // in force. Nothing has rotated yet, so no such vault exists today.
+    //
+    // The key is stored beside the id because the fold needs both: it walks
+    // genesis -> head checking each link's `prev_sig` under the *previous*
+    // link's `ID_S_pub`, and after the first rotation `id_s_pub` below is the
+    // successor's. See migration 0023.
     tx.execute(
         "INSERT OR IGNORE INTO identity
          (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
-          created_at_ms, minted_by_device_id, genesis_identity_id)
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+          created_at_ms, minted_by_device_id, genesis_identity_id,
+          genesis_id_s_pub)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &identity.identity_id[..],
             &identity.signing.public_bytes()[..],
@@ -2138,6 +2149,7 @@ fn insert_identity_row(
             now_ms,
             minted_by.map(|d| d.to_vec()),
             &identity.identity_id[..],
+            &identity.signing.public_bytes()[..],
         ],
     )?;
     Ok(())

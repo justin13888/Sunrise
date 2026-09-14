@@ -134,4 +134,12 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// not serve as that anchor — it is the identity *in force*, so it moves on
 /// every transition, and replicas at different points in the chain would fold
 /// from different starts and disagree about who the account is.
-pub const STORAGE_V: u16 = 22;
+///
+/// `23` is migration `0023_identity_chain_verification.sql`. 22 built the chain
+/// and left it unverifiable: the fold needs `(identity_id, ID_S_pub)` per link
+/// to check each transition's `prev_sig`, and the *genesis* key is in no row
+/// once `identity.id_s_pub` moves to the successor -- `identity_id` is a
+/// one-way derivation of it. It also needs the two digests the signatures are
+/// taken over, which were inside the payload blob, so the fold would have had
+/// to CBOR-decode a roster on every link at every open.
+pub const STORAGE_V: u16 = 23;
