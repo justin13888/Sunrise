@@ -155,7 +155,7 @@ pub async fn init(
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
     // mkdir-then-write race between two concurrent chunk uploads.
-    pending_store(&state, &caller, &upload_id)?;
+    pending_store(&state, &caller, &raw)?;
     let chunk_urls = (0..body.chunk_count)
         .map(|i| format!("/api/v1/blobs/{upload_id}/{i}"))
         .collect();
@@ -184,7 +184,7 @@ pub async fn put_chunk(
             "chunk must be 1..={MAX_CHUNK_BYTES} bytes"
         )));
     }
-    let store = pending_store(&state, &caller, &path.upload_id)?;
+    let store = pending_store(&state, &caller, &upload)?;
     store
         .put_chunk(&upload, path.chunk_idx, &bytes)
         .map_err(|_| ApiError::internal())?;
@@ -231,7 +231,7 @@ pub async fn finalize(
         .map(|h| parse_hash(h, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
 
-    let pending = pending_store(&state, &caller, &body.upload_id)?;
+    let pending = pending_store(&state, &caller, &upload)?;
     // Re-hash what is actually on disk. The client's hashes are a claim; this
     // is the check. A chunk that never arrived, arrived truncated, or arrived
     // corrupted all fail here rather than becoming an unreadable attachment
@@ -369,12 +369,29 @@ fn account_root(state: &ServerState, caller: &Caller, area: &str) -> PathBuf {
 fn pending_store(
     state: &ServerState,
     caller: &Caller,
-    upload_id: &str,
+    upload: &[u8; 16],
 ) -> Result<BlobStore, ApiError> {
-    // One directory per upload keeps a `delete_all` at finalize from touching
-    // any other in-flight upload of the same account.
-    let root = account_root(state, caller, "pending").join(upload_id);
+    let root = pending_dir(&account_root(state, caller, "pending"), upload);
     BlobStore::new(&root).map_err(|_| ApiError::internal())
+}
+
+/// Where one upload's chunks live, under that account's pending root.
+///
+/// One directory per upload keeps a `delete_all` at finalize from touching any
+/// other in-flight upload of the same account.
+///
+/// Named from the **parsed bytes**, re-encoded, rather than from the URL
+/// segment they were parsed out of. `parse_hex16` decodes through
+/// `hex::decode_to_slice`, which is case-insensitive, so `up_AB…` and `up_ab…`
+/// are one upload with two spellings. Joining the raw segment gave them two
+/// directories on a case-sensitive filesystem — chunks PUT under one spelling
+/// were invisible to a `finalize` using the other, and the loser was never
+/// swept. Taking `[u8; 16]` rather than a `&str` is what makes that
+/// unrepresentable: there is no spelling left to disagree about.
+// `Path` in this module is kynos's path extractor, so the filesystem one is
+// spelled out.
+fn pending_dir(root: &std::path::Path, upload: &[u8; 16]) -> PathBuf {
+    root.join(format!("up_{}", hex::encode(upload)))
 }
 
 fn committed_store(state: &ServerState, caller: &Caller) -> Result<BlobStore, ApiError> {
@@ -498,6 +515,7 @@ fn not_found() -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    use super::pending_dir;
     use crate::api::error::codes;
     use crate::api::testing::{Client, SECOND_BEARER};
     use kynos::http::{Method, StatusCode};
@@ -753,6 +771,43 @@ mod tests {
         assert_eq!(
             put_chunk(&client, &format!("up_{}", "A".repeat(32)), 0, CHUNKS[0]).await,
             StatusCode::NO_CONTENT
+        );
+    }
+
+    /// An upload's directory is decided by its bytes, never by how they were
+    /// spelled.
+    ///
+    /// `pending_store` used to join the raw URL segment. `parse_hex16` decodes
+    /// case-insensitively, so `up_AB…` and `up_ab…` are the same sixteen bytes
+    /// and used to become two directories: chunks PUT under one spelling were
+    /// invisible to a `finalize` using the other, and the abandoned one was
+    /// never swept.
+    ///
+    /// **Asserted on the constructed path, not on the filesystem.** The split
+    /// only happens where directory names are case-*sensitive*, which is
+    /// production (Linux) and is not macOS, whose APFS volumes fold case by
+    /// default. A test that wrote a chunk under each spelling and looked for
+    /// two directories would therefore have passed on a laptop while the
+    /// defect was live on the relay. Comparing the `PathBuf` is the same
+    /// question asked where the answer does not depend on the host.
+    #[test]
+    fn an_uploads_directory_is_named_by_its_bytes_and_not_by_their_spelling() {
+        let root = std::path::Path::new("/blobs/pending/acct");
+        let mut upper = [0u8; 16];
+        let mut lower = [0u8; 16];
+        hex::decode_to_slice("AB".repeat(16), &mut upper).unwrap();
+        hex::decode_to_slice("ab".repeat(16), &mut lower).unwrap();
+        assert_eq!(upper, lower, "the premise: one upload, two spellings");
+
+        assert_eq!(
+            pending_dir(root, &upper),
+            pending_dir(root, &lower),
+            "two spellings of one upload must not become two directories"
+        );
+        assert_eq!(
+            pending_dir(root, &upper),
+            root.join(format!("up_{}", "ab".repeat(16))),
+            "and the one they share is the canonical lowercase spelling"
         );
     }
 
