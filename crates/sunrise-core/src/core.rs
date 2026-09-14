@@ -115,7 +115,7 @@ impl Core {
         let pid = std::process::id();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
-        let (vault_root, paired) = unlock.into_parts();
+        let (vault_root, identity_seed) = unlock.into_parts();
         let db_path = cfg.vault_dir.join("vault.db");
         let mut db = Db::open(&db_path, &vault_root)?;
         let (changes_tx, _) = broadcast::channel(256);
@@ -128,7 +128,7 @@ impl Core {
             vault_root,
             cfg.clock.as_ref(),
             cfg.rng.as_ref(),
-            paired.as_deref(),
+            &identity_seed,
         )?);
         let engine = Engine::new(
             cfg.clock.clone(),
