@@ -730,8 +730,20 @@ jobs:
           # Hardened runtime is not optional for a notarized app, and a
           # silently-missing flag is exactly the kind of thing that only shows
           # up as a Gatekeeper refusal on somebody else's Mac.
-          codesign -d --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime' \
-            || { echo "::error::the exported app is not hardened-runtime signed"; exit 1; }
+          # Captured first, then tested. Piping into `grep -q` under `pipefail`
+          # can report the opposite of the truth: `grep -q` exits at its first
+          # match, `codesign` writes about a dozen unbuffered lines and several
+          # of them follow the `CodeDirectory` line carrying `flags=`, so
+          # `codesign` can take EPIPE and `pipefail` makes that the pipeline's
+          # status — failing the check on an app that IS hardened-runtime
+          # signed. Capturing also means the operator sees the evidence rather
+          # than only the verdict.
+          sigcheck=$(codesign -d --verbose=2 "$app" 2>&1)
+          if ! grep -q 'flags=.*runtime' <<<"$sigcheck"; then
+            echo "$sigcheck"
+            echo "::error::the exported app is not hardened-runtime signed"
+            exit 1
+          fi
       - name: Checksum
         run: |
           set -euo pipefail
