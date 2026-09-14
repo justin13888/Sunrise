@@ -1693,4 +1693,28 @@ mod tests {
             "a duplicate produced a second frame: {after}"
         );
     }
+
+    /// `parse_id` takes lowercase hex and nothing else.
+    ///
+    /// `hex::decode_to_slice` is case-insensitive, so for a long time an
+    /// uppercase `stream_id` or `device_id` decoded to the same sixteen bytes
+    /// and was accepted while the `400` body said "must be lowercase hex". The
+    /// message was kept — and deliberately not loosened to "must be hex" —
+    /// so that closing the gap needed no user-visible change to the contract.
+    /// This is the assertion that it is closed.
+    #[test]
+    fn parse_id_takes_lowercase_hex_and_nothing_else() {
+        use crate::api::sync::cursors::parse_id;
+
+        parse_id(&"ab".repeat(16), "stream_id").expect("lowercase is the canonical form");
+
+        for id in ["AB".repeat(16), format!("{}AB", "ab".repeat(15))] {
+            let err = parse_id(&id, "stream_id").expect_err("uppercase must not decode");
+            assert_eq!(
+                err.to_string(),
+                "stream_id must be lowercase hex",
+                "for {id}"
+            );
+        }
+    }
 }

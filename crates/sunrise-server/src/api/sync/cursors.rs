@@ -100,22 +100,24 @@ pub async fn subscribe(
     Ok(kynos::response::status::NoContent)
 }
 
-/// Parse a 16-byte id from 32 lowercase hex characters.
+/// Parse a 16-byte id from 32 **lowercase** hex characters.
 ///
-/// The decode underneath (`hex::decode_to_slice`) is case-insensitive, so the
-/// *lowercase* half of the refusal below cannot fire today: an uppercase id
-/// decodes to the same sixteen bytes and is accepted. That is a gap between
-/// the contract and the parse, and the contract is the half worth keeping —
-/// lowercase is what every id this server emits is spelled in, and the
-/// identically-shaped `api::blobs::parse_upload_id` refuses in the same words.
-/// Loosening the message to "must be hex" would be a user-visible change to a
-/// `400` body, and would publish the laxer rule as the contract rather than
-/// leaving room for the parse to close the gap.
+/// The case check is explicit because the decode underneath
+/// (`hex::decode_to_slice`) is case-insensitive and would accept `AB…` as the
+/// same sixteen bytes as `ab…`. One value with two spellings is a liability in
+/// a system that keys directories, cursor maps and content addresses off these
+/// ids, so the canonical form is the only one admitted: nothing released emits
+/// anything else, and the refusal below has always said so.
 pub(super) fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
         return Err(ApiError::validation(format!(
             "{field} must carry 32 hex characters"
+        )));
+    }
+    if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(ApiError::validation(format!(
+            "{field} must be lowercase hex"
         )));
     }
     hex::decode_to_slice(s, &mut out)

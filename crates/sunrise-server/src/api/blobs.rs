@@ -459,8 +459,9 @@ const fn blob_key(content_hash: &[u8; 32]) -> [u8; 16] {
     out
 }
 
-/// `up_` + 32 lowercase hex characters. Parsing rather than trusting is what
-/// keeps a `../` out of a path built from a URL segment.
+/// `up_` + 32 lowercase hex characters, and uppercase is a `400` rather than a
+/// second spelling of the same id. Parsing rather than trusting is what keeps a
+/// `../` out of a path built from a URL segment.
 fn parse_upload_id(s: &str) -> Result<[u8; 16], ApiError> {
     let hexpart = s
         .strip_prefix("up_")
@@ -476,11 +477,27 @@ fn parse_blob_id(s: &str) -> Result<[u8; 16], ApiError> {
     parse_hex16(hexpart, "blob id")
 }
 
+/// Whether every character is a digit or `a`–`f`.
+///
+/// `hex::decode_to_slice` is case-insensitive, so this is the only thing
+/// standing between the contract these parsers state and the one they enforce.
+/// An id with two spellings is a liability where ids name directories and
+/// content addresses — `pending_dir` carries the concrete cost — and nothing
+/// released spells one any other way.
+fn is_lowercase_hex(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 fn parse_hex16(s: &str, field: &str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
         return Err(ApiError::validation(format!(
             "{field} must carry 32 hex characters"
+        )));
+    }
+    if !is_lowercase_hex(s) {
+        return Err(ApiError::validation(format!(
+            "{field} must be lowercase hex"
         )));
     }
     hex::decode_to_slice(s, &mut out)
@@ -493,6 +510,11 @@ fn parse_hash(s: &str, field: &'static str) -> Result<[u8; 32], ApiError> {
     if s.len() != 64 {
         return Err(ApiError::validation(format!(
             "{field} entries must be 64 hex characters"
+        )));
+    }
+    if !is_lowercase_hex(s) {
+        return Err(ApiError::validation(format!(
+            "{field} must be lowercase hex"
         )));
     }
     hex::decode_to_slice(s, &mut out)
@@ -751,27 +773,63 @@ mod tests {
         }
     }
 
-    /// Pinned, not endorsed: an **uppercase** hex upload id is accepted.
+    /// An **uppercase** hex upload id is refused, at the route.
     ///
-    /// `parse_upload_id` is documented as "`up_` + 32 lowercase hex
-    /// characters" and its own refusal says "must be lowercase hex", but the
-    /// decode underneath is case-insensitive, so the same sixteen bytes have
-    /// two spellings that reach the same pending directory.
+    /// It used to be accepted: `parse_upload_id` is documented as "`up_` + 32
+    /// lowercase hex characters" and its refusal says "must be lowercase hex",
+    /// but the decode underneath is case-insensitive, so the message was a
+    /// claim nothing enforced. The parsers now enforce it, which is the
+    /// decision this test records rather than the gap the old one pinned.
     ///
-    /// What the assertion pins is exactly one fact: the status is `204`. The
-    /// message the name invokes is context for why a `204` is surprising, not
-    /// something checked — nothing below reads a response body, so rewording
-    /// the refusal does not fail this test. Nothing here depends on the id
-    /// being canonical, so this is a statement of current behaviour rather
-    /// than an endorsement of it, and it is stated so that tightening the
-    /// parse fails a test instead of passing silently.
+    /// Asserted through the route, not against `parse_hex16`, because the
+    /// refusal has to be the surface's `400 VALIDATION_INVALID` and not a
+    /// `404` from the router or a `500` from somewhere downstream — an
+    /// uppercase id occupies one path segment, so it reaches the handler.
     #[tokio::test]
-    async fn an_uppercase_hex_upload_id_is_accepted_despite_the_message() {
+    async fn an_uppercase_hex_upload_id_is_rejected() {
         let (client, _guard) = Client::with_blob_root();
-        assert_eq!(
-            put_chunk(&client, &format!("up_{}", "A".repeat(32)), 0, CHUNKS[0]).await,
-            StatusCode::NO_CONTENT
-        );
+        let res = client
+            .send_bytes(
+                Method::PUT,
+                &format!("/api/v1/blobs/up_{}/0", "A".repeat(32)),
+                "application/octet-stream",
+                CHUNKS[0],
+                &[],
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(res.json()["code"], codes::VALIDATION_INVALID);
+    }
+
+    /// The parsers themselves, on the whole of what they now admit and refuse.
+    ///
+    /// Two of the three canonical-hex parsers live here; `sync::parse_id` is
+    /// the third and is covered beside the sync suite. Each refuses in the
+    /// words its doc comment and its `400` body have always used, so the
+    /// message and the rule are finally the same statement.
+    #[test]
+    fn the_blob_parsers_take_lowercase_hex_and_nothing_else() {
+        use super::{parse_hash, parse_hex16};
+
+        parse_hex16(&"ab".repeat(16), "upload_id").expect("lowercase is the canonical form");
+        parse_hash(&"ab".repeat(32), "content_hash").expect("lowercase is the canonical form");
+
+        for id in ["AB".repeat(16), format!("{}AB", "ab".repeat(15))] {
+            let err = parse_hex16(&id, "upload_id").expect_err("uppercase must not decode");
+            assert_eq!(
+                err.to_string(),
+                "upload_id must be lowercase hex",
+                "for {id}"
+            );
+        }
+        for hash in ["AB".repeat(32), format!("{}AB", "ab".repeat(31))] {
+            let err = parse_hash(&hash, "content_hash").expect_err("uppercase must not decode");
+            assert_eq!(
+                err.to_string(),
+                "content_hash must be lowercase hex",
+                "for {hash}"
+            );
+        }
     }
 
     /// An upload's directory is decided by its bytes, never by how they were
