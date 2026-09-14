@@ -90,7 +90,31 @@ tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "ti
 # `openapi32` is what makes an event stream describable at all -- 3.1 has no
 # `itemSchema`, so `response::stream` is a 3.2-only subtree, and ADR-0023's sync
 # transport needs it.
-kynos = { version = "0.1", default-features = false, features = ["openapi32", "macros", "server", "http1", "http2", "json", "trace"] }
+# Pinned to a git revision rather than the published 0.1.0, temporarily.
+#
+# 0.1.0 (2026-08-29) is the only release, and it carries the defect in #58: the
+# route macros emit a `relative_uri` doc literal whose first line starts at
+# column zero and whose second paragraph is indented eight spaces. rustdoc
+# unindents a fragment by its minimum line indent, so the eight-space paragraph
+# survives above Markdown's four-space threshold, becomes an indented code
+# block, and is compiled as a doctest at every route-attribute call site -- 18
+# of them in `sunrise-server`, all failing on English prose.
+#
+# Upstream fixed it three days after the release, in `13064f42`
+# ("fix(macros): unindent the paragraph rustdoc reads as a code block"), and has
+# cut no release since.
+#
+# Three of the 300 commits between 0.1.0 and this revision are breaking, all on
+# 2026-09-08, all giving a refusal an RFC 9457 problem type. Exactly one
+# reaches this workspace: `AuthRejection::Forbidden` gained a `type_uri` field.
+# Upstream ships `AuthRejection::forbidden()` as the behaviour-preserving
+# constructor, and `api/auth.rs` calls it -- one line, no wire change, since
+# `From<AuthRejection> for ApiError` discards the rejection either way.
+#
+# **This pin moves back to a published version as soon as one exists** (#60).
+# A git dependency is pinned by `Cargo.lock` to an exact revision, so the build
+# is reproducible, but it is not a shape a release should carry indefinitely.
+kynos = { version = "0.1", git = "https://github.com/getkono/kynos", rev = "a4087410454b4568c48f464adea95db5a3d1d4a8", default-features = false, features = ["openapi32", "macros", "server", "http1", "http2", "json", "trace"] }
 hyper = { version = "1.5", default-features = false, features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 

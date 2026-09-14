@@ -1536,8 +1536,7 @@ dependencies = [
 [[package]]
 name = "kynos"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e2870b13f4836a8fdf9eef13f4342bddb74e4a78ef7cb350481df6e685a1a29"
+source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1560,8 +1559,7 @@ dependencies = [
 [[package]]
 name = "kynos-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17bf779f93eeb6c3942519f261573f47483c79f51d721fff7ec120f6cda949b5"
+source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
 dependencies = [
  "kynos-openapi",
  "proc-macro2",
@@ -1572,8 +1570,7 @@ dependencies = [
 [[package]]
 name = "kynos-openapi"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ce3286ca0f45019fd229a2a467a2d0ddeb074843614f09fee9b7370a0cb3eb9"
+source = "git+https://github.com/getkono/kynos?rev=a4087410454b4568c48f464adea95db5a3d1d4a8#a4087410454b4568c48f464adea95db5a3d1d4a8"
 dependencies = [
  "http",
  "indexmap",

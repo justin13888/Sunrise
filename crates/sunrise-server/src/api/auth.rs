@@ -137,7 +137,7 @@ pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Princip
             state.clock.now_ms(),
         )
         .map_err(|e| match e {
-            crate::store::StoreError::SignupDisabled => AuthRejection::Forbidden,
+            crate::store::StoreError::SignupDisabled => AuthRejection::forbidden(),
             _ => AuthRejection::unauthenticated(),
         })?;
     Ok(Principal {
