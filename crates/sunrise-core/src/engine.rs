@@ -15038,6 +15038,306 @@ mod tests {
         );
     }
 
+    /// Seal `inner` into a real envelope under a key the *attacker* minted.
+    ///
+    /// The whole point of the epoch-forgery cases: an attacker cannot raise
+    /// `meta_epoch` by asserting a number, because the number names a key. It
+    /// can mint a key of its own and claim any epoch it likes — this builds
+    /// exactly that, with a real signature over real ciphertext, so the
+    /// receiver's refusal is a cryptographic one and not a parse failure.
+    fn forged_envelope_at(
+        attacker: &Engine,
+        attacker_db: &mut Db,
+        inner: &InnerOp,
+        mints: u32,
+        hlc: Hlc,
+    ) -> Vec<u8> {
+        let mut minted = (0u32, StreamKey::from_bytes([0u8; 32]));
+        for _ in 0..mints {
+            minted = attacker_db
+                .with_tx(|tx| {
+                    attacker
+                        .keychain
+                        .mint_epoch(tx, &META_STREAM, &SystemRng, T0)
+                })
+                .expect("the attacker mints its own epoch");
+        }
+        attacker
+            .keychain
+            .seal_op_at(
+                META_STREAM,
+                99,
+                hlc,
+                &encode_inner_op(inner).expect("encode"),
+                &SystemRng,
+                minted.0,
+                &minted.1,
+            )
+            .expect("seal under the self-minted key")
+    }
+
+    /// A forged transition sealed under a **self-minted `e+1`** is refused, not
+    /// applied and not parked.
+    ///
+    /// The revoked device can mint keys — nothing stops it doing arithmetic in
+    /// its own vault — so it can claim the epoch the honest rotation just
+    /// reached. What it cannot do is produce *the* key the survivors hold at
+    /// that epoch, because that one was random and was never sealed to it. So
+    /// the survivors have a non-empty key list at `e+1` and none of them opens
+    /// this envelope, which is the one case `apply_remote` treats as an error
+    /// rather than as a missing key.
+    ///
+    /// That distinction is the whole test. "No key" parks, because the
+    /// `key_envelope` carrying it may simply be in flight; "keys, none of which
+    /// opens it" is ciphertext nobody in this account wrote.
+    #[test]
+    fn a_transition_forged_under_a_self_minted_next_epoch_is_refused() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbc = db_root(ROOT);
+        trust(&ea, &mut dba, &ec);
+        trust(&ec, &mut dbc, &ea);
+        let c_id = ec.keychain.device_id();
+
+        // The revocation rotates the meta stream, so A now holds a *random*
+        // key at the next epoch.
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Compromised,
+            },
+        )
+        .unwrap();
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+        let live = dba
+            .with_tx(|tx| ea.keychain.current_epoch_tx(tx, &META_STREAM))
+            .unwrap()
+            .expect("the meta stream has an epoch");
+        assert!(
+            !ea.keychain.stream_keys_at(&META_STREAM, live).is_empty(),
+            "the premise: the survivor holds a key at the epoch being forged"
+        );
+
+        // C forges a transition off the identity it kept and seals it under an
+        // epoch it minted itself.
+        let (inner, _) = build_transition(&ec, &[&ec], false, T0);
+        let forged = forged_envelope_at(&ec, &mut dbc, &inner, 1, Hlc::at(T0 + 1));
+        let err = ea.apply_remote_all(&mut dba, &forged).unwrap_err();
+        assert!(
+            matches!(&err, EngineError::RemoteOpInvalid(m)
+                if m.contains("no key at this (stream, epoch) opens the envelope")),
+            "expected a decrypt refusal, got {err:?}"
+        );
+        assert_eq!(deferred_rows(&dba), 0, "refused, not parked");
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            head,
+            "and the head did not move"
+        );
+    }
+
+    /// The same forgery at **`e+2`** parks instead of erroring, is never
+    /// applied, and ages out.
+    ///
+    /// Parking is correct here and is not a weakness: from the receiver's side
+    /// "I hold no key at epoch 3" is indistinguishable from an honest op that
+    /// overtook its `key_envelope`, and refusing would lose that op for good —
+    /// the relay does not redeliver. What matters is that parking is *inert*:
+    /// the op never applies, the head never moves, and the row is swept at
+    /// [`DEFERRED_TTL_MS`] rather than sitting there forever waiting for a key
+    /// that cannot exist, because no honest device ever minted that epoch.
+    #[test]
+    fn a_transition_forged_two_epochs_ahead_parks_and_is_never_applied() {
+        let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+        let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+        let ea = engine_random_keys(ROOT, [1u8; 32], ca.clone());
+        let eb = engine_random_keys(ROOT, [2u8; 32], cb.clone());
+        let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        let mut dbc = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+        trust(&eb, &mut dbb, &ea);
+        trust(&eb, &mut dbb, &ec);
+        trust(&ec, &mut dbc, &ea);
+        // B is the replica under attack, and it has to be a *replica* rather
+        // than the emitter: the TTL sweep runs inside `drain_deferred`, which
+        // only a remotely absorbed key reaches.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        let head = eb.current_identity(dbb.conn()).unwrap().identity_id;
+
+        let (inner, to) = build_transition(&ec, &[&ec], false, T0);
+        let forged = forged_envelope_at(&ec, &mut dbc, &inner, 2, Hlc::at(T0 + 1));
+        assert!(eb.apply_remote_all(&mut dbb, &forged).unwrap().is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "no key at that epoch, so it parks");
+        assert_eq!(
+            eb.current_identity(dbb.conn()).unwrap().identity_id,
+            head,
+            "parked is not applied"
+        );
+        let n: i64 = dbb
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM identity_transitions WHERE to_identity_id = ?",
+                params![&to[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "and it never became a link");
+
+        // A month later some *other* key reaches B — an ordinary new Stream —
+        // and the drain it triggers sweeps by age. The forged row is swept
+        // rather than released, because the epoch it claims was never minted by
+        // anyone in this account and no envelope for it can ever arrive.
+        set_clock(&ca, T0 + DEFERRED_TTL_MS + 1);
+        set_clock(&cb, T0 + DEFERRED_TTL_MS + 1);
+        let stream = ea
+            .apply(
+                &mut dba,
+                Command::CreateStream(StreamDraft {
+                    name: "later".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .entity;
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "in the new stream".into(),
+                stream_id: Some(stream),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        for env in key_envelope_envs(&dba) {
+            let _ = eb.apply_remote_all(&mut dbb, &env);
+        }
+        assert_eq!(deferred_rows(&dbb), 0, "swept at the TTL, not lingering");
+        assert_eq!(eb.current_identity(dbb.conn()).unwrap().identity_id, head);
+    }
+
+    /// **A device that was offline across the rotation comes back and catches
+    /// up, with no recovery code and no re-pairing.**
+    ///
+    /// This is the half of #143 that decides whether any of it is usable. The
+    /// transition is sealed under the meta epoch the rotation *minted*, so a
+    /// device that missed that epoch cannot read the op that would tell it the
+    /// identity moved — which looks circular and is not, because the
+    /// `key_envelope` carrying the new meta epoch is itself sealed under the
+    /// **old** one. The device can always open that.
+    ///
+    /// So the order is: park the transition, absorb the envelope, drain, apply,
+    /// and take the re-issued cert and the `ID_S_priv` share out of the roster.
+    /// Each step is asserted here, because the failure mode is a device that
+    /// silently never becomes current again and can only be fixed by re-pairing
+    /// it — which is exactly the outcome a rotation is supposed to avoid.
+    #[test]
+    fn a_device_offline_across_a_rotation_catches_up_without_re_pairing() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let mut dbb = db_root(ROOT);
+        let c_id = ec.keychain.device_id();
+
+        // A knows B and C; B knows A. B then goes offline.
+        trust(&ea, &mut dba, &eb);
+        trust(&ea, &mut dba, &ec);
+        trust(&eb, &mut dbb, &ea);
+        // Something has to be written before the vault-meta stream has a key
+        // to hand over at all.
+        ea.apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "before B went away".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        hand_over_key(&eb, &mut dbb, &ea, &mut dba, &META_STREAM);
+        let before = eb.current_identity(dbb.conn()).unwrap().identity_id;
+
+        // A revokes C while B is away. B is in the roster; C is not.
+        ea.apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .unwrap();
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+        assert_ne!(
+            head, before,
+            "the premise: the identity moved while B was away"
+        );
+
+        // B comes back and meets the transition first. It is sealed under the
+        // meta epoch the rotation minted, which B does not hold.
+        let transition = env_for_kind(&dba, &head, "identity.transition");
+        assert!(eb
+            .apply_remote_all(&mut dbb, &transition)
+            .unwrap()
+            .is_empty());
+        assert_eq!(deferred_rows(&dbb), 1, "parked, because the epoch is new");
+        assert_eq!(
+            eb.current_identity(dbb.conn()).unwrap().identity_id,
+            before,
+            "and nothing has moved yet"
+        );
+
+        // Now the `key_envelope` that carries that epoch. It was sealed under
+        // the OLD meta epoch, so B can open it — this is what breaks the
+        // apparent circularity.
+        let mut drained = false;
+        for env in key_envelope_envs(&dba) {
+            if eb.apply_remote_all(&mut dbb, &env).is_ok() {
+                drained = true;
+            }
+        }
+        assert!(drained, "B absorbed at least one envelope");
+        assert_eq!(
+            deferred_rows(&dbb),
+            0,
+            "and the drain released the transition"
+        );
+
+        // B is current again, on its own, with everything it needs.
+        assert_eq!(
+            eb.current_identity(dbb.conn()).unwrap().identity_id,
+            head,
+            "B agrees who the account is"
+        );
+        assert_eq!(
+            eb.keychain.identity_id(),
+            head,
+            "B opened its share and adopted: no recovery code, no re-pairing"
+        );
+        DeviceCert::from_cbor(&eb.keychain.cert_blob())
+            .unwrap()
+            .verify_binding(&eb.keychain.identity_signing_pub(), &head)
+            .expect("B holds a cert under the identity in force");
+
+        // ...and C, which was excluded, is not current on B's replica either.
+        let QueryResult::Devices(rows) = eb.query(&dbb, Query::DeviceList).unwrap() else {
+            panic!("expected Devices")
+        };
+        if let Some(c) = rows.iter().find(|r| r.device_id == c_id) {
+            assert!(!c.current, "the excluded device is not current anywhere");
+        }
+    }
+
     /// **`meta_epoch` sorts first, and that is the security component.**
     ///
     /// Two transitions succeed the same identity. The attacker's carries an
