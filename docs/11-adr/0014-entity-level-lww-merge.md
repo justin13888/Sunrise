@@ -195,8 +195,8 @@ that today would be paying for the roadmap, not the product.
 
 | Option | Why rejected |
 |---|---|
-| **Realize ADR-0003** — route merge through `sunrise-crdt`/Loro now | Rewrites the entire materialization path in `engine.rs` and the op codec for zero v1-visible behaviour change, since no v1 entity needs a non-LWW type. Reinstates four unmaintained-dependency advisories. |
-| **Per-field LWW** (stamp `(ts_ms, device_id)` per column) | Closes the "different fields, one survivor" gap without a CRDT library, but costs a wide schema migration and per-column merge logic in `engine.rs`. Genuinely attractive; deferred because no shipping surface produces concurrent per-field edits — v1 clients submit whole-entity updates. Recorded as the first thing to reach for (see below). |
+| **Realize ADR-0003** — route merge through `sunrise-crdt`/Loro now | Rewrites the entire materialization path in `crates/sunrise-core/src/engine/lww.rs` and the op codec for zero v1-visible behaviour change, since no v1 entity needs a non-LWW type. Reinstates four unmaintained-dependency advisories. |
+| **Per-field LWW** (stamp `(ts_ms, device_id)` per column) | Closes the "different fields, one survivor" gap without a CRDT library, but costs a wide schema migration and per-column merge logic in `crates/sunrise-core/src/engine/lww.rs`. Genuinely attractive; deferred because no shipping surface produces concurrent per-field edits — v1 clients submit whole-entity updates. Recorded as the first thing to reach for (see below). |
 | **Keep `sunrise-crdt` as a dormant crate** | The status quo, and the reason this ADR exists: a compiling crate named `sunrise-crdt` next to a live merge engine that ignores it is a trap for the next reader. Dormant code with no consumer is a claim the product does not honour. |
 | **Entity-level LWW, crate deleted (chosen)** | One merge model, in one place, with the proptest and chaos suite pointed at it. |
 

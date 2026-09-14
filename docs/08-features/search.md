@@ -39,7 +39,8 @@ indexed. Streams, Blocks, Notes and People have no writer at all.
 ## Free-text search
 
 `Query::Search { text, limit }` (`crates/sunrise-core/src/queries.rs`) is the
-whole query surface. `query_search` (`engine.rs`) matches against `search_idx`
+whole query surface. `query_search`
+(`crates/sunrise-core/src/engine/query.rs:238`) matches against `search_idx`
 with `kind = 'task'`, orders by `bm25(search_idx)`, applies the caller's
 `limit`, reads each hit back as a full Task and drops any that is deleted. It
 returns `QueryResult::Tasks` — so search returns tasks, in relevance order,
