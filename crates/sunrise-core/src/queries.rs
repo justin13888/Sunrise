@@ -431,4 +431,21 @@ pub struct DeviceRow {
     pub platform: String,
     /// Revoked.
     pub revoked: bool,
+    /// Whether this device is certified under the account identity **in
+    /// force**, and therefore a member.
+    ///
+    /// Separate from `revoked` because the two answer different questions and
+    /// a device can be either without the other. `revoked` is a register entry
+    /// naming this device id; `current` is whether the identity that issued
+    /// this device's cert is the head of the account's transition chain
+    /// (ADR-0032).
+    ///
+    /// A device that left and certified itself back in under a fresh id reads
+    /// `revoked: false, current: false` — the register has never heard of the
+    /// new id, and that is exactly the bypass
+    /// ([#105](https://github.com/justin13888/Sunrise/issues/105)); `current`
+    /// is the field that shows it. An honest device that has not yet applied a
+    /// rotation reads the same way for a moment, so a UI should present this as
+    /// "not active on this account" rather than as an accusation.
+    pub current: bool,
 }

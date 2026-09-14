@@ -49,7 +49,10 @@
 
 use crate::commands::{Command, CommandResult, FocusStartDraft};
 use crate::config::{Clock, HlcClock, Rng};
-use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
+use crate::control_op::{
+    DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient,
+    RevokeReason, RosterEntry,
+};
 use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::{EnvelopeRecipient, KeySource, Keychain, SuccessorPublics};
@@ -172,6 +175,37 @@ const MAX_EPOCH_LEAP: u32 = 64;
 /// certified under the real head reads as not-current. That fails closed —
 /// nothing is sealed to anybody — rather than admitting a device it should not.
 const MAX_TRANSITION_CHAIN: usize = 64;
+
+/// One device that survives a rotation, with everything its roster entry and
+/// its share need.
+///
+/// A struct rather than the five-tuple this was: `clippy::type_complexity` is
+/// denied, and the fields are worth names anyway. `d_s_pub` is read out of the
+/// stored cert rather than from a column, on the same single-source-of-truth
+/// rule `RosterEntry` follows — a column beside the cert could disagree with
+/// the body the identity signed.
+struct Survivor {
+    device_id: [u8; 16],
+    d_s_pub: [u8; 32],
+    d_d_pub: [u8; 32],
+    nickname: String,
+    platform: String,
+}
+
+/// What one call to `Engine::rotate_identity` actually did.
+///
+/// `carried_recovery_code` is the field with consequences: the caller asked,
+/// and the answer can be no. See `rotate_identity` for the one case that
+/// refuses, and `Command::RotateIdentity` for what a UI owes the user when it
+/// comes back false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RotationOutcome {
+    to_identity_id: [u8; 16],
+    carried_recovery_code: bool,
+    devices_kept: usize,
+    op_id: [u8; 16],
+    seq: u64,
+}
 
 /// The account identity in force on a replica: the last link of its chain.
 ///
@@ -512,6 +546,15 @@ impl Engine {
             Command::RevokeDevice { device_id, reason } => {
                 self.revoke_device(db, device_id, reason)
             }
+            Command::RotateIdentity { keep_recovery_code } => {
+                let out = self.rotate_identity(db, None, keep_recovery_code)?;
+                Ok(CommandResult::new(
+                    EntityRef::new(EntityKind::Identity, out.to_identity_id),
+                    None,
+                    out.op_id,
+                    out.seq,
+                ))
+            }
             Command::RotateStreamKey { stream } => self.rotate_stream_key(db, stream),
             Command::StartFocus(d) => self.start_focus(db, d),
             Command::EndFocus {
@@ -775,7 +818,308 @@ impl Engine {
             other => EngineError::Storage(other),
         })?;
 
+        // 4. Rotate the **identity**, excluding the device just revoked.
+        //
+        //    This is what makes the revocation stick, and it is a second
+        //    transaction on purpose. The first one has to commit before this
+        //    one runs: `rotate_identity` builds its roster from the recipient
+        //    rule — current, unrevoked, not excluded — and the revocation
+        //    register it reads is written above. Building both in one
+        //    transaction would work, but it would also mean a rotation whose
+        //    roster depends on uncommitted state it cannot re-read after a
+        //    rollback.
+        //
+        //    Without it, everything above is exactly the pre-ADR-0032
+        //    behaviour: the register names a device id, the revoked device
+        //    still holds `ID_S_priv`, and it certifies itself back in under a
+        //    fresh id that the register has never heard of
+        //    ([#105](https://github.com/justin13888/Sunrise/issues/105)). The
+        //    rotation moves the head, and the excluded device gets no share of
+        //    the successor, so the id it mints next is certified under an
+        //    identity that is no longer the account.
+        //
+        //    `keep_recovery_code: true` is the request; `rotate_identity`
+        //    overrides it when the device being revoked is the one holding
+        //    `ID_D_priv`, because a carry share sealed to that key would hand
+        //    the successor straight to the device being excluded.
+        let rotation = self.rotate_identity(db, Some(revoked), true)?;
+        if !rotation.carried_recovery_code {
+            tracing::warn!(
+                ev = "core.identity.recovery_code_invalidated",
+                subject_h = hex_short(&revoked),
+                head_h = hex_short(&rotation.to_identity_id),
+                "the revoked device held the account's recovery key, so the successor \
+                 could not be carried forward under it; the user needs a new recovery code"
+            );
+        }
+
         Ok(CommandResult::new(device_id, None, op_id, seq))
+    }
+
+    /// Replace the account identity, and with it the membership.
+    ///
+    /// The emit half of ADR-0032. `exclude` is the device this rotation is
+    /// leaving behind — `Some` when a revocation drives it, `None` for a
+    /// user-requested rotation that keeps everybody.
+    ///
+    /// What it emits is one op carrying the whole hand-over, because the parts
+    /// are not independently applicable: a replica that learned the new
+    /// `ID_S_pub` without the re-issued certs would reject every device in the
+    /// account, and one that learned the certs without the transition would
+    /// have no key to verify them under.
+    ///
+    /// # Why the roster is built from the recipient rule and not from `devices`
+    ///
+    /// The surviving set is exactly "current, unrevoked, and not the device
+    /// being excluded" — the same three facts `emit_key_envelopes` joins on.
+    /// Reading `devices` unfiltered would put a device that is already
+    /// non-current back into the roster and re-admit it in the act of
+    /// rotating, which is the failure this whole mechanism exists to prevent.
+    ///
+    /// # The carry share, and the one case that must refuse it
+    ///
+    /// By default the successor is sealed to the **outgoing** `ID_D_pub` as
+    /// well, so the user's existing recovery code keeps working: without it
+    /// that code opens an identity the account has retired and the user must
+    /// re-enrol from a device they may not have.
+    ///
+    /// The exception is not optional. The outgoing `ID_D_priv` is held by the
+    /// account's creator, so when the device being revoked *is* the creator,
+    /// carrying the successor forward under that key would hand the successor
+    /// to the device the rotation exists to exclude — the rotation would
+    /// complete, every check would pass, and the excluded device would hold the
+    /// new identity. `keep_recovery_code` is therefore a request rather than an
+    /// instruction, and the returned [`RotationOutcome`] says which way it went
+    /// so a caller can tell the user their recovery code needs replacing.
+    ///
+    /// # Errors
+    /// Storage failures, or [`EngineError::Invalid`] if this device holds no
+    /// share of the identity it is trying to rotate — a device that cannot
+    /// speak for the account cannot hand it on.
+    fn rotate_identity(
+        &self,
+        db: &mut Db,
+        exclude: Option<[u8; 16]>,
+        keep_recovery_code: bool,
+    ) -> Result<RotationOutcome, EngineError> {
+        let now_ms = self.clock.now_ms();
+        let op_id = self.fresh_op_id(now_ms);
+        let mut outcome = RotationOutcome {
+            to_identity_id: [0u8; 16],
+            carried_recovery_code: false,
+            devices_kept: 0,
+            op_id,
+            seq: 0,
+        };
+        db.with_tx(|tx| -> rusqlite::Result<()> {
+            let head = self.current_identity(tx)?;
+            if head.identity_id != self.keychain.identity_id() {
+                // This device is already not the account. Rotating from here
+                // would fork the chain off a link nobody follows.
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            let successor = self.keychain.mint_successor_identity(self.rng.as_ref());
+
+            // The surviving set, on the recipient rule. This device is always
+            // in it — it is emitting — and is not in the `devices` query
+            // because that one deliberately excludes self.
+            let mut survivors: Vec<Survivor> = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT d.device_id, d.d_d_pub, d.cert_blob, d.nickname, d.platform
+                     FROM devices d
+                     WHERE d.d_d_pub IS NOT NULL
+                       AND d.identity_id = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM device_revocations r
+                           WHERE r.device_id = d.device_id
+                       )
+                     ORDER BY d.device_id",
+                )?;
+                let rows = stmt
+                    .query_map(params![&head.identity_id[..]], |r| {
+                        Ok((
+                            r.get::<_, Vec<u8>>(0)?,
+                            r.get::<_, Vec<u8>>(1)?,
+                            r.get::<_, Vec<u8>>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for (id, dd, cert, nickname, platform) in rows {
+                    let (Some(id), Some(dd)) = (to16(&id), to32(&dd)) else {
+                        continue;
+                    };
+                    if Some(id) == exclude || id == self.keychain.device_id() {
+                        continue;
+                    }
+                    // `d_s_pub` is inside the cert and nowhere else, which is
+                    // the same single-source-of-truth rule `RosterEntry`
+                    // follows: a column beside it could disagree with the body
+                    // the identity signed.
+                    let Ok(parsed) = DeviceCert::from_cbor(&cert) else {
+                        continue;
+                    };
+                    survivors.push(Survivor {
+                        device_id: id,
+                        d_s_pub: parsed.body.d_s_pub,
+                        d_d_pub: dd,
+                        nickname,
+                        platform,
+                    });
+                }
+            }
+            let (my_nick, my_platform) =
+                Keychain::device_labels_tx(tx, &self.keychain.device_id())?;
+            survivors.push(Survivor {
+                device_id: self.keychain.device_id(),
+                d_s_pub: self.keychain.device_signing_pub(),
+                d_d_pub: self.keychain.device_dh_pub(),
+                nickname: my_nick,
+                platform: my_platform,
+            });
+            survivors.sort_unstable_by_key(|s| s.device_id);
+            outcome.devices_kept = survivors.len();
+
+            let mut roster: Vec<RosterEntry> = Vec::with_capacity(survivors.len());
+            let mut device_shares: Vec<KeyShare> = Vec::with_capacity(survivors.len());
+            for sv in &survivors {
+                let cert = Keychain::issue_roster_cert(
+                    &successor,
+                    sv.device_id,
+                    sv.d_s_pub,
+                    sv.d_d_pub,
+                    &sv.nickname,
+                    &sv.platform,
+                    now_ms,
+                )
+                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+                roster.push(RosterEntry { cert });
+                device_shares.push(KeyShare {
+                    device_id: sv.device_id,
+                    hpke_ciphertext: self
+                        .keychain
+                        .seal_successor_device_share(
+                            &successor,
+                            &sv.d_d_pub,
+                            &sv.device_id,
+                            self.rng.as_ref(),
+                        )
+                        .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?,
+                });
+            }
+
+            // The creator holds the outgoing `ID_D_priv`, so a carry share
+            // sealed to it reaches the creator and nobody else. Excluding the
+            // creator therefore forbids the carry outright.
+            let excluding_key_holder = exclude.is_some_and(|d| {
+                tx.query_row(
+                    "SELECT 1 FROM identity WHERE id = 1 AND minted_by_device_id = ?",
+                    params![&d[..]],
+                    |_| Ok(()),
+                )
+                .optional()
+                .unwrap_or(None)
+                .is_some()
+            });
+            let identity_share = (keep_recovery_code && !excluding_key_holder)
+                .then(|| {
+                    self.keychain
+                        .seal_successor_carry_share(&successor, self.rng.as_ref())
+                        .ok()
+                        .map(serde_bytes::ByteBuf::from)
+                })
+                .flatten();
+            outcome.carried_recovery_code = identity_share.is_some();
+
+            let certs: Vec<&[u8]> = roster.iter().map(|e| e.cert.as_slice()).collect();
+            let share_refs: Vec<([u8; 16], &[u8])> = device_shares
+                .iter()
+                .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+                .collect();
+            let body = sunrise_crypto::IdentityTransitionBody {
+                from_identity_id: head.identity_id,
+                to_identity_id: successor.identity_id(),
+                to_id_s_pub: successor.id_s_pub(),
+                to_id_d_pub: successor.id_d_pub(),
+                roster_digest: roster_digest(&certs)
+                    .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?,
+                shares_digest: shares_digest(
+                    &share_refs,
+                    identity_share.as_ref().map(|b| b.as_slice()),
+                )
+                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?,
+            };
+            let sigs = self
+                .keychain
+                .sign_transition(&body, &successor)
+                .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+            outcome.to_identity_id = body.to_identity_id;
+
+            let inner = InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+                from_identity_id: body.from_identity_id,
+                to_identity_id: body.to_identity_id,
+                to_id_s_pub: body.to_id_s_pub,
+                to_id_d_pub: body.to_id_d_pub,
+                roster,
+                device_shares,
+                identity_share,
+                prev_sig: sigs.prev_sig,
+                next_sig: sigs.next_sig,
+            }));
+            let encoded =
+                encode_inner_op(&inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+
+            // Sealed under the epoch the departing device still shares, like
+            // every other op in a rotating transaction: a peer that has not yet
+            // received the new epoch must still be able to read the op that
+            // tells it the identity moved.
+            let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+            let hlc = self.hlc.send();
+            outcome.seq = self.next_seq_tx(tx, &META_STREAM)?;
+            self.ops_insert_at(
+                tx,
+                &op_id,
+                &META_STREAM,
+                outcome.seq,
+                hlc,
+                &encoded,
+                "identity.transition",
+                "identity",
+                Some(&body.to_identity_id),
+                Some(now_ms),
+                None,
+                now_ms,
+                &[],
+                seal_under.0,
+                &seal_under.1,
+            )?;
+            // Applied locally through the same arm every peer will use, at the
+            // same `meta_epoch` a peer will read off the envelope — so the
+            // local fold and every remote one order this transition
+            // identically.
+            self.apply_control_op(
+                tx,
+                &inner,
+                &self.keychain.device_id(),
+                hlc,
+                now_ms,
+                seal_under.0,
+            )?;
+            Ok(())
+        })
+        .map_err(|e| match e {
+            sunrise_storage::DbError::Sqlite(rusqlite::Error::QueryReturnedNoRows) => {
+                EngineError::Invalid(
+                    "this device does not hold the account's current identity and cannot \
+                     rotate it"
+                        .into(),
+                )
+            }
+            other => EngineError::Storage(other),
+        })?;
+        Ok(outcome)
     }
 
     /// Mint a new epoch for one Stream and distribute it.
@@ -1313,6 +1657,68 @@ impl Engine {
             chain.push(next);
         }
         Ok(chain)
+    }
+
+    /// Move every device the roster names onto the successor identity.
+    ///
+    /// **This is what a roster is for**, and without it the whole mechanism
+    /// fails closed on the wrong people: `devices.identity_id` records which
+    /// chain identity certified a device, every membership test compares it to
+    /// the head, and a rotation moves the head. If nothing rewrote those rows,
+    /// the first rotation would make *every* device non-current — including the
+    /// ones the rotation was meant to keep — and the account would stop sealing
+    /// keys to anybody. That is exactly what happened, and it is the e2e
+    /// revocation test that said so.
+    ///
+    /// So the roster is not merely evidence that the successor blessed these
+    /// devices; it is the instruction to record that it did. Each entry
+    /// replaces the device's `cert_blob`, `d_d_pub` and labels as well as its
+    /// `identity_id`, because the re-issued cert is now the one a peer will
+    /// verify that device's envelopes against.
+    ///
+    /// A device **not** in the roster is untouched, keeps pointing at the
+    /// identity that certified it, and is current no longer. No row is deleted
+    /// and no revocation is written: it is not an accusation, it is an
+    /// omission, and the device can be re-admitted by an ordinary cert publish
+    /// under the new identity if it turns out to be honest.
+    ///
+    /// Every entry has already been verified against `to_id_s_pub` by the
+    /// caller, so this does not re-check — but it does re-derive `device_id`
+    /// from the cert rather than trusting any outer copy, because there is no
+    /// outer copy and that is deliberate.
+    fn apply_roster(
+        &self,
+        tx: &Transaction<'_>,
+        roster: &[RosterEntry],
+        to_identity_id: &[u8; 16],
+    ) -> rusqlite::Result<()> {
+        for entry in roster {
+            let Ok(cert) = DeviceCert::from_cbor(&entry.cert) else {
+                continue;
+            };
+            tx.execute(
+                "INSERT INTO devices
+                 (device_id, cert_blob, nickname, platform, created_at_ms,
+                  identity_id, d_d_pub)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(device_id) DO UPDATE SET
+                    cert_blob = excluded.cert_blob,
+                    nickname = excluded.nickname,
+                    platform = excluded.platform,
+                    identity_id = excluded.identity_id,
+                    d_d_pub = excluded.d_d_pub",
+                params![
+                    &cert.body.device_id[..],
+                    entry.cert,
+                    cert.body.nickname,
+                    cert.body.platform,
+                    i64::try_from(cert.body.created_at_ms).unwrap_or(i64::MAX),
+                    &to_identity_id[..],
+                    &cert.body.d_d_pub[..],
+                ],
+            )?;
+        }
+        Ok(())
     }
 
     /// Bring this device's own identity into step with the chain head.
@@ -2101,6 +2507,13 @@ impl Engine {
                     ],
                 )?;
                 self.recompute_identity_head(tx, now_ms)?;
+                // The roster is applied only if this transition actually *won*
+                // the fold. A losing branch carries a perfectly valid roster
+                // for a membership the account did not adopt, and writing it
+                // would let the loser decide who is current.
+                if self.current_identity(tx)?.identity_id == p.to_identity_id {
+                    self.apply_roster(tx, &p.roster, &p.to_identity_id)?;
+                }
                 Ok(Vec::new())
             }
             _ => Ok(Vec::new()),
@@ -4112,12 +4525,18 @@ impl Engine {
     }
 
     fn query_device_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        // `current` is computed against the chain head rather than stored,
+        // on the same rule every other membership test in this file follows:
+        // it is a fact about the op set, so a row that cached it would go stale
+        // the moment a transition landed.
+        let head = self.current_identity(db.conn())?;
         let mut stmt = db.conn().prepare(
-            "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL
+            "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL,
+                    d.identity_id IS NOT NULL AND d.identity_id = ?1
              FROM devices d
              LEFT JOIN device_revocations r ON r.device_id = d.device_id",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![&head.identity_id[..]], |row| {
             let blob: Vec<u8> = row.get(0)?;
             let mut a = [0u8; 16];
             let take = blob.len().min(16);
@@ -4127,6 +4546,7 @@ impl Engine {
                 nickname: row.get(1)?,
                 platform: row.get(2)?,
                 revoked: row.get(3)?,
+                current: row.get(4)?,
             })
         })?;
         let mut out = Vec::new();
@@ -8603,7 +9023,6 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::config::SystemRng;
-    use crate::control_op::{IdentityTransitionPayload, KeyShare, RosterEntry};
     use parking_lot::Mutex as PLMutex;
     use sunrise_crypto::keys::VaultRootKey;
     use sunrise_domain::ActivityKind;
@@ -13895,28 +14314,29 @@ mod tests {
         );
     }
 
-    /// **A revoked device rejoins under a fresh device id, and every replica
-    /// lets it.** This test asserts the bypass, not a defence against it.
+    /// **A revoked device cannot rejoin under a fresh device id.** The test
+    /// that had to flip, flipped.
     ///
-    /// [#105](https://github.com/justin13888/Sunrise/issues/105). Revocation
-    /// names a *device id*; the capability it needs to take away is
-    /// `ID_S_priv`, which every paired device holds and no revocation touches.
-    /// So the revoked device mints a fresh keypair, signs a `DeviceCert` for it
-    /// under the account identity, publishes it — sealed under the pre-rotation
-    /// vault-meta epoch it still has — and `backfill_key_envelopes` hands the
-    /// new id every key the revocation had just rotated away.
+    /// [#105](https://github.com/justin13888/Sunrise/issues/105). The setup is
+    /// unchanged from the version that asserted the bypass, deliberately: same
+    /// engines, same vault root, same fresh id minted from the `ID_S_priv` the
+    /// revoked device kept, same publish. Every step the issue describes still
+    /// happens and still succeeds. The cert still verifies — it is not a
+    /// forgery and nothing here pretends it is.
     ///
-    /// Both engines below are built from the same vault root, which is what
-    /// gives them the same account identity, and that models the situation
-    /// exactly: the revoked device *is* holding the key that signs certs. The
-    /// new id is not a forgery. It verifies.
+    /// What changed is underneath it. `RevokeDevice` now rotates the account
+    /// identity as well as the Stream keys, and the revoked device is not in
+    /// the new roster, so it holds no share of the successor's `ID_S_priv`. The
+    /// fresh cert it signs is therefore issued under an identity the account
+    /// has retired: `DeviceCertPublish` records *which* chain identity verified
+    /// it, that is not the head, and every membership test reads the row as not
+    /// current. The row lands — applying is unconditional, so every replica
+    /// agrees it landed — and it is a recipient of nothing.
     ///
-    /// It is pinned here because it was a claim in three documents and an
-    /// assertion in none, and because it is the test that has to flip when the
-    /// fix lands. ADR-0032 records why the fix is identity rotation and not any
-    /// of the narrower checks that were considered here.
+    /// ADR-0032 records why the fix is identity rotation and not any of the
+    /// narrower checks that were considered here.
     #[test]
-    fn a_revoked_device_rejoins_under_a_fresh_device_id() {
+    fn a_revoked_device_cannot_rejoin_under_a_fresh_device_id() {
         let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         let ec = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
         // The same account identity, a device id nobody has revoked: what the
@@ -13956,15 +14376,48 @@ mod tests {
             "the read bound holds for the id it names, which is the whole of what it does"
         );
 
-        let mut got = envelopes_to(&ea, &dba, &c2_id);
-        got.sort_unstable();
-        let mut want = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
-        want.sort_unstable();
+        // The fresh id is admitted. That is not a concession — it is the
+        // property that keeps the fix convergent: facts about devices apply
+        // unconditionally on every replica, and only standing is derived.
+        let stored: Option<Vec<u8>> = dba
+            .conn()
+            .query_row(
+                "SELECT identity_id FROM devices WHERE device_id = ?",
+                params![&c2_id[..]],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+        assert!(stored.is_some(), "the cert verifies, so the row lands");
+        assert_ne!(
+            stored.as_deref().and_then(to16),
+            Some(head),
+            "but under the identity the rotation retired, not the one in force"
+        );
+
+        // And the round trip stops. Step 4 of the issue -- "backfill_key_envelopes
+        // then seals C' the current epoch of every stream" -- emits nothing.
+        let want = dba.with_tx(Keychain::held_epochs_tx).expect("held epochs");
         assert!(!want.is_empty(), "the revocation rotated something");
-        assert_eq!(
-            got, want,
-            "every key the revocation rotated away is handed back to the same \
-             device under a name the register does not list"
+        assert!(
+            envelopes_to(&ea, &dba, &c2_id).is_empty(),
+            "the keys the revocation rotated away are not handed back to the same \
+             device under a new name"
+        );
+
+        // The device list says so, in the field a UI renders.
+        let QueryResult::Devices(rows) = ea.query(&dba, Query::DeviceList).unwrap() else {
+            panic!("expected Devices")
+        };
+        let c2 = rows
+            .iter()
+            .find(|r| r.device_id == c2_id)
+            .expect("the fresh id is listed");
+        assert!(!c2.revoked, "the register has never heard of this id");
+        assert!(
+            !c2.current,
+            "and `current` is the field that shows it anyway"
         );
     }
 
@@ -14422,6 +14875,257 @@ mod tests {
         assert!(
             envelopes_to(&ea, &dba, &b_id).len() > stale,
             "and the backfill that runs behind the publish now reaches it"
+        );
+    }
+
+    /// A user-requested rotation keeps everybody: every current device is in
+    /// the roster, adopts, and goes on receiving keys.
+    ///
+    /// The counterpart to the revocation case, and the one that says the fix is
+    /// a *rotation* rather than a way to lock devices out. Nothing needs
+    /// re-pairing and nothing goes quiet.
+    #[test]
+    fn a_requested_rotation_keeps_every_current_device() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+        trust(&ea, &mut dba, &eb);
+        let before_identity = ea.current_identity(dba.conn()).unwrap().identity_id;
+        let before_envelopes = envelopes_to(&ea, &dba, &b_id).len();
+
+        ea.apply(
+            &mut dba,
+            Command::RotateIdentity {
+                keep_recovery_code: true,
+            },
+        )
+        .unwrap();
+
+        let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+        assert_ne!(head, before_identity, "the identity moved");
+        assert_eq!(
+            ea.keychain.identity_id(),
+            head,
+            "and the emitter adopted it"
+        );
+
+        // B's row was moved onto the successor by the roster, so it is current
+        // and still a recipient.
+        let QueryResult::Devices(rows) = ea.query(&dba, Query::DeviceList).unwrap() else {
+            panic!("expected Devices")
+        };
+        let b = rows.iter().find(|r| r.device_id == b_id).expect("listed");
+        assert!(b.current, "a rotation that keeps everybody keeps everybody");
+        assert!(!b.revoked);
+
+        ea.apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .unwrap();
+        assert!(
+            envelopes_to(&ea, &dba, &b_id).len() > before_envelopes,
+            "and it goes on receiving keys minted after the rotation"
+        );
+    }
+
+    /// Revoking the device that holds `ID_D_priv` **must not** carry the
+    /// recovery code forward.
+    ///
+    /// The carry share is sealed to the outgoing `ID_D_pub`, and the only
+    /// holder of the matching private half is the account's creator. Carrying
+    /// it while revoking that creator would seal the successor to the very key
+    /// the rotation exists to exclude: every check would pass and the excluded
+    /// device would hold the new identity. So the request is overridden, the
+    /// user's code stops working, and a client has to say so.
+    ///
+    /// The `identity` row is written by hand because `Keychain::for_test*`
+    /// builds none; `minted_by_device_id` is the column that names the holder,
+    /// and it is the one this branch reads.
+    #[test]
+    fn revoking_the_recovery_key_holder_refuses_to_carry_the_code() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        let b_id = eb.keychain.device_id();
+        trust(&ea, &mut dba, &eb);
+
+        let id = ea.keychain.identity_id();
+        let pk = ea.keychain.identity_signing_pub();
+        dba.conn()
+            .execute(
+                "INSERT INTO identity
+                 (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped,
+                  id_d_priv_wrapped, created_at_ms, minted_by_device_id,
+                  genesis_identity_id, genesis_id_s_pub)
+                 VALUES (1, ?1, ?2, X'00', X'00', X'00', 0, ?3, ?1, ?2)",
+                params![&id[..], &pk[..], &b_id[..]],
+            )
+            .unwrap();
+
+        // B holds ID_D_priv, and B is the device being revoked.
+        let out = ea.rotate_identity(&mut dba, Some(b_id), true).unwrap();
+        assert!(
+            !out.carried_recovery_code,
+            "carrying it would seal the successor to the key being excluded"
+        );
+
+        // The same rotation excluding somebody else does carry it.
+        let out = ea
+            .rotate_identity(&mut dba, Some([0x77; 16]), true)
+            .unwrap();
+        assert!(out.carried_recovery_code);
+    }
+
+    /// The same bypass, seen by a **peer** rather than by the device that did
+    /// the revoking.
+    ///
+    /// The flipped test above runs on the revoker's own replica, where the
+    /// rotation and the attacker's cert land in one process. This is the case
+    /// that actually matters for convergence: B applies the revocation and the
+    /// rotation as ordinary remote ops, then meets the fresh cert. B has no
+    /// special knowledge — it did not choose the successor and cannot tell an
+    /// attacker's fresh id from an honest new pairing — and still gives it
+    /// nothing, because the only question it asks is which chain identity
+    /// signed the cert.
+    #[test]
+    fn a_peer_gives_nothing_to_a_fresh_id_certified_under_a_retired_identity() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let ec2 = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dbb = db_root(ROOT);
+        let c2_id = ec2.keychain.device_id();
+
+        // B knows A. A rotates, keeping B, and B applies the transition as an
+        // ordinary remote control op.
+        trust(&eb, &mut dbb, &ea);
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        apply_control_at(
+            &eb,
+            &mut dbb,
+            &inner,
+            &ea.keychain.device_id(),
+            Hlc::at(T0),
+            1,
+        );
+        assert_eq!(eb.current_identity(dbb.conn()).unwrap().identity_id, to);
+        assert_eq!(
+            eb.keychain.identity_id(),
+            to,
+            "B is in the roster, so it adopts"
+        );
+
+        // The attacker's fresh id, certified under the identity it kept.
+        let before = envelopes_to(&eb, &dbb, &c2_id).len();
+        trust_at(&eb, &mut dbb, &ec2, T0 + 1);
+        assert_eq!(
+            envelopes_to(&eb, &dbb, &c2_id).len(),
+            before,
+            "B has no way to recognise the attacker and does not need one"
+        );
+        let QueryResult::Devices(rows) = eb.query(&dbb, Query::DeviceList).unwrap() else {
+            panic!("expected Devices")
+        };
+        assert!(
+            !rows
+                .iter()
+                .find(|r| r.device_id == c2_id)
+                .expect("listed")
+                .current
+        );
+    }
+
+    /// **`meta_epoch` sorts first, and that is the security component.**
+    ///
+    /// Two transitions succeed the same identity. The attacker's carries an
+    /// HLC far ahead of anything honest — the shape a forward-dated op takes,
+    /// bounded only by `MAX_DRIFT_MS` — and is sealed under the meta epoch it
+    /// still holds. The honest one carries a small HLC and a higher epoch.
+    ///
+    /// The honest one wins, and not because it is honest: it wins because a
+    /// revoked device provably cannot raise `meta_epoch`. `revoke_device`
+    /// writes the revocation register *before* it mints, so
+    /// `emit_key_envelopes`' anti-join excludes that device from every epoch
+    /// minted in the same transaction, and it holds no key above the one it was
+    /// cut at. An HLC is a claim; an epoch is a key you either have or do not.
+    #[test]
+    fn a_higher_meta_epoch_beats_any_hlc() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut dba = db_root(ROOT);
+        trust(&ea, &mut dba, &eb);
+
+        let (attacker, attacker_to) = build_transition(&ea, &[&eb], false, T0);
+        let (honest, honest_to) = build_transition(&ea, &[&eb], true, T0);
+        let a_id = ea.keychain.device_id();
+
+        // Forward-dated to just inside the drift gate, at the old epoch.
+        apply_control_at(
+            &ea,
+            &mut dba,
+            &attacker,
+            &a_id,
+            Hlc::at(T0 + sunrise_cbor::hlc::MAX_DRIFT_MS - 1),
+            1,
+        );
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            attacker_to,
+            "with nothing to compete against it, it does win"
+        );
+
+        // Backdated ten days, at the next epoch. The epoch decides.
+        apply_control_at(&ea, &mut dba, &honest, &a_id, Hlc::at(T0 - 864_000_000), 2);
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            honest_to,
+            "a higher meta_epoch wins however far the loser's clock was pushed"
+        );
+    }
+
+    /// Two competing transitions, applied to two fresh replicas in **opposite
+    /// orders**, converge byte for byte.
+    ///
+    /// The property the whole design rests on and the reason nothing is refused
+    /// at apply time: standing is a pure function of the op set, so arrival
+    /// order cannot decide who the account is.
+    #[test]
+    fn competing_transitions_converge_whatever_order_they_arrive_in() {
+        let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let (first, _) = build_transition(&ea, &[&eb], true, T0);
+        let (second, _) = build_transition(&ea, &[&eb], true, T0);
+        let a_id = ea.keychain.device_id();
+
+        // Each op carries its *own* stamp, fixed before either is delivered.
+        // Deriving it from arrival position instead would make the input a
+        // function of the order and the test vacuous — which is what the first
+        // version of this did, and what it caught.
+        let a = (&first, Hlc::at(T0 + 1));
+        let b = (&second, Hlc::at(T0 + 2));
+
+        let chain_after = |order: [(&InnerOp, Hlc); 2]| -> Vec<([u8; 16], [u8; 32])> {
+            // A fresh engine per run: the keychain adopts as it folds, and a
+            // reused one would carry the first run's adoption into the second.
+            let e = engine_random_keys(ROOT, [9u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+            let mut db = db_root(ROOT);
+            trust(&e, &mut db, &ea);
+            trust(&e, &mut db, &eb);
+            for (inner, hlc) in order {
+                apply_control_at(&e, &mut db, inner, &a_id, hlc, 1);
+            }
+            e.chain_identities(db.conn()).unwrap()
+        };
+
+        let forwards = chain_after([a, b]);
+        let backwards = chain_after([b, a]);
+        assert_eq!(forwards.len(), 2, "one of the two won, and only one");
+        assert_eq!(
+            forwards, backwards,
+            "the chain is a function of the op set, not of arrival order"
         );
     }
 
