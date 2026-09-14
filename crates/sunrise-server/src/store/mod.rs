@@ -118,7 +118,16 @@ impl Store {
     }
 }
 
-pub(super) fn unsigned(v: i64) -> u64 {
+/// SQLite hands back `i64`; the row mappers in both halves want `u64`.
+///
+/// Private on purpose. In `store/mod.rs`, `super` is the crate root, so
+/// `pub(super)` here would read as "the store's neighbours may call this" and
+/// mean exactly `pub(crate)` — crate-wide reach for a helper with three call
+/// sites, all of them inside `store`. The halves that need it are `accounts`
+/// and `devices`, which are *children* of this module rather than siblings of
+/// it, and a child can already reach an ancestor's private items: their
+/// `use super::unsigned` compiles with no visibility modifier at all.
+fn unsigned(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
 
@@ -360,6 +369,85 @@ mod tests {
             .active_device(&alice.account_id, &d.device_id)
             .unwrap()
             .is_none());
+    }
+
+    /// **What [`Store::open`] composes, and in what order.**
+    ///
+    /// `open` runs six things: `PRAGMA foreign_keys`, then `accounts::SCHEMA`,
+    /// `devices::SCHEMA`, `relay_log::SCHEMA`, `devices::add_missing_columns`
+    /// and `devices::LATE_INDEXES`. Splitting the store turned that from one
+    /// `execute_batch` over one literal into five names that can be reordered
+    /// or dropped independently, and only one of the orderings was constrained:
+    /// `a_column_added_after_release_reaches_a_database_that_predates_it` below
+    /// fails if `add_missing_columns` runs after `LATE_INDEXES`.
+    ///
+    /// The rest were free. Swapping `accounts::SCHEMA` and `devices::SCHEMA`
+    /// left the whole suite green, because SQLite resolves a `REFERENCES
+    /// accounts(account_id)` inside a `CREATE TABLE` lazily — the constraint is
+    /// enforced at DML time, not at declaration — so `open`'s own claim that
+    /// accounts come "first, because a device row references one" was a claim
+    /// nothing could falsify. Deleting the `LATE_INDEXES` line left it green
+    /// too: no test named `devices_by_vault_id`, and an absent index changes a
+    /// query's plan rather than its answer.
+    ///
+    /// Reading `sqlite_master` in `rowid` order is reading the DDL back in the
+    /// order it ran: rows are appended as objects are created, and a freshly
+    /// opened database has dropped nothing. Internal objects are filtered out —
+    /// `relay_frames`' `AUTOINCREMENT` mints a `sqlite_sequence`, and the
+    /// `PRIMARY KEY` / `UNIQUE` declarations mint `sqlite_autoindex_*` — because
+    /// those are SQLite's bookkeeping rather than this schema's composition.
+    #[test]
+    fn open_composes_each_tenants_ddl_in_dependency_order() {
+        let s = store();
+        let conn = s.conn.lock();
+
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            foreign_keys, 1,
+            "every ON DELETE CASCADE in these tenants is inert without it"
+        );
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE name NOT LIKE 'sqlite_%'
+                 ORDER BY rowid",
+            )
+            .unwrap();
+        let objects: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(
+            objects,
+            vec![
+                // accounts::SCHEMA — first, because the next table references it
+                "accounts",
+                // devices::SCHEMA
+                "devices",
+                "devices_by_account",
+                "push_tokens",
+                // relay_log::SCHEMA — references neither of the above
+                "relay_frames",
+                "relay_frames_by_channel",
+                "relay_frame_heads",
+                "relay_evicted",
+                "relay_batches",
+                "relay_batches_by_frame",
+                // devices::LATE_INDEXES — after add_missing_columns, which is
+                // what puts the column this index names on an upgraded database
+                "devices_by_vault_id",
+            ],
+            "the DDL `open` composes, in the order it ran"
+        );
+        assert!(
+            objects.contains(&"devices_by_vault_id".to_owned()),
+            "the revoke-by-vault-id lookup's index, which no other test names"
+        );
     }
 
     /// A column added to a table an earlier release created.

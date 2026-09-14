@@ -400,7 +400,7 @@ fn is_shipped_kind(kind: &str) -> bool {
 ///
 /// `#[cfg(test)]` is *not* blanked. A scan for the end of the attributed item
 /// assumed a brace-balanced one, and on a struct field or an enum variant it
-/// ran on — measured, it blanked 130 lines of `api/sync.rs` and hid every
+/// ran on — measured, it blanked 130 lines of `api/sync.rs` (now `api/sync/`) and hid every
 /// `tracing::` call inside from every gate. Deleting it costs a constraint
 /// (a unit test in a shipped file must use allowlisted field names) that the
 /// workspace already met.

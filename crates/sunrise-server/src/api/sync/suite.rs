@@ -846,7 +846,7 @@ mod tests {
 
     /// Revoking a device ends the stream it is already holding.
     ///
-    /// `device_recheck_ms` is described in `config.rs` as "the bound on how
+    /// `device_recheck_ms` is described in `config/model.rs` as "the bound on how
     /// long a revoked device keeps receiving fan-out on a socket it already
     /// holds", which is a security bound that had no test behind it (`#81`).
     /// It is driven down here rather than waited out: the production default

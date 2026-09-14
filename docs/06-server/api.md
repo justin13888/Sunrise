@@ -81,9 +81,9 @@ AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
 `AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
-provisioning (`crates/sunrise-server/src/store.rs:331`) and nothing updates it or
-reads it for a decision. It is retained for wire compatibility, not because it
-means anything — there are no plan tiers in v1
+provisioning (`crates/sunrise-server/src/store/accounts.rs:107`) and nothing
+updates it or reads it for a decision. It is retained for wire compatibility,
+not because it means anything — there are no plan tiers in v1
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
@@ -382,7 +382,7 @@ period — so it lands with the GC slice rather than as a bare unlink.
 
 ### Sharing — NOT IMPLEMENTED
 
-No `api/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
+No `api/shares.rs` exists, no `shares` table is in `store/`'s schema, and
 `/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
 [ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
 derived-key model there is no key unit smaller than the whole vault to grant,
