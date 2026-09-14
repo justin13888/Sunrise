@@ -552,6 +552,15 @@ jobs:
         # never about. This is scoped the way the rule is scoped -- one crate --
         # and carries a visible allowlist of the two documented exceptions.
         run: python3 .github/scripts/core-filesystem-gate.py
+      - name: Reject a file that grew past its package's threshold
+        # No file in this repository had a bound until engine.rs reached 18,568
+        # lines -- six impl blocks, ninety free functions and a ten-thousand-line
+        # test module in one file. It got there one reasonable commit at a time.
+        #
+        # Thresholds are each package's own p90, not a number from a style
+        # guide, and the baseline in the script names every file over one today
+        # with what it is. That list may shrink and may not grow.
+        run: python3 .github/scripts/file-size-gate.py
 
   log-redaction:
     name: Log redaction gate
