@@ -104,7 +104,8 @@ answer would have been to build them.
 
 ## v1 status audit
 
-Re-measured on branch `v1-rewrite` by tracing each capability from a
+Re-measured on the v1 rewrite line, now merged to `master`, by tracing each
+capability from a
 **user-reachable surface** — a view something presents, a menu command, a
 subcommand, an OS entry point — down to a real seam or core call. A file that
 compiles is not evidence; an unreachable correct implementation counts as unmet,

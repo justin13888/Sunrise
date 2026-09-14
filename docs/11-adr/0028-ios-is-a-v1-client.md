@@ -2,6 +2,17 @@
 
 **Status:** accepted
 
+> **Later change, recorded rather than edited in.** The Context below reads the
+> CI triggers as they stood when this ADR was written, and names the hole it
+> found on its way past: *"a pull request stacked on another feature branch is
+> filtered out on its base, as the one carrying this ADR was"*. That hole is
+> now closed — `pull_request` carries no `branches:` key, so **every** pull
+> request is gated whatever it targets, and `v1-rewrite` is retired. Every
+> citation below to `master` or `v1-rewrite` as the gated set, and every line
+> number into the trigger block, describes the file as it was. The decision is
+> unaffected: it rests on the `ios-app` job being unconditional, which it
+> still is, and on a strictly wider trigger set than the one it was argued from.
+
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (one new column, 31 cells, plus an audit section, two hard rules — the iOS
 regression rule and the definition of a qualified *met* — and five verdicts in
