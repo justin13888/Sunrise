@@ -248,13 +248,14 @@ Three decisions are worth knowing before adding one.
 - **Not every version needs one.** The rule is the oldest supported version,
   plus any later version whose successor migrations move *data* the older
   fixture cannot contain. That is 13 and 17 today. Of the appended migrations,
-  three move data rather than only schema — 0014's `sort_order` backfill,
-  0017's `stream_keys` drop / `device_revocations` carry / Inbox re-point, and
-  0019's `minted_by_device_id` backfill and `id_d_priv_wrapped` blanking — and
-  the v13 fixture reaches the first two but structurally cannot reach the third,
-  because `identity` does not exist before 0017 and 0017 creates it empty. 0015,
-  0016, 0018, 0020 and 0021 are pure `ADD COLUMN` / `CREATE TABLE` /
-  `CREATE INDEX` and earn no fixture of their own.
+  four move data rather than only schema — 0014's `sort_order` backfill,
+  0017's `stream_keys` drop / `device_revocations` carry / Inbox re-point,
+  0019's `minted_by_device_id` backfill and `id_d_priv_wrapped` blanking, and
+  0022's `genesis_identity_id` backfill — and the v13 fixture reaches the first
+  two but structurally cannot reach the last two, because `identity` does not
+  exist before 0017 and 0017 creates it empty. 0015, 0016, 0018, 0020 and 0021
+  are pure `ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX` and earn no fixture
+  of their own.
 
 What is still **specified and not implemented**:
 

@@ -53,7 +53,17 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// new *variants*, so an older build refuses one rather than misreading it, and
 /// the floor still does not move: every v1..v4 payload shape is unchanged and
 /// still decodes here.
-pub const DOC_SCHEMA_V: u16 = 5;
+///
+/// `6` added the fourth control family, `IdentityTransition` (ADR-0032,
+/// issue #105): the account's `ID_S`/`ID_D` pair becomes replaceable, and the
+/// op carries the successor's public halves, a re-issued `DeviceCert` for
+/// every surviving device, and the successor's secrets sealed to each of them.
+/// A new variant again, so a v5 build refuses one rather than misreading it —
+/// and refusing is the right answer here rather than merely the safe one: a
+/// build that skipped a transition would go on verifying every later op
+/// against an identity the account has retired. Every v1..v5 payload shape is
+/// unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 6;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///
@@ -116,4 +126,12 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// full scans of the widest table in the vault, decrypting it a page at a time.
 /// Measured at 18.1 ms for a 10k-op log, 183 ms at 100k and 2.01 s at 1M;
 /// with the index, about 60 us at all three.
-pub const STORAGE_V: u16 = 21;
+///
+/// `22` is migration `0022_identity_transition.sql`. The account identity
+/// stopped being a value and became a chain: `identity_transitions` holds one
+/// append-only row per absorbed transition, and `identity.genesis_identity_id`
+/// is the fixed point the chain is folded from. `identity.identity_id` could
+/// not serve as that anchor — it is the identity *in force*, so it moves on
+/// every transition, and replicas at different points in the chain would fold
+/// from different starts and disagree about who the account is.
+pub const STORAGE_V: u16 = 22;
