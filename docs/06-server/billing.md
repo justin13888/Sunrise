@@ -12,7 +12,7 @@ status: proposed
 > **What exists in the tree:** `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'`
 > column (`crates/sunrise-server/src/store.rs:157`) that `resolve_account` sets
 > to `"free"` (`store.rs:331`) and that is read exactly once, to echo onto
-> `AccountInfo` (`api/accounts.rs:86`). Nothing else: no Stripe client, no
+> `AccountInfo` (`api/accounts.rs:92`). Nothing else: no Stripe client, no
 > `processed_stripe_events` table, no webhook route, no quota accounting.
 >
 > **Why it is not v1:** v1 ships one server shape, the self-host single binary,

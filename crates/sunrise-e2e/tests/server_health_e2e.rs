@@ -56,7 +56,41 @@ async fn health_meta_metrics_round_trip() {
 
     let (s, body) = get(&addr, "/api/v1/meta").await;
     assert_eq!(s, 200, "meta body: {body}");
-    assert!(body.contains("wire_proto") || body.contains("crypto_suite"));
+
+    // The substring check this replaces — `contains("wire_proto") ||
+    // contains("crypto_suite")` on the raw response string — was satisfied by
+    // the field names alone, either one of them sufficing, and never read a
+    // value. What a client actually negotiates against is the numbers, so the
+    // body is decoded through the generated client and compared with them.
+    //
+    // The expectations are the literals `docs/10-cross-cutting/
+    // protocol-versioning.md` §2 publishes, not `sunrise_cbor::version`'s
+    // constants. Comparing the response with the constants the handler reads
+    // puts one source on both sides of the `assert_eq!`: it pins that the
+    // members are not swapped, and cannot fail on a wrong number, because the
+    // number would be wrong on both sides. A peer negotiates against the
+    // published numbers, so those are what this asserts — a constant bumped
+    // without its spec fails here.
+    let meta = sunrise_relay_client::api::Client::new(&format!("http://{addr}"))
+        .expect("a client over the booted relay")
+        .meta()
+        .await
+        .expect("meta must decode into the described shape")
+        .into_inner();
+    assert_eq!(
+        meta.wire_proto_supported,
+        vec![1_i64],
+        "protocol-versioning.md §2 publishes WIRE_PROTO_V = 1"
+    );
+    assert_eq!(
+        meta.crypto_suite_supported,
+        vec![2_i64],
+        "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 2"
+    );
+    assert_eq!(
+        meta.doc_schema_floor, 1_i64,
+        "protocol-versioning.md §2 publishes DOC_SCHEMA_FLOOR = 1"
+    );
 
     let (s, body) = get(&addr, "/metrics").await;
     assert_eq!(s, 200, "metrics body: {body}");
