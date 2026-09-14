@@ -72,4 +72,17 @@ confidence-threshold = 0.9
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Temporary, and the only entry this list should ever hold at a time.
+#
+# kynos 0.1.0 is the only published release and it carries the defect in #58 —
+# its route macros emit a doc literal rustdoc reads as an indented code block
+# and then compiles as English, producing 18 failing doctests in
+# `sunrise-server`. Upstream fixed it in `13064f42`, three days after the
+# release, and has cut no release since.
+#
+# Pinned by exact `rev` in the workspace manifest, so `Cargo.lock` still fixes
+# the build to one immutable revision — a git source is not an unpinned source
+# here. It is still a shape a release should not carry indefinitely, which is
+# what #60 tracks: when a kynos release carries that fix, the `git`/`rev` keys
+# come off the dependency and this entry comes out of this list, together.
+allow-git = ["https://github.com/getkono/kynos"]
