@@ -1,9 +1,19 @@
-//! Self-host account + device persistence (SQLite).
+//! The SQLite substrate the self-host server keeps its state in.
 //!
+//! Two tenants share it, and both are named here because both are governed by
+//! what this file sets up.
+//!
+//! **Accounts and devices** are the tenant this module also implements.
 //! `docs/06-server/auth.md` keys an account on the OIDC pair `(iss, sub)` and
 //! hangs devices off it; `docs/06-server/api.md` describes the device rows the
-//! REST surface returns. This module is the only place either shape is
-//! written.
+//! REST surface returns. Every statement that writes either shape is below.
+//!
+//! **The durable relay log** is the other, and only its tables are here: the
+//! `SCHEMA` const declares `relay_frames`, `relay_frame_heads`,
+//! `relay_evicted` and `relay_batches`, because one `Connection` opens one
+//! database and the schema has to be applied in one place. The methods over
+//! those tables live in [`crate::relay_log`], which extends `Store` from
+//! there.
 //!
 //! Backing file comes from [`crate::ServerConfig::sqlite_path`]; `None` opens
 //! an in-memory database, which is what tests use — every `ServerState` then
@@ -11,12 +21,18 @@
 //!
 //! # Concurrency
 //!
-//! One `Connection` behind a `parking_lot::Mutex`. Every statement here is a
-//! point lookup or a single-row write against a small table, so the critical
-//! section is microseconds; a self-host relay does not have the write volume to
-//! justify a pool, and a single connection makes "revocation takes effect in
-//! the request's transaction" trivially true. A multi-node deployment replaces
-//! this module with Postgres.
+//! One `Connection` behind a `parking_lot::Mutex`, held by both tenants. Every
+//! statement *in this file* is a point lookup or a single-row write against a
+//! small table, so the critical section is microseconds; a self-host relay
+//! does not have the write volume to justify a pool, and a single connection
+//! makes "revocation takes effect in the request's transaction" trivially
+//! true. A multi-node deployment replaces this module with Postgres.
+//!
+//! The relay append path is the exception worth knowing about before reading
+//! the paragraph above as the whole story: it takes this same mutex for a
+//! multi-statement transaction and a retention sweep, so it holds the lock for
+//! considerably longer than a point lookup does. [`crate::relay_log`] is where
+//! that cost is described.
 
 use std::path::Path;
 
@@ -355,9 +371,25 @@ impl Store {
 
     /// Record the identity material the first device registers.
     ///
-    /// Idempotent by design: a client that retries `POST /accounts` after a
-    /// dropped response must not end up with a second account or a changed
-    /// identity key, so the keys are written once and later calls are no-ops.
+    /// Idempotent **for identical input**: a client that retries
+    /// `POST /accounts` after a dropped response must not end up with a second
+    /// account or a changed identity key, so every column is `COALESCE`d onto
+    /// what is already there and re-sending the same values changes nothing.
+    ///
+    /// A *different* `recovery_blob` is not a no-op but a conflict, and a
+    /// missing account row is an error rather than a silent success. Neither
+    /// is an oversight: see [`StoreError::RecoveryBlobExists`] for why a
+    /// second blob is refused rather than dropped.
+    ///
+    /// # Errors
+    /// [`StoreError::RecoveryBlobExists`] when `recovery_blob` is `Some` and
+    /// the account already holds a different one. Nothing is written — the
+    /// check runs before the `UPDATE`.
+    ///
+    /// [`StoreError::NotFound`] when no account carries this `account_id`. The
+    /// `UPDATE` matches no row and the read-back that follows finds none.
+    ///
+    /// [`StoreError::Sqlite`] if either statement fails.
     pub fn set_identity(
         &self,
         account_id: &str,

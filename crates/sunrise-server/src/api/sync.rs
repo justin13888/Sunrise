@@ -627,6 +627,15 @@ pub struct RefreshResponse {
 /// refresh that changed either would let one credential hand a live op stream
 /// to another, which is the whole reason the check exists rather than simply
 /// trusting a valid token.
+///
+/// That mismatch does more than refuse the refresh: it **ends the session**
+/// before answering `401`, so the caller has to establish a new one rather
+/// than retry with the credential it still holds. The two failure paths are
+/// asymmetric on purpose. A token that fails *verification* says nothing about
+/// who holds the session, so that one is recoverable and the session keeps the
+/// credential it already has; a token that verifies and names *someone else*
+/// means the channel namespace fixed at establishment no longer matches the
+/// holder, and there is nothing left worth serving on it.
 #[kynos::post("/api/v1/sync/session/refresh", operation_id = "refreshSyncSession")]
 pub async fn refresh(
     Inject(state): Inject<ServerState>,
@@ -1081,6 +1090,16 @@ fn resolve(
 }
 
 /// Parse a 16-byte id from 32 lowercase hex characters.
+///
+/// The decode underneath (`hex::decode_to_slice`) is case-insensitive, so the
+/// *lowercase* half of the refusal below cannot fire today: an uppercase id
+/// decodes to the same sixteen bytes and is accepted. That is a gap between
+/// the contract and the parse, and the contract is the half worth keeping —
+/// lowercase is what every id this server emits is spelled in, and the
+/// identically-shaped `api::blobs::parse_upload_id` refuses in the same words.
+/// Loosening the message to "must be hex" would be a user-visible change to a
+/// `400` body, and would publish the laxer rule as the contract rather than
+/// leaving room for the parse to close the gap.
 fn parse_id(s: &str, field: &'static str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
