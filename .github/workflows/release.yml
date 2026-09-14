@@ -420,6 +420,18 @@ jobs:
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          # A deliberate widening of this step's secret surface, against the
+          # principle stated below that a step which does not need a secret
+          # should not hold one. The justification is this step's own purpose:
+          # "Prove the identity is usable now, not inside a 20-minute build."
+          # A certificate of the right *type* belonging to the wrong *team*
+          # satisfies a type-only assertion and then fails `-exportArchive`
+          # twenty minutes later, which is precisely the failure this step
+          # exists to eliminate. The team is already visible in the identity
+          # line this step reads, so checking it costs one `env:` entry and no
+          # new command. It is also strictly less sensitive than the two
+          # secrets already here -- the certificate and its password.
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
         run: |
           set -euo pipefail
           keychain="$RUNNER_TEMP/sunrise-signing.keychain-db"
@@ -491,6 +503,23 @@ jobs:
             echo "--- certificates in this keychain ---"
             security find-certificate -a "$keychain" | grep -E '"(labl|subj)"' || true
             echo "::error title=No Developer ID Application identity in the signing keychain::MACOS_CERTIFICATE_P12 decoded and imported, but the keychain holds no *valid* Developer ID Application signing identity. The listings above say which case this is. docs/07-clients/releasing.md gives the openssl command that checks a .p12 for both halves before it is base64'd. Nothing is signed, notarized or published."
+            exit 1
+          fi
+          # Type is necessary and not sufficient. `xcodebuild -exportArchive`
+          # consumes `MACOS_TEAM_ID` as both `DEVELOPMENT_TEAM` and the export
+          # plist's `teamID`, so a Developer ID Application certificate from a
+          # different team is valid, trusted, in date, and still unusable here.
+          # The identity line carries the team in parentheses:
+          #
+          #   1) ABC...123 "Developer ID Application: Some Name (TEAMID123)"
+          #
+          # so this is a second pattern over the listing already in hand, not a
+          # second command. `MACOS_TEAM_ID` is a masked secret and cannot be
+          # echoed, so the message says the teams disagree without printing
+          # either -- the listing above already names the team that was found,
+          # and GitHub masks the expected one wherever it appears.
+          if ! grep -qE "^ *[0-9]+\) [0-9A-F]{40} \"Developer ID Application:.*\\(${MACOS_TEAM_ID}\\)\"" <<<"$identities"; then
+            echo "::error title=Developer ID identity belongs to the wrong team::The keychain holds a valid Developer ID Application identity, but its team is not MACOS_TEAM_ID. The identity listing above names the team the certificate actually carries. xcodebuild -exportArchive would fail on this about twenty minutes from here, which is the failure this step exists to catch. Nothing is signed, notarized or published."
             exit 1
           fi
       # The repository's own task, not a re-expression of it. It builds the
