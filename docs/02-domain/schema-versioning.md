@@ -97,7 +97,9 @@ Avoid. If unavoidable:
 ## What this means for the v1 launch
 
 - **The CDDL specs in `02-domain/` are authoritative again.** All nine were
-  re-derived against `crates/sunrise-domain/src/` at `DOC_SCHEMA_V = 4`. An
+  re-derived against `crates/sunrise-domain/src/` at `DOC_SCHEMA_V = 4`, and
+  re-checked at `5` without change — see the version note at the end of this
+  section for why `5` could not move them. An
   earlier revision of this section recorded eight of the nine as drifted;
   every item on that list is closed, and the repairs are listed below so the
   closure can be re-checked rather than taken on trust.
@@ -144,6 +146,16 @@ Avoid. If unavoidable:
   ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); neither is reflected
   in the CDDL — they are op-family and op-shape changes, not entity-field
   changes, so the entity blocks above are unaffected by them.
+
+  Version 5 is the same class of change again, which is why the re-check above
+  found nothing to repair. It added three **control** op families —
+  `KeyEnvelope`, `DeviceRevoke` and `DeviceCertPublish`
+  ([ADR-0024](../11-adr/0024-key-hierarchy.md)). None of the three
+  carries a domain entity: they take `KeyEnvelopePayload`, `DeviceRevokePayload`
+  and a raw `bstr` respectively, and `sunrise_core::inner_op` states the
+  distinction directly — they "carry key material and trust", not entity state.
+  No entity gained, lost or changed a field at `5`, so all nine blocks stand as
+  re-derived at `4`.
 - We expect rapid iteration in the first 6 months. Therefore, and these are
   implemented rather than planned:
   - Every entity carries an `unknown` map (`#[serde(flatten)]`) that preserves

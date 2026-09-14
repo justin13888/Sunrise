@@ -226,8 +226,12 @@ completing *different* occurrences concurrently is where entity LWW bites: one
 row wins whole, and the loser's key and increment are dropped from the
 projection (they survive in the op log). See ADR-0014 §What we give up.
 
-**The streak fields are system-managed.** `RoutinePatch` exposes exactly two
-knobs — `grace_window_s` and `forgiveness_enabled` — and nothing else.
+**The streak fields are system-managed.** Of them, `RoutinePatch` exposes
+exactly two knobs — `grace_window_s` and `forgiveness_enabled` — and no others.
+(The patch type carries ten further fields, none of them streak state:
+`template`, `rrule`, `timezone`, `starts_at`, `ends_at`,
+`scheduling_constraints`, `catchup_policy`, `paused`, `paused_until` and
+`archived`.)
 `streak_counter`, `streak_started_at`, `forgivenesses_in_window`, `streak_keys`
 and `last_completed_at` have no patch field and no command: they move only as a
 side effect of completing an occurrence, in the same transaction as the
