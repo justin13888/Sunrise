@@ -55,8 +55,9 @@ const ALL_WEEKDAYS: [Weekday; 7] = [
     Weekday::Su,
 ];
 
-/// Format the 16-byte op/device ids UniFFI cannot carry as lowercase hex.
-fn hex16(bytes: &[u8; 16]) -> String {
+/// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
+/// hex.
+pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(32);
     for b in bytes {

@@ -769,6 +769,30 @@ impl Core {
             .collect())
     }
 
+    /// Whether a revocation of `device_id` is still owed to the relay.
+    ///
+    /// The two halves of a revocation are different guarantees and a user is
+    /// entitled to know which they have: the vault half is committed the
+    /// moment `RevokeDevice` returns, while the relay half is a queued intent
+    /// that needs a session. A client that reported only the first would let
+    /// someone with no network believe a stolen laptop had been cut off from
+    /// the server, which it has not been. See issue #160.
+    ///
+    /// # Errors
+    /// Storage failures.
+    pub fn relay_revocation_pending(&self, device_id: &[u8; 16]) -> Result<bool, CoreError> {
+        let db = self.db.lock();
+        let found: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT 1 FROM relay_revocation_intents WHERE device_id = ?",
+                rusqlite::params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(found.is_some())
+    }
+
     /// Forget an intent the relay has answered.
     ///
     /// # Errors
