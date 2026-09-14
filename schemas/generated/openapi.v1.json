@@ -22,7 +22,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -44,7 +63,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -104,7 +142,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -118,13 +156,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -138,7 +207,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -148,7 +229,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -158,7 +251,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -168,7 +273,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -178,7 +295,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -188,7 +317,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -198,7 +339,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -223,7 +376,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -277,7 +449,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -291,13 +463,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -311,7 +514,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -321,7 +536,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -331,7 +558,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -341,7 +580,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -351,7 +602,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -361,7 +624,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -371,7 +646,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -387,7 +674,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -442,7 +748,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -456,13 +762,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -476,7 +813,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -486,7 +835,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -496,7 +857,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -506,7 +879,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -516,7 +901,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -526,7 +923,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -536,7 +945,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -552,7 +973,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -606,7 +1046,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -620,13 +1060,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -640,7 +1111,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -650,7 +1133,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -660,7 +1155,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -670,7 +1177,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -680,7 +1199,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -690,7 +1221,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -700,7 +1243,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -719,7 +1274,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -782,7 +1356,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -796,13 +1370,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -816,7 +1421,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -826,7 +1443,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -836,7 +1465,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -846,7 +1487,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -856,7 +1509,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -866,7 +1531,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -876,7 +1553,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -901,7 +1590,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -965,17 +1673,48 @@
         ],
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -989,13 +1728,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1009,7 +1779,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1019,7 +1801,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1029,7 +1823,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1039,7 +1845,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1049,7 +1867,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1059,7 +1889,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1068,7 +1910,26 @@
             "description": "the request succeeded and there is no content to send"
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1132,17 +1993,48 @@
         ],
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -1156,13 +2048,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1176,7 +2099,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1186,7 +2121,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1196,7 +2143,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1206,7 +2165,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1216,7 +2187,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1226,7 +2209,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1235,7 +2230,26 @@
             "description": "the request succeeded and there is no content to send"
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1299,7 +2313,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -1313,13 +2327,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1333,7 +2378,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1343,7 +2400,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1353,7 +2422,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1363,7 +2444,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1373,7 +2466,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1383,7 +2488,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1393,7 +2510,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1402,7 +2531,26 @@
             "description": "the request succeeded and there is no content to send"
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1466,7 +2614,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -1480,13 +2628,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1500,7 +2679,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1510,7 +2701,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1520,7 +2723,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1530,7 +2745,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1540,7 +2767,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1550,7 +2789,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1560,7 +2811,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1576,7 +2839,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1640,7 +2922,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -1654,13 +2936,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1674,7 +2987,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1684,7 +3009,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1694,7 +3031,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1704,7 +3053,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1714,7 +3075,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1724,7 +3097,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1734,7 +3119,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1750,7 +3147,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1833,17 +3249,48 @@
         },
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -1857,13 +3304,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1877,7 +3355,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1887,7 +3377,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1897,7 +3399,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1907,7 +3421,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1917,7 +3443,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1927,7 +3465,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1936,7 +3486,26 @@
             "description": "the request succeeded and there is no content to send"
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2000,17 +3569,48 @@
         ],
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2024,13 +3624,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2044,7 +3675,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2054,7 +3697,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2064,7 +3719,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2074,7 +3741,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2084,7 +3763,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2094,7 +3785,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2108,7 +3811,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2173,7 +3895,7 @@
         },
         "responses": {
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2187,13 +3909,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2207,7 +3960,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2217,7 +3982,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2227,7 +4004,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2237,7 +4026,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2247,7 +4048,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2257,7 +4070,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2267,7 +4092,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2292,7 +4129,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2369,17 +4225,48 @@
         },
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2393,13 +4280,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2413,7 +4331,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2423,7 +4353,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2433,7 +4375,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2443,7 +4397,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2453,7 +4419,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2463,7 +4441,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2472,7 +4462,26 @@
             "description": "the request succeeded and there is no content to send"
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2549,17 +4558,48 @@
         },
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2573,13 +4613,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2593,7 +4664,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2603,7 +4686,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2613,7 +4708,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2623,7 +4730,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2633,7 +4752,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2643,7 +4774,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2659,7 +4802,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2736,17 +4898,48 @@
         },
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2760,13 +4953,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2780,7 +5004,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2790,7 +5026,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2800,7 +5048,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2810,7 +5070,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2820,7 +5092,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2830,7 +5114,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2846,7 +5142,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2920,17 +5235,48 @@
         ],
         "responses": {
           "400": {
-            "description": "Bad Request",
+            "description": "Bad Request; Invalid request",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized; Unauthenticated",
             "headers": {
               "WWW-Authenticate": {
                 "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
@@ -2944,13 +5290,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Forbidden",
+            "description": "Forbidden; Sign-up disabled",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2964,7 +5341,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2974,7 +5363,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2984,7 +5385,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2994,7 +5407,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3004,7 +5429,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3014,7 +5451,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3052,7 +5501,26 @@
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3083,7 +5551,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3093,17 +5573,62 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unauthenticated"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Sign-up disabled",
+            "description": "Sign-up disabled; Forbidden",
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/signup-disabled"
+                            }
+                          }
+                        }
+                      ],
+                      "title": "Sign-up disabled"
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/forbidden"
+                            }
+                          }
+                        }
+                      ],
+                      "title": "Forbidden"
+                    }
+                  ]
                 }
               }
             }
@@ -3113,7 +5638,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3123,7 +5660,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3133,7 +5682,19 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3143,13 +5704,44 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Problem"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           },
           "413": {
-            "description": "the request body exceeds the configured limit"
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -3169,6 +5761,36 @@
           "status"
         ],
         "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
+      },
+      "Problem": {
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "maximum": 65535.0,
+            "minimum": 0.0,
+            "format": "uint16"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "type",
+          "status"
+        ],
+        "title": "Problem Details",
+        "description": "An RFC 9457 problem detail."
       },
       "MetaResponse": {
         "properties": {
@@ -3243,36 +5865,6 @@
           "device_binding_required"
         ],
         "description": "Server meta response."
-      },
-      "Problem": {
-        "properties": {
-          "type": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer",
-            "maximum": 65535.0,
-            "minimum": 0.0,
-            "format": "uint16"
-          },
-          "detail": {
-            "type": "string"
-          },
-          "instance": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": true,
-        "type": "object",
-        "required": [
-          "type",
-          "status"
-        ],
-        "title": "Problem Details",
-        "description": "An RFC 9457 problem detail."
       },
       "AccountCreateRequest": {
         "properties": {
