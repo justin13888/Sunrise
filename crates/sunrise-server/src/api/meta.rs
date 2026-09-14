@@ -67,15 +67,29 @@ mod tests {
     use crate::{ServerConfig, StaticVerifier, Subject};
     use kynos::http::{Method, StatusCode};
     use std::sync::Arc;
-    use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, WIRE_PROTO_V};
-    use sunrise_wire_protocol::capability::REQUIRED_SERVER_BITS;
 
-    /// **What `/meta` returns, which only a substring check ever touched.**
+    /// **What `/meta` returns, against the numbers the specs publish.**
     ///
     /// `sunrise-e2e`'s health round trip asserted `body.contains("wire_proto")
     /// || body.contains("crypto_suite")` on a raw response string — satisfied
     /// by the field names alone, either one sufficing, and the values never
-    /// read. Every member below could have carried the wrong number.
+    /// read.
+    ///
+    /// Comparing each member against the constant the handler itself reads
+    /// would catch a field swapped for its neighbour and nothing else: the same
+    /// source would sit on both sides of the `assert_eq!`, so a wrong number
+    /// would be equally wrong on both and the test would stay green. The
+    /// expectations below are therefore the literals the published contract
+    /// states — `docs/10-cross-cutting/protocol-versioning.md` §2 for the three
+    /// version numbers, its §5 ("Server MUST set 3") for the capability
+    /// bitfield, and `docs/06-server/api.md` §Device binding for
+    /// `device_binding_mode`. That is an oracle the server cannot satisfy by
+    /// being self-consistent, so a constant that moves without its spec moving
+    /// fails here, which is the drift worth catching.
+    ///
+    /// `server_app_v` is the exception: no spec publishes a literal for it,
+    /// because it is whatever the operator configured. What is pinned is that
+    /// `/meta` echoes that configured value rather than inventing one.
     #[tokio::test]
     async fn meta_reports_the_versions_this_build_speaks() {
         let config = ServerConfig::default();
@@ -89,24 +103,30 @@ mod tests {
         assert_eq!(meta["server_app_v"], serde_json::json!(expected_app_v));
         assert_eq!(
             meta["wire_proto_supported"],
-            serde_json::json!([u32::from(WIRE_PROTO_V)])
+            serde_json::json!([1]),
+            "protocol-versioning.md §2 publishes WIRE_PROTO_V = 1"
         );
         assert_eq!(
             meta["crypto_suite_supported"],
-            serde_json::json!([u32::from(CRYPTO_SUITE_V)])
+            serde_json::json!([2]),
+            "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 2"
         );
         assert_eq!(
             meta["doc_schema_floor"],
-            serde_json::json!(u32::from(DOC_SCHEMA_FLOOR))
+            serde_json::json!(1),
+            "protocol-versioning.md §2 publishes DOC_SCHEMA_FLOOR = 1"
         );
         assert_eq!(
             meta["capabilities"],
-            serde_json::json!(REQUIRED_SERVER_BITS.0)
+            serde_json::json!(0b0000_1000_u64),
+            "protocol-versioning.md §5: the server MUST set bit 3 (blob \
+             presign) and v1 requires no other, so the bitfield is 8"
         );
         assert_eq!(
             meta["device_binding_mode"],
-            serde_json::json!(super::DEVICE_BINDING_MODE),
-            "the string a client reads must be the scheme the server verifies"
+            serde_json::json!("header_sig_v2"),
+            "api.md §Device binding: /meta returns \"header_sig_v2\", and it \
+             is the scheme the server verifies"
         );
     }
 

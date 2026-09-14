@@ -721,10 +721,15 @@ mod tests {
     /// `parse_upload_id` is documented as "`up_` + 32 lowercase hex
     /// characters" and its own refusal says "must be lowercase hex", but the
     /// decode underneath is case-insensitive, so the same sixteen bytes have
-    /// two spellings that reach the same pending directory. Nothing here
-    /// depends on the id being canonical, so this is a statement of current
-    /// behaviour rather than an endorsement of it — and it is stated so that
-    /// tightening the parse fails a test instead of passing silently.
+    /// two spellings that reach the same pending directory.
+    ///
+    /// What the assertion pins is exactly one fact: the status is `204`. The
+    /// message the name invokes is context for why a `204` is surprising, not
+    /// something checked — nothing below reads a response body, so rewording
+    /// the refusal does not fail this test. Nothing here depends on the id
+    /// being canonical, so this is a statement of current behaviour rather
+    /// than an endorsement of it, and it is stated so that tightening the
+    /// parse fails a test instead of passing silently.
     #[tokio::test]
     async fn an_uppercase_hex_upload_id_is_accepted_despite_the_message() {
         let (client, _guard) = Client::with_blob_root();

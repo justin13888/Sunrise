@@ -4,7 +4,13 @@
 //! identifying is read out of a request body** — the account id used to be the
 //! first sixteen characters of the caller's own submitted public key, and
 //! `GET /accounts/me` used to answer `200 {"identity_id":"unauthenticated"}` to
-//! anybody. Those are regression-tested in `routes::accounts` and the property
+//! anybody. Those are regression-tested by this module's
+//! `tests::the_account_route_reports_the_identity_the_token_resolved_to`, which
+//! pins that `/accounts/me` does not answer `"unauthenticated"`, that the id it
+//! reports is the resolved account's own, and that two principals do not share
+//! one. This sentence used to name `routes::accounts` — a module that has never
+//! existed anywhere in the workspace, so the regression it claimed to cover had
+//! no test at all. The property
 //! is preserved here by construction: the only account id in scope comes from
 //! [`Principal`](crate::api::auth::Principal), which only
 //! [`Auth`](kynos::security::auth::Auth) can produce.
@@ -418,12 +424,13 @@ mod tests {
     /// Every one of its five members was only ever reached as a signature
     /// target, where the test asserts the status and throws the body away.
     ///
-    /// This module's own header says the `200 {"identity_id":"unauthenticated"}`
-    /// regression is "regression-tested in `routes::accounts`". No `routes`
-    /// module exists anywhere in the workspace — that string occurs exactly
-    /// once, in the comment claiming it — so the regression had no test at all.
-    /// This is it: the id is the resolved account's, it is stable across calls,
-    /// and two principals do not share one.
+    /// This module's header used to say the
+    /// `200 {"identity_id":"unauthenticated"}` regression was
+    /// "regression-tested in `routes::accounts`". No `routes` module exists
+    /// anywhere in the workspace — that string occurred exactly once, in the
+    /// comment claiming it — so the regression had no test at all. This is it:
+    /// the id is the resolved account's, it is stable across calls, and two
+    /// principals do not share one. The header now names this test.
     #[tokio::test]
     async fn the_account_route_reports_the_identity_the_token_resolved_to() {
         let client = client_claiming_email("alice@idp.example");
