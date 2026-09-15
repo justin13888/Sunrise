@@ -424,6 +424,58 @@ impl LossEvidence {
     }
 }
 
+/// The monotonic instant source a session schedules its deadlines against.
+///
+/// Injected rather than read ambiently, so the resync deadline and the
+/// retransmit sweep can be driven to an exact instant in a test instead of
+/// waited out on real time — which is [`#207`], and which is why
+/// `backoff_sleep`'s reset arm had no test: reaching it meant sleeping thirty
+/// seconds.
+///
+/// [`#207`]: https://github.com/justin13888/Sunrise/issues/207
+///
+/// # Why this is not [`crate::config::Clock`]
+///
+/// That seam is the vault's **wall clock**: `now_ms` is unix milliseconds, and
+/// it stamps HLCs, `created_at`, reminder windows — everything whose value a
+/// peer has to agree with. A deadline is not that. It has to survive an NTP
+/// step, a daylight-saving jump and a user correcting their clock by an hour,
+/// none of which may make a pending retransmit fire an hour early or an hour
+/// late. And the pump ultimately hands the result to
+/// [`tokio::time::sleep_until`], which consumes a monotonic
+/// [`tokio::time::Instant`] and nothing else.
+///
+/// So this is not a second notion of "now" sitting beside `Clock`. It is the
+/// timeline the driver was already on — tokio's — with the `now()` call made
+/// injectable. `Clock` keeps its monopoly on "what time is it in the world";
+/// this answers only "how long until the next thing is due".
+pub(crate) trait MonotonicClock: Send + Sync + std::fmt::Debug {
+    /// Now, on the same monotonic timeline [`tokio::time::sleep_until`] reads.
+    fn now(&self) -> Instant;
+}
+
+/// The production clock: tokio's own, which is real time outside a test and
+/// virtual under a paused runtime.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TokioClock;
+
+impl MonotonicClock for TokioClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// What a session needs in order to schedule: how often to resync, and the
+/// clock to measure it on.
+///
+/// One parameter rather than two because `session` is already at the
+/// `too-many-arguments` threshold, and because the pair is meaningless split:
+/// an interval with no clock cannot be turned into a deadline.
+struct SessionSchedule {
+    resync_interval: Duration,
+    clock: Arc<dyn MonotonicClock>,
+}
+
 /// Deadlines a live session is waiting on, and the loss evidence that pulls
 /// the resync deadline forward.
 struct Deadlines {
@@ -432,21 +484,43 @@ struct Deadlines {
     /// Earliest a resync may happen at all, from [`MIN_RESYNC_GAP`].
     resync_floor: Instant,
     interval: Duration,
+    /// Where every instant below comes from. Held rather than passed per call
+    /// because `note_loss` is reached from deep inside frame handling, and
+    /// threading a `now` through five frame kinds to reach it would put the
+    /// clock in signatures that have nothing to do with time.
+    clock: Arc<dyn MonotonicClock>,
 }
 
 impl Deadlines {
-    fn new(interval: Duration) -> Self {
-        let now = Instant::now();
+    fn new(interval: Duration, clock: Arc<dyn MonotonicClock>) -> Self {
+        let now = clock.now();
         Self {
             resync_at: now + interval,
             resync_floor: now,
             interval,
+            clock,
         }
+    }
+
+    /// Now, per the injected clock. The one reader of it outside this type is
+    /// the retransmit sweep, which must compare against the same instant these
+    /// deadlines were computed from.
+    fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    /// Whether the anti-entropy resync is due.
+    ///
+    /// `<=`, not `<`: a deadline at exactly `resync_at` has arrived. The pump
+    /// sleeps *until* this instant, so a strict comparison would wake, decide
+    /// nothing was due, and sleep again on a zero-length timer.
+    fn resync_due(&self) -> bool {
+        self.resync_at <= self.clock.now()
     }
 
     /// Record that a resync just happened.
     fn resynced(&mut self) {
-        let now = Instant::now();
+        let now = self.clock.now();
         self.resync_floor = now + MIN_RESYNC_GAP;
         self.resync_at = now + self.interval;
     }
@@ -458,7 +532,8 @@ impl Deadlines {
             cause = evidence.as_str(),
             "scheduling a resync"
         );
-        self.resync_at = self.resync_at.min(self.resync_floor.max(Instant::now()));
+        let now = self.clock.now();
+        self.resync_at = self.resync_at.min(self.resync_floor.max(now));
     }
 }
 
@@ -471,6 +546,11 @@ pub(crate) async fn run(
     rng: Arc<dyn Rng>,
 ) {
     let mut backoff = Backoff::canonical();
+    // The production clock, constructed here rather than taken as a parameter:
+    // `run`'s callers spawn the driver and have no opinion about time, and the
+    // seam exists for the scheduling unit tests below, which build `Deadlines`
+    // directly.
+    let clock: Arc<dyn MonotonicClock> = Arc::new(TokioClock);
     let resync_interval = weak
         .upgrade()
         .and_then(|c| c.sync_resync_interval())
@@ -550,7 +630,10 @@ pub(crate) async fn run(
             &shared,
             transport,
             rng.as_ref(),
-            resync_interval,
+            SessionSchedule {
+                resync_interval,
+                clock: Arc::clone(&clock),
+            },
             &credential,
             &mut renewals,
         )
@@ -583,15 +666,7 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
     if shared.is_shutdown() {
         return false;
     }
-    // Never give up on a long-lived client: once the policy is exhausted, cap
-    // at the max delay and keep retrying.
-    let delay = if let Some(d) = backoff.next_delay(rng_unit(rng)) {
-        backoff.record_attempt();
-        d
-    } else {
-        backoff.reset();
-        Duration::from_millis(30_000)
-    };
+    let delay = next_backoff_delay(backoff, rng_unit(rng));
     tracing::debug!(
         ev = "sync.backoff",
         attempt = u64::from(backoff.attempt()),
@@ -602,6 +677,29 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
         biased;
         () = shared.shutdown_notified() => false,
         () = tokio::time::sleep(delay) => true,
+    }
+}
+
+/// How long the next reconnect waits, and the attempt bookkeeping that goes
+/// with it. Pure: it decides the delay, it does not wait it.
+///
+/// Split out of [`backoff_sleep`] so the schedule is testable without spending
+/// the schedule. The `else` arm is the reason — a long-lived client never gives
+/// up, so an exhausted policy resets and waits a flat, **un-jittered** 30 s
+/// (`docs/05-sync/offline-queue.md` §backoff documents that as load-bearing).
+/// Reaching it through `backoff_sleep` costs a real thirty-second sleep, so
+/// nothing did, and the arm shipped untested. Here it costs six calls.
+///
+/// `jitter_unit` is in `[0, 1]`; see [`Backoff::next_delay`].
+fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
+    // Never give up on a long-lived client: once the policy is exhausted, cap
+    // at the max delay and keep retrying.
+    if let Some(d) = backoff.next_delay(jitter_unit) {
+        backoff.record_attempt();
+        d
+    } else {
+        backoff.reset();
+        Duration::from_millis(30_000)
     }
 }
 
@@ -665,7 +763,7 @@ async fn session(
     shared: &SyncShared,
     mut transport: BoxTransport,
     rng: &dyn Rng,
-    resync_interval: Duration,
+    schedule: SessionSchedule,
     credential: &TokenSource,
     renewals: &mut TokenWatch,
 ) -> SessionEnd {
@@ -696,7 +794,7 @@ async fn session(
     let mut inflight_ops: HashSet<[u8; 16]> = HashSet::new();
     let mut batch_counter: u64 = 0;
     let mut pending_sends: Vec<Vec<u8>> = Vec::new();
-    let mut deadlines = Deadlines::new(resync_interval);
+    let mut deadlines = Deadlines::new(schedule.resync_interval, schedule.clock);
     // A renewal that landed while this client was disconnected is already in
     // the credential the connect used, so it is marked seen rather than
     // re-sent as a refresh the relay does not need.
@@ -714,6 +812,7 @@ async fn session(
         &mut batch_counter,
         &mut pending_sends,
         rng,
+        deadlines.now(),
     )
     .is_err()
     {
@@ -781,6 +880,7 @@ async fn session(
                     &mut batch_counter,
                     &mut pending_sends,
                     rng,
+                    deadlines.now(),
                 )
                 .is_err()
                 {
@@ -810,7 +910,7 @@ async fn session(
                     );
                     return SessionEnd::Disconnected;
                 }
-                if deadlines.resync_at <= Instant::now() {
+                if deadlines.resync_due() {
                     match encode_subscribe_all(core) {
                         Ok(frame) => pending_sends.push(frame),
                         Err(()) => return SessionEnd::Disconnected,
@@ -936,7 +1036,10 @@ fn retransmit_due(
     deadlines: &mut Deadlines,
     rng: &dyn Rng,
 ) -> bool {
-    let now = Instant::now();
+    // The same clock the deadlines were computed from. Reading `Instant::now`
+    // here instead would compare two different timelines the moment either one
+    // is faked.
+    let now = deadlines.now();
     for (batch_id, batch) in inflight.iter_mut() {
         if batch.due_at > now {
             continue;
@@ -1106,6 +1209,7 @@ fn build_outbox_frames(
     batch_counter: &mut u64,
     out: &mut Vec<Vec<u8>>,
     rng: &dyn Rng,
+    now: Instant,
 ) -> Result<(), ()> {
     let groups = core.sync_outbox_grouped(inflight_ops).map_err(|_| ())?;
     for (stream_id, ops) in groups {
@@ -1137,7 +1241,7 @@ fn build_outbox_frames(
         let backoff = Backoff::canonical();
         // First deadline uses the policy's own initial delay, without consuming
         // an attempt: attempt 0 is the original send.
-        let due_at = Instant::now() + backoff.next_delay(rng_unit(rng)).unwrap_or(MIN_RESYNC_GAP);
+        let due_at = now + backoff.next_delay(rng_unit(rng)).unwrap_or(MIN_RESYNC_GAP);
         inflight.insert(
             batch_id,
             InflightBatch {
@@ -1538,6 +1642,371 @@ fn rng_unit(rng: &dyn Rng) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     {
         v as f64 / (1u64 << 53) as f64
+    }
+}
+
+#[cfg(test)]
+mod scheduling {
+    //! The driver's pure scheduling arithmetic, driven with no sleeping at all.
+    //!
+    //! Separate from the harness tests below, which need a fake relay and a
+    //! `multi_thread` runtime — the combination that made these deadlines
+    //! untestable in the first place (`#207`). Nothing here starts a runtime,
+    //! opens a vault or connects a transport: the backoff schedule is a pure
+    //! function of an attempt counter and a jitter unit, and every instant
+    //! comes from an injected [`MonotonicClock`] a test moves by hand.
+    //!
+    //! The delays asserted here are the ones
+    //! `docs/10-cross-cutting/error-handling.md` §canonical-retry-policy and
+    //! `docs/05-sync/offline-queue.md` §backoff state, so a silent change to
+    //! either reddens this module rather than the docs drifting.
+
+    use super::{
+        next_backoff_delay, next_deadline, retransmit_due, Backoff, Deadlines, InflightBatch,
+        LossEvidence, MonotonicClock, MIN_RESYNC_GAP,
+    };
+    use crate::config::Rng;
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    /// A clock a test moves by hand. No timer, no runtime, no waiting.
+    #[derive(Debug)]
+    struct ManualClock(Mutex<Instant>);
+
+    impl ManualClock {
+        fn started() -> Arc<Self> {
+            Arc::new(Self(Mutex::new(Instant::now())))
+        }
+
+        fn advance(&self, by: Duration) {
+            let mut at = self.0.lock();
+            *at += by;
+        }
+    }
+
+    impl MonotonicClock for ManualClock {
+        fn now(&self) -> Instant {
+            *self.0.lock()
+        }
+    }
+
+    /// An RNG whose [`super::rng_unit`] is exactly 0.5, the midpoint of the
+    /// jitter band — so a delay comes out at its base with no jitter applied
+    /// and the *schedule* is what the assertion is about.
+    ///
+    /// `rng_unit` is `(u64::from_le_bytes(b) >> 11) / 2^53`, so the midpoint is
+    /// the top bit alone: `2^63 >> 11 == 2^52`, and `2^52 / 2^53 == 0.5`.
+    #[derive(Debug)]
+    struct MidJitterRng;
+
+    impl Rng for MidJitterRng {
+        fn fill_bytes(&self, dest: &mut [u8]) {
+            dest.fill(0);
+            if let Some(last) = dest.last_mut() {
+                *last = 0x80;
+            }
+        }
+    }
+
+    fn ms(d: Duration) -> u64 {
+        u64::try_from(d.as_millis()).expect("a backoff delay fits in u64 ms")
+    }
+
+    /// The reconnect schedule end to end, including the arm that only a sixth
+    /// consecutive failure reaches.
+    ///
+    /// Jitter is pinned to the midpoint, so these are the policy's bases
+    /// exactly: 100 ms doubling five times, then the flat 30 s an exhausted
+    /// policy waits, then back to 100 ms because a long-lived client cycles
+    /// rather than giving up.
+    #[test]
+    fn reconnect_backoff_doubles_five_times_then_cycles_through_a_flat_thirty_seconds() {
+        let mut backoff = Backoff::canonical();
+        let schedule: Vec<u64> = (0..7)
+            .map(|_| ms(next_backoff_delay(&mut backoff, 0.5)))
+            .collect();
+        assert_eq!(
+            schedule,
+            vec![100, 200, 400, 800, 1_600, 30_000, 100],
+            "the canonical policy's delays, in order"
+        );
+        assert_eq!(
+            backoff.attempt(),
+            1,
+            "the seventh call is the second cycle's first attempt"
+        );
+    }
+
+    /// The exhaustion arm is flat *and* un-jittered — the one delay in the
+    /// driver that is identical on every device, which is what
+    /// `docs/05-sync/offline-queue.md` §backoff calls load-bearing.
+    #[test]
+    fn the_exhausted_arm_is_thirty_seconds_regardless_of_jitter() {
+        for unit in [0.0_f64, 0.5, 1.0] {
+            let mut backoff = Backoff::canonical();
+            for _ in 0..5 {
+                let _ = next_backoff_delay(&mut backoff, unit);
+            }
+            assert!(backoff.exhausted(), "five attempts exhaust the policy");
+            assert_eq!(
+                next_backoff_delay(&mut backoff, unit),
+                Duration::from_millis(30_000),
+                "jitter {unit} must not move the exhausted delay"
+            );
+            assert_eq!(backoff.attempt(), 0, "the exhausted arm resets the counter");
+        }
+    }
+
+    /// The wrapper passes the jitter unit straight through to the policy
+    /// rather than swallowing or re-deriving it.
+    ///
+    /// The ±20% band itself, the clamp on an out-of-range unit and the burst
+    /// arithmetic belong to `Backoff` and are pinned next door, in
+    /// `crates/sunrise-sync/tests/backoff_policy.rs`. Repeating them here
+    /// would be two copies of one contract. What is *not* covered there is
+    /// this function, because the cycling arm lives in the driver.
+    #[test]
+    fn the_jitter_unit_reaches_the_policy_unchanged() {
+        let band: Vec<u64> = [0.0_f64, 0.5, 1.0]
+            .into_iter()
+            .map(|unit| ms(next_backoff_delay(&mut Backoff::canonical(), unit)))
+            .collect();
+        assert_eq!(band, vec![80, 100, 120], "100 ms base, jittered ±20%");
+    }
+
+    /// The resync deadline fires **at** its interval and not one millisecond
+    /// before.
+    #[test]
+    fn the_resync_deadline_fires_at_the_interval_and_not_before() {
+        let clock = ManualClock::started();
+        let interval = Duration::from_secs(30);
+        let deadlines = Deadlines::new(interval, Arc::clone(&clock) as Arc<dyn MonotonicClock>);
+
+        assert!(!deadlines.resync_due(), "nothing is due at t=0");
+        clock.advance(interval - Duration::from_millis(1));
+        assert!(
+            !deadlines.resync_due(),
+            "one millisecond short of the interval is still short"
+        );
+        clock.advance(Duration::from_millis(1));
+        assert!(deadlines.resync_due(), "the deadline fires at the interval");
+    }
+
+    /// A resync re-arms the next one a full interval out, and closes the
+    /// minimum gap behind it.
+    #[test]
+    fn a_resync_rearms_the_interval_and_opens_the_minimum_gap() {
+        let clock = ManualClock::started();
+        let interval = Duration::from_secs(30);
+        let mut deadlines = Deadlines::new(interval, Arc::clone(&clock) as Arc<dyn MonotonicClock>);
+
+        clock.advance(interval);
+        assert!(deadlines.resync_due());
+        deadlines.resynced();
+        assert!(
+            !deadlines.resync_due(),
+            "the next one is a full interval out"
+        );
+
+        clock.advance(interval - Duration::from_millis(1));
+        assert!(!deadlines.resync_due());
+        clock.advance(Duration::from_millis(1));
+        assert!(deadlines.resync_due(), "and it fires on that interval too");
+    }
+
+    /// Loss evidence immediately after a resync cannot re-trigger one inside
+    /// [`MIN_RESYNC_GAP`] — the floor that stops a burst of corrupt frames
+    /// turning into a burst of resyncs.
+    #[test]
+    fn loss_evidence_cannot_pull_a_resync_inside_the_minimum_gap() {
+        let clock = ManualClock::started();
+        let mut deadlines = Deadlines::new(
+            Duration::from_secs(30),
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        );
+        deadlines.resynced();
+
+        // Three pieces of evidence in the same breath, which is the case the
+        // floor exists for.
+        deadlines.note_loss(LossEvidence::UndecodableFrame);
+        deadlines.note_loss(LossEvidence::CorruptOp);
+        deadlines.note_loss(LossEvidence::Retransmit);
+        assert!(
+            !deadlines.resync_due(),
+            "the floor holds the resync off at t=0"
+        );
+
+        clock.advance(MIN_RESYNC_GAP - Duration::from_millis(1));
+        assert!(!deadlines.resync_due(), "still inside the gap");
+        clock.advance(Duration::from_millis(1));
+        assert!(
+            deadlines.resync_due(),
+            "the pulled-forward resync fires exactly at the floor"
+        );
+    }
+
+    /// Past the floor, evidence pulls the resync to now rather than to the
+    /// floor — waiting a further `MIN_RESYNC_GAP` after evidence of loss would
+    /// be the opposite of the point.
+    #[test]
+    fn loss_evidence_past_the_floor_pulls_the_resync_to_now() {
+        let clock = ManualClock::started();
+        let mut deadlines = Deadlines::new(
+            Duration::from_secs(30),
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        );
+        deadlines.resynced();
+        clock.advance(MIN_RESYNC_GAP * 4);
+
+        assert!(!deadlines.resync_due(), "the interval has not elapsed");
+        deadlines.note_loss(LossEvidence::CorruptOp);
+        assert!(deadlines.resync_due(), "evidence makes it due at once");
+    }
+
+    /// Evidence only ever pulls a deadline **forward**. A resync already due
+    /// stays due; it is not pushed out to the floor.
+    #[test]
+    fn loss_evidence_never_postpones_a_resync() {
+        let clock = ManualClock::started();
+        let interval = Duration::from_secs(30);
+        let mut deadlines = Deadlines::new(interval, Arc::clone(&clock) as Arc<dyn MonotonicClock>);
+        clock.advance(interval);
+        assert!(deadlines.resync_due());
+
+        deadlines.note_loss(LossEvidence::UndecodableFrame);
+        assert!(deadlines.resync_due(), "an overdue resync stays overdue");
+    }
+
+    /// A batch is retransmitted **at** its deadline and not before, and the
+    /// retry that follows is spaced by the batch's own policy.
+    #[test]
+    fn a_batch_is_retransmitted_at_its_deadline_and_respaced_by_its_policy() {
+        let clock = ManualClock::started();
+        let rng = MidJitterRng;
+        let mut deadlines = Deadlines::new(
+            Duration::from_secs(300),
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        );
+        let start = clock.now();
+        let mut inflight = HashMap::new();
+        inflight.insert(
+            1,
+            InflightBatch {
+                op_ids: vec![[7u8; 16]],
+                frame: vec![0xde, 0xad],
+                backoff: Backoff::canonical(),
+                due_at: start + Duration::from_millis(100),
+            },
+        );
+
+        let mut out = Vec::new();
+        clock.advance(Duration::from_millis(99));
+        assert!(retransmit_due(
+            &mut inflight,
+            &mut out,
+            &mut deadlines,
+            &rng
+        ));
+        assert!(out.is_empty(), "not due yet, nothing sent");
+
+        clock.advance(Duration::from_millis(1));
+        assert!(retransmit_due(
+            &mut inflight,
+            &mut out,
+            &mut deadlines,
+            &rng
+        ));
+        assert_eq!(out.len(), 1, "the frame goes out at the deadline");
+        assert_eq!(out[0], vec![0xde, 0xad], "byte for byte, not re-read");
+        assert!(
+            deadlines.resync_due(),
+            "an unacked batch is loss evidence, so a resync is pulled forward"
+        );
+
+        let batch = &inflight[&1];
+        assert_eq!(batch.backoff.attempt(), 1, "one attempt consumed");
+        assert_eq!(
+            batch.due_at,
+            clock.now() + Duration::from_millis(100),
+            "respaced by the policy's first delay"
+        );
+    }
+
+    /// Exhausting a batch's policy is reported to the caller, which tears the
+    /// session down rather than retrying forever on a link that is not
+    /// delivering.
+    #[test]
+    fn an_exhausted_batch_policy_ends_the_session() {
+        let clock = ManualClock::started();
+        let rng = MidJitterRng;
+        let mut deadlines = Deadlines::new(
+            Duration::from_secs(300),
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        );
+        let mut backoff = Backoff::canonical();
+        for _ in 0..5 {
+            backoff.record_attempt();
+        }
+        let mut inflight = HashMap::new();
+        inflight.insert(
+            1,
+            InflightBatch {
+                op_ids: vec![[7u8; 16]],
+                frame: vec![0xde, 0xad],
+                backoff,
+                due_at: clock.now(),
+            },
+        );
+
+        let mut out = Vec::new();
+        assert!(
+            !retransmit_due(&mut inflight, &mut out, &mut deadlines, &rng),
+            "five unacked retries is the end of the session"
+        );
+    }
+
+    /// The pump sleeps until the soonest of the two deadlines it owns.
+    #[test]
+    fn the_pump_wakes_for_whichever_deadline_comes_first() {
+        let clock = ManualClock::started();
+        let interval = Duration::from_secs(30);
+        let deadlines = Deadlines::new(interval, Arc::clone(&clock) as Arc<dyn MonotonicClock>);
+        let start = clock.now();
+
+        let empty: HashMap<u64, InflightBatch> = HashMap::new();
+        assert_eq!(
+            next_deadline(&empty, &deadlines),
+            start + interval,
+            "with nothing in flight, the resync is the only deadline"
+        );
+
+        let mut inflight = HashMap::new();
+        inflight.insert(
+            1,
+            InflightBatch {
+                op_ids: Vec::new(),
+                frame: Vec::new(),
+                backoff: Backoff::canonical(),
+                due_at: start + Duration::from_millis(100),
+            },
+        );
+        inflight.insert(
+            2,
+            InflightBatch {
+                op_ids: Vec::new(),
+                frame: Vec::new(),
+                backoff: Backoff::canonical(),
+                due_at: start + Duration::from_millis(50),
+            },
+        );
+        assert_eq!(
+            next_deadline(&inflight, &deadlines),
+            start + Duration::from_millis(50),
+            "the soonest retransmit wins over the resync and its own sibling"
+        );
     }
 }
 
