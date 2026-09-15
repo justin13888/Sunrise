@@ -2,10 +2,16 @@ import SwiftUI
 
 /// The pairing sheet, from either side.
 ///
-/// One view for both roles on purpose. The two devices walk the *same* six
+/// One view for both roles on purpose. The two devices walk the *same* eight
 /// legs in the same order — they simply alternate who is showing and who is
 /// pasting — and two screens would be two places for that order to drift out
 /// of step with `sunrise-pairing`.
+///
+/// It was six until the account's signing key stopped travelling (#105). The
+/// device holding the vault cannot certify keys the joining device has not
+/// minted, so the single final hand-over became a round trip; the alternation
+/// that made one view serve both roles is exactly what made that a three-line
+/// change here.
 struct PairingView: View {
     @Bindable var model: PairingModel
     let dismiss: () -> Void
@@ -87,7 +93,7 @@ struct PairingView: View {
                 .disabled(model.accountEmail.trimmed.isEmpty)
                 .accessibilityIdentifier("pairing.begin")
         case let .handOff(handOff):
-            Button(handOff.leg == .root ? "I've pasted it" : "Continue") { model.advance() }
+            Button(handOff.leg == .grant ? "I've pasted it" : "Continue") { model.advance() }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("pairing.continue")
         case .awaiting:

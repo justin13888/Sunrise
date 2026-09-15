@@ -6,14 +6,35 @@ import Foundation
 ///
 /// `crates/sunrise-core-bindings/src/pairing.rs` says it plainly: the relay's
 /// pairing rendezvous does not exist yet, so the transport for the three Noise
-/// messages and the sealed root **is the user**. Every one of them crosses as
-/// base64url text, and the crypto does not care how it travelled — the SAS
-/// binds the transcript either way. So this model is a six-leg script: at each
-/// leg one device is showing text and the other is pasting it, and the model's
-/// job is to make it obvious which of those this Mac is doing right now.
+/// messages and the three pairing messages **is the user**. Every one of them
+/// crosses as base64url text, and the crypto does not care how it travelled —
+/// the SAS binds the transcript either way. So this model is an eight-leg
+/// script: at each leg one device is showing text and the other is pasting it,
+/// and the model's job is to make it obvious which of those this device is
+/// doing right now.
 ///
 /// When the rendezvous lands, the same seam calls drive it in the same order.
 /// Only who moves the bytes changes.
+///
+/// # Why eight legs and not six
+///
+/// Pairing used to end with one message: the device holding the vault sealed
+/// everything — including `ID_S_priv`, the account's signing key — and the new
+/// device opened it. Handing that key to every device is what let a *revoked*
+/// one mint a fresh device id, sign itself a certificate that genuinely
+/// verified, and rejoin (#105).
+///
+/// It does not travel now, and the cost is a round trip: the device that holds
+/// the vault cannot sign a certificate for keys the joining device has not
+/// minted yet. So the last leg became three — the account's public identity
+/// out, the new device's freshly minted public keys back, then the signed
+/// certificate and the vault key together. The user does one more copy and
+/// paste; what they get is a device that cannot be impersonated by one they
+/// threw away.
+///
+/// A device added this way can never add another. That is the property rather
+/// than a gap, and `SunriseCore.canSponsorPairing()` is how a screen asks
+/// before offering ``Intent/addAnotherDevice``.
 ///
 /// # What is not here
 ///
@@ -25,43 +46,47 @@ import Foundation
 @MainActor
 @Observable
 final class PairingModel {
-    /// Which side of the pairing this Mac is asking to be.
+    /// Which side of the pairing this device is asking to be.
     ///
     /// Named for what the user wants rather than for the protocol role,
     /// because the two are inverted from the obvious reading: the device
     /// *being added* publishes the QR and initiates (`PairingRole.newDevice`),
-    /// and the device that already holds the vault reads it and sends the root.
+    /// and the device that already holds the vault reads it and issues the
+    /// certificate.
     enum Intent: Equatable {
-        /// This Mac has no vault and wants one. It is `PairingRole.newDevice`.
+        /// This device has no vault and wants one. It is `PairingRole.newDevice`.
         case addThisMac
-        /// This Mac holds the vault and is authorising another device. It is
+        /// This device holds the vault and is authorising another. It is
         /// `PairingRole.existingDevice`.
         case addAnotherDevice
     }
 
-    /// The legs, in the order Noise XX forces: three handshake messages
-    /// alternating from the new device, then the SAS, then the root.
+    /// The legs, in the order the protocol forces: three Noise handshake
+    /// messages alternating from the new device, the SAS, then offer, request
+    /// and grant.
     enum Leg: Int, CaseIterable {
         case code
         case first
         case second
         case third
         case compare
-        case root
+        case offer
+        case request
+        case grant
     }
 
-    /// Text this Mac has produced that the other one needs.
+    /// Text this device has produced that the other one needs.
     struct HandOff: Equatable {
         let leg: Leg
         let title: String
         let instruction: String
         let text: String
-        /// Only the QR payload is drawn as a code. The Noise messages are
-        /// bigger than a screen-readable symbol and are copied, not scanned.
+        /// Only the QR payload is drawn as a code. Every other message is
+        /// bigger than a screen-readable symbol and is copied, not scanned.
         let drawsCode: Bool
     }
 
-    /// Text the other Mac is showing that this one needs.
+    /// Text the other device is showing that this one needs.
     struct Prompt: Equatable {
         let leg: Leg
         let title: String
@@ -76,8 +101,8 @@ final class PairingModel {
         /// Both devices are showing `sas`. Nothing advances from here without
         /// an explicit answer — see `confirm(matched:)`.
         case comparing(sas: String)
-        /// The seam is doing the one slow thing on this screen: sealing the
-        /// root, or writing it and opening the vault behind it.
+        /// The seam is doing the one slow thing on this screen: sealing a
+        /// message, or writing the vault and opening it.
         case working
         case done(String)
         /// The user said the digits differed. Kept apart from `failed` because
@@ -109,27 +134,50 @@ final class PairingModel {
 
     private var pairing: DevicePairing?
     private let relayURL: String
-    /// Seals the open vault's pairing payload for a confirmed pairing. Absent
-    /// on a Mac with no open vault, which is every Mac taking `.addThisMac`.
-    private let sealPayload: ((DevicePairing) async throws -> String)?
+
+    /// Seals the open vault's account identity for a confirmed pairing. Absent
+    /// on a device with no open vault, which is every device taking
+    /// `.addThisMac`.
+    private let sealOffer: ((DevicePairing) async throws -> String)?
+
+    /// Issues the joining device's certificate and seals it with the vault.
+    ///
+    /// Takes the sealed request, because the certificate is signed *over the
+    /// keys inside it* — which is the whole reason pairing needs a round trip.
+    /// Absent for the same reason `sealOffer` is.
+    private let sealGrant: ((DevicePairing, String) async throws -> String)?
+
     /// Hands the opened root **and** the bundle behind it to the session.
-    /// Absent in `.addAnotherDevice`, where this Mac keeps the vault it
+    /// Absent in `.addAnotherDevice`, where this device keeps the vault it
     /// already has.
     ///
     /// Two values rather than one because the root alone no longer opens an
     /// account: since ADR-0024 the Stream keys are random, and they travel in
-    /// the bundle.
+    /// the bundle — along, now, with this device's own keys and the certificate
+    /// the other one signed for them.
     private let adopt: ((Data, Data) async -> Void)?
+
+    /// Text a submit produced for the *next* leg to show.
+    ///
+    /// The three-message exchange is the only part of the script where what one
+    /// device shows is computed from what it just pasted: the request is built
+    /// from the offer, and the grant is signed over the request. `step(after:)`
+    /// has access to neither, so the submit that produced the text parks it
+    /// here and the step picks it up. Cleared as it is read, so a stale one can
+    /// never be shown twice.
+    private var pendingHandOff: String?
 
     init(
         intent: Intent,
         relayURL: String = "",
-        sealPayload: ((DevicePairing) async throws -> String)? = nil,
+        sealOffer: ((DevicePairing) async throws -> String)? = nil,
+        sealGrant: ((DevicePairing, String) async throws -> String)? = nil,
         adopt: ((Data, Data) async -> Void)? = nil
     ) {
         self.intent = intent
         self.relayURL = relayURL
-        self.sealPayload = sealPayload
+        self.sealOffer = sealOffer
+        self.sealGrant = sealGrant
         self.adopt = adopt
         if intent == .addAnotherDevice {
             phase = .awaiting(Self.prompt(for: .code))
@@ -144,7 +192,7 @@ final class PairingModel {
         accountEmail.trimmed.isEmpty ? "" : pairingAccountTag(accountEmail: accountEmail.trimmed)
     }
 
-    /// Where in the six-leg script this Mac is, for a progress line.
+    /// Where in the script this device is, for a progress line.
     var progress: (leg: Int, of: Int)? {
         guard let leg = currentLeg else { return nil }
         return (leg.rawValue + 1, Leg.allCases.count)
@@ -155,7 +203,7 @@ final class PairingModel {
         case let .handOff(handOff): handOff.leg
         case let .awaiting(prompt): prompt.leg
         case .comparing: .compare
-        case .working: .root
+        case .working: .offer
         case .idle, .done, .mismatch, .failed: nil
         }
     }
@@ -190,9 +238,10 @@ final class PairingModel {
     /// Take what the other device is showing.
     ///
     /// The seam validates every one of these — the QR by its own decoder, the
-    /// Noise messages by decrypting them — so a mistyped or truncated paste is
-    /// refused here rather than becoming a handshake that fails later for no
-    /// visible reason.
+    /// Noise messages by decrypting them, the grant by checking the certificate
+    /// inside it against the offer this device has been holding — so a
+    /// mistyped, truncated or simply wrong paste is refused here rather than
+    /// becoming a vault whose every op its peers reject.
     func submit() async {
         guard case let .awaiting(prompt) = phase else { return }
         let text = pasted.trimmed
@@ -203,8 +252,26 @@ final class PairingModel {
                 pairing = try DevicePairing.accept(qrPayload: text)
             case .first, .second, .third:
                 try require().receiveMessage(message: text)
-            case .root:
-                let bundle = try require().openPairingPayload(sealed: text)
+            case .offer:
+                // The one leg that mints. `D_S_priv` is derived from the first
+                // seed and every op this device ever writes is signed under it,
+                // so both come from the system CSPRNG — and neither leaves the
+                // Rust object: only the public halves go into the request.
+                pendingHandOff = try require().requestDeviceCert(
+                    sealedOffer: text,
+                    nickname: Platform.deviceName,
+                    platform: Platform.identifier,
+                    seedS: SystemRandom.bytes(32),
+                    seedD: SystemRandom.bytes(32)
+                )
+            case .request:
+                pasted = ""
+                phase = .working
+                syncSeamState()
+                guard let sealGrant else { throw PairingUIError.noOpenVault }
+                pendingHandOff = try await sealGrant(require(), text)
+            case .grant:
+                let bundle = try require().openPairingGrant(sealed: text)
                 pasted = ""
                 phase = .working
                 syncSeamState()
@@ -232,9 +299,10 @@ final class PairingModel {
     /// about its own user. `false` discards the ephemeral keys here and now —
     /// the local half of the spec's `pair_abort` — and cannot be walked back.
     ///
-    /// On the device that holds the vault, a `true` also seals the root, which
+    /// On the device that holds the vault, a `true` also seals the offer, which
     /// is why this is the one confirmation that awaits: the seam refuses to
-    /// seal before the SAS was answered, so the two belong in one call.
+    /// send anything before the SAS was answered, so the two belong in one
+    /// call.
     func confirm(matched: Bool) async {
         guard case .comparing = phase, let session = pairing else { return }
         guard matched else {
@@ -254,25 +322,27 @@ final class PairingModel {
         step(after: .compare)
         syncSeamState()
         guard case .working = phase, intent == .addAnotherDevice else { return }
-        await sealForPeer(session)
+        await sealOfferForPeer(session)
     }
 
     /// End it, at any point, leaving nothing half-open.
     ///
     /// `confirm(matched: false)` is the discard: it takes the session out of
-    /// the Rust object and drops the ephemeral keys with it. Its error is the
-    /// expected outcome, not a problem — which is why it is swallowed here and
+    /// the Rust object and drops the ephemeral keys — and, since the round
+    /// trip, this device's minted `D_S`/`D_D` with them. Its error is the
+    /// expected outcome, not a problem, which is why it is swallowed here and
     /// nowhere else.
     func cancel() {
         try? pairing?.confirm(matched: false)
         pairing = nil
         pasted = ""
+        pendingHandOff = nil
         phase = intent == .addAnotherDevice ? .awaiting(Self.prompt(for: .code)) : .idle
         syncSeamState()
     }
 }
 
-/// The six-leg script, and the words for each leg.
+/// The script, and the words for each leg.
 ///
 /// An extension rather than more of the class above: what the model *is* —
 /// the phase, the seam handle, the answers a user can give — is a different
@@ -280,7 +350,7 @@ final class PairingModel {
 extension PairingModel {
     // MARK: - The script
 
-    /// What this Mac does at the leg after `leg`, given its role.
+    /// What this device does at the leg after `leg`, given its role.
     ///
     /// The table this encodes:
     ///
@@ -291,7 +361,13 @@ extension PairingModel {
     ///     second   | paste       | show
     ///     third    | show        | paste
     ///     compare  | both        | both
-    ///     root     | paste       | show
+    ///     offer    | paste       | show
+    ///     request  | show        | paste
+    ///     grant    | paste       | show
+    ///
+    /// The last three alternate where the old script simply ended, and the
+    /// alternation is the point: a vault cannot certify keys it has not been
+    /// shown.
     private func step(after leg: Leg) {
         guard let next = Leg(rawValue: leg.rawValue + 1) else {
             phase = .done(doneSummary)
@@ -307,32 +383,44 @@ extension PairingModel {
                     : .awaiting(Self.prompt(for: next))
             case .compare:
                 phase = .comparing(sas: try require().sas())
-            case .root:
+            case .offer:
                 // The device that seals passes through `.working` while it
                 // does; the one being added waits to be handed the ciphertext.
-                phase = shows(.root) ? .working : .awaiting(Self.prompt(for: .root))
+                phase = shows(.offer) ? .working : .awaiting(Self.prompt(for: .offer))
+            case .request, .grant:
+                // Both were computed by the submit that just ran — a request is
+                // built from the offer, a grant is signed over the request — so
+                // the text is waiting rather than produced here.
+                if shows(next) {
+                    guard let text = pendingHandOff else { throw PairingUIError.noSession }
+                    pendingHandOff = nil
+                    phase = .handOff(handOff(for: next, text: text))
+                } else {
+                    phase = .awaiting(Self.prompt(for: next))
+                }
             }
         } catch {
             fail(with: error)
         }
     }
 
-    /// Whether this Mac is the one showing text at `leg`.
+    /// Whether this device is the one showing text at `leg`.
     private func shows(_ leg: Leg) -> Bool {
         switch leg {
-        case .code, .first, .third: intent == .addThisMac
-        case .second, .root: intent == .addAnotherDevice
+        case .code, .first, .third, .request: intent == .addThisMac
+        case .second, .offer, .grant: intent == .addAnotherDevice
         case .compare: false
         }
     }
 
-    private func sealForPeer(_ session: DevicePairing) async {
-        guard let sealPayload else {
+    private func sealOfferForPeer(_ session: DevicePairing) async {
+        guard let sealOffer else {
             fail(with: PairingUIError.noOpenVault)
+            syncSeamState()
             return
         }
         do {
-            phase = .handOff(handOff(for: .root, text: try await sealPayload(session)))
+            phase = .handOff(handOff(for: .offer, text: try await sealOffer(session)))
         } catch {
             fail(with: error)
         }
@@ -356,101 +444,6 @@ extension PairingModel {
     private var doneSummary: String {
         intent == .addThisMac
             ? "This \(Platform.deviceName) is paired. Your vault is open here."
-            : "The other device has your vault key. It can open your vault now."
-    }
-
-    // MARK: - Words
-
-    private func handOff(for leg: Leg, text: String) -> HandOff {
-        switch leg {
-        case .code:
-            HandOff(
-                leg: leg,
-                title: "Show this to the device that has your vault",
-                instruction: """
-                    Scan the code, or copy the text below and paste it into \
-                    Settings › Vaults › Add a device on your other device — \
-                    the one that already has your vault.
-                    """,
-                text: text,
-                drawsCode: true
-            )
-        case .first, .second, .third:
-            HandOff(
-                leg: leg,
-                title: "Copy this to the other device",
-                instruction: """
-                    Paste it into the field the other device is showing, then \
-                    come back here and continue.
-                    """,
-                text: text,
-                drawsCode: false
-            )
-        case .compare:
-            HandOff(leg: leg, title: "", instruction: "", text: text, drawsCode: false)
-        case .root:
-            HandOff(
-                leg: leg,
-                title: "Copy this last block to the other device",
-                instruction: """
-                    This is your vault key, sealed so that only the device whose \
-                    digits you just confirmed can open it. Anything it passes \
-                    through on the way — a message, a clipboard, a relay — sees \
-                    nothing usable.
-                    """,
-                text: text,
-                drawsCode: false
-            )
-        }
-    }
-
-    private static func prompt(for leg: Leg) -> Prompt {
-        switch leg {
-        case .code:
-            Prompt(
-                leg: leg,
-                title: "Paste the code from the device you are adding",
-                instruction: """
-                    That device is showing a QR code with the same text \
-                    underneath it. Paste the text here.
-                    """
-            )
-        case .first, .second, .third:
-            Prompt(
-                leg: leg,
-                title: "Paste what the other device is showing",
-                instruction: "Copy the block from the other device's screen and paste it here."
-            )
-        case .compare:
-            Prompt(leg: leg, title: "", instruction: "")
-        case .root:
-            Prompt(
-                leg: leg,
-                title: "Paste the sealed key",
-                instruction: """
-                    The other device is showing one last block, now that you have \
-                    both confirmed the digits. It is the only thing in this \
-                    whole exchange that carries your vault key.
-                    """
-            )
-        }
-    }
-}
-
-/// The failures that are this screen's, not the seam's.
-enum PairingUIError: Error, Equatable, LocalizedError {
-    case noSession
-    case noPayload
-    case noOpenVault
-
-    var errorDescription: String? {
-        switch self {
-        case .noSession:
-            "This pairing is over. Start it again from the beginning."
-        case .noPayload:
-            "Sunrise could not produce a pairing code for this device."
-        case .noOpenVault:
-            "There is no open vault on this device to share."
-        }
+            : "The other device has a certificate from your account and a copy of your vault key."
     }
 }

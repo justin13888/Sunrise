@@ -258,6 +258,7 @@ impl Engine {
             transitions: chain.len() - 1,
             this_device_is_current: self.keychain.identity_id() == current,
             holds_recovery_key: self.keychain.holds_only_copy_of_identity_key(),
+            can_sponsor: self.keychain.can_rotate_identity(),
         })))
     }
 

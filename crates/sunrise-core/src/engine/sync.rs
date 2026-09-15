@@ -239,27 +239,51 @@ impl Engine {
         //    roster depends on uncommitted state it cannot re-read after a
         //    rollback.
         //
-        //    Without it, everything above is exactly the pre-ADR-0032
-        //    behaviour: the register names a device id, the revoked device
-        //    still holds `ID_S_priv`, and it certifies itself back in under a
-        //    fresh id that the register has never heard of
-        //    ([#105](https://github.com/justin13888/Sunrise/issues/105)). The
-        //    rotation moves the head, and the excluded device gets no share of
-        //    the successor, so the id it mints next is certified under an
-        //    identity that is no longer the account.
-        //
         //    `keep_recovery_code: true` is the request; `rotate_identity`
         //    overrides it when the device being revoked is the one holding
         //    `ID_D_priv`, because a carry share sealed to that key would hand
         //    the successor straight to the device being excluded.
-        let rotation = self.rotate_identity(db, Some(revoked), true)?;
-        if !rotation.carried_recovery_code {
+        //
+        //    # Why this is best-effort now
+        //
+        //    Signing a transition needs `ID_S_priv`, and since #105 closed the
+        //    pairing hole only the device that created the account holds it. A
+        //    revocation run from a paired device therefore cannot rotate, and
+        //    refusing the whole command would be worse than not rotating: the
+        //    device the user is trying to revoke is often the one they have
+        //    lost, and the creator may be the one they lost.
+        //
+        //    What is given up is bounded, because rotation is no longer what
+        //    stops a revoked device certifying itself back in — *not holding
+        //    `ID_S_priv`* is, and a revoked device admitted by pairing never
+        //    held it. Everything above still runs: the register is written, the
+        //    cut is recorded, every stream rotates and the revoked device is
+        //    excluded from every new epoch.
+        //
+        //    The exception is revoking the **creator**, which is the one device
+        //    that does hold `ID_S_priv` and so the one case where the identity
+        //    genuinely needs to move. A paired device cannot do it, and the
+        //    warning says so rather than letting the user believe otherwise.
+        //    `docs/03-crypto/key-rotation.md` §Revocation is the procedure.
+        if self.keychain.can_rotate_identity() {
+            let rotation = self.rotate_identity(db, Some(revoked), true)?;
+            if !rotation.carried_recovery_code {
+                tracing::warn!(
+                    ev = "core.identity.recovery_code_invalidated",
+                    subject_h = hex_short(&revoked),
+                    head_h = hex_short(&rotation.to_identity_id),
+                    "the revoked device held the account's recovery key, so the successor \
+                     could not be carried forward under it; the user needs a new recovery code"
+                );
+            }
+        } else {
             tracing::warn!(
-                ev = "core.identity.recovery_code_invalidated",
+                ev = "core.identity.rotation_unavailable",
                 subject_h = hex_short(&revoked),
-                head_h = hex_short(&rotation.to_identity_id),
-                "the revoked device held the account's recovery key, so the successor \
-                 could not be carried forward under it; the user needs a new recovery code"
+                "this device was admitted by pairing and holds no account signing key, so the \
+                 revocation cut every future key without rotating the identity; a revoked \
+                 device that was itself paired cannot certify itself back in either way, but \
+                 revoking the device that created the account needs to be done from that device"
             );
         }
 
@@ -1505,7 +1529,7 @@ impl Engine {
                         &shares_digest[..],
                     ],
                 )?;
-                self.recompute_identity_head(tx, now_ms)?;
+                self.recompute_identity_head(tx)?;
                 // The roster is applied only if this transition actually *won*
                 // the fold. A losing branch carries a perfectly valid roster
                 // for a membership the account did not adopt, and writing it

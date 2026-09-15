@@ -196,14 +196,34 @@ actor CoreBridge {
 
     // MARK: - Pairing
 
-    /// Seal this vault's pairing payload into a confirmed pairing.
+    /// Whether this vault can add a device at all.
     ///
-    /// The payload itself never reaches Swift — it carries the account
-    /// identity's private keys and every Stream key, not just the root. What
-    /// comes back is ciphertext only the device on the other end of the
-    /// confirmed handshake can open.
-    func sendPairingPayload(to pairing: DevicePairing) throws -> String {
-        try core.sendPairingPayload(pairing: pairing)
+    /// False on a vault that was itself added by pairing: since #105 it holds
+    /// the account's public identity and no signing key, so it cannot issue the
+    /// certificate a joining device needs. Ask before offering the button — a
+    /// user who walks eight legs to a failure at the last one has been told the
+    /// wrong thing for seven of them.
+    func canSponsorPairing() -> Bool { core.canSponsorPairing() }
+
+    /// Seal message 1 — this account's identity — into a confirmed pairing.
+    ///
+    /// Nothing secret reaches Swift on this leg or any other. This one carries
+    /// no secret at all: the vault key and the Stream keys do not move until
+    /// ``sendPairingGrant(to:request:)``, which runs on a request this vault
+    /// accepted. What comes back is ciphertext only the device on the other end
+    /// of the confirmed handshake can open.
+    func sendPairingOffer(to pairing: DevicePairing) throws -> String {
+        try core.sendPairingOffer(pairing: pairing)
+    }
+
+    /// Issue the joining device's certificate and seal message 3.
+    ///
+    /// `request` is the sealed block that device produced. The certificate is
+    /// signed inside the core, over the keys that block names — `ID_S_priv`
+    /// does not reach this seam, let alone Swift — and the vault key and every
+    /// Stream key are sealed alongside it.
+    func sendPairingGrant(to pairing: DevicePairing, request: String) throws -> String {
+        try core.sendPairingGrant(pairing: pairing, sealedRequest: request)
     }
 
     /// This device's stable id, hex-encoded — what a login binds its token to.

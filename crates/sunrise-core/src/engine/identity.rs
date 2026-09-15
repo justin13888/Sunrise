@@ -57,6 +57,39 @@ use sunrise_storage::Db;
 /// a member could occupy all sixteen places above an honest successor and
 /// suppress it — which is the *other* unleavable state, and why the two
 /// constants have to be read together.
+///
+/// # What this number actually enforces, and what it does not
+///
+/// **It can never truncate.** `apply_control_op` is the only writer of
+/// `identity_transitions` — one `INSERT OR IGNORE`, behind the sibling cap —
+/// and that cap refuses a row when the predecessor already holds
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] *other* successors, so a predecessor tops
+/// out at exactly that many rows. The `LIMIT` here is the same number, so the
+/// query is never asked for a row it will not return. Raising this constant
+/// changes nothing; only lowering it below the ingest cap does, and what that
+/// would do is make the rows above the limit permanently unreachable — the
+/// unleavable state one level down, which is the whole reason the two numbers
+/// are pinned equal.
+///
+/// **It is barely exercised.** Every row stored under a predecessor this
+/// replica has *already established* had its `prev_sig` checked at ingest, so
+/// it verifies at fold time too, and the walk's `find_map` stops at the first
+/// candidate. Before the inequality test below existed, setting this constant
+/// to `1` left the entire `sunrise-core` suite green — as did `2` and `3` —
+/// which is the measurement rather than the claim: no path the suite builds
+/// makes the walk look at a second row. (That sweep no longer reproduces as
+/// written, because the test below now fails on any value under the ingest
+/// cap by construction; re-run it against the *behavioural* tests alone.)
+///
+/// The one path that can store a row the fold must then skip is a transition
+/// admitted while its predecessor was still unknown — `prev_sig` is unchecked
+/// there by design — and nothing in the suite builds that, so the
+/// scan-past-a-bad-row behaviour this constant bounds is untested. Treat it as
+/// defence in depth whose load-bearing property is the inequality, not the
+/// value.
+///
+/// The inequality is pinned by
+/// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`.
 pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
 
 /// How many `identity_transitions` rows this replica stores for one predecessor.
@@ -213,13 +246,24 @@ impl Engine {
     /// # Errors
     /// Storage failures, or [`EngineError::Invalid`] if this device holds no
     /// share of the identity it is trying to rotate — a device that cannot
-    /// speak for the account cannot hand it on.
+    /// speak for the account cannot hand it on — or holds no `ID_S_priv` at
+    /// all, which since #105 is every device admitted by pairing. The second is
+    /// checked first and by name, because it is a permanent property of the
+    /// device rather than a state it might be in.
     pub(super) fn rotate_identity(
         &self,
         db: &mut Db,
         exclude: Option<[u8; 16]>,
         keep_recovery_code: bool,
     ) -> Result<RotationOutcome, EngineError> {
+        if !self.keychain.can_rotate_identity() {
+            return Err(EngineError::Invalid(
+                "this device was admitted by pairing and holds no account signing key, so it \
+                 cannot rotate the account identity; run this from the device that created the \
+                 account"
+                    .into(),
+            ));
+        }
         let now_ms = self.clock.now_ms();
         let op_id = self.fresh_op_id(now_ms);
         let mut outcome = RotationOutcome {
@@ -701,11 +745,10 @@ impl Engine {
     /// not decode and a successor this device is not in the roster of are all
     /// the same non-error outcome — no adoption — and are logged rather than
     /// returned, for the reason `apply_control_op`'s other arms give.
-    pub(crate) fn recompute_identity_head(
-        &self,
-        tx: &Transaction<'_>,
-        now_ms: u64,
-    ) -> rusqlite::Result<()> {
+    /// Takes no clock reading: adoption no longer stamps anything. The cert
+    /// this device ends up holding is the roster's, whose `created_at_ms` is
+    /// the rotation's, so a second reading here could only disagree with it.
+    pub(crate) fn recompute_identity_head(&self, tx: &Transaction<'_>) -> rusqlite::Result<()> {
         let head = self.current_identity(tx)?;
         if head.identity_id == self.keychain.identity_id() {
             return Ok(());
@@ -756,15 +799,34 @@ impl Engine {
             );
             return Ok(());
         };
-        let (nickname, platform) = Keychain::device_labels_tx(tx, &me)?;
-        match self.keychain.adopt_successor_identity(
-            tx,
-            successor,
-            &nickname,
-            &platform,
-            now_ms,
-            self.rng.as_ref(),
-        ) {
+        // This device's cert under the successor, taken from the roster rather
+        // than re-issued locally. Since `#105` most devices hold no `ID_S_priv`
+        // and could not re-issue it; they do not need to, because the roster is
+        // the successor's own signed statement about who survives and every
+        // entry in it has already been verified against `to_id_s_pub`.
+        //
+        // A device with a share but no roster entry is a malformed transition:
+        // `rotate_identity` builds both lists from the same survivor set. It
+        // lands in the same non-adoption as having no share at all.
+        let mine = p.roster.iter().find_map(|e| {
+            DeviceCert::from_cbor(&e.cert)
+                .ok()
+                .filter(|c| c.body.device_id == me)
+                .map(|_| e.cert.clone())
+        });
+        let Some(roster_cert) = mine else {
+            tracing::warn!(
+                ev = "core.identity.not_in_roster",
+                head_h = hex_short(&head.identity_id),
+                "this device holds a share of the account's successor identity but no cert \
+                 in its roster, so there is nothing to adopt under"
+            );
+            return Ok(());
+        };
+        match self
+            .keychain
+            .adopt_successor_identity(tx, successor, roster_cert, self.rng.as_ref())
+        {
             Ok(_) => {
                 tracing::info!(
                     ev = "core.identity.adopted",

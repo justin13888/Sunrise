@@ -92,9 +92,10 @@ decorative. The cost is that a backup must include both; a vault whose key is
 missing says exactly that rather than failing as a corrupt read.
 
 `SUNRISE_VAULT_ROOT` (64 hex characters) supplies a root outright and touches no
-keystore. It is how two vaults are told to be one account until pairing lands —
-the same kind of explicit dev affordance as `SUNRISE_PAIRING_FILE` — and how
-to open a vault created before per-vault keys existed. Such a vault is refused
+keystore. It is an explicit dev affordance for handing two vaults the same
+at-rest key, and how to open a vault created before per-vault keys existed. It
+does **not** make them one account: each still mints its own identity, so
+neither reads the other's ops. Joining an account is `sunrise pair`. Such a vault is refused
 with its own typed error rather than opened by guessing the old constant, and
 the error quotes that constant so the data can be read out; the refusal follows
 the precedent of the `BASELINE_STORAGE_V = 13` refusal in

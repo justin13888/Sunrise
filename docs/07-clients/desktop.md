@@ -401,11 +401,14 @@ none, because it is the SAS.
   deliberately not the default action.
 - Two entry points: the first-run "pair with an existing device" branch, and a
   route out of `LockedView` when the vault exists but its key does not.
-- The full `PairingPayload` crosses — the account identity, every Stream key
-  and the vault root — so the joining device is a member of the account rather
-  than a second account holding the same root. Its cert is signed by the
-  identity it just received and published as a `device_cert` op; there is no
-  separate trust step to forget.
+- Three messages cross, not one: the sponsor's `PairingOffer` (the account's
+  public identity, no secret at all), the joiner's `PairingRequest` (the
+  `D_S_pub`/`D_D_pub` it just minted), and the sponsor's `PairingGrant` (the
+  issued cert, the vault root and every Stream key). The joiner assembles a
+  `PairingPayload` from the three, so it is a member of the account rather than
+  a second account holding the same root. Its cert is signed by the sponsor
+  under `ID_S_priv` — which never leaves that device (`#105`) — and published as
+  a `device_cert` op; there is no separate trust step to forget.
 - The spec's 90-second SAS timeout is not implemented; there is an abort button
   instead.
 

@@ -472,6 +472,23 @@ pub struct IdentityStatus {
     /// recovery code. A rotation carries it forward by default; revoking the
     /// device that holds it cannot, which is when a user needs a new code.
     pub holds_recovery_key: bool,
+    /// Whether this device holds `ID_S_priv` and can therefore speak **for**
+    /// the account: issue a `DeviceCert`, sponsor a pairing, rotate the
+    /// identity.
+    ///
+    /// True on the account's creator and on a device restored from the
+    /// recovery code. **False on every device admitted by pairing**, which is
+    /// `#105`'s fix and not a gap — a device that cannot issue a cert is a
+    /// device that cannot certify *itself* back in after being revoked.
+    ///
+    /// A separate question from [`Self::this_device_is_current`], and the two
+    /// are easy to conflate on screen: a paired device is perfectly current —
+    /// it is a member, its ops are accepted, it reads everything — and still
+    /// cannot admit anybody. Deliberately not the same field as
+    /// [`Self::holds_recovery_key`] either: that one is about `ID_D_priv` and
+    /// bounds what this device can *read back*, this is about `ID_S_priv` and
+    /// bounds what it can *say*.
+    pub can_sponsor: bool,
 }
 
 /// One row of [`Query::DeviceList`].

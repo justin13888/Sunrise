@@ -326,8 +326,6 @@ pub async fn rebuild_vault(
             sunrise_core::SyncConfig::new(base_url.to_owned())
                 .with_credential(sunrise_core::TokenSource::new(Some(bearer.to_owned()))),
         ),
-        export_pairing: None,
-        adopt_pairing: None,
         device_id: Some(relay_device_id.clone()),
     };
     for line in livesync::apply_plan(&core, &plan) {

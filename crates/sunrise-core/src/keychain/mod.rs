@@ -148,7 +148,7 @@ use sunrise_crypto::{
     IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
 };
 use sunrise_domain::INBOX_STREAM_BYTES;
-use sunrise_pairing::PairingPayload;
+use sunrise_pairing::{PairingGrant, PairingOffer, PairingPayload, PairingRequest};
 use sunrise_storage::Db;
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -156,7 +156,9 @@ use zeroize::Zeroize;
 use crypto::{
     device_aad, device_dh_aad, unwrap_identity, unwrap_secret, wrap_device_secrets, wrap_identity,
 };
-use device::{device_id_from_pub, issue_cert, mint_device_keys};
+use device::{
+    adopt_granted_device_keys, device_id_from_pub, issue_cert, mint_own_device_keys, DeviceMaterial,
+};
 use legacy::{legacy_cert_labels, legacy_derived_stream_key, legacy_stream_set, LEGACY_EPOCH};
 use rows::{
     insert_device_row, insert_identity_row, insert_local_identity_row, insert_stream_key_row,
@@ -310,6 +312,100 @@ pub enum KeychainError {
          devices from this one after it upgrades, or open it on a single device only."
     )]
     LegacyMultiDevice(i64),
+    /// The account's `ID_S_priv` is not on this device, and the operation
+    /// asked for needs it.
+    ///
+    /// Every device admitted by pairing is in this state, and that is the whole
+    /// of `#105`'s fix: the sponsor issues the joiner's cert, the joiner is
+    /// handed the public half only, and no amount of local state lets it
+    /// produce a `DeviceCert` for anything afterwards. The operations that
+    /// land here are the three that speak *for* the account rather than as a
+    /// member of it — issuing a cert, signing an identity transition, and
+    /// sealing a recovery blob.
+    ///
+    /// Distinct from [`Self::IdentitySecretAbsent`], which is about `ID_D_priv`
+    /// and the read path. A device can easily be missing both; they are missing
+    /// for different reasons and bound different things.
+    #[error(
+        "this device holds no account signing key: it was admitted by pairing, and only the \
+         device that created the account can issue certs, rotate the identity, or seal a \
+         recovery blob"
+    )]
+    IdentitySigningKeyAbsent,
+    /// A pairing grant's `DeviceCert` does not match the keys this device
+    /// minted, or is not signed by the identity the offer named.
+    #[error("pairing grant certificate: {0}")]
+    BadGrantCert(&'static str),
+}
+
+/// The account's Ed25519 signing key, or as much of it as this device has.
+///
+/// The one structural expression of `#105`'s fix. `ID_S_priv` signs every
+/// `DeviceCert`, a `DeviceCert` names only its subject, and its single signature
+/// is the identity's — so a device holding the secret can mint a valid cert for
+/// any device id it invents, including one the account's revocation register has
+/// never heard of. Pairing used to hand that secret to every device. It does
+/// not now, and this type is why the difference cannot be papered over: there is
+/// no `secret_bytes()` on the public arm to reach for.
+///
+/// An enum rather than an `Option` beside a `[u8; 32]`, because those two can
+/// disagree and this cannot: [`Self::public_bytes`] answers from whichever arm
+/// is present and the secret arm derives it.
+pub enum IdentitySigningKey {
+    /// This device holds `ID_S_priv`.
+    ///
+    /// True on the device that created the account, on one restored from the
+    /// recovery code, and on a device that minted a successor identity itself.
+    /// Not true anywhere else, and specifically never true because of pairing.
+    Held(IdentitySigningKeyPair),
+    /// This device holds `ID_S_pub` and nothing more.
+    ///
+    /// Every device admitted by pairing. It can verify any cert the account
+    /// issued — including its own — and can issue none.
+    PublicOnly([u8; 32]),
+}
+
+impl IdentitySigningKey {
+    /// `ID_S_pub`, whichever arm this is.
+    #[must_use]
+    pub fn public_bytes(&self) -> [u8; 32] {
+        match self {
+            Self::Held(kp) => kp.public_bytes(),
+            Self::PublicOnly(pk) => *pk,
+        }
+    }
+
+    /// The signing key, on a device that has it.
+    ///
+    /// Returns a `Result` rather than an `Option` so that every caller that
+    /// needs the key states, in one `?`, what it is unable to do without it.
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing.
+    pub fn require(&self) -> Result<&IdentitySigningKeyPair, KeychainError> {
+        match self {
+            Self::Held(kp) => Ok(kp),
+            Self::PublicOnly(_) => Err(KeychainError::IdentitySigningKeyAbsent),
+        }
+    }
+
+    /// Whether the secret is here.
+    #[must_use]
+    pub const fn is_held(&self) -> bool {
+        matches!(self, Self::Held(_))
+    }
+}
+
+impl std::fmt::Debug for IdentitySigningKey {
+    /// Says which arm and never the bytes, so a `Debug` on the identity that
+    /// walks into a log cannot carry the account's signing key with it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Held(_) => "IdentitySigningKey::Held(<redacted>)",
+            Self::PublicOnly(_) => "IdentitySigningKey::PublicOnly",
+        })
+    }
 }
 
 /// Carry a [`KeychainError`] out through a `rusqlite::Result` boundary.
@@ -363,7 +459,10 @@ pub struct RotationSet {
 #[allow(clippy::struct_field_names)]
 pub struct Identity {
     identity_id: [u8; 16],
-    signing: IdentitySigningKeyPair,
+    /// `ID_S`, or its public half alone on a device admitted by pairing.
+    ///
+    /// The asymmetry this encodes is `#105`'s fix: see [`IdentitySigningKey`].
+    signing: IdentitySigningKey,
     /// `ID_D_pub`. Every device holds this: sealing a `key_envelope` to the
     /// identity needs only the public half.
     dh_pub: [u8; 32],
@@ -403,6 +502,15 @@ impl Identity {
     #[must_use]
     pub const fn id_d_pub(&self) -> [u8; 32] {
         self.dh_pub
+    }
+
+    /// Whether this device holds the account's `ID_S_priv`.
+    ///
+    /// False on every device admitted by pairing, which is what stops it
+    /// issuing a `DeviceCert` for anything — see [`IdentitySigningKey`].
+    #[must_use]
+    pub const fn holds_signing_key(&self) -> bool {
+        self.signing.is_held()
     }
 }
 
@@ -450,7 +558,7 @@ impl SuccessorPublics {
     /// blob decrypted to something".
     fn into_identity(
         self,
-        signing: IdentitySigningKeyPair,
+        signing: IdentitySigningKey,
         dh_secret: Option<IdentityDhKeyPair>,
         created_at_ms: u64,
     ) -> Result<Identity, KeychainError> {
@@ -640,9 +748,10 @@ impl Keychain {
     /// Which account identity a vault being created belongs to.
     ///
     /// Split out of [`Self::create`] because it is a decision with three
-    /// distinct answers and one consequence — whether this device ends up
-    /// holding `ID_D_priv` — and that consequence is now readable in one place
-    /// rather than spread through the rest of the open path.
+    /// distinct answers and two consequences — whether this device ends up
+    /// holding `ID_D_priv`, and whether it ends up holding `ID_S_priv` — and
+    /// those consequences are readable in one place here rather than spread
+    /// through the rest of the open path.
     fn identity_for_create(
         vault_root: &VaultRootKey,
         rng: &dyn Rng,
@@ -651,14 +760,21 @@ impl Keychain {
         now_ms: u64,
     ) -> Result<Identity, KeychainError> {
         match (seed, existing) {
-            // A device being paired adopts the account's identity wholesale.
+            // A device being paired adopts the account's identity — both public
+            // halves, and neither private one.
             (IdentitySeed::Paired(p), existing) => {
                 let identity = Identity {
                     identity_id: p.identity_id,
-                    signing: IdentitySigningKeyPair::from_secret_bytes(&p.id_s_priv),
+                    // `#105`. A paired device gets `ID_S_pub` and cannot issue
+                    // a `DeviceCert` for anything, itself included: the one it
+                    // holds was issued by its sponsor, which is the only device
+                    // in the account that can sign one. Before this, every
+                    // paired device held the secret and a revoked one simply
+                    // minted a fresh device id and certified itself back in.
+                    signing: IdentitySigningKey::PublicOnly(p.id_s_pub),
                     dh_pub: p.id_d_pub,
-                    // The point of the whole change: a paired device adopts the
-                    // identity's public half and never its unwrapping key.
+                    // `#76`. A paired device adopts the identity's public half
+                    // and never its unwrapping key.
                     dh_secret: None,
                     // A paired device cannot seal a recovery blob at all, so
                     // this stamp is never the one a blob reports.
@@ -699,7 +815,12 @@ impl Keychain {
                 Ok(Identity {
                     identity_id: r.identity_id,
                     dh_pub: r.id_d_pub,
-                    signing,
+                    // Held, not `PublicOnly`: the blob is the *only* carrier
+                    // that still hands over `ID_S_priv` since #105, and it has
+                    // to — a recovering account with no surviving device would
+                    // otherwise come up unable to certify the very device
+                    // doing the recovering, and unable ever to sponsor another.
+                    signing: IdentitySigningKey::Held(signing),
                     // The point of the whole mode, and the one thing a
                     // `PairingPayload` could never carry. Without it this
                     // vault opens, syncs, and reads nothing: every
@@ -732,7 +853,11 @@ impl Keychain {
                 Ok(Identity {
                     identity_id,
                     dh_pub: dh.public_bytes(),
-                    signing,
+                    // The account's creator is the one device that holds
+                    // `ID_S_priv`, and so the only one that can ever issue a
+                    // `DeviceCert` — for itself at the bottom of this function,
+                    // and for every device it later sponsors.
+                    signing: IdentitySigningKey::Held(signing),
                     // The account's creator keeps it, because until the
                     // recovery blob exists this is the only copy and dropping
                     // it would make the account unrecoverable. That is the one
@@ -759,12 +884,34 @@ impl Keychain {
         let identity =
             Self::identity_for_create(&vault_root, rng, seed, existing.as_ref(), now_ms)?;
 
-        let (signing, device_dh, device_id) = mint_device_keys(rng);
-        let nickname = "sunrise-device".to_string();
-        let platform = std::env::consts::OS.to_string();
-        let cert_blob = issue_cert(
-            &identity, device_id, &signing, &device_dh, now_ms, &nickname, &platform,
-        )?;
+        // Where this device's keys and cert come from, and it is the whole of
+        // what the three-message pairing protocol changed here.
+        //
+        // A founding vault mints both and signs its own cert, because it holds
+        // `ID_S_priv` and is the account. A **paired** vault cannot: it holds no
+        // signing key, so the cert has to have been issued for it by its
+        // sponsor — which means the keys that cert names had to exist before
+        // the pairing finished. The joiner minted them for `PairingRequest`,
+        // the sponsor wrote them into a `DeviceCert`, and what arrives here is
+        // that pair plus that cert. Minting fresh keys at this point would
+        // produce a device whose only cert names a `D_S_pub` it does not hold.
+        let DeviceMaterial {
+            signing,
+            device_dh,
+            device_id,
+            cert_blob,
+            nickname,
+            platform,
+        } = match seed {
+            IdentitySeed::Paired(p) => adopt_granted_device_keys(&identity, p)?,
+            // A recovering vault mints its own, exactly as a founding one does:
+            // the blob restored `ID_S_priv`, so it can sign its own cert, and
+            // the device it is replacing is gone rather than superseded. See
+            // `docs/03-crypto/key-rotation.md` §Device key rotation.
+            IdentitySeed::Own | IdentitySeed::Recovered(_) => {
+                mint_own_device_keys(&identity, rng, now_ms)?
+            }
+        };
 
         let wrapped_identity = wrap_identity(&vault_root, &identity, rng);
         let (wrapped_signing, wrapped_dh) =
@@ -920,7 +1067,9 @@ impl Keychain {
         let identity = Identity {
             identity_id: identity_id_from_pub(&id_signing.public_bytes()),
             dh_pub: id_dh.public_bytes(),
-            signing: id_signing,
+            // Minted here, so this device is the account's creator and holds
+            // the signing key — the same arm the founding path takes.
+            signing: IdentitySigningKey::Held(id_signing),
             // A vault upgrading from pre-0017 is minting the account identity
             // here, which makes this device its creator; it keeps the secret
             // for the same reason the founder branch does.
@@ -1242,6 +1391,29 @@ impl Keychain {
         self.identity.lock().identity.dh_secret.is_some()
     }
 
+    /// Whether this device can speak *for* the account rather than as a member
+    /// of it: issue a `DeviceCert`, sponsor a pairing, rotate the identity.
+    ///
+    /// True on the device that created the account and on one restored from the
+    /// recovery code. False on every device admitted by pairing, which is
+    /// `#105`'s fix and not a gap — see [`IdentitySigningKey`].
+    ///
+    /// The sibling of [`Self::holds_only_copy_of_identity_key`], and
+    /// deliberately a second question rather than the same one: that answers
+    /// for `ID_D_priv` and bounds what this device can *read*, this answers for
+    /// `ID_S_priv` and bounds what it can *say*. They happen to agree on every
+    /// vault v1 produces, and the reason they are two methods is that nothing
+    /// enforces the agreement.
+    ///
+    /// Callers should branch on this rather than provoke the error: a "pair
+    /// another device" button on a vault that cannot sponsor is a button that
+    /// only ever fails, and `Engine::revoke_device` reads it to decide whether
+    /// a revocation can rotate the identity as well as the Stream keys.
+    #[must_use]
+    pub fn can_rotate_identity(&self) -> bool {
+        self.identity.lock().identity.holds_signing_key()
+    }
+
     /// Seal this account's identity keys into a recovery blob under `seed`.
     ///
     /// `seed` is the 32 bytes behind the user's BIP-39 recovery code
@@ -1280,8 +1452,15 @@ impl Keychain {
             .dh_secret
             .as_ref()
             .ok_or(KeychainError::IdentitySecretAbsent)?;
+        // Both halves or nothing. A blob carrying `ID_D_priv` and not
+        // `ID_S_priv` would restore an identity that can read the account's
+        // history and issue no cert for the device doing the restoring, which
+        // is a recovery that cannot complete. In practice the two are held by
+        // the same device — the creator — so this second `?` fires only on a
+        // vault whose rows disagree.
+        let signing = identity.signing.require()?;
         let mut payload = sunrise_crypto::recovery::RecoveryPayload {
-            id_s_priv: identity.signing.secret_bytes(),
+            id_s_priv: signing.secret_bytes(),
             id_d_priv: dh.secret_bytes(),
             id_s_pub: identity.signing.public_bytes(),
             id_d_pub: identity.dh_pub,
@@ -1314,7 +1493,7 @@ impl Keychain {
     /// this module exists to enforce — that the vault root never leaves the
     /// keychain. It is no longer sufficient on its own: since ADR-0024 a device
     /// also needs the identity and the Stream keys, which is what
-    /// [`Self::export_pairing_payload`] assembles. The root is still what keys
+    /// [`Self::issue_pairing_grant`] hands over. The root is still what keys
     /// the local database, so it still has to travel.
     ///
     /// The name is long and unpleasant on purpose. Callers must send the result
@@ -1325,11 +1504,21 @@ impl Keychain {
         VaultRootKey::from_bytes(*self.vault_root.as_bytes())
     }
 
-    /// Assemble everything a device being paired needs.
+    /// Message 1: what this device offers a joiner, before it has been asked
+    /// for anything.
+    ///
+    /// Public material only. **This is where the export used to hand over
+    /// `ID_S_priv`, the vault root and every Stream key in one shot**, and the
+    /// split is `#105`: a joiner that received the signing key could mint a
+    /// `DeviceCert` for any device id it invented, so a revoked one certified
+    /// itself back in. Nothing the sponsor can be made to emit before it has
+    /// seen a request is worth stealing now; [`Self::issue_pairing_grant`] is
+    /// where the account actually changes hands, and it only runs on a request
+    /// this device accepted.
     ///
     /// # Errors
-    /// SQLite failures reading the device labels.
-    pub fn export_pairing_payload(&self, db: &Db) -> Result<PairingPayload, KeychainError> {
+    /// SQLite failures reading the device labels or the fold anchor.
+    pub fn export_pairing_offer(&self, db: &Db) -> Result<PairingOffer, KeychainError> {
         let (nickname, platform) = self.local_labels(db)?;
         // The fold anchor, read from the row rather than assumed equal to the
         // identity in force. They are equal only until the account rotates
@@ -1338,13 +1527,77 @@ impl Keychain {
         // account folding from different starts and disagreeing about who the
         // account is, silently, because each stays internally consistent.
         let genesis = self.genesis_pair(db)?;
+        let state = self.identity.lock();
+        Ok(PairingOffer {
+            id_s_pub: state.identity.signing.public_bytes(),
+            id_d_pub: state.identity.dh_pub,
+            identity_id: state.identity.identity_id,
+            genesis_identity_id: genesis.0,
+            genesis_id_s_pub: genesis.1,
+            nickname,
+            platform,
+        })
+    }
+
+    /// Message 3: issue the joiner's `DeviceCert` and hand over the account.
+    ///
+    /// The half of pairing that needs `ID_S_priv`, and the reason a device
+    /// admitted by pairing cannot sponsor another one. The cert is signed here,
+    /// on a device that already holds the key, over the keys the joiner minted
+    /// and published in its request — which is why pairing needs a round trip
+    /// at all: this signature cannot exist before those keys do.
+    ///
+    /// `request.identity_id` is checked against this account's. A request is
+    /// public material and carries no secret, so a request captured from one
+    /// pairing can be handed to any sponsor; the check stops *this* device
+    /// spending a grant on one. The joiner makes the matching check in
+    /// [`sunrise_pairing::PairingGrant::accept`], which is the one that binds.
+    ///
+    /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing, [`KeychainError::IdentityConflict`] when the request answers a
+    /// different account's offer, and [`KeychainError::Cert`] for a nickname
+    /// outside `1..=`[`sunrise_crypto::MAX_NICKNAME_BYTES`] bytes.
+    pub fn issue_pairing_grant(
+        &self,
+        request: &PairingRequest,
+        now_ms: u64,
+    ) -> Result<PairingGrant, KeychainError> {
+        if request.identity_id != self.identity_id() {
+            return Err(KeychainError::IdentityConflict);
+        }
+        let device_cert = self.issue_cert_for(
+            request.device_id,
+            request.d_s_pub,
+            request.d_d_pub,
+            &request.nickname,
+            &request.platform,
+            now_ms,
+        )?;
+        Ok(PairingGrant {
+            device_cert,
+            vault_root: *self.vault_root.as_bytes(),
+            stream_keys: self.held_stream_keys(),
+        })
+    }
+
+    /// Every Stream key this device holds: `stream_id -> epoch -> key`.
+    ///
+    /// What a [`PairingGrant`] carries, and separately readable because it is
+    /// also the honest answer to "did a revocation actually bound this device's
+    /// reads" — a question that has to be answerable on the **revoked** device,
+    /// which since `#105` cannot sponsor a pairing and so cannot be asked
+    /// through [`Self::issue_pairing_grant`]. Asking what a device holds beats
+    /// asking whether it has had time to receive something.
+    ///
+    /// One key per `(stream, epoch)`. Where two devices minted the same epoch
+    /// concurrently the other still reaches a joiner through the `key_envelope`
+    /// op that distributed it; carrying both would double the message already
+    /// most likely to hit the transport limit.
+    #[must_use]
+    pub fn held_stream_keys(&self) -> BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> {
         let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
         for ((stream_id, epoch), keys) in self.cache.lock().iter() {
-            // One key per (stream, epoch) in the payload. Where two devices
-            // minted the same epoch concurrently the receiver still learns the
-            // other through the `key_envelope` op that distributed it; sending
-            // both here would double a payload that is already the value most
-            // likely to hit the transport limit.
             if let Some(first) = keys.first() {
                 stream_keys
                     .entry(*stream_id)
@@ -1352,19 +1605,44 @@ impl Keychain {
                     .insert(*epoch, *first.as_bytes());
             }
         }
-        let state = self.identity.lock();
-        Ok(PairingPayload {
-            id_s_priv: state.identity.signing.secret_bytes(),
-            id_s_pub: state.identity.signing.public_bytes(),
-            id_d_pub: state.identity.dh_pub,
-            identity_id: state.identity.identity_id,
-            genesis_identity_id: genesis.0,
-            genesis_id_s_pub: genesis.1,
-            vault_root: *self.vault_root.as_bytes(),
-            stream_keys,
-            nickname,
-            platform,
-        })
+        stream_keys
+    }
+
+    /// Run a whole pairing against this sponsor, in one process, and return
+    /// what the joiner would hand `Keychain::create`.
+    ///
+    /// Offer, request, grant, accept — the same four calls and the same checks a
+    /// real driver makes, with the messages handed straight across instead of
+    /// through a Noise channel or a pair of files. There is no transport here at
+    /// all, which is the point: the protocol is transport-agnostic and this is
+    /// what that claim looks like when it is exercised.
+    ///
+    /// Exported rather than `#[cfg(test)]` because three crates' tests need it —
+    /// `sunrise-core`'s own, `sunrise-e2e`'s two-replica fixtures, and
+    /// `sunrise-cli`'s — and a helper copied three times is three helpers that
+    /// drift. It is not a shortcut around the protocol and cannot be made into
+    /// one: it goes through [`Self::issue_pairing_grant`], so a sponsor that
+    /// holds no `ID_S_priv` fails here exactly as it would on a real device.
+    ///
+    /// `seed_s` and `seed_d` are the joiner's device keys, taken explicitly so a
+    /// seeded test is reproducible.
+    ///
+    /// # Errors
+    /// Whatever [`Self::issue_pairing_grant`] refuses, plus
+    /// [`KeychainError::Pairing`] if the joiner rejects the cert it is issued.
+    pub fn pair_device_in_process(
+        &self,
+        db: &Db,
+        nickname: String,
+        platform: String,
+        seed_s: [u8; 32],
+        seed_d: [u8; 32],
+        now_ms: u64,
+    ) -> Result<PairingPayload, KeychainError> {
+        let offer = self.export_pairing_offer(db)?;
+        let joiner = sunrise_pairing::PairingJoiner::new(offer, nickname, platform, seed_s, seed_d);
+        let grant = self.issue_pairing_grant(joiner.request(), now_ms)?;
+        Ok(joiner.accept(grant)?)
     }
 
     fn local_labels(&self, db: &Db) -> Result<(String, String), KeychainError> {
@@ -1988,6 +2266,9 @@ impl Keychain {
     /// device list.
     ///
     /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing — which is the whole of `#105`'s fix, and the assertion
+    /// `a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id` makes — and
     /// [`KeychainError::Cert`] for a nickname outside
     /// `1..=`[`sunrise_crypto::MAX_NICKNAME_BYTES`] bytes, or a CBOR failure.
     pub fn issue_cert_for(
@@ -2000,6 +2281,7 @@ impl Keychain {
         now_ms: u64,
     ) -> Result<Vec<u8>, KeychainError> {
         let state = self.identity.lock();
+        let signing = state.identity.signing.require()?;
         let body = DeviceCertInner {
             v: 1,
             device_id,
@@ -2010,7 +2292,7 @@ impl Keychain {
             nickname: nickname.to_string(),
             platform: platform.to_string(),
         };
-        Ok(DeviceCert::issue(body, &state.identity.signing)?.to_cbor()?)
+        Ok(DeviceCert::issue(body, signing)?.to_cbor()?)
     }
 
     // ---- identity transition (ADR-0032) ----
@@ -2026,8 +2308,10 @@ impl Keychain {
     /// about who survives rather than a list the emitter wrote.
     ///
     /// # Errors
-    /// [`KeychainError::Cert`] for an invalid nickname length or a CBOR
-    /// failure.
+    /// [`KeychainError::IdentitySigningKeyAbsent`] when `successor` is a
+    /// successor this device adopted rather than minted, so it holds only the
+    /// public half; [`KeychainError::Cert`] for an invalid nickname length or a
+    /// CBOR failure.
     pub fn issue_roster_cert(
         successor: &Identity,
         device_id: [u8; 16],
@@ -2047,7 +2331,7 @@ impl Keychain {
             nickname: nickname.to_string(),
             platform: platform.to_string(),
         };
-        Ok(DeviceCert::issue(body, &successor.signing)?.to_cbor()?)
+        Ok(DeviceCert::issue(body, successor.signing.require()?)?.to_cbor()?)
     }
 
     /// Sign a transition body with the **outgoing** identity this keychain
@@ -2059,6 +2343,15 @@ impl Keychain {
     /// gets the pair back rather than borrowing the key.
     ///
     /// # Errors
+    /// [`KeychainError::IdentitySigningKeyAbsent`] on a device admitted by
+    /// pairing. A transition's `prev_sig` is the *outgoing* identity's
+    /// statement that it hands over to this successor, and a device that never
+    /// held the outgoing key cannot make it — so since `#105` only the account's
+    /// creator can rotate the identity. `Engine::revoke_device` still cuts a
+    /// revoked device off from every future epoch without one; see
+    /// `docs/03-crypto/key-rotation.md` §Revocation for what that does and does
+    /// not bound.
+    ///
     /// [`KeychainError::Transition`] when the body does not name this
     /// keychain's identity as its predecessor or the successor's key as its
     /// successor. Both are checked before either signature is produced.
@@ -2070,8 +2363,8 @@ impl Keychain {
         let state = self.identity.lock();
         Ok(sign_identity_transition(
             body,
-            &state.identity.signing,
-            &successor.signing,
+            state.identity.signing.require()?,
+            successor.signing.require()?,
         )?)
     }
 
@@ -2099,24 +2392,44 @@ impl Keychain {
         dh_seed.zeroize();
         Identity {
             identity_id: identity_id_from_pub(&signing.public_bytes()),
-            signing,
+            signing: IdentitySigningKey::Held(signing),
             dh_pub: dh.public_bytes(),
             dh_secret: Some(dh),
             created_at_ms,
         }
     }
 
-    /// Seal the successor's `ID_S_priv` to one surviving device's `D_D_pub`.
+    /// Seal one surviving device's share of the successor to its `D_D_pub`.
     ///
-    /// 32 bytes of plaintext, so 80 on the wire. `ID_D_priv` is deliberately
-    /// **not** in here: ADR-0024's asymmetry is that a paired device can seal
-    /// to the identity and cannot open what was sealed to it, and a rotation
-    /// that handed every device the new unwrapping key would undo #76 in one
-    /// op. The device gets what it actually needs — the signing key that lets
-    /// it issue its own certs, which pairing already gives it.
+    /// 32 bytes of plaintext, so 80 on the wire, and **which** 32 bytes is the
+    /// decision `#105` turns on.
+    ///
+    /// This used to be the successor's `ID_S_priv`, for every survivor. That
+    /// undid at the first rotation exactly what withholding the key from
+    /// `PairingPayload` achieves: a device admitted without a signing key was
+    /// handed one the moment anybody revoked anything, and could mint a cert
+    /// for a fresh device id from then on. **A rotation must move `ID_S_priv`
+    /// to nobody.** So the share carries the successor's `ID_S_pub` instead,
+    /// except for the one addressed to the emitting device — which minted the
+    /// successor, already holds the outgoing secret, and would otherwise lose
+    /// the ability to rotate again on the rotation it just performed.
+    ///
+    /// The share still does the work it always did. Its *presence* is the
+    /// roster signal — a device with no share adopts nothing and logs
+    /// `not_in_roster` — and `shares_digest` binds the set into the signed
+    /// body, so a relay cannot add or drop one. What it no longer does is
+    /// distribute a capability.
+    ///
+    /// `ID_D_priv` was never in here and still is not: ADR-0024's asymmetry is
+    /// that a paired device can seal to the identity and cannot open what was
+    /// sealed to it, and a rotation that handed every device the new unwrapping
+    /// key would undo #76 in one op.
     ///
     /// # Errors
-    /// [`KeychainError::Hpke`] for a malformed recipient key.
+    /// [`KeychainError::Hpke`] for a malformed recipient key, and
+    /// [`KeychainError::IdentitySigningKeyAbsent`] when this device is sealing
+    /// its own share for a successor it does not hold the key to — which cannot
+    /// happen, because minting the successor is what produced it.
     pub fn seal_successor_device_share(
         &self,
         successor: &Identity,
@@ -2125,26 +2438,39 @@ impl Keychain {
         rng: &dyn Rng,
     ) -> Result<Vec<u8>, KeychainError> {
         let info = identity_share_info(&successor.identity_id, device_id);
-        let mut secret = successor.signing.secret_bytes();
+        let mut plain = if *device_id == self.device_id {
+            successor.signing.require()?.secret_bytes()
+        } else {
+            successor.signing.public_bytes()
+        };
         let mut adapter = RngAdapter(rng);
-        let out = hpke_seal(recipient_d_d_pub, &info, &secret, b"", &mut adapter);
-        secret.zeroize();
+        let out = hpke_seal(recipient_d_d_pub, &info, &plain, b"", &mut adapter);
+        plain.zeroize();
         Ok(out?)
     }
 
     /// Open the share addressed to **this** device and rebuild the successor.
     ///
-    /// The public halves come from the transition's signed body and the secret
+    /// The public halves come from the transition's signed body and the share
     /// from the sealed blob, and the two are checked against each other before
     /// anything is returned. Nothing else could check them: HPKE Base
     /// authenticates no sender, so a share is only as trustworthy as the
     /// signature over the body that names the key it should open to.
     ///
+    /// The 32 bytes are the successor's `ID_S_pub` on every device but the one
+    /// that emitted the rotation, which gets `ID_S_priv` — see
+    /// [`Self::seal_successor_device_share`] for why. The two are told apart by
+    /// what they *derive*, not by a flag: bytes that produce `body.id_s_pub`
+    /// when read as a seed are the secret, bytes that **are** `body.id_s_pub`
+    /// are the public half, and nothing else is either. Finding a seed whose
+    /// public key equals a given 32 bytes that are themselves that public key
+    /// is not a thing an attacker gets to arrange.
+    ///
     /// # Errors
     /// [`KeychainError::Hpke`] when the blob is not for this device or was
     /// sealed under another transition, [`KeychainError::WrappedLen`] for a
     /// wrong-sized plaintext, [`KeychainError::IdentityIdMismatch`] when the
-    /// opened secret is not the key the body names.
+    /// opened share is neither the key the body names nor its public half.
     pub fn open_successor_device_share(
         &self,
         body: &SuccessorPublics,
@@ -2152,12 +2478,20 @@ impl Keychain {
     ) -> Result<Identity, KeychainError> {
         let info = identity_share_info(&body.identity_id, &self.device_id);
         let opened = hpke_open(&self.device_dh, &info, sealed, b"")?;
-        let mut seed: [u8; 32] = opened
+        let mut bytes: [u8; 32] = opened
             .as_slice()
             .try_into()
             .map_err(|_| KeychainError::WrappedLen)?;
-        let signing = IdentitySigningKeyPair::from_secret_bytes(&seed);
-        seed.zeroize();
+        let as_secret = IdentitySigningKeyPair::from_secret_bytes(&bytes);
+        let signing = if as_secret.public_bytes() == body.id_s_pub {
+            IdentitySigningKey::Held(as_secret)
+        } else {
+            // Not the secret. `into_identity` refuses it unless it is the public
+            // half the signed body names, so a share carrying anything else
+            // fails there rather than installing a key nothing can verify.
+            IdentitySigningKey::PublicOnly(bytes)
+        };
+        bytes.zeroize();
         body.into_identity(signing, None, self.identity.lock().identity.created_at_ms)
     }
 
@@ -2191,7 +2525,12 @@ impl Keychain {
             .ok_or(KeychainError::IdentitySecretAbsent)?;
         let info = identity_carry_info(&successor.identity_id);
         let mut plain = [0u8; 64];
-        let mut s = successor.signing.secret_bytes();
+        // The one place a rotation still moves `ID_S_priv`, and it moves it to
+        // a *key*, not to a device: sealed to the outgoing `ID_D_pub`, whose
+        // private half lives in the recovery blob and on the account's creator.
+        // A recovery has to be able to issue certs or it cannot re-admit the
+        // device doing the recovering.
+        let mut s = successor.signing.require()?.secret_bytes();
         let mut d = dh.secret_bytes();
         plain[..32].copy_from_slice(&s);
         plain[32..].copy_from_slice(&d);
@@ -2235,7 +2574,7 @@ impl Keychain {
         s.copy_from_slice(&opened[..32]);
         d.copy_from_slice(&opened[32..]);
         opened.zeroize();
-        let signing = IdentitySigningKeyPair::from_secret_bytes(&s);
+        let signing = IdentitySigningKey::Held(IdentitySigningKeyPair::from_secret_bytes(&s));
         s.zeroize();
         let dh = IdentityDhKeyPair::from_secret_bytes(d);
         d.zeroize();
@@ -2270,33 +2609,48 @@ impl Keychain {
     /// a device that adopts a successor it did not mint stores an empty
     /// `id_d_priv_wrapped` and a NULL minter, exactly as a paired device does.
     ///
-    /// Returns the re-issued cert blob, which the caller publishes.
+    /// `roster_cert` is this device's entry from the transition's roster, and
+    /// is **taken rather than re-issued**. It used to be signed here, under
+    /// `successor.signing` — which since `#105` most devices do not hold. They
+    /// do not need to: the roster already carries a cert for every survivor,
+    /// signed by the successor and bound into the signed body by
+    /// `roster_digest`, and `apply_control_op` has verified every entry in it
+    /// against `to_id_s_pub` before this runs. Re-issuing was producing a second
+    /// cert for the same device under the same identity, which is at best
+    /// redundant and at worst a body that disagrees with the one every peer
+    /// applied.
+    ///
+    /// Returns the cert blob, which the caller publishes.
     ///
     /// # Errors
-    /// SQLite failures, or [`KeychainError::Cert`] if the device's stored
-    /// labels do not make a valid cert body.
+    /// SQLite failures, or [`KeychainError::BadGrantCert`] if the roster entry
+    /// does not name this device under the successor — which
+    /// `apply_control_op` has already excluded, and which is checked again here
+    /// because this is the function that writes it to three rows.
     pub fn adopt_successor_identity(
         &self,
         tx: &rusqlite::Transaction<'_>,
         successor: Identity,
-        nickname: &str,
-        platform: &str,
-        now_ms: u64,
+        roster_cert: Vec<u8>,
         rng: &dyn Rng,
     ) -> Result<Vec<u8>, KeychainError> {
-        let cert_blob = {
-            let body = DeviceCertInner {
-                v: 1,
-                device_id: self.device_id,
-                d_s_pub: self.signing.public_bytes(),
-                d_d_pub: self.device_dh.public_bytes(),
-                identity_id: successor.identity_id,
-                created_at_ms: now_ms,
-                nickname: nickname.to_string(),
-                platform: platform.to_string(),
-            };
-            DeviceCert::issue(body, &successor.signing)?.to_cbor()?
-        };
+        let cert_blob = roster_cert;
+        {
+            let cert = DeviceCert::from_cbor(&cert_blob)
+                .map_err(|_| KeychainError::BadGrantCert("the roster cert does not decode"))?;
+            cert.verify_binding(&successor.signing.public_bytes(), &successor.identity_id)
+                .map_err(|_| {
+                    KeychainError::BadGrantCert("the roster cert is not signed by the successor")
+                })?;
+            if cert.body.device_id != self.device_id
+                || cert.body.d_s_pub != self.signing.public_bytes()
+                || cert.body.d_d_pub != self.device_dh.public_bytes()
+            {
+                return Err(KeychainError::BadGrantCert(
+                    "the roster cert names another device",
+                ));
+            }
+        }
 
         let wrapped = wrap_identity(&self.vault_root, &successor, rng);
         let minted_here = successor.dh_secret.is_some();
@@ -2395,6 +2749,32 @@ impl Keychain {
         Self::for_test_inner(vault_root, signing_seed, false)
     }
 
+    /// A test keychain shaped like a device **admitted by pairing**: the same
+    /// account, the same device keys, and `ID_S_pub` instead of `ID_S`.
+    ///
+    /// Every other test keychain here is a founder, which is fine for the
+    /// engine's ordinary paths and wrong for the two that turn on who holds the
+    /// account's signing key — `revoke_device`'s rotation step and
+    /// `rotate_identity` itself. Without this they would only ever be exercised
+    /// on the one device in an account that can perform them.
+    ///
+    /// Its `cert_blob` is issued here under the real `ID_S_priv`, exactly as a
+    /// sponsor would have issued it, and then the key is dropped rather than
+    /// stored — which is the whole of what pairing does.
+    #[cfg(test)]
+    pub(crate) fn for_test_paired(vault_root: VaultRootKey, signing_seed: [u8; 32]) -> Self {
+        let kc = Self::for_test_inner(vault_root, signing_seed, false);
+        {
+            let mut state = kc.identity.lock();
+            let public = state.identity.signing.public_bytes();
+            state.identity.signing = IdentitySigningKey::PublicOnly(public);
+            // `#76`'s half of the same asymmetry, so the fixture is a device a
+            // pairing could actually have produced rather than a half of one.
+            state.identity.dh_secret = None;
+        }
+        kc
+    }
+
     #[cfg(test)]
     fn for_test_inner(
         vault_root: VaultRootKey,
@@ -2411,7 +2791,7 @@ impl Keychain {
         let id_dh = IdentityDhKeyPair::from_secret_bytes([0x5b; 32]);
         let identity = Identity {
             identity_id: identity_id_from_pub(&id_signing.public_bytes()),
-            signing: id_signing,
+            signing: IdentitySigningKey::Held(id_signing),
             dh_pub: id_dh.public_bytes(),
             dh_secret: Some(id_dh),
             created_at_ms: 0,
@@ -2505,6 +2885,7 @@ impl rand_core::CryptoRng for RngAdapter<'_> {}
 mod tests {
     use super::*;
     use crate::config::SystemRng;
+    use device::mint_device_keys;
     use parking_lot::Mutex as PLMutex;
     use sunrise_storage::Db;
 
@@ -3119,7 +3500,16 @@ mod tests {
         );
 
         // The paired device, opened from that device's own payload.
-        let payload = inviter.export_pairing_payload(&inviter_db).unwrap();
+        let payload = inviter
+            .pair_device_in_process(
+                &inviter_db,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
         let mut paired_db = db(&root);
         let paired = Keychain::open(
             &mut paired_db,
@@ -3182,7 +3572,16 @@ mod tests {
             .seal_key_envelope(&inviter.identity_dh_pub(), &sid, 4, &key, &SystemRng)
             .unwrap();
 
-        let payload = inviter.export_pairing_payload(&inviter_db).unwrap();
+        let payload = inviter
+            .pair_device_in_process(
+                &inviter_db,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
         let mut paired_db = db(&root);
         drop(
             Keychain::open(
@@ -3250,7 +3649,16 @@ mod tests {
             "the account's creator holds `ID_D_priv`, and today holds the only copy"
         );
 
-        let payload = creator.export_pairing_payload(&creator_db).unwrap();
+        let payload = creator
+            .pair_device_in_process(
+                &creator_db,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
         let mut paired_db = db(&root);
         let paired = Keychain::open(
             &mut paired_db,
@@ -3331,7 +3739,16 @@ mod tests {
         let root = VaultRootKey::from_bytes([0x7b; 32]);
         let mut creator_db = db(&root);
         let creator = open(&mut creator_db, &root);
-        let payload = creator.export_pairing_payload(&creator_db).unwrap();
+        let payload = creator
+            .pair_device_in_process(
+                &creator_db,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
 
         let mut paired_db = db(&root);
         let paired = Keychain::open(
@@ -3630,7 +4047,16 @@ mod tests {
         let (epoch, key) = da
             .with_tx(|tx| ka.mint_epoch(tx, &sid, &SystemRng, 0))
             .unwrap();
-        let payload = ka.export_pairing_payload(&da).unwrap();
+        let payload = ka
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
 
         let mut db2 = db(&root);
         let kb = Keychain::open(
@@ -3698,9 +4124,10 @@ mod tests {
         // A rotates. Its own row moves to the successor; its anchor does not.
         let successor = ka.mint_successor_identity(&SystemRng);
         let successor_id = successor.identity_id();
+        let cert = roster_cert(&successor, &ka, 1);
         da.with_tx(|tx| {
             Ok(ka
-                .adopt_successor_identity(tx, successor, "a", "test", 1, &SystemRng)
+                .adopt_successor_identity(tx, successor, cert, &SystemRng)
                 .expect("adopt"))
         })
         .unwrap();
@@ -3708,7 +4135,16 @@ mod tests {
         assert_eq!(ka.genesis_pair(&da).unwrap(), (genesis, genesis_pub));
 
         // B pairs from A now, and gets the anchor rather than the head.
-        let payload = ka.export_pairing_payload(&da).unwrap();
+        let payload = ka
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
         assert_eq!(payload.identity_id, successor_id, "the identity in force");
         assert_eq!(
             payload.genesis_identity_id, genesis,
@@ -3733,13 +4169,27 @@ mod tests {
         );
     }
 
+    /// A payload whose `identity_id` does not derive from the `ID_S_pub` beside
+    /// it names one account and signs under another. It used to be provoked by
+    /// rewriting `id_s_priv`; the field is gone, so the public half is rewritten
+    /// instead — which is the only half there is now, and the only thing the
+    /// receiver can check.
     #[test]
     fn a_payload_from_another_account_is_refused() {
         let root = VaultRootKey::from_bytes([0x56; 32]);
         let mut da = db(&root);
         let ka = open(&mut da, &root);
-        let mut payload = ka.export_pairing_payload(&da).unwrap();
-        payload.id_s_priv = [0x01; 32];
+        let mut payload = ka
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
+        payload.id_s_pub = IdentitySigningKeyPair::from_secret_bytes(&[0x01; 32]).public_bytes();
 
         let mut db2 = db(&root);
         let err =
@@ -3758,13 +4208,42 @@ mod tests {
         }
     }
 
+    /// The roster entry a rotation would carry for `subject`.
+    ///
+    /// `adopt_successor_identity` takes this rather than re-issuing, because
+    /// since `#105` the device doing the adopting usually holds no `ID_S_priv`
+    /// to issue with. Signed by `successor`, which only the emitter holds — so
+    /// every test that adopts has to go through the emitter to get one, exactly
+    /// as the real path does.
+    fn roster_cert(successor: &Identity, subject: &Keychain, now_ms: u64) -> Vec<u8> {
+        Keychain::issue_roster_cert(
+            successor,
+            subject.device_id(),
+            subject.device_signing_pub(),
+            subject.device_dh_pub(),
+            "a",
+            "test",
+            now_ms,
+        )
+        .expect("issue a roster cert")
+    }
+
     /// A founding vault and a device paired from it — the two halves every
     /// rotation has to serve, since only the founder holds `ID_D_priv`.
     fn paired_pair() -> (VaultRootKey, Db, Keychain, Db, Keychain) {
         let root = VaultRootKey::from_bytes([0x71; 32]);
         let mut da = db(&root);
         let ka = open(&mut da, &root);
-        let payload = ka.export_pairing_payload(&da).unwrap();
+        let payload = ka
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
         let mut db2 = db(&root);
         let kb = Keychain::open(
             &mut db2,
@@ -3775,6 +4254,286 @@ mod tests {
         )
         .unwrap();
         (root, da, ka, db2, kb)
+    }
+
+    /// **The #105 test.** A device admitted by pairing holds no `ID_S_priv`,
+    /// and cannot issue a `DeviceCert` for a fresh device id.
+    ///
+    /// This is the property the whole change exists for, and it is asserted
+    /// three ways that fail independently:
+    ///
+    /// 1. **Behaviourally**, which is what actually matters. `issue_cert_for`
+    ///    is the *only* way to produce a cert, and the paired device is handed
+    ///    exactly the arguments issue #105 describes — a device id it just
+    ///    minted, with keys it holds — and refused. The sponsor is handed the
+    ///    same arguments and succeeds, so the refusal is attributable to the
+    ///    absent key rather than to a malformed request.
+    /// 2. **At rest.** The paired vault's `identity` row stores an empty
+    ///    `id_s_priv_wrapped`, so there is no ciphertext a later build could
+    ///    decide to unwrap. A struct field is a fact about today's source; a
+    ///    zero-length column is a fact about the database.
+    /// 3. **Across a restart**, because the first two would both pass on a
+    ///    device that held the key in memory and simply declined to use it.
+    ///    Re-opening reconstructs the keychain from that row alone.
+    ///
+    /// Note what is *not* asserted: that the struct has no field. That would be
+    /// grepping the type, and the type can be changed by the same commit that
+    /// breaks the property.
+    #[test]
+    fn a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id() {
+        let (root, da, sponsor, mut db2, paired) = paired_pair();
+
+        // The fresh device id a revoked device used to mint for itself: real
+        // keys, derived id, nothing forged about it.
+        let (fresh_signing, fresh_dh, fresh_id) = mint_device_keys(&SystemRng);
+
+        // 1. The sponsor can. This is the control, and it is what makes the
+        //    refusal below mean "no key" rather than "bad arguments".
+        let issued = sponsor
+            .issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            )
+            .expect("the account's creator holds ID_S_priv and can certify anything");
+        DeviceCert::from_cbor(&issued)
+            .unwrap()
+            .verify_binding(&sponsor.identity_signing_pub(), &sponsor.identity_id())
+            .expect("and what it produces is a genuinely valid cert");
+
+        // ...and the paired device cannot, for the same id and the same keys.
+        let err = paired
+            .issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            )
+            .expect_err("a paired device must not be able to certify anything");
+        assert!(matches!(err, KeychainError::IdentitySigningKeyAbsent));
+
+        // Nor can it speak for the account any other way. Both of these are
+        // signatures under `ID_S_priv` wearing different names.
+        assert!(!paired.can_rotate_identity());
+        assert!(matches!(
+            paired.issue_pairing_grant(
+                &sunrise_pairing::PairingRequest {
+                    device_id: fresh_id,
+                    d_s_pub: fresh_signing.public_bytes(),
+                    d_d_pub: fresh_dh.public_bytes(),
+                    identity_id: paired.identity_id(),
+                    nickname: "a fresh id".into(),
+                    platform: "test".into(),
+                },
+                1_700_000_002_000
+            ),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+        assert!(matches!(
+            paired.seal_recovery_blob(&[0x99; 32], &SystemRng),
+            Err(KeychainError::IdentitySecretAbsent | KeychainError::IdentitySigningKeyAbsent)
+        ));
+
+        // 2. At rest: no wrapped signing secret to unwrap, on the paired vault
+        //    and — the control again — one on the sponsor's.
+        let wrapped = |d: &Db| -> Vec<u8> {
+            d.conn()
+                .query_row(
+                    "SELECT id_s_priv_wrapped FROM identity WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert!(
+            wrapped(&db2).is_empty(),
+            "a paired vault must store no ciphertext of the account signing key"
+        );
+        assert!(
+            !wrapped(&da).is_empty(),
+            "the creator's vault does, or the assertion above is vacuous"
+        );
+
+        // 3. Across a restart, so this is not a keychain that holds the key and
+        //    declines to use it.
+        let reopened = open(&mut db2, &root);
+        assert!(!reopened.can_rotate_identity());
+        assert_eq!(
+            reopened.identity_signing_pub(),
+            sponsor.identity_signing_pub(),
+            "it still knows whose account it is — it just cannot sign for it"
+        );
+        assert!(matches!(
+            reopened.issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            ),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+    }
+
+    /// A payload whose cert does not name the keys beside it is refused at
+    /// `Keychain::create`, not at the first op the device tries to publish.
+    ///
+    /// `PairingGrant::accept` makes the same checks one crate over, and this is
+    /// not the same test: a `PairingPayload` reaches this function across a
+    /// *seam* — a `paired_bundle` from Swift, a file on disk — so it arrives
+    /// having been decoded rather than assembled, and the only thing standing
+    /// between "these bytes decoded" and "this device has a usable identity" is
+    /// the check here.
+    ///
+    /// Each mutation below is a different way for a grant to be wrong, and each
+    /// produces the same silent failure without the check: a vault that opens
+    /// fine and whose every op every peer refuses, because the cert it publishes
+    /// names a key it cannot sign with.
+    #[test]
+    fn a_payload_whose_cert_does_not_match_its_keys_is_refused_at_open() {
+        let root = VaultRootKey::from_bytes([0x73; 32]);
+        let mut da = db(&root);
+        let sponsor = open(&mut da, &root);
+        let honest = || {
+            sponsor
+                .pair_device_in_process(
+                    &da,
+                    "joiner".into(),
+                    "test".into(),
+                    [0x71; 32],
+                    [0x72; 32],
+                    1_700_000_000_000,
+                )
+                .unwrap()
+        };
+
+        // The control: the honest payload opens a vault.
+        let mut good_db = db(&root);
+        Keychain::open(
+            &mut good_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Paired(Box::new(honest())),
+        )
+        .expect("an honest grant opens the vault");
+
+        // A cert issued by a well-formed identity that is not this account's.
+        // It verifies against its own key, which is why the check has to name
+        // the identity rather than merely verify the signature.
+        let stranger = IdentitySigningKeyPair::from_secret_bytes(&[0x99; 32]);
+        let mut p = honest();
+        let cert = DeviceCert::from_cbor(&p.device_cert).unwrap();
+        let mut body = cert.body.clone();
+        body.identity_id = identity_id_from_pub(&stranger.public_bytes());
+        p.device_cert = DeviceCert::issue(body, &stranger)
+            .unwrap()
+            .to_cbor()
+            .unwrap();
+
+        // ...and a cert for a different device's keys, signed by the real
+        // account. This is the one a confused sponsor produces.
+        let other = DeviceSigningKeyPair::from_secret_bytes(&[0x51; 32]);
+        let mut q = honest();
+        q.d_s_priv = other.secret_bytes();
+
+        for (name, payload) in [("another identity", p), ("another device", q)] {
+            let mut d = db(&root);
+            let err = Keychain::open(
+                &mut d,
+                root.clone(),
+                &clock(),
+                &SystemRng,
+                &IdentitySeed::Paired(Box::new(payload)),
+            )
+            .expect_err("a mismatched grant must not open a vault");
+            assert!(
+                matches!(err, KeychainError::BadGrantCert(_)),
+                "expected a named refusal for {name}, got {err:?}"
+            );
+        }
+    }
+
+    /// A paired device is a **member** — it just cannot speak for the account.
+    ///
+    /// The other half of the test above, and the one that stops "cannot issue a
+    /// cert" from being achieved by breaking the pairing. Everything a device
+    /// is supposed to be able to do, it still does.
+    #[test]
+    fn a_paired_device_is_a_full_member_of_the_account_it_cannot_speak_for() {
+        // Built inline rather than from `paired_pair`, because this one needs a
+        // Stream key to exist *before* the pairing: a bare keychain mints none
+        // — `Core::open` is what mints the base epochs — so the fixture's
+        // grant would carry an empty map and the last assertion below would
+        // pass on nothing.
+        let root = VaultRootKey::from_bytes([0x72; 32]);
+        let mut da = db(&root);
+        let sponsor = open(&mut da, &root);
+        let sid = [0x5a_u8; 16];
+        da.with_tx(|tx| sponsor.mint_epoch(tx, &sid, &SystemRng, 0))
+            .expect("mint a stream key for the grant to carry");
+
+        let payload = sponsor
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .expect("the creator can sponsor");
+        let mut db2 = db(&root);
+        let paired = Keychain::open(
+            &mut db2,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Paired(Box::new(payload)),
+        )
+        .unwrap();
+
+        assert_eq!(paired.identity_id(), sponsor.identity_id());
+        assert_eq!(
+            paired.identity_signing_pub(),
+            sponsor.identity_signing_pub()
+        );
+        assert_eq!(paired.identity_dh_pub(), sponsor.identity_dh_pub());
+        assert_eq!(
+            paired.genesis_pair(&db2).unwrap(),
+            sponsor.genesis_pair(&da).unwrap(),
+            "it folds the identity chain from the same anchor"
+        );
+        assert_ne!(
+            paired.device_id(),
+            sponsor.device_id(),
+            "with its own device id, minted here and never sent"
+        );
+
+        // Its cert was issued by the sponsor and verifies under the account.
+        let cert = DeviceCert::from_cbor(&paired.cert_blob()).expect("its cert parses");
+        cert.verify_binding(&sponsor.identity_signing_pub(), &sponsor.identity_id())
+            .expect("and is signed by the account identity, not by itself");
+        assert_eq!(cert.body.device_id, paired.device_id());
+        assert_eq!(cert.body.d_s_pub, paired.device_signing_pub());
+        assert_eq!(cert.body.d_d_pub, paired.device_dh_pub());
+        assert_eq!(
+            cert.body.nickname, "joiner",
+            "the labels it asked for, which the account signed"
+        );
+
+        // And it holds the keys it needs to read the account's history.
+        assert_eq!(paired.held_stream_keys(), sponsor.held_stream_keys());
+        assert!(
+            !paired.held_stream_keys().is_empty(),
+            "or the comparison above is vacuous"
+        );
     }
 
     #[test]
@@ -3829,8 +4588,13 @@ mod tests {
             .unwrap();
         assert_eq!(opened.identity_id, successor.identity_id);
         assert_eq!(
-            opened.signing.secret_bytes(),
-            successor.signing.secret_bytes()
+            opened.signing.public_bytes(),
+            successor.signing.public_bytes()
+        );
+        assert!(
+            !opened.holds_signing_key(),
+            "handing every device the successor's ID_S_priv would undo #105 in one op: \
+             the device pairing refused a signing key would get one from the next rotation"
         );
         assert_eq!(opened.dh_pub, successor.dh_pub);
         assert!(
@@ -3966,18 +4730,11 @@ mod tests {
 
         let successor = kc.mint_successor_identity(&SystemRng);
         let successor_id = successor.identity_id;
+        let roster = roster_cert(&successor, &kc, 1_700_000_001_000);
         let cert = d
             .with_tx(|tx| {
-                let (nickname, platform) = Keychain::device_labels_tx(tx, &kc.device_id())?;
                 Ok(kc
-                    .adopt_successor_identity(
-                        tx,
-                        successor,
-                        &nickname,
-                        &platform,
-                        1_700_000_001_000,
-                        &SystemRng,
-                    )
+                    .adopt_successor_identity(tx, successor, roster, &SystemRng)
                     .expect("adopt the successor"))
             })
             .unwrap();
@@ -4030,17 +4787,16 @@ mod tests {
         let received = kb
             .open_successor_device_share(&publics(&successor), &sealed)
             .unwrap();
+        assert!(
+            !received.holds_signing_key(),
+            "a device that did not mint the successor must not end up holding its \
+             signing key: that is the rotation handing back what pairing withheld (#105)"
+        );
         let successor_id = received.identity_id;
+        let roster = roster_cert(&successor, &kb, 1_700_000_001_000);
         db2.with_tx(|tx| {
             Ok(kb
-                .adopt_successor_identity(
-                    tx,
-                    received,
-                    "laptop",
-                    "macos",
-                    1_700_000_001_000,
-                    &SystemRng,
-                )
+                .adopt_successor_identity(tx, received, roster, &SystemRng)
                 .expect("adopt the successor"))
         })
         .unwrap();
@@ -4262,7 +5018,16 @@ mod tests {
         let root = VaultRootKey::from_bytes([0x74; 32]);
         let mut founding_db = db(&root);
         let founder = open(&mut founding_db, &root);
-        let payload = founder.export_pairing_payload(&founding_db).unwrap();
+        let payload = founder
+            .pair_device_in_process(
+                &founding_db,
+                "joiner".into(),
+                "test".into(),
+                [0x76; 32],
+                [0x77; 32],
+                1_700_000_000_000,
+            )
+            .unwrap();
 
         let mut paired_db = db(&root);
         let paired = Keychain::open(

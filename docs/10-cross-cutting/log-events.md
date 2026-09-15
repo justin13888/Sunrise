@@ -110,8 +110,10 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | Event | Level | Meaning |
 |---|---|---|
 | `ui.start` | info | Client starting; `app_v` and the protocol versions. Emitted by `sunrise-cli`; the macOS app will emit the same name. |
-| `ui.pair.payload_exported` | info/warn | Dev pairing-payload export step of the two-vault demo; `result`. Never the path. |
-| `ui.pair.payload_adopted` | info/warn | Dev pairing-payload adoption step, at `Core::open`; `result`, `err_code` on failure. |
+| `ui.pair.offer_written` | info | `sunrise pair offer` wrote message 1; `result`. Never the path — the strings the command prints carry it, and those are not log records. The offer carries no secret, which is why this one has no failure arm worth distinguishing: a write that fails fails the command. |
+| `ui.pair.request_written` | info | `sunrise pair request` minted this device's `D_S`/`D_D` and wrote message 2; `result`. |
+| `ui.pair.grant_written` | info | `sunrise pair issue` certified a joining device and wrote message 3; `result`. The file it names carries the vault root and every Stream key; the event names neither. |
+| `ui.pair.accepted` | info | `sunrise pair accept` adopted a certificate and opened this device's vault for the first time; `result`. |
 
 ---
 
@@ -149,6 +151,7 @@ them until code uses them.
 | `core.identity.adopted` | info | This device opened its share of a new account identity and now signs under it; `head_h`. The ordinary outcome of a rotation for a device that survived it. |
 | `core.identity.not_in_roster` | warn | The account's identity moved and this device holds no share of the successor; `head_h`. **Not an error — it is the mechanism.** Only the devices named in a rotation's roster receive a share, so this is what being excluded looks like from the inside: the device keeps signing under a retired identity, every membership test reads it as not-current, and no peer seals it another Stream key ([#105](https://github.com/justin13888/Sunrise/issues/105), ADR-0037). It is also what an honest device sees if it applies the transition before the roster cert that names it, so it is disclosed rather than acted on. |
 | `core.identity.adopt_failed` | warn | A share opened but the adoption could not be written; `head_h`, `cause`. Storage-shaped, and it leaves the device signing under the previous identity — recoverable, because the fold runs again on the next open. |
+| `core.identity.rotation_unavailable` | warn | A revocation cut every future Stream key but could **not** rotate the account identity, because this device holds no `ID_S_priv`; `subject_h`. Every device admitted by pairing is in that state since [#105](https://github.com/justin13888/Sunrise/issues/105), and for most revocations it costs nothing: a revoked device that was itself paired cannot certify itself back in either way, which is what rotation used to be for. The one case it matters is revoking the device the account was **created** on — that device does hold the key — and the remedy is to run the revocation from there. |
 | `core.op.deferred_evicted` | warn | The parked-op buffer hit its cap and the oldest rows were dropped; `n_dropped`, `stream_h`. Ordinary traffic never reaches it: a legitimate park is released by the very next absorbed key. |
 
 ### `crypto` (sunrise-crypto)

@@ -23,7 +23,7 @@ use super::attachment::*;
 use super::block::*;
 use super::context::*;
 use super::focus::*;
-use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
+use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR, MAX_SIBLING_CANDIDATES};
 use super::ids::*;
 use super::lww::*;
 use super::oplog::*;
@@ -6743,6 +6743,165 @@ fn a_revoked_device_cannot_rejoin_under_a_fresh_device_id() {
     );
 }
 
+/// **#105 closed rather than bounded.** The device that gets revoked cannot
+/// certify itself back in because it never held the key to do it with —
+/// not because a rotation retired the identity it would have used.
+///
+/// The test above is the *remedy*: the revoked device mints a cert, the
+/// cert verifies, and rotation makes it worthless. It had to be, while
+/// every paired device held `ID_S_priv`. It also only bought one
+/// revocation at a time — the device paired *after* a rotation held the new
+/// key, so revoking that one replayed the whole trick one identity along.
+///
+/// This is the fix. A device admitted by pairing is handed `ID_S_pub`, so
+/// the first step of the attack — sign a cert for a fresh device id — does
+/// not complete, before or after any revocation. Nothing about the
+/// revocation is what stops it, which is exactly why it keeps working on
+/// the second device and the third.
+#[test]
+fn a_paired_device_cannot_certify_a_fresh_device_id_before_or_after_its_revocation() {
+    use crate::KeychainError;
+    let founder = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    // The device under test: same account, admitted by pairing.
+    let paired = Engine::from_clock(
+        Arc::new(FakeClock(PLMutex::new(T0))),
+        Arc::new(SystemRng),
+        Arc::new(Keychain::for_test_paired(
+            VaultRootKey::from_bytes(ROOT),
+            [2u8; 32],
+        )),
+    );
+    let mut dba = db_root(ROOT);
+    let paired_id = paired.keychain.device_id();
+    trust(&founder, &mut dba, &paired);
+
+    // The fresh id the attack needs, with real keys behind it.
+    let fresh = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let attempt = |e: &Engine| {
+        e.keychain.issue_cert_for(
+            fresh.keychain.device_id(),
+            fresh.keychain.device_signing_pub(),
+            fresh.keychain.device_dh_pub(),
+            "a fresh id",
+            "test",
+            T0,
+        )
+    };
+
+    // Before: the founder can, the paired device cannot. Both are members
+    // of the same account and both hold valid certs of their own.
+    assert!(attempt(&founder).is_ok(), "the control: the creator can");
+    assert!(matches!(
+        attempt(&paired),
+        Err(KeychainError::IdentitySigningKeyAbsent)
+    ));
+
+    // The revocation, from the founder, which rotates the identity.
+    let head_before = founder.current_identity(dba.conn()).unwrap().identity_id;
+    founder
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, paired_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .unwrap();
+    assert_ne!(
+        founder.current_identity(dba.conn()).unwrap().identity_id,
+        head_before,
+        "the creator holds ID_S_priv, so the revocation still rotates"
+    );
+
+    // After: unchanged, and that is the point. The revoked device's
+    // inability to certify anything is a property of the device, not a
+    // consequence of the rotation — so it survives the *next* revocation
+    // too, which is what the remedy could not do.
+    assert!(matches!(
+        attempt(&paired),
+        Err(KeychainError::IdentitySigningKeyAbsent)
+    ));
+}
+
+/// A revocation run from a device that cannot rotate still cuts the reads.
+///
+/// Only the account's creator holds `ID_S_priv` now, so a paired device can
+/// revoke and cannot rotate the identity. Refusing the command outright
+/// would be worse than not rotating — the device a user is revoking is
+/// often the one they lost, and the creator may be the one they lost — so
+/// the revocation completes and says what it did not do.
+///
+/// What it gives up is bounded: a revoked device that was itself paired
+/// holds no signing key either way, so there is nothing for the rotation to
+/// have retired. The case that genuinely needs it is revoking the creator.
+#[test]
+fn a_revocation_from_a_paired_device_cuts_the_keys_without_rotating_the_identity() {
+    let paired = Engine::from_clock(
+        Arc::new(FakeClock(PLMutex::new(T0))),
+        Arc::new(SystemRng),
+        Arc::new(Keychain::for_test_paired(
+            VaultRootKey::from_bytes(ROOT),
+            [1u8; 32],
+        )),
+    );
+    let victim = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let victim_id = victim.keychain.device_id();
+    trust(&paired, &mut db, &victim);
+
+    paired
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "before the cut".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let head_before = paired.current_identity(db.conn()).unwrap().identity_id;
+    let sealed_before = envelopes_to(&paired, &db, &victim_id).len();
+
+    paired
+        .apply(
+            &mut db,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, victim_id),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .expect("a device with no signing key can still revoke");
+
+    assert!(
+        paired.is_revoked(db.conn(), &victim_id).unwrap(),
+        "the cut is recorded"
+    );
+    assert_eq!(
+        envelopes_to(&paired, &db, &victim_id).len(),
+        sealed_before,
+        "and the rotation sealed the new epochs to everyone except it"
+    );
+    assert_eq!(
+        paired.current_identity(db.conn()).unwrap().identity_id,
+        head_before,
+        "the identity did not move, because this device cannot sign a transition"
+    );
+
+    // ...and asking for the rotation on its own says so, rather than
+    // failing with something storage-shaped.
+    let err = paired
+        .apply(
+            &mut db,
+            Command::RotateIdentity {
+                keep_recovery_code: true,
+            },
+        )
+        .expect_err("a paired device cannot rotate the account identity");
+    assert!(
+        matches!(&err, EngineError::Invalid(m) if m.contains("admitted by pairing")),
+        "expected a named refusal, got {err:?}"
+    );
+}
+
 // ---- the verification rule (ADR-0032, #105) ----
 
 /// Build a complete, valid `identity_transition` from `emitter` onto a
@@ -6754,6 +6913,27 @@ fn a_revoked_device_cannot_rejoin_under_a_fresh_device_id() {
 /// and the two signatures are taken by the keychain over the real digests —
 /// so a test that applies one is exercising the production path and not a
 /// fixture.
+///
+/// # `roster` must name `emitter` for the emitter to adopt
+///
+/// `roster` is a free parameter here and is **not** free in production:
+/// [`Engine::rotate_identity`] pushes this device into the survivor set
+/// unconditionally, right after the `devices` query that deliberately skips
+/// it, so a real emitter is always in its own roster. Since `#105`,
+/// `recompute_identity_head` takes the adopting device's cert *from* the
+/// roster rather than re-issuing it — most devices hold no `ID_S_priv` and
+/// could not sign one — so an emitter left out of `roster` opens its share,
+/// finds no cert to adopt under, and keeps its old `identity_id`.
+///
+/// That matters to any caller that rotates more than once, because
+/// `from_identity_id` below is `emitter.keychain.identity_id()`: an emitter
+/// that never adopts emits every later transition from the *same*
+/// predecessor, so what accumulates is a fan of siblings off one identity
+/// rather than a chain — and the fan hits
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] at ingest on the seventeenth.
+/// A caller building a chain must pass `emitter` in `roster`. A caller
+/// deliberately testing a losing branch, a rejected payload or a single
+/// transition need not, and several below do not.
 fn build_transition(
     emitter: &Engine,
     roster: &[&Engine],
@@ -6861,7 +7041,7 @@ fn an_applied_transition_moves_the_head() {
     trust(&ea, &mut dba, &eb);
     let before = ea.current_identity(dba.conn()).unwrap();
 
-    let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+    let (inner, to) = build_transition(&ea, &[&ea, &eb], true, T0);
     apply_control_at(
         &ea,
         &mut dba,
@@ -7946,6 +8126,15 @@ fn build_transition_naming(emitter: &Engine, devices: usize, now_ms: u64) -> Inn
 /// `apply_control_op` arm a peer's delivery reaches, so what is being folded is
 /// what production writes.
 ///
+/// The roster names **A as well as B**, because A is the emitter and
+/// `rotate_identity` puts this device in its own survivor set unconditionally.
+/// Without it A opens its share, finds no cert in the roster to adopt under,
+/// and keeps its old `identity_id` -- so every later transition is emitted
+/// from the *same* predecessor and what this builds is seventy siblings of
+/// genesis rather than a chain of seventy links. That is not the shape the
+/// assertions below are about, and it is not a shape production can emit;
+/// see `build_transition` for the invariant.
+///
 /// The assertion that matters is the last one: after seventy rotations the
 /// account can still rotate again, and the new head is the one it just moved
 /// to. That is "cannot reach a state it cannot leave", stated as the thing a
@@ -7963,7 +8152,7 @@ fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
 
     let mut last = genesis;
     for i in 0..LINKS {
-        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        let (inner, to) = build_transition(&ea, &[&ea, &eb], true, T0);
         apply_control_at(
             &ea,
             &mut dba,
@@ -7993,7 +8182,7 @@ fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
 
     // The point of the whole test: the account is not frozen. One more
     // rotation, and it takes effect like the seventy before it.
-    let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+    let (inner, to) = build_transition(&ea, &[&ea, &eb], true, T0);
     apply_control_at(
         &ea,
         &mut dba,
@@ -8058,6 +8247,36 @@ fn a_transition_naming_more_devices_than_the_cap_is_refused() {
     assert_eq!(ea.current_identity(dba.conn()).unwrap().identity_id, to);
 }
 
+/// The fold is willing to look at every row ingest will store.
+///
+/// `apply_control_op` is the only writer of `identity_transitions`, and its
+/// sibling cap lets a predecessor reach exactly
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] rows. If the fold's `LIMIT` were smaller
+/// than that, the rows past it would be ones the walk could never reach on a
+/// replica that had already stored them — no rotation recorded there could
+/// ever take effect, which is `MAX_TRANSITION_CHAIN = 64` all over again, one
+/// level down.
+///
+/// So the load-bearing property of [`MAX_SIBLING_CANDIDATES`] is not its value
+/// but this inequality, and this is the test that makes the constant causal:
+/// lowering it below the ingest cap turns this red. Its *behaviour* — scanning
+/// past a row that does not verify — is not exercised anywhere, because every
+/// row stored under an established predecessor had `prev_sig` checked at
+/// ingest and therefore verifies here too. See `MAX_SIBLING_CANDIDATES` for
+/// the measurement and the one path that could store a row the fold must skip.
+#[test]
+fn the_fold_looks_at_every_row_ingest_will_store() {
+    let ingest_cap = usize::try_from(MAX_SIBLINGS_PER_PREDECESSOR)
+        .expect("the sibling cap is a small positive number");
+    assert!(
+        MAX_SIBLING_CANDIDATES >= ingest_cap,
+        "the fold verifies at most {MAX_SIBLING_CANDIDATES} candidates per link but ingest \
+         will store {ingest_cap} rows under one predecessor, so {} of them are rows the walk \
+         can never reach and the transitions they carry can never take effect",
+        ingest_cap - MAX_SIBLING_CANDIDATES
+    );
+}
+
 /// One predecessor may accumulate only so many successors, and a re-delivery
 /// of a row already held is never what the cap turns away.
 ///
@@ -8074,9 +8293,12 @@ fn a_predecessor_accumulates_only_as_many_successors_as_the_fold_will_verify() {
     let a_id = ea.keychain.device_id();
 
     // Every one of these succeeds the *same* predecessor: `build_transition`
-    // reads `emitter.keychain.identity_id()`, and the emitter only adopts the
-    // transition that wins the fold, so each call forks from the identity it
-    // currently signs under.
+    // reads `emitter.keychain.identity_id()`, and that only moves when this
+    // device *adopts*, which since #105 needs a cert for itself in the
+    // transition's roster. The roster here is B alone, so A never adopts and
+    // every call forks from genesis -- which is exactly the fan this test
+    // wants, and is why the roster deliberately does not name A the way
+    // `a_chain_past_the_old_cap_still_folds_and_can_still_be_extended` does.
     let mut built = Vec::new();
     for i in 0..MAX_SIBLINGS_PER_PREDECESSOR + 4 {
         let (inner, to) = build_transition(&ea, &[&eb], true, T0);

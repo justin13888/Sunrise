@@ -173,14 +173,52 @@ already know who it trusts; that is what makes `prev_sig` mean anything.
   an honest device looks like between applying a rotation and receiving its
   roster cert. `core.identity.not_in_roster` discloses it and nothing gates on
   it, for ADR-0032's reason: the two are indistinguishable inside the vault.
-- **`ID_S_priv` still travels in `PairingPayload`**, so a revoked device can
-  still self-certify — until the next rotation, which is now certain and
-  automatic. The residual gap is bounded rather than open. Closing it entirely
-  means the sponsor issuing the joining device's cert, which needs a second
-  message the CLI's file-drop pairing and the one-shot UniFFI seam do not have.
-  ADR-0032 alternative 2's over-block does **not** apply to that change as
-  scoped — there would be no sponsor countersignature and no sponsor binding on
-  the cert, so revoking a sponsor locks nobody out.
+- **`ID_S_priv` no longer travels in `PairingPayload`, and this ADR is now the
+  defence in depth rather than the whole defence.** When this was written the
+  key still travelled, so a revoked device could self-certify and the rotation
+  was what made the cert worthless. That was a bound, not a fix, and it bought
+  one revocation at a time: the device paired *after* a rotation held the new
+  `ID_S_priv`, so revoking it replayed the trick one identity along.
+
+  Pairing is a three-message exchange now — the sponsor issues the joining
+  device's cert, because it cannot sign one for keys the joiner has not minted
+  yet ([`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+  §Flow). A device admitted by pairing holds `ID_S_pub` and cannot produce a
+  certificate for anything. Item 1 of §What would force revisiting this
+  happened, and it is what turns #105 from bounded into closed.
+
+  ADR-0032 alternative 2's over-block does **not** apply, and the distinction is
+  the reason this shape is acceptable where that one was not. Alternative 2 was
+  sponsor-*countersigned* certs: a second signature on the cert, checked by
+  every verifier, so revoking a device invalidates every device it ever
+  sponsored — and down a chain of pairings, devices the user never associated
+  with it. What was built is sponsor-*issued*: byte for byte the same
+  `DeviceCert` shape, one signature, the identity's, no issuer field and no
+  sponsor binding anywhere. A verifier cannot tell which device held
+  `ID_S_priv` when the cert was signed, and does not need to. **Revoking a
+  sponsor locks nobody out.** The sponsor is a gate at issue time and leaves no
+  trace on the artifact.
+
+- **The per-device share carries `ID_S_pub`, not `ID_S_priv`.** It carried the
+  secret when this ADR was written, and that would have undone the change above
+  at the first revocation after any pairing: the device pairing had withheld a
+  signing key from would be handed one by the rotation. A rotation moves
+  `ID_S_priv` to nobody — except the share addressed to the emitting device,
+  which minted the successor and already holds the outgoing key. The share is
+  still the roster signal and is still bound by `shares_digest`; it is no longer
+  a way to distribute a capability.
+
+- **A rotation can only be performed by the device that created the account**,
+  because signing a transition needs the outgoing `ID_S_priv`.
+  `Command::RotateIdentity` refuses elsewhere by name; `Command::RevokeDevice`
+  completes the revocation without rotating and logs
+  `core.identity.rotation_unavailable`. Refusing the whole revocation would be
+  worse — the device being revoked is often the one the user lost, and the
+  creator may be the one they lost — and what is given up is small, because a
+  revoked device that was itself paired has no certificate-issuing capability
+  for the rotation to have retired. The case that still needs a rotation is
+  revoking the creator, and it has to be run from the creator. That asymmetry is
+  the real cost of closing #105 and it is recorded here rather than discovered.
 - **The device list gained `current`**, which is not the negation of `revoked`
   and must not be rendered as one.
 - **The fold bounds work, not chain length, and that is a correction to this
@@ -214,9 +252,13 @@ already know who it trusts; that is what makes `prev_sig` mean anything.
 
 ## What would force revisiting this
 
-1. **`ID_S_priv` leaving `PairingPayload`.** It removes the capability this ADR
-   bounds rather than removes, and would make the rotation-on-revocation a
-   defence in depth rather than the whole defence.
+1. ~~**`ID_S_priv` leaving `PairingPayload`.**~~ **Done.** It removed the
+   capability this ADR bounded, and rotation-on-revocation is now defence in
+   depth rather than the whole defence. See §Consequences. What it left behind
+   is a new asymmetry — only the account's creator can rotate — which is the
+   thing to watch: an account whose creator is lost can revoke but cannot move
+   its identity, and the way out of that is a recovery-code restore rather than
+   anything in this ADR.
 2. **A relay-side write bound** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
    A revoked device that cannot upload cannot publish a cert, which bounds the
    bypass before the fold ever sees it.

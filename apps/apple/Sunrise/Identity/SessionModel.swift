@@ -61,6 +61,16 @@ final class SessionModel {
     private(set) var phase: Phase = .starting
     private(set) var bridge: CoreBridge?
 
+    /// Whether the open vault can add another device.
+    ///
+    /// Snapshotted rather than read on demand because `CoreBridge` is an actor
+    /// and a SwiftUI body cannot await — and because it is a fact about the
+    /// vault that does not change while it is open: a device either holds the
+    /// account's signing key or it does not, and since #105 a device admitted
+    /// by pairing never does. `false` with no vault open, which is what the
+    /// button wants anyway.
+    private(set) var canSponsorPairing = false
+
     /// The vaults this Mac knows about, or `nil` in the single-vault
     /// configuration the tests and the UI-test harness use. Non-`nil` is what
     /// puts the switcher on screen.
@@ -402,6 +412,7 @@ final class SessionModel {
         // 1. Let go. Nothing below can succeed until this returns.
         await bridge?.shutdown()
         bridge = nil
+        canSponsorPairing = false
         phase = .starting
 
         // 2. Re-point. Both halves together: a directory from one vault and a
@@ -427,7 +438,12 @@ final class SessionModel {
 
     private func open(with root: Data, bundle: Data? = nil) async {
         do {
-            bridge = try await openBridge(location.directory, root, appVersion, bundle)
+            let opened = try await openBridge(location.directory, root, appVersion, bundle)
+            // Asked once, here, because it cannot be asked from a view body:
+            // `CoreBridge` is an actor and `canSponsorPairing` is a fact about
+            // the vault that does not move while it is open.
+            canSponsorPairing = await opened.canSponsorPairing()
+            bridge = opened
             phase = .unlocked
         } catch {
             phase = .failed(error.localizedDescription)
@@ -461,6 +477,7 @@ final class SessionModel {
     func lock() async {
         await bridge?.shutdown()
         bridge = nil
+        canSponsorPairing = false
         phase = .locked(.lockedByUser)
     }
 }

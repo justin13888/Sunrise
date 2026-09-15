@@ -2604,9 +2604,12 @@ mod tests {
             .await
             .unwrap();
         }
-        let bundle =
-            sunrise_pairing::encode_pairing_payload(&core.export_pairing_payload().unwrap())
-                .unwrap();
+        let bundle = sunrise_pairing::encode_pairing_payload(
+            &core
+                .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+                .unwrap(),
+        )
+        .unwrap();
         let groups = core.sync_outbox_grouped(&HashSet::new()).unwrap();
         let mut meta: Option<([u8; 16], Vec<Vec<u8>>)> = None;
         let mut tasks: Option<([u8; 16], Vec<Vec<u8>>)> = None;

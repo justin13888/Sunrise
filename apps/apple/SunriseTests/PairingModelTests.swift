@@ -13,6 +13,17 @@ import Testing
 ///
 /// The user is the transport, so the tests are the user: each step takes the
 /// text one model is showing and pastes it into the other.
+///
+/// # Why there is a real vault in here now
+///
+/// The last leg used to be a canned `PairingFixture`, because a pairing payload
+/// was one blob the holding device sealed and the joining device opened. It is
+/// three messages since #105, and the middle one is keys the *joining* device
+/// mints at random — so the certificate in the last message is signed over
+/// values no fixture can know in advance. A stub `sealGrant` would produce a
+/// certificate the joiner correctly refuses, which would test the refusal and
+/// nothing else. So the sponsor here is a real ``TestVault``, exactly as it is
+/// in the app.
 @MainActor
 struct PairingModelTests {
     /// Somewhere for the new device's `adopt` to put what it opened.
@@ -23,7 +34,6 @@ struct PairingModelTests {
     }
 
     private static let relay = "https://relay.example"
-    private static let vaultRoot = PairingFixture.vaultRoot
 
     private func shownText(_ model: PairingModel) -> String? {
         guard case let .handOff(handOff) = model.phase else { return nil }
@@ -37,11 +47,12 @@ struct PairingModelTests {
 
     /// A pair of models walked as far as the SAS screen, which is every test
     /// below's starting point but one.
+    ///
+    /// `sponsor` is `nil` for the tests that are about the handshake and never
+    /// reach a message the vault has to answer.
     private func handshake(
         sink: Sink = Sink(),
-        sealPayload: ((DevicePairing) async throws -> String)? = { pairing in
-            try pairing.sealPairingPayload(payload: PairingFixture.payload())
-        }
+        sponsor: CoreBridge?
     ) async throws -> (added: PairingModel, holder: PairingModel) {
         let added = PairingModel(
             intent: .addThisMac,
@@ -51,7 +62,17 @@ struct PairingModelTests {
                 sink.bundle = bundle
             }
         )
-        let holder = PairingModel(intent: .addAnotherDevice, sealPayload: sealPayload)
+        let holder = PairingModel(
+            intent: .addAnotherDevice,
+            sealOffer: sponsor.map { bridge in
+                { pairing in try await bridge.sendPairingOffer(to: pairing) }
+            },
+            sealGrant: sponsor.map { bridge in
+                { pairing, request in
+                    try await bridge.sendPairingGrant(to: pairing, request: request)
+                }
+            }
+        )
 
         added.accountEmail = "someone@example.com"
         added.begin()
@@ -79,12 +100,16 @@ struct PairingModelTests {
         return (added, holder)
     }
 
-    /// The whole point: the pairing payload that started on one device ends up
-    /// on the other, and every leg in between was something a person could do.
+    /// The whole point: an account that started on one device ends up admitting
+    /// the other, and every leg in between was something a person could do.
+    ///
+    /// The three legs after the SAS are the ones this change added, and the
+    /// direction alternates through them: offer out, request back, grant out.
     @Test
-    func thePayloadCrossesWhenBothUsersConfirmTheSameDigits() async throws {
+    func theAccountCrossesWhenBothUsersConfirmTheSameDigits() async throws {
+        let vault = try await TestVault()
         let sink = Sink()
-        let (added, holder) = try await handshake(sink: sink)
+        let (added, holder) = try await handshake(sink: sink, sponsor: vault.bridge)
 
         let theirs = try #require(sas(holder))
         let ours = try #require(sas(added))
@@ -96,25 +121,39 @@ struct PairingModelTests {
         await added.confirm(matched: true)
         await holder.confirm(matched: true)
 
-        // The sealed payload is the last thing the user carries.
+        // Leg 6: the offer. It names the account and carries no key.
         added.pasted = try #require(shownText(holder))
         await added.submit()
         holder.advance()
 
-        #expect(sink.root == Self.vaultRoot, "the root comes out of the payload")
+        // Leg 7: the request, which only the device being added can produce —
+        // it is the public half of keys it just minted.
+        holder.pasted = try #require(shownText(added))
+        await holder.submit()
+        added.advance()
+
+        // Leg 8: the certificate signed over those keys, and the vault with it.
+        added.pasted = try #require(shownText(holder))
+        await added.submit()
+        holder.advance()
+
         #expect(
-            sink.bundle == (try PairingFixture.payload()),
-            "and the bundle behind it, which is what carries the Stream keys"
+            sink.root == Data(repeating: 42, count: 32),
+            "the root comes out of the grant, and it is the sponsor's own"
         )
+        let bundle = try #require(sink.bundle)
+        #expect(!bundle.isEmpty, "and the bundle behind it, which carries the Stream keys")
         if case .done = added.phase {} else { Issue.record("expected done, got \(added.phase)") }
         if case .done = holder.phase {} else { Issue.record("expected done, got \(holder.phase)") }
+
+        await vault.bridge.shutdown()
     }
 
     /// The seam's own view of the handshake, which the screen shows so that a
     /// bug in this model is visible rather than merely wrong.
     @Test
     func eachSideReportsItsRoleAndWhereTheHandshakeHasGot() async throws {
-        let (added, holder) = try await handshake()
+        let (added, holder) = try await handshake(sponsor: nil)
 
         #expect(added.role == .newDevice, "the device being added is the one that offers")
         #expect(holder.role == .existingDevice)
@@ -130,7 +169,7 @@ struct PairingModelTests {
     /// nothing left to confirm a second time.
     @Test
     func sayingTheDigitsDifferEndsItAndCannotBeWalkedBack() async throws {
-        let (added, _) = try await handshake()
+        let (added, _) = try await handshake(sponsor: nil)
 
         await added.confirm(matched: false)
         #expect(added.phase == .mismatch)
@@ -142,19 +181,26 @@ struct PairingModelTests {
 
     /// A rejection on one side leaves the other unable to finish, even though
     /// nobody told it. That is the property that makes six digits enough.
+    ///
+    /// It bites one leg earlier than it used to. The offer carries nothing
+    /// worth having, so a MITM that got this far would learn nothing from it —
+    /// and the device that rejected cannot even accept the offer, let alone
+    /// reach the grant that carries the vault.
     @Test
-    func aRejectionOnOneSideStopsTheOtherFromEverGettingTheRoot() async throws {
-        let (added, holder) = try await handshake()
+    func aRejectionOnOneSideStopsTheOtherFromEverGettingTheVault() async throws {
+        let vault = try await TestVault()
+        let (added, holder) = try await handshake(sponsor: vault.bridge)
 
         await added.confirm(matched: false)
         await holder.confirm(matched: true)
 
         // The holder seals for a peer that threw its keys away. The ciphertext
         // exists, and the device that would have to open it no longer can.
-        let sealed = try #require(shownText(holder))
-        added.pasted = sealed
+        added.pasted = try #require(shownText(holder))
         await added.submit()
         #expect(added.phase == .mismatch, "a discarded pairing accepts nothing")
+
+        await vault.bridge.shutdown()
     }
 
     /// A mistyped paste is refused where it was typed, not three legs later.
@@ -195,7 +241,7 @@ struct PairingModelTests {
     /// with no way out.
     @Test
     func cancellingMidHandshakeDiscardsTheKeysAndReturnsToTheStart() async throws {
-        let (added, holder) = try await handshake()
+        let (added, holder) = try await handshake(sponsor: nil)
 
         added.cancel()
         #expect(added.phase == .idle)
@@ -216,7 +262,7 @@ struct PairingModelTests {
     /// producing a sealed blob that carries nothing.
     @Test
     func sharingWithNoOpenVaultFailsRatherThanSealingNothing() async throws {
-        let (added, holder) = try await handshake(sealPayload: nil)
+        let (added, holder) = try await handshake(sponsor: nil)
 
         await added.confirm(matched: true)
         await holder.confirm(matched: true)
@@ -236,7 +282,7 @@ struct PairingModelTests {
         #expect(!model.accountTag.contains("@"))
     }
 
-    /// Six legs, and the screen says which one you are on — the difference
+    /// Eight legs, and the screen says which one you are on — the difference
     /// between a wizard and a wall of blobs.
     @Test
     func theScreenSaysHowFarThroughTheHandshakeItIs() async throws {
@@ -246,9 +292,23 @@ struct PairingModelTests {
         added.accountEmail = "someone@example.com"
         added.begin()
         #expect(added.progress?.leg == 1)
-        #expect(added.progress?.of == 6)
+        #expect(added.progress?.of == 8, "six until the signing key stopped travelling")
 
-        let (walked, _) = try await handshake()
-        #expect(walked.progress?.leg == 5, "the SAS is the fifth leg")
+        let (walked, _) = try await handshake(sponsor: nil)
+        #expect(walked.progress?.leg == 5, "the SAS is still the fifth leg")
+    }
+
+    /// A device added by pairing holds the account's public identity and no
+    /// signing key, so it cannot certify a third device. The screen asks before
+    /// it offers, rather than after eight legs of copying.
+    @Test
+    func aVaultThatCanSponsorSaysSoAndOneCreatedByPairingWouldNot() async throws {
+        let vault = try await TestVault()
+        let canSponsor = await vault.bridge.canSponsorPairing()
+        #expect(
+            canSponsor,
+            "a vault opened without a pairing bundle created its own account, so it holds ID_S_priv"
+        )
+        await vault.bridge.shutdown()
     }
 }

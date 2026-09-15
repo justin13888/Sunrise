@@ -16,7 +16,7 @@
 //! AAD fails the build's tests rather than shipping.
 
 use super::rows::AccountIdentityRow;
-use super::{Identity, KeychainError};
+use super::{Identity, IdentitySigningKey, KeychainError};
 use crate::config::Rng;
 use sunrise_crypto::aead::{aead_open_xchacha, aead_seal_xchacha, AEAD_NONCE_LEN};
 use sunrise_crypto::{
@@ -136,9 +136,20 @@ pub(super) fn wrap_identity(
     rng: &dyn Rng,
 ) -> (Vec<u8>, Vec<u8>) {
     let id = identity.identity_id;
-    let mut s = identity.signing.secret_bytes();
-    let wrapped_s = wrap_secret(vault_root, &s, &identity_signing_aad(&id), rng);
-    s.zeroize();
+    // An empty blob when the secret is not here, on the same rule and for the
+    // same reason as `ID_D_priv` below. Since `#105` a device admitted by
+    // pairing holds `ID_S_pub` and nothing else, so its `identity` row has to
+    // be able to say so; wrapping a placeholder would make a row that unwraps
+    // to a key the account does not have.
+    let wrapped_s = match identity.signing {
+        IdentitySigningKey::Held(ref kp) => {
+            let mut s = kp.secret_bytes();
+            let w = wrap_secret(vault_root, &s, &identity_signing_aad(&id), rng);
+            s.zeroize();
+            w
+        }
+        IdentitySigningKey::PublicOnly(_) => Vec::new(),
+    };
     // `None` stores a zero-length blob rather than a wrapped zero key: the
     // column has to distinguish "this device never had the secret" from "the
     // secret happens to be all zeros", and an empty blob cannot be mistaken
@@ -171,13 +182,23 @@ pub(super) fn unwrap_identity(
     row: &AccountIdentityRow,
     this_device: Option<&[u8; 16]>,
 ) -> Result<Identity, KeychainError> {
-    let mut s = unwrap_secret(
-        vault_root,
-        &row.id_s_priv_wrapped,
-        &identity_signing_aad(&row.identity_id),
-    )?;
-    let signing = IdentitySigningKeyPair::from_secret_bytes(&s);
-    s.zeroize();
+    // An empty `id_s_priv_wrapped` is a device admitted by pairing: it holds
+    // `ID_S_pub` and cannot issue a `DeviceCert` for anything (`#105`). The
+    // column is the at-rest half of what `IdentitySigningKey` is at runtime,
+    // and the two have to agree or a restart would hand the device a capability
+    // its pairing withheld.
+    let signing = if row.id_s_priv_wrapped.is_empty() {
+        IdentitySigningKey::PublicOnly(row.id_s_pub)
+    } else {
+        let mut s = unwrap_secret(
+            vault_root,
+            &row.id_s_priv_wrapped,
+            &identity_signing_aad(&row.identity_id),
+        )?;
+        let kp = IdentitySigningKeyPair::from_secret_bytes(&s);
+        s.zeroize();
+        IdentitySigningKey::Held(kp)
+    };
     let minted_here = match (row.minted_by_device_id.as_ref(), this_device) {
         (Some(minter), Some(me)) => minter == me,
         _ => false,
@@ -286,7 +307,11 @@ mod tests {
             identity_id: ID,
             dh_pub: dh.public_bytes(),
             dh_secret: Some(dh),
-            signing,
+            // `Held`, because this asserts on the wrapped blob and a
+            // `PublicOnly` identity wraps nothing to assert on. The optional
+            // arm arrived with `#105`; the domain split it is threaded through
+            // is the finding this test pins.
+            signing: IdentitySigningKey::Held(signing),
             created_at_ms: 0,
         };
         let (wrapped_s, wrapped_d) = wrap_identity(&vault_root, &identity, &rng);
