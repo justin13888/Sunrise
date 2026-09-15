@@ -128,9 +128,36 @@ run = [
 description = "Type-check the Rust workspace"
 run = "cargo check --workspace --all-targets"
 
+# `--all-targets` is load-bearing beyond "run the tests in the tree", and the
+# reason is `crates/sunrise-log/tests/event_catalog.rs`. That gate reads the
+# dep-info rustc leaves beside each artefact to learn which files the compiler
+# actually compiled, so its coverage is a fact about what has been built. It
+# compiles every target before it runs a test, which is what puts a record on
+# disk for the two files a plain `cargo build --workspace` never compiles:
+# `crates/sunrise-sync/src/sse.rs`, behind a feature off by default, and
+# `crates/sunrise-server/src/api/testing.rs`, behind `#[cfg(test)]`. Drop the
+# flag and that gate fails naming them. See `log-fields` below for running it
+# on its own.
 [tasks.rust-test]
 description = "Run the Rust test suite"
 run = "cargo test --workspace --all-targets"
+
+# The log-event and log-field gate, on its own, with the build it reads from in
+# front of it (#153).
+#
+# It is an ordinary `cargo test`, and `rust-test` above already runs it — but
+# it is the one test here whose inputs are build artefacts rather than source,
+# so running it alone against a `target/` populated by a plain `cargo build`
+# fails for a reason that is not about the code under review. It then names the
+# files it could not see and asks for the build. That is correct and it is one
+# step someone has to learn twice, so the ordering is written down here once
+# instead.
+[tasks.log-fields]
+description = "Run the log-event/field gate, building first what it reads from"
+run = [
+  "cargo test --workspace --all-targets --no-run",
+  "cargo test -p sunrise-log --test event_catalog",
+]
 
 [tasks.storage-fixtures]
 description = "Rewrite the committed old-vault fixtures under crates/sunrise-storage/fixtures/"

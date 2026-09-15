@@ -960,8 +960,8 @@ fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
         let Some(newest) = infos.last().copied() else {
             problems.push(format!(
                 "{package}: no per-unit dep-info for {}. Build the workspace first — \
-                 `cargo test --workspace --all-targets --no-run` — because this gate \
-                 reads what the compiler recorded rather than parsing the module \
+                 `mise run log-fields` does that build and then this gate — because \
+                 it reads what the compiler recorded rather than parsing the module \
                  tree.{}",
                 rel(&src_path, &root),
                 if clippy_only {
@@ -1547,11 +1547,11 @@ fn the_scan_reaches_what_cargo_compiles() {
         missing.is_empty(),
         "these files are tracked under a workspace crate's `src/` and no dep-info \
          names them, so nothing in this file reads a line of them. Either the \
-         workspace has not been built the way this gate needs — \
-         `cargo test --workspace --all-targets --no-run`, which compiles the \
-         feature and cfg combinations an ordinary `cargo build --workspace` does \
-         not — or the file is reachable from no module and is compiled by \
-         nothing:\n  {}",
+         workspace has not been built the way this gate needs — `mise run \
+         log-fields`, which is `cargo test --workspace --all-targets --no-run` \
+         and then this gate, compiling the feature and cfg combinations an \
+         ordinary `cargo build --workspace` does not — or the file is reachable \
+         from no module and is compiled by nothing:\n  {}",
         missing.join("\n  ")
     );
     for expected in [

@@ -130,6 +130,16 @@ jobs:
       # walks up out of `fuzz/` — so the determinism deny-list binds here too.
       - name: cargo clippy (fuzz)
         run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      # `--all-targets` is what runs the log-field gate
+      # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
+      # rather than a partial one. That gate's file set is the dep-info rustc
+      # wrote beside each artefact, so it can only see what has been compiled,
+      # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
+      # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
+      # by no plain `cargo build --workspace`. This command compiles every
+      # target before running a test, so the records exist by the time the gate
+      # reads them; narrowing it would turn that gate red here (#153).
+      # `mise run log-fields` is the same ordering for one gate, run locally.
       - name: cargo test
         run: cargo test --workspace --all-targets
       # One run again. This was two, with `--exclude sunrise-server` and a
