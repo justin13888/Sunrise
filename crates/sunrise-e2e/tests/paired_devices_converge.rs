@@ -140,6 +140,97 @@ async fn inbox_titles(core: &Core) -> Vec<String> {
     }
 }
 
+/// Drive the three pairing messages across a confirmed channel, and assert that
+/// nothing secret crosses any of them in the clear.
+///
+/// Extracted from the test below because it is the part that grew: pairing used
+/// to be one sealed blob in one direction, and it is offer, request and grant
+/// alternating since the account's signing key stopped travelling (#105). The
+/// sponsor cannot certify keys the joiner has not minted yet, so there is no
+/// shorter form of this.
+///
+/// Returns the joiner — which is holding the device secrets it minted and has
+/// not sent — and the sealed grant, for the caller to open.
+fn exchange_pairing_messages(
+    sponsor: &Core,
+    sponsor_channel: &mut sunrise_pairing::PairedChannel,
+    joiner_channel: &mut sunrise_pairing::PairedChannel,
+    sponsor_root: [u8; 32],
+) -> (PairingJoiner, Vec<u8>) {
+    // 1. The offer: the account's public identity, and no secret at all.
+    let offer = sponsor
+        .export_pairing_offer()
+        .expect("export the pairing offer");
+    let offer_wire = sponsor_channel
+        .send(&offer.encode().expect("encode the offer"))
+        .expect("send the offer");
+    let offer_b = decode_pairing_offer(&joiner_channel.receive(&offer_wire).expect("receive"))
+        .expect("decode the offer on the new device");
+    assert_eq!(
+        offer_b.identity_id,
+        sponsor.identity_id(),
+        "the paired device joins the sending device's account, not a new one"
+    );
+
+    // 2. The request: keys the joining device just minted, public halves only.
+    let joiner = PairingJoiner::new(
+        offer_b,
+        "the paired device".into(),
+        "test".into(),
+        random_seed(),
+        random_seed(),
+    );
+    let request_wire = joiner_channel
+        .send(&joiner.request().encode().expect("encode the request"))
+        .expect("send the request");
+    let request = decode_pairing_request(
+        &sponsor_channel
+            .receive(&request_wire)
+            .expect("receive the request"),
+    )
+    .expect("decode the request on the sponsor");
+
+    // 3. The grant: the cert the sponsor signed over those keys, the vault root
+    //    and every Stream key.
+    let grant = sponsor
+        .issue_pairing_grant(&request)
+        .expect("the sponsor holds ID_S_priv and issues the cert");
+    let stream_keys: Vec<[u8; 32]> = grant
+        .stream_keys
+        .values()
+        .flat_map(|epochs| epochs.values().copied())
+        .collect();
+    assert!(
+        !stream_keys.is_empty(),
+        "A has minted at least the meta and inbox keys by now"
+    );
+    let grant_wire = sponsor_channel
+        .send(&grant.encode().expect("encode the grant"))
+        .expect("send the grant");
+
+    // Nothing the exchange carries may appear in the clear on the wire, on any
+    // of the three legs. The vault root and every Stream key are in the grant.
+    //
+    // Neither identity private key is in this list, because neither is in any
+    // message any more. Checking that an absent field does not appear on the
+    // wire would pass whatever happened; what holds their absence is
+    // `sunrise-pairing`'s `no_message_in_the_exchange_carries_an_identity_private_key`,
+    // `sunrise_core::keychain`'s `a_paired_device_cannot_open_the_identity_copy`
+    // and `sunrise-e2e`'s own `device_revocation` test.
+    let mut secrets: Vec<[u8; 32]> = vec![sponsor_root];
+    secrets.extend(stream_keys);
+    for leg in [&offer_wire, &request_wire, &grant_wire] {
+        for secret in &secrets {
+            assert!(
+                !leg.windows(32).any(|w| w == secret),
+                "a secret from the pairing exchange appeared in the clear on the wire"
+            );
+        }
+    }
+
+    (joiner, grant_wire)
+}
+
 /// The whole point: pair, transfer, converge — with no shared key literal.
 #[tokio::test]
 async fn a_paired_device_receives_the_vault_root_and_syncs() {
@@ -182,79 +273,10 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
         .into_channel(true)
         .expect("existing device channel");
 
-    // Three messages over the channel, not one. The offer carries the account's
-    // public identity and no secret; the joiner mints its own `D_S`/`D_D` and
-    // asks to be certified; the sponsor — the only device in the account
-    // holding `ID_S_priv` — issues the cert and hands over the root and every
-    // Stream key. Before ADR-0024 the root alone sufficed, because every Stream
-    // key was derived from it. It no longer is, and since #105 the signing key
-    // never travels at all.
-    let offer = core_a
-        .export_pairing_offer()
-        .expect("export the pairing offer");
-    let offer_wire = existing_channel
-        .send(&offer.encode().expect("encode the offer"))
-        .expect("send the offer");
-    let offer_b = decode_pairing_offer(&new_channel.receive(&offer_wire).expect("receive"))
-        .expect("decode the offer on the new device");
-    assert_eq!(
-        offer_b.identity_id,
-        core_a.identity_id(),
-        "the paired device joins the sending device's account, not a new one"
-    );
-
-    let joiner = PairingJoiner::new(
-        offer_b,
-        "the paired device".into(),
-        "test".into(),
-        random_seed(),
-        random_seed(),
-    );
-    let request_wire = new_channel
-        .send(&joiner.request().encode().expect("encode the request"))
-        .expect("send the request");
-    let request = decode_pairing_request(
-        &existing_channel
-            .receive(&request_wire)
-            .expect("receive the request"),
-    )
-    .expect("decode the request on the sponsor");
-
-    let grant = core_a
-        .issue_pairing_grant(&request)
-        .expect("the sponsor holds ID_S_priv and issues the cert");
-    let a_stream_keys: Vec<[u8; 32]> = grant
-        .stream_keys
-        .values()
-        .flat_map(|epochs| epochs.values().copied())
-        .collect();
-    assert!(
-        !a_stream_keys.is_empty(),
-        "A has minted at least the meta and inbox keys by now"
-    );
-    let wire = existing_channel
-        .send(&grant.encode().expect("encode the grant"))
-        .expect("send the grant");
-
-    // Nothing the exchange carries may appear in the clear on the wire, on any
-    // of the three legs. The vault root and every Stream key are in the grant.
-    //
-    // Neither identity private key is in this list, because neither is in any
-    // message any more. Checking that an absent field does not appear on the
-    // wire would pass whatever happened; what holds their absence is
-    // `sunrise-pairing`'s `no_message_in_the_exchange_carries_an_identity_private_key`,
-    // `sunrise_core::keychain`'s `a_paired_device_cannot_open_the_identity_copy`
-    // and `sunrise-e2e`'s own `device_revocation` test.
-    let mut secrets: Vec<[u8; 32]> = vec![root_a];
-    secrets.extend(a_stream_keys);
-    for leg in [&offer_wire, &request_wire, &wire] {
-        for secret in &secrets {
-            assert!(
-                !leg.windows(32).any(|w| w == secret),
-                "a secret from the pairing exchange appeared in the clear on the wire"
-            );
-        }
-    }
+    // Three messages over the channel, not one, and nothing secret appears in
+    // the clear on any of them. See `exchange_pairing_messages`.
+    let (joiner, wire) =
+        exchange_pairing_messages(&core_a, &mut existing_channel, &mut new_channel, root_a);
 
     let received = new_channel.receive(&wire).expect("receive the grant");
     let payload_b = joiner

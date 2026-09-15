@@ -379,7 +379,12 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
     pub fn seal_pairing_offer(&self, offer: Vec<u8>) -> Result<String, BindingError> {
-        self.send_as(PairingRole::ExistingDevice, &offer, "the pairing offer", false)
+        self.send_as(
+            PairingRole::ExistingDevice,
+            &offer,
+            "the pairing offer",
+            false,
+        )
     }
 
     /// Mint this device's keys and seal message 2 — the cert request — on the
@@ -424,7 +429,8 @@ impl DevicePairing {
         }
         let seed_s = seed32(seed_s)?;
         let seed_d = seed32(seed_d)?;
-        let plain = self.receive_from(PairingRole::NewDevice, &sealed_offer, "the pairing offer")?;
+        let plain =
+            self.receive_from(PairingRole::NewDevice, &sealed_offer, "the pairing offer")?;
         let offer =
             decode_pairing_offer(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
         let joiner = PairingJoiner::new(offer, nickname, platform, seed_s, seed_d);
@@ -452,8 +458,7 @@ impl DevicePairing {
     /// device is the one being added, or when the ciphertext does not open —
     /// which is what a tampered or replayed frame looks like.
     pub fn open_cert_request(&self, sealed: String) -> Result<Vec<u8>, BindingError> {
-        let plain =
-            self.receive_from(PairingRole::ExistingDevice, &sealed, "the cert request")?;
+        let plain = self.receive_from(PairingRole::ExistingDevice, &sealed, "the cert request")?;
         // Decoded and thrown away: the point is to refuse a malformed or
         // self-named request here, where the error reaches the sponsor's screen,
         // rather than inside the core where it would surface as a failed grant.
@@ -472,7 +477,12 @@ impl DevicePairing {
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
     pub fn seal_pairing_grant(&self, grant: Vec<u8>) -> Result<String, BindingError> {
-        self.send_as(PairingRole::ExistingDevice, &grant, "the pairing grant", true)
+        self.send_as(
+            PairingRole::ExistingDevice,
+            &grant,
+            "the pairing grant",
+            true,
+        )
     }
 
     /// Open message 3 on the joiner and assemble what `SunriseCore::open`
@@ -500,7 +510,8 @@ impl DevicePairing {
     /// not 32 bytes.
     pub fn open_pairing_grant(&self, sealed: String) -> Result<PairedBundle, BindingError> {
         let plain = self.receive_from(PairingRole::NewDevice, &sealed, "the pairing grant")?;
-        let grant = decode_pairing_grant(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let grant =
+            decode_pairing_grant(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
         let joiner = self
             .joiner
             .lock()

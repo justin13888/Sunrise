@@ -989,6 +989,10 @@ mod tests {
 #[cfg(test)]
 #[test]
 #[ignore = "generator, not an assertion: regenerates the Apple test fixture"]
+// stdout *is* this function's output; the workspace ban on `print_stdout`
+// exists to keep it out of library code that has a caller to return to, and
+// this has none.
+#[allow(clippy::print_stdout)]
 fn apple_fixture() {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -1021,7 +1025,10 @@ fn apple_fixture() {
         genesis_id_s_pub: id_s_pub,
         d_s_priv: d_s.secret_bytes(),
         d_d_priv: d_d.secret_bytes(),
-        device_cert: DeviceCert::issue(body, &signing).unwrap().to_cbor().unwrap(),
+        device_cert: DeviceCert::issue(body, &signing)
+            .unwrap()
+            .to_cbor()
+            .unwrap(),
         vault_root: [0xAB; 32],
         stream_keys,
     };
