@@ -663,6 +663,28 @@ jobs:
         # the one legitimate upgrade route.
         run: .github/scripts/kynos-waiver-gate.py
 
+  kynos-waiver-gate-contract:
+    name: Kynos waiver gate contract
+    runs-on: ubuntu-latest
+    # One Python script over two-crate workspaces it synthesises in a temp
+    # directory. It needs a cargo, because what the gate reads is a resolved
+    # feature set and nothing else can produce one — but only
+    # `cargo metadata --all-features` over path dependencies, which resolves
+    # without touching the registry or compiling anything. Seconds of work.
+    timeout-minutes: 10
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The gate asserts something about the published API
+    # surface — that no operation in the description can be flagged opaque —
+    # on the strength of one feature lookup, and the shape it looks that up in
+    # has already moved once: package ids became opaque in newer Cargo, and
+    # kynos moved to a git pin. A lookup that silently stopped finding the
+    # package would print OK over a workspace with the hatch wide open.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_kynos_waiver_gate.py
+
   openapi-current:
     name: OpenAPI description gate
     runs-on: ubuntu-latest
@@ -740,6 +762,26 @@ jobs:
         # carries its own exemption and quarantine lists, each entry with a
         # reason, and fails when one of them goes stale.
         run: .github/scripts/orphan-crate-gate.py
+
+  orphan-crate-gate-contract:
+    name: Orphan crate gate contract
+    runs-on: ubuntu-latest
+    # One Python script over workspaces of two to four one-line crates,
+    # synthesised in a temp directory. It needs a cargo for the same reason the
+    # job above does — `cargo metadata --no-deps` reads manifests and nothing
+    # else — and nothing to cache. Seconds of work.
+    timeout-minutes: 10
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The number this gate prints is cited by
+    # `docs/implementation/overview.md`, and nothing checked the walk that
+    # produces it: an edge that stopped being followed, or a root that stopped
+    # being a root, changes the count without changing the verdict. Every pass
+    # case in the contract asserts the count for that reason.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_orphan_crate_gate.py
 
 
   proptest-persistence:

@@ -23,6 +23,10 @@ workspace = true
 jiff = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { workspace = true }
+# `sunrise recover` has one error arm per thing the user can do about it, and a
+# recovery is run by someone who has already lost every device — "it failed" is
+# not an acceptable message there.
+thiserror = { workspace = true }
 # The recovery seed is drawn, used twice and dropped inside one function; this
 # is what makes "dropped" mean the bytes are gone rather than merely out of
 # scope.

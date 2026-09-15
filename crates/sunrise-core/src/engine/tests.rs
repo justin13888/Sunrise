@@ -7017,8 +7017,16 @@ fn a_transition_forged_under_a_self_minted_next_epoch_is_refused() {
 
     // C forges a transition off the identity it kept and seals it under an
     // epoch it minted itself.
+    //
+    // **Twice**, and that is load-bearing. The vault-meta stream's genesis
+    // epoch is *derived* — `meta_genesis_key`, from `ID_D_priv ‖ identity_id`,
+    // which is what lets a recovered vault reach the epochs that predate it —
+    // so the first mint on any vault holding `ID_D_priv` produces the key every
+    // other such vault already has. Sealing there is not forging under a
+    // self-minted key at all; it is using the shared one. The second mint is
+    // the first that is genuinely C's own.
     let (inner, _) = build_transition(&ec, &[&ec], false, T0);
-    let forged = forged_envelope_at(&ec, &mut dbc, &inner, 1, Hlc::at(T0 + 1));
+    let forged = forged_envelope_at(&ec, &mut dbc, &inner, 2, Hlc::at(T0 + 1));
     let err = ea.apply_remote_all(&mut dba, &forged).unwrap_err();
     assert!(
         matches!(&err, EngineError::RemoteOpInvalid(m)
@@ -7030,6 +7038,53 @@ fn a_transition_forged_under_a_self_minted_next_epoch_is_refused() {
         ea.current_identity(dba.conn()).unwrap().identity_id,
         head,
         "and the head did not move"
+    );
+}
+
+/// **The vault-meta genesis epoch is shared by every holder of `ID_D_priv`,
+/// and that is the weakest place to seal anything.**
+///
+/// `meta_genesis_key` derives epoch 1 of the vault-meta stream from
+/// `ID_D_priv ‖ identity_id` rather than minting it at random. That is what
+/// makes recovery work at all — a restored vault has the identity key and
+/// nothing else, so a random genesis would leave every epoch that predates the
+/// recovery unreadable — and its cost is that a *revoked* device which held
+/// `ID_D_priv` keeps the ability to seal and open at that one epoch forever.
+///
+/// It does not get such a device anything, and this pins why: `meta_epoch` is
+/// the first component of the fold's ordering key, and the genesis is the
+/// lowest epoch there is. Anything sealed there sorts below every honest
+/// rotation by construction. The envelope opens; the head does not move.
+#[test]
+fn an_op_sealed_at_the_derived_genesis_epoch_opens_but_outranks_nothing() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbc = db_root(ROOT);
+    trust(&ea, &mut dba, &ec);
+    trust(&ec, &mut dbc, &ea);
+    let c_id = ec.keychain.device_id();
+
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, c_id),
+            reason: RevokeReason::Compromised,
+        },
+    )
+    .unwrap();
+    let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    // One mint lands on the derived genesis, which A holds too.
+    let (inner, _) = build_transition(&ec, &[&ec], false, T0);
+    let at_genesis = forged_envelope_at(&ec, &mut dbc, &inner, 1, Hlc::at(T0 + 1));
+    ea.apply_remote_all(&mut dba, &at_genesis)
+        .expect("A can open what was sealed under the epoch both derive");
+
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        head,
+        "the genesis epoch is the bottom of the ordering key, so it moves nothing"
     );
 }
 

@@ -21,19 +21,32 @@ use sunrise_storage::Db;
 
 /// Write the account identity row.
 ///
-/// `minted_by` is `Some` only on the two paths that actually generate
-/// `ID_S`/`ID_D` — a founding vault and a pre-0017 vault being adopted — and
-/// `None` when the identity arrived in a `PairingPayload`. It is what lets
+/// `minted_by` names the device this vault will let hold `ID_D_priv`. It is
+/// `Some` on the three paths that legitimately have the key in hand — a
+/// founding vault, a pre-0017 vault being adopted, and a vault seeded from an
+/// **opened recovery blob** — and `None` when the identity arrived in a
+/// `PairingPayload`, which does not carry the key at all. It is what lets
 /// [`unwrap_identity`](super::crypto::unwrap_identity) tell "this row holds the
 /// only copy of `ID_D_priv`" from "this row holds a copy this device should not
 /// have", which migration 0018 could not and 0019 backfills.
+///
+/// The column is named for the founding case because that was the only one
+/// when it was added. `docs/03-crypto/key-rotation.md` §Revocation already
+/// states the wider rule it encodes: *the device that created the account, and
+/// any device restored from the recovery code, hold `ID_D_priv`.*
+///
+/// `created_at_ms` comes off the identity rather than from a clock the caller
+/// passes. On a recovering vault the two differ and only one is right: field 6
+/// of the recovery blob is the **account's** creation time
+/// (`docs/03-crypto/recovery.md` §Recovery blob construction), and stamping
+/// "now" here would make a blob re-sealed after a recovery disagree with the
+/// one that produced it.
 pub(super) fn insert_identity_row(
     tx: &rusqlite::Transaction<'_>,
     identity: &Identity,
     wrapped: &(Vec<u8>, Vec<u8>),
     minted_by: Option<&[u8; 16]>,
     genesis: ([u8; 16], [u8; 32]),
-    now_ms: u64,
 ) -> rusqlite::Result<()> {
     // `genesis_identity_id` and `genesis_id_s_pub` are written here and never
     // again. Migration 0022
@@ -71,7 +84,7 @@ pub(super) fn insert_identity_row(
             &identity.dh_pub[..],
             wrapped.0,
             wrapped.1,
-            now_ms,
+            identity.created_at_ms,
             minted_by.map(|d| d.to_vec()),
             &genesis.0[..],
             &genesis.1[..],
